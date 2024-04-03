@@ -7,6 +7,7 @@ from ._widget import (
     ImageThreshold,
     threshold_autogenerate_widget,
     threshold_magic_widget,
+    apply_filter,
 )
 from ._writer import write_multiple, write_single_image
 

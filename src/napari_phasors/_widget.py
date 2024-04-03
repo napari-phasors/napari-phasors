@@ -39,6 +39,9 @@ from skimage.util import img_as_float
 if TYPE_CHECKING:
     import napari
 
+def apply_filter(image: "napari.types.ImageData") -> "napari.types.ImageData":
+    from skimage.filters import sobel, gaussian
+    return sobel(image)
 
 # Uses the `autogenerate: true` flag in the plugin manifest
 # to indicate it should be wrapped as a magicgui to autogenerate

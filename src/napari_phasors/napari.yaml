@@ -30,6 +30,9 @@ contributions:
     - id: napari-phasors.make_qwidget
       python_name: napari_phasors:ExampleQWidget
       title: Make example QWidget
+    - id: napari-phasors.filter_function
+      python_name: napari_phasors:apply_filter
+      title: Apply a Sobel Filter
   readers:
     - command: napari-phasors.get_reader
       accepts_directories: false
@@ -55,3 +58,6 @@ contributions:
       display_name: Autogenerate Threshold
     - command: napari-phasors.make_qwidget
       display_name: Example QWidget
+    - command: napari-phasors.filter_function
+      autogenerate: true
+      display_name: Filter
