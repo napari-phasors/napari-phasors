@@ -1,0 +1,57 @@
+name: napari-phasors
+display_name: Napari Phasors
+# use 'hidden' to remove plugin from napari hub search results
+visibility: public
+# see https://napari.org/stable/plugins/manifest.html for valid categories
+categories: ["Annotation", "Segmentation", "Acquisition"]
+contributions:
+  commands:
+    - id: napari-phasors.get_reader
+      python_name: napari_phasors._reader:napari_get_reader
+      title: Open data with Napari Phasors
+    - id: napari-phasors.write_multiple
+      python_name: napari_phasors._writer:write_multiple
+      title: Save multi-layer data with Napari Phasors
+    - id: napari-phasors.write_single_image
+      python_name: napari_phasors._writer:write_single_image
+      title: Save image data with Napari Phasors
+    - id: napari-phasors.make_sample_data
+      python_name: napari_phasors._sample_data:make_sample_data
+      title: Load sample data from Napari Phasors
+    - id: napari-phasors.make_container_widget
+      python_name: napari_phasors:ImageThreshold
+      title: Make threshold Container widget
+    - id: napari-phasors.make_magic_widget
+      python_name: napari_phasors:threshold_magic_widget
+      title: Make threshold magic widget
+    - id: napari-phasors.make_function_widget
+      python_name: napari_phasors:threshold_autogenerate_widget
+      title: Make threshold function widget
+    - id: napari-phasors.make_qwidget
+      python_name: napari_phasors:ExampleQWidget
+      title: Make example QWidget
+  readers:
+    - command: napari-phasors.get_reader
+      accepts_directories: false
+      filename_patterns: ['*.npy']
+  writers:
+    - command: napari-phasors.write_multiple
+      layer_types: ['image*','labels*']
+      filename_extensions: []
+    - command: napari-phasors.write_single_image
+      layer_types: ['image']
+      filename_extensions: ['.npy']
+  sample_data:
+    - command: napari-phasors.make_sample_data
+      display_name: Napari Phasors
+      key: unique_id.1
+  widgets:
+    - command: napari-phasors.make_container_widget
+      display_name: Container Threshold
+    - command: napari-phasors.make_magic_widget
+      display_name: Magic Threshold
+    - command: napari-phasors.make_function_widget
+      autogenerate: true
+      display_name: Autogenerate Threshold
+    - command: napari-phasors.make_qwidget
+      display_name: Example QWidget

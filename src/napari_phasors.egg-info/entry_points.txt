@@ -1,0 +1,2 @@
+[napari.manifest]
+napari-phasors = napari_phasors:napari.yaml
