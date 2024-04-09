@@ -36,7 +36,9 @@ from magicgui.widgets import CheckBox, Container, create_widget, PushButton, Lin
 from qtpy.QtWidgets import QHBoxLayout, QPushButton, QWidget
 from skimage.util import img_as_float
 
-from phasorpy.phasor import phasor_from_signal, phasor_calibrate
+from phasorpy.phasor import phasor_calibrate
+from phasorpy.plot import plot_phasor
+import matplotlib.pyplot as plt
 
 if TYPE_CHECKING:
     import napari
@@ -135,21 +137,21 @@ class PlotPhasor(Container):
         super().__init__()
         self._viewer = viewer
         # use create_widget to generate widgets from type annotations
-        self._image_layer_combo = create_widget(
-            label="Image", annotation="napari.layers.Image"
+        self._image_mean =create_widget(
+            label="DC", annotation="napari.layers.Image"
         )
-        self._image_mean = None
-        self._image_real = None
-        self._image_imag = None
-        self._harmonics = create_widget(
-            label="Harmonics", annotation=float, widget_type="FloatSlider"
+        self._image_real = create_widget(
+            label="G", annotation="napari.layers.Image"
         )
-        self._harmonics.min = 1.0
-        self._harmonics.max = 4.0
-        self._harmonics.step = 1.0
-        self._calculate_phasor_button = PushButton(text="Calculate and plot phasor")    
-        self._calibration_layer_combo = create_widget(
-            label="Calibration image", annotation="napari.layers.Image"
+        self._image_imag =create_widget(
+            label="S", annotation="napari.layers.Image"
+        )
+        self._plot_phasor_button = PushButton(text="Plot phasor")    
+        self._calibration_real = create_widget(
+            label="Calibration image G", annotation="napari.layers.Image"
+        )
+        self._calibration_imag = create_widget(
+            label="Calibration image S", annotation="napari.layers.Image"
         )
         self._frequency = create_widget(
             label="Frequency", annotation=float, widget_type="LineEdit"
@@ -158,27 +160,32 @@ class PlotPhasor(Container):
             label="Reference lifetime", annotation=float, widget_type="LineEdit"
         )
         self._calibrate_phasor_button = PushButton(text="Calibrate phasor")
-        self._calculate_phasor_button.changed.connect(self._calculate_phasor)
+        self._plot_phasor_button.changed.connect(self._plot_phasor)
         self._calibrate_phasor_button.changed.connect(self._calibrate_phasor)
         self.extend(
             [
-                self._image_layer_combo,
-                self._harmonics,
-                self._calculate_phasor_button,
-                self._calibration_layer_combo,
+                self._image_real,
+                self._image_imag,
+                self._plot_phasor_button,
+                self._calibration_real,
+                self._calibration_imag,
                 self._frequency,
                 self._reference_lifetime,
                 self._calibrate_phasor_button,
             ]
         )
-    
-    def _calculate_phasor(self):
-        image_layer = self._image_layer_combo.value
-        self._image_mean, self._image_real, self._image_imag = phasor_from_signal(image_layer)
+
+    def _plot_phasor(self):
+        real = self._image_real.value.data
+        imag = self._image_imag.value.data
+        plot_phasor(real, imag)
+
+
 
     def _calibrate_phasor(self):
-        image_phasor = self._image_phasor
-        calibration_layer = self._calibration_layer_combo.value
-        _, calibration_real, calibration_imag = phasor_from_signal(calibration_layer)
-        self._image_real, self._image_imag = phasor_calibrate(self._image_real, self._image_imag, calibration_real, calibration_imag, frequency=self._frequency, lifetime=self._reference_lifetime)
-        
+        real = self._image_real.value.data
+        imag = self._image_imag.value.data
+        calibration_real = self._calibration_real.value.data
+        calibration_imag = self._calibration_imag.value.data
+        real, imag = phasor_calibrate(real, imag, calibration_real, calibration_imag, frequency=self._frequency.value, lifetime=self._reference_lifetime.value)
+        plot_phasor(real, imag)
