@@ -30,10 +30,13 @@ contributions:
     - id: napari-phasors.make_qwidget
       python_name: napari_phasors:ExampleQWidget
       title: Make example QWidget
+    - id: napari-phasors.plot_phasor
+      python_name: napari_phasors:PlotPhasor
+      title: Plot Phasor
   readers:
     - command: napari-phasors.get_reader
       accepts_directories: false
-      filename_patterns: ['*.npy']
+      filename_patterns: ['*.fbd']
   writers:
     - command: napari-phasors.write_multiple
       layer_types: ['image*','labels*']
@@ -55,3 +58,5 @@ contributions:
       display_name: Autogenerate Threshold
     - command: napari-phasors.make_qwidget
       display_name: Example QWidget
+    - command: napari-phasors.plot_phasor
+      display_name: Plot Phasor

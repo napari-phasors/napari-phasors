@@ -5,37 +5,35 @@ It implements the Reader specification, but your plugin may choose to
 implement multiple readers or even other plugin contributions. see:
 https://napari.org/stable/plugins/guides.html?#readers
 """
-
+import os
 import numpy as np
-
+import phasorpy.io as io
 
 def napari_get_reader(path):
     """A basic implementation of a Reader contribution.
 
-    Parameters
-    ----------
-    path : str or list of str
-        Path to file, or list of paths.
-
-    Returns
-    -------
-    function or None
-        If the path is a recognized format, return a function that accepts the
-        same path or list of paths, and returns a list of layer data tuples.
     """
-    if isinstance(path, list):
-        # reader plugins may be handed single path, or a list of paths.
-        # if it is a list, it is assumed to be an image stack...
-        # so we are only going to look at the first file.
-        path = path[0]
-
-    # if we know we cannot read the file, we immediately return None.
-    if not path.endswith(".npy"):
-        return None
-
+    extension_mapping = {
+        ".ptu": io.read_ptu,
+        ".fbd": read_fbd,
+        ".flif": io.read_flif,
+        ".sdt": io.read_sdt,
+        ".bh": io.read_bh,
+        ".bhz": io.read_bhz,
+        ".b64": io.read_b64,
+        ".ifli": io.read_ifli,
+        ".r64": io.read_r64,
+        ".ref": io.read_ref,
+        ".ometiff": io.read_ometiff_phasor,
+        ".lsm": io.read_lsm,
+    }
+    print('ENTERING READER')
+    _, file_extension = os.path.splitext(path)
+    print(f"FILE EXTENSION: {file_extension}")
+    file_extension = file_extension.lower()
+    processing_function = extension_mapping.get(file_extension, reader_function)
     # otherwise we return the *function* that can read ``path``.
-    return reader_function
-
+    return processing_function(path)
 
 def reader_function(path):
     """Take a path or list of paths and return a list of LayerData tuples.
@@ -71,3 +69,7 @@ def reader_function(path):
 
     layer_type = "image"  # optional, default is "image"
     return [(data, add_kwargs, layer_type)]
+
+def read_fbd(path):
+    data = io.read_fbd(path, frame=-1,keepdims=False)
+    return data

@@ -7,6 +7,7 @@ from ._widget import (
     ImageThreshold,
     threshold_autogenerate_widget,
     threshold_magic_widget,
+    PlotPhasor,
 )
 from ._writer import write_multiple, write_single_image
 
@@ -19,4 +20,5 @@ __all__ = (
     "ImageThreshold",
     "threshold_autogenerate_widget",
     "threshold_magic_widget",
+    "PlotPhasor",
 )
