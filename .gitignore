@@ -81,3 +81,4 @@ target/
 # PyBuilder
 .idea
 venv/
+napari_phasors_venv
