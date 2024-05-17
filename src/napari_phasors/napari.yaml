@@ -9,12 +9,6 @@ contributions:
     - id: napari-phasors.get_reader
       python_name: napari_phasors._reader:napari_get_reader
       title: Open data with Napari Phasors
-    - id: napari-phasors.write_multiple
-      python_name: napari_phasors._writer:write_multiple
-      title: Save multi-layer data with Napari Phasors
-    - id: napari-phasors.write_single_image
-      python_name: napari_phasors._writer:write_single_image
-      title: Save image data with Napari Phasors
     - id: napari-phasors.make_sample_data
       python_name: napari_phasors._sample_data:make_sample_data
       title: Load sample data from Napari Phasors
@@ -30,17 +24,21 @@ contributions:
     - id: napari-phasors.make_qwidget
       python_name: napari_phasors:ExampleQWidget
       title: Make example QWidget
+    - id: napari-phasors.plot_phasor
+      python_name: napari_phasors:PlotPhasor
+      title: Plot Phasor
+    - id: napari-phasors.write_ome_tiff
+      python_name: napari_phasors:write_ome_tiff
+      title: Write OME-TIFF
   readers:
     - command: napari-phasors.get_reader
       accepts_directories: false
-      filename_patterns: ['*.npy']
+      filename_patterns: ['*.fbd','*.ptu','*.tif', '*.lsm']
   writers:
-    - command: napari-phasors.write_multiple
+    - command: napari-phasors.write_ome_tiff
+      display_name: Export Phasor to OME-TIFF
       layer_types: ['image*','labels*']
       filename_extensions: []
-    - command: napari-phasors.write_single_image
-      layer_types: ['image']
-      filename_extensions: ['.npy']
   sample_data:
     - command: napari-phasors.make_sample_data
       display_name: Napari Phasors
