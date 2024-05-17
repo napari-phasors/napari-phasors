@@ -35,6 +35,11 @@ from magicgui import magic_factory
 from magicgui.widgets import CheckBox, Container, create_widget
 from qtpy.QtWidgets import QHBoxLayout, QPushButton, QWidget
 from skimage.util import img_as_float
+from qtpy import uic
+from qtpy.QtWidgets import QVBoxLayout
+from pathlib import Path
+from napari.layers import Image
+from napari_phasors.plotter import PlotterWidget
 
 if TYPE_CHECKING:
     import napari
@@ -127,3 +132,55 @@ class ExampleQWidget(QWidget):
 
     def _on_click(self):
         print("napari has", len(self.viewer.layers), "layers")
+
+
+class CalibrationWidget(QWidget):
+    def __init__(self, viewer: "napari.viewer.Viewer"):
+        super().__init__()
+        self.viewer = viewer
+
+        # Cretaes and empty widget
+        self.calibration_widget = QWidget()
+        uic.loadUi(
+            Path(__file__).parent / "ui/calibration_widget.ui",
+            self.calibration_widget,
+        )
+        
+        # self.calibration_widget.frequency_line_edit_widget.setText("0")
+
+
+        # Connect callbacks
+        self.calibration_widget.calibrate_push_button.clicked.connect(self._on_click)
+
+        # Connect layer events to populate combobox
+        self.viewer.layers.events.inserted.connect(self._populate_comboboxes)
+        self.viewer.layers.events.removed.connect(self._populate_comboboxes)
+
+        # Populate combobox
+        self._populate_comboboxes()
+
+        mainLayout = QVBoxLayout()
+        mainLayout.addWidget(self.calibration_widget)
+        self.setLayout(mainLayout)
+
+    def _populate_comboboxes(self):
+        self.calibration_widget.calibration_layer_combobox.clear()
+        image_layers = [layer for layer in self.viewer.layers if isinstance(layer, Image)]
+        print(image_layers)
+        for layer in image_layers:
+            self.calibration_widget.calibration_layer_combobox.addItem(layer.name)
+
+        self.calibration_widget.sample_layer_combobox.clear()
+        image_layers = [layer for layer in self.viewer.layers if isinstance(layer, Image)]
+        print(image_layers)
+        for layer in image_layers:
+            self.calibration_widget.sample_layer_combobox.addItem(layer.name)
+
+    def _on_click(self):
+        frequency = int(self.calibration_widget.frequency_line_edit_widget.text())
+        print(frequency)
+        # Apply calibration (update table in Labels layer in layer metadata)
+
+        # Call plotter with calibrated layer in the combobox
+        plotter = PlotterWidget(self.viewer)
+        self.viewer.window.add_dock_widget(plotter)
