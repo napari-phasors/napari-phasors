@@ -8,6 +8,7 @@ from ._widget import (
     threshold_autogenerate_widget,
     threshold_magic_widget,
 )
+from .plotter import PlotterWidget
 
 from ._writer import write_ome_tiff
 

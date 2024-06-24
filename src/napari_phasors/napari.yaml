@@ -25,7 +25,7 @@ contributions:
       python_name: napari_phasors:ExampleQWidget
       title: Make example QWidget
     - id: napari-phasors.plot_phasor
-      python_name: napari_phasors:PlotPhasor
+      python_name: napari_phasors:PlotterWidget
       title: Plot Phasor
     - id: napari-phasors.write_ome_tiff
       python_name: napari_phasors:write_ome_tiff
@@ -53,3 +53,5 @@ contributions:
       display_name: Autogenerate Threshold
     - command: napari-phasors.make_qwidget
       display_name: Example QWidget
+    - command: napari-phasors.plot_phasor
+      display_name: Phasor Plot
