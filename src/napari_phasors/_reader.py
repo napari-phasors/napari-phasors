@@ -36,6 +36,14 @@ Commented file extensions are not supported at the moment.
 
 """
 
+iter_index_mapping = {
+    ".ptu": 'C',
+    ".lsm": None,
+}
+"""This dictionary contains the mapping for the axis to iterate over
+when calculating phasor coordinates in the file.
+"""
+
 def napari_get_reader(path: str):
     """Initial reader function to map file extension to
     specific reader functions.
@@ -119,20 +127,21 @@ def raw_file_reader(path: str):
     file_extension = file_extension.lower()
     raw_data = extension_mapping['raw'][file_extension](path)
     layers = []
-    for channel in range(raw_data.shape[0]):
-        mean_intensity_image, G_image, S_image = phasor_from_signal(raw_data[channel])
-        pixel_id = np.arange(1, mean_intensity_image.size + 1)
-        if len(G_image.shape) > 2:
-            table = pd.DataFrame([])
-            for i in range(G_image.shape[0]):
-                sub_table = pd.DataFrame({'label': pixel_id, 'G': G_image[i].ravel(), 'S': S_image[i].ravel(), 'harmonic': i+1})  
-                table = pd.concat([table, sub_table])
-        else:
-            table = pd.DataFrame({'label': pixel_id, 'G': G_image.ravel(), 'S': S_image.ravel(), 'harmonic': 1})
-        labels_data = pixel_id.reshape(mean_intensity_image.shape)
-        labels_layer = Labels(labels_data, name=filename + ' Phasor Features Layer', scale=(1, 1), features=table)
-        add_kwargs = {'name': f'{filename} Intensity Image: Channel {channel}', 'metadata':{'phasor_features_labels_layer': labels_layer}}
+    iter_axis = iter_index_mapping[file_extension]
+    if iter_axis is None:
+        # Calculate phasor over channels if file is of hyperspectral type
+        mean_intensity_image, G_image, S_image = phasor_from_signal(raw_data, axis=raw_data.dims.index('C'))
+        labels_layer = make_phasors_labels_layer(mean_intensity_image, G_image, S_image, name=filename)
+        add_kwargs = {'name': f'{filename} Intensity Image', 'metadata':{'phasor_features_labels_layer': labels_layer}}
         layers.append((mean_intensity_image, add_kwargs))
+    else:
+        iter_axis_index = raw_data.dims.index(iter_axis)
+        for channel in range(raw_data.shape[iter_axis_index]):
+            # Calculate phasor over photon counts dimension if file is of FLIM type
+            mean_intensity_image, G_image, S_image = phasor_from_signal(raw_data.sel(C=channel), axis=raw_data.sel(C=channel).dims.index('H'))
+            labels_layer = make_phasors_labels_layer(mean_intensity_image, G_image, S_image, name=filename)
+            add_kwargs = {'name': f'{filename} Intensity Image: Channel {channel}', 'metadata':{'phasor_features_labels_layer': labels_layer}}
+            layers.append((mean_intensity_image, add_kwargs))
     return layers
 
 def processed_file_reader(path: str):
@@ -161,17 +170,39 @@ def processed_file_reader(path: str):
     file_extension = file_extension.lower()
     mean_intensity_image, G_image, S_image = extension_mapping['processed'][file_extension](path)
     mean_intensity_image, G_image, S_image = mean_intensity_image.values, G_image.values, S_image.values
-    pixel_id = np.arange(1, mean_intensity_image.size + 1)
+    labels_layer = make_phasors_labels_layer(mean_intensity_image, G_image, S_image, name=filename)
     layers = []
+    add_kwargs = {'name': filename + ' Intensity Image', 'metadata':{'phasor_features_labels_layer': labels_layer}}
+    layers.append((mean_intensity_image, add_kwargs))
+    return layers
+
+def make_phasors_labels_layer(mean_intensity_image, G_image, S_image, name=''):
+    """Create a napari Labels layer from phasor coordinates.
+
+    Parameters
+    ----------
+    mean_intensity_image : np.ndarray
+        Mean intensity image.
+    G_image : np.ndarray
+        G phasor coordinates.
+    S_image : np.ndarray
+        S phasor coordinates.
+    name : str, optional
+        Name of the layer, by default ''.
+
+    Returns
+    -------
+    labels_layer : napari.layers.Labels
+        Labels layer with phasor coordinates as features.
+    """
+    pixel_id = np.arange(1, mean_intensity_image.size + 1)
     if len(G_image.shape) > 2:
         table = pd.DataFrame([])
         for i in range(G_image.shape[0]):
-            sub_table = pd.DataFrame({'label': pixel_id, 'G': G_image[i].ravel(), 'S': S_image[i].ravel(), 'harmonic': i+1})
+            sub_table = pd.DataFrame({'label': pixel_id, 'G': G_image[i].ravel(), 'S': S_image[i].ravel(), 'harmonic': i+1})  
             table = pd.concat([table, sub_table])
     else:
         table = pd.DataFrame({'label': pixel_id, 'G': G_image.ravel(), 'S': S_image.ravel(), 'harmonic': 1})
     labels_data = pixel_id.reshape(mean_intensity_image.shape)
-    labels_layer = Labels(labels_data, name=filename + ' Phasor Features Layer', scale=(1, 1), features=table)
-    add_kwargs = {'name': filename + ' Intensity Image', 'metadata':{'phasor_features_labels_layer': labels_layer}}
-    layers.append((mean_intensity_image, add_kwargs))
-    return layers
+    labels_layer = Labels(labels_data, name=name + ' Phasor Features Layer', scale=(1, 1), features=table)
+    return labels_layer
