@@ -8,12 +8,13 @@ from ._widget import (
     threshold_autogenerate_widget,
     threshold_magic_widget,
 )
-from ._writer import write_multiple, write_single_image
+from .plotter import PlotterWidget
+
+from ._writer import write_ome_tiff
 
 __all__ = (
     "napari_get_reader",
-    "write_single_image",
-    "write_multiple",
+    "write_ome_tiff",
     "make_sample_data",
     "ExampleQWidget",
     "ImageThreshold",
