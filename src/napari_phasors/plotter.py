@@ -135,11 +135,20 @@ class PlotterWidget(QWidget):
                 self._labels_layer_with_phasor_features.features['label']).astype(int)
         # Populate comboboxes
         for column in self._labels_layer_with_phasor_features.features.columns:
-            if 'SELECTION' in column:
-                self.plotter_inputs_widget.hue_combobox.addItem(column)
-            elif column != 'label' and column != 'frame':
-                self.plotter_inputs_widget.x_axis_combobox.addItem(column)
-                self.plotter_inputs_widget.y_axis_combobox.addItem(column)
+            print(column)
+            hue_combobox_items = [self.plotter_inputs_widget.hue_combobox.itemText(i) 
+                        for i in range(self.plotter_inputs_widget.hue_combobox.count())]
+            x_axis_combobox_items = [self.plotter_inputs_widget.x_axis_combobox.itemText(i) 
+                        for i in range(self.plotter_inputs_widget.x_axis_combobox.count())]
+            y_axis_combobox_items = [self.plotter_inputs_widget.y_axis_combobox.itemText(i)
+                        for i in range(self.plotter_inputs_widget.y_axis_combobox.count())]
+            all_items = hue_combobox_items + x_axis_combobox_items + y_axis_combobox_items
+            if column not in all_items:
+                if 'SELECTION' in column:
+                    self.plotter_inputs_widget.hue_combobox.addItem(column)
+                elif column != 'label' and column != 'frame':
+                    self.plotter_inputs_widget.x_axis_combobox.addItem(column)
+                    self.plotter_inputs_widget.y_axis_combobox.addItem(column)
 
         # Set initial comboboxes default choices
         for i in range(self.plotter_inputs_widget.x_axis_combobox.count()):
