@@ -135,7 +135,6 @@ class PlotterWidget(QWidget):
                 self._labels_layer_with_phasor_features.features['label']).astype(int)
         # Populate comboboxes
         for column in self._labels_layer_with_phasor_features.features.columns:
-            print(column)
             hue_combobox_items = [self.plotter_inputs_widget.hue_combobox.itemText(i) 
                         for i in range(self.plotter_inputs_widget.hue_combobox.count())]
             x_axis_combobox_items = [self.plotter_inputs_widget.x_axis_combobox.itemText(i) 
