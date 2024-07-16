@@ -3,7 +3,9 @@ from typing import TYPE_CHECKING
 from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
-    QScrollArea,
+    QSpacerItem,
+    QSizePolicy,
+    QPushButton,
 )
 from qtpy.QtCore import Qt
 from qtpy import uic
@@ -14,6 +16,7 @@ from pathlib import Path
 from napari.layers import Labels, Image
 from skimage.util import map_array
 from napari.utils import DirectLabelColormap
+from superqt import QCollapsible
 
 if TYPE_CHECKING:
     import napari
@@ -50,45 +53,72 @@ class PlotterWidget(QWidget):
     def __init__(self, napari_viewer):
         super().__init__()
         self.viewer = napari_viewer
+
+        self.setLayout(QVBoxLayout())
+
+        # Load canvas widget
+        self.canvas_widget = CanvasWidget(napari_viewer)
+        self.layout().addWidget(self.canvas_widget)
+
         # Load plotter inputs widget from ui file
         self.plotter_inputs_widget = QWidget()
         uic.loadUi(
             Path(__file__).parent / "ui/plotter_inputs_widget.ui",
             self.plotter_inputs_widget,
         )
-        self.canvas_widget = CanvasWidget(napari_viewer)
+        self.layout().addWidget(self.plotter_inputs_widget)
 
-        # Create a scroll area
-        self.scrollArea = QScrollArea(self)
-        self.scrollArea.setMinimumWidth(300)
-        self.scrollArea.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scrollableWidget = QWidget()
-        scrollAreaLayout = QVBoxLayout()
+        # Add collapsible widget
+        collapsible_widget = QCollapsible("Extra Options")
+        self.layout().addWidget(collapsible_widget)
+
+        # load extra inputs widget from ui file
+        self.extra_inputs_widget = QWidget()
+        uic.loadUi(
+            Path(__file__).parent / "ui/plotter_inputs_widget_extra.ui",
+            self.extra_inputs_widget,
+        )
+        collapsible_widget.addWidget(self.extra_inputs_widget)
+
+        self.plot_button = QPushButton("Plot")
+        self.layout().addWidget(self.plot_button)
+
+
+        # Add a vertical spacer at the bottom
+        spacer = QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding)
+        self.layout().addItem(spacer)
+
+        # # Create a scroll area
+        # self.scrollArea = QScrollArea(self)
+        # self.scrollArea.setMinimumWidth(300)
+        # self.scrollArea.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # scrollableWidget = QWidget()
+        # scrollAreaLayout = QVBoxLayout()
         # Add the widgets to the layout
-        scrollAreaLayout.addWidget(self.canvas_widget)
-        scrollAreaLayout.addWidget(self.plotter_inputs_widget)
+        # self.layout().addWidget(self.canvas_widget)
+        # self.layout().addWidget(self.plotter_inputs_widget)
 
         # Set the layout to the scrollable widget
-        scrollableWidget.setLayout(scrollAreaLayout)
+        # scrollableWidget.setLayout(scrollAreaLayout)
 
         # Set the scrollable widget as the widget of scroll area
-        self.scrollArea.setWidget(scrollableWidget)
-        self.scrollArea.setWidgetResizable(True)
+        # self.scrollArea.setWidget(scrollableWidget)
+        # self.scrollArea.setWidgetResizable(True)
 
-        mainLayout = QVBoxLayout()
-        mainLayout.addWidget(self.scrollArea)
-        self.setLayout(mainLayout)
+        
+        # mainLayout.addWidget(self.scrollArea)
+        # self.setLayout(mainLayout)
 
         self.viewer.layers.events.inserted.connect(self.reset_layer_choices)
         self.viewer.layers.events.removed.connect(self.reset_layer_choices)
 
         # Populate plot type combobox
-        self.plotter_inputs_widget.plot_type_combobox.addItems(
+        self.extra_inputs_widget.plot_type_combobox.addItems(
             [ArtistType.SCATTER.name, ArtistType.HISTOGRAM2D.name]
         )
 
         # Connect callbacks
-        self.plotter_inputs_widget.plot_pushbutton.clicked.connect(self.plot)
+        self.plot_button.clicked.connect(self.plot)
         self.plotter_inputs_widget.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
             self.on_labels_layer_with_phasor_features_changed)
         
@@ -135,35 +165,19 @@ class PlotterWidget(QWidget):
                 self._labels_layer_with_phasor_features.features['label']).astype(int)
         # Populate comboboxes
         for column in self._labels_layer_with_phasor_features.features.columns:
-            hue_combobox_items = [self.plotter_inputs_widget.hue_combobox.itemText(i) 
-                        for i in range(self.plotter_inputs_widget.hue_combobox.count())]
-            x_axis_combobox_items = [self.plotter_inputs_widget.x_axis_combobox.itemText(i) 
-                        for i in range(self.plotter_inputs_widget.x_axis_combobox.count())]
-            y_axis_combobox_items = [self.plotter_inputs_widget.y_axis_combobox.itemText(i)
-                        for i in range(self.plotter_inputs_widget.y_axis_combobox.count())]
-            all_items = hue_combobox_items + x_axis_combobox_items + y_axis_combobox_items
-            if column not in all_items:
+            phasor_selection_id_combobox_items = [self.plotter_inputs_widget.phasor_selection_id_combobox.itemText(i) 
+                        for i in range(self.plotter_inputs_widget.phasor_selection_id_combobox.count())]
+            if column not in phasor_selection_id_combobox_items:
                 if 'SELECTION' in column:
-                    self.plotter_inputs_widget.hue_combobox.addItem(column)
-                elif column != 'label' and column != 'frame':
-                    self.plotter_inputs_widget.x_axis_combobox.addItem(column)
-                    self.plotter_inputs_widget.y_axis_combobox.addItem(column)
+                    self.plotter_inputs_widget.phasor_selection_id_combobox.addItem(column)
 
         # Set initial comboboxes default choices
-        for i in range(self.plotter_inputs_widget.x_axis_combobox.count()):
-            if self.plotter_inputs_widget.x_axis_combobox.itemText(i) == 'G':
-                self.x_axis = 'G'
-                break
-        for i in range(self.plotter_inputs_widget.y_axis_combobox.count()):
-            if self.plotter_inputs_widget.y_axis_combobox.itemText(i) == 'S':
-                self.y_axis = 'S'
-                break
-        for i in range(self.plotter_inputs_widget.hue_combobox.count()):
-            if self.plotter_inputs_widget.hue_combobox.itemText(i) == 'MANUAL_SELECTION':
-                self.hue = 'MANUAL_SELECTION'
+        for i in range(self.plotter_inputs_widget.phasor_selection_id_combobox.count()):
+            if self.plotter_inputs_widget.phasor_selection_id_combobox.itemText(i) == 'MANUAL_SELECTION':
+                self.selection_id = 'MANUAL_SELECTION'
                 break
 
-    def get_features(self, x_column='G', y_column='S', hue_column='MANUAL_SELECTION'):
+    def get_features(self, x_column='G', y_column='S', selection_id_column='MANUAL_SELECTION'):
         if self._labels_layer_with_phasor_features is None:
             return None
         # Check if layer contains features
@@ -172,62 +186,35 @@ class PlotterWidget(QWidget):
         table = self._labels_layer_with_phasor_features.features
         x_column = table[x_column].values
         y_column = table[y_column].values
-        if hue_column in table.columns:
-            hue_column = table[hue_column].values
+        if selection_id_column in table.columns:
+            selection_id_column = table[selection_id_column].values
         else:
-            hue_column = np.zeros_like(x_column)
-        return x_column, y_column, hue_column
+            selection_id_column = np.zeros_like(x_column)
+        return x_column, y_column, selection_id_column
 
     @property
-    def x_axis(self):
-        if self.plotter_inputs_widget.x_axis_combobox.count() == 0:
+    def selection_id(self):
+        if self.plotter_inputs_widget.phasor_selection_id_combobox.count() == 0:
             return None
         else:
-            return self.plotter_inputs_widget.x_axis_combobox.currentText()
+            return self.plotter_inputs_widget.phasor_selection_id_combobox.currentText()
 
-    @x_axis.setter
-    def x_axis(self, column: str):
-        self.plotter_inputs_widget.x_axis_combobox.setCurrentText(
-            column
-        )
-
-    @property
-    def y_axis(self):
-        if self.plotter_inputs_widget.y_axis_combobox.count() == 0:
-            return None
-        else:
-            return self.plotter_inputs_widget.y_axis_combobox.currentText()
-
-    @y_axis.setter
-    def y_axis(self, column: str):
-        self.plotter_inputs_widget.y_axis_combobox.setCurrentText(
-            column
-        )
-
-    @property
-    def hue(self):
-        if self.plotter_inputs_widget.hue_combobox.count() == 0:
-            return None
-        else:
-            return self.plotter_inputs_widget.hue_combobox.currentText()
-
-    @hue.setter
-    def hue(self, column: str):
-        self.plotter_inputs_widget.hue_combobox.setCurrentText(
+    @selection_id.setter
+    def selection_id(self, column: str):
+        self.plotter_inputs_widget.phasor_selection_id_combobox.setCurrentText(
             column
         )
 
     @property
     def plot_type(self):
-        return self.plotter_inputs_widget.plot_type_combobox.currentText()
+        return self.extra_inputs_widget.plot_type_combobox.currentText()
 
     @plot_type.setter
     def plot_type(self, type):
-        self.plotter_inputs_widget.plot_type_combobox.setCurrentText(type)
+        self.extra_inputs_widget.plot_type_combobox.setCurrentText(type)
 
     def plot(self):
-        x_column, y_column, hue_column = self.get_features(
-            self.x_axis, self.y_axis, self.hue)
+        x_column, y_column, hue_column = self.get_features(selection_id_column=self.selection_id)
         self.canvas_widget.active_artist = self.canvas_widget.artists[ArtistType[self.plot_type]]
         if x_column is None or y_column is None:
             return
