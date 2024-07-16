@@ -128,6 +128,7 @@ class ExampleQWidget(QWidget):
     def _on_click(self):
         print("napari has", len(self.viewer.layers), "layers")
 
+
 class PhasorTransform(QWidget):
     def __init__(self, viewer: "napari.viewer.Viewer"):
         super().__init__()
@@ -181,7 +182,16 @@ class PhasorTransform(QWidget):
         fbd_widget = QWidget()
         layout = QVBoxLayout(fbd_widget)
         layout.addWidget(QLabel("Frames: "))
-        layout.addWidget(QComboBox)
+        frames = QComboBox()
+        layout.addWidget(frames)
+        # TODO: populate frames combobox with available frames
+        options = {}
+        # TODO: create the options dictionary
+        btn = QPushButton("Phasor Transform")
+        btn.clicked.connect(lambda: self._on_click(path, options))
+        # TODO: pass options to phasor transform function
+        layout.addWidget(btn)
+
         return fbd_widget
 
     def _create_ptu_widget(self, path):
@@ -198,6 +208,11 @@ class PhasorTransform(QWidget):
         # Create a widget for tif files
         tif_widget = QLabel(f"tif file: {path}")
         return tif_widget
+    
+    def _on_click(self, path, options):
+        # TODO: call reader function with selected options
+        reader = napari_get_reader(path, options=options)
+        self.viewer.open(reader())
 
     #     # Connect callbacks
     #     self.phasor_transofrm_widget.calibrate_push_button.clicked.connect(self._on_click)
