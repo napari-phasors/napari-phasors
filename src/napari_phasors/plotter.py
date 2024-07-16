@@ -45,9 +45,7 @@ def colormap_to_dict(colormap, num_colors=10, exclude_first=True):
     color_dict[None] = (0, 0, 0, 0)
     return color_dict
 
-
-
-
+DATA_COLUMNS = ['label', 'Average Image', 'G', 'S', 'harmonic']
 
 class PlotterWidget(QWidget):
     def __init__(self, napari_viewer):
@@ -88,27 +86,6 @@ class PlotterWidget(QWidget):
         spacer = QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding)
         self.layout().addItem(spacer)
 
-        # # Create a scroll area
-        # self.scrollArea = QScrollArea(self)
-        # self.scrollArea.setMinimumWidth(300)
-        # self.scrollArea.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        # scrollableWidget = QWidget()
-        # scrollAreaLayout = QVBoxLayout()
-        # Add the widgets to the layout
-        # self.layout().addWidget(self.canvas_widget)
-        # self.layout().addWidget(self.plotter_inputs_widget)
-
-        # Set the layout to the scrollable widget
-        # scrollableWidget.setLayout(scrollAreaLayout)
-
-        # Set the scrollable widget as the widget of scroll area
-        # self.scrollArea.setWidget(scrollableWidget)
-        # self.scrollArea.setWidgetResizable(True)
-
-        
-        # mainLayout.addWidget(self.scrollArea)
-        # self.setLayout(mainLayout)
-
         self.viewer.layers.events.inserted.connect(self.reset_layer_choices)
         self.viewer.layers.events.removed.connect(self.reset_layer_choices)
 
@@ -119,8 +96,8 @@ class PlotterWidget(QWidget):
 
         # Connect callbacks
         self.plot_button.clicked.connect(self.plot)
-        self.plotter_inputs_widget.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
-            self.on_labels_layer_with_phasor_features_changed)
+        # self.plotter_inputs_widget.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
+        #     self.on_labels_layer_with_phasor_features_changed)
         
         # Connect canvas signals
         self.canvas_widget.artists[ArtistType.SCATTER].color_indices_changed_signal.connect(self.update_manual_selection)
@@ -137,7 +114,10 @@ class PlotterWidget(QWidget):
     def update_manual_selection(self, manual_selection):
         if self._labels_layer_with_phasor_features is None:
             return
-        self._labels_layer_with_phasor_features.features['MANUAL_SELECTION'] = manual_selection
+        if self.selection_id is None or self.selection_id == "":
+            return
+        column = self.selection_id
+        self._labels_layer_with_phasor_features.features[column] = manual_selection
         self.create_phasors_selected_layer()
 
     def reset_layer_choices(self):
@@ -146,51 +126,46 @@ class PlotterWidget(QWidget):
             [layer.name for layer in self.viewer.layers if isinstance(
                 layer, Image) and 'phasor_features_labels_layer' in layer.metadata.keys()]
         )
-        self.on_labels_layer_with_phasor_features_changed()
+        # self.on_labels_layer_with_phasor_features_changed()
 
-    def on_labels_layer_with_phasor_features_changed(self):
-        labels_layer_name = self.plotter_inputs_widget.image_layer_with_phasor_features_combobox.currentText()
-        if labels_layer_name == "":
-            self._labels_layer_with_phasor_features = None
-            return
-        self._labels_layer_with_phasor_features = self.viewer.layers[labels_layer_name].metadata['phasor_features_labels_layer']
-        self.set_valid_features_columns()
+    # def on_labels_layer_with_phasor_features_changed(self):
+    #     labels_layer_name = self.plotter_inputs_widget.image_layer_with_phasor_features_combobox.currentText()
+    #     if labels_layer_name == "":
+    #         self._labels_layer_with_phasor_features = None
+    #         return
+    #     self._labels_layer_with_phasor_features = self.viewer.layers[labels_layer_name].metadata['phasor_features_labels_layer']
+    #     self.set_valid_features_columns()
 
-    def set_valid_features_columns(self):
-        if self._labels_layer_with_phasor_features is None:
-            return []
-        # Initialize manual selection column if it does not exist
-        if 'MANUAL_SELECTION' not in self._labels_layer_with_phasor_features.features.columns:
-            self._labels_layer_with_phasor_features.features['MANUAL_SELECTION'] = np.zeros_like(
-                self._labels_layer_with_phasor_features.features['label']).astype(int)
-        # Populate comboboxes
-        for column in self._labels_layer_with_phasor_features.features.columns:
-            phasor_selection_id_combobox_items = [self.plotter_inputs_widget.phasor_selection_id_combobox.itemText(i) 
-                        for i in range(self.plotter_inputs_widget.phasor_selection_id_combobox.count())]
-            if column not in phasor_selection_id_combobox_items:
-                if 'SELECTION' in column:
-                    self.plotter_inputs_widget.phasor_selection_id_combobox.addItem(column)
+    # def clear_phasor_selection_id_combobox(self):
+    #     self.plotter_inputs_widget.phasor_selection_id_combobox.clear()
 
-        # Set initial comboboxes default choices
-        for i in range(self.plotter_inputs_widget.phasor_selection_id_combobox.count()):
-            if self.plotter_inputs_widget.phasor_selection_id_combobox.itemText(i) == 'MANUAL_SELECTION':
-                self.selection_id = 'MANUAL_SELECTION'
-                break
+    # def set_valid_features_columns(self):
+    #     if self._labels_layer_with_phasor_features is None:
+    #         return []
 
-    def get_features(self, x_column='G', y_column='S', selection_id_column='MANUAL_SELECTION'):
+    #     self.clear_phasor_selection_id_combobox()
+    #     for column in self._labels_layer_with_phasor_features.features.columns:
+    #         if column not in DATA_COLUMNS:
+    #             self.plotter_inputs_widget.phasor_selection_id_combobox.addItem(column)                 
+
+    def get_features(self, x_column='G', y_column='S', selection_id_column='MANUAL_SELECTION', harmonic=1):
+        print("Getting features")
+        # TODO: Set _labels_layer_with_phasor_features somewhere before
         if self._labels_layer_with_phasor_features is None:
             return None
         # Check if layer contains features
         if self._labels_layer_with_phasor_features.features is None:
             return None
         table = self._labels_layer_with_phasor_features.features
-        x_column = table[x_column].values
-        y_column = table[y_column].values
+        print(table)
+        x_data = table[x_column][table['harmonic'] == harmonic].values
+        y_data = table[y_column][table['harmonic'] == harmonic].values
         if selection_id_column in table.columns:
-            selection_id_column = table[selection_id_column].values
+            selection_id_data = table[selection_id_column][table['harmonic'] == harmonic].values
         else:
-            selection_id_column = np.zeros_like(x_column)
-        return x_column, y_column, selection_id_column
+            selection_id_data = np.zeros_like(x_data)
+        print(x_data)
+        return x_data, y_data, selection_id_data
 
     @property
     def selection_id(self):
@@ -214,13 +189,17 @@ class PlotterWidget(QWidget):
         self.extra_inputs_widget.plot_type_combobox.setCurrentText(type)
 
     def plot(self):
-        x_column, y_column, hue_column = self.get_features(selection_id_column=self.selection_id)
+        print("Plotting")
+        print(self.selection_id)
+        output = self.get_features(selection_id_column=self.selection_id)
+        print(output)
+        x_data, y_data, selection_id_data = output
         self.canvas_widget.active_artist = self.canvas_widget.artists[ArtistType[self.plot_type]]
-        if x_column is None or y_column is None:
+        if x_data is None or y_data is None:
             return
         self.canvas_widget.active_artist.data = np.column_stack(
-            (x_column, y_column))
-        self.canvas_widget.active_artist.color_indices = hue_column
+            (x_data, y_data))
+        self.canvas_widget.active_artist.color_indices = selection_id_data
         self.create_phasors_selected_layer()
 
     def create_phasors_selected_layer(self):
@@ -229,7 +208,7 @@ class PlotterWidget(QWidget):
         
         mapped_data = map_array(np.asarray(self._labels_layer_with_phasor_features.data),
                           np.asarray(self._labels_layer_with_phasor_features.features['label'].values),
-                          np.array(self._labels_layer_with_phasor_features.features['MANUAL_SELECTION'].values),)
+                          np.array(self._labels_layer_with_phasor_features.features[self.selection_id].values),)
         color_dict = colormap_to_dict(self._colormap, self._colormap.N, exclude_first=True)
         phasors_selected_layer = Labels(
             mapped_data, name='Phasors Selected', scale=self._labels_layer_with_phasor_features.scale,
@@ -262,10 +241,10 @@ def make_intensity_layer_with_phasors(raw_flim_data, axis=0, harmonic=None, file
     if len(G_image.shape) > 2:
         table = pd.DataFrame([])
         for i in range(G_image.shape[0]):
-            sub_table = pd.DataFrame({'label': pixel_id, 'G': G_image[i].ravel(), 'S': S_image[i].ravel(), 'harmonic': i+1})  
+            sub_table = pd.DataFrame({'label': pixel_id, 'Average Image': mean_intensity_image[i].ravel(), 'G': G_image[i].ravel(), 'S': S_image[i].ravel(), 'harmonic': i+1})  
             table = pd.concat([table, sub_table])
     else:
-        table = pd.DataFrame({'label': pixel_id, 'G': G_image.ravel(), 'S': S_image.ravel(), 'harmonic': harmonic})
+        table = pd.DataFrame({'label': pixel_id, 'Average Image': mean_intensity_image.ravel(), 'G': G_image.ravel(), 'S': S_image.ravel(), 'harmonic': harmonic})
     labels_data = pixel_id.reshape(mean_intensity_image.shape)
     labels_layer = Labels(labels_data, name=filename + ' Phasor Features Layer', scale=(1, 1), features=table)
     mean_intensity_image_layer = Image(mean_intensity_image, name=filename + ' Intensity Image', metadata={'phasor_features_labels_layer': labels_layer})
