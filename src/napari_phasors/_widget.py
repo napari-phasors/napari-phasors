@@ -33,12 +33,12 @@ from typing import TYPE_CHECKING
 
 from magicgui import magic_factory
 from magicgui.widgets import CheckBox, Container, create_widget
-from qtpy.QtWidgets import QHBoxLayout, QPushButton, QWidget
+from qtpy.QtWidgets import QHBoxLayout, QPushButton, QWidget, QTreeView, QDirModel, QComboBox, QLabel, QVBoxLayout
 from skimage.util import img_as_float
+from ._reader import napari_get_reader, _get_filename_extension
 
 if TYPE_CHECKING:
     import napari
-
 
 # Uses the `autogenerate: true` flag in the plugin manifest
 # to indicate it should be wrapped as a magicgui to autogenerate
@@ -127,3 +127,129 @@ class ExampleQWidget(QWidget):
 
     def _on_click(self):
         print("napari has", len(self.viewer.layers), "layers")
+
+class PhasorTransform(QWidget):
+    def __init__(self, viewer: "napari.viewer.Viewer"):
+        super().__init__()
+        self.viewer = viewer
+
+        # Create main layout
+        main_layout = QVBoxLayout(self)
+
+        # Create search tree
+        search_tree = QTreeView()
+        model = QDirModel()
+        search_tree.setModel(model)
+        search_tree.setColumnHidden(1, True)
+        search_tree.setColumnHidden(2, True)
+        search_tree.setColumnHidden(3, True)
+        search_tree.resize(640, 480)
+        main_layout.addWidget(search_tree)
+
+        # Create layout for dynamic widgets
+        self.dynamic_widget_layout = QVBoxLayout()
+        main_layout.addLayout(self.dynamic_widget_layout)
+
+        # Set up callbacks whenever the selection changes
+        selection = search_tree.selectionModel()
+        selection.currentChanged.connect(lambda current, previous: self._on_change(current, previous, model))
+
+        # Define reader options (example)
+        self.reader_options = {
+            '.fbd': self._create_fbd_widget,
+            '.ptu': self._create_ptu_widget,
+            '.lsm': self._create_lsm_widget,
+            '.tif': self._create_tif_widget,
+        }
+
+    def _on_change(self, current, previous, model):
+        path = model.filePath(current)
+        filename, extension = _get_filename_extension(path)
+        if extension in self.reader_options:
+            # Clear existing widgets
+            for i in reversed(range(self.dynamic_widget_layout.count())):
+                widget = self.dynamic_widget_layout.takeAt(i).widget()
+                widget.deleteLater()
+
+            # Create new widgets based on extension
+            create_widget_func = self.reader_options[extension]
+            new_widget = create_widget_func(path)
+            self.dynamic_widget_layout.addWidget(new_widget)
+
+    def _create_fbd_widget(self, path):
+        # Create a widget for fbd files
+        fbd_widget = QWidget()
+        layout = QVBoxLayout(fbd_widget)
+        layout.addWidget(QLabel("Frames: "))
+        layout.addWidget(QComboBox)
+        return fbd_widget
+
+    def _create_ptu_widget(self, path):
+        # Create a widget for PTU files
+        PTU_widget = QLabel(f"PTU file: {path}")
+        return PTU_widget
+
+    def _create_lsm_widget(self, path):
+        # Create a widget for lsm files
+        lsm_widget = QLabel(f"lsm file: {path}")
+        return lsm_widget
+    
+    def _create_tif_widget(self, path):
+        # Create a widget for tif files
+        tif_widget = QLabel(f"tif file: {path}")
+        return tif_widget
+
+    #     # Connect callbacks
+    #     self.phasor_transofrm_widget.calibrate_push_button.clicked.connect(self._on_click)
+
+    #     # Connect layer events to populate combobox
+    #     self.viewer.layers.events.inserted.connect(self._populate_comboboxes)
+    #     self.viewer.layers.events.removed.connect(self._populate_comboboxes)
+
+    #     # Populate combobox
+    #     self._populate_comboboxes()
+
+    #     mainLayout = QVBoxLayout()
+    #     mainLayout.addWidget(self.phasor_transofrm_widget)
+    #     self.setLayout(mainLayout)
+    #     # Call plotter with calibrated layer in the combobox
+    #     # self.plotter = PlotterWidget(self.viewer)
+    #     # self.viewer.window.add_dock_widget(self.plotter)
+
+    # def _populate_comboboxes(self):
+    #     self.phasor_transofrm_widget.calibration_layer_combobox.clear()
+    #     image_layers = [layer for layer in self.viewer.layers if isinstance(layer, Image)]
+    #     # print(image_layers)
+    #     for layer in image_layers:
+    #         self.phasor_transofrm_widget.calibration_layer_combobox.addItem(layer.name)
+
+    #     self.phasor_transofrm_widget.sample_layer_combobox.clear()
+    #     image_layers = [layer for layer in self.viewer.layers if isinstance(layer, Image)]
+    #     # print(image_layers)
+    #     for layer in image_layers:
+    #         self.phasor_transofrm_widget.sample_layer_combobox.addItem(layer.name)
+
+    # def _on_click(self):
+    #     frequency = int(self.phasor_transofrm_widget.frequency_line_edit_widget.text())
+    #     lifetime = float(self.phasor_transofrm_widget.lifetime_line_edit_widget.text())
+    #     sample_name = self.phasor_transofrm_widget.sample_layer_combobox.currentText()
+    #     cal_name = self.phasor_transofrm_widget.calibration_layer_combobox.currentText()
+    #     sample_metadata = self.viewer.layers[sample_name].metadata
+    #     sample_phasor_data = sample_metadata['phasor_features_labels_layer'].features
+    #     cal_phasor_data = self.viewer.layers[cal_name].metadata['phasor_features_labels_layer'].features
+    #     print(sample_metadata.keys())
+    #     if 'calibrated' not in sample_metadata.keys() or sample_metadata['calibrated'] is False:
+    #         g_img, s_img = phasor_calibrate(
+    #             sample_phasor_data['G'],
+    #             sample_phasor_data['S'],
+    #             cal_phasor_data['G'],
+    #             cal_phasor_data['S'],
+    #             frequency=frequency,
+    #             lifetime=lifetime,
+    #         )
+    #         sample_phasor_data['G'] = g_img
+    #         sample_phasor_data['S'] = s_img
+    #         self.plotter.plot()
+    #         sample_metadata['calibrated'] = True
+    #     elif sample_metadata['calibrated'] == True:
+    #         show_error("Layer already calibrated")

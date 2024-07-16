@@ -30,6 +30,9 @@ contributions:
     - id: napari-phasors.write_ome_tiff
       python_name: napari_phasors:write_ome_tiff
       title: Write OME-TIFF
+    - id: napari-phasors.PhasorTransform
+      python_name: napari_phasors:PhasorTransform
+      title: Phasor Transform
   readers:
     - command: napari-phasors.get_reader
       accepts_directories: false
@@ -55,3 +58,5 @@ contributions:
       display_name: Example QWidget
     - command: napari-phasors.plot_phasor
       display_name: Phasor Plot
+    - command: napari-phasors.PhasorTransform
+      display_name: Phasor Transform

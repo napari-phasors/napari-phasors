@@ -7,6 +7,7 @@ from ._widget import (
     ImageThreshold,
     threshold_autogenerate_widget,
     threshold_magic_widget,
+    PhasorTransform,
 )
 from .plotter import PlotterWidget
 
@@ -20,4 +21,5 @@ __all__ = (
     "ImageThreshold",
     "threshold_autogenerate_widget",
     "threshold_magic_widget",
+    "PhasorTransform",
 )
