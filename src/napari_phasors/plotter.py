@@ -114,6 +114,79 @@ class PlotterWidget(QWidget):
         # Populate labels layer combobox
         self.reset_layer_choices()
 
+    @property
+    def selection_id(self):
+        """Gets or sets the selection id from the phasor selection id combobox.
+
+        Value should not be one of these: ['label', 'Average Image', 'G', 'S', 'harmonic'].
+
+        Returns
+        -------
+        str
+            The selection id. Returns `None` if no selection id is available.
+        """
+        if self.plotter_inputs_widget.phasor_selection_id_combobox.count() == 0:
+            return None
+        else:
+            return self.plotter_inputs_widget.phasor_selection_id_combobox.currentText()
+
+    @selection_id.setter
+    def selection_id(self, new_selection_id: str):
+        """Sets the selection id from the phasor selection id combobox."""
+        if self._labels_layer_with_phasor_features is None:
+            notifications.WarningNotification("No labels layer with phasor features selected.")
+            return
+        if new_selection_id in DATA_COLUMNS:
+            notifications.WarningNotification(f"{new_selection_id} is not a valid selection column. It must not be one of {DATA_COLUMNS}.")
+            return
+        else:
+            self.plotter_inputs_widget.phasor_selection_id_combobox.setCurrentText(new_selection_id)
+            # If column_name is not in features, add it with zeros
+            if new_selection_id not in self._labels_layer_with_phasor_features.features.columns:
+                self._labels_layer_with_phasor_features.features[new_selection_id] = np.zeros_like(self._labels_layer_with_phasor_features.features['label'].values)
+
+    def on_selection_id_changed(self):
+        """Callback function when the phasor selection id combobox is changed.
+
+        This function updates the `selection_id` attribute with the selected text from the combobox.
+        """
+        self.selection_id = self.plotter_inputs_widget.phasor_selection_id_combobox.currentText()
+    
+    @property
+    def harmonic(self):
+        """Gets or sets the harmonic value from the harmonic spinbox.
+
+        Returns
+        -------
+        int
+            The harmonic value.
+        """
+        return self.plotter_inputs_widget.harmonic_spinbox.value()
+    
+    @harmonic.setter
+    def harmonic(self, value: int):
+        """Sets the harmonic value from the harmonic spinbox."""
+        if value < 1:
+            notifications.WarningNotification(f"Harmonic value should be greater than 0. Setting to 1.")
+            value = 1
+        self.plotter_inputs_widget.harmonic_spinbox.setValue(value)
+
+    @property
+    def plot_type(self):
+        """Gets or sets the plot type from the plot type combobox.
+
+        Returns
+        -------
+        str
+            The plot type.
+        """
+        return self.extra_inputs_widget.plot_type_combobox.currentText()
+
+    @plot_type.setter
+    def plot_type(self, type):
+        """Sets the plot type from the plot type combobox."""
+        self.extra_inputs_widget.plot_type_combobox.setCurrentText(type)
+
     def update_manual_selection(self, manual_selection):
         """Update the manual selection in the labels layer with phasor features.
 
@@ -157,7 +230,6 @@ class PlotterWidget(QWidget):
             self._labels_layer_with_phasor_features = None
             return
         self._labels_layer_with_phasor_features = self.viewer.layers[labels_layer_name].metadata['phasor_features_labels_layer']
-        
 
     def get_features(self):
         """Get the G and S features for the selected harmonic and selection id.
@@ -185,51 +257,12 @@ class PlotterWidget(QWidget):
             selection_data = table[self.selection_id][table['harmonic'] == self.harmonic].values
         return x_data, y_data, selection_data
 
-    @property
-    def selection_id(self):
-        if self.plotter_inputs_widget.phasor_selection_id_combobox.count() == 0:
-            return None
-        else:
-            return self.plotter_inputs_widget.phasor_selection_id_combobox.currentText()
-
-    @selection_id.setter
-    def selection_id(self, new_selection_id: str):
-        if self._labels_layer_with_phasor_features is None:
-            notifications.WarningNotification("No labels layer with phasor features selected.")
-            return
-        if new_selection_id in DATA_COLUMNS:
-            notifications.WarningNotification(f"{new_selection_id} is not a valid selection column. It must not be one of {DATA_COLUMNS}.")
-            return
-        else:
-            self.plotter_inputs_widget.phasor_selection_id_combobox.setCurrentText(new_selection_id)
-            # If column_name is not in features, add it with zeros
-            if new_selection_id not in self._labels_layer_with_phasor_features.features.columns:
-                self._labels_layer_with_phasor_features.features[new_selection_id] = np.zeros_like(self._labels_layer_with_phasor_features.features['label'].values)
-
-    def on_selection_id_changed(self):
-        new_selection_id = self.plotter_inputs_widget.phasor_selection_id_combobox.currentText()
-        self.selection_id = new_selection_id            
-    
-    @property
-    def harmonic(self):
-        return self.plotter_inputs_widget.harmonic_spinbox.value()
-    
-    @harmonic.setter
-    def harmonic(self, value: int):
-        if value < 1:
-            notifications.WarningNotification(f"Harmonic value should be greater than 0. Setting to 1.")
-            value = 1
-        self.plotter_inputs_widget.harmonic_spinbox.setValue(value)
-
-    @property
-    def plot_type(self):
-        return self.extra_inputs_widget.plot_type_combobox.currentText()
-
-    @plot_type.setter
-    def plot_type(self, type):
-        self.extra_inputs_widget.plot_type_combobox.setCurrentText(type)
-
     def plot(self):
+        """Plot the selected phasor features.
+
+        This function plots the selected phasor features in the canvas widget.
+        It also creates the phasors selected layer.
+        """
         x_data, y_data, selection_id_data = self.get_features()
         self.canvas_widget.active_artist = self.canvas_widget.artists[ArtistType[self.plot_type]]
         self.canvas_widget.active_artist.data = np.column_stack(
@@ -238,6 +271,7 @@ class PlotterWidget(QWidget):
         self.create_phasors_selected_layer()
 
     def create_phasors_selected_layer(self):
+        """Create or update the phasors selected layer."""
         if self._labels_layer_with_phasor_features is None:
             return
         input_array = np.asarray(self._labels_layer_with_phasor_features.data)
@@ -261,13 +295,15 @@ class PlotterWidget(QWidget):
             self._phasors_selected_layer.scale = self._labels_layer_with_phasor_features.scale
 
 
-def make_raw_flim_data(n_time_bins=100, shape=(2, 5)):
+def make_raw_flim_data(n_time_bins=1000, shape=(2, 5)):
     """Generate a synthetic FLIM data with exponential decay for each pixel.
     """
     n_samples = shape[0] * shape[1]
-    time_constants = np.random.rand(n_samples).tolist()
+    # time_constants = np.linspace(0.2, 20, n_samples).tolist()
+    time_constants = [0.02, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50]
+    print(time_constants)
     # make a 1d array exponential decay for each time constant
-    raw_flim_data = np.moveaxis(np.array([np.exp(-time_constant * np.linspace(0, 1, n_time_bins)) for time_constant in time_constants]).reshape((*shape, n_time_bins)), -1, 0)
+    raw_flim_data = np.moveaxis(np.array([np.exp(-(1/time_constant) * np.linspace(0, 1, n_time_bins)) for time_constant in time_constants]).reshape((*shape, n_time_bins)), -1, 0)
     return raw_flim_data
 
 def make_intensity_layer_with_phasors(raw_flim_data, axis=0, harmonic=None, filename='FLIM data'):
@@ -292,11 +328,11 @@ def make_intensity_layer_with_phasors(raw_flim_data, axis=0, harmonic=None, file
     mean_intensity_image_layer = Image(mean_intensity_image, name=filename + ' Intensity Image', metadata={'phasor_features_labels_layer': labels_layer})
     return mean_intensity_image_layer
 
-
-raw_flim_data = make_raw_flim_data()
-intensity_image_layer = make_intensity_layer_with_phasors(raw_flim_data)
-viewer = napari.Viewer()
-viewer.add_layer(intensity_image_layer)
-plotter = PlotterWidget(viewer)
-viewer.window.add_dock_widget(plotter, area="right")
-napari.run()
+if __name__ == "__main__":
+    raw_flim_data = make_raw_flim_data()
+    intensity_image_layer = make_intensity_layer_with_phasors(raw_flim_data)
+    viewer = napari.Viewer()
+    viewer.add_layer(intensity_image_layer)
+    plotter = PlotterWidget(viewer)
+    viewer.window.add_dock_widget(plotter, area="right")
+    napari.run()
