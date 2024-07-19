@@ -22,6 +22,8 @@ from napari.utils.colormaps import ALL_COLORMAPS
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.colors import LogNorm, Normalize
 
+from napari_phasors._synthetic_generator import make_raw_flim_data, make_intensity_layer_with_phasors
+
 if TYPE_CHECKING:
     import napari
 
@@ -379,40 +381,6 @@ class PlotterWidget(QWidget):
         else:
             self._phasors_selected_layer.data = mapped_data
             self._phasors_selected_layer.scale = self._labels_layer_with_phasor_features.scale
-
-
-def make_raw_flim_data(n_time_bins=1000, shape=(2, 5)):
-    """Generate a synthetic FLIM data with exponential decay for each pixel.
-    """
-    n_samples = shape[0] * shape[1]
-    # time_constants = np.linspace(0.2, 20, n_samples).tolist()
-    time_constants = [0.01, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50]
-    # make a 1d array exponential decay for each time constant
-    raw_flim_data = np.moveaxis(np.array([np.exp(-(1/time_constant) * np.linspace(0, 10, n_time_bins)) for time_constant in time_constants]).reshape((*shape, n_time_bins)), -1, 0)
-    return raw_flim_data
-
-def make_intensity_layer_with_phasors(raw_flim_data, axis=0, harmonic=None, filename='FLIM data'):
-    """Generate an intensity image layer with phasor features.
-    """
-    import numpy as np
-    from phasorpy.phasor import phasor_from_signal
-    from napari.layers import Labels, Image
-    if harmonic is None:
-        harmonic = 1
-    mean_intensity_image, G_image, S_image = phasor_from_signal(raw_flim_data, axis=axis, harmonic=harmonic)
-    pixel_id = np.arange(1, mean_intensity_image.size + 1)
-    if len(harmonic) > 1:
-        table = pd.DataFrame([])
-        for i in range(G_image.shape[0]):
-            sub_table = pd.DataFrame({'label': pixel_id, 'Average Image': mean_intensity_image.ravel(), 'G': G_image[i].ravel(), 'S': S_image[i].ravel(), 'harmonic': harmonic[i]})
-            # sub_table['harmonic'] = i+1 
-            table = pd.concat([table, sub_table])
-    else:
-        table = pd.DataFrame({'label': pixel_id, 'Average Image': mean_intensity_image.ravel(), 'G': G_image.ravel(), 'S': S_image.ravel(), 'harmonic': harmonic})
-    labels_data = pixel_id.reshape(mean_intensity_image.shape)
-    labels_layer = Labels(labels_data, name=filename + ' Phasor Features Layer', scale=(1, 1), features=table)
-    mean_intensity_image_layer = Image(mean_intensity_image, name=filename + ' Intensity Image', metadata={'phasor_features_labels_layer': labels_layer})
-    return mean_intensity_image_layer
 
 if __name__ == "__main__":
     raw_flim_data = make_raw_flim_data()
