@@ -186,6 +186,8 @@ class PlotterWidget(QWidget):
         self._phasors_selected_layer = None
         self._colormap = self.canvas_widget.artists[ArtistType.HISTOGRAM2D].categorical_colormap
         self._histogram_colormap = self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram_colormap
+        # Start with the histogram2d plot type
+        self.plot_type = ArtistType.HISTOGRAM2D.name
 
         # Populate labels layer combobox
         self.reset_layer_choices()
@@ -216,6 +218,8 @@ class PlotterWidget(QWidget):
             notifications.WarningNotification(f"{new_selection_id} is not a valid selection column. It must not be one of {DATA_COLUMNS}.")
             return
         else:
+            if new_selection_id not in [self.plotter_inputs_widget.phasor_selection_id_combobox.itemText(i) for i in range(self.plotter_inputs_widget.phasor_selection_id_combobox.count())]:
+                self.plotter_inputs_widget.phasor_selection_id_combobox.addItem(new_selection_id)
             self.plotter_inputs_widget.phasor_selection_id_combobox.setCurrentText(new_selection_id)
             # If column_name is not in features, add it with zeros
             if new_selection_id not in self._labels_layer_with_phasor_features.features.columns:
@@ -451,7 +455,8 @@ class PlotterWidget(QWidget):
 
 if __name__ == "__main__":
     import napari
-    raw_flim_data = make_raw_flim_data()
+    time_constants = [0.1, 1, 10]
+    raw_flim_data = make_raw_flim_data(time_constants=time_constants)
     harmonic = [1, 2, 3]
     intensity_image_layer = make_intensity_layer_with_phasors(raw_flim_data, harmonic=harmonic)
     viewer = napari.Viewer()
