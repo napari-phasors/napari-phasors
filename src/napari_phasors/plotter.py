@@ -1,5 +1,20 @@
-from biaplotter.plotter import CanvasWidget, ArtistType
+import numpy as np
+
+from pathlib import Path
 from typing import TYPE_CHECKING
+from skimage.util import map_array
+from napari.utils import (
+    notifications,
+    DirectLabelColormap,
+    colormaps
+)
+from napari.layers import Labels, Image
+from biaplotter.plotter import (
+    CanvasWidget,
+    ArtistType
+)
+from superqt import QCollapsible
+from qtpy import uic
 from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
@@ -7,27 +22,22 @@ from qtpy.QtWidgets import (
     QSizePolicy,
     QPushButton,
 )
-from qtpy.QtCore import Qt
-from qtpy import uic
-import numpy as np
-import pandas as pd
-import napari
-from napari.utils import notifications
-from pathlib import Path
-from napari.layers import Labels, Image
-from skimage.util import map_array
-from napari.utils import DirectLabelColormap
-from superqt import QCollapsible
-from napari.utils.colormaps import ALL_COLORMAPS
-from matplotlib.colors import LinearSegmentedColormap
-from matplotlib.colors import LogNorm, Normalize
+from matplotlib.colors import (
+    LinearSegmentedColormap,
+    LogNorm, 
+    Normalize
+)
 
-from napari_phasors._synthetic_generator import make_raw_flim_data, make_intensity_layer_with_phasors
+from napari_phasors._synthetic_generator import (
+    make_raw_flim_data,
+    make_intensity_layer_with_phasors
+)
 
 if TYPE_CHECKING:
     import napari
 
-import matplotlib.pyplot as plt
+DATA_COLUMNS = ['label', 'Average Image', 'G', 'S', 'harmonic']
+
 def colormap_to_dict(colormap, num_colors=10, exclude_first=True):
     """
     Converts a matplotlib colormap into a dictionary of RGBA colors.
@@ -51,9 +61,59 @@ def colormap_to_dict(colormap, num_colors=10, exclude_first=True):
     color_dict[None] = (0, 0, 0, 0)
     return color_dict
 
-DATA_COLUMNS = ['label', 'Average Image', 'G', 'S', 'harmonic']
-
 class PlotterWidget(QWidget):
+    """A widget for plotting phasor features.
+
+    This widget contains a canvas widget and input widgets for plotting phasor features.
+    It also creates a phasors selected layer based on the manual selection in the canvas widget.
+
+    Parameters
+    ----------
+    napari_viewer : napari.Viewer
+        The napari viewer object.
+
+    Attributes
+    ----------
+    viewer : napari.Viewer
+        The napari viewer object.
+    canvas_widget : biaplotter.plotter.CanvasWidget
+        The canvas widget for plotting phasor features.
+    plotter_inputs_widget : QWidget
+        The main plotter inputs widget. The widget contains:
+        - image_layer_with_phasor_features_combobox : QComboBox
+            The combobox for selecting the image layer with phasor features.
+        - phasor_selection_id_combobox : QComboBox
+            The combobox for selecting the phasor selection id.
+        - harmonic_spinbox : QSpinBox
+            The spinbox for selecting the harmonic.
+        - threshold_slider : QSlider
+            The slider for selecting the threshold.
+        - median_filter_spinbox : QSpinBox
+            The spinbox for selecting the median filter kernel size (in pixels).
+        - semi_circle_checkbox : QCheckBox
+            The checkbox for displaying the universal semi-circle (if True) or the full polar plot (if False).
+    extra_inputs_widget : QWidget
+        The extra plotter inputs widget. It is collapsible. The widget contains:
+        - plot_type_combobox : QComboBox
+            The combobox for selecting the plot type.
+        - colormap_combobox : QComboBox
+            The combobox for selecting the histogram colormap.
+        - number_of_bins_spinbox : QSpinBox
+            The spinbox for selecting the number of bins in the histogram.
+        - log_scale_checkbox : QCheckBox
+            The checkbox for selecting the log scale in the histogram.
+    plot_button : QPushButton
+        The plot button.
+    _labels_layer_with_phasor_features : Labels
+        The labels layer with phasor features.
+    _phasors_selected_layer : Labels
+        The phasors selected layer.
+    _colormap : matplotlib.colors.Colormap
+        The colormap for the canvas widget.
+    _histogram_colormap : matplotlib.colors.Colormap
+        The histogram colormap for the canvas widget.
+    
+    """
     def __init__(self, napari_viewer):
         super().__init__()
         self.viewer = napari_viewer
@@ -107,7 +167,7 @@ class PlotterWidget(QWidget):
             [ArtistType.SCATTER.name, ArtistType.HISTOGRAM2D.name]
         )
         # Populate colormap combobox
-        self.extra_inputs_widget.colormap_combobox.addItems(list(ALL_COLORMAPS.keys()))
+        self.extra_inputs_widget.colormap_combobox.addItems(list(colormaps.ALL_COLORMAPS.keys()))
         self.histogram_colormap = 'magma' # Set default colormap (same as in biaplotter)
 
         # Connect canvas signals
@@ -210,7 +270,7 @@ class PlotterWidget(QWidget):
     @histogram_colormap.setter
     def histogram_colormap(self, colormap: str):
         """Sets the histogram colormap from the colormap combobox."""
-        if colormap not in ALL_COLORMAPS.keys():
+        if colormap not in colormaps.ALL_COLORMAPS.keys():
             notifications.WarningNotification(f"{colormap} is not a valid colormap. Setting to default colormap.")
             colormap = self._histogram_colormap.name
         self.extra_inputs_widget.colormap_combobox.setCurrentText(colormap)
@@ -340,7 +400,7 @@ class PlotterWidget(QWidget):
         # Set selection data in the active artist
         self.canvas_widget.active_artist.color_indices = selection_id_data
         # Set colormap in the active artist
-        selected_histogram_colormap = ALL_COLORMAPS[self.histogram_colormap]
+        selected_histogram_colormap = colormaps.ALL_COLORMAPS[self.histogram_colormap]
         # Temporary convertion to LinearSegmentedColormap to match matplotlib format, while biaplotter is not updated
         selected_histogram_colormap = LinearSegmentedColormap.from_list(
             selected_histogram_colormap.name, selected_histogram_colormap.colors)
@@ -383,6 +443,7 @@ class PlotterWidget(QWidget):
             self._phasors_selected_layer.scale = self._labels_layer_with_phasor_features.scale
 
 if __name__ == "__main__":
+    import napari
     raw_flim_data = make_raw_flim_data()
     harmonic = [1, 2, 3]
     intensity_image_layer = make_intensity_layer_with_phasors(raw_flim_data, harmonic=harmonic)
