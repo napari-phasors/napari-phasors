@@ -36,19 +36,26 @@ from napari_phasors._synthetic_generator import (
 if TYPE_CHECKING:
     import napari
 
+#: The columns in the phasor features table that should not be used as selection id.
 DATA_COLUMNS = ['label', 'Average Image', 'G', 'S', 'harmonic']
 
 def colormap_to_dict(colormap, num_colors=10, exclude_first=True):
     """
     Converts a matplotlib colormap into a dictionary of RGBA colors.
 
-    Parameters:
-        colormap (matplotlib.colors.Colormap): The colormap to convert.
-        num_colors (int): The number of discrete colors to extract from the colormap.
-        exclude_first (bool): Whether to exclude the first color in the colormap.
+    Parameters
+    ----------
+    colormap : matplotlib.colors.Colormap
+        The colormap to convert.
+    num_colors : int, optional
+        The number of colors in the colormap, by default 10.
+    exclude_first : bool, optional
+        Whether to exclude the first color in the colormap, by default True.
 
-    Returns:
-        dict: A dictionary with keys as positive integers and values as RGBA colors.
+    Returns
+    -------
+    color_dict: dict
+        A dictionary with keys as positive integers and values as RGBA colors.
     """
     color_dict = {}
     start = 0
