@@ -20,6 +20,7 @@ from napari.utils import DirectLabelColormap
 from superqt import QCollapsible
 from napari.utils.colormaps import ALL_COLORMAPS
 from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.colors import LogNorm, Normalize
 
 if TYPE_CHECKING:
     import napari
@@ -210,16 +211,49 @@ class PlotterWidget(QWidget):
         if colormap not in ALL_COLORMAPS.keys():
             notifications.WarningNotification(f"{colormap} is not a valid colormap. Setting to default colormap.")
             colormap = self._histogram_colormap.name
-            # self.extra_inputs_widget.colormap_combobox.setCurrentText(self._histogram_colormap.name)
         self.extra_inputs_widget.colormap_combobox.setCurrentText(colormap)
-        
+
+    @property
+    def histogram_bins(self):
+        """Gets the histogram bins from the histogram bins spinbox.
+
+        Returns
+        -------
+        int
+            The histogram bins value.
+        """
+        return self.extra_inputs_widget.number_of_bins_spinbox.value()
+    
+    @histogram_bins.setter
+    def histogram_bins(self, value: int):
+        """Sets the histogram bins from the histogram bins spinbox."""
+        if value < 2:
+            notifications.WarningNotification(f"Number of bins should be greater than 1. Setting to 10.")
+            value = 10
+        self.extra_inputs_widget.number_of_bins_spinbox.setValue(value)
+    
+    @property
+    def histogram_log_scale(self):
+        """Gets the histogram log scale from the histogram log scale checkbox.
+
+        Returns
+        -------
+        bool
+            The histogram log scale value.
+        """
+        return self.extra_inputs_widget.log_scale_checkbox.isChecked()
+    
+    @histogram_log_scale.setter
+    def histogram_log_scale(self, value: bool):
+        """Sets the histogram log scale from the histogram log scale checkbox."""
+        self.extra_inputs_widget.log_scale_checkbox.setChecked(value)
 
     def manual_selection_changed(self, manual_selection):
         """Update the manual selection in the labels layer with phasor features.
 
-        This method serves as a slot for the color_indices_changed_signal emitted by the canvas widget.
+        This method serves as a Slot for the `color_indices_changed_signal` emitted by the canvas widget.
         It should receive the `color_indices` array from the active artist in the canvas widget.
-        It also updates/creates the phasors selected layer.
+        It also updates/creates the phasors selected layer by calling the `create_phasors_selected_layer` method.
 
         Parameters
         ----------
@@ -309,6 +343,17 @@ class PlotterWidget(QWidget):
         selected_histogram_colormap = LinearSegmentedColormap.from_list(
             selected_histogram_colormap.name, selected_histogram_colormap.colors)
         self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram_colormap = selected_histogram_colormap
+        # Set log scale in the active artist
+        if self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram is not None:
+            if self.histogram_log_scale:
+                self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram[-1].set_norm(LogNorm())
+            else:
+                self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram[-1].set_norm(Normalize())
+        # Set number of bins in the active artist
+        self.canvas_widget.artists[ArtistType.HISTOGRAM2D].bins = self.histogram_bins
+        # Temporarily set active artist "again" to have it displayed on top #TODO: Fix this
+        self.canvas_widget.active_artist = self.canvas_widget.artists[ArtistType[self.plot_type]]
+        
         self.create_phasors_selected_layer()
 
     def create_phasors_selected_layer(self):
