@@ -12,18 +12,6 @@ contributions:
     - id: napari-phasors.make_sample_data
       python_name: napari_phasors._sample_data:make_sample_data
       title: Load sample data from Napari Phasors
-    - id: napari-phasors.make_container_widget
-      python_name: napari_phasors:ImageThreshold
-      title: Make threshold Container widget
-    - id: napari-phasors.make_magic_widget
-      python_name: napari_phasors:threshold_magic_widget
-      title: Make threshold magic widget
-    - id: napari-phasors.make_function_widget
-      python_name: napari_phasors:threshold_autogenerate_widget
-      title: Make threshold function widget
-    - id: napari-phasors.make_qwidget
-      python_name: napari_phasors:ExampleQWidget
-      title: Make example QWidget
     - id: napari-phasors.plot_phasor
       python_name: napari_phasors:PlotterWidget
       title: Plot Phasor
@@ -47,15 +35,6 @@ contributions:
       display_name: Napari Phasors
       key: unique_id.1
   widgets:
-    - command: napari-phasors.make_container_widget
-      display_name: Container Threshold
-    - command: napari-phasors.make_magic_widget
-      display_name: Magic Threshold
-    - command: napari-phasors.make_function_widget
-      autogenerate: true
-      display_name: Autogenerate Threshold
-    - command: napari-phasors.make_qwidget
-      display_name: Example QWidget
     - command: napari-phasors.plot_phasor
       display_name: Phasor Plot
     - command: napari-phasors.PhasorTransform
