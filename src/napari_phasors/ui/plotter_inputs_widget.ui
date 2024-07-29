@@ -6,83 +6,118 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>592</width>
-    <height>609</height>
+    <width>591</width>
+    <height>565</height>
    </rect>
   </property>
   <property name="windowTitle">
    <string>Form</string>
   </property>
-  <layout class="QGridLayout" name="gridLayout">
-   <item row="2" column="1">
-    <widget class="QComboBox" name="y_axis_combobox"/>
-   </item>
-   <item row="3" column="0">
-    <widget class="QLabel" name="hue_label_widget">
-     <property name="text">
-      <string>Hue:</string>
-     </property>
-    </widget>
-   </item>
-   <item row="0" column="1">
-    <widget class="QComboBox" name="image_layer_with_phasor_features_combobox"/>
-   </item>
-   <item row="1" column="1">
-    <widget class="QComboBox" name="x_axis_combobox"/>
-   </item>
-   <item row="4" column="1">
-    <widget class="QComboBox" name="plot_type_combobox"/>
-   </item>
-   <item row="12" column="0" colspan="2">
-    <widget class="QPushButton" name="plot_pushbutton">
-     <property name="text">
-      <string>Plot</string>
-     </property>
-    </widget>
-   </item>
-   <item row="4" column="0">
-    <widget class="QLabel" name="plot_type_label_widget">
-     <property name="text">
-      <string>Plot Type:</string>
-     </property>
-    </widget>
-   </item>
-   <item row="1" column="0">
-    <widget class="QLabel" name="x_axis_label_widget">
-     <property name="text">
-      <string>X-axis:</string>
-     </property>
-    </widget>
-   </item>
-   <item row="3" column="1">
-    <widget class="QComboBox" name="hue_combobox"/>
-   </item>
-   <item row="0" column="0">
-    <widget class="QLabel" name="image_layer_with_phasor_features_label_widget">
-     <property name="text">
-      <string>Image Layer with Phasor Features:</string>
-     </property>
-    </widget>
-   </item>
-   <item row="2" column="0">
-    <widget class="QLabel" name="y_axis_label_widget">
-     <property name="text">
-      <string>Y-axis:</string>
-     </property>
-    </widget>
-   </item>
-   <item row="13" column="0" colspan="2">
-    <spacer name="verticalSpacer">
-     <property name="orientation">
-      <enum>Qt::Vertical</enum>
-     </property>
-     <property name="sizeHint" stdset="0">
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <widget class="QScrollArea" name="scrollArea">
+     <property name="minimumSize">
       <size>
-       <width>20</width>
-       <height>40</height>
+       <width>410</width>
+       <height>200</height>
       </size>
      </property>
-    </spacer>
+     <property name="widgetResizable">
+      <bool>true</bool>
+     </property>
+     <widget class="QWidget" name="scrollAreaWidgetContents">
+      <property name="geometry">
+       <rect>
+        <x>0</x>
+        <y>0</y>
+        <width>571</width>
+        <height>545</height>
+       </rect>
+      </property>
+      <layout class="QGridLayout" name="gridLayout">
+       <item row="2" column="1">
+        <widget class="QSpinBox" name="harmonic_spinbox">
+         <property name="minimum">
+          <number>1</number>
+         </property>
+        </widget>
+       </item>
+       <item row="1" column="1">
+        <widget class="QComboBox" name="phasor_selection_id_combobox">
+         <property name="editable">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="0">
+        <widget class="QLabel" name="label">
+         <property name="text">
+          <string>Harmonic:</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="0">
+        <widget class="QLabel" name="label_6">
+         <property name="text">
+          <string>Image Layer with Phasor Features:</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="1">
+        <widget class="QComboBox" name="image_layer_with_phasor_features_combobox"/>
+       </item>
+       <item row="3" column="0">
+        <widget class="QLabel" name="label_3">
+         <property name="text">
+          <string>Threshold:</string>
+         </property>
+        </widget>
+       </item>
+       <item row="4" column="0">
+        <widget class="QLabel" name="label_4">
+         <property name="text">
+          <string>Median Filter Kernel Size:</string>
+         </property>
+        </widget>
+       </item>
+       <item row="1" column="0">
+        <widget class="QLabel" name="label_2">
+         <property name="text">
+          <string>Phasor Selection ID:</string>
+         </property>
+        </widget>
+       </item>
+       <item row="3" column="1">
+        <widget class="QSlider" name="threshold_slider">
+         <property name="orientation">
+          <enum>Qt::Horizontal</enum>
+         </property>
+        </widget>
+       </item>
+       <item row="4" column="1">
+        <widget class="QSpinBox" name="median_filter_spinbox">
+         <property name="minimum">
+          <number>2</number>
+         </property>
+        </widget>
+       </item>
+       <item row="5" column="1">
+        <widget class="QCheckBox" name="semi_circle_checkbox">
+         <property name="text">
+          <string/>
+         </property>
+        </widget>
+       </item>
+       <item row="5" column="0">
+        <widget class="QLabel" name="label_5">
+         <property name="text">
+          <string>Universal Semi-Circle / Full Polar Plot:</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </widget>
    </item>
   </layout>
  </widget>
