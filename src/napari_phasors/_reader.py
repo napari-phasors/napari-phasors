@@ -6,7 +6,7 @@ and computes phasor coordinates with `phasorpy.phasor.phasor_from_signal`
 
 import inspect
 import os
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence, Union
 
 import numpy as np
 import pandas as pd
@@ -17,20 +17,20 @@ from phasorpy.phasor import phasor_from_signal
 
 extension_mapping = {
     "raw": {
-        ".ptu": lambda path, options: _parse_and_call_io_function(
+        ".ptu": lambda path, reader_options: _parse_and_call_io_function(
             path,
             io.read_ptu,
             {"frame": (-1, False), "keepdims": (True, False)},
-            options,
+            reader_options,
         ),
-        ".fbd": lambda path, options: _parse_and_call_io_function(
+        ".fbd": lambda path, reader_options: _parse_and_call_io_function(
             path,
             io.read_fbd,
             {"frame": (-1, False), "keepdims": (True, False)},
-            options,
+            reader_options,
         ),
-        ".lsm": lambda path, options: _parse_and_call_io_function(
-            path, io.read_lsm, {}, options
+        ".lsm": lambda path, reader_options: _parse_and_call_io_function(
+            path, io.read_lsm, {}, reader_options
         ),
         # ".flif": lambda path: io.read_flif(path),
         # ".sdt": lambda path: io.read_sdt(path),
@@ -39,8 +39,8 @@ extension_mapping = {
         # ".ifli": lambda path: io.read_ifli(),
     },
     "processed": {
-        ".tif": lambda path, options: _parse_and_call_io_function(
-            path, io.read_ometiff_phasor, {}, options
+        ".tif": lambda path, reader_options: _parse_and_call_io_function(
+            path, io.read_ometiff_phasor, {}, reader_options
         ),
         # ".b64": lambda path: io.read_b64(path),
         # ".r64": lambda path: io.read_r64(path),
@@ -61,7 +61,7 @@ when calculating phasor coordinates in the file.
 
 
 def napari_get_reader(
-    path: str, options: Optional[dict] = None
+    path: str, reader_options: Optional[dict] = None, harmonics: Union[int, Sequence[int], None] = None,
 ) -> Optional[Callable]:
     """Initial reader function to map file extension to
     specific reader functions.
@@ -70,8 +70,10 @@ def napari_get_reader(
     ----------
     path : str
         Path to file.
-    options : dict, optional
+    reader_options : dict, optional
         Dictionary containing the arguments to pass to the function.
+    harmonics : int, optional
+        Number of harmonics to calculate phasor coordinates, by default 1.
 
     Returns
     -------
@@ -88,13 +90,13 @@ def napari_get_reader(
     _, file_extension = os.path.splitext(path)
     file_extension = file_extension.lower()
     if file_extension in extension_mapping["processed"].keys():
-        return lambda path: processed_file_reader(path, options=options)
+        return lambda path: processed_file_reader(path, reader_options=reader_options, harmonics=harmonics)
     elif file_extension in extension_mapping["raw"].keys():
-        return lambda path: raw_file_reader(path, options=options)
+        return lambda path: raw_file_reader(path, reader_options=reader_options, harmonics=harmonics)
     else:
         show_error('File extension not supported.')
 
-def raw_file_reader(path: str, options: Optional[dict] = None) -> list[tuple]:
+def raw_file_reader(path: str, reader_options: Optional[dict] = None, harmonics: Union[int, Sequence[int], None] = None,) -> list[tuple]:
     """Read raw data files from supported file formats and apply the phasor
     transformation to get mean intensity image and phasor coordinates.
 
@@ -102,6 +104,10 @@ def raw_file_reader(path: str, options: Optional[dict] = None) -> list[tuple]:
     ----------
     path : str
         Path to file.
+    reader_options : dict, optional
+        Dictionary containing the arguments to pass to the function.
+    harmonics : int, optional
+        Number of harmonics to calculate phasor coordinates, by default 1.
 
     Returns
     -------
@@ -116,13 +122,13 @@ def raw_file_reader(path: str, options: Optional[dict] = None) -> list[tuple]:
 
     """
     filename, file_extension = _get_filename_extension(path)
-    raw_data = extension_mapping["raw"][file_extension](path, options)
+    raw_data = extension_mapping["raw"][file_extension](path, reader_options)
     layers = []
     iter_axis = iter_index_mapping[file_extension]
     if iter_axis is None:
         # Calculate phasor over channels if file is of hyperspectral type
         mean_intensity_image, G_image, S_image = phasor_from_signal(
-            raw_data, axis=raw_data.dims.index("C")
+            raw_data, axis=raw_data.dims.index("C"), harmonic=harmonics
         )
         labels_layer = make_phasors_labels_layer(
             mean_intensity_image, G_image, S_image, name=filename
@@ -139,6 +145,7 @@ def raw_file_reader(path: str, options: Optional[dict] = None) -> list[tuple]:
             mean_intensity_image, G_image, S_image = phasor_from_signal(
                 raw_data.sel(C=channel),
                 axis=raw_data.sel(C=channel).dims.index("H"),
+                harmonic=harmonics
             )
             labels_layer = make_phasors_labels_layer(
                 mean_intensity_image, G_image, S_image, name=filename
@@ -152,7 +159,7 @@ def raw_file_reader(path: str, options: Optional[dict] = None) -> list[tuple]:
 
 
 def processed_file_reader(
-    path: str, options: Optional[dict[str, str]] = None
+    path: str, reader_options: Optional[dict[str, str]] = None, harmonics: Union[int, Sequence[int], None] = None,
 ) -> list[tuple]:
     """Reader function for files that contain processed images, as phasor
     coordinates or intensity images.
@@ -161,6 +168,10 @@ def processed_file_reader(
     ----------
     path : str
         Path to file.
+    reader_options : dict, optional
+        Dictionary containing the arguments to pass to the function.
+    harmonics : int, optional
+        Number of harmonics to calculate phasor coordinates, by default 1.
 
     Returns
     -------
@@ -253,7 +264,7 @@ def _parse_and_call_io_function(
     path: str,
     func: Callable,
     args_defaults: dict[str, Any],
-    options: Optional[dict[str, Any]] = None,
+    reader_options: Optional[dict[str, Any]] = None,
 ) -> Any:
     """Private helper function to parse arguments and call a `io` function.
 
@@ -265,7 +276,7 @@ def _parse_and_call_io_function(
         Function to call.
     args_defaults : dict
         Dictionary containing the default arguments for the function.
-    options : dict, optional
+    reader_options : dict, optional
         Dictionary containing the arguments to pass to the function.
         Default is None.
 
@@ -276,12 +287,12 @@ def _parse_and_call_io_function(
 
     """
     args = {}
-    # Use options if provided, otherwise use the default
-    if options is not None:
-        for arg, value in options.items():
+    # Use reader_options if provided, otherwise use the default
+    if reader_options is not None:
+        for arg, value in reader_options.items():
             args[arg] = value
 
-    # Fill in defaults for any missing arguments not provided in options
+    # Fill in defaults for any missing arguments not provided in reader_options
     for arg, (default, is_required) in args_defaults.items():
         if arg not in args:
             if is_required:
