@@ -1,4 +1,5 @@
 import numpy as np
+from matplotlib.colorbar import Colorbar
 
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -129,6 +130,7 @@ class PlotterWidget(QWidget):
 
         # Load canvas widget
         self.canvas_widget = CanvasWidget(napari_viewer)
+        self.set_axes_labels()
         self.layout().addWidget(self.canvas_widget)
 
         # Load plotter inputs widget from ui file
@@ -184,6 +186,7 @@ class PlotterWidget(QWidget):
         # Initialize attributes
         self._labels_layer_with_phasor_features = None
         self._phasors_selected_layer = None
+        self.colorbar = None
         self._colormap = self.canvas_widget.artists[ArtistType.HISTOGRAM2D].categorical_colormap
         self._histogram_colormap = self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram_colormap
         # Start with the histogram2d plot type
@@ -395,6 +398,13 @@ class PlotterWidget(QWidget):
         else:
             selection_data = table[self.selection_id][table['harmonic'] == self.harmonic].values
         return x_data, y_data, selection_data
+    
+    def set_axes_labels(self):
+        """Set the axes labels in the canvas widget."""
+        self.canvas_widget.artists[ArtistType.SCATTER].ax.set_xlabel('G', color='white')
+        self.canvas_widget.artists[ArtistType.SCATTER].ax.set_ylabel('S', color='white')
+        self.canvas_widget.artists[ArtistType.HISTOGRAM2D].ax.set_xlabel('G', color='white')
+        self.canvas_widget.artists[ArtistType.HISTOGRAM2D].ax.set_ylabel('S', color='white')
 
     def plot(self):
         """Plot the selected phasor features.
@@ -427,6 +437,24 @@ class PlotterWidget(QWidget):
         # Temporarily set active artist "again" to have it displayed on top #TODO: Fix this
         self.canvas_widget.active_artist = self.canvas_widget.artists[ArtistType[self.plot_type]]
         
+        # if active artist is histogram, add a colorbar
+        if self.plot_type == ArtistType.HISTOGRAM2D.name:
+            # creat cax for colorbar on the right side of the histogram
+            self.cax = self.canvas_widget.artists[ArtistType.HISTOGRAM2D].ax.inset_axes([1.05, 0, 0.05, 1])
+            # Create colorbar
+            self.colorbar = Colorbar(ax=self.cax, cmap=self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram_colormap, norm=self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram[-1].norm)
+            # self.colorbar = self.canvas_widget.figure.colorbar(self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram[-1], ax=self.canvas_widget.artists[ArtistType.HISTOGRAM2D].ax, use_gridspec=True)
+            # set colorbar tick color
+            self.colorbar.ax.yaxis.set_tick_params(color='white')
+            # set colorbar edgecolor 
+            self.colorbar.outline.set_edgecolor('white')
+            # set colorbar ticklabels
+            self.colorbar.ax.set_yticklabels(self.colorbar.ax.get_yticklabels(), color='white')
+        else:
+            if self.colorbar is not None:
+                # remove colorbar
+                self.colorbar.remove()
+
         self.create_phasors_selected_layer()
 
     def create_phasors_selected_layer(self):
