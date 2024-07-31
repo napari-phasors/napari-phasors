@@ -211,134 +211,9 @@ class PlotterWidget(QWidget):
     @selection_id.setter
     def selection_id(self, new_selection_id: str):
         """Sets the selection id from the phasor selection id combobox."""
-
         if self._labels_layer_with_phasor_features is None:
             notifications.WarningNotification("No labels layer with phasor features selected.")
             return
-        if new_selection_id in DATA_COLUMNS:
-            notifications.WarningNotification(f"{new_selection_id} is not a valid selection column. It must not be one of {DATA_COLUMNS}.")
-            return
-        else:
-            if new_selection_id not in [self.plotter_inputs_widget.phasor_selection_id_combobox.itemText(i) for i in range(self.plotter_inputs_widget.phasor_selection_id_combobox.count())]:
-                self.plotter_inputs_widget.phasor_selection_id_combobox.addItem(new_selection_id)
-            self.plotter_inputs_widget.phasor_selection_id_combobox.setCurrentText(new_selection_id)
-            # If column_name is not in features, add it with zeros
-            if new_selection_id not in self._labels_layer_with_phasor_features.features.columns:
-                self._labels_layer_with_phasor_features.features[new_selection_id] = np.zeros_like(self._labels_layer_with_phasor_features.features['label'].values)
-
-    def on_selection_id_changed(self):
-        """Callback function when the phasor selection id combobox is changed.
-
-        This function updates the `selection_id` attribute with the selected text from the combobox.
-        """
-        self.selection_id = self.plotter_inputs_widget.phasor_selection_id_combobox.currentText()
-    
-    @property
-    def harmonic(self):
-        """Gets or sets the harmonic value from the harmonic spinbox.
-
-        Returns
-        -------
-        int
-            The harmonic value.
-        """
-        return self.plotter_inputs_widget.harmonic_spinbox.value()
-    
-    @harmonic.setter
-    def harmonic(self, value: int):
-        """Sets the harmonic value from the harmonic spinbox."""
-        if value < 1:
-            notifications.WarningNotification(f"Harmonic value should be greater than 0. Setting to 1.")
-            value = 1
-        self.plotter_inputs_widget.harmonic_spinbox.setValue(value)
-
-    @property
-    def plot_type(self):
-        """Gets or sets the plot type from the plot type combobox.
-
-        Returns
-        -------
-        str
-            The plot type.
-        """
-        return self.extra_inputs_widget.plot_type_combobox.currentText()
-
-    @plot_type.setter
-    def plot_type(self, type):
-        """Sets the plot type from the plot type combobox."""
-        self.extra_inputs_widget.plot_type_combobox.setCurrentText(type)
-
-    @property
-    def histogram_colormap(self):
-        """Gets or sets the histogram colormap from the colormap combobox.
-
-        Returns
-        -------
-        str
-            The colormap name.
-        """
-        return self.extra_inputs_widget.colormap_combobox.currentText()
-    
-    @histogram_colormap.setter
-    def histogram_colormap(self, colormap: str):
-        """Sets the histogram colormap from the colormap combobox."""
-        if colormap not in colormaps.ALL_COLORMAPS.keys():
-            notifications.WarningNotification(f"{colormap} is not a valid colormap. Setting to default colormap.")
-            colormap = self._histogram_colormap.name
-        self.extra_inputs_widget.colormap_combobox.setCurrentText(colormap)
-
-    @property
-    def histogram_bins(self):
-        """Gets the histogram bins from the histogram bins spinbox.
-
-        Returns
-        -------
-        int
-            The histogram bins value.
-        """
-        return self.extra_inputs_widget.number_of_bins_spinbox.value()
-    
-    @histogram_bins.setter
-    def histogram_bins(self, value: int):
-        """Sets the histogram bins from the histogram bins spinbox."""
-        if value < 2:
-            notifications.WarningNotification(f"Number of bins should be greater than 1. Setting to 10.")
-            value = 10
-        self.extra_inputs_widget.number_of_bins_spinbox.setValue(value)
-    
-    @property
-    def histogram_log_scale(self):
-        """Gets the histogram log scale from the histogram log scale checkbox.
-
-        Returns
-        -------
-        bool
-            The histogram log scale value.
-        """
-        return self.extra_inputs_widget.log_scale_checkbox.isChecked()
-    
-    @histogram_log_scale.setter
-    def histogram_log_scale(self, value: bool):
-        """Sets the histogram log scale from the histogram log scale checkbox."""
-        self.extra_inputs_widget.log_scale_checkbox.setChecked(value)
-
-    def manual_selection_changed(self, manual_selection):
-        """Update the manual selection in the labels layer with phasor features.
-
-        This method serves as a Slot for the `color_indices_changed_signal` emitted by the canvas widget.
-        It should receive the `color_indices` array from the active artist in the canvas widget.
-        It also updates/creates the phasors selected layer by calling the `create_phasors_selected_layer` method.
-
-        Parameters
-        ----------
-        manual_selection : np.ndarray
-            The manual selection array.
-        """
-
-        if self._labels_layer_with_phasor_features is None:
-            notifications.WarningNotification("No labels layer with phasor features selected.")
-            return
-
         if new_selection_id in DATA_COLUMNS:
             notifications.WarningNotification(f"{new_selection_id} is not a valid selection column. It must not be one of {DATA_COLUMNS}.")
             return
@@ -476,15 +351,10 @@ class PlotterWidget(QWidget):
         It also updates `_labels_layer_with_phasor_features` attribute with the Labels layer in the metadata of the selected image layer.
         """
         self.plotter_inputs_widget.image_layer_with_phasor_features_combobox.clear()
-        layer_names = [layer.name for layer in self.viewer.layers if isinstance(
-                layer, Image) and 'phasor_features_labels_layer' in layer.metadata.keys()]
         self.plotter_inputs_widget.image_layer_with_phasor_features_combobox.addItems(
-            layer_names
+            [layer.name for layer in self.viewer.layers if isinstance(
+                layer, Image) and 'phasor_features_labels_layer' in layer.metadata.keys()]
         )
-        # Update layer names in the phasor selection id combobox when layer name changes
-        for layer_name in layer_names:
-            layer = self.viewer.layers[layer_name]
-            layer.events.name.connect(self.reset_layer_choices)
         self.on_labels_layer_with_phasor_features_changed()
 
     def on_labels_layer_with_phasor_features_changed(self):
@@ -556,7 +426,7 @@ class PlotterWidget(QWidget):
         self.canvas_widget.artists[ArtistType.HISTOGRAM2D].bins = self.histogram_bins
         # Temporarily set active artist "again" to have it displayed on top #TODO: Fix this
         self.canvas_widget.active_artist = self.canvas_widget.artists[ArtistType[self.plot_type]]
-
+        
         self.create_phasors_selected_layer()
 
     def create_phasors_selected_layer(self):
@@ -585,7 +455,7 @@ class PlotterWidget(QWidget):
 
 if __name__ == "__main__":
     import napari
-    time_constants = [0.1, 1, 2, 3, 4, 5, 10]
+    time_constants = [0.1, 1, 10]
     raw_flim_data = make_raw_flim_data(time_constants=time_constants)
     harmonic = [1, 2, 3]
     intensity_image_layer = make_intensity_layer_with_phasors(raw_flim_data, harmonic=harmonic)
