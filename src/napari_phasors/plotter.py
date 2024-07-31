@@ -351,10 +351,15 @@ class PlotterWidget(QWidget):
         It also updates `_labels_layer_with_phasor_features` attribute with the Labels layer in the metadata of the selected image layer.
         """
         self.plotter_inputs_widget.image_layer_with_phasor_features_combobox.clear()
-        self.plotter_inputs_widget.image_layer_with_phasor_features_combobox.addItems(
-            [layer.name for layer in self.viewer.layers if isinstance(
+        layer_names = [layer.name for layer in self.viewer.layers if isinstance(
                 layer, Image) and 'phasor_features_labels_layer' in layer.metadata.keys()]
+        self.plotter_inputs_widget.image_layer_with_phasor_features_combobox.addItems(
+            layer_names
         )
+        # Update layer names in the phasor selection id combobox when layer name changes
+        for layer_name in layer_names:
+            layer = self.viewer.layers[layer_name]
+            layer.events.name.connect(self.reset_layer_choices)
         self.on_labels_layer_with_phasor_features_changed()
 
     def on_labels_layer_with_phasor_features_changed(self):
@@ -426,7 +431,7 @@ class PlotterWidget(QWidget):
         self.canvas_widget.artists[ArtistType.HISTOGRAM2D].bins = self.histogram_bins
         # Temporarily set active artist "again" to have it displayed on top #TODO: Fix this
         self.canvas_widget.active_artist = self.canvas_widget.artists[ArtistType[self.plot_type]]
-        
+       
         self.create_phasors_selected_layer()
 
     def create_phasors_selected_layer(self):
@@ -455,7 +460,7 @@ class PlotterWidget(QWidget):
 
 if __name__ == "__main__":
     import napari
-    time_constants = [0.1, 1, 10]
+    time_constants = [0.1, 1, 2, 3, 4, 5, 10]
     raw_flim_data = make_raw_flim_data(time_constants=time_constants)
     harmonic = [1, 2, 3]
     intensity_image_layer = make_intensity_layer_with_phasors(raw_flim_data, harmonic=harmonic)
