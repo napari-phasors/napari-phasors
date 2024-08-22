@@ -84,3 +84,4 @@ venv/
 
 # Virtual environment
 napari_phasors_venv
+.vscode/settings.json

@@ -1,31 +1,163 @@
 import numpy as np
+import pandas as pd
+from napari.layers import Labels
 
 from napari_phasors import napari_get_reader
 
 
-# tmp_path is a pytest fixture
-def test_reader(tmp_path):
-    """An example of how you might test your plugin."""
-
-    # write some fake data using your supported file format
-    my_test_file = str(tmp_path / "myfile.npy")
-    original_data = np.random.rand(20, 20)
-    np.save(my_test_file, original_data)
-
-    # try to read it back in
-    reader = napari_get_reader(my_test_file)
+def test_reader_ptu():
+    """Test reading a PTU file"""
+    ptu_file = "src/napari_phasors/_tests/test_data/test_file.ptu"
+    reader = napari_get_reader(ptu_file)
     assert callable(reader)
-
-    # make sure we're delivering the right format
-    layer_data_list = reader(my_test_file)
-    assert isinstance(layer_data_list, list) and len(layer_data_list) > 0
+    layer_data_list = reader(ptu_file)
+    assert isinstance(layer_data_list, list) and len(layer_data_list) == 1
+    # First Channel
     layer_data_tuple = layer_data_list[0]
-    assert isinstance(layer_data_tuple, tuple) and len(layer_data_tuple) > 0
+    assert isinstance(layer_data_tuple, tuple) and len(layer_data_tuple) == 2
+    assert isinstance(layer_data_tuple[0], np.ndarray) and isinstance(
+        layer_data_tuple[1], dict
+    )
+    assert layer_data_tuple[0].shape == (1, 256, 256)
+    assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
+    assert (
+        layer_data_tuple[1]["name"]
+        == "test_file.ptu Intensity Image: Channel 0"
+    )
+    assert (
+        len(layer_data_tuple[1]["metadata"]) == 1
+        and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
+    )
+    phasor_features = layer_data_tuple[1]["metadata"][
+        "phasor_features_labels_layer"
+    ]
+    assert isinstance(phasor_features, Labels)
+    assert phasor_features.data.shape == (1, 256, 256)
+    assert isinstance(phasor_features.features, pd.DataFrame)
+    assert phasor_features.features.shape == (65536, 4)
+    expected_columns = ["label", "G", "S", "harmonic"]
+    actual_columns = phasor_features.features.columns.tolist()
+    assert actual_columns == expected_columns
 
-    # make sure it's the same as it started
-    np.testing.assert_allclose(original_data, layer_data_tuple[0])
+
+def test_reader_fbd():
+    """Test reading a FBD file"""
+    fbd_file = "src/napari_phasors/_tests/test_data/test_file$EI0S.fbd"
+    reader = napari_get_reader(fbd_file)
+    assert callable(reader)
+    layer_data_list = reader(fbd_file)
+    assert isinstance(layer_data_list, list) and len(layer_data_list) == 2
+    # First Channel
+    layer_data_tuple = layer_data_list[0]
+    assert isinstance(layer_data_tuple, tuple) and len(layer_data_tuple) == 2
+    assert isinstance(layer_data_tuple[0], np.ndarray) and isinstance(
+        layer_data_tuple[1], dict
+    )
+    assert layer_data_tuple[0].shape == (1, 256, 256)
+    assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
+    assert (
+        layer_data_tuple[1]["name"]
+        == "test_file$EI0S.fbd Intensity Image: Channel 0"
+    )
+    assert (
+        len(layer_data_tuple[1]["metadata"]) == 1
+        and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
+    )
+    phasor_features = layer_data_tuple[1]["metadata"][
+        "phasor_features_labels_layer"
+    ]
+    assert isinstance(phasor_features, Labels)
+    assert phasor_features.data.shape == (1, 256, 256)
+    assert isinstance(phasor_features.features, pd.DataFrame)
+    assert phasor_features.features.shape == (65536, 4)
+    expected_columns = ["label", "G", "S", "harmonic"]
+    actual_columns = phasor_features.features.columns.tolist()
+    assert actual_columns == expected_columns
+    # Second Channel
+    layer_data_tuple = layer_data_list[1]
+    assert isinstance(layer_data_tuple, tuple) and len(layer_data_tuple) == 2
+    assert isinstance(layer_data_tuple[0], np.ndarray) and isinstance(
+        layer_data_tuple[1], dict
+    )
+    assert layer_data_tuple[0].shape == (1, 256, 256)
+    assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
+    assert (
+        layer_data_tuple[1]["name"]
+        == "test_file$EI0S.fbd Intensity Image: Channel 1"
+    )
+    assert (
+        len(layer_data_tuple[1]["metadata"]) == 1
+        and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
+    )
+    phasor_features = layer_data_tuple[1]["metadata"][
+        "phasor_features_labels_layer"
+    ]
+    assert isinstance(phasor_features, Labels)
+    assert phasor_features.data.shape == (1, 256, 256)
+    assert isinstance(phasor_features.features, pd.DataFrame)
+    assert phasor_features.features.shape == (65536, 4)
+    expected_columns = ["label", "G", "S", "harmonic"]
+    actual_columns = phasor_features.features.columns.tolist()
+    assert actual_columns == expected_columns
 
 
-def test_get_reader_pass():
-    reader = napari_get_reader("fake.file")
-    assert reader is None
+def test_reader_lsm():
+    """Test reading a LSM file"""
+    lsm_file = "src/napari_phasors/_tests/test_data/test_file.lsm"
+    reader = napari_get_reader(lsm_file)
+    assert callable(reader)
+    layer_data_list = reader(lsm_file)
+    assert isinstance(layer_data_list, list) and len(layer_data_list) == 1
+    layer_data_tuple = layer_data_list[0]
+    assert isinstance(layer_data_tuple, tuple) and len(layer_data_tuple) == 2
+    assert isinstance(layer_data_tuple[0], np.ndarray) and isinstance(
+        layer_data_tuple[1], dict
+    )
+    assert layer_data_tuple[0].shape == (512, 512)
+    assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
+    assert layer_data_tuple[1]["name"] == "test_file.lsm Intensity Image"
+    assert (
+        len(layer_data_tuple[1]["metadata"]) == 1
+        and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
+    )
+    phasor_features = layer_data_tuple[1]["metadata"][
+        "phasor_features_labels_layer"
+    ]
+    assert isinstance(phasor_features, Labels)
+    assert phasor_features.data.shape == (512, 512)
+    assert isinstance(phasor_features.features, pd.DataFrame)
+    assert phasor_features.features.shape == (262144, 4)
+    expected_columns = ["label", "G", "S", "harmonic"]
+    actual_columns = phasor_features.features.columns.tolist()
+    assert actual_columns == expected_columns
+
+
+def test_reader_ometif():
+    """Test reading a ome.tif file"""
+    ometif_file = "src/napari_phasors/_tests/test_data/test_file.ome.tif"
+    reader = napari_get_reader(ometif_file)
+    assert callable(reader)
+    layer_data_list = reader(ometif_file)
+    assert isinstance(layer_data_list, list) and len(layer_data_list) == 1
+    layer_data_tuple = layer_data_list[0]
+    assert isinstance(layer_data_tuple, tuple) and len(layer_data_tuple) == 2
+    assert isinstance(layer_data_tuple[0], np.ndarray) and isinstance(
+        layer_data_tuple[1], dict
+    )
+    assert layer_data_tuple[0].shape == (256, 256)
+    assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
+    assert layer_data_tuple[1]["name"] == "test_file.ome.tif Intensity Image"
+    assert (
+        len(layer_data_tuple[1]["metadata"]) == 1
+        and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
+    )
+    phasor_features = layer_data_tuple[1]["metadata"][
+        "phasor_features_labels_layer"
+    ]
+    assert isinstance(phasor_features, Labels)
+    assert phasor_features.data.shape == (256, 256)
+    assert isinstance(phasor_features.features, pd.DataFrame)
+    assert phasor_features.features.shape == (65536, 4)
+    expected_columns = ["label", "G", "S", "harmonic"]
+    actual_columns = phasor_features.features.columns.tolist()
+    assert actual_columns == expected_columns

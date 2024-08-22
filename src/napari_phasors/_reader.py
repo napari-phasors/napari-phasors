@@ -61,7 +61,9 @@ when calculating phasor coordinates in the file.
 
 
 def napari_get_reader(
-    path: str, reader_options: Optional[dict] = None, harmonics: Union[int, Sequence[int], None] = None,
+    path: str,
+    reader_options: Optional[dict] = None,
+    harmonics: Union[int, Sequence[int], None] = None,
 ) -> Optional[Callable]:
     """Initial reader function to map file extension to
     specific reader functions.
@@ -72,8 +74,9 @@ def napari_get_reader(
         Path to file.
     reader_options : dict, optional
         Dictionary containing the arguments to pass to the function.
-    harmonics : int, optional
-        Number of harmonics to calculate phasor coordinates, by default 1.
+    harmonics : Union[int, Sequence[int], None], optional
+        Harmonic(s) to be processed. Can be a single integer, a sequence of
+        integers, or None. Default is None.
 
     Returns
     -------
@@ -87,16 +90,23 @@ def napari_get_reader(
         in 'metadata' contain phasor coordinates as columns 'G' and 'S'.
 
     """
-    _, file_extension = os.path.splitext(path)
-    file_extension = file_extension.lower()
-    if file_extension in extension_mapping["processed"].keys():
-        return lambda path: processed_file_reader(path, reader_options=reader_options, harmonics=harmonics)
-    elif file_extension in extension_mapping["raw"].keys():
-        return lambda path: raw_file_reader(path, reader_options=reader_options, harmonics=harmonics)
+    if path.endswith(tuple(extension_mapping["processed"].keys())):
+        return lambda path: processed_file_reader(
+            path, reader_options=reader_options, harmonics=harmonics
+        )
+    elif path.endswith(tuple(extension_mapping["raw"].keys())):
+        return lambda path: raw_file_reader(
+            path, reader_options=reader_options, harmonics=harmonics
+        )
     else:
-        show_error('File extension not supported.')
+        show_error("File extension not supported.")
 
-def raw_file_reader(path: str, reader_options: Optional[dict] = None, harmonics: Union[int, Sequence[int], None] = None,) -> list[tuple]:
+
+def raw_file_reader(
+    path: str,
+    reader_options: Optional[dict] = None,
+    harmonics: Union[int, Sequence[int], None] = None,
+) -> list[tuple]:
     """Read raw data files from supported file formats and apply the phasor
     transformation to get mean intensity image and phasor coordinates.
 
@@ -106,8 +116,9 @@ def raw_file_reader(path: str, reader_options: Optional[dict] = None, harmonics:
         Path to file.
     reader_options : dict, optional
         Dictionary containing the arguments to pass to the function.
-    harmonics : int, optional
-        Number of harmonics to calculate phasor coordinates, by default 1.
+    harmonics : Union[int, Sequence[int], None], optional
+        Harmonic(s) to be processed. Can be a single integer, a sequence of
+        integers, or None. Default is None.
 
     Returns
     -------
@@ -131,7 +142,11 @@ def raw_file_reader(path: str, reader_options: Optional[dict] = None, harmonics:
             raw_data, axis=raw_data.dims.index("C"), harmonic=harmonics
         )
         labels_layer = make_phasors_labels_layer(
-            mean_intensity_image, G_image, S_image, name=filename
+            mean_intensity_image,
+            G_image,
+            S_image,
+            name=filename,
+            harmonics=harmonics,
         )
         add_kwargs = {
             "name": f"{filename} Intensity Image",
@@ -145,10 +160,14 @@ def raw_file_reader(path: str, reader_options: Optional[dict] = None, harmonics:
             mean_intensity_image, G_image, S_image = phasor_from_signal(
                 raw_data.sel(C=channel),
                 axis=raw_data.sel(C=channel).dims.index("H"),
-                harmonic=harmonics
+                harmonic=harmonics,
             )
             labels_layer = make_phasors_labels_layer(
-                mean_intensity_image, G_image, S_image, name=filename
+                mean_intensity_image,
+                G_image,
+                S_image,
+                name=filename,
+                harmonics=harmonics,
             )
             add_kwargs = {
                 "name": f"{filename} Intensity Image: Channel {channel}",
@@ -159,7 +178,9 @@ def raw_file_reader(path: str, reader_options: Optional[dict] = None, harmonics:
 
 
 def processed_file_reader(
-    path: str, reader_options: Optional[dict[str, str]] = None, harmonics: Union[int, Sequence[int], None] = None,
+    path: str,
+    reader_options: Optional[dict[str, str]] = None,
+    harmonics: Union[int, Sequence[int], None] = None,
 ) -> list[tuple]:
     """Reader function for files that contain processed images, as phasor
     coordinates or intensity images.
@@ -170,8 +191,9 @@ def processed_file_reader(
         Path to file.
     reader_options : dict, optional
         Dictionary containing the arguments to pass to the function.
-    harmonics : int, optional
-        Number of harmonics to calculate phasor coordinates, by default 1.
+    harmonics : Union[int, Sequence[int], None], optional
+        Harmonic(s) to be processed. Can be a single integer, a sequence of
+        integers, or None. Default is None.
 
     Returns
     -------
@@ -185,17 +207,24 @@ def processed_file_reader(
         in 'metadata' contain phasor coordinates as columns 'G' and 'S'.
 
     """
+    # TODO: check if extension is '.tif' or 'ome.tif'
     filename, file_extension = _get_filename_extension(path)
     mean_intensity_image, G_image, S_image = extension_mapping["processed"][
         file_extension
-    ](path)
+    ](path, reader_options)
     mean_intensity_image, G_image, S_image = (
         mean_intensity_image.values,
         G_image.values,
         S_image.values,
     )
+    if mean_intensity_image.ndim > 2:
+        mean_intensity_image = mean_intensity_image[0]
     labels_layer = make_phasors_labels_layer(
-        mean_intensity_image, G_image, S_image, name=filename
+        mean_intensity_image,
+        G_image,
+        S_image,
+        name=filename,
+        harmonics=harmonics,
     )
     layers = []
     add_kwargs = {
@@ -207,7 +236,11 @@ def processed_file_reader(
 
 
 def make_phasors_labels_layer(
-    mean_intensity_image: Any, G_image: Any, S_image: Any, name: str = ""
+    mean_intensity_image: Any,
+    G_image: Any,
+    S_image: Any,
+    name: str = "",
+    harmonics: Union[int, Sequence[int], None] = None,
 ) -> Labels:
     """Create a napari Labels layer from phasor coordinates.
 
@@ -221,6 +254,9 @@ def make_phasors_labels_layer(
         S phasor coordinates.
     name : str, optional
         Name of the layer, by default ''.
+    harmonics : Union[int, Sequence[int], None], optional
+        Harmonic(s) to be processed. Can be a single integer, a sequence of
+        integers, or None. Default is None.
 
     Returns
     -------
@@ -229,31 +265,37 @@ def make_phasors_labels_layer(
 
     """
     pixel_id = np.arange(1, mean_intensity_image.size + 1)
+    table = pd.DataFrame()
     if len(G_image.shape) > 2:
-        table = pd.DataFrame([])
         for i in range(G_image.shape[0]):
+            harmonic_value = harmonics[i] if harmonics is not None else i + 1
             sub_table = pd.DataFrame(
                 {
                     "label": pixel_id,
                     "G": G_image[i].ravel(),
                     "S": S_image[i].ravel(),
-                    "harmonic": i + 1,
+                    "harmonic": harmonic_value,
                 }
             )
             table = pd.concat([table, sub_table])
     else:
+        if isinstance(harmonics, list):
+            harmonic_value = harmonics[0]
+        else:
+            harmonic_value = harmonics if harmonics is not None else 1
         table = pd.DataFrame(
             {
                 "label": pixel_id,
                 "G": G_image.ravel(),
                 "S": S_image.ravel(),
-                "harmonic": 1,
+                "harmonic": harmonic_value,
             }
         )
+
     labels_data = pixel_id.reshape(mean_intensity_image.shape)
     labels_layer = Labels(
         labels_data,
-        name=name + " Phasor Features Layer",
+        name=f"{name} Phasor Features Layer",
         scale=(1, 1),
         features=table,
     )

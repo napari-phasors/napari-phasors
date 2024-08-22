@@ -7,21 +7,22 @@ This module contains widgets to:
 
 from typing import TYPE_CHECKING
 
-from qtpy.QtWidgets import (
-    QPushButton,
-    QWidget,
-    QTreeView,
-    QDirModel,
-    QComboBox,
-    QLabel,
-    QVBoxLayout,
-    QLineEdit,
-    QCompleter,
-    QSpinBox,
-    QHBoxLayout,
-)
 from qtpy.QtGui import QDoubleValidator
-from ._reader import napari_get_reader, _get_filename_extension
+from qtpy.QtWidgets import (
+    QComboBox,
+    QCompleter,
+    QDirModel,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QSpinBox,
+    QTreeView,
+    QVBoxLayout,
+    QWidget,
+)
+
+from ._reader import _get_filename_extension, napari_get_reader
 
 if TYPE_CHECKING:
     import napari
@@ -69,7 +70,6 @@ class PhasorTransform(QWidget):
             ".fbd": FbdWidget,
             ".ptu": PtuWidget,
             ".lsm": LsmWidget,
-            ".tif": LsmWidget,
         }
 
     def _on_change(self, current, model):
@@ -86,6 +86,11 @@ class PhasorTransform(QWidget):
             create_widget_class = self.reader_options[extension]
             new_widget = create_widget_class(self.viewer, path)
             self.dynamic_widget_layout.addWidget(new_widget)
+        else:
+            # Clear existing widgets
+            for i in reversed(range(self.dynamic_widget_layout.count())):
+                widget = self.dynamic_widget_layout.takeAt(i).widget()
+                widget.deleteLater()
 
 
 class AdvancedOptionsWidget(QWidget):
@@ -105,7 +110,7 @@ class AdvancedOptionsWidget(QWidget):
         # Initial layout
         self.mainLayout = QVBoxLayout()
         self.setLayout(self.mainLayout)
-    
+
     def _harmonic_widget(self):
         """Add the harmonic widget to main layout."""
         self.mainLayout.addWidget(QLabel("Harmonics: "))
@@ -125,7 +130,7 @@ class AdvancedOptionsWidget(QWidget):
         harmonic_layout.addWidget(QLabel("to: "))
         harmonic_layout.addWidget(self.harmonic_end)
         self.mainLayout.addLayout(harmonic_layout)
-    
+
     def _frame_widget(self):
         """Add the frame widget to main layout."""
         self.mainLayout.addWidget(QLabel("Frames: "))
@@ -138,8 +143,7 @@ class AdvancedOptionsWidget(QWidget):
             self._on_frames_combobox_changed
         )
         self.mainLayout.addWidget(self.frames)
-        
-    
+
     def _channels_widget(self):
         # Channel selection
         self.mainLayout.addWidget(QLabel("Channels: "))
@@ -161,7 +165,7 @@ class AdvancedOptionsWidget(QWidget):
         if end < start:
             end = start
             self.harmonic_end.setValue(start)
-        self.harmonic = list(range(start, end + 1))
+        self.harmonics = list(range(start, end + 1))
 
     def _on_frames_combobox_changed(self, index):
         """Callback whenever the frames combobox changes."""
@@ -176,7 +180,9 @@ class AdvancedOptionsWidget(QWidget):
 
     def _on_click(self, path, reader_options, harmonics):
         """Callback whenever the calculate phasor button is clicked."""
-        reader = napari_get_reader(path, reader_options=reader_options, harmonics=harmonics)
+        reader = napari_get_reader(
+            path, reader_options=reader_options, harmonics=harmonics
+        )
         for layer in reader(path):
             self.viewer.add_image(
                 layer[0], name=layer[1]["name"], metadata=layer[1]["metadata"]
@@ -216,7 +222,9 @@ class FbdWidget(AdvancedOptionsWidget):
         # Calculate phasor button
         self.btn = QPushButton("Phasor Transform")
         self.btn.clicked.connect(
-            lambda: self._on_click(self.path, self.reader_options, self.harmonics)
+            lambda: self._on_click(
+                self.path, self.reader_options, self.harmonics
+            )
         )
         self.mainLayout.addWidget(self.btn)
 
@@ -261,7 +269,9 @@ class PtuWidget(AdvancedOptionsWidget):
         # Calculate phasor button
         self.btn = QPushButton("Phasor Transform")
         self.btn.clicked.connect(
-            lambda: self._on_click(self.path, self.reader_options, self.harmonics)
+            lambda: self._on_click(
+                self.path, self.reader_options, self.harmonics
+            )
         )
         self.mainLayout.addWidget(self.btn)
 
@@ -287,6 +297,8 @@ class LsmWidget(AdvancedOptionsWidget):
         # Calculate phasor button
         self.btn = QPushButton("Phasor Transform")
         self.btn.clicked.connect(
-            lambda: self._on_click(self.path, self.reader_options, self.harmonics)
+            lambda: self._on_click(
+                self.path, self.reader_options, self.harmonics
+            )
         )
         self.mainLayout.addWidget(self.btn)
