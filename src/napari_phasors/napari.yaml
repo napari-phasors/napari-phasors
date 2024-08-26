@@ -24,7 +24,7 @@ contributions:
   readers:
     - command: napari-phasors.get_reader
       accepts_directories: false
-      filename_patterns: ['*.fbd','*.ptu','*.tif', '*.lsm']
+      filename_patterns: ['*.fbd','*.ptu', '*.lsm', '*ome.tif', '*.tif']
   writers:
     - command: napari-phasors.write_ome_tiff
       display_name: Export Phasor to OME-TIFF

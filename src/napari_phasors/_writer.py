@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, List, Sequence, Tuple, Union
 
 import numpy as np
-from phasorpy.io import write_ometiff_phasor
+from phasorpy.io import phasor_to_ometiff
 
 if TYPE_CHECKING:
     DataType = Union[Any, Sequence[Any]]
@@ -36,11 +36,10 @@ def write_ome_tiff(path: str, image_layer: Any) -> List[str]:
     """
     mean = image_layer[0][0]
     phasor_data = image_layer[0][1]["metadata"]["phasor_features_labels_layer"]
-    num_harmonics = len(phasor_data.features["harmonic"].unique())
-    G = np.reshape(phasor_data.features["G"], (num_harmonics, *mean.shape))
-    S = np.reshape(phasor_data.features["S"], (num_harmonics, *mean.shape))
-    mean = mean[np.newaxis, ...].repeat(num_harmonics, axis=0)
+    harmonics = phasor_data.features["harmonic"].unique()
+    G = np.reshape(phasor_data.features["G"], (len(harmonics), *mean.shape))
+    S = np.reshape(phasor_data.features["S"], (len(harmonics), *mean.shape))
     if not path.endswith(".ome.tif"):
         path += ".ome.tif"
-    write_ometiff_phasor(path, mean, G, S)
-    return
+    phasor_to_ometiff(path, mean, G, S, harmonic=harmonics)
+    return path

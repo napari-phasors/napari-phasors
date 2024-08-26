@@ -14,6 +14,7 @@ import phasorpy.io as io
 from napari.layers import Labels
 from napari.utils.notifications import show_error
 from phasorpy.phasor import phasor_from_signal
+import tifffile
 
 extension_mapping = {
     "raw": {
@@ -30,7 +31,10 @@ extension_mapping = {
             reader_options,
         ),
         ".lsm": lambda path, reader_options: _parse_and_call_io_function(
-            path, io.read_lsm, {}, reader_options
+            path, io.read_lsm, {}, reader_options,
+        ),
+        ".tif": lambda path, reader_options: _parse_and_call_io_function(
+            path, tifffile.imread, {}, reader_options,
         ),
         # ".flif": lambda path: io.read_flif(path),
         # ".sdt": lambda path: io.read_sdt(path),
@@ -39,9 +43,10 @@ extension_mapping = {
         # ".ifli": lambda path: io.read_ifli(),
     },
     "processed": {
-        ".tif": lambda path, reader_options: _parse_and_call_io_function(
-            path, io.read_ometiff_phasor, {}, reader_options
+        ".ome.tif": lambda path, reader_options: _parse_and_call_io_function(
+            path, io.phasor_from_ometiff, {}, reader_options
         ),
+
         # ".b64": lambda path: io.read_b64(path),
         # ".r64": lambda path: io.read_r64(path),
         # ".ref": lambda path: io.read_ref(path)
@@ -54,7 +59,7 @@ Commented file extensions are not supported at the moment.
 
 """
 
-iter_index_mapping = {".ptu": "C", ".fbd": "C", ".lsm": None}
+iter_index_mapping = {".ptu": "C", ".fbd": "C", ".lsm": None, ".tif": None}
 """This dictionary contains the mapping for the axis to iterate over
 when calculating phasor coordinates in the file.
 """
@@ -137,10 +142,15 @@ def raw_file_reader(
     layers = []
     iter_axis = iter_index_mapping[file_extension]
     if iter_axis is None:
-        # Calculate phasor over channels if file is of hyperspectral type
-        mean_intensity_image, G_image, S_image = phasor_from_signal(
-            raw_data, axis=raw_data.dims.index("C"), harmonic=harmonics
-        )
+        if file_extension == ".tif":
+            mean_intensity_image, G_image, S_image = phasor_from_signal(
+                raw_data, axis=0, harmonic=harmonics
+            )
+        else:
+            # Calculate phasor over channels if file is of hyperspectral type
+            mean_intensity_image, G_image, S_image = phasor_from_signal(
+                raw_data, axis=raw_data.dims.index("C"), harmonic=harmonics
+            )
         labels_layer = make_phasors_labels_layer(
             mean_intensity_image,
             G_image,
@@ -207,7 +217,6 @@ def processed_file_reader(
         in 'metadata' contain phasor coordinates as columns 'G' and 'S'.
 
     """
-    # TODO: check if extension is '.tif' or 'ome.tif'
     filename, file_extension = _get_filename_extension(path)
     mean_intensity_image, G_image, S_image = extension_mapping["processed"][
         file_extension
@@ -367,9 +376,13 @@ def _get_filename_extension(path: str) -> tuple[str, str]:
     filename : str
         Filename.
     file_extension : str
-        File extension.
+        File extension including the leading dot.
 
     """
     filename = os.path.basename(path)
-    _, file_extension = os.path.splitext(filename)
-    return filename, file_extension.lower()
+    parts = filename.split('.', 1)
+    if len(parts) > 1:
+        file_extension = '.' + parts[1]
+    else:
+        file_extension = ''
+    return parts[0], file_extension.lower()

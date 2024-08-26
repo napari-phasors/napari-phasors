@@ -70,6 +70,7 @@ class PhasorTransform(QWidget):
             ".fbd": FbdWidget,
             ".ptu": PtuWidget,
             ".lsm": LsmWidget,
+            ".tif": LsmWidget,
         }
 
     def _on_change(self, current, model):
