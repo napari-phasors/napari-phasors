@@ -118,7 +118,7 @@ def test_phasor_transform_fbd_widget(make_napari_viewer):
     assert len(viewer.layers) == 1
     assert (
         viewer.layers[0].name
-        == "test_file$EI0S.fbd Intensity Image: Channel 0"
+        == "test_file$EI0S Intensity Image: Channel 0"
     )
     assert viewer.layers[0].data.shape == (1, 256, 256)
     phasor_data = (
@@ -133,7 +133,7 @@ def test_phasor_transform_fbd_widget(make_napari_viewer):
     assert len(viewer.layers) == 3
     assert (
         viewer.layers[2].name
-        == "test_file$EI0S.fbd Intensity Image: Channel 1"
+        == "test_file$EI0S Intensity Image: Channel 1"
     )
     assert viewer.layers[2].data.shape == (1, 256, 256)
     phasor_data = (
@@ -200,7 +200,7 @@ def test_phasor_transform_ptu_widget(make_napari_viewer):
     # Click button of phasor transform and check layers
     widget.btn.click()
     assert len(viewer.layers) == 1
-    assert viewer.layers[0].name == "test_file.ptu Intensity Image: Channel 0"
+    assert viewer.layers[0].name == "test_file Intensity Image: Channel 0"
     assert viewer.layers[0].data.shape == (1, 256, 256)
     phasor_data = (
         viewer.layers[0].metadata["phasor_features_labels_layer"].features
@@ -213,7 +213,7 @@ def test_phasor_transform_ptu_widget(make_napari_viewer):
     widget.btn.click()
     assert len(viewer.layers) == 2
     assert (
-        viewer.layers[1].name == "test_file.ptu Intensity Image: Channel 0 [1]"
+        viewer.layers[1].name == "test_file Intensity Image: Channel 0 [1]"
     )
     assert viewer.layers[1].data.shape == (1, 256, 256)
     phasor_data = (
@@ -253,7 +253,7 @@ def test_phasor_transform_lsm_widget(make_napari_viewer):
     # Click button of phasor transform and check layers
     widget.btn.click()
     assert len(viewer.layers) == 1
-    assert viewer.layers[0].name == "test_file.lsm Intensity Image"
+    assert viewer.layers[0].name == "test_file Intensity Image"
     assert viewer.layers[0].data.shape == (512, 512)
     phasor_data = (
         viewer.layers[0].metadata["phasor_features_labels_layer"].features
@@ -264,7 +264,7 @@ def test_phasor_transform_lsm_widget(make_napari_viewer):
     widget.harmonic_end.setValue(2)
     widget.btn.click()
     assert len(viewer.layers) == 2
-    assert viewer.layers[1].name == "test_file.lsm Intensity Image [1]"
+    assert viewer.layers[1].name == "test_file Intensity Image [1]"
     assert viewer.layers[1].data.shape == (512, 512)
     phasor_data = (
         viewer.layers[1].metadata["phasor_features_labels_layer"].features

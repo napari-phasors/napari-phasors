@@ -226,8 +226,6 @@ def processed_file_reader(
         G_image.values,
         S_image.values,
     )
-    if mean_intensity_image.ndim > 2:
-        mean_intensity_image = mean_intensity_image[0]
     labels_layer = make_phasors_labels_layer(
         mean_intensity_image,
         G_image,

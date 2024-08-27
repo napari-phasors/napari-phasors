@@ -22,7 +22,7 @@ def test_reader_ptu():
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert (
         layer_data_tuple[1]["name"]
-        == "test_file.ptu Intensity Image: Channel 0"
+        == "test_file Intensity Image: Channel 0"
     )
     assert (
         len(layer_data_tuple[1]["metadata"]) == 1
@@ -57,7 +57,7 @@ def test_reader_fbd():
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert (
         layer_data_tuple[1]["name"]
-        == "test_file$EI0S.fbd Intensity Image: Channel 0"
+        == "test_file$EI0S Intensity Image: Channel 0"
     )
     assert (
         len(layer_data_tuple[1]["metadata"]) == 1
@@ -83,7 +83,7 @@ def test_reader_fbd():
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert (
         layer_data_tuple[1]["name"]
-        == "test_file$EI0S.fbd Intensity Image: Channel 1"
+        == "test_file$EI0S Intensity Image: Channel 1"
     )
     assert (
         len(layer_data_tuple[1]["metadata"]) == 1
@@ -115,7 +115,7 @@ def test_reader_lsm():
     )
     assert layer_data_tuple[0].shape == (512, 512)
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
-    assert layer_data_tuple[1]["name"] == "test_file.lsm Intensity Image"
+    assert layer_data_tuple[1]["name"] == "test_file Intensity Image"
     assert (
         len(layer_data_tuple[1]["metadata"]) == 1
         and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
@@ -146,7 +146,7 @@ def test_reader_ometif():
     )
     assert layer_data_tuple[0].shape == (256, 256)
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
-    assert layer_data_tuple[1]["name"] == "test_file.ome.tif Intensity Image"
+    assert layer_data_tuple[1]["name"] == "test_file Intensity Image"
     assert (
         len(layer_data_tuple[1]["metadata"]) == 1
         and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
@@ -161,3 +161,5 @@ def test_reader_ometif():
     expected_columns = ["label", "G", "S", "harmonic"]
     actual_columns = phasor_features.features.columns.tolist()
     assert actual_columns == expected_columns
+
+# TODO: Add tests for .tif files
