@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from napari.layers import Image
-from napari.utils.notifications import show_error
+from napari.utils.notifications import show_error, show_info
 from phasorpy.phasor import phasor_calibrate
 from qtpy import uic
 from qtpy.QtGui import QDoubleValidator
@@ -384,5 +384,6 @@ class CalibrationWidget(QWidget):
             sample_phasor_data["S"] = imag
             self.plotter.plot()
             sample_metadata["calibrated"] = True
+            show_info(f"Calibrated {sample_name}")
         elif sample_metadata["calibrated"] is True:
             show_error("Layer already calibrated")

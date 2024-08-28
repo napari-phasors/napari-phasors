@@ -347,7 +347,11 @@ def test_calibration_widget(make_napari_viewer):
     assert (
         main_widget.calibration_widget.lifetime_line_edit_widget.text() == "2"
     )
-    main_widget.calibration_widget.calibrate_push_button.click()
+    # main_widget.calibration_widget.calibrate_push_button.click()
+    with patch("napari_phasors._widget.show_info") as mock_show_info:
+        main_widget.calibration_widget.calibrate_push_button.click()
+        sample_name = main_widget.calibration_widget.sample_layer_combobox.currentText()
+        mock_show_info.assert_called_once_with(f"Calibrated {sample_name}")
     # Check if the calibration was successful
     assert viewer.layers[0].metadata["calibrated"] is True
     calibrated_real = (
