@@ -14,88 +14,72 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: Test library and docs
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: ["ubuntu-20.04"]
-        python-version: ["3.10", "3.11", "3.12"]
-    steps:
-    - uses: actions/checkout@v4
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ matrix.python-version }}
-    - name: Editable install
-      run: |
-        python -m pip install --upgrade pip
-        python -m pip install git+https://github.com/phasorpy/phasorpy.git
-        python -m pip install -r requirements.txt
-    - name: Install xvfb
-      run: sudo apt-get install xvfb
-    - name: Test with pytest
-      run: |
-        xvfb-run -a python -X dev -m pytest
+   test:
+     name: ${{ matrix.platform }} py${{ matrix.python-version }}
+     runs-on: ${{ matrix.platform }}
+     strategy:
+       matrix:
+         platform: [ubuntu-latest, windows-latest, macos-13, macos-14]
+         python-version: ['3.10', '3.11', '3.12']
 
-  test_win_mac:
-    name: Test Windows and macOS
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: ["windows-2019", "macos-12"]
-        python-version: ["3.10", "3.11", "3.12"]
-        # 3.12 tested with cibuildwheel
-    steps:
-    - uses: actions/checkout@v4
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ matrix.python-version }}
+     steps:
+       - uses: actions/checkout@v3
 
-    - name: Editable install
-      run: |
-        python -m pip install --upgrade pip
-        python -m pip install git+https://github.com/phasorpy/phasorpy.git
-        python -m pip install -r requirements.txt
-    - name: Install xvfb
-      run: sudo apt-get install xvfb
-    - name: Test with pytest
-      run: |
-        xvfb-run -a python -X dev -m pytest
+       - name: Set up Python ${{ matrix.python-version }}
+         uses: actions/setup-python@v4
+         with:
+           python-version: ${{ matrix.python-version }}
 
-  static_analysis:
-    name: Static code analysis
-    runs-on: "ubuntu-latest"
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.10", "3.11", "3.12"]
-    steps:
-    - uses: actions/checkout@v4
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ matrix.python-version }}
-    - name: Editable install
-      run: |
-        python -m pip install --upgrade pip
-        python -m pip install git+https://github.com/phasorpy/phasorpy.git
-        python -m pip install -r requirements.txt
-    - name: Test with black
-      run: |
-        python -m black --check src/napari_phasors src/napari_phasors/_tests
-    - name: Test with blackdoc
-      run: |
-        python -m blackdoc --check src/napari_phasors src/napari_phasors/_tests
-    # - name: Test with mypy
-    #   run: |
-    #     python -m mypy
-    - name: Test with isort
-      run: |
-        python -m isort --check src/napari_phasors src/napari_phasors/_tests
-    - name: Check spelling
-      run: |
-        python -m codespell_lib
+       # these libraries enable testing on Qt on linux
+       - uses: tlambert03/setup-qt-libs@v1
+
+       # strategy borrowed from vispy for installing opengl libs on windows
+       - name: Install Windows OpenGL
+         if: runner.os == 'Windows'
+         run: |
+           git clone --depth 1 https://github.com/pyvista/gl-ci-helpers.git
+           powershell gl-ci-helpers/appveyor/install_opengl.ps1
+       # note: if you need dependencies from conda, considering using
+       # setup-miniconda: https://github.com/conda-incubator/setup-miniconda
+       # and
+       # tox-conda: https://github.com/tox-dev/tox-conda
+       - name: Install dependencies
+         run: |
+           python -m pip install --upgrade pip
+           python -m pip install git+https://github.com/phasorpy/phasorpy.git
+           python -m pip install setuptools tox tox-gh-actions
+       # this runs the platform-specific tests declared in tox.ini
+       - name: Test with tox
+         uses: aganders3/headless-gui@v1
+         with:
+           run: python -m tox
+         env:
+           PLATFORM: ${{ matrix.platform }}
+           static_analysis:
+            
+      name: Static code analysis
+      runs-on: "ubuntu-latest"
+      strategy:
+        fail-fast: false
+        matrix:
+          python-version: ["3.10", "3.11", "3.12"]
+      steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Editable install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install git+https://github.com/phasorpy/phasorpy.git
+          python -m pip install -r requirements.txt
+      - name: Test with black
+        run: |
+          python -m black --check src/napari_phasors src/napari_phasors/_tests
+      - name: Test with blackdoc
+        run: |
+          python -m blackdoc --check src/napari_phasors src/napari_phasors/_tests
+      - name: Test with isort
+        run: |
+          python -m isort --check src/napari_phasors src/napari_phasors/_tests
