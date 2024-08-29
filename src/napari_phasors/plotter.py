@@ -1,44 +1,27 @@
-import numpy as np
-from matplotlib.colorbar import Colorbar
-
 from pathlib import Path
 from typing import TYPE_CHECKING
-from skimage.util import map_array
-from napari.utils import (
-    notifications,
-    DirectLabelColormap,
-    colormaps
-)
-from napari.layers import Labels, Image
-from biaplotter.plotter import (
-    CanvasWidget,
-    ArtistType
-)
-from superqt import QCollapsible
+
+import numpy as np
+from biaplotter.plotter import ArtistType, CanvasWidget
+from matplotlib.colorbar import Colorbar
+from matplotlib.colors import LinearSegmentedColormap, LogNorm, Normalize
+from napari.layers import Image, Labels
+from napari.utils import DirectLabelColormap, colormaps, notifications
 from qtpy import uic
-from qtpy.QtWidgets import (
-    QVBoxLayout,
-    QWidget,
-    QSpacerItem,
-    QSizePolicy,
-    QPushButton,
-)
-from matplotlib.colors import (
-    LinearSegmentedColormap,
-    LogNorm, 
-    Normalize
-)
+from qtpy.QtWidgets import (QPushButton, QSizePolicy, QSpacerItem, QVBoxLayout,
+                            QWidget)
+from skimage.util import map_array
+from superqt import QCollapsible
 
 from napari_phasors._synthetic_generator import (
-    make_raw_flim_data,
-    make_intensity_layer_with_phasors
-)
+    make_intensity_layer_with_phasors, make_raw_flim_data)
 
 if TYPE_CHECKING:
     import napari
 
 #: The columns in the phasor features table that should not be used as selection id.
-DATA_COLUMNS = ['label', 'Average Image', 'G', 'S', 'harmonic']
+DATA_COLUMNS = ["label", "Average Image", "G", "S", "harmonic"]
+
 
 def colormap_to_dict(colormap, num_colors=10, exclude_first=True):
     """
@@ -65,9 +48,10 @@ def colormap_to_dict(colormap, num_colors=10, exclude_first=True):
     for i in range(start, num_colors + start):
         pos = i / (num_colors - 1)
         color = colormap(pos)
-        color_dict[i+1-start] = color
+        color_dict[i + 1 - start] = color
     color_dict[None] = (0, 0, 0, 0)
     return color_dict
+
 
 class PlotterWidget(QWidget):
     """A widget for plotting phasor features.
@@ -120,8 +104,9 @@ class PlotterWidget(QWidget):
         The colormap for the canvas widget.
     _histogram_colormap : matplotlib.colors.Colormap
         The histogram colormap for the canvas widget.
-    
+
     """
+
     def __init__(self, napari_viewer):
         super().__init__()
         self.viewer = napari_viewer
@@ -157,7 +142,9 @@ class PlotterWidget(QWidget):
         self.layout().addWidget(self.plot_button)
 
         # Add a vertical spacer at the bottom
-        spacer = QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding)
+        spacer = QSpacerItem(
+            20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding
+        )
         self.layout().addItem(spacer)
 
         # Connect napari signals when new layer is inseted or removed
@@ -166,29 +153,43 @@ class PlotterWidget(QWidget):
 
         # Connect callbacks
         self.plotter_inputs_widget.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
-            self.on_labels_layer_with_phasor_features_changed)
+            self.on_labels_layer_with_phasor_features_changed
+        )
         self.plotter_inputs_widget.phasor_selection_id_combobox.currentIndexChanged.connect(
-            self.on_selection_id_changed)
+            self.on_selection_id_changed
+        )
         self.plot_button.clicked.connect(self.plot)
-        
+
         # Populate plot type combobox
         self.extra_inputs_widget.plot_type_combobox.addItems(
             [ArtistType.SCATTER.name, ArtistType.HISTOGRAM2D.name]
         )
         # Populate colormap combobox
-        self.extra_inputs_widget.colormap_combobox.addItems(list(colormaps.ALL_COLORMAPS.keys()))
-        self.histogram_colormap = 'magma' # Set default colormap (same as in biaplotter)
+        self.extra_inputs_widget.colormap_combobox.addItems(
+            list(colormaps.ALL_COLORMAPS.keys())
+        )
+        self.histogram_colormap = (
+            "magma"  # Set default colormap (same as in biaplotter)
+        )
 
         # Connect canvas signals
-        self.canvas_widget.artists[ArtistType.SCATTER].color_indices_changed_signal.connect(self.manual_selection_changed)
-        self.canvas_widget.artists[ArtistType.HISTOGRAM2D].color_indices_changed_signal.connect(self.manual_selection_changed)
+        self.canvas_widget.artists[
+            ArtistType.SCATTER
+        ].color_indices_changed_signal.connect(self.manual_selection_changed)
+        self.canvas_widget.artists[
+            ArtistType.HISTOGRAM2D
+        ].color_indices_changed_signal.connect(self.manual_selection_changed)
 
         # Initialize attributes
         self._labels_layer_with_phasor_features = None
         self._phasors_selected_layer = None
         self.colorbar = None
-        self._colormap = self.canvas_widget.artists[ArtistType.HISTOGRAM2D].categorical_colormap
-        self._histogram_colormap = self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram_colormap
+        self._colormap = self.canvas_widget.artists[
+            ArtistType.HISTOGRAM2D
+        ].categorical_colormap
+        self._histogram_colormap = self.canvas_widget.artists[
+            ArtistType.HISTOGRAM2D
+        ].histogram_colormap
         # Start with the histogram2d plot type
         self.plot_type = ArtistType.HISTOGRAM2D.name
 
@@ -206,35 +207,66 @@ class PlotterWidget(QWidget):
         str
             The selection id. Returns `None` if no selection id is available.
         """
-        if self.plotter_inputs_widget.phasor_selection_id_combobox.count() == 0:
+        if (
+            self.plotter_inputs_widget.phasor_selection_id_combobox.count()
+            == 0
+        ):
             return None
         else:
-            return self.plotter_inputs_widget.phasor_selection_id_combobox.currentText()
+            return (
+                self.plotter_inputs_widget.phasor_selection_id_combobox.currentText()
+            )
 
     @selection_id.setter
     def selection_id(self, new_selection_id: str):
         """Sets the selection id from the phasor selection id combobox."""
         if self._labels_layer_with_phasor_features is None:
-            notifications.WarningNotification("No labels layer with phasor features selected.")
+            notifications.WarningNotification(
+                "No labels layer with phasor features selected."
+            )
             return
         if new_selection_id in DATA_COLUMNS:
-            notifications.WarningNotification(f"{new_selection_id} is not a valid selection column. It must not be one of {DATA_COLUMNS}.")
+            notifications.WarningNotification(
+                f"{new_selection_id} is not a valid selection column. It must not be one of {DATA_COLUMNS}."
+            )
             return
         else:
-            if new_selection_id not in [self.plotter_inputs_widget.phasor_selection_id_combobox.itemText(i) for i in range(self.plotter_inputs_widget.phasor_selection_id_combobox.count())]:
-                self.plotter_inputs_widget.phasor_selection_id_combobox.addItem(new_selection_id)
-            self.plotter_inputs_widget.phasor_selection_id_combobox.setCurrentText(new_selection_id)
+            if new_selection_id not in [
+                self.plotter_inputs_widget.phasor_selection_id_combobox.itemText(
+                    i
+                )
+                for i in range(
+                    self.plotter_inputs_widget.phasor_selection_id_combobox.count()
+                )
+            ]:
+                self.plotter_inputs_widget.phasor_selection_id_combobox.addItem(
+                    new_selection_id
+                )
+            self.plotter_inputs_widget.phasor_selection_id_combobox.setCurrentText(
+                new_selection_id
+            )
             # If column_name is not in features, add it with zeros
-            if new_selection_id not in self._labels_layer_with_phasor_features.features.columns:
-                self._labels_layer_with_phasor_features.features[new_selection_id] = np.zeros_like(self._labels_layer_with_phasor_features.features['label'].values)
+            if (
+                new_selection_id
+                not in self._labels_layer_with_phasor_features.features.columns
+            ):
+                self._labels_layer_with_phasor_features.features[
+                    new_selection_id
+                ] = np.zeros_like(
+                    self._labels_layer_with_phasor_features.features[
+                        "label"
+                    ].values
+                )
 
     def on_selection_id_changed(self):
         """Callback function when the phasor selection id combobox is changed.
 
         This function updates the `selection_id` attribute with the selected text from the combobox.
         """
-        self.selection_id = self.plotter_inputs_widget.phasor_selection_id_combobox.currentText()
-    
+        self.selection_id = (
+            self.plotter_inputs_widget.phasor_selection_id_combobox.currentText()
+        )
+
     @property
     def harmonic(self):
         """Gets or sets the harmonic value from the harmonic spinbox.
@@ -245,12 +277,14 @@ class PlotterWidget(QWidget):
             The harmonic value.
         """
         return self.plotter_inputs_widget.harmonic_spinbox.value()
-    
+
     @harmonic.setter
     def harmonic(self, value: int):
         """Sets the harmonic value from the harmonic spinbox."""
         if value < 1:
-            notifications.WarningNotification(f"Harmonic value should be greater than 0. Setting to 1.")
+            notifications.WarningNotification(
+                f"Harmonic value should be greater than 0. Setting to 1."
+            )
             value = 1
         self.plotter_inputs_widget.harmonic_spinbox.setValue(value)
 
@@ -280,12 +314,14 @@ class PlotterWidget(QWidget):
             The colormap name.
         """
         return self.extra_inputs_widget.colormap_combobox.currentText()
-    
+
     @histogram_colormap.setter
     def histogram_colormap(self, colormap: str):
         """Sets the histogram colormap from the colormap combobox."""
         if colormap not in colormaps.ALL_COLORMAPS.keys():
-            notifications.WarningNotification(f"{colormap} is not a valid colormap. Setting to default colormap.")
+            notifications.WarningNotification(
+                f"{colormap} is not a valid colormap. Setting to default colormap."
+            )
             colormap = self._histogram_colormap.name
         self.extra_inputs_widget.colormap_combobox.setCurrentText(colormap)
 
@@ -299,15 +335,17 @@ class PlotterWidget(QWidget):
             The histogram bins value.
         """
         return self.extra_inputs_widget.number_of_bins_spinbox.value()
-    
+
     @histogram_bins.setter
     def histogram_bins(self, value: int):
         """Sets the histogram bins from the histogram bins spinbox."""
         if value < 2:
-            notifications.WarningNotification(f"Number of bins should be greater than 1. Setting to 10.")
+            notifications.WarningNotification(
+                f"Number of bins should be greater than 1. Setting to 10."
+            )
             value = 10
         self.extra_inputs_widget.number_of_bins_spinbox.setValue(value)
-    
+
     @property
     def histogram_log_scale(self):
         """Gets the histogram log scale from the histogram log scale checkbox.
@@ -318,7 +356,7 @@ class PlotterWidget(QWidget):
             The histogram log scale value.
         """
         return self.extra_inputs_widget.log_scale_checkbox.isChecked()
-    
+
     @histogram_log_scale.setter
     def histogram_log_scale(self, value: bool):
         """Sets the histogram log scale from the histogram log scale checkbox."""
@@ -342,9 +380,18 @@ class PlotterWidget(QWidget):
             return
         column = self.selection_id
         # Update the manual selection in the labels layer with phasor features for each harmonic
-        for harmonic in range(1, self._labels_layer_with_phasor_features.features['harmonic'].max() + 1):
-            harmonic_mask = self._labels_layer_with_phasor_features.features['harmonic'] == harmonic
-            self._labels_layer_with_phasor_features.features.loc[harmonic_mask, column] = manual_selection
+        for harmonic in range(
+            1,
+            self._labels_layer_with_phasor_features.features["harmonic"].max()
+            + 1,
+        ):
+            harmonic_mask = (
+                self._labels_layer_with_phasor_features.features["harmonic"]
+                == harmonic
+            )
+            self._labels_layer_with_phasor_features.features.loc[
+                harmonic_mask, column
+            ] = manual_selection
         self.create_phasors_selected_layer()
 
     def reset_layer_choices(self):
@@ -354,8 +401,12 @@ class PlotterWidget(QWidget):
         It also updates `_labels_layer_with_phasor_features` attribute with the Labels layer in the metadata of the selected image layer.
         """
         self.plotter_inputs_widget.image_layer_with_phasor_features_combobox.clear()
-        layer_names = [layer.name for layer in self.viewer.layers if isinstance(
-                layer, Image) and 'phasor_features_labels_layer' in layer.metadata.keys()]
+        layer_names = [
+            layer.name
+            for layer in self.viewer.layers
+            if isinstance(layer, Image)
+            and "phasor_features_labels_layer" in layer.metadata.keys()
+        ]
         self.plotter_inputs_widget.image_layer_with_phasor_features_combobox.addItems(
             layer_names
         )
@@ -365,19 +416,24 @@ class PlotterWidget(QWidget):
             layer.events.name.connect(self.reset_layer_choices)
         self.on_labels_layer_with_phasor_features_changed()
 
-
     def on_labels_layer_with_phasor_features_changed(self):
         """Callback function when the image layer with phasor features combobox is changed.
 
         This function updates the `_labels_layer_with_phasor_features` attribute with the Labels layer in the metadata of the selected image layer.
         """
-        labels_layer_name = self.plotter_inputs_widget.image_layer_with_phasor_features_combobox.currentText()
+        labels_layer_name = (
+            self.plotter_inputs_widget.image_layer_with_phasor_features_combobox.currentText()
+        )
         if labels_layer_name == "":
             self._labels_layer_with_phasor_features = None
             return
-        self._labels_layer_with_phasor_features = self.viewer.layers[labels_layer_name].metadata['phasor_features_labels_layer']
+        self._labels_layer_with_phasor_features = self.viewer.layers[
+            labels_layer_name
+        ].metadata["phasor_features_labels_layer"]
         # Set harmonic spinbox maximum value based on maximum harmonic in the table
-        self.plotter_inputs_widget.harmonic_spinbox.setMaximum(self._labels_layer_with_phasor_features.features['harmonic'].max())
+        self.plotter_inputs_widget.harmonic_spinbox.setMaximum(
+            self._labels_layer_with_phasor_features.features["harmonic"].max()
+        )
 
     def get_features(self):
         """Get the G and S features for the selected harmonic and selection id.
@@ -397,20 +453,30 @@ class PlotterWidget(QWidget):
         if self._labels_layer_with_phasor_features.features is None:
             return None
         table = self._labels_layer_with_phasor_features.features
-        x_data = table['G'][table['harmonic'] == self.harmonic].values
-        y_data = table['S'][table['harmonic'] == self.harmonic].values
+        x_data = table["G"][table["harmonic"] == self.harmonic].values
+        y_data = table["S"][table["harmonic"] == self.harmonic].values
         if self.selection_id is None or self.selection_id == "":
             return x_data, y_data, np.zeros_like(x_data)
         else:
-            selection_data = table[self.selection_id][table['harmonic'] == self.harmonic].values
+            selection_data = table[self.selection_id][
+                table["harmonic"] == self.harmonic
+            ].values
         return x_data, y_data, selection_data
-    
+
     def set_axes_labels(self):
         """Set the axes labels in the canvas widget."""
-        self.canvas_widget.artists[ArtistType.SCATTER].ax.set_xlabel('G', color='white')
-        self.canvas_widget.artists[ArtistType.SCATTER].ax.set_ylabel('S', color='white')
-        self.canvas_widget.artists[ArtistType.HISTOGRAM2D].ax.set_xlabel('G', color='white')
-        self.canvas_widget.artists[ArtistType.HISTOGRAM2D].ax.set_ylabel('S', color='white')
+        self.canvas_widget.artists[ArtistType.SCATTER].ax.set_xlabel(
+            "G", color="white"
+        )
+        self.canvas_widget.artists[ArtistType.SCATTER].ax.set_ylabel(
+            "S", color="white"
+        )
+        self.canvas_widget.artists[ArtistType.HISTOGRAM2D].ax.set_xlabel(
+            "G", color="white"
+        )
+        self.canvas_widget.artists[ArtistType.HISTOGRAM2D].ax.set_ylabel(
+            "S", color="white"
+        )
 
     def plot(self):
         """Plot the selected phasor features.
@@ -420,42 +486,74 @@ class PlotterWidget(QWidget):
         """
         x_data, y_data, selection_id_data = self.get_features()
         # Set active artist
-        self.canvas_widget.active_artist = self.canvas_widget.artists[ArtistType[self.plot_type]]
+        self.canvas_widget.active_artist = self.canvas_widget.artists[
+            ArtistType[self.plot_type]
+        ]
         # Set data in the active artist
         self.canvas_widget.active_artist.data = np.column_stack(
-            (x_data, y_data))
+            (x_data, y_data)
+        )
         # Set selection data in the active artist
         self.canvas_widget.active_artist.color_indices = selection_id_data
         # Set colormap in the active artist
-        selected_histogram_colormap = colormaps.ALL_COLORMAPS[self.histogram_colormap]
+        selected_histogram_colormap = colormaps.ALL_COLORMAPS[
+            self.histogram_colormap
+        ]
         # Temporary convertion to LinearSegmentedColormap to match matplotlib format, while biaplotter is not updated
         selected_histogram_colormap = LinearSegmentedColormap.from_list(
-            selected_histogram_colormap.name, selected_histogram_colormap.colors)
-        self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram_colormap = selected_histogram_colormap
+            selected_histogram_colormap.name,
+            selected_histogram_colormap.colors,
+        )
+        self.canvas_widget.artists[
+            ArtistType.HISTOGRAM2D
+        ].histogram_colormap = selected_histogram_colormap
         # Set log scale in the active artist
-        if self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram is not None:
+        if (
+            self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram
+            is not None
+        ):
             if self.histogram_log_scale:
-                self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram[-1].set_norm(LogNorm())
+                self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram[
+                    -1
+                ].set_norm(LogNorm())
             else:
-                self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram[-1].set_norm(Normalize())
+                self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram[
+                    -1
+                ].set_norm(Normalize())
         # Set number of bins in the active artist
-        self.canvas_widget.artists[ArtistType.HISTOGRAM2D].bins = self.histogram_bins
+        self.canvas_widget.artists[ArtistType.HISTOGRAM2D].bins = (
+            self.histogram_bins
+        )
         # Temporarily set active artist "again" to have it displayed on top #TODO: Fix this
-        self.canvas_widget.active_artist = self.canvas_widget.artists[ArtistType[self.plot_type]]
-        
+        self.canvas_widget.active_artist = self.canvas_widget.artists[
+            ArtistType[self.plot_type]
+        ]
+
         # if active artist is histogram, add a colorbar
         if self.plot_type == ArtistType.HISTOGRAM2D.name:
             # creat cax for colorbar on the right side of the histogram
-            self.cax = self.canvas_widget.artists[ArtistType.HISTOGRAM2D].ax.inset_axes([1.05, 0, 0.05, 1])
+            self.cax = self.canvas_widget.artists[
+                ArtistType.HISTOGRAM2D
+            ].ax.inset_axes([1.05, 0, 0.05, 1])
             # Create colorbar
-            self.colorbar = Colorbar(ax=self.cax, cmap=self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram_colormap, norm=self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram[-1].norm)
+            self.colorbar = Colorbar(
+                ax=self.cax,
+                cmap=self.canvas_widget.artists[
+                    ArtistType.HISTOGRAM2D
+                ].histogram_colormap,
+                norm=self.canvas_widget.artists[ArtistType.HISTOGRAM2D]
+                .histogram[-1]
+                .norm,
+            )
             # self.colorbar = self.canvas_widget.figure.colorbar(self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram[-1], ax=self.canvas_widget.artists[ArtistType.HISTOGRAM2D].ax, use_gridspec=True)
             # set colorbar tick color
-            self.colorbar.ax.yaxis.set_tick_params(color='white')
-            # set colorbar edgecolor 
-            self.colorbar.outline.set_edgecolor('white')
+            self.colorbar.ax.yaxis.set_tick_params(color="white")
+            # set colorbar edgecolor
+            self.colorbar.outline.set_edgecolor("white")
             # set colorbar ticklabels
-            self.colorbar.ax.set_yticklabels(self.colorbar.ax.get_yticklabels(), color='white')
+            self.colorbar.ax.set_yticklabels(
+                self.colorbar.ax.get_yticklabels(), color="white"
+            )
         else:
             if self.colorbar is not None:
                 # remove colorbar
@@ -468,31 +566,58 @@ class PlotterWidget(QWidget):
         if self._labels_layer_with_phasor_features is None:
             return
         input_array = np.asarray(self._labels_layer_with_phasor_features.data)
-        input_array_values = np.asarray(self._labels_layer_with_phasor_features.features['label'].values)
+        input_array_values = np.asarray(
+            self._labels_layer_with_phasor_features.features["label"].values
+        )
         # If no selection id is provided, set all pixels to 0
         if self.selection_id is None or self.selection_id == "":
-            phasors_layer_data = np.zeros_like(self._labels_layer_with_phasor_features.features['label'].values)
+            phasors_layer_data = np.zeros_like(
+                self._labels_layer_with_phasor_features.features[
+                    "label"
+                ].values
+            )
         else:
-            phasors_layer_data = np.asarray(self._labels_layer_with_phasor_features.features[self.selection_id].values)
-        
-        mapped_data = map_array(input_array, input_array_values, phasors_layer_data)
-        color_dict = colormap_to_dict(self._colormap, self._colormap.N, exclude_first=True)
+            phasors_layer_data = np.asarray(
+                self._labels_layer_with_phasor_features.features[
+                    self.selection_id
+                ].values
+            )
+
+        mapped_data = map_array(
+            input_array, input_array_values, phasors_layer_data
+        )
+        color_dict = colormap_to_dict(
+            self._colormap, self._colormap.N, exclude_first=True
+        )
         # Build output phasors Labels layer
         phasors_selected_layer = Labels(
-            mapped_data, name='Phasors Selected', scale=self._labels_layer_with_phasor_features.scale,
-            colormap=DirectLabelColormap(color_dict=color_dict, name='cat10_mod'))
+            mapped_data,
+            name="Phasors Selected",
+            scale=self._labels_layer_with_phasor_features.scale,
+            colormap=DirectLabelColormap(
+                color_dict=color_dict, name="cat10_mod"
+            ),
+        )
         if self._phasors_selected_layer is None:
-            self._phasors_selected_layer = self.viewer.add_layer(phasors_selected_layer)
+            self._phasors_selected_layer = self.viewer.add_layer(
+                phasors_selected_layer
+            )
         else:
             self._phasors_selected_layer.data = mapped_data
-            self._phasors_selected_layer.scale = self._labels_layer_with_phasor_features.scale
+            self._phasors_selected_layer.scale = (
+                self._labels_layer_with_phasor_features.scale
+            )
+
 
 if __name__ == "__main__":
     import napari
+
     time_constants = [0.1, 1, 2, 3, 4, 5, 10]
     raw_flim_data = make_raw_flim_data(time_constants=time_constants)
     harmonic = [1, 2, 3]
-    intensity_image_layer = make_intensity_layer_with_phasors(raw_flim_data, harmonic=harmonic)
+    intensity_image_layer = make_intensity_layer_with_phasors(
+        raw_flim_data, harmonic=harmonic
+    )
     viewer = napari.Viewer()
     viewer.add_layer(intensity_image_layer)
     plotter = PlotterWidget(viewer)

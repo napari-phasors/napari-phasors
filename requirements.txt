@@ -59,3 +59,4 @@ magicgui
 qtpy
 scikit-image
 biaplotter>=0.0.4
+PyQt6

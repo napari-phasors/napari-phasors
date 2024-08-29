@@ -8,19 +8,9 @@ This module contains widgets to:
 from typing import TYPE_CHECKING
 
 from qtpy.QtGui import QDoubleValidator
-from qtpy.QtWidgets import (
-    QComboBox,
-    QCompleter,
-    QDirModel,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QPushButton,
-    QSpinBox,
-    QTreeView,
-    QVBoxLayout,
-    QWidget,
-)
+from qtpy.QtWidgets import (QComboBox, QCompleter, QDirModel, QHBoxLayout,
+                            QLabel, QLineEdit, QPushButton, QSpinBox,
+                            QTreeView, QVBoxLayout, QWidget)
 
 from ._reader import _get_filename_extension, napari_get_reader
 

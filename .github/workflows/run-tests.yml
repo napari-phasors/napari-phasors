@@ -81,16 +81,16 @@ jobs:
         python -m pip install -r requirements.txt
     - name: Test with black
       run: |
-        python -m black --check src/napari-phasors _tests
+        python -m black --check src/napari_phasors _tests
     - name: Test with blackdoc
       run: |
-        python -m blackdoc --check src/napari-phasors _tests
+        python -m blackdoc --check src/napari_phasors _tests
     # - name: Test with mypy
     #   run: |
     #     python -m mypy
     - name: Test with isort
       run: |
-        python -m isort --check src/napari-phasors _tests
+        python -m isort --check src/napari_phasors _tests
     - name: Check spelling
       run: |
         python -m codespell_lib
