@@ -34,6 +34,7 @@ coverage
 pytest-cov
 pytest-runner
 pytest-doctestplus
+pytest-qt
 #
 # tools requirements
 tomli; python_version < "3.11"
@@ -46,12 +47,16 @@ codespell
 #
 # optional requirements
 scipy
-scikit-image
 # scikit-learn
-# pandas
+pandas
 # zarr
 # fsspec
 # bioio
 lfdfiles
 sdtfile
 ptufile
+magicgui
+qtpy
+scikit-image
+biaplotter>=0.0.4
+git+https://github.com/phasorpy/phasorpy.git
