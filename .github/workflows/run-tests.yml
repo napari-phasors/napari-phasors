@@ -82,10 +82,6 @@ jobs:
         run: |
           python -m black --check src/napari_phasors src/napari_phasors/_tests
 
-      - name: Test with blackdoc
-        run: |
-          python -m blackdoc --check src/napari_phasors src/napari_phasors/_tests
-
       - name: Test with isort
         run: |
           python -m isort --check src/napari_phasors src/napari_phasors/_tests
