@@ -59,4 +59,4 @@ magicgui
 qtpy
 scikit-image
 biaplotter>=0.0.4
-git+https://github.com/phasorpy/phasorpy.git
+git+https://github.com/phasorpy/phasorpy.git#egg=phasorpy
