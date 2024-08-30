@@ -13,9 +13,19 @@ from napari.utils.notifications import show_error, show_info
 from phasorpy.phasor import phasor_calibrate
 from qtpy import uic
 from qtpy.QtGui import QDoubleValidator
-from qtpy.QtWidgets import (QComboBox, QCompleter, QDirModel, QHBoxLayout,
-                            QLabel, QLineEdit, QPushButton, QSpinBox,
-                            QTreeView, QVBoxLayout, QWidget)
+from qtpy.QtWidgets import (
+    QComboBox,
+    QCompleter,
+    QDirModel,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QSpinBox,
+    QTreeView,
+    QVBoxLayout,
+    QWidget,
+)
 
 from napari_phasors.plotter import PlotterWidget
 

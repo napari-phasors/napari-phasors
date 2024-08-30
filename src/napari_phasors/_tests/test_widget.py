@@ -7,10 +7,17 @@ from PyQt5.QtCore import QModelIndex
 from qtpy.QtWidgets import QWidget
 
 from napari_phasors._synthetic_generator import (
-    make_intensity_layer_with_phasors, make_raw_flim_data)
-from napari_phasors._widget import (AdvancedOptionsWidget, CalibrationWidget,
-                                    FbdWidget, LsmWidget, PhasorTransform,
-                                    PtuWidget)
+    make_intensity_layer_with_phasors,
+    make_raw_flim_data,
+)
+from napari_phasors._widget import (
+    AdvancedOptionsWidget,
+    CalibrationWidget,
+    FbdWidget,
+    LsmWidget,
+    PhasorTransform,
+    PtuWidget,
+)
 
 TEST_FORMATS = [
     (".fbd", FbdWidget),
@@ -350,7 +357,9 @@ def test_calibration_widget(make_napari_viewer):
     # main_widget.calibration_widget.calibrate_push_button.click()
     with patch("napari_phasors._widget.show_info") as mock_show_info:
         main_widget.calibration_widget.calibrate_push_button.click()
-        sample_name = main_widget.calibration_widget.sample_layer_combobox.currentText()
+        sample_name = (
+            main_widget.calibration_widget.sample_layer_combobox.currentText()
+        )
         mock_show_info.assert_called_once_with(f"Calibrated {sample_name}")
     # Check if the calibration was successful
     assert viewer.layers[0].metadata["calibrated"] is True

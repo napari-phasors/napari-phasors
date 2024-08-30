@@ -5,7 +5,9 @@ import numpy as np
 
 from napari_phasors._reader import napari_get_reader
 from napari_phasors._synthetic_generator import (
-    make_intensity_layer_with_phasors, make_raw_flim_data)
+    make_intensity_layer_with_phasors,
+    make_raw_flim_data,
+)
 from napari_phasors._writer import write_ome_tiff
 
 
