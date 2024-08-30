@@ -5,8 +5,13 @@ This module contains widgets to:
 
 """
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+from napari.layers import Image
+from napari.utils.notifications import show_error, show_info
+from phasorpy.phasor import phasor_calibrate
+from qtpy import uic
 from qtpy.QtGui import QDoubleValidator
 from qtpy.QtWidgets import (
     QComboBox,
@@ -22,6 +27,8 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from napari_phasors.plotter import PlotterWidget
+
 from ._reader import _get_filename_extension, napari_get_reader
 
 if TYPE_CHECKING:
@@ -32,14 +39,7 @@ class PhasorTransform(QWidget):
     """Widget to transform FLIM and hyperspectral images into phasor space."""
 
     def __init__(self, viewer: "napari.viewer.Viewer"):
-        """Initialize the widget.
-
-        Parameters
-        ----------
-        viewer : napari.viewer.Viewer
-            Napari viewer instance.
-
-        """
+        """Initialize the widget."""
         super().__init__()
         self.viewer = viewer
 
@@ -303,3 +303,97 @@ class LsmWidget(AdvancedOptionsWidget):
             )
         )
         self.mainLayout.addWidget(self.btn)
+
+
+class CalibrationWidget(QWidget):
+    """Widget to calibrate a FLIM image layer using a calibration image."""
+
+    def __init__(self, viewer: "napari.viewer.Viewer"):
+        super().__init__()
+        self.viewer = viewer
+
+        # Creates and empty widget
+        self.calibration_widget = QWidget()
+        uic.loadUi(
+            Path(__file__).parent / "ui/calibration_widget.ui",
+            self.calibration_widget,
+        )
+
+        # self.calibration_widget.frequency_line_edit_widget.setText("0")
+
+        # Connect callbacks
+        self.calibration_widget.calibrate_push_button.clicked.connect(
+            self._on_click
+        )
+
+        # Connect layer events to populate combobox
+        self.viewer.layers.events.inserted.connect(self._populate_comboboxes)
+        self.viewer.layers.events.removed.connect(self._populate_comboboxes)
+
+        # Populate combobox
+        self._populate_comboboxes()
+
+        mainLayout = QVBoxLayout()
+        mainLayout.addWidget(self.calibration_widget)
+        self.setLayout(mainLayout)
+        # Call plotter with calibrated layer in the combobox
+        self.plotter = PlotterWidget(self.viewer)
+        self.viewer.window.add_dock_widget(self.plotter)
+
+    def _populate_comboboxes(self):
+        self.calibration_widget.calibration_layer_combobox.clear()
+        image_layers = [
+            layer for layer in self.viewer.layers if isinstance(layer, Image)
+        ]
+        for layer in image_layers:
+            self.calibration_widget.calibration_layer_combobox.addItem(
+                layer.name
+            )
+        self.calibration_widget.sample_layer_combobox.clear()
+        image_layers = [
+            layer for layer in self.viewer.layers if isinstance(layer, Image)
+        ]
+        for layer in image_layers:
+            self.calibration_widget.sample_layer_combobox.addItem(layer.name)
+
+    def _on_click(self):
+        frequency = int(
+            self.calibration_widget.frequency_line_edit_widget.text()
+        )
+        lifetime = float(
+            self.calibration_widget.lifetime_line_edit_widget.text()
+        )
+        sample_name = (
+            self.calibration_widget.sample_layer_combobox.currentText()
+        )
+        calibration_name = (
+            self.calibration_widget.calibration_layer_combobox.currentText()
+        )
+        sample_metadata = self.viewer.layers[sample_name].metadata
+        sample_phasor_data = sample_metadata[
+            "phasor_features_labels_layer"
+        ].features
+        calibration_phasor_data = (
+            self.viewer.layers[calibration_name]
+            .metadata["phasor_features_labels_layer"]
+            .features
+        )
+        if (
+            "calibrated" not in sample_metadata.keys()
+            or sample_metadata["calibrated"] is False
+        ):
+            real, imag = phasor_calibrate(
+                sample_phasor_data["G"],
+                sample_phasor_data["S"],
+                calibration_phasor_data["G"],
+                calibration_phasor_data["S"],
+                frequency=frequency,
+                lifetime=lifetime,
+            )
+            sample_phasor_data["G"] = real
+            sample_phasor_data["S"] = imag
+            self.plotter.plot()
+            sample_metadata["calibrated"] = True
+            show_info(f"Calibrated {sample_name}")
+        elif sample_metadata["calibrated"] is True:
+            show_error("Layer already calibrated")

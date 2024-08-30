@@ -21,6 +21,9 @@ contributions:
     - id: napari-phasors.PhasorTransform
       python_name: napari_phasors:PhasorTransform
       title: Phasor Transform
+    - id: napari-phasors.CalibrationWidget
+      python_name: napari_phasors:CalibrationWidget
+      title: Calibration Widget
   readers:
     - command: napari-phasors.get_reader
       accepts_directories: false
@@ -39,3 +42,5 @@ contributions:
       display_name: Phasor Plot
     - command: napari-phasors.PhasorTransform
       display_name: Phasor Transform
+    - command: napari-phasors.CalibrationWidget
+      display_name: Calibration Widget
