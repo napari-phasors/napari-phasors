@@ -3,13 +3,8 @@ from unittest.mock import MagicMock, patch
 from PyQt5.QtCore import QModelIndex
 from qtpy.QtWidgets import QWidget
 
-from napari_phasors._widget import (
-    AdvancedOptionsWidget,
-    FbdWidget,
-    LsmWidget,
-    PhasorTransform,
-    PtuWidget,
-)
+from napari_phasors._widget import (AdvancedOptionsWidget, FbdWidget,
+                                    LsmWidget, PhasorTransform, PtuWidget)
 
 TEST_FORMATS = [
     (".fbd", FbdWidget),

@@ -8,20 +8,13 @@ from matplotlib.colors import LinearSegmentedColormap, LogNorm, Normalize
 from napari.layers import Image, Labels
 from napari.utils import DirectLabelColormap, colormaps, notifications
 from qtpy import uic
-from qtpy.QtWidgets import (
-    QPushButton,
-    QSizePolicy,
-    QSpacerItem,
-    QVBoxLayout,
-    QWidget,
-)
+from qtpy.QtWidgets import (QPushButton, QSizePolicy, QSpacerItem, QVBoxLayout,
+                            QWidget)
 from skimage.util import map_array
 from superqt import QCollapsible
 
 from napari_phasors._synthetic_generator import (
-    make_intensity_layer_with_phasors,
-    make_raw_flim_data,
-)
+    make_intensity_layer_with_phasors, make_raw_flim_data)
 
 if TYPE_CHECKING:
     import napari
