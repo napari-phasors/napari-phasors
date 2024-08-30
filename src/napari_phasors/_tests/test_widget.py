@@ -1,3 +1,4 @@
+import os
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -6,6 +7,7 @@ from phasorpy.phasor import phasor_calibrate
 from PyQt5.QtCore import QModelIndex
 from qtpy.QtWidgets import QWidget
 
+from napari_phasors._reader import napari_get_reader
 from napari_phasors._synthetic_generator import (
     make_intensity_layer_with_phasors,
     make_raw_flim_data,
@@ -17,6 +19,7 @@ from napari_phasors._widget import (
     LsmWidget,
     PhasorTransform,
     PtuWidget,
+    WriterWidget,
 )
 
 TEST_FORMATS = [
@@ -354,7 +357,6 @@ def test_calibration_widget(make_napari_viewer):
     assert (
         main_widget.calibration_widget.lifetime_line_edit_widget.text() == "2"
     )
-    # main_widget.calibration_widget.calibrate_push_button.click()
     with patch("napari_phasors._widget.show_info") as mock_show_info:
         main_widget.calibration_widget.calibrate_push_button.click()
         sample_name = (
@@ -382,3 +384,84 @@ def test_calibration_widget(make_napari_viewer):
     with patch("napari_phasors._widget.show_error") as mock_show_error:
         main_widget.calibration_widget.calibrate_push_button.click()
         mock_show_error.assert_called_once_with("Layer already calibrated")
+
+
+def test_writer_widget(make_napari_viewer, tmp_path):
+    """Test the WriterWidget class."""
+    # Intialize viewer and add intensity image layer with phasors data
+    viewer = make_napari_viewer()
+    main_widget = WriterWidget(viewer)
+    assert main_widget.viewer is viewer
+    assert isinstance(main_widget, QWidget)
+    model = MagicMock()
+    current = MagicMock(spec=QModelIndex)
+    # Check init values are empty
+    assert main_widget.save_path.text() == ""
+    assert main_widget.export_layer_combobox.count() == 0
+    assert main_widget.export_file_name.text() == ""
+    # Create a synthetic FLIM data and an intensity image layer with phasors
+    raw_flim_data = make_raw_flim_data()
+    harmonic = [1, 2, 3]
+    sample_image_layer = make_intensity_layer_with_phasors(
+        raw_flim_data, harmonic=harmonic
+    )
+    viewer.add_layer(sample_image_layer)
+    # Assert combobox is populated and file name is set
+    assert (
+        main_widget.export_layer_combobox.itemText(0)
+        == sample_image_layer.name
+    )
+    assert (
+        main_widget.export_layer_combobox.currentText()
+        == sample_image_layer.name
+    )
+    assert main_widget.export_file_name.text() == sample_image_layer.name
+    # Simulate a path selection from the search tree
+    model.filePath.return_value = str(tmp_path)
+    main_widget._on_search_tree_change(current, model)
+    assert main_widget.save_path.text() == str(tmp_path)
+    # Click export button and check if the file was created
+    with patch("napari_phasors._widget.show_info") as mock_show_info:
+        main_widget.btn.click()
+        export_layer_name = main_widget.export_layer_combobox.currentText()
+        export_path = os.path.join(
+            main_widget.save_path.text(),
+            f'{main_widget.export_file_name.text()}.ome.tif',
+        )
+        # Check if the show_info was called
+        mock_show_info.assert_called_once_with(
+            f"Exported {export_layer_name} to {export_path}"
+        )
+        # Check if the file was created and has expected data when read
+        assert os.path.exists(export_path)
+        reader = napari_get_reader(export_path)
+        layer_data_list = reader(export_path)
+        layer_data_tuple = layer_data_list[0]
+        assert len(layer_data_tuple) == 2
+        np.testing.assert_array_almost_equal(
+            layer_data_tuple[0], sample_image_layer.data
+        )
+        phasor_features = layer_data_tuple[1]["metadata"][
+            "phasor_features_labels_layer"
+        ]
+        np.testing.assert_array_equal(
+            phasor_features.data, [[1, 2, 3, 4, 5], [6, 7, 8, 9, 10]]
+        )
+        assert phasor_features.features.shape == (30, 4)
+        expected_columns = ["label", "G", "S", "harmonic"]
+        actual_columns = phasor_features.features.columns.tolist()
+        assert actual_columns == expected_columns
+        assert phasor_features.features["harmonic"].unique().tolist() == [
+            1,
+            2,
+            3,
+        ]
+    # Check error messages if path or name are empty
+    with patch("napari_phasors._widget.show_error") as mock_show_error:
+        main_widget.save_path.setText("")
+        main_widget.btn.click()
+        mock_show_error.assert_called_once_with("Select export location")
+        main_widget.save_path.setText(str(tmp_path))
+        main_widget.export_file_name.setText("")
+        main_widget.btn.click()
+        mock_show_error.assert_called_with("Enter name of exported file")
