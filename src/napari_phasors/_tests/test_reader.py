@@ -21,8 +21,7 @@ def test_reader_ptu():
     assert layer_data_tuple[0].shape == (1, 256, 256)
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert (
-        layer_data_tuple[1]["name"]
-        == "test_file Intensity Image: Channel 0"
+        layer_data_tuple[1]["name"] == "test_file Intensity Image: Channel 0"
     )
     assert (
         len(layer_data_tuple[1]["metadata"]) == 1
@@ -161,5 +160,6 @@ def test_reader_ometif():
     expected_columns = ["label", "G", "S", "harmonic"]
     actual_columns = phasor_features.features.columns.tolist()
     assert actual_columns == expected_columns
+
 
 # TODO: Add tests for .tif files

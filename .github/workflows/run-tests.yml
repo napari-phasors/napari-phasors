@@ -1,0 +1,86 @@
+name: Run tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.platform }} py${{ matrix.python-version }}
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      matrix:
+        platform: [ubuntu-latest, windows-latest, macos-13, macos-14]
+        python-version: ['3.10', '3.11', '3.12']
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # These libraries enable testing on Qt on Linux
+      - uses: tlambert03/setup-qt-libs@v1
+
+      # Strategy borrowed from vispy for installing OpenGL libs on Windows
+      - name: Install Windows OpenGL
+        if: runner.os == 'Windows'
+        run: |
+          git clone --depth 1 https://github.com/pyvista/gl-ci-helpers.git
+          powershell gl-ci-helpers/appveyor/install_opengl.ps1
+
+      # Note: If you need dependencies from conda, consider using setup-miniconda:
+      # https://github.com/conda-incubator/setup-miniconda and tox-conda:
+      # https://github.com/tox-dev/tox-conda
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install setuptools tox tox-gh-actions
+
+      # This runs the platform-specific tests declared in tox.ini
+      - name: Test with tox
+        uses: aganders3/headless-gui@v1
+        with:
+          run: python -m tox
+        env:
+          PLATFORM: ${{ matrix.platform }}
+
+  static_analysis:
+    name: Static code analysis
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Editable install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install black isort
+
+      - name: Test with black
+        run: |
+          python -m black --check src/napari_phasors src/napari_phasors/_tests
+
+      - name: Test with isort
+        run: |
+          python -m isort --check src/napari_phasors src/napari_phasors/_tests
+

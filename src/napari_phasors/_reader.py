@@ -11,10 +11,10 @@ from typing import Any, Callable, Optional, Sequence, Union
 import numpy as np
 import pandas as pd
 import phasorpy.io as io
+import tifffile
 from napari.layers import Labels
 from napari.utils.notifications import show_error
 from phasorpy.phasor import phasor_from_signal
-import tifffile
 
 extension_mapping = {
     "raw": {
@@ -31,10 +31,16 @@ extension_mapping = {
             reader_options,
         ),
         ".lsm": lambda path, reader_options: _parse_and_call_io_function(
-            path, io.read_lsm, {}, reader_options,
+            path,
+            io.read_lsm,
+            {},
+            reader_options,
         ),
         ".tif": lambda path, reader_options: _parse_and_call_io_function(
-            path, tifffile.imread, {}, reader_options,
+            path,
+            tifffile.imread,
+            {},
+            reader_options,
         ),
         # ".flif": lambda path: io.read_flif(path),
         # ".sdt": lambda path: io.read_sdt(path),
@@ -46,7 +52,6 @@ extension_mapping = {
         ".ome.tif": lambda path, reader_options: _parse_and_call_io_function(
             path, io.phasor_from_ometiff, {}, reader_options
         ),
-
         # ".b64": lambda path: io.read_b64(path),
         # ".r64": lambda path: io.read_r64(path),
         # ".ref": lambda path: io.read_ref(path)
@@ -378,9 +383,9 @@ def _get_filename_extension(path: str) -> tuple[str, str]:
 
     """
     filename = os.path.basename(path)
-    parts = filename.split('.', 1)
+    parts = filename.split(".", 1)
     if len(parts) > 1:
-        file_extension = '.' + parts[1]
+        file_extension = "." + parts[1]
     else:
-        file_extension = ''
+        file_extension = ""
     return parts[0], file_extension.lower()
