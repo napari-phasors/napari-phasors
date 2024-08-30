@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, List, Sequence, Tuple, Union
 
-from napari.layers import Image
 import numpy as np
+from napari.layers import Image
 from phasorpy.io import phasor_to_ometiff
 
 if TYPE_CHECKING:
@@ -40,7 +40,9 @@ def write_ome_tiff(path: str, image_layer: Any) -> List[str]:
         phasor_data = image_layer.metadata["phasor_features_labels_layer"]
     else:
         mean = image_layer[0][0]
-        phasor_data = image_layer[0][1]["metadata"]["phasor_features_labels_layer"]
+        phasor_data = image_layer[0][1]["metadata"][
+            "phasor_features_labels_layer"
+        ]
     harmonics = phasor_data.features["harmonic"].unique()
     G = np.reshape(phasor_data.features["G"], (len(harmonics), *mean.shape))
     S = np.reshape(phasor_data.features["S"], (len(harmonics), *mean.shape))
