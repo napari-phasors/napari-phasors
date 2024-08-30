@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, List, Sequence, Tuple, Union
 
+from napari.layers import Image
 import numpy as np
 from phasorpy.io import phasor_to_ometiff
 
@@ -24,8 +25,8 @@ def write_ome_tiff(path: str, image_layer: Any) -> List[str]:
     path : str
         A string path indicating where to save the image file.
     image_layer : napari.layers.Image
-        Napari image layer. Must contain as first element the mean
-        intensity image and as second element a dict with `metadata` as key.
+        Napari image layer or a list with the mean intensity image as the
+        first element and as second element a dict with `metadata` as key.
         The value associated to 'metadata' must be a dict with
         `phasor_features_labels_layer` as key which contains as value a Labels
         layer with a Dataframe with `G`, `S`  and 'harmonic' columns.
@@ -34,8 +35,12 @@ def write_ome_tiff(path: str, image_layer: Any) -> List[str]:
     -------
     A list containing the string path to the saved file.
     """
-    mean = image_layer[0][0]
-    phasor_data = image_layer[0][1]["metadata"]["phasor_features_labels_layer"]
+    if isinstance(image_layer, Image):
+        mean = image_layer.data
+        phasor_data = image_layer.metadata["phasor_features_labels_layer"]
+    else:
+        mean = image_layer[0][0]
+        phasor_data = image_layer[0][1]["metadata"]["phasor_features_labels_layer"]
     harmonics = phasor_data.features["harmonic"].unique()
     G = np.reshape(phasor_data.features["G"], (len(harmonics), *mean.shape))
     S = np.reshape(phasor_data.features["S"], (len(harmonics), *mean.shape))

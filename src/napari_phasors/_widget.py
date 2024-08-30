@@ -5,6 +5,7 @@ This module contains widgets to:
 
 """
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -30,6 +31,7 @@ from qtpy.QtWidgets import (
 from napari_phasors.plotter import PlotterWidget
 
 from ._reader import _get_filename_extension, napari_get_reader
+from ._writer import write_ome_tiff
 
 if TYPE_CHECKING:
     import napari
@@ -397,3 +399,98 @@ class CalibrationWidget(QWidget):
             show_info(f"Calibrated {sample_name}")
         elif sample_metadata["calibrated"] is True:
             show_error("Layer already calibrated")
+
+
+class WriterWidget(QWidget):
+    """Widget to export phasor data to a OME-TIF file."""
+
+    def __init__(self, viewer: "napari.viewer.Viewer"):
+        """Initialize the widget."""
+        super().__init__()
+        self.viewer = viewer
+
+        # Create main layout
+        self.main_layout = QVBoxLayout(self)
+
+        # Set export location
+        self.main_layout.addWidget(QLabel("Select export location: "))
+        self.save_path = QLineEdit()
+        self.main_layout.addWidget(self.save_path)
+
+        # Create search tree
+        search_tree = QTreeView()
+        self.model = QDirModel()
+        search_tree.setModel(self.model)
+        search_tree.setColumnHidden(1, True)
+        search_tree.setColumnHidden(2, True)
+        search_tree.setColumnHidden(3, True)
+        self.main_layout.addWidget(search_tree)
+
+        # Set up callbacks whenever the selection changes
+        self.selection = search_tree.selectionModel()
+        self.selection.currentChanged.connect(
+            lambda current: self._on_search_tree_change(current, self.model)
+        )
+        # Combobox to select image layer with phasor data for export
+        self.main_layout.addWidget(
+            QLabel("Select image layer to be exported: ")
+        )
+        self.export_layer_combobox = QComboBox()
+        self.export_layer_combobox.currentIndexChanged.connect(
+            self._on_combobox_change
+        )
+        self.main_layout.addWidget(self.export_layer_combobox)
+
+        # Line edit to input name of exported file
+        self.main_layout.addWidget(QLabel("Name of exported file: "))
+        self.export_file_name = QLineEdit()
+        self.main_layout.addWidget(self.export_file_name)
+
+        # Connect layer events to populate combobox
+        self.viewer.layers.events.inserted.connect(self._populate_combobox)
+        self.viewer.layers.events.removed.connect(self._populate_combobox)
+
+        # Populate combobox
+        self._populate_combobox()
+
+        # Export button
+        self.btn = QPushButton("Export")
+        self.btn.clicked.connect(self._on_click)
+        self.main_layout.addWidget(self.btn)
+
+    def _on_search_tree_change(self, current, model):
+        """Callback whenever the selection of the search tree changes."""
+        path = model.filePath(current)
+        if os.path.isdir(path):
+            self.save_path.setText(path)
+        else:
+            self.save_path.setText(os.path.dirname(path))
+
+    def _populate_combobox(self):
+        """Populate combobox with image layers."""
+        self.export_layer_combobox.clear()
+        image_layers = [
+            layer for layer in self.viewer.layers if isinstance(layer, Image)
+        ]
+        for layer in image_layers:
+            self.export_layer_combobox.addItem(layer.name)
+
+    def _on_combobox_change(self):
+        """Callback whenever the combobox changes."""
+        export_layer_name = self.export_layer_combobox.currentText()
+        self.export_file_name.setText(export_layer_name)
+
+    def _on_click(self):
+        """Callback whenever the export button is clicked."""
+        if not self.save_path.text():
+            show_error("Select export location")
+            return
+        if not self.export_file_name.text():
+            show_error("Enter name of exported file")
+            return
+        export_layer_name = self.export_layer_combobox.currentText()
+        export_layer = self.viewer.layers[export_layer_name]
+        export_file_name = self.export_file_name.text()
+        export_path = os.path.join(self.save_path.text(), export_file_name)
+        export_path = write_ome_tiff(export_path, export_layer)
+        show_info(f"Exported {export_layer_name} to {export_path}")
