@@ -147,8 +147,9 @@ def test_reader_ometif():
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert layer_data_tuple[1]["name"] == "test_file Intensity Image"
     assert (
-        len(layer_data_tuple[1]["metadata"]) == 1
+        len(layer_data_tuple[1]["metadata"]) == 2
         and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
+        and "attrs" in layer_data_tuple[1]["metadata"]
     )
     phasor_features = layer_data_tuple[1]["metadata"][
         "phasor_features_labels_layer"
