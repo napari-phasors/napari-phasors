@@ -56,6 +56,12 @@ jobs:
         env:
           PLATFORM: ${{ matrix.platform }}
 
+      - name: Coverage
+        uses: codecov/codecov-action@v4.0.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: napari-phasors/napari-phasors
+
   static_analysis:
     name: Static code analysis
     runs-on: ubuntu-latest
