@@ -40,7 +40,9 @@ def test_write_ometif(tmp_path):
     assert os.path.exists(
         os.path.join(tmp_path, "test_file_extension.ome.tif")
     )
-    reader = napari_get_reader(os.path.join(tmp_path, "test_file.ome.tif"))
+    reader = napari_get_reader(
+        os.path.join(tmp_path, "test_file.ome.tif"), harmonics=harmonic
+    )
     layer_data_list = reader(os.path.join(tmp_path, "test_file.ome.tif"))
     layer_data_tuple = layer_data_list[0]
     assert len(layer_data_tuple) == 2

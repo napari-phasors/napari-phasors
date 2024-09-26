@@ -223,14 +223,10 @@ def processed_file_reader(
 
     """
     filename, file_extension = _get_filename_extension(path)
-    mean_intensity_image, G_image, S_image = extension_mapping["processed"][
-        file_extension
-    ](path, reader_options)
-    mean_intensity_image, G_image, S_image = (
-        mean_intensity_image.values,
-        G_image.values,
-        S_image.values,
-    )
+    reader_options = reader_options or {'harmonic': harmonics}
+    mean_intensity_image, G_image, S_image, attrs = extension_mapping[
+        "processed"
+    ][file_extension](path, reader_options)
     labels_layer = make_phasors_labels_layer(
         mean_intensity_image,
         G_image,
@@ -241,7 +237,10 @@ def processed_file_reader(
     layers = []
     add_kwargs = {
         "name": filename + " Intensity Image",
-        "metadata": {"phasor_features_labels_layer": labels_layer},
+        "metadata": {
+            "phasor_features_labels_layer": labels_layer,
+            "attrs": attrs,
+        },
     }
     layers.append((mean_intensity_image, add_kwargs))
     return layers

@@ -434,7 +434,7 @@ def test_writer_widget(make_napari_viewer, tmp_path):
         )
         # Check if the file was created and has expected data when read
         assert os.path.exists(export_path)
-        reader = napari_get_reader(export_path)
+        reader = napari_get_reader(export_path, harmonics=harmonic)
         layer_data_list = reader(export_path)
         layer_data_tuple = layer_data_list[0]
         assert len(layer_data_tuple) == 2
