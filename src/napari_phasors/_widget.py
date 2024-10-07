@@ -378,6 +378,10 @@ class CalibrationWidget(QWidget):
             .metadata["phasor_features_labels_layer"]
             .features
         )
+        harmonics = np.unique(sample_phasor_data["harmonic"])
+        original_mean_shape = (
+            self.viewer.layers[sample_name].metadata["original_mean"].shape
+        )
         if (
             "calibrated" not in sample_metadata.keys()
             or sample_metadata["calibrated"] is False
@@ -385,17 +389,38 @@ class CalibrationWidget(QWidget):
             skip_axis = None
             if len(np.unique(sample_phasor_data["harmonic"])) > 1:
                 skip_axis = (0,)
-            real, imag = phasor_calibrate(
-                sample_phasor_data["G"],
-                sample_phasor_data["S"],
-                calibration_phasor_data["G"],
-                calibration_phasor_data["S"],
-                frequency=frequency,
-                lifetime=lifetime,
-                skip_axis=skip_axis,
-            )
-            sample_phasor_data["G"] = real
-            sample_phasor_data["S"] = imag
+                real, imag = phasor_calibrate(
+                    np.reshape(
+                        sample_phasor_data["G"],
+                        (len(harmonics),) + original_mean_shape,
+                    ),
+                    np.reshape(
+                        sample_phasor_data["S"],
+                        (len(harmonics),) + original_mean_shape,
+                    ),
+                    np.reshape(
+                        calibration_phasor_data["G"],
+                        (len(harmonics),) + original_mean_shape,
+                    ),
+                    np.reshape(
+                        calibration_phasor_data["S"],
+                        (len(harmonics),) + original_mean_shape,
+                    ),
+                    frequency=frequency * np.array(harmonics),
+                    lifetime=lifetime,
+                    skip_axis=skip_axis,
+                )
+            else:
+                real, imag = phasor_calibrate(
+                    sample_phasor_data["G"],
+                    sample_phasor_data["S"],
+                    calibration_phasor_data["G"],
+                    calibration_phasor_data["S"],
+                    frequency=frequency,
+                    lifetime=lifetime,
+                )
+            sample_phasor_data["G"] = real.flatten()
+            sample_phasor_data["S"] = imag.flatten()
             sample_metadata["calibrated"] = True
             show_info(f"Calibrated {sample_name}")
         elif sample_metadata["calibrated"] is True:

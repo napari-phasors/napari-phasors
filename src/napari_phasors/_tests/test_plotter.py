@@ -1,5 +1,6 @@
 import numpy as np
 from biaplotter.plotter import ArtistType
+from phasorpy.phasor import phasor_filter, phasor_threshold
 
 from napari_phasors._synthetic_generator import (
     make_intensity_layer_with_phasors,
@@ -24,8 +25,9 @@ def test_phasor_plotter(make_napari_viewer):
     ].features
     assert phasors_table.shape == (
         30,
-        5,
-    )  # rows: 10 pixels (2x5 image) x 3 harmonics; columns: 5
+        6,
+    )  # rows: 10 pixels (2x5 image) x 3 harmonics; columns: 6
+    original_mean = intensity_image_layer.metadata["original_mean"]
 
     # Create Plotter widget
     plotter = PlotterWidget(viewer)
@@ -47,6 +49,9 @@ def test_phasor_plotter(make_napari_viewer):
         )
     ]
     assert intensity_image_layer.name in image_layer_combobox_items
+    assert np.all(
+        intensity_image_layer.metadata["original_mean"] == original_mean
+    )
 
     # Update input parameters
     plotter.harmonic = 2
@@ -54,6 +59,9 @@ def test_phasor_plotter(make_napari_viewer):
     plotter.histogram_bins = 5
     plotter.histogram_log_scale = True
     plotter.plot_type = ArtistType.SCATTER.name
+    plotter.plotter_inputs_widget.threshold_slider.setValue(1)
+    plotter.plotter_inputs_widget.median_filter_spinbox.setValue(3)
+    plotter.plotter_inputs_widget.median_filter_repetition_spinbox.setValue(3)
     plotter.plot()
 
     # Add new phasor selection id
@@ -62,7 +70,7 @@ def test_phasor_plotter(make_napari_viewer):
     phasors_table = intensity_image_layer.metadata[
         "phasor_features_labels_layer"
     ].features
-    assert phasors_table.shape == (30, 6)
+    assert phasors_table.shape == (30, 7)
     assert "selection_1" in phasors_table.columns
 
     # Select first 3 points
@@ -80,3 +88,32 @@ def test_phasor_plotter(make_napari_viewer):
             phasors_table.loc[h_mask, "selection_1"].values.tolist()
             == manual_selection.tolist()
         )
+    assert np.all(
+        intensity_image_layer.metadata["original_mean"] == original_mean
+    )
+    phasor_features = intensity_image_layer.metadata[
+        'phasor_features_labels_layer'
+    ].features
+    harmonics = np.unique(phasor_features['harmonic'])
+    original_g = np.reshape(
+        phasor_features['G_original'],
+        (len(harmonics),) + original_mean.data.shape,
+    )
+    original_s = np.reshape(
+        phasor_features['S_original'],
+        (len(harmonics),) + original_mean.data.shape,
+    )
+    original_g, original_s = phasor_filter(
+        original_g, original_s, repeat=3, size=3, axes=(1, 2)
+    )
+    mean, original_g, original_s = phasor_threshold(
+        original_mean, original_g, original_s, 1 / 10
+    )
+    filtered_thresholded_g = np.reshape(
+        phasor_features['G'], (len(harmonics),) + original_mean.data.shape
+    )
+    filtered_thresholded_s = np.reshape(
+        phasor_features['S'], (len(harmonics),) + original_mean.data.shape
+    )
+    assert np.allclose(original_g, filtered_thresholded_g, equal_nan=True)
+    assert np.allclose(original_s, filtered_thresholded_s, equal_nan=True)

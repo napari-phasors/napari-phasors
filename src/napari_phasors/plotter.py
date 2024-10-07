@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     import napari
 
 #: The columns in the phasor features table that should not be used as selection id.
-DATA_COLUMNS = ["label", "Average Image", "G", "S", "harmonic"]
+DATA_COLUMNS = ["label", "G_original", "S_original", "G", "S", "harmonic"]
 
 
 def colormap_to_dict(colormap, num_colors=10, exclude_first=True):
