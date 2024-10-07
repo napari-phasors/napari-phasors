@@ -34,7 +34,14 @@ def test_reader_ptu():
     assert phasor_features.data.shape == (1, 256, 256)
     assert isinstance(phasor_features.features, pd.DataFrame)
     assert phasor_features.features.shape == (65536, 6)
-    expected_columns = ["label", "G_original", "S_original", "G", "S", "harmonic"]
+    expected_columns = [
+        "label",
+        "G_original",
+        "S_original",
+        "G",
+        "S",
+        "harmonic",
+    ]
     actual_columns = phasor_features.features.columns.tolist()
     assert actual_columns == expected_columns
 
@@ -69,7 +76,14 @@ def test_reader_fbd():
     assert phasor_features.data.shape == (1, 256, 256)
     assert isinstance(phasor_features.features, pd.DataFrame)
     assert phasor_features.features.shape == (65536, 6)
-    expected_columns = ["label", "G_original", "S_original", "G", "S", "harmonic"]
+    expected_columns = [
+        "label",
+        "G_original",
+        "S_original",
+        "G",
+        "S",
+        "harmonic",
+    ]
     actual_columns = phasor_features.features.columns.tolist()
     assert actual_columns == expected_columns
     # Second Channel
@@ -95,7 +109,14 @@ def test_reader_fbd():
     assert phasor_features.data.shape == (1, 256, 256)
     assert isinstance(phasor_features.features, pd.DataFrame)
     assert phasor_features.features.shape == (65536, 6)
-    expected_columns = ["label", "G_original", "S_original", "G", "S", "harmonic"]
+    expected_columns = [
+        "label",
+        "G_original",
+        "S_original",
+        "G",
+        "S",
+        "harmonic",
+    ]
     actual_columns = phasor_features.features.columns.tolist()
     assert actual_columns == expected_columns
 
@@ -126,7 +147,14 @@ def test_reader_lsm():
     assert phasor_features.data.shape == (512, 512)
     assert isinstance(phasor_features.features, pd.DataFrame)
     assert phasor_features.features.shape == (262144, 6)
-    expected_columns = ["label", "G_original", "S_original", "G", "S", "harmonic"]
+    expected_columns = [
+        "label",
+        "G_original",
+        "S_original",
+        "G",
+        "S",
+        "harmonic",
+    ]
     actual_columns = phasor_features.features.columns.tolist()
     assert actual_columns == expected_columns
 
@@ -158,7 +186,14 @@ def test_reader_ometif():
     assert phasor_features.data.shape == (256, 256)
     assert isinstance(phasor_features.features, pd.DataFrame)
     assert phasor_features.features.shape == (65536, 6)
-    expected_columns = ["label", "G_original", "S_original", "G", "S", "harmonic"]
+    expected_columns = [
+        "label",
+        "G_original",
+        "S_original",
+        "G",
+        "S",
+        "harmonic",
+    ]
     actual_columns = phasor_features.features.columns.tolist()
     assert actual_columns == expected_columns
 

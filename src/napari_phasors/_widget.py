@@ -8,8 +8,8 @@ This module contains widgets to:
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
-import numpy as np
 
+import numpy as np
 from napari.layers import Image
 from napari.utils.notifications import show_error, show_info
 from phasorpy.phasor import phasor_calibrate

@@ -117,6 +117,9 @@ def make_intensity_layer_with_phasors(
     mean_intensity_image_layer = Image(
         mean_intensity_image,
         name=name + " Intensity Image",
-        metadata={"phasor_features_labels_layer": labels_layer, "original_mean": mean_intensity_image},
+        metadata={
+            "phasor_features_labels_layer": labels_layer,
+            "original_mean": mean_intensity_image,
+        },
     )
     return mean_intensity_image_layer

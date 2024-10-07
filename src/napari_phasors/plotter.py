@@ -563,6 +563,8 @@ class PlotterWidget(QWidget):
 
         # if active artist is histogram, add a colorbar
         if self.plot_type == ArtistType.HISTOGRAM2D.name:
+            if self.colorbar is not None:
+                self.colorbar.remove()
             # creat cax for colorbar on the right side of the histogram
             self.cax = self.canvas_widget.artists[
                 ArtistType.HISTOGRAM2D
@@ -578,6 +580,7 @@ class PlotterWidget(QWidget):
                 .norm,
             )
             # self.colorbar = self.canvas_widget.figure.colorbar(self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram[-1], ax=self.canvas_widget.artists[ArtistType.HISTOGRAM2D].ax, use_gridspec=True)
+
             # set colorbar tick color
             self.colorbar.ax.yaxis.set_tick_params(color="white")
             # set colorbar edgecolor
@@ -642,7 +645,7 @@ class PlotterWidget(QWidget):
 
     def on_threshold_slider_change(self):
         self.plotter_inputs_widget.label_3.setText(
-            'Threshold: '
+            'Intensity threshold: '
             + str(self.plotter_inputs_widget.threshold_slider.value() / 10)
         )
 
