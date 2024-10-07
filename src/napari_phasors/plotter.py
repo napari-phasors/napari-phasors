@@ -22,6 +22,7 @@ from napari_phasors._synthetic_generator import (
     make_intensity_layer_with_phasors,
     make_raw_flim_data,
 )
+from napari_phasors._utils import apply_filter_and_threshold
 
 if TYPE_CHECKING:
     import napari
@@ -202,6 +203,16 @@ class PlotterWidget(QWidget):
 
         # Populate labels layer combobox
         self.reset_layer_choices()
+
+        # Connect threshold slider
+        self.plotter_inputs_widget.threshold_slider.valueChanged.connect(
+            self.on_threshold_slider_change
+        )
+
+        # Connect kernel size spinbox
+        self.plotter_inputs_widget.median_filter_spinbox.valueChanged.connect(
+            self.on_kernel_size_change
+        )
 
     @property
     def selection_id(self):
@@ -460,14 +471,18 @@ class PlotterWidget(QWidget):
         if self._labels_layer_with_phasor_features.features is None:
             return None
         table = self._labels_layer_with_phasor_features.features
-        x_data = table["G"][table["harmonic"] == self.harmonic].values
-        y_data = table["S"][table["harmonic"] == self.harmonic].values
+        x_data = table['G'][table['harmonic'] == self.harmonic].values
+        y_data = table['S'][table['harmonic'] == self.harmonic].values
+        mask = np.isnan(x_data) & np.isnan(y_data)
+        x_data = x_data[~mask]
+        y_data = y_data[~mask]
         if self.selection_id is None or self.selection_id == "":
             return x_data, y_data, np.zeros_like(x_data)
         else:
             selection_data = table[self.selection_id][
-                table["harmonic"] == self.harmonic
+                table['harmonic'] == self.harmonic
             ].values
+
         return x_data, y_data, selection_data
 
     def set_axes_labels(self):
@@ -491,6 +506,16 @@ class PlotterWidget(QWidget):
         This function plots the selected phasor features in the canvas widget.
         It also creates the phasors selected layer.
         """
+        labels_layer_name = (
+            self.plotter_inputs_widget.image_layer_with_phasor_features_combobox.currentText()
+        )
+        apply_filter_and_threshold(
+            self.viewer.layers[labels_layer_name],
+            threshold=self.plotter_inputs_widget.threshold_slider.value() / 10,
+            method='median',
+            size=self.plotter_inputs_widget.median_filter_spinbox.value(),
+            repeat=self.plotter_inputs_widget.median_filter_repetition_spinbox.value(),
+        )
         x_data, y_data, selection_id_data = self.get_features()
         # Set active artist
         self.canvas_widget.active_artist = self.canvas_widget.artists[
@@ -614,6 +639,18 @@ class PlotterWidget(QWidget):
             self._phasors_selected_layer.scale = (
                 self._labels_layer_with_phasor_features.scale
             )
+
+    def on_threshold_slider_change(self):
+        self.plotter_inputs_widget.label_3.setText(
+            'Threshold: '
+            + str(self.plotter_inputs_widget.threshold_slider.value() / 10)
+        )
+
+    def on_kernel_size_change(self):
+        kernel_value = self.plotter_inputs_widget.median_filter_spinbox.value()
+        self.plotter_inputs_widget.label_4.setText(
+            'Median Filter Kernel Size: ' + f'{kernel_value} x {kernel_value}'
+        )
 
 
 if __name__ == "__main__":

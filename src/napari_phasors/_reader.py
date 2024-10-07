@@ -165,7 +165,7 @@ def raw_file_reader(
         )
         add_kwargs = {
             "name": f"{filename} Intensity Image",
-            "metadata": {"phasor_features_labels_layer": labels_layer},
+            "metadata": {"phasor_features_labels_layer": labels_layer, "original_mean": mean_intensity_image},
         }
         layers.append((mean_intensity_image, add_kwargs))
     else:
@@ -186,7 +186,7 @@ def raw_file_reader(
             )
             add_kwargs = {
                 "name": f"{filename} Intensity Image: Channel {channel}",
-                "metadata": {"phasor_features_labels_layer": labels_layer},
+                "metadata": {"phasor_features_labels_layer": labels_layer, "original_mean": mean_intensity_image},
             }
             layers.append((mean_intensity_image, add_kwargs))
     return layers
@@ -239,6 +239,7 @@ def processed_file_reader(
         "name": filename + " Intensity Image",
         "metadata": {
             "phasor_features_labels_layer": labels_layer,
+            "original_mean": mean_intensity_image,
             "attrs": attrs,
         },
     }
@@ -283,6 +284,8 @@ def make_phasors_labels_layer(
             sub_table = pd.DataFrame(
                 {
                     "label": pixel_id,
+                    "G_original": G_image[i].ravel(),
+                    "S_original": S_image[i].ravel(),
                     "G": G_image[i].ravel(),
                     "S": S_image[i].ravel(),
                     "harmonic": harmonic_value,
@@ -296,7 +299,9 @@ def make_phasors_labels_layer(
             harmonic_value = harmonics if harmonics is not None else 1
         table = pd.DataFrame(
             {
-                "label": pixel_id,
+                "label": pixel_id,                
+                "G_original": G_image.ravel(),
+                "S_original": S_image.ravel(),
                 "G": G_image.ravel(),
                 "S": S_image.ravel(),
                 "harmonic": harmonic_value,

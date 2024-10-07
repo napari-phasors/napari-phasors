@@ -86,7 +86,9 @@ def make_intensity_layer_with_phasors(
             sub_table = pd.DataFrame(
                 {
                     "label": pixel_id,
-                    "Average Image": mean_intensity_image.ravel(),
+                    # "Average Image": mean_intensity_image.ravel(),
+                    "G_original": G_image[i].ravel(),
+                    "S_original": S_image[i].ravel(),
                     "G": G_image[i].ravel(),
                     "S": S_image[i].ravel(),
                     "harmonic": harmonic[i],
@@ -97,7 +99,9 @@ def make_intensity_layer_with_phasors(
         table = pd.DataFrame(
             {
                 "label": pixel_id,
-                "Average Image": mean_intensity_image.ravel(),
+                # "Average Image": mean_intensity_image.ravel(),
+                "G_original": G_image[i].ravel(),
+                "S_original": S_image[i].ravel(),
                 "G": G_image.ravel(),
                 "S": S_image.ravel(),
                 "harmonic": harmonic,
@@ -113,6 +117,6 @@ def make_intensity_layer_with_phasors(
     mean_intensity_image_layer = Image(
         mean_intensity_image,
         name=name + " Intensity Image",
-        metadata={"phasor_features_labels_layer": labels_layer},
+        metadata={"phasor_features_labels_layer": labels_layer, "original_mean": mean_intensity_image},
     )
     return mean_intensity_image_layer

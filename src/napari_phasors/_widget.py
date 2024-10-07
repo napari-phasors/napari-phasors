@@ -8,6 +8,7 @@ This module contains widgets to:
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
+import numpy as np
 
 from napari.layers import Image
 from napari.utils.notifications import show_error, show_info
@@ -338,9 +339,6 @@ class CalibrationWidget(QWidget):
         mainLayout = QVBoxLayout()
         mainLayout.addWidget(self.calibration_widget)
         self.setLayout(mainLayout)
-        # Call plotter with calibrated layer in the combobox
-        self.plotter = PlotterWidget(self.viewer)
-        self.viewer.window.add_dock_widget(self.plotter)
 
     def _populate_comboboxes(self):
         self.calibration_widget.calibration_layer_combobox.clear()
@@ -384,6 +382,9 @@ class CalibrationWidget(QWidget):
             "calibrated" not in sample_metadata.keys()
             or sample_metadata["calibrated"] is False
         ):
+            skip_axis = None
+            if len(np.unique(sample_phasor_data["harmonic"])) > 1:
+                skip_axis = (0,)
             real, imag = phasor_calibrate(
                 sample_phasor_data["G"],
                 sample_phasor_data["S"],
@@ -391,10 +392,10 @@ class CalibrationWidget(QWidget):
                 calibration_phasor_data["S"],
                 frequency=frequency,
                 lifetime=lifetime,
+                skip_axis=skip_axis,
             )
             sample_phasor_data["G"] = real
             sample_phasor_data["S"] = imag
-            self.plotter.plot()
             sample_metadata["calibrated"] = True
             show_info(f"Calibrated {sample_name}")
         elif sample_metadata["calibrated"] is True:
