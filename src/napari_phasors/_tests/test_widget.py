@@ -132,7 +132,7 @@ def test_phasor_transform_fbd_widget(make_napari_viewer):
     phasor_data = (
         viewer.layers[0].metadata["phasor_features_labels_layer"].features
     )
-    assert phasor_data.shape == (131072, 4)
+    assert phasor_data.shape == (131072, 6)
     assert phasor_data["harmonic"].unique().tolist() == [2, 3]
     # Modify channels and harmonics and phasor transform again
     widget.channels.setCurrentIndex(0)
@@ -144,7 +144,7 @@ def test_phasor_transform_fbd_widget(make_napari_viewer):
     phasor_data = (
         viewer.layers[2].metadata["phasor_features_labels_layer"].features
     )
-    assert phasor_data.shape == (65536, 4)
+    assert phasor_data.shape == (65536, 6)
     assert phasor_data["harmonic"].unique().tolist() == [2]
     # TODO: test laser factor parameter
 
@@ -210,7 +210,7 @@ def test_phasor_transform_ptu_widget(make_napari_viewer):
     phasor_data = (
         viewer.layers[0].metadata["phasor_features_labels_layer"].features
     )
-    assert phasor_data.shape == (131072, 4)
+    assert phasor_data.shape == (131072, 6)
     assert phasor_data["harmonic"].unique().tolist() == [2, 3]
     # Modify frames and harmonics and phasor transform again
     widget.frames.setCurrentIndex(0)
@@ -222,7 +222,7 @@ def test_phasor_transform_ptu_widget(make_napari_viewer):
     phasor_data = (
         viewer.layers[1].metadata["phasor_features_labels_layer"].features
     )
-    assert phasor_data.shape == (65536, 4)
+    assert phasor_data.shape == (65536, 6)
     assert phasor_data["harmonic"].unique().tolist() == [2]
     # TODO: test dtime parameter
 
@@ -261,7 +261,7 @@ def test_phasor_transform_lsm_widget(make_napari_viewer):
     phasor_data = (
         viewer.layers[0].metadata["phasor_features_labels_layer"].features
     )
-    assert phasor_data.shape == (524288, 4)
+    assert phasor_data.shape == (524288, 6)
     assert phasor_data["harmonic"].unique().tolist() == [2, 3]
     # Modify harmonics and phasor transform again
     widget.harmonic_end.setValue(2)
@@ -272,7 +272,7 @@ def test_phasor_transform_lsm_widget(make_napari_viewer):
     phasor_data = (
         viewer.layers[1].metadata["phasor_features_labels_layer"].features
     )
-    assert phasor_data.shape == (262144, 4)
+    assert phasor_data.shape == (262144, 6)
     assert phasor_data["harmonic"].unique().tolist() == [2]
 
 
@@ -298,13 +298,26 @@ def test_calibration_widget(make_napari_viewer):
     original_phasors_table = sample_image_layer.metadata[
         "phasor_features_labels_layer"
     ].features
-    original_real = original_phasors_table["G"]
-    original_imag = original_phasors_table["S"]
+    original_mean = sample_image_layer.metadata["original_mean"]
+    original_real = np.reshape(
+        original_phasors_table["G_original"],
+        (len(harmonic),) + original_mean.data.shape,
+    )
+    original_imag = np.reshape(
+        original_phasors_table["S_original"],
+        (len(harmonic),) + original_mean.data.shape,
+    )
     calibration_phasors_table = calibration_image_layer.metadata[
         "phasor_features_labels_layer"
     ].features
-    calibration_real = calibration_phasors_table["G"]
-    calibration_imag = calibration_phasors_table["S"]
+    calibration_real = np.reshape(
+        calibration_phasors_table["G_original"],
+        (len(harmonic),) + original_mean.data.shape,
+    )
+    calibration_imag = np.reshape(
+        calibration_phasors_table["S_original"],
+        (len(harmonic),) + original_mean.data.shape,
+    )
     sample_phasors_table = (
         viewer.layers[0].metadata["phasor_features_labels_layer"].features
     )
@@ -365,19 +378,26 @@ def test_calibration_widget(make_napari_viewer):
         mock_show_info.assert_called_once_with(f"Calibrated {sample_name}")
     # Check if the calibration was successful
     assert viewer.layers[0].metadata["calibrated"] is True
-    calibrated_real = (
-        viewer.layers[0].metadata["phasor_features_labels_layer"].features["G"]
+    calibrated_real = np.reshape(
+        viewer.layers[0]
+        .metadata["phasor_features_labels_layer"]
+        .features["G"],
+        (len(harmonic),) + original_mean.data.shape,
     )
-    calibrated_imag = (
-        viewer.layers[0].metadata["phasor_features_labels_layer"].features["S"]
+    calibrated_imag = np.reshape(
+        viewer.layers[0]
+        .metadata["phasor_features_labels_layer"]
+        .features["S"],
+        (len(harmonic),) + original_mean.data.shape,
     )
     expected_real, expected_imag = phasor_calibrate(
         original_real,
         original_imag,
         calibration_real,
         calibration_imag,
-        frequency=80,
+        frequency=80 * np.array(harmonic),
         lifetime=2,
+        skip_axis=0,
     )
     assert np.allclose(calibrated_real, expected_real)
     assert np.allclose(calibrated_imag, expected_imag)
@@ -447,8 +467,15 @@ def test_writer_widget(make_napari_viewer, tmp_path):
         np.testing.assert_array_equal(
             phasor_features.data, [[1, 2, 3, 4, 5], [6, 7, 8, 9, 10]]
         )
-        assert phasor_features.features.shape == (30, 4)
-        expected_columns = ["label", "G", "S", "harmonic"]
+        assert phasor_features.features.shape == (30, 6)
+        expected_columns = [
+            "label",
+            "G_original",
+            "S_original",
+            "G",
+            "S",
+            "harmonic",
+        ]
         actual_columns = phasor_features.features.columns.tolist()
         assert actual_columns == expected_columns
         assert phasor_features.features["harmonic"].unique().tolist() == [

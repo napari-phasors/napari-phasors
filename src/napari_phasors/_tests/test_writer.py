@@ -55,8 +55,15 @@ def test_write_ometif(tmp_path):
     np.testing.assert_array_equal(
         phasor_features.data, [[1, 2, 3, 4, 5], [6, 7, 8, 9, 10]]
     )
-    assert phasor_features.features.shape == (30, 4)
-    expected_columns = ["label", "G", "S", "harmonic"]
+    assert phasor_features.features.shape == (30, 6)
+    expected_columns = [
+        "label",
+        "G_original",
+        "S_original",
+        "G",
+        "S",
+        "harmonic",
+    ]
     actual_columns = phasor_features.features.columns.tolist()
     assert actual_columns == expected_columns
     assert phasor_features.features["harmonic"].unique().tolist() == [1, 2, 3]
