@@ -122,6 +122,7 @@ class PlotterWidget(QWidget):
 
         # Load canvas widget
         self.canvas_widget = CanvasWidget(napari_viewer)
+        self.canvas_widget.class_spinbox.setValue(1)
         self.set_axes_labels()
         self.layout().addWidget(self.canvas_widget)
 
