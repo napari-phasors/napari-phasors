@@ -190,6 +190,7 @@ class PlotterWidget(QWidget):
 
         # Initialize attributes
         self._labels_layer_with_phasor_features = None
+        self.selection_id = "MANUAL SELECTION #1"
         self._phasors_selected_layer = None
         self.colorbar = None
         self._colormap = self.canvas_widget.artists[
@@ -228,11 +229,6 @@ class PlotterWidget(QWidget):
     @selection_id.setter
     def selection_id(self, new_selection_id: str):
         """Sets the selection id from the phasor selection id combobox."""
-        if self._labels_layer_with_phasor_features is None:
-            notifications.WarningNotification(
-                "No labels layer with phasor features selected."
-            )
-            return
         if new_selection_id in DATA_COLUMNS:
             notifications.WarningNotification(
                 f"{new_selection_id} is not a valid selection column. It must not be one of {DATA_COLUMNS}."
@@ -253,18 +249,35 @@ class PlotterWidget(QWidget):
             self.plotter_inputs_widget.phasor_selection_id_combobox.setCurrentText(
                 new_selection_id
             )
-            # If column_name is not in features, add it with zeros
-            if (
+            self.add_selection_id_to_features(new_selection_id)
+    
+    def add_selection_id_to_features(self, new_selection_id: str):
+        """Add a new selection id to the features table in the labels layer with phasor features.
+
+        Parameters
+        ----------
+        new_selection_id : str
+            The new selection id to add to the features table.
+        """
+        if self._labels_layer_with_phasor_features is None:
+            return
+        if new_selection_id in DATA_COLUMNS:
+            notifications.WarningNotification(
+                f"{new_selection_id} is not a valid selection column. It must not be one of {DATA_COLUMNS}."
+            )
+            return
+        # If column_name is not in features, add it with zeros
+        if (
+            new_selection_id
+            not in self._labels_layer_with_phasor_features.features.columns
+        ):
+            self._labels_layer_with_phasor_features.features[
                 new_selection_id
-                not in self._labels_layer_with_phasor_features.features.columns
-            ):
+            ] = np.zeros_like(
                 self._labels_layer_with_phasor_features.features[
-                    new_selection_id
-                ] = np.zeros_like(
-                    self._labels_layer_with_phasor_features.features[
-                        "label"
-                    ].values
-                )
+                    "label"
+                ].values
+            )
 
     def on_selection_id_changed(self):
         """Callback function when the phasor selection id combobox is changed.
@@ -442,6 +455,8 @@ class PlotterWidget(QWidget):
         self.plotter_inputs_widget.harmonic_spinbox.setMaximum(
             self._labels_layer_with_phasor_features.features["harmonic"].max()
         )
+        # Add default selection id to table if not present
+        self.add_selection_id_to_features("MANUAL SELECTION #1")
 
     def get_features(self):
         """Get the G and S features for the selected harmonic and selection id.
