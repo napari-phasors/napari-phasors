@@ -250,7 +250,7 @@ class PlotterWidget(QWidget):
                 new_selection_id
             )
             self.add_selection_id_to_features(new_selection_id)
-    
+
     def add_selection_id_to_features(self, new_selection_id: str):
         """Add a new selection id to the features table in the labels layer with phasor features.
 
