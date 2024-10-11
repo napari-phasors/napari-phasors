@@ -211,6 +211,8 @@ class PlotterWidget(QWidget):
 
         # Set intial axes limits
         self._redefine_axes_limits()
+        # Set initial background color
+        self._update_plot_bg_color()
         # Populate labels layer combobox
         self.reset_layer_choices()
 
@@ -438,6 +440,20 @@ class PlotterWidget(QWidget):
         
         self.canvas_widget.axes.set_ylim([ylim_0, ylim_1])
         self.canvas_widget.axes.set_xlim([xlim_0, xlim_1])
+        self.canvas_widget.figure.canvas.draw_idle()
+
+    def _update_plot_bg_color(self, color=None):
+        """Change the background color of the canvas widget.
+
+        Parameters
+        ----------
+        color : str, optional
+            The color to set the background, by default None. If None, the first color of the histogram colormap is used.
+        """
+        if color is None:
+            self.canvas_widget.axes.set_facecolor(self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram_colormap(0))
+        else:
+            self.canvas_widget.axes.set_facecolor(color)
         self.canvas_widget.figure.canvas.draw_idle()
 
     @property
@@ -713,6 +729,7 @@ class PlotterWidget(QWidget):
                 self.colorbar.remove()
         # Update axes limits
         self._redefine_axes_limits()
+        self._update_plot_bg_color()
         self.create_phasors_selected_layer()
 
     def create_phasors_selected_layer(self):
