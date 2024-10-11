@@ -156,6 +156,9 @@ class PlotterWidget(QWidget):
         )
         self.layout().addItem(spacer)
 
+        # Set minimum size
+        self.setMinimumSize(300, 300)
+
         # Connect napari signals when new layer is inseted or removed
         self.viewer.layers.events.inserted.connect(self.reset_layer_choices)
         self.viewer.layers.events.removed.connect(self.reset_layer_choices)
