@@ -338,7 +338,7 @@ class PlotterWidget(QWidget):
     def toggle_semi_circle(self, value: bool):
         """Sets the display semi circle value from the semi circle checkbox."""
         self.plotter_inputs_widget.semi_circle_checkbox.setChecked(value)
-        if self.toggle_semi_circle:
+        if value:
             self._update_polar_plot(self.canvas_widget.axes, visible=False)
             self._update_semi_circle_plot(self.canvas_widget.axes)
         else:
