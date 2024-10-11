@@ -333,7 +333,7 @@ class PlotterWidget(QWidget):
             The display semi circle value.
         """
         return self.plotter_inputs_widget.semi_circle_checkbox.isChecked()
-    
+
     @toggle_semi_circle.setter
     def toggle_semi_circle(self, value: bool):
         """Sets the display semi circle value from the semi circle checkbox."""
@@ -342,7 +342,8 @@ class PlotterWidget(QWidget):
             self._update_polar_plot(self.canvas_widget.axes, visible=False)
             self._update_semi_circle_plot(self.canvas_widget.axes)
         else:
-            self._update_semi_circle_plot(self.canvas_widget.axes, visible=False)
+            self._update_semi_circle_plot(
+                self.canvas_widget.axes, visible=False)
             self._update_polar_plot(self.canvas_widget.axes)
         self._redefine_axes_limits()
 
@@ -353,7 +354,6 @@ class PlotterWidget(QWidget):
         And it displays either the universal semi-circle or the full polar plot in the canvas widget.
         """
         self.toggle_semi_circle = state
-        
 
     def _update_polar_plot(self, ax, visible=True, alpha=0.3, zorder=3):
         """
@@ -367,29 +367,43 @@ class PlotterWidget(QWidget):
                 artist.set_alpha(alpha)
         else:
             x1 = np.linspace(start=-1, stop=1, num=500)
-            yp1 = lambda x1: np.sqrt(1 - x1 ** 2)
-            yn1 = lambda x1: -np.sqrt(1 - x1 ** 2)
+            def yp1(x1): return np.sqrt(1 - x1 ** 2)
+            def yn1(x1): return -np.sqrt(1 - x1 ** 2)
             x2 = np.linspace(start=-0.5, stop=0.5, num=500)
-            yp2 = lambda x2: np.sqrt(0.5 ** 2 - x2 ** 2)
-            yn2 = lambda x2: -np.sqrt(0.5 ** 2 - x2 ** 2)
+            def yp2(x2): return np.sqrt(0.5 ** 2 - x2 ** 2)
+            def yn2(x2): return -np.sqrt(0.5 ** 2 - x2 ** 2)
             x3 = np.linspace(start=-1, stop=1, num=30)
             x4 = np.linspace(start=-0.7, stop=0.7, num=30)
-            self.polar_plot_artist_list.append(ax.plot(x1, list(map(yp1, x1)), color='darkgoldenrod', visible=visible, alpha=alpha, zorder=zorder)[0])
-            self.polar_plot_artist_list.append(ax.plot(x1, list(map(yn1, x1)), color='darkgoldenrod', visible=visible, alpha=alpha, zorder=zorder)[0])
-            self.polar_plot_artist_list.append(ax.plot(x2, list(map(yp2, x2)), color='darkgoldenrod', visible=visible, alpha=alpha, zorder=zorder)[0])
-            self.polar_plot_artist_list.append(ax.plot(x2, list(map(yn2, x2)), color='darkgoldenrod', visible=visible, alpha=alpha, zorder=zorder)[0])
-            self.polar_plot_artist_list.append(ax.scatter(x3, [0] * len(x3), marker='_', color='darkgoldenrod', visible=visible, alpha=alpha, zorder=zorder))
-            self.polar_plot_artist_list.append(ax.scatter([0] * len(x3), x3, marker='|', color='darkgoldenrod', visible=visible, alpha=alpha, zorder=zorder))
-            self.polar_plot_artist_list.append(ax.scatter(x4, x4, marker='_', color='darkgoldenrod', visible=visible, alpha=alpha, zorder=zorder))
-            self.polar_plot_artist_list.append(ax.scatter(x4, -x4, marker='_', color='darkgoldenrod', visible=visible, alpha=alpha, zorder=zorder))
-            self.polar_plot_artist_list.append(ax.annotate('0°', (1.05, 0.05), color='darkgoldenrod', visible=visible, alpha=alpha, zorder=zorder))
-            self.polar_plot_artist_list.append(ax.annotate('180°', (-0.95, 0.05), color='darkgoldenrod', visible=visible, alpha=alpha, zorder=zorder))
-            self.polar_plot_artist_list.append(ax.annotate('90°', (0.05, 1.05), color='darkgoldenrod', visible=visible, alpha=alpha, zorder=zorder))
-            self.polar_plot_artist_list.append(ax.annotate('270°', (0.05, -0.95), color='darkgoldenrod', visible=visible, alpha=alpha, zorder=zorder))
-            self.polar_plot_artist_list.append(ax.annotate('0.5', (0.42, 0.28), color='darkgoldenrod', visible=visible, alpha=alpha, zorder=zorder))
-            self.polar_plot_artist_list.append(ax.annotate('1', (0.8, 0.65), color='darkgoldenrod', visible=visible, alpha=alpha, zorder=zorder))
+            self.polar_plot_artist_list.append(ax.plot(x1, list(map(
+                yp1, x1)), color='darkgoldenrod', visible=visible, alpha=alpha, zorder=zorder)[0])
+            self.polar_plot_artist_list.append(ax.plot(x1, list(map(
+                yn1, x1)), color='darkgoldenrod', visible=visible, alpha=alpha, zorder=zorder)[0])
+            self.polar_plot_artist_list.append(ax.plot(x2, list(map(
+                yp2, x2)), color='darkgoldenrod', visible=visible, alpha=alpha, zorder=zorder)[0])
+            self.polar_plot_artist_list.append(ax.plot(x2, list(map(
+                yn2, x2)), color='darkgoldenrod', visible=visible, alpha=alpha, zorder=zorder)[0])
+            self.polar_plot_artist_list.append(ax.scatter(
+                x3, [0] * len(x3), marker='_', color='darkgoldenrod', visible=visible, alpha=alpha, zorder=zorder))
+            self.polar_plot_artist_list.append(ax.scatter(
+                [0] * len(x3), x3, marker='|', color='darkgoldenrod', visible=visible, alpha=alpha, zorder=zorder))
+            self.polar_plot_artist_list.append(ax.scatter(
+                x4, x4, marker='_', color='darkgoldenrod', visible=visible, alpha=alpha, zorder=zorder))
+            self.polar_plot_artist_list.append(ax.scatter(
+                x4, -x4, marker='_', color='darkgoldenrod', visible=visible, alpha=alpha, zorder=zorder))
+            self.polar_plot_artist_list.append(ax.annotate(
+                '0°', (1.05, 0.05), color='darkgoldenrod', visible=visible, alpha=alpha, zorder=zorder))
+            self.polar_plot_artist_list.append(ax.annotate(
+                '180°', (-0.95, 0.05), color='darkgoldenrod', visible=visible, alpha=alpha, zorder=zorder))
+            self.polar_plot_artist_list.append(ax.annotate(
+                '90°', (0.05, 1.05), color='darkgoldenrod', visible=visible, alpha=alpha, zorder=zorder))
+            self.polar_plot_artist_list.append(ax.annotate(
+                '270°', (0.05, -0.95), color='darkgoldenrod', visible=visible, alpha=alpha, zorder=zorder))
+            self.polar_plot_artist_list.append(ax.annotate(
+                '0.5', (0.42, 0.28), color='darkgoldenrod', visible=visible, alpha=alpha, zorder=zorder))
+            self.polar_plot_artist_list.append(ax.annotate(
+                '1', (0.8, 0.65), color='darkgoldenrod', visible=visible, alpha=alpha, zorder=zorder))
         return ax
-    
+
     def _update_semi_circle_plot(self, ax, visible=True, alpha=0.3, zorder=3):
         '''
         Generate FLIM universal semi-circle plot
@@ -402,8 +416,10 @@ class PlotterWidget(QWidget):
             angles = np.linspace(0, np.pi, 180)
             x = (np.cos(angles) + 1) / 2
             y = np.sin(angles) / 2
-            self.semi_circle_plot_artist_list.append(ax.plot(x, y, 'darkgoldenrod', alpha=alpha, visible=visible, zorder=zorder)[0])
-            self.semi_circle_plot_artist_list.append(ax.axhline(0, color='darkgoldenrod', alpha=alpha, visible=visible, zorder=zorder))
+            self.semi_circle_plot_artist_list.append(
+                ax.plot(x, y, 'darkgoldenrod', alpha=alpha, visible=visible, zorder=zorder)[0])
+            self.semi_circle_plot_artist_list.append(ax.axhline(
+                0, color='darkgoldenrod', alpha=alpha, visible=visible, zorder=zorder))
         return ax
 
     def _redefine_axes_limits(self, ensure_full_circle_displayed=True):
@@ -418,29 +434,38 @@ class PlotterWidget(QWidget):
         # Redefine axes limits
         if self.toggle_semi_circle:
             # Get semi circle plot limits
-            circle_plot_limits = [0, 1, 0, 0.5] # xmin, xmax, ymin, ymax
+            circle_plot_limits = [0, 1, 0, 0.5]  # xmin, xmax, ymin, ymax
         else:
             # Get polar plot limits
-            circle_plot_limits = [-1, 1, -1, 1] # xmin, xmax, ymin, ymax
+            circle_plot_limits = [-1, 1, -1, 1]  # xmin, xmax, ymin, ymax
         # Check if histogram is plotted
         if self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram is not None:
             # Get histogram data limits
-            histogram_limits = self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram[-1].get_datalim(self.canvas_widget.axes.transData)
-            plotted_data_limits = [histogram_limits.x0, histogram_limits.x1, histogram_limits.y0, histogram_limits.y1]
-        else: 
+            histogram_limits = self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram[-1].get_datalim(
+                self.canvas_widget.axes.transData)
+            plotted_data_limits = [
+                histogram_limits.x0, histogram_limits.x1, histogram_limits.y0, histogram_limits.y1]
+        else:
             plotted_data_limits = circle_plot_limits
         # Check if full circle should be displayed
         if not ensure_full_circle_displayed:
             # If not, only the data limits are used
             circle_plot_limits = plotted_data_limits
-        
-        x_range = np.amax([plotted_data_limits[1], circle_plot_limits[1]]) - np.amin([plotted_data_limits[0], circle_plot_limits[0]])
-        y_range = np.amax([plotted_data_limits[3], circle_plot_limits[3]]) - np.amin([plotted_data_limits[2], circle_plot_limits[2]])
-        xlim_0 = np.amin([plotted_data_limits[0], circle_plot_limits[0]]) - 0.1 * x_range # 10% of the range as a frame
-        xlim_1 = np.amax([plotted_data_limits[1], circle_plot_limits[1]]) + 0.1 * x_range
-        ylim_0 = np.amin([plotted_data_limits[2], circle_plot_limits[2]]) - 0.1 * y_range
-        ylim_1 = np.amax([plotted_data_limits[3], circle_plot_limits[3]]) + 0.1 * y_range
-        
+
+        x_range = np.amax([plotted_data_limits[1], circle_plot_limits[1]]) - \
+            np.amin([plotted_data_limits[0], circle_plot_limits[0]])
+        y_range = np.amax([plotted_data_limits[3], circle_plot_limits[3]]) - \
+            np.amin([plotted_data_limits[2], circle_plot_limits[2]])
+        # 10% of the range as a frame
+        xlim_0 = np.amin(
+            [plotted_data_limits[0], circle_plot_limits[0]]) - 0.1 * x_range
+        xlim_1 = np.amax(
+            [plotted_data_limits[1], circle_plot_limits[1]]) + 0.1 * x_range
+        ylim_0 = np.amin(
+            [plotted_data_limits[2], circle_plot_limits[2]]) - 0.1 * y_range
+        ylim_1 = np.amax(
+            [plotted_data_limits[3], circle_plot_limits[3]]) + 0.1 * y_range
+
         self.canvas_widget.axes.set_ylim([ylim_0, ylim_1])
         self.canvas_widget.axes.set_xlim([xlim_0, xlim_1])
         self.canvas_widget.figure.canvas.draw_idle()
@@ -454,7 +479,8 @@ class PlotterWidget(QWidget):
             The color to set the background, by default None. If None, the first color of the histogram colormap is used.
         """
         if color is None:
-            self.canvas_widget.axes.set_facecolor(self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram_colormap(0))
+            self.canvas_widget.axes.set_facecolor(
+                self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram_colormap(0))
         else:
             self.canvas_widget.axes.set_facecolor(color)
         self.canvas_widget.figure.canvas.draw_idle()
