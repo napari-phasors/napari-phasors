@@ -37,6 +37,15 @@ def test_phasor_plotter(make_napari_viewer):
     assert phasors_table.shape == (30, 6)
     assert "MANUAL SELECTION #1" in phasors_table.columns
 
+    # Check initial axes limits
+    assert plotter.plotter_inputs_widget.ax.get_xlim() == (-0.1, 1.1)
+    assert plotter.plotter_inputs_widget.ax.get_ylim() == (-0.05, 0.55)
+
+    # Check toggle semi-circle/polar plot display
+    plotter.toggle_semi_circle = False
+    assert plotter.plotter_inputs_widget.ax.get_xlim() == (-1.2, 1.2)
+    assert plotter.plotter_inputs_widget.ax.get_ylim() == (-1.2, 1.2)
+
     # Call the plot method
     plotter.plot()
     # Check that new layer is created
