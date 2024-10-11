@@ -30,6 +30,13 @@ def test_phasor_plotter(make_napari_viewer):
     # Create Plotter widget
     plotter = PlotterWidget(viewer)
 
+    # Check that plotter adds a new default manual selection column to the table
+    phasors_table = intensity_image_layer.metadata[
+        "phasor_features_labels_layer"
+    ].features
+    assert phasors_table.shape == (30, 6)
+    assert "MANUAL SELECTION #1" in phasors_table.columns
+
     # Call the plot method
     plotter.plot()
     # Check that new layer is created
@@ -62,7 +69,7 @@ def test_phasor_plotter(make_napari_viewer):
     phasors_table = intensity_image_layer.metadata[
         "phasor_features_labels_layer"
     ].features
-    assert phasors_table.shape == (30, 6)
+    assert phasors_table.shape == (30, 7) # table now has 5 DATA columns + 2 SELECTION columns
     assert "selection_1" in phasors_table.columns
 
     # Select first 3 points
