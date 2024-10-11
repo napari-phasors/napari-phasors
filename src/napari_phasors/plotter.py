@@ -166,6 +166,9 @@ class PlotterWidget(QWidget):
         self.plotter_inputs_widget.phasor_selection_id_combobox.currentIndexChanged.connect(
             self.on_selection_id_changed
         )
+        self.plotter_inputs_widget.semi_circle_checkbox.stateChanged.connect(
+            self.on_toggle_semi_circle
+        )
         self.plot_button.clicked.connect(self.plot)
 
         # Populate plot type combobox
@@ -192,6 +195,7 @@ class PlotterWidget(QWidget):
         self._labels_layer_with_phasor_features = None
         self.selection_id = "MANUAL SELECTION #1"
         self._phasors_selected_layer = None
+        self.toggle_semi_circle = True
         self.colorbar = None
         self._colormap = self.canvas_widget.artists[
             ArtistType.HISTOGRAM2D
@@ -308,6 +312,82 @@ class PlotterWidget(QWidget):
             )
             value = 1
         self.plotter_inputs_widget.harmonic_spinbox.setValue(value)
+
+    @property
+    def toggle_semi_circle(self):
+        """Gets the display semi circle value from the semi circle checkbox.
+
+        Returns
+        -------
+        bool
+            The display semi circle value.
+        """
+        return self.plotter_inputs_widget.semi_circle_checkbox.isChecked()
+    
+    @toggle_semi_circle.setter
+    def toggle_semi_circle(self, value: bool):
+        """Sets the display semi circle value from the semi circle checkbox."""
+        self.plotter_inputs_widget.semi_circle_checkbox.setChecked(value)
+        if self.toggle_semi_circle:
+            circle_plotting_method = self.generate_semi_circle_plot
+        else:
+            circle_plotting_method = self.generate_polar_plot
+        for artist in self.canvas_widget.artists.values():
+            if artist.ax is not None:
+                artist.ax.clear()
+                circle_plotting_method(artist.ax)
+                artist.draw()
+
+    def on_toggle_semi_circle(self, state):
+        """Callback function when the semi circle checkbox is toggled.
+
+        This function updates the `toggle_semi_circle` attribute with the checked status of the checkbox.
+        And it displays either the universal semi-circle or the full polar plot in the canvas widget.
+        """
+        self.toggle_semi_circle = state
+        
+
+    def generate_polar_plot(self, ax):
+        """Generate the polar plot in the canvas widget.
+
+        Built the figure inner and outer circle and the 45 degrees lines in the plot
+
+        
+        """
+        x1 = np.linspace(start=-1, stop=1, num=500)
+        yp1 = lambda x1: np.sqrt(1 - x1 ** 2)
+        yn1 = lambda x1: -np.sqrt(1 - x1 ** 2)
+        x2 = np.linspace(start=-0.5, stop=0.5, num=500)
+        yp2 = lambda x2: np.sqrt(0.5 ** 2 - x2 ** 2)
+        yn2 = lambda x2: -np.sqrt(0.5 ** 2 - x2 ** 2)
+        x3 = np.linspace(start=-1, stop=1, num=30)
+        x4 = np.linspace(start=-0.7, stop=0.7, num=30)
+        ax.plot(x1, list(map(yp1, x1)), color='darkgoldenrod')
+        ax.plot(x1, list(map(yn1, x1)), color='darkgoldenrod')
+        ax.plot(x2, list(map(yp2, x2)), color='darkgoldenrod')
+        ax.plot(x2, list(map(yn2, x2)), color='darkgoldenrod')
+        ax.scatter(x3, [0] * len(x3), marker='_', color='darkgoldenrod')
+        ax.scatter([0] * len(x3), x3, marker='|', color='darkgoldenrod')
+        ax.scatter(x4, x4, marker='_', color='darkgoldenrod')
+        ax.scatter(x4, -x4, marker='_', color='darkgoldenrod')
+        ax.annotate('0º', (1, 0), color='darkgoldenrod')
+        ax.annotate('180º', (-1, 0), color='darkgoldenrod')
+        ax.annotate('90º', (0, 1), color='darkgoldenrod')
+        ax.annotate('270º', (0, -1), color='darkgoldenrod')
+        ax.annotate('0.5', (0.42, 0.28), color='darkgoldenrod')
+        ax.annotate('1', (0.8, 0.65), color='darkgoldenrod')
+        return ax
+    
+    def generate_semi_circle_plot(self, ax):
+        '''
+        Generate FLIM universal semi-circle plot
+        '''
+        angles = np.linspace(0, np.pi, 180)
+        x = (np.cos(angles) + 1) / 2
+        y = np.sin(angles) / 2
+        ax.plot(x, y, 'darkgoldenrod', alpha=0.3)
+        return ax
+
 
     @property
     def plot_type(self):
@@ -568,7 +648,6 @@ class PlotterWidget(QWidget):
                 .histogram[-1]
                 .norm,
             )
-            # self.colorbar = self.canvas_widget.figure.colorbar(self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram[-1], ax=self.canvas_widget.artists[ArtistType.HISTOGRAM2D].ax, use_gridspec=True)
             # set colorbar tick color
             self.colorbar.ax.yaxis.set_tick_params(color="white")
             # set colorbar edgecolor
