@@ -1,11 +1,12 @@
+from math import ceil, log10
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import matplotlib.ticker as ticker
 import numpy as np
 from biaplotter.plotter import ArtistType, CanvasWidget
 from matplotlib.colorbar import Colorbar
 from matplotlib.colors import LinearSegmentedColormap, LogNorm, Normalize
-import matplotlib.ticker as ticker
 from napari.layers import Image, Labels
 from napari.utils import DirectLabelColormap, colormaps, notifications
 from qtpy import uic
@@ -18,7 +19,6 @@ from qtpy.QtWidgets import (
 )
 from skimage.util import map_array
 from superqt import QCollapsible
-from math import ceil, log10
 
 from napari_phasors._synthetic_generator import (
     make_intensity_layer_with_phasors,
@@ -400,13 +400,18 @@ class PlotterWidget(QWidget):
             return
         column = self.selection_id
         # Update the manual selection in the labels layer with phasor features for each harmonic
-        harmonics = np.unique(self._labels_layer_with_phasor_features.features["harmonic"])
+        harmonics = np.unique(
+            self._labels_layer_with_phasor_features.features["harmonic"]
+        )
         self._labels_layer_with_phasor_features.features[column] = 0
         # Filter rows where 'G' is not NaN
-        valid_rows = ~self._labels_layer_with_phasor_features.features["G"].isna() & ~self._labels_layer_with_phasor_features.features["S"].isna()
+        valid_rows = (
+            ~self._labels_layer_with_phasor_features.features["G"].isna()
+            & ~self._labels_layer_with_phasor_features.features["S"].isna()
+        )
         self._labels_layer_with_phasor_features.features.loc[
             valid_rows, column
-        ] = np.tile(manual_selection, len(harmonics))[:valid_rows.sum()]
+        ] = np.tile(manual_selection, len(harmonics))[: valid_rows.sum()]
         self.create_phasors_selected_layer()
 
     def reset_layer_choices(self):
@@ -449,17 +454,23 @@ class PlotterWidget(QWidget):
         self.plotter_inputs_widget.harmonic_spinbox.setMaximum(
             self._labels_layer_with_phasor_features.features["harmonic"].max()
         )
-        max_mean_value = self.viewer.layers[
-            labels_layer_name
-        ].metadata["original_mean"].max()
+        max_mean_value = (
+            self.viewer.layers[labels_layer_name]
+            .metadata["original_mean"]
+            .max()
+        )
         # Determine the threshold factor based on max_mean_value using logarithmic scaling
         if max_mean_value > 0:
             magnitude = int(log10(max_mean_value))
-            self.threshold_factor = 10 ** (2 - magnitude) if magnitude <= 2 else 1
+            self.threshold_factor = (
+                10 ** (2 - magnitude) if magnitude <= 2 else 1
+            )
         else:
             self.threshold_factor = 1  # Default case for values less than 1
         # Set harmonic spinbox maximum value based on maximum mean
-        self.plotter_inputs_widget.threshold_slider.setMaximum(ceil(max_mean_value*self.threshold_factor))
+        self.plotter_inputs_widget.threshold_slider.setMaximum(
+            ceil(max_mean_value * self.threshold_factor)
+        )
 
     def get_features(self):
         """Get the G and S features for the selected harmonic and selection id.
@@ -520,7 +531,8 @@ class PlotterWidget(QWidget):
         )
         apply_filter_and_threshold(
             self.viewer.layers[labels_layer_name],
-            threshold=self.plotter_inputs_widget.threshold_slider.value() / self.threshold_factor,
+            threshold=self.plotter_inputs_widget.threshold_slider.value()
+            / self.threshold_factor,
             method='median',
             size=self.plotter_inputs_widget.median_filter_spinbox.value(),
             repeat=self.plotter_inputs_widget.median_filter_repetition_spinbox.value(),
@@ -599,7 +611,9 @@ class PlotterWidget(QWidget):
             ticks = self.colorbar.ax.get_yticks()
 
             # Set the ticks using a FixedLocator
-            self.colorbar.ax.yaxis.set_major_locator(ticker.FixedLocator(ticks))
+            self.colorbar.ax.yaxis.set_major_locator(
+                ticker.FixedLocator(ticks)
+            )
             # set colorbar ticklabels
             self.colorbar.ax.set_yticklabels(
                 self.colorbar.ax.get_yticklabels(), color="white"
@@ -661,7 +675,10 @@ class PlotterWidget(QWidget):
     def on_threshold_slider_change(self):
         self.plotter_inputs_widget.label_3.setText(
             'Intensity threshold: '
-            + str(self.plotter_inputs_widget.threshold_slider.value() / self.threshold_factor)
+            + str(
+                self.plotter_inputs_widget.threshold_slider.value()
+                / self.threshold_factor
+            )
         )
 
     def on_kernel_size_change(self):
