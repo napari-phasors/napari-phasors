@@ -131,10 +131,10 @@
        <item row="4" column="1">
         <widget class="QSpinBox" name="median_filter_repetition_spinbox">
          <property name="minimum">
-          <number>1</number>
+          <number>0</number>
          </property>
          <property name="value">
-          <number>1</number>
+          <number>0</number>
          </property>
         </widget>
        </item>

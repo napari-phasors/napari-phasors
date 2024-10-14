@@ -44,14 +44,15 @@ def apply_filter_and_threshold(
     )
     real = np.reshape(real, (len(harmonics),) + mean.shape)
     imag = np.reshape(imag, (len(harmonics),) + mean.shape)
-    real, imag = phasor_filter(
-        real,
-        imag,
-        method=method,
-        repeat=repeat,
-        size=size,
-        axes=tuple(range(1, real.ndim)),
-    )
+    if repeat > 1:
+        real, imag = phasor_filter(
+            real,
+            imag,
+            method=method,
+            repeat=repeat,
+            size=size,
+            axes=tuple(range(1, real.ndim)),
+        )
     mean, real, imag = phasor_threshold(mean, real, imag, threshold)
     (
         layer.metadata['phasor_features_labels_layer'].features['G'],
