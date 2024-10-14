@@ -59,7 +59,8 @@ def test_phasor_plotter(make_napari_viewer):
     plotter.histogram_bins = 5
     plotter.histogram_log_scale = True
     plotter.plot_type = ArtistType.SCATTER.name
-    plotter.plotter_inputs_widget.threshold_slider.setValue(1)
+    threshold = 1
+    plotter.plotter_inputs_widget.threshold_slider.setValue(threshold)
     plotter.plotter_inputs_widget.median_filter_spinbox.setValue(3)
     plotter.plotter_inputs_widget.median_filter_repetition_spinbox.setValue(3)
     plotter.plot()
@@ -72,22 +73,38 @@ def test_phasor_plotter(make_napari_viewer):
     ].features
     assert phasors_table.shape == (30, 7)
     assert "selection_1" in phasors_table.columns
-
     # Select first 3 points
-    manual_selection = np.array([1, 1, 1, 0, 0, 0, 0, 0, 0, 0])
+    manual_selection = np.array([1, 1, 1, 0, 0, 0, 0])
     plotter.canvas_widget.active_artist.color_indices = manual_selection
     # Check that 'Phasors Selected' Labels layer contains selection
-    assert (
-        viewer.layers["Phasors Selected"].data.ravel().tolist()
-        == manual_selection.tolist()
-    )
+    # print(viewer.layers["Phasors Selected"].data.ravel().tolist())
+    assert viewer.layers["Phasors Selected"].data.ravel().tolist() == [
+        0,
+        0,
+        0,
+        1,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+    ]  # First three are 0 because they were filtered out
     # Check that new column in phasors_table contains selection for each harmonic
     for h in harmonic:
         h_mask = phasors_table["harmonic"] == h
-        assert (
-            phasors_table.loc[h_mask, "selection_1"].values.tolist()
-            == manual_selection.tolist()
-        )
+        assert phasors_table.loc[h_mask, "selection_1"].values.tolist() == [
+            0,
+            0,
+            0,
+            1,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+        ]
     assert np.all(
         intensity_image_layer.metadata["original_mean"] == original_mean
     )
@@ -106,8 +123,11 @@ def test_phasor_plotter(make_napari_viewer):
     original_g, original_s = phasor_filter(
         original_g, original_s, repeat=3, size=3, axes=(1, 2)
     )
-    mean, original_g, original_s = phasor_threshold(
-        original_mean, original_g, original_s, 1 / 10
+    _, original_g, original_s = phasor_threshold(
+        original_mean,
+        original_g,
+        original_s,
+        threshold / plotter.threshold_factor,
     )
     filtered_thresholded_g = np.reshape(
         phasor_features['G'], (len(harmonics),) + original_mean.data.shape
