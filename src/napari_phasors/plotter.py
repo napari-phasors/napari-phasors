@@ -187,7 +187,7 @@ class PlotterWidget(QWidget):
             list(colormaps.ALL_COLORMAPS.keys())
         )
         self.histogram_colormap = (
-            "magma"  # Set default colormap (same as in biaplotter)
+            "turbo"  # Set default colormap (same as in biaplotter)
         )
 
         # Connect canvas signals
