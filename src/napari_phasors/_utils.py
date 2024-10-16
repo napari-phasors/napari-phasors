@@ -8,7 +8,8 @@ import warnings
 import numpy as np
 from napari.layers import Image
 from phasorpy.phasor import phasor_filter, phasor_threshold
-from napari.utils.colormaps import Colormap, ALL_COLORMAPS
+from napari.utils.colormaps import Colormap
+from napari.utils.colormaps import ALL_COLORMAPS
 
 
 def apply_filter_and_threshold(
