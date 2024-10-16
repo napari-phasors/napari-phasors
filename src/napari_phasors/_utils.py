@@ -8,6 +8,7 @@ import warnings
 import numpy as np
 from napari.layers import Image
 from phasorpy.phasor import phasor_filter, phasor_threshold
+from napari.utils.colormaps import Colormap, ALL_COLORMAPS
 
 
 def apply_filter_and_threshold(
@@ -80,8 +81,6 @@ def turbo_first_color_changed_colormap(first='white'):
         Colormap with the first color being white.
 
     """
-    from napari.utils.colormaps import Colormap, ALL_COLORMAPS
-
     if first == 'white':
         color = (1, 1, 1, 1)
     elif first == 'black':
