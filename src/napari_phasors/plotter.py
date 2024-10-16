@@ -1,6 +1,8 @@
+from math import ceil, log10
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import matplotlib.ticker as ticker
 import numpy as np
 from biaplotter.plotter import ArtistType, CanvasWidget
 from matplotlib.colorbar import Colorbar
@@ -22,12 +24,13 @@ from napari_phasors._synthetic_generator import (
     make_intensity_layer_with_phasors,
     make_raw_flim_data,
 )
+from napari_phasors._utils import apply_filter_and_threshold
 
 if TYPE_CHECKING:
     import napari
 
 #: The columns in the phasor features table that should not be used as selection id.
-DATA_COLUMNS = ["label", "Average Image", "G", "S", "harmonic"]
+DATA_COLUMNS = ["label", "G_original", "S_original", "G", "S", "harmonic"]
 
 
 def colormap_to_dict(colormap, num_colors=10, exclude_first=True):
@@ -202,6 +205,16 @@ class PlotterWidget(QWidget):
 
         # Populate labels layer combobox
         self.reset_layer_choices()
+
+        # Connect threshold slider
+        self.plotter_inputs_widget.threshold_slider.valueChanged.connect(
+            self.on_threshold_slider_change
+        )
+
+        # Connect kernel size spinbox
+        self.plotter_inputs_widget.median_filter_spinbox.valueChanged.connect(
+            self.on_kernel_size_change
+        )
 
     @property
     def selection_id(self):
@@ -387,18 +400,18 @@ class PlotterWidget(QWidget):
             return
         column = self.selection_id
         # Update the manual selection in the labels layer with phasor features for each harmonic
-        for harmonic in range(
-            1,
-            self._labels_layer_with_phasor_features.features["harmonic"].max()
-            + 1,
-        ):
-            harmonic_mask = (
-                self._labels_layer_with_phasor_features.features["harmonic"]
-                == harmonic
-            )
-            self._labels_layer_with_phasor_features.features.loc[
-                harmonic_mask, column
-            ] = manual_selection
+        harmonics = np.unique(
+            self._labels_layer_with_phasor_features.features["harmonic"]
+        )
+        self._labels_layer_with_phasor_features.features[column] = 0
+        # Filter rows where 'G' is not NaN
+        valid_rows = (
+            ~self._labels_layer_with_phasor_features.features["G"].isna()
+            & ~self._labels_layer_with_phasor_features.features["S"].isna()
+        )
+        self._labels_layer_with_phasor_features.features.loc[
+            valid_rows, column
+        ] = np.tile(manual_selection, len(harmonics))[: valid_rows.sum()]
         self.create_phasors_selected_layer()
 
     def reset_layer_choices(self):
@@ -441,6 +454,23 @@ class PlotterWidget(QWidget):
         self.plotter_inputs_widget.harmonic_spinbox.setMaximum(
             self._labels_layer_with_phasor_features.features["harmonic"].max()
         )
+        max_mean_value = (
+            self.viewer.layers[labels_layer_name]
+            .metadata["original_mean"]
+            .max()
+        )
+        # Determine the threshold factor based on max_mean_value using logarithmic scaling
+        if max_mean_value > 0:
+            magnitude = int(log10(max_mean_value))
+            self.threshold_factor = (
+                10 ** (2 - magnitude) if magnitude <= 2 else 1
+            )
+        else:
+            self.threshold_factor = 1  # Default case for values less than 1
+        # Set harmonic spinbox maximum value based on maximum mean
+        self.plotter_inputs_widget.threshold_slider.setMaximum(
+            ceil(max_mean_value * self.threshold_factor)
+        )
 
     def get_features(self):
         """Get the G and S features for the selected harmonic and selection id.
@@ -460,14 +490,19 @@ class PlotterWidget(QWidget):
         if self._labels_layer_with_phasor_features.features is None:
             return None
         table = self._labels_layer_with_phasor_features.features
-        x_data = table["G"][table["harmonic"] == self.harmonic].values
-        y_data = table["S"][table["harmonic"] == self.harmonic].values
+        x_data = table['G'][table['harmonic'] == self.harmonic].values
+        y_data = table['S'][table['harmonic'] == self.harmonic].values
+        mask = np.isnan(x_data) & np.isnan(y_data)
+        x_data = x_data[~mask]
+        y_data = y_data[~mask]
         if self.selection_id is None or self.selection_id == "":
             return x_data, y_data, np.zeros_like(x_data)
         else:
             selection_data = table[self.selection_id][
-                table["harmonic"] == self.harmonic
+                table['harmonic'] == self.harmonic
             ].values
+            selection_data = selection_data[~mask]
+
         return x_data, y_data, selection_data
 
     def set_axes_labels(self):
@@ -491,6 +526,17 @@ class PlotterWidget(QWidget):
         This function plots the selected phasor features in the canvas widget.
         It also creates the phasors selected layer.
         """
+        labels_layer_name = (
+            self.plotter_inputs_widget.image_layer_with_phasor_features_combobox.currentText()
+        )
+        apply_filter_and_threshold(
+            self.viewer.layers[labels_layer_name],
+            threshold=self.plotter_inputs_widget.threshold_slider.value()
+            / self.threshold_factor,
+            method='median',
+            size=self.plotter_inputs_widget.median_filter_spinbox.value(),
+            repeat=self.plotter_inputs_widget.median_filter_repetition_spinbox.value(),
+        )
         x_data, y_data, selection_id_data = self.get_features()
         # Set active artist
         self.canvas_widget.active_artist = self.canvas_widget.artists[
@@ -538,6 +584,8 @@ class PlotterWidget(QWidget):
 
         # if active artist is histogram, add a colorbar
         if self.plot_type == ArtistType.HISTOGRAM2D.name:
+            if self.colorbar is not None:
+                self.colorbar.remove()
             # creat cax for colorbar on the right side of the histogram
             self.cax = self.canvas_widget.artists[
                 ArtistType.HISTOGRAM2D
@@ -553,10 +601,19 @@ class PlotterWidget(QWidget):
                 .norm,
             )
             # self.colorbar = self.canvas_widget.figure.colorbar(self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram[-1], ax=self.canvas_widget.artists[ArtistType.HISTOGRAM2D].ax, use_gridspec=True)
+
             # set colorbar tick color
             self.colorbar.ax.yaxis.set_tick_params(color="white")
             # set colorbar edgecolor
             self.colorbar.outline.set_edgecolor("white")
+
+            # Get the current ticks
+            ticks = self.colorbar.ax.get_yticks()
+
+            # Set the ticks using a FixedLocator
+            self.colorbar.ax.yaxis.set_major_locator(
+                ticker.FixedLocator(ticks)
+            )
             # set colorbar ticklabels
             self.colorbar.ax.set_yticklabels(
                 self.colorbar.ax.get_yticklabels(), color="white"
@@ -614,6 +671,21 @@ class PlotterWidget(QWidget):
             self._phasors_selected_layer.scale = (
                 self._labels_layer_with_phasor_features.scale
             )
+
+    def on_threshold_slider_change(self):
+        self.plotter_inputs_widget.label_3.setText(
+            'Intensity threshold: '
+            + str(
+                self.plotter_inputs_widget.threshold_slider.value()
+                / self.threshold_factor
+            )
+        )
+
+    def on_kernel_size_change(self):
+        kernel_value = self.plotter_inputs_widget.median_filter_spinbox.value()
+        self.plotter_inputs_widget.label_4.setText(
+            'Median Filter Kernel Size: ' + f'{kernel_value} x {kernel_value}'
+        )
 
 
 if __name__ == "__main__":

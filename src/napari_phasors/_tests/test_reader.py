@@ -24,8 +24,9 @@ def test_reader_ptu():
         layer_data_tuple[1]["name"] == "test_file Intensity Image: Channel 0"
     )
     assert (
-        len(layer_data_tuple[1]["metadata"]) == 1
+        len(layer_data_tuple[1]["metadata"]) == 2
         and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
+        and "original_mean" in layer_data_tuple[1]["metadata"]
     )
     phasor_features = layer_data_tuple[1]["metadata"][
         "phasor_features_labels_layer"
@@ -33,8 +34,15 @@ def test_reader_ptu():
     assert isinstance(phasor_features, Labels)
     assert phasor_features.data.shape == (1, 256, 256)
     assert isinstance(phasor_features.features, pd.DataFrame)
-    assert phasor_features.features.shape == (65536, 4)
-    expected_columns = ["label", "G", "S", "harmonic"]
+    assert phasor_features.features.shape == (65536, 6)
+    expected_columns = [
+        "label",
+        "G_original",
+        "S_original",
+        "G",
+        "S",
+        "harmonic",
+    ]
     actual_columns = phasor_features.features.columns.tolist()
     assert actual_columns == expected_columns
 
@@ -59,8 +67,9 @@ def test_reader_fbd():
         == "test_file$EI0S Intensity Image: Channel 0"
     )
     assert (
-        len(layer_data_tuple[1]["metadata"]) == 1
+        len(layer_data_tuple[1]["metadata"]) == 2
         and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
+        and "original_mean" in layer_data_tuple[1]["metadata"]
     )
     phasor_features = layer_data_tuple[1]["metadata"][
         "phasor_features_labels_layer"
@@ -68,8 +77,15 @@ def test_reader_fbd():
     assert isinstance(phasor_features, Labels)
     assert phasor_features.data.shape == (1, 256, 256)
     assert isinstance(phasor_features.features, pd.DataFrame)
-    assert phasor_features.features.shape == (65536, 4)
-    expected_columns = ["label", "G", "S", "harmonic"]
+    assert phasor_features.features.shape == (65536, 6)
+    expected_columns = [
+        "label",
+        "G_original",
+        "S_original",
+        "G",
+        "S",
+        "harmonic",
+    ]
     actual_columns = phasor_features.features.columns.tolist()
     assert actual_columns == expected_columns
     # Second Channel
@@ -85,8 +101,9 @@ def test_reader_fbd():
         == "test_file$EI0S Intensity Image: Channel 1"
     )
     assert (
-        len(layer_data_tuple[1]["metadata"]) == 1
+        len(layer_data_tuple[1]["metadata"]) == 2
         and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
+        and "original_mean" in layer_data_tuple[1]["metadata"]
     )
     phasor_features = layer_data_tuple[1]["metadata"][
         "phasor_features_labels_layer"
@@ -94,8 +111,15 @@ def test_reader_fbd():
     assert isinstance(phasor_features, Labels)
     assert phasor_features.data.shape == (1, 256, 256)
     assert isinstance(phasor_features.features, pd.DataFrame)
-    assert phasor_features.features.shape == (65536, 4)
-    expected_columns = ["label", "G", "S", "harmonic"]
+    assert phasor_features.features.shape == (65536, 6)
+    expected_columns = [
+        "label",
+        "G_original",
+        "S_original",
+        "G",
+        "S",
+        "harmonic",
+    ]
     actual_columns = phasor_features.features.columns.tolist()
     assert actual_columns == expected_columns
 
@@ -116,8 +140,9 @@ def test_reader_lsm():
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert layer_data_tuple[1]["name"] == "test_file Intensity Image"
     assert (
-        len(layer_data_tuple[1]["metadata"]) == 1
+        len(layer_data_tuple[1]["metadata"]) == 2
         and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
+        and "original_mean" in layer_data_tuple[1]["metadata"]
     )
     phasor_features = layer_data_tuple[1]["metadata"][
         "phasor_features_labels_layer"
@@ -125,8 +150,15 @@ def test_reader_lsm():
     assert isinstance(phasor_features, Labels)
     assert phasor_features.data.shape == (512, 512)
     assert isinstance(phasor_features.features, pd.DataFrame)
-    assert phasor_features.features.shape == (262144, 4)
-    expected_columns = ["label", "G", "S", "harmonic"]
+    assert phasor_features.features.shape == (262144, 6)
+    expected_columns = [
+        "label",
+        "G_original",
+        "S_original",
+        "G",
+        "S",
+        "harmonic",
+    ]
     actual_columns = phasor_features.features.columns.tolist()
     assert actual_columns == expected_columns
 
@@ -147,9 +179,10 @@ def test_reader_ometif():
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert layer_data_tuple[1]["name"] == "test_file Intensity Image"
     assert (
-        len(layer_data_tuple[1]["metadata"]) == 2
+        len(layer_data_tuple[1]["metadata"]) == 3
         and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
         and "attrs" in layer_data_tuple[1]["metadata"]
+        and "original_mean" in layer_data_tuple[1]["metadata"]
     )
     phasor_features = layer_data_tuple[1]["metadata"][
         "phasor_features_labels_layer"
@@ -157,8 +190,15 @@ def test_reader_ometif():
     assert isinstance(phasor_features, Labels)
     assert phasor_features.data.shape == (256, 256)
     assert isinstance(phasor_features.features, pd.DataFrame)
-    assert phasor_features.features.shape == (65536, 4)
-    expected_columns = ["label", "G", "S", "harmonic"]
+    assert phasor_features.features.shape == (65536, 6)
+    expected_columns = [
+        "label",
+        "G_original",
+        "S_original",
+        "G",
+        "S",
+        "harmonic",
+    ]
     actual_columns = phasor_features.features.columns.tolist()
     assert actual_columns == expected_columns
 
