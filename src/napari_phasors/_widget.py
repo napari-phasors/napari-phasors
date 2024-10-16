@@ -213,10 +213,12 @@ class FbdWidget(AdvancedOptionsWidget):
         self._channels_widget()
 
         # Laser factor
-        self.mainLayout.addWidget(QLabel("Laser Factor: "))
+        self.mainLayout.addWidget(QLabel("Laser Factor (optional): "))
         self.laser_factor = QLineEdit()
+        self.laser_factor.setText("-1")
         self.laser_factor.setToolTip(
-            "Most probable laser factors are: 0.00022, 2.50012, 2.50016"
+            "Default is -1. If this doesn't work, "
+            "most probable laser factors are: 0.00022, 2.50012, 2.50016"
         )
         self.laser_factor.setValidator(QDoubleValidator())
         laser_factor_completer = QCompleter(["0.00022", "2.50012", "2.50016"])
@@ -260,8 +262,9 @@ class PtuWidget(AdvancedOptionsWidget):
         self._channels_widget()
 
         # dtime widget
-        self.mainLayout.addWidget(QLabel("dtime: "))
+        self.mainLayout.addWidget(QLabel("dtime (optional): "))
         self.dtime = QLineEdit()
+        self.dtime.setText("0")
         self.dtime.setToolTip(
             "Specifies number of bins in image histogram."
             "If 0 (default), return number of bins in one period."
