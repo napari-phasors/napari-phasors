@@ -32,6 +32,25 @@ def test_phasor_plotter(make_napari_viewer):
     # Create Plotter widget
     plotter = PlotterWidget(viewer)
 
+    # Check that plotter adds a new default manual selection column to the table
+    phasors_table = intensity_image_layer.metadata[
+        "phasor_features_labels_layer"
+    ].features
+    assert phasors_table.shape == (
+        30,
+        7,
+    )  # table now has 6 DATA columns + 1 SELECTION column
+    assert "MANUAL SELECTION #1" in phasors_table.columns
+
+    # Check initial axes limits
+    assert plotter.canvas_widget.axes.get_xlim() == (-0.1, 1.1)
+    assert plotter.canvas_widget.axes.get_ylim() == (-0.05, 0.55)
+
+    # Check toggle semi-circle/polar plot display
+    plotter.toggle_semi_circle = False
+    assert plotter.canvas_widget.axes.get_xlim() == (-1.2, 1.2)
+    assert plotter.canvas_widget.axes.get_ylim() == (-1.2, 1.2)
+
     # Call the plot method
     plotter.plot()
     # Check that new layer is created
@@ -71,7 +90,8 @@ def test_phasor_plotter(make_napari_viewer):
     phasors_table = intensity_image_layer.metadata[
         "phasor_features_labels_layer"
     ].features
-    assert phasors_table.shape == (30, 7)
+    # table now has 6 DATA columns + 2 SELECTION columns
+    assert phasors_table.shape == (30, 8)
     assert "selection_1" in phasors_table.columns
     # Select first 3 points
     manual_selection = np.array([1, 1, 1, 0, 0, 0, 0])

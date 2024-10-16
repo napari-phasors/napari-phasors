@@ -7,6 +7,7 @@ import numpy as np
 from biaplotter.plotter import ArtistType, CanvasWidget
 from matplotlib.colorbar import Colorbar
 from matplotlib.colors import LinearSegmentedColormap, LogNorm, Normalize
+from matplotlib.lines import Line2D
 from napari.layers import Image, Labels
 from napari.utils import DirectLabelColormap, colormaps, notifications
 from qtpy import uic
@@ -125,6 +126,7 @@ class PlotterWidget(QWidget):
 
         # Load canvas widget
         self.canvas_widget = CanvasWidget(napari_viewer)
+        self.canvas_widget.class_spinbox.setValue(1)
         self.set_axes_labels()
         self.layout().addWidget(self.canvas_widget)
 
@@ -157,6 +159,9 @@ class PlotterWidget(QWidget):
         )
         self.layout().addItem(spacer)
 
+        # Set minimum size
+        self.setMinimumSize(300, 300)
+
         # Connect napari signals when new layer is inseted or removed
         self.viewer.layers.events.inserted.connect(self.reset_layer_choices)
         self.viewer.layers.events.removed.connect(self.reset_layer_choices)
@@ -167,6 +172,9 @@ class PlotterWidget(QWidget):
         )
         self.plotter_inputs_widget.phasor_selection_id_combobox.currentIndexChanged.connect(
             self.on_selection_id_changed
+        )
+        self.plotter_inputs_widget.semi_circle_checkbox.stateChanged.connect(
+            self.on_toggle_semi_circle
         )
         self.plot_button.clicked.connect(self.plot)
 
@@ -179,7 +187,7 @@ class PlotterWidget(QWidget):
             list(colormaps.ALL_COLORMAPS.keys())
         )
         self.histogram_colormap = (
-            "magma"  # Set default colormap (same as in biaplotter)
+            "turbo"  # Set default colormap (same as in biaplotter)
         )
 
         # Connect canvas signals
@@ -192,7 +200,11 @@ class PlotterWidget(QWidget):
 
         # Initialize attributes
         self._labels_layer_with_phasor_features = None
+        self.selection_id = "MANUAL SELECTION #1"
         self._phasors_selected_layer = None
+        self.polar_plot_artist_list = []
+        self.semi_circle_plot_artist_list = []
+        self.toggle_semi_circle = True
         self.colorbar = None
         self._colormap = self.canvas_widget.artists[
             ArtistType.HISTOGRAM2D
@@ -203,6 +215,10 @@ class PlotterWidget(QWidget):
         # Start with the histogram2d plot type
         self.plot_type = ArtistType.HISTOGRAM2D.name
 
+        # Set intial axes limits
+        self._redefine_axes_limits()
+        # Set initial background color
+        self._update_plot_bg_color()
         # Populate labels layer combobox
         self.reset_layer_choices()
 
@@ -240,11 +256,6 @@ class PlotterWidget(QWidget):
     @selection_id.setter
     def selection_id(self, new_selection_id: str):
         """Sets the selection id from the phasor selection id combobox."""
-        if self._labels_layer_with_phasor_features is None:
-            notifications.WarningNotification(
-                "No labels layer with phasor features selected."
-            )
-            return
         if new_selection_id in DATA_COLUMNS:
             notifications.WarningNotification(
                 f"{new_selection_id} is not a valid selection column. It must not be one of {DATA_COLUMNS}."
@@ -265,18 +276,35 @@ class PlotterWidget(QWidget):
             self.plotter_inputs_widget.phasor_selection_id_combobox.setCurrentText(
                 new_selection_id
             )
-            # If column_name is not in features, add it with zeros
-            if (
+            self.add_selection_id_to_features(new_selection_id)
+
+    def add_selection_id_to_features(self, new_selection_id: str):
+        """Add a new selection id to the features table in the labels layer with phasor features.
+
+        Parameters
+        ----------
+        new_selection_id : str
+            The new selection id to add to the features table.
+        """
+        if self._labels_layer_with_phasor_features is None:
+            return
+        if new_selection_id in DATA_COLUMNS:
+            notifications.WarningNotification(
+                f"{new_selection_id} is not a valid selection column. It must not be one of {DATA_COLUMNS}."
+            )
+            return
+        # If column_name is not in features, add it with zeros
+        if (
+            new_selection_id
+            not in self._labels_layer_with_phasor_features.features.columns
+        ):
+            self._labels_layer_with_phasor_features.features[
                 new_selection_id
-                not in self._labels_layer_with_phasor_features.features.columns
-            ):
+            ] = np.zeros_like(
                 self._labels_layer_with_phasor_features.features[
-                    new_selection_id
-                ] = np.zeros_like(
-                    self._labels_layer_with_phasor_features.features[
-                        "label"
-                    ].values
-                )
+                    "label"
+                ].values
+            )
 
     def on_selection_id_changed(self):
         """Callback function when the phasor selection id combobox is changed.
@@ -307,6 +335,333 @@ class PlotterWidget(QWidget):
             )
             value = 1
         self.plotter_inputs_widget.harmonic_spinbox.setValue(value)
+
+    @property
+    def toggle_semi_circle(self):
+        """Gets the display semi circle value from the semi circle checkbox.
+
+        Returns
+        -------
+        bool
+            The display semi circle value.
+        """
+        return self.plotter_inputs_widget.semi_circle_checkbox.isChecked()
+
+    @toggle_semi_circle.setter
+    def toggle_semi_circle(self, value: bool):
+        """Sets the display semi circle value from the semi circle checkbox."""
+        self.plotter_inputs_widget.semi_circle_checkbox.setChecked(value)
+        if value:
+            self._update_polar_plot(self.canvas_widget.axes, visible=False)
+            self._update_semi_circle_plot(self.canvas_widget.axes)
+        else:
+            self._update_semi_circle_plot(
+                self.canvas_widget.axes, visible=False
+            )
+            self._update_polar_plot(self.canvas_widget.axes)
+        self._redefine_axes_limits()
+
+    def on_toggle_semi_circle(self, state):
+        """Callback function when the semi circle checkbox is toggled.
+
+        This function updates the `toggle_semi_circle` attribute with the checked status of the checkbox.
+        And it displays either the universal semi-circle or the full polar plot in the canvas widget.
+        """
+        self.toggle_semi_circle = state
+
+    def _update_polar_plot(self, ax, visible=True, alpha=0.3, zorder=3):
+        """
+        Generate the polar plot in the canvas widget.
+
+        Build the inner and outer circle and the 45 degrees lines in the plot.
+        """
+        if len(self.polar_plot_artist_list) > 0:
+            for artist in self.polar_plot_artist_list:
+                artist.set_visible(visible)
+                artist.set_alpha(alpha)
+        else:
+            x1 = np.linspace(start=-1, stop=1, num=500)
+
+            def yp1(x1):
+                return np.sqrt(1 - x1**2)
+
+            def yn1(x1):
+                return -np.sqrt(1 - x1**2)
+
+            x2 = np.linspace(start=-0.5, stop=0.5, num=500)
+
+            def yp2(x2):
+                return np.sqrt(0.5**2 - x2**2)
+
+            def yn2(x2):
+                return -np.sqrt(0.5**2 - x2**2)
+
+            x3 = np.linspace(start=-1, stop=1, num=30)
+            x4 = np.linspace(start=-0.7, stop=0.7, num=30)
+            self.polar_plot_artist_list.append(
+                ax.plot(
+                    x1,
+                    list(map(yp1, x1)),
+                    color='darkgoldenrod',
+                    visible=visible,
+                    alpha=alpha,
+                    zorder=zorder,
+                )[0]
+            )
+            self.polar_plot_artist_list.append(
+                ax.plot(
+                    x1,
+                    list(map(yn1, x1)),
+                    color='darkgoldenrod',
+                    visible=visible,
+                    alpha=alpha,
+                    zorder=zorder,
+                )[0]
+            )
+            self.polar_plot_artist_list.append(
+                ax.plot(
+                    x2,
+                    list(map(yp2, x2)),
+                    color='darkgoldenrod',
+                    visible=visible,
+                    alpha=alpha,
+                    zorder=zorder,
+                )[0]
+            )
+            self.polar_plot_artist_list.append(
+                ax.plot(
+                    x2,
+                    list(map(yn2, x2)),
+                    color='darkgoldenrod',
+                    visible=visible,
+                    alpha=alpha,
+                    zorder=zorder,
+                )[0]
+            )
+            self.polar_plot_artist_list.append(
+                ax.scatter(
+                    x3,
+                    [0] * len(x3),
+                    marker='_',
+                    color='darkgoldenrod',
+                    visible=visible,
+                    alpha=alpha,
+                    zorder=zorder,
+                )
+            )
+            self.polar_plot_artist_list.append(
+                ax.scatter(
+                    [0] * len(x3),
+                    x3,
+                    marker='|',
+                    color='darkgoldenrod',
+                    visible=visible,
+                    alpha=alpha,
+                    zorder=zorder,
+                )
+            )
+            self.polar_plot_artist_list.append(
+                ax.scatter(
+                    x4,
+                    x4,
+                    marker='_',
+                    color='darkgoldenrod',
+                    visible=visible,
+                    alpha=alpha,
+                    zorder=zorder,
+                )
+            )
+            self.polar_plot_artist_list.append(
+                ax.scatter(
+                    x4,
+                    -x4,
+                    marker='_',
+                    color='darkgoldenrod',
+                    visible=visible,
+                    alpha=alpha,
+                    zorder=zorder,
+                )
+            )
+            self.polar_plot_artist_list.append(
+                ax.annotate(
+                    '0°',
+                    (1.05, 0.05),
+                    color='darkgoldenrod',
+                    visible=visible,
+                    alpha=alpha,
+                    zorder=zorder,
+                )
+            )
+            self.polar_plot_artist_list.append(
+                ax.annotate(
+                    '180°',
+                    (-0.95, 0.05),
+                    color='darkgoldenrod',
+                    visible=visible,
+                    alpha=alpha,
+                    zorder=zorder,
+                )
+            )
+            self.polar_plot_artist_list.append(
+                ax.annotate(
+                    '90°',
+                    (0.05, 1.05),
+                    color='darkgoldenrod',
+                    visible=visible,
+                    alpha=alpha,
+                    zorder=zorder,
+                )
+            )
+            self.polar_plot_artist_list.append(
+                ax.annotate(
+                    '270°',
+                    (0.05, -0.95),
+                    color='darkgoldenrod',
+                    visible=visible,
+                    alpha=alpha,
+                    zorder=zorder,
+                )
+            )
+            self.polar_plot_artist_list.append(
+                ax.annotate(
+                    '0.5',
+                    (0.42, 0.28),
+                    color='darkgoldenrod',
+                    visible=visible,
+                    alpha=alpha,
+                    zorder=zorder,
+                )
+            )
+            self.polar_plot_artist_list.append(
+                ax.annotate(
+                    '1',
+                    (0.8, 0.65),
+                    color='darkgoldenrod',
+                    visible=visible,
+                    alpha=alpha,
+                    zorder=zorder,
+                )
+            )
+        return ax
+
+    def _update_semi_circle_plot(self, ax, visible=True, alpha=0.3, zorder=3):
+        '''
+        Generate FLIM universal semi-circle plot
+        '''
+        if len(self.semi_circle_plot_artist_list) > 0:
+            for artist in self.semi_circle_plot_artist_list:
+                artist.set_visible(visible)
+                artist.set_alpha(alpha)
+        else:
+            angles = np.linspace(0, np.pi, 180)
+            x = (np.cos(angles) + 1) / 2
+            y = np.sin(angles) / 2
+            self.semi_circle_plot_artist_list.append(
+                ax.plot(
+                    x,
+                    y,
+                    'darkgoldenrod',
+                    alpha=alpha,
+                    visible=visible,
+                    zorder=zorder,
+                )[0]
+            )
+            self.semi_circle_plot_artist_list.append(
+                ax.axhline(
+                    0,
+                    color='darkgoldenrod',
+                    alpha=alpha,
+                    visible=visible,
+                    zorder=zorder,
+                )
+            )
+        return ax
+
+    def _redefine_axes_limits(self, ensure_full_circle_displayed=True):
+        """
+        Redefine axes limits based on the data plotted in the canvas widget.
+
+        Parameters
+        ----------
+        ensure_full_circle_displayed : bool, optional
+            Whether to ensure the full circle is displayed in the canvas widget, by default True.
+        """
+        # Redefine axes limits
+        if self.toggle_semi_circle:
+            # Get semi circle plot limits
+            circle_plot_limits = [0, 1, 0, 0.5]  # xmin, xmax, ymin, ymax
+        else:
+            # Get polar plot limits
+            circle_plot_limits = [-1, 1, -1, 1]  # xmin, xmax, ymin, ymax
+        # Check if histogram is plotted
+        if (
+            self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram
+            is not None
+        ):
+            # Get histogram data limits
+            histogram_limits = (
+                self.canvas_widget.artists[ArtistType.HISTOGRAM2D]
+                .histogram[-1]
+                .get_datalim(self.canvas_widget.axes.transData)
+            )
+            plotted_data_limits = [
+                histogram_limits.x0,
+                histogram_limits.x1,
+                histogram_limits.y0,
+                histogram_limits.y1,
+            ]
+        else:
+            plotted_data_limits = circle_plot_limits
+        # Check if full circle should be displayed
+        if not ensure_full_circle_displayed:
+            # If not, only the data limits are used
+            circle_plot_limits = plotted_data_limits
+
+        x_range = np.amax(
+            [plotted_data_limits[1], circle_plot_limits[1]]
+        ) - np.amin([plotted_data_limits[0], circle_plot_limits[0]])
+        y_range = np.amax(
+            [plotted_data_limits[3], circle_plot_limits[3]]
+        ) - np.amin([plotted_data_limits[2], circle_plot_limits[2]])
+        # 10% of the range as a frame
+        xlim_0 = (
+            np.amin([plotted_data_limits[0], circle_plot_limits[0]])
+            - 0.1 * x_range
+        )
+        xlim_1 = (
+            np.amax([plotted_data_limits[1], circle_plot_limits[1]])
+            + 0.1 * x_range
+        )
+        ylim_0 = (
+            np.amin([plotted_data_limits[2], circle_plot_limits[2]])
+            - 0.1 * y_range
+        )
+        ylim_1 = (
+            np.amax([plotted_data_limits[3], circle_plot_limits[3]])
+            + 0.1 * y_range
+        )
+
+        self.canvas_widget.axes.set_ylim([ylim_0, ylim_1])
+        self.canvas_widget.axes.set_xlim([xlim_0, xlim_1])
+        self.canvas_widget.figure.canvas.draw_idle()
+
+    def _update_plot_bg_color(self, color=None):
+        """Change the background color of the canvas widget.
+
+        Parameters
+        ----------
+        color : str, optional
+            The color to set the background, by default None. If None, the first color of the histogram colormap is used.
+        """
+        if color is None:
+            self.canvas_widget.axes.set_facecolor(
+                self.canvas_widget.artists[
+                    ArtistType.HISTOGRAM2D
+                ].histogram_colormap(0)
+            )
+        else:
+            self.canvas_widget.axes.set_facecolor(color)
+        self.canvas_widget.figure.canvas.draw_idle()
 
     @property
     def plot_type(self):
@@ -471,6 +826,8 @@ class PlotterWidget(QWidget):
         self.plotter_inputs_widget.threshold_slider.setMaximum(
             ceil(max_mean_value * self.threshold_factor)
         )
+        # Add default selection id to table if not present
+        self.add_selection_id_to_features("MANUAL SELECTION #1")
 
     def get_features(self):
         """Get the G and S features for the selected harmonic and selection id.
@@ -600,8 +957,6 @@ class PlotterWidget(QWidget):
                 .histogram[-1]
                 .norm,
             )
-            # self.colorbar = self.canvas_widget.figure.colorbar(self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram[-1], ax=self.canvas_widget.artists[ArtistType.HISTOGRAM2D].ax, use_gridspec=True)
-
             # set colorbar tick color
             self.colorbar.ax.yaxis.set_tick_params(color="white")
             # set colorbar edgecolor
@@ -622,7 +977,10 @@ class PlotterWidget(QWidget):
             if self.colorbar is not None:
                 # remove colorbar
                 self.colorbar.remove()
-
+                self.colorbar = None
+        # Update axes limits
+        self._redefine_axes_limits()
+        self._update_plot_bg_color()
         self.create_phasors_selected_layer()
 
     def create_phasors_selected_layer(self):
