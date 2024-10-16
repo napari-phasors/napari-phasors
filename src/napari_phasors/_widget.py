@@ -74,6 +74,7 @@ class PhasorTransform(QWidget):
             ".ptu": PtuWidget,
             ".lsm": LsmWidget,
             ".tif": LsmWidget,
+            ".sdt": SdtWidget,
         }
 
     def _on_change(self, current, model):
@@ -306,6 +307,44 @@ class LsmWidget(AdvancedOptionsWidget):
             )
         )
         self.mainLayout.addWidget(self.btn)
+
+
+class SdtWidget(AdvancedOptionsWidget):
+    """Widget for SDT files."""
+
+    def __init__(self, viewer, path):
+        """Initialize the widget."""
+        super().__init__(viewer, path)
+
+    def initUI(self):
+        """Initialize the user interface."""
+        super().initUI()
+        self._harmonic_widget()
+
+        # Index selector
+        self.mainLayout.addWidget(QLabel("Index (optional): "))
+        self.index = QLineEdit()
+        self.index.setText("0")
+        self.index.setToolTip(
+            "Index of dataset to read in case the file contains multiple "
+            "datasets. By default, the first dataset is read."
+        )
+        self.mainLayout.addWidget(self.index)
+
+        # Calculate phasor button
+        self.btn = QPushButton("Phasor Transform")
+        self.btn.clicked.connect(
+            lambda: self._on_click(
+                self.path, self.reader_options, self.harmonics
+            )
+        )
+        self.mainLayout.addWidget(self.btn)
+
+    def _on_click(self, path, reader_options, harmonics):
+        """Callback whenever the calculate phasor button is clicked."""
+        if self.index.text():
+            reader_options["index"] = float(self.index.text())
+        super()._on_click(path, reader_options, harmonics)
 
 
 class CalibrationWidget(QWidget):

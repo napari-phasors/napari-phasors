@@ -69,7 +69,13 @@ Commented file extensions are not supported at the moment.
 
 """
 
-iter_index_mapping = {".ptu": "C", ".fbd": "C", ".lsm": None, ".tif": None}
+iter_index_mapping = {
+    ".ptu": "C",
+    ".fbd": "C",
+    ".lsm": None,
+    ".tif": None,
+    '.sdt': None,
+}
 """This dictionary contains the mapping for the axis to iterate over
 when calculating phasor coordinates in the file.
 """
@@ -155,6 +161,10 @@ def raw_file_reader(
         if file_extension == ".tif":
             mean_intensity_image, G_image, S_image = phasor_from_signal(
                 raw_data, axis=0, harmonic=harmonics
+            )
+        elif file_extension == '.sdt':
+            mean_intensity_image, G_image, S_image = phasor_from_signal(
+                raw_data, axis=-1, harmonic=harmonics
             )
         else:
             # Calculate phasor over channels if file is of hyperspectral type
