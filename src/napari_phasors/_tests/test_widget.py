@@ -381,13 +381,13 @@ def test_calibration_widget(make_napari_viewer):
     calibrated_real = np.reshape(
         viewer.layers[0]
         .metadata["phasor_features_labels_layer"]
-        .features["G"],
+        .features["G_original"],
         (len(harmonic),) + original_mean.data.shape,
     )
     calibrated_imag = np.reshape(
         viewer.layers[0]
         .metadata["phasor_features_labels_layer"]
-        .features["S"],
+        .features["S_original"],
         (len(harmonic),) + original_mean.data.shape,
     )
     expected_real, expected_imag = phasor_calibrate(

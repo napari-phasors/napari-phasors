@@ -391,19 +391,19 @@ class CalibrationWidget(QWidget):
                 skip_axis = (0,)
                 real, imag = phasor_calibrate(
                     np.reshape(
-                        sample_phasor_data["G"],
+                        sample_phasor_data["G_original"],
                         (len(harmonics),) + original_mean_shape,
                     ),
                     np.reshape(
-                        sample_phasor_data["S"],
+                        sample_phasor_data["S_original"],
                         (len(harmonics),) + original_mean_shape,
                     ),
                     np.reshape(
-                        calibration_phasor_data["G"],
+                        calibration_phasor_data["G_original"],
                         (len(harmonics),) + original_mean_shape,
                     ),
                     np.reshape(
-                        calibration_phasor_data["S"],
+                        calibration_phasor_data["S_original"],
                         (len(harmonics),) + original_mean_shape,
                     ),
                     frequency=frequency * np.array(harmonics),
@@ -412,15 +412,15 @@ class CalibrationWidget(QWidget):
                 )
             else:
                 real, imag = phasor_calibrate(
-                    sample_phasor_data["G"],
-                    sample_phasor_data["S"],
-                    calibration_phasor_data["G"],
-                    calibration_phasor_data["S"],
+                    sample_phasor_data["G_original"],
+                    sample_phasor_data["S_original"],
+                    calibration_phasor_data["G_original"],
+                    calibration_phasor_data["S_original"],
                     frequency=frequency,
                     lifetime=lifetime,
                 )
-            sample_phasor_data["G"] = real.flatten()
-            sample_phasor_data["S"] = imag.flatten()
+            sample_phasor_data["G_original"] = real.flatten()
+            sample_phasor_data["S_original"] = imag.flatten()
             sample_metadata["calibrated"] = True
             show_info(f"Calibrated {sample_name}")
         elif sample_metadata["calibrated"] is True:
