@@ -812,6 +812,7 @@ class PlotterWidget(QWidget):
             if self.colorbar is not None:
                 # remove colorbar
                 self.colorbar.remove()
+                self.colorbar = None
         # Update axes limits
         self._redefine_axes_limits()
         self._update_plot_bg_color()
