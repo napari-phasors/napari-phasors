@@ -70,6 +70,7 @@ def apply_filter_and_threshold(
     layer.refresh()
     return
 
+
 def turbo_first_color_changed_colormap(first='white'):
     """Create a colormap with the first color being white.
 
@@ -80,6 +81,7 @@ def turbo_first_color_changed_colormap(first='white'):
 
     """
     from napari.utils.colormaps import Colormap, ALL_COLORMAPS
+
     if first == 'white':
         color = (1, 1, 1, 1)
     elif first == 'black':

@@ -25,7 +25,10 @@ from napari_phasors._synthetic_generator import (
     make_intensity_layer_with_phasors,
     make_raw_flim_data,
 )
-from napari_phasors._utils import apply_filter_and_threshold, turbo_first_color_changed_colormap
+from napari_phasors._utils import (
+    apply_filter_and_threshold,
+    turbo_first_color_changed_colormap,
+)
 
 if TYPE_CHECKING:
     import napari
@@ -695,7 +698,10 @@ class PlotterWidget(QWidget):
     @histogram_colormap.setter
     def histogram_colormap(self, colormap: str):
         """Sets the histogram colormap from the colormap combobox."""
-        if colormap not in colormaps.ALL_COLORMAPS.keys() and colormap != "turbo_white_first":
+        if (
+            colormap not in colormaps.ALL_COLORMAPS.keys()
+            and colormap != "turbo_white_first"
+        ):
             notifications.WarningNotification(
                 f"{colormap} is not a valid colormap. Setting to default colormap."
             )
