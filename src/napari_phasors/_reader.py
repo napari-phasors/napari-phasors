@@ -30,6 +30,12 @@ extension_mapping = {
             {"frame": (-1, False), "keepdims": (True, False)},
             reader_options,
         ),
+        ".sdt": lambda path, reader_options: _parse_and_call_io_function(
+            path,
+            io.read_sdt,
+            {},
+            reader_options,
+        ),
         ".lsm": lambda path, reader_options: _parse_and_call_io_function(
             path,
             io.read_lsm,
@@ -43,7 +49,6 @@ extension_mapping = {
             reader_options,
         ),
         # ".flif": lambda path: io.read_flif(path),
-        # ".sdt": lambda path: io.read_sdt(path),
         # ".bh": lambda path: io.read_bh(path),
         # ".bhz": lambda path: io.read_bhz(path),
         # ".ifli": lambda path: io.read_ifli(),
