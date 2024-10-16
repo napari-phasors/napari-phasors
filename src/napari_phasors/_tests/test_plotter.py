@@ -36,7 +36,10 @@ def test_phasor_plotter(make_napari_viewer):
     phasors_table = intensity_image_layer.metadata[
         "phasor_features_labels_layer"
     ].features
-    assert phasors_table.shape == (30, 6)
+    assert phasors_table.shape == (
+        30,
+        7,
+    )  # table now has 6 DATA columns + 1 SELECTION column
     assert "MANUAL SELECTION #1" in phasors_table.columns
 
     # Check initial axes limits
@@ -87,8 +90,8 @@ def test_phasor_plotter(make_napari_viewer):
     phasors_table = intensity_image_layer.metadata[
         "phasor_features_labels_layer"
     ].features
-    # table now has 5 DATA columns + 2 SELECTION columns
-    assert phasors_table.shape == (30, 7)
+    # table now has 6 DATA columns + 2 SELECTION columns
+    assert phasors_table.shape == (30, 8)
     assert "selection_1" in phasors_table.columns
     # Select first 3 points
     manual_selection = np.array([1, 1, 1, 0, 0, 0, 0])
