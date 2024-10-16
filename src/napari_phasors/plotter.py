@@ -25,7 +25,7 @@ from napari_phasors._synthetic_generator import (
     make_intensity_layer_with_phasors,
     make_raw_flim_data,
 )
-from napari_phasors._utils import apply_filter_and_threshold
+from napari_phasors._utils import apply_filter_and_threshold, turbo_first_color_changed_colormap
 
 if TYPE_CHECKING:
     import napari
@@ -184,10 +184,11 @@ class PlotterWidget(QWidget):
         )
         # Populate colormap combobox
         self.extra_inputs_widget.colormap_combobox.addItems(
-            list(colormaps.ALL_COLORMAPS.keys())
+            ["turbo_white_first"] + list(colormaps.ALL_COLORMAPS.keys())
         )
         self.histogram_colormap = (
-            "turbo"  # Set default colormap (same as in biaplotter)
+            "turbo_white_first"
+            # turbo_first_color_changed_colormap()
         )
 
         # Connect canvas signals
@@ -209,9 +210,10 @@ class PlotterWidget(QWidget):
         self._colormap = self.canvas_widget.artists[
             ArtistType.HISTOGRAM2D
         ].categorical_colormap
-        self._histogram_colormap = self.canvas_widget.artists[
-            ArtistType.HISTOGRAM2D
-        ].histogram_colormap
+        self._histogram_colormap = turbo_first_color_changed_colormap()
+        # self._histogram_colormap = self.canvas_widget.artists[
+        #     ArtistType.HISTOGRAM2D
+        # ].histogram_colormap
         # Start with the histogram2d plot type
         self.plot_type = ArtistType.HISTOGRAM2D.name
 
@@ -693,7 +695,7 @@ class PlotterWidget(QWidget):
     @histogram_colormap.setter
     def histogram_colormap(self, colormap: str):
         """Sets the histogram colormap from the colormap combobox."""
-        if colormap not in colormaps.ALL_COLORMAPS.keys():
+        if colormap not in colormaps.ALL_COLORMAPS.keys() and colormap != "turbo_white_first":
             notifications.WarningNotification(
                 f"{colormap} is not a valid colormap. Setting to default colormap."
             )
@@ -906,9 +908,12 @@ class PlotterWidget(QWidget):
         # Set selection data in the active artist
         self.canvas_widget.active_artist.color_indices = selection_id_data
         # Set colormap in the active artist
-        selected_histogram_colormap = colormaps.ALL_COLORMAPS[
-            self.histogram_colormap
-        ]
+        if self.histogram_colormap == "turbo_white_first":
+            selected_histogram_colormap = turbo_first_color_changed_colormap()
+        else:
+            selected_histogram_colormap = colormaps.ALL_COLORMAPS[
+                self.histogram_colormap
+            ]
         # Temporary convertion to LinearSegmentedColormap to match matplotlib format, while biaplotter is not updated
         selected_histogram_colormap = LinearSegmentedColormap.from_list(
             selected_histogram_colormap.name,
