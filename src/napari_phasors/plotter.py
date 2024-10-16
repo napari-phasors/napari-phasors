@@ -218,7 +218,7 @@ class PlotterWidget(QWidget):
         # Set intial axes limits
         self._redefine_axes_limits()
         # Set initial background color
-        self._update_plot_bg_color()
+        self._update_plot_bg_color(color="white")
         # Populate labels layer combobox
         self.reset_layer_choices()
 
@@ -899,6 +899,8 @@ class PlotterWidget(QWidget):
         self.canvas_widget.active_artist = self.canvas_widget.artists[
             ArtistType[self.plot_type]
         ]
+        self.canvas_widget.active_artist.ax.set_facecolor('white')
+        self.canvas_widget.artists[ArtistType.HISTOGRAM2D].cmin = 1
         # Set data in the active artist
         self.canvas_widget.active_artist.data = np.column_stack(
             (x_data, y_data)
@@ -980,7 +982,7 @@ class PlotterWidget(QWidget):
                 self.colorbar = None
         # Update axes limits
         self._redefine_axes_limits()
-        self._update_plot_bg_color()
+        self._update_plot_bg_color(color="white")
         self.create_phasors_selected_layer()
 
     def create_phasors_selected_layer(self):
