@@ -8,6 +8,8 @@ import warnings
 import numpy as np
 from napari.layers import Image
 from phasorpy.phasor import phasor_filter, phasor_threshold
+from napari.utils.colormaps import Colormap
+from napari.utils.colormaps import ALL_COLORMAPS
 
 
 def apply_filter_and_threshold(
@@ -69,3 +71,24 @@ def apply_filter_and_threshold(
     layer.data = mean
     layer.refresh()
     return
+
+
+def turbo_first_color_changed_colormap(first='white'):
+    """Create a colormap with the first color being white.
+
+    Returns
+    -------
+    colormap : np.ndarray
+        Colormap with the first color being white.
+
+    """
+    if first == 'white':
+        color = (1, 1, 1, 1)
+    elif first == 'black':
+        color = (0, 0, 0, 1)
+    else:
+        raise ValueError(f"Invalid value for first: {first}")
+    turbo_colors = ALL_COLORMAPS['turbo'].colors.copy()
+    turbo_colors[0] = color
+    turbo_colormap = Colormap(turbo_colors, name='turbo_' + first + '_first')
+    return turbo_colormap
