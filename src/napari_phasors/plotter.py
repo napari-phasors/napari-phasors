@@ -1,10 +1,10 @@
+import math
 from math import ceil, log10
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import matplotlib.ticker as ticker
 import numpy as np
-import math
 from biaplotter.plotter import ArtistType, CanvasWidget
 from matplotlib.colorbar import Colorbar
 from matplotlib.colors import LinearSegmentedColormap, LogNorm, Normalize
@@ -383,10 +383,26 @@ class PlotterWidget(QWidget):
                 artist.set_alpha(alpha)
         else:
             self.polar_plot_artist_list.append(
-                ax.add_line(Line2D([-1, 1], [0, 0], linestyle='-', linewidth = 1, color='black'))
+                ax.add_line(
+                    Line2D(
+                        [-1, 1],
+                        [0, 0],
+                        linestyle='-',
+                        linewidth=1,
+                        color='black',
+                    )
+                )
             )
             self.polar_plot_artist_list.append(
-                ax.add_line(Line2D([0, 0], [-1, 1], linestyle='-', linewidth = 1, color='black'))
+                ax.add_line(
+                    Line2D(
+                        [0, 0],
+                        [-1, 1],
+                        linestyle='-',
+                        linewidth=1,
+                        color='black',
+                    )
+                )
             )
             self.polar_plot_artist_list.append(
                 ax.add_patch(Circle((0, 0), 1, fill=False))
@@ -399,10 +415,26 @@ class PlotterWidget(QWidget):
                 x = math.cos(math.pi / a)
                 y = math.sin(math.pi / a)
                 self.polar_plot_artist_list.append(
-                    ax.add_line(Line2D([-x, x], [-y, y], linestyle=':', linewidth = 0.5, color='black'))
+                    ax.add_line(
+                        Line2D(
+                            [-x, x],
+                            [-y, y],
+                            linestyle=':',
+                            linewidth=0.5,
+                            color='black',
+                        )
+                    )
                 )
                 self.polar_plot_artist_list.append(
-                    ax.add_line(Line2D([-x, x], [y, -y], linestyle=':', linewidth = 0.5, color='black'))
+                    ax.add_line(
+                        Line2D(
+                            [-x, x],
+                            [y, -y],
+                            linestyle=':',
+                            linewidth=0.5,
+                            color='black',
+                        )
+                    )
                 )
         return ax
 
