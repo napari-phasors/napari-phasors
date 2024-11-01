@@ -11,8 +11,9 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from napari.layers import Image
+from napari.utils import colormaps
 from napari.utils.notifications import show_error, show_info
-from phasorpy.phasor import phasor_calibrate
+from phasorpy.phasor import phasor_calibrate, phasor_to_apparent_lifetime
 from qtpy import uic
 from qtpy.QtGui import QDoubleValidator
 from qtpy.QtWidgets import (
@@ -523,3 +524,114 @@ class WriterWidget(QWidget):
         export_path = os.path.join(self.save_path.text(), export_file_name)
         export_path = write_ome_tiff(export_path, export_layer)
         show_info(f"Exported {export_layer_name} to {export_path}")
+
+
+class LifetimeWidget(QWidget):
+    """Widget to calibrate a FLIM image layer using a calibration image."""
+
+    def __init__(self, viewer: "napari.viewer.Viewer"):
+        super().__init__()
+        self.viewer = viewer
+        self._labels_layer_with_phasor_features = None
+        self._lifetime_layer = None
+
+        # Create main layout
+        self.main_layout = QVBoxLayout(self)
+        # Select layer to calculate lifetime
+        self.main_layout.addWidget(QLabel("Select layer to calculate lifetime: "))
+        self.layer_combobox = QComboBox()
+        self.layer_combobox.currentIndexChanged.connect(self._on_layers_combobox_change)
+        self.main_layout.addWidget(self.layer_combobox)
+        # Frequency input
+        self.main_layout.addWidget(QLabel("Frequency: "))
+        self.frequency_input = QLineEdit()
+        self.frequency_input.setValidator(QDoubleValidator())
+        self.frequency_input.setPlaceholderText("Frequency")
+        self.main_layout.addWidget(self.frequency_input)
+        # Add colormap combobox
+        self.lifetime_colormap_combobox = QComboBox()
+        self.lifetime_colormap_combobox.addItems(colormaps.ALL_COLORMAPS.keys())
+        self.lifetime_colormap_combobox.setCurrentText("turbo")
+        self.main_layout.addWidget(QLabel("Lifetime colormap: "))
+        # Add combobox to select between phase or modulation apparent lifetime
+        self.main_layout.addWidget(QLabel("Show phase of modulation apparent lifetime: "))
+        self.lifetime_type_combobox = QComboBox()
+        self.lifetime_type_combobox.addItems(["Phase", "Modulation"])
+        self.lifetime_type_combobox.setCurrentText("Phase")
+        self.main_layout.addWidget(self.lifetime_type_combobox)
+        # Plot lifetime button
+        plot_lifetime_button = QPushButton("Plot Lifetime")
+        self.plot_lifetime_button.clicked.connect(self._on_click)
+        self.main_layout.addWidget(plot_lifetime_button)
+        # Connect layer events to populate combobox
+        self.viewer.layers.events.inserted.connect(self._populate_layers_combobox)
+        self.viewer.layers.events.removed.connect(self._populate_layers_combobox)
+
+        # Populate combobox
+        self._populate_layers_combobox()
+
+
+    @property
+    def lifetime_colormap(self):
+        """Gets or sets the lifetime colormap from the colormap combobox.
+
+        Returns
+        -------
+        str
+            The colormap name.
+        """
+        return self.lifetime_colormap_combobox.currentText()
+
+    @lifetime_colormap.setter
+    def lifetime_colormap(self, colormap: str):
+        """Sets the lifetime colormap from the colormap combobox."""
+        if colormap not in colormaps.ALL_COLORMAPS.keys():
+            show_error(f"{colormap} is not a valid colormap. Setting to default colormap.")
+            colormap = self.lifetime_colormap.name
+        self.lifetime_colormap_combobox.setCurrentText(colormap)
+    
+    def _populate_layers_combobox(self):
+        """Populate combobox with image layers."""
+        self.layer_combobox.clear()
+        image_layers = [
+            layer for layer in self.viewer.layers if isinstance(layer, Image)
+        ]
+        for layer in image_layers:
+            self.layer_combobox.addItem(layer.name)
+    
+    def _on_layers_combobox_change(self):
+        """Callback whenever the layer combobox changes."""
+        # TODO: get the frequency automatically from the metadata
+        self._labels_layer_with_phasor_features = (
+            self.layer_combobox.currentText()
+        )
+
+    def create_lifetime_layer(self):
+        """Create or update the lifetime layer."""
+        if self._labels_layer_with_phasor_features is None:
+            return
+        
+        # Build output phasors Labels layer
+        phasors_selected_layer = Labels(
+            mapped_data,
+            name="Phasors Selected",
+            scale=self._labels_layer_with_phasor_features.scale,
+            colormap=DirectLabelColormap(
+                color_dict=color_dict, name="cat10_mod"
+            ),
+        )
+        if self._lifetime_layer is None:
+            self._lifetime_layer = self.viewer.add_layer(
+                phasors_selected_layer
+            )
+        else:
+            self._lifetime_layer.data = mapped_data
+            self._lifetime_layer.scale = (
+                self._labels_layer_with_phasor_features.scale
+            )
+
+    def _on_click(self):
+        """Callback whenever the plot lifetime button is clicked."""
+        frequency = float(self.frequency_input.text())
+        colormap = self.lifetime_colormap
+        lifetime_type = self.lifetime_type_combobox.currentText()
