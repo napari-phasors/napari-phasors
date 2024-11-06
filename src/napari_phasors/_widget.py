@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-from napari.layers import Image
-from napari.utils import colormaps
+from napari.layers import Image, Labels
+from napari.utils import colormaps, DirectLabelColormap
 from napari.utils.notifications import show_error, show_info
 from phasorpy.phasor import phasor_calibrate, phasor_to_apparent_lifetime
 from qtpy import uic
@@ -29,11 +29,12 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
-from napari_phasors.plotter import PlotterWidget
+import matplotlib.cm as cm
+import matplotlib.colors as mcolors
 
 from ._reader import _get_filename_extension, napari_get_reader
 from ._writer import write_ome_tiff
+from ._utils import colormap_to_dict
 
 if TYPE_CHECKING:
     import napari
@@ -532,8 +533,9 @@ class LifetimeWidget(QWidget):
     def __init__(self, viewer: "napari.viewer.Viewer"):
         super().__init__()
         self.viewer = viewer
+        self.lifetime_data = None
         self._labels_layer_with_phasor_features = None
-        self._lifetime_layer = None
+        self.lifetime_layer = None
 
         # Create main layout
         self.main_layout = QVBoxLayout(self)
@@ -546,13 +548,13 @@ class LifetimeWidget(QWidget):
         self.main_layout.addWidget(QLabel("Frequency: "))
         self.frequency_input = QLineEdit()
         self.frequency_input.setValidator(QDoubleValidator())
-        self.frequency_input.setPlaceholderText("Frequency")
         self.main_layout.addWidget(self.frequency_input)
         # Add colormap combobox
+        self.main_layout.addWidget(QLabel("Lifetime colormap: "))
         self.lifetime_colormap_combobox = QComboBox()
         self.lifetime_colormap_combobox.addItems(colormaps.ALL_COLORMAPS.keys())
         self.lifetime_colormap_combobox.setCurrentText("turbo")
-        self.main_layout.addWidget(QLabel("Lifetime colormap: "))
+        self.main_layout.addWidget(self.lifetime_colormap_combobox)
         # Add combobox to select between phase or modulation apparent lifetime
         self.main_layout.addWidget(QLabel("Show phase of modulation apparent lifetime: "))
         self.lifetime_type_combobox = QComboBox()
@@ -561,7 +563,7 @@ class LifetimeWidget(QWidget):
         self.main_layout.addWidget(self.lifetime_type_combobox)
         # Plot lifetime button
         plot_lifetime_button = QPushButton("Plot Lifetime")
-        self.plot_lifetime_button.clicked.connect(self._on_click)
+        plot_lifetime_button.clicked.connect(self._on_click)
         self.main_layout.addWidget(plot_lifetime_button)
         # Connect layer events to populate combobox
         self.viewer.layers.events.inserted.connect(self._populate_layers_combobox)
@@ -602,36 +604,68 @@ class LifetimeWidget(QWidget):
     def _on_layers_combobox_change(self):
         """Callback whenever the layer combobox changes."""
         # TODO: get the frequency automatically from the metadata
-        self._labels_layer_with_phasor_features = (
-            self.layer_combobox.currentText()
-        )
+        layer_name = self.layer_combobox.currentText()
+        if layer_name == "":
+            self._labels_layer_with_phasor_features = None
+            return
+        self._labels_layer_with_phasor_features = self.viewer.layers[layer_name].metadata['phasor_features_labels_layer']
 
     def create_lifetime_layer(self):
         """Create or update the lifetime layer."""
-        if self._labels_layer_with_phasor_features is None:
+        if self.lifetime_data is None:
             return
-        
-        # Build output phasors Labels layer
-        phasors_selected_layer = Labels(
-            mapped_data,
-            name="Phasors Selected",
+        cmap = cm.get_cmap(self.lifetime_colormap)
+        color_dict = colormap_to_dict(cmap, cmap.N, exclude_first=True)
+        # Normalize the array values to the range [0, 1]
+        # norm = mcolors.Normalize(vmin=self.lifetime_data.min(), vmax=self.lifetime_data.max())
+        # # Apply the colormap to the normalized array
+        # colored_lifetimes = cmap(norm(self.lifetime_data))
+        # max_lifetime = np.round(np.nanmax(self.lifetime_data))
+        # normalized_arr = (self.lifetime_data - np.min(self.lifetime_data)) / (np.max(self.lifetime_data) - np.min(self.lifetime_data))
+        # # Step 2: Scale to the range [0, 1000]
+        # scaled_arr = normalized_arr * max_lifetime
+        # Step 3: Round to the nearest integer
+        lifetime_array = np.round(self.lifetime_data).astype(int)
+        # Build lifetime layer
+        lifetime_layer_name = f"Lifetime: {self.layer_combobox.currentText()}"
+        selected_lifetime_layer = Labels(
+            lifetime_array,
+            name=lifetime_layer_name,
             scale=self._labels_layer_with_phasor_features.scale,
             colormap=DirectLabelColormap(
-                color_dict=color_dict, name="cat10_mod"
+                color_dict=color_dict, name=self.lifetime_colormap
             ),
         )
-        if self._lifetime_layer is None:
-            self._lifetime_layer = self.viewer.add_layer(
-                phasors_selected_layer
-            )
+        # Check if the layer is in the viewer before attempting to remove it
+        if lifetime_layer_name in self.viewer.layers:
+            self.viewer.layers.remove(self.viewer.layers[lifetime_layer_name])
+
+        self.lifetime_layer = self.viewer.add_layer(
+            selected_lifetime_layer
+        )
+            
+    def calculate_lifetimes(self):
+        if self._labels_layer_with_phasor_features is None:
+            return
+        phasor_data = self._labels_layer_with_phasor_features.features
+        frequency = float(self.frequency_input.text())
+        lifetimes = phasor_to_apparent_lifetime(
+            phasor_data['G'], phasor_data['S'], frequency=frequency
+        )
+        lifetimes = np.nan_to_num(lifetimes, nan=0)
+        lifetimes = np.clip(lifetimes, a_min=0, a_max=None)
+        harmonics = np.unique(phasor_data['harmonic'])
+        mean_shape =  self._labels_layer_with_phasor_features.data.shape
+        if self.lifetime_type_combobox.currentText() == "Phase":
+            self.lifetime_data = np.reshape(lifetimes[0], (len(harmonics),) + mean_shape)
         else:
-            self._lifetime_layer.data = mapped_data
-            self._lifetime_layer.scale = (
-                self._labels_layer_with_phasor_features.scale
-            )
+            self.lifetime_data = np.reshape(lifetimes[1], (len(harmonics),) + mean_shape)
 
     def _on_click(self):
         """Callback whenever the plot lifetime button is clicked."""
-        frequency = float(self.frequency_input.text())
-        colormap = self.lifetime_colormap
-        lifetime_type = self.lifetime_type_combobox.currentText()
+        if self.frequency_input.text() == "":
+            show_error("Enter frequency")
+            return
+        self.calculate_lifetimes()
+        self.create_lifetime_layer()
+

@@ -27,6 +27,9 @@ contributions:
     - id: napari-phasors.WriterWidget
       python_name: napari_phasors:WriterWidget
       title: Export to OME-TIF Widget
+    - id: napari-phasors.LifetimeWidget
+      python_name: napari_phasors:LifetimeWidget
+      title: Plot lifetime image
   readers:
     - command: napari-phasors.get_reader
       accepts_directories: false
@@ -49,3 +52,5 @@ contributions:
       display_name: Calibration Widget
     - command: napari-phasors.WriterWidget
       display_name: Export to OME-TIF Widget
+    - command: napari-phasors.LifetimeWidget
+      display_name: Lifetime Widget
