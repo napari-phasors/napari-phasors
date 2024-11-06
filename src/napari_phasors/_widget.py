@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-from napari.layers import Image, Labels
+from napari.layers import Image
 from napari.utils import colormaps, DirectLabelColormap
 from napari.utils.notifications import show_error, show_info
 from phasorpy.phasor import phasor_calibrate, phasor_to_apparent_lifetime
@@ -29,12 +29,13 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
 from ._reader import _get_filename_extension, napari_get_reader
 from ._writer import write_ome_tiff
-from ._utils import colormap_to_dict
 
 if TYPE_CHECKING:
     import napari
@@ -536,6 +537,7 @@ class LifetimeWidget(QWidget):
         self.lifetime_data = None
         self._labels_layer_with_phasor_features = None
         self.lifetime_layer = None
+        self.lifetime_histogram = None
 
         # Create main layout
         self.main_layout = QVBoxLayout(self)
@@ -552,7 +554,7 @@ class LifetimeWidget(QWidget):
         # Add colormap combobox
         self.main_layout.addWidget(QLabel("Lifetime colormap: "))
         self.lifetime_colormap_combobox = QComboBox()
-        self.lifetime_colormap_combobox.addItems(colormaps.ALL_COLORMAPS.keys())
+        self.lifetime_colormap_combobox.addItems(plt.colormaps())
         self.lifetime_colormap_combobox.setCurrentText("turbo")
         self.main_layout.addWidget(self.lifetime_colormap_combobox)
         # Add combobox to select between phase or modulation apparent lifetime
@@ -572,6 +574,10 @@ class LifetimeWidget(QWidget):
         # Populate combobox
         self._populate_layers_combobox()
 
+        # Add layout for histogram
+        self.histogram_widget = QWidget(self)
+        self.histogram_layout = QVBoxLayout(self.histogram_widget)
+        self.main_layout.addWidget(self.histogram_widget)
 
     @property
     def lifetime_colormap(self):
@@ -587,7 +593,7 @@ class LifetimeWidget(QWidget):
     @lifetime_colormap.setter
     def lifetime_colormap(self, colormap: str):
         """Sets the lifetime colormap from the colormap combobox."""
-        if colormap not in colormaps.ALL_COLORMAPS.keys():
+        if colormap not in plt.colormaps():
             show_error(f"{colormap} is not a valid colormap. Setting to default colormap.")
             colormap = self.lifetime_colormap.name
         self.lifetime_colormap_combobox.setCurrentText(colormap)
@@ -609,41 +615,7 @@ class LifetimeWidget(QWidget):
             self._labels_layer_with_phasor_features = None
             return
         self._labels_layer_with_phasor_features = self.viewer.layers[layer_name].metadata['phasor_features_labels_layer']
-
-    def create_lifetime_layer(self):
-        """Create or update the lifetime layer."""
-        if self.lifetime_data is None:
-            return
-        cmap = cm.get_cmap(self.lifetime_colormap)
-        color_dict = colormap_to_dict(cmap, cmap.N, exclude_first=True)
-        # Normalize the array values to the range [0, 1]
-        # norm = mcolors.Normalize(vmin=self.lifetime_data.min(), vmax=self.lifetime_data.max())
-        # # Apply the colormap to the normalized array
-        # colored_lifetimes = cmap(norm(self.lifetime_data))
-        # max_lifetime = np.round(np.nanmax(self.lifetime_data))
-        # normalized_arr = (self.lifetime_data - np.min(self.lifetime_data)) / (np.max(self.lifetime_data) - np.min(self.lifetime_data))
-        # # Step 2: Scale to the range [0, 1000]
-        # scaled_arr = normalized_arr * max_lifetime
-        # Step 3: Round to the nearest integer
-        lifetime_array = np.round(self.lifetime_data).astype(int)
-        # Build lifetime layer
-        lifetime_layer_name = f"Lifetime: {self.layer_combobox.currentText()}"
-        selected_lifetime_layer = Labels(
-            lifetime_array,
-            name=lifetime_layer_name,
-            scale=self._labels_layer_with_phasor_features.scale,
-            colormap=DirectLabelColormap(
-                color_dict=color_dict, name=self.lifetime_colormap
-            ),
-        )
-        # Check if the layer is in the viewer before attempting to remove it
-        if lifetime_layer_name in self.viewer.layers:
-            self.viewer.layers.remove(self.viewer.layers[lifetime_layer_name])
-
-        self.lifetime_layer = self.viewer.add_layer(
-            selected_lifetime_layer
-        )
-            
+    
     def calculate_lifetimes(self):
         if self._labels_layer_with_phasor_features is None:
             return
@@ -661,6 +633,100 @@ class LifetimeWidget(QWidget):
         else:
             self.lifetime_data = np.reshape(lifetimes[1], (len(harmonics),) + mean_shape)
 
+    def create_lifetime_layer(self):
+        """Create or update the lifetime layer."""
+        if self.lifetime_data is None:
+            return
+        
+        # Flatten the lifetime data for percentile calculation
+        flattened_data = self.lifetime_data.flatten()
+        flattened_data = flattened_data[flattened_data > 0]
+        
+        # Calculate the 5th and 95th percentiles
+        lower_bound = np.percentile(flattened_data, 5)
+        upper_bound = np.percentile(flattened_data, 95)
+        
+        # Normalize the array values to the range [lower_bound, upper_bound]
+        norm = mcolors.Normalize(vmin=lower_bound, vmax=upper_bound)
+        
+        # Choose a colormap
+        cmap = cm.get_cmap(self.lifetime_colormap)
+        
+        # Apply the colormap to the normalized array
+        colored_array = cmap(norm(self.lifetime_data))
+        
+        # Set the first value of the colormap to transparent
+        colored_array[..., -1][self.lifetime_data == self.lifetime_data.min()] = 0
+        
+        # Build lifetime layer
+        lifetime_layer_name = f"Lifetime: {self.layer_combobox.currentText()}"
+        selected_lifetime_layer = Image(
+            colored_array,
+            name=lifetime_layer_name,
+            scale=self._labels_layer_with_phasor_features.scale,
+            colormap=self.lifetime_colormap,
+        )
+        
+        # Check if the layer is in the viewer before attempting to remove it
+        if lifetime_layer_name in self.viewer.layers:
+            self.viewer.layers.remove(self.viewer.layers[lifetime_layer_name])
+
+        self.lifetime_layer = self.viewer.add_layer(
+            selected_lifetime_layer
+        )
+    
+    def plot_lifetime_histogram(self):
+        """Plot the histogram of the lifetime data as a line plot."""
+        if self.lifetime_data is None:
+            return
+        
+        # Flatten the lifetime data for histogram plotting
+        flattened_data = self.lifetime_data.flatten()
+        flattened_data = flattened_data[flattened_data > 0]
+
+        # Calculate the histogram values
+        counts, bin_edges = np.histogram(flattened_data, bins=100)
+        
+        # Calculate the bin centers
+        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+        
+        # Calculate the 5th and 95th percentiles
+        lower_bound = np.percentile(flattened_data, 5)
+        upper_bound = np.percentile(flattened_data, 95)
+        
+        # Create a Matplotlib figure and axis
+        fig, ax = plt.subplots()
+        
+        # Plot the histogram values as a line plot with transparent line color
+        ax.plot(bin_centers, counts, color='none', alpha=0)
+        
+        # Normalize the bin values to the range [lower_bound, upper_bound]
+        norm = plt.Normalize(vmin=lower_bound, vmax=upper_bound)
+        
+        # Get the colormap
+        cmap = plt.get_cmap(self.lifetime_colormap)
+        
+        # Fill the area under the curve using the colormap
+        for count, bin_start, bin_end in zip(counts, bin_edges[:-1], bin_edges[1:]):
+            bin_center = (bin_start + bin_end) / 2
+            color = cmap(norm(bin_center))
+            ax.fill_between([bin_start, bin_end], 0, count, color=color, alpha=0.7)
+        
+        ax.set_title('Lifetime Data Histogram')
+        ax.set_xlabel('Lifetime')
+        ax.set_ylabel('Frequency')
+        
+        # Clear the previous histogram plot
+        for i in reversed(range(self.histogram_layout.count())):
+            widget_to_remove = self.histogram_layout.itemAt(i).widget()
+            self.histogram_layout.removeWidget(widget_to_remove)
+            widget_to_remove.setParent(None)
+        
+        # Embed the Matplotlib figure into the widget
+        canvas = FigureCanvas(fig)
+        self.histogram_layout.addWidget(canvas)
+
+
     def _on_click(self):
         """Callback whenever the plot lifetime button is clicked."""
         if self.frequency_input.text() == "":
@@ -668,4 +734,5 @@ class LifetimeWidget(QWidget):
             return
         self.calculate_lifetimes()
         self.create_lifetime_layer()
+        self.plot_lifetime_histogram()
 
