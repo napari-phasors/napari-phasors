@@ -629,9 +629,12 @@ class PlotterWidget(QWidget):
             ~self._labels_layer_with_phasor_features.features["G"].isna()
             & ~self._labels_layer_with_phasor_features.features["S"].isna()
         )
+        num_valid_rows = valid_rows.sum()
+        # Tile the manual_selection array to match the number of valid rows
+        tiled_manual_selection = np.tile(manual_selection, (num_valid_rows // len(manual_selection)) + 1)[:num_valid_rows]
         self._labels_layer_with_phasor_features.features.loc[
             valid_rows, column
-        ] = np.tile(manual_selection, len(harmonics))[: valid_rows.sum()]
+        ] = tiled_manual_selection
         self.create_phasors_selected_layer()
 
     def reset_layer_choices(self):

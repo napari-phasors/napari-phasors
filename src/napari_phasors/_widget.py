@@ -538,6 +538,8 @@ class LifetimeWidget(QWidget):
         self._labels_layer_with_phasor_features = None
         self.lifetime_layer = None
         self.lifetime_histogram = None
+        self.harmonics = None
+        self.selected_harmonic = None
 
         # Create main layout
         self.main_layout = QVBoxLayout(self)
@@ -579,6 +581,8 @@ class LifetimeWidget(QWidget):
         self.histogram_layout = QVBoxLayout(self.histogram_widget)
         self.main_layout.addWidget(self.histogram_widget)
 
+
+
     @property
     def lifetime_colormap(self):
         """Gets or sets the lifetime colormap from the colormap combobox.
@@ -601,11 +605,14 @@ class LifetimeWidget(QWidget):
     def _populate_layers_combobox(self):
         """Populate combobox with image layers."""
         self.layer_combobox.clear()
-        image_layers = [
-            layer for layer in self.viewer.layers if isinstance(layer, Image)
+        layer_names = [
+            layer.name
+            for layer in self.viewer.layers
+            if isinstance(layer, Image)
+            and "phasor_features_labels_layer" in layer.metadata.keys()
         ]
-        for layer in image_layers:
-            self.layer_combobox.addItem(layer.name)
+        for layer in layer_names:
+            self.layer_combobox.addItem(layer)
     
     def _on_layers_combobox_change(self):
         """Callback whenever the layer combobox changes."""
@@ -613,8 +620,10 @@ class LifetimeWidget(QWidget):
         layer_name = self.layer_combobox.currentText()
         if layer_name == "":
             self._labels_layer_with_phasor_features = None
+            self.histogram_widget.hide()
             return
         self._labels_layer_with_phasor_features = self.viewer.layers[layer_name].metadata['phasor_features_labels_layer']
+        self.harmonics = np.unique(self._labels_layer_with_phasor_features.features['harmonic'])
     
     def calculate_lifetimes(self):
         if self._labels_layer_with_phasor_features is None:
@@ -632,36 +641,49 @@ class LifetimeWidget(QWidget):
             self.lifetime_data = np.reshape(lifetimes[0], (len(harmonics),) + mean_shape)
         else:
             self.lifetime_data = np.reshape(lifetimes[1], (len(harmonics),) + mean_shape)
-
+            
     def create_lifetime_layer(self):
-        """Create or update the lifetime layer."""
+        """Create or update the lifetime layer for all harmonics."""
         if self.lifetime_data is None:
             return
         
-        # Flatten the lifetime data for percentile calculation
-        flattened_data = self.lifetime_data.flatten()
-        flattened_data = flattened_data[flattened_data > 0]
+        # Initialize a list to hold the colored arrays for each harmonic
+        combined_colored_array = []
+
+        # Iterate over each harmonic
+        for harmonic_index in range(len(self.harmonics)):
+            lifetime_data = self.lifetime_data[harmonic_index]
+            
+            # Flatten the lifetime data for percentile calculation
+            flattened_data = lifetime_data.flatten()
+            flattened_data = flattened_data[flattened_data > 0]
+            
+            # Calculate the 5th and 95th percentiles
+            lower_bound = np.percentile(flattened_data, 5)
+            upper_bound = np.percentile(flattened_data, 95)
+            
+            # Normalize the array values to the range [lower_bound, upper_bound]
+            norm = mcolors.Normalize(vmin=lower_bound, vmax=upper_bound)
+            
+            # Choose a colormap
+            cmap = cm.get_cmap(self.lifetime_colormap)
+            
+            # Apply the colormap to the normalized array
+            colored_array = cmap(norm(lifetime_data))
+            
+            # Set the first value of the colormap to transparent
+            colored_array[..., -1][lifetime_data == lifetime_data.min()] = 0
+            
+            # Append the colored array to the list
+            combined_colored_array.append(colored_array)
         
-        # Calculate the 5th and 95th percentiles
-        lower_bound = np.percentile(flattened_data, 5)
-        upper_bound = np.percentile(flattened_data, 95)
-        
-        # Normalize the array values to the range [lower_bound, upper_bound]
-        norm = mcolors.Normalize(vmin=lower_bound, vmax=upper_bound)
-        
-        # Choose a colormap
-        cmap = cm.get_cmap(self.lifetime_colormap)
-        
-        # Apply the colormap to the normalized array
-        colored_array = cmap(norm(self.lifetime_data))
-        
-        # Set the first value of the colormap to transparent
-        colored_array[..., -1][self.lifetime_data == self.lifetime_data.min()] = 0
+        # Stack the colored arrays along a new axis to combine them
+        combined_colored_array = np.stack(combined_colored_array, axis=0)
         
         # Build lifetime layer
         lifetime_layer_name = f"Lifetime: {self.layer_combobox.currentText()}"
         selected_lifetime_layer = Image(
-            colored_array,
+            combined_colored_array,
             name=lifetime_layer_name,
             scale=self._labels_layer_with_phasor_features.scale,
             colormap=self.lifetime_colormap,
@@ -679,9 +701,14 @@ class LifetimeWidget(QWidget):
         """Plot the histogram of the lifetime data as a line plot."""
         if self.lifetime_data is None:
             return
-        
+        if self._labels_layer_with_phasor_features is None:
+            return
+        if self.selected_harmonic is None:
+            self.selected_harmonic = self.harmonics.min()
+        harmonic_index = list(self.harmonics).index(self.selected_harmonic)
+        lifetime_data = self.lifetime_data[harmonic_index]
         # Flatten the lifetime data for histogram plotting
-        flattened_data = self.lifetime_data.flatten()
+        flattened_data = lifetime_data.flatten()
         flattened_data = flattened_data[flattened_data > 0]
 
         # Calculate the histogram values
@@ -716,16 +743,38 @@ class LifetimeWidget(QWidget):
         ax.set_xlabel('Lifetime')
         ax.set_ylabel('Frequency')
         
-        # Clear the previous histogram plot
+        # Clear the previous histogram plot but keep the QSpinBox
         for i in reversed(range(self.histogram_layout.count())):
             widget_to_remove = self.histogram_layout.itemAt(i).widget()
-            self.histogram_layout.removeWidget(widget_to_remove)
-            widget_to_remove.setParent(None)
+            if isinstance(widget_to_remove, FigureCanvas):
+                self.histogram_layout.removeWidget(widget_to_remove)
+                widget_to_remove.setParent(None)
         
         # Embed the Matplotlib figure into the widget
         canvas = FigureCanvas(fig)
         self.histogram_layout.addWidget(canvas)
+        self.histogram_widget.show()
 
+        # Add harmonic selector if it doesn't exist
+        if not hasattr(self, 'harmonic_selector'):
+            self.harmonic_selector = QSpinBox()
+            self.harmonic_selector.setMinimum(self.harmonics.min())
+            self.harmonic_selector.setMaximum(self.harmonics.max())
+            self.harmonic_selector.setValue(self.selected_harmonic)
+            self.harmonic_selector.valueChanged.connect(self._on_harmonic_changed)
+        
+        # Ensure the harmonic selector is always at the bottom
+        if self.harmonic_selector not in [self.histogram_layout.itemAt(i).widget() for i in range(self.histogram_layout.count())]:
+            self.histogram_layout.addWidget(self.harmonic_selector)
+        else:
+            self.histogram_layout.removeWidget(self.harmonic_selector)
+            self.histogram_layout.addWidget(self.harmonic_selector)
+        self.harmonic_selector.setValue(self.selected_harmonic)
+
+    def _on_harmonic_changed(self):
+        """Callback whenever the harmonic selector changes."""
+        self.selected_harmonic = self.harmonic_selector.value()
+        self.plot_lifetime_histogram()
 
     def _on_click(self):
         """Callback whenever the plot lifetime button is clicked."""
