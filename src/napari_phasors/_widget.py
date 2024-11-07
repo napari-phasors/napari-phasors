@@ -743,7 +743,7 @@ class LifetimeWidget(QWidget):
         ax.set_xlabel('Lifetime')
         ax.set_ylabel('Frequency')
         
-        # Clear the previous histogram plot but keep the QSpinBox
+        # Clear the previous histogram plot but keep the QSpinBox and QLabel
         for i in reversed(range(self.histogram_layout.count())):
             widget_to_remove = self.histogram_layout.itemAt(i).widget()
             if isinstance(widget_to_remove, FigureCanvas):
@@ -755,7 +755,10 @@ class LifetimeWidget(QWidget):
         self.histogram_layout.addWidget(canvas)
         self.histogram_widget.show()
 
-        # Add harmonic selector if it doesn't exist
+        # Add harmonic selector label and QSpinBox if they don't exist
+        if not hasattr(self, 'harmonic_selector_label'):
+            self.harmonic_selector_label = QLabel("Select a harmonic to display its lifetime histogram:")
+            self.histogram_layout.addWidget(self.harmonic_selector_label)
         if not hasattr(self, 'harmonic_selector'):
             self.harmonic_selector = QSpinBox()
             self.harmonic_selector.setMinimum(self.harmonics.min())
@@ -763,7 +766,12 @@ class LifetimeWidget(QWidget):
             self.harmonic_selector.setValue(self.selected_harmonic)
             self.harmonic_selector.valueChanged.connect(self._on_harmonic_changed)
         
-        # Ensure the harmonic selector is always at the bottom
+        # Ensure the harmonic selector label and QSpinBox are always at the bottom
+        if self.harmonic_selector_label not in [self.histogram_layout.itemAt(i).widget() for i in range(self.histogram_layout.count())]:
+            self.histogram_layout.addWidget(self.harmonic_selector_label)
+        else:
+            self.histogram_layout.removeWidget(self.harmonic_selector_label)
+            self.histogram_layout.addWidget(self.harmonic_selector_label)
         if self.harmonic_selector not in [self.histogram_layout.itemAt(i).widget() for i in range(self.histogram_layout.count())]:
             self.histogram_layout.addWidget(self.harmonic_selector)
         else:
