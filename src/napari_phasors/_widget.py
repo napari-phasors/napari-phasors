@@ -9,10 +9,10 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib import colormaps
 from matplotlib.backends.backend_qt5agg import (
     FigureCanvasQTAgg as FigureCanvas,
 )
@@ -538,7 +538,6 @@ class LifetimeWidget(QWidget):
         self.lifetime_data = None
         self._labels_layer_with_phasor_features = None
         self.lifetime_layer = None
-        self.lifetime_histogram = None
         self.harmonics = None
         self.selected_harmonic = None
 
@@ -573,9 +572,9 @@ class LifetimeWidget(QWidget):
         self.lifetime_type_combobox.setCurrentText("Phase")
         self.main_layout.addWidget(self.lifetime_type_combobox)
         # Plot lifetime button
-        plot_lifetime_button = QPushButton("Plot Lifetime")
-        plot_lifetime_button.clicked.connect(self._on_click)
-        self.main_layout.addWidget(plot_lifetime_button)
+        self.plot_lifetime_button = QPushButton("Plot Lifetime")
+        self.plot_lifetime_button.clicked.connect(self._on_click)
+        self.main_layout.addWidget(self.plot_lifetime_button)
         # Connect layer events to populate combobox
         self.viewer.layers.events.inserted.connect(
             self._populate_layers_combobox
@@ -608,7 +607,8 @@ class LifetimeWidget(QWidget):
         """Sets the lifetime colormap from the colormap combobox."""
         if colormap not in plt.colormaps():
             show_error(
-                f"{colormap} is not a valid colormap. Setting to default colormap."
+                f"{colormap} is not a valid colormap. "
+                "Setting to default colormap."
             )
             colormap = self.lifetime_colormap.name
         self.lifetime_colormap_combobox.setCurrentText(colormap)
@@ -642,24 +642,41 @@ class LifetimeWidget(QWidget):
 
     def calculate_lifetimes(self):
         """Calculate the lifetimes for all harmonics."""
+        # TODO: when phasor_to_apparent_lifetimes can handle multiple
+        # harmonics remove the for loop
         if self._labels_layer_with_phasor_features is None:
             return
         phasor_data = self._labels_layer_with_phasor_features.features
-        frequency = float(self.frequency_input.text())
-        lifetimes = phasor_to_apparent_lifetime(
-            phasor_data['G'], phasor_data['S'], frequency=frequency
+        frequency = float(self.frequency_input.text()) * np.array(
+            self.harmonics
         )
-        lifetimes = np.nan_to_num(lifetimes, nan=0)
-        lifetimes = np.clip(lifetimes, a_min=0, a_max=None)
-        harmonics = np.unique(phasor_data['harmonic'])
+        phase_lifetimes = []
+        modulation_lifetimes = []
+        for i in range(len(frequency)):
+            # Select only the rows where column 'harmonic' == self.harmonics[i]
+            harmonic_mask = phasor_data['harmonic'] == self.harmonics[i]
+            real = phasor_data.loc[harmonic_mask, 'G']
+            imag = phasor_data.loc[harmonic_mask, 'S']
+            phase_lifetime, modulation_lifetime = phasor_to_apparent_lifetime(
+                real, imag, frequency=frequency[i]
+            )
+            phase_lifetimes.append(phase_lifetime)
+            modulation_lifetimes.append(modulation_lifetime)
+
+        phase_lifetimes = np.nan_to_num(phase_lifetimes, nan=0)
+        modulation_lifetimes = np.nan_to_num(modulation_lifetimes, nan=0)
+        phase_lifetimes = np.clip(phase_lifetimes, a_min=0, a_max=None)
+        modulation_lifetimes = np.clip(
+            modulation_lifetimes, a_min=0, a_max=None
+        )
         mean_shape = self._labels_layer_with_phasor_features.data.shape
         if self.lifetime_type_combobox.currentText() == "Phase":
             self.lifetime_data = np.reshape(
-                lifetimes[0], (len(harmonics),) + mean_shape
+                phase_lifetimes, (len(self.harmonics),) + mean_shape
             )
         else:
             self.lifetime_data = np.reshape(
-                lifetimes[1], (len(harmonics),) + mean_shape
+                modulation_lifetimes, (len(self.harmonics),) + mean_shape
             )
 
     def create_lifetime_layer(self):
@@ -682,11 +699,11 @@ class LifetimeWidget(QWidget):
             lower_bound = np.percentile(flattened_data, 5)
             upper_bound = np.percentile(flattened_data, 95)
 
-            # Normalize the array values to the range [lower_bound, upper_bound]
+            # Normalize the array to the range [lower_bound, upper_bound]
             norm = mcolors.Normalize(vmin=lower_bound, vmax=upper_bound)
 
             # Choose a colormap
-            cmap = cm.get_cmap(self.lifetime_colormap)
+            cmap = colormaps[self.lifetime_colormap]
 
             # Apply the colormap to the normalized array
             colored_array = cmap(norm(lifetime_data))
@@ -749,7 +766,7 @@ class LifetimeWidget(QWidget):
         norm = plt.Normalize(vmin=lower_bound, vmax=upper_bound)
 
         # Get the colormap
-        cmap = plt.get_cmap(self.lifetime_colormap)
+        cmap = colormaps[self.lifetime_colormap]
 
         # Fill the area under the curve using the colormap
         for count, bin_start, bin_end in zip(

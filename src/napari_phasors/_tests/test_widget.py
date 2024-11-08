@@ -3,7 +3,11 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas.testing as pdt
-from phasorpy.phasor import phasor_calibrate
+from phasorpy.phasor import (
+    phasor_calibrate,
+    phasor_from_signal,
+    phasor_to_apparent_lifetime,
+)
 from PyQt5.QtCore import QModelIndex
 from qtpy.QtWidgets import QWidget
 
@@ -16,6 +20,7 @@ from napari_phasors._widget import (
     AdvancedOptionsWidget,
     CalibrationWidget,
     FbdWidget,
+    LifetimeWidget,
     LsmWidget,
     PhasorTransform,
     PtuWidget,
@@ -492,3 +497,93 @@ def test_writer_widget(make_napari_viewer, tmp_path):
         main_widget.export_file_name.setText("")
         main_widget.btn.click()
         mock_show_error.assert_called_with("Enter name of exported file")
+
+
+def test_lifetime_widget(make_napari_viewer):
+    """Test the LifetimeWidget class."""
+    # Initialize viewer and add intensity image layer with phasors data
+    viewer = make_napari_viewer()
+    main_widget = LifetimeWidget(viewer)
+    assert main_widget.viewer is viewer
+    assert isinstance(main_widget, QWidget)
+    # Check init values
+    assert main_widget.lifetime_data is None
+    assert main_widget.harmonics is None
+    assert main_widget.selected_harmonic is None
+    assert main_widget.lifetime_layer is None
+    assert main_widget._labels_layer_with_phasor_features is None
+    assert main_widget.layer_combobox.count() == 0
+    assert main_widget.frequency_input.text() == ""
+    assert (
+        main_widget.lifetime_colormap_combobox.currentText() == 'turbo'
+    )  # default colormap
+    assert (
+        main_widget.lifetime_type_combobox.currentText() == 'Phase'
+    )  # default lifetime type
+    assert main_widget.lifetime_type_combobox.count() == 2
+    # Create a synthetic FLIM data and an intensity image layer with phasors
+    raw_flim_data = make_raw_flim_data()
+    harmonic = [1, 2, 3]
+    sample_image_layer = make_intensity_layer_with_phasors(
+        raw_flim_data, harmonic=harmonic
+    )
+    viewer.add_layer(sample_image_layer)
+    # Check for values changed after adding layer
+    assert main_widget.layer_combobox.count() == 1
+    assert main_widget.layer_combobox.currentText() == sample_image_layer.name
+    assert main_widget.lifetime_data is None
+    np.testing.assert_array_equal(main_widget.harmonics, harmonic)
+    assert main_widget.selected_harmonic is None
+    assert main_widget.lifetime_layer is None
+    assert main_widget._labels_layer_with_phasor_features is not None
+    main_widget.frequency_input.setText("80")
+    assert main_widget.frequency_input.text() == "80"
+    # Click Plot Lifetime Button and check expected changes
+    main_widget.plot_lifetime_button.click()
+    frequency = np.array(harmonic) * 80
+    real, imag = phasor_from_signal(raw_flim_data, axis=0, harmonic=harmonic)[
+        1:
+    ]
+    expected_phase_lifetimes = []
+    expected_modulation_lifetimes = []
+    for i in range(len(harmonic)):
+        phase_lifetime, modulation_lifetime = phasor_to_apparent_lifetime(
+            real[i], imag[i], frequency=frequency[i]
+        )
+        expected_phase_lifetimes.append(phase_lifetime)
+        expected_modulation_lifetimes.append(modulation_lifetime)
+    np.testing.assert_array_equal(
+        main_widget.lifetime_data, expected_phase_lifetimes
+    )
+    assert main_widget.selected_harmonic == harmonic[0]
+    assert (
+        main_widget.lifetime_layer.name
+        == "Lifetime: FLIM data Intensity Image"
+    )
+    # Check harmonic selector
+    main_widget.harmonic_selector.setValue(2)
+    assert main_widget.selected_harmonic == harmonic[1]
+    # Check colormap selector
+    main_widget.lifetime_colormap_combobox.setCurrentText('viridis')
+    assert main_widget.lifetime_colormap_combobox.currentText() == 'viridis'
+    # Check lifetime type selector
+    main_widget.lifetime_type_combobox.setCurrentText('Modulation')
+    assert main_widget.lifetime_type_combobox.currentText() == 'Modulation'
+    # Check error messages if frequency is empty
+    with patch("napari_phasors._widget.show_error") as mock_show_error:
+        main_widget.frequency_input.setText("")
+        main_widget.plot_lifetime_button.click()
+        mock_show_error.assert_called_once_with("Enter frequency")
+    # Click Plot Lifetime button again and check values
+    main_widget.frequency_input.setText("80")
+    main_widget.plot_lifetime_button.click()
+    np.testing.assert_array_equal(
+        main_widget.lifetime_data, expected_modulation_lifetimes
+    )
+    assert main_widget.selected_harmonic == harmonic[1]
+    assert (
+        main_widget.lifetime_layer.name
+        == "Lifetime: FLIM data Intensity Image"
+    )
+    # assert no other layer is created
+    assert len(viewer.layers) == 2
