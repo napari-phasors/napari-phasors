@@ -1,3 +1,4 @@
+import math
 from math import ceil, log10
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -8,6 +9,7 @@ from biaplotter.plotter import ArtistType, CanvasWidget
 from matplotlib.colorbar import Colorbar
 from matplotlib.colors import LinearSegmentedColormap, LogNorm, Normalize
 from matplotlib.lines import Line2D
+from matplotlib.patches import Circle
 from napari.layers import Image, Labels
 from napari.utils import DirectLabelColormap, colormaps, notifications
 from qtpy import uic
@@ -218,7 +220,7 @@ class PlotterWidget(QWidget):
         # Set intial axes limits
         self._redefine_axes_limits()
         # Set initial background color
-        self._update_plot_bg_color()
+        self._update_plot_bg_color(color="white")
         # Populate labels layer combobox
         self.reset_layer_choices()
 
@@ -380,168 +382,60 @@ class PlotterWidget(QWidget):
                 artist.set_visible(visible)
                 artist.set_alpha(alpha)
         else:
-            x1 = np.linspace(start=-1, stop=1, num=500)
-
-            def yp1(x1):
-                return np.sqrt(1 - x1**2)
-
-            def yn1(x1):
-                return -np.sqrt(1 - x1**2)
-
-            x2 = np.linspace(start=-0.5, stop=0.5, num=500)
-
-            def yp2(x2):
-                return np.sqrt(0.5**2 - x2**2)
-
-            def yn2(x2):
-                return -np.sqrt(0.5**2 - x2**2)
-
-            x3 = np.linspace(start=-1, stop=1, num=30)
-            x4 = np.linspace(start=-0.7, stop=0.7, num=30)
             self.polar_plot_artist_list.append(
-                ax.plot(
-                    x1,
-                    list(map(yp1, x1)),
-                    color='darkgoldenrod',
-                    visible=visible,
-                    alpha=alpha,
-                    zorder=zorder,
-                )[0]
-            )
-            self.polar_plot_artist_list.append(
-                ax.plot(
-                    x1,
-                    list(map(yn1, x1)),
-                    color='darkgoldenrod',
-                    visible=visible,
-                    alpha=alpha,
-                    zorder=zorder,
-                )[0]
-            )
-            self.polar_plot_artist_list.append(
-                ax.plot(
-                    x2,
-                    list(map(yp2, x2)),
-                    color='darkgoldenrod',
-                    visible=visible,
-                    alpha=alpha,
-                    zorder=zorder,
-                )[0]
-            )
-            self.polar_plot_artist_list.append(
-                ax.plot(
-                    x2,
-                    list(map(yn2, x2)),
-                    color='darkgoldenrod',
-                    visible=visible,
-                    alpha=alpha,
-                    zorder=zorder,
-                )[0]
-            )
-            self.polar_plot_artist_list.append(
-                ax.scatter(
-                    x3,
-                    [0] * len(x3),
-                    marker='_',
-                    color='darkgoldenrod',
-                    visible=visible,
-                    alpha=alpha,
-                    zorder=zorder,
+                ax.add_line(
+                    Line2D(
+                        [-1, 1],
+                        [0, 0],
+                        linestyle='-',
+                        linewidth=1,
+                        color='black',
+                    )
                 )
             )
             self.polar_plot_artist_list.append(
-                ax.scatter(
-                    [0] * len(x3),
-                    x3,
-                    marker='|',
-                    color='darkgoldenrod',
-                    visible=visible,
-                    alpha=alpha,
-                    zorder=zorder,
+                ax.add_line(
+                    Line2D(
+                        [0, 0],
+                        [-1, 1],
+                        linestyle='-',
+                        linewidth=1,
+                        color='black',
+                    )
                 )
             )
             self.polar_plot_artist_list.append(
-                ax.scatter(
-                    x4,
-                    x4,
-                    marker='_',
-                    color='darkgoldenrod',
-                    visible=visible,
-                    alpha=alpha,
-                    zorder=zorder,
-                )
+                ax.add_patch(Circle((0, 0), 1, fill=False))
             )
-            self.polar_plot_artist_list.append(
-                ax.scatter(
-                    x4,
-                    -x4,
-                    marker='_',
-                    color='darkgoldenrod',
-                    visible=visible,
-                    alpha=alpha,
-                    zorder=zorder,
+            for r in (1 / 3, 2 / 3):
+                self.polar_plot_artist_list.append(
+                    ax.add_patch(Circle((0, 0), r, fill=False))
                 )
-            )
-            self.polar_plot_artist_list.append(
-                ax.annotate(
-                    '0°',
-                    (1.05, 0.05),
-                    color='darkgoldenrod',
-                    visible=visible,
-                    alpha=alpha,
-                    zorder=zorder,
+            for a in (3, 6):
+                x = math.cos(math.pi / a)
+                y = math.sin(math.pi / a)
+                self.polar_plot_artist_list.append(
+                    ax.add_line(
+                        Line2D(
+                            [-x, x],
+                            [-y, y],
+                            linestyle=':',
+                            linewidth=0.5,
+                            color='black',
+                        )
+                    )
                 )
-            )
-            self.polar_plot_artist_list.append(
-                ax.annotate(
-                    '180°',
-                    (-0.95, 0.05),
-                    color='darkgoldenrod',
-                    visible=visible,
-                    alpha=alpha,
-                    zorder=zorder,
+                self.polar_plot_artist_list.append(
+                    ax.add_line(
+                        Line2D(
+                            [-x, x],
+                            [y, -y],
+                            linestyle=':',
+                            linewidth=0.5,
+                            color='black',
+                        )
+                    )
                 )
-            )
-            self.polar_plot_artist_list.append(
-                ax.annotate(
-                    '90°',
-                    (0.05, 1.05),
-                    color='darkgoldenrod',
-                    visible=visible,
-                    alpha=alpha,
-                    zorder=zorder,
-                )
-            )
-            self.polar_plot_artist_list.append(
-                ax.annotate(
-                    '270°',
-                    (0.05, -0.95),
-                    color='darkgoldenrod',
-                    visible=visible,
-                    alpha=alpha,
-                    zorder=zorder,
-                )
-            )
-            self.polar_plot_artist_list.append(
-                ax.annotate(
-                    '0.5',
-                    (0.42, 0.28),
-                    color='darkgoldenrod',
-                    visible=visible,
-                    alpha=alpha,
-                    zorder=zorder,
-                )
-            )
-            self.polar_plot_artist_list.append(
-                ax.annotate(
-                    '1',
-                    (0.8, 0.65),
-                    color='darkgoldenrod',
-                    visible=visible,
-                    alpha=alpha,
-                    zorder=zorder,
-                )
-            )
         return ax
 
     def _update_semi_circle_plot(self, ax, visible=True, alpha=0.3, zorder=3):
@@ -560,20 +454,21 @@ class PlotterWidget(QWidget):
                 ax.plot(
                     x,
                     y,
-                    'darkgoldenrod',
+                    'black',
                     alpha=alpha,
                     visible=visible,
                     zorder=zorder,
                 )[0]
             )
             self.semi_circle_plot_artist_list.append(
-                ax.axhline(
-                    0,
-                    color='darkgoldenrod',
+                ax.plot(
+                    [0, 1],
+                    [0, 0],
+                    color='black',
                     alpha=alpha,
                     visible=visible,
                     zorder=zorder,
-                )
+                )[0]
             )
         return ax
 
@@ -899,6 +794,8 @@ class PlotterWidget(QWidget):
         self.canvas_widget.active_artist = self.canvas_widget.artists[
             ArtistType[self.plot_type]
         ]
+        self.canvas_widget.active_artist.ax.set_facecolor('white')
+        self.canvas_widget.artists[ArtistType.HISTOGRAM2D].cmin = 1
         # Set data in the active artist
         self.canvas_widget.active_artist.data = np.column_stack(
             (x_data, y_data)
@@ -980,7 +877,7 @@ class PlotterWidget(QWidget):
                 self.colorbar = None
         # Update axes limits
         self._redefine_axes_limits()
-        self._update_plot_bg_color()
+        self._update_plot_bg_color(color="white")
         self.create_phasors_selected_layer()
 
     def create_phasors_selected_layer(self):
