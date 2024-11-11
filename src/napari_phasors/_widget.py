@@ -431,7 +431,7 @@ class CalibrationWidget(QWidget):
 
 
 class WriterWidget(QWidget):
-    """Widget to export phasor data to a OME-TIF file."""
+    """Widget to export phasor data to a OME-TIF or CSV file."""
 
     def __init__(self, viewer: "napari.viewer.Viewer"):
         """Initialize the widget."""
@@ -469,6 +469,13 @@ class WriterWidget(QWidget):
             self._on_combobox_change
         )
         self.main_layout.addWidget(self.export_layer_combobox)
+
+        # Combobox to select file format for export
+        self.main_layout.addWidget(QLabel("Export as: "))
+        self.export_format_combobox = QComboBox()
+        self.export_format_combobox.addItems(["OME-TIFF", "CSV"])
+        self.export_format_combobox.setCurrentIndex(0)
+        self.main_layout.addWidget(self.export_format_combobox)
 
         # Line edit to input name of exported file
         self.main_layout.addWidget(QLabel("Name of exported file: "))
@@ -521,5 +528,15 @@ class WriterWidget(QWidget):
         export_layer = self.viewer.layers[export_layer_name]
         export_file_name = self.export_file_name.text()
         export_path = os.path.join(self.save_path.text(), export_file_name)
-        export_path = write_ome_tiff(export_path, export_layer)
+        if self.export_format_combobox.currentText() == "CSV":
+            if not export_path.endswith(".csv"):
+                export_path += ".csv"
+            export_layer.metadata[
+                "phasor_features_labels_layer"
+            ].features.to_csv(
+                export_path,
+                index=False,
+            )
+        elif self.export_format_combobox.currentText() == "OME-TIFF":
+            export_path = write_ome_tiff(export_path, export_layer)
         show_info(f"Exported {export_layer_name} to {export_path}")

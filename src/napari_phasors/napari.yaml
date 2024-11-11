@@ -26,7 +26,7 @@ contributions:
       title: Calibration Widget
     - id: napari-phasors.WriterWidget
       python_name: napari_phasors:WriterWidget
-      title: Export to OME-TIF Widget
+      title: Export Phasor
   readers:
     - command: napari-phasors.get_reader
       accepts_directories: false
@@ -48,4 +48,4 @@ contributions:
     - command: napari-phasors.CalibrationWidget
       display_name: Calibration Widget
     - command: napari-phasors.WriterWidget
-      display_name: Export to OME-TIF Widget
+      display_name: Export Phasor

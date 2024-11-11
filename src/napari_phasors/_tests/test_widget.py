@@ -2,7 +2,7 @@ import os
 from unittest.mock import MagicMock, patch
 
 import numpy as np
-import pandas.testing as pdt
+import pandas as pd
 from phasorpy.phasor import phasor_calibrate
 from PyQt5.QtCore import QModelIndex
 from qtpy.QtWidgets import QWidget
@@ -321,7 +321,7 @@ def test_calibration_widget(make_napari_viewer):
     sample_phasors_table = (
         viewer.layers[0].metadata["phasor_features_labels_layer"].features
     )
-    pdt.assert_frame_equal(original_phasors_table, sample_phasors_table)
+    pd.testing.assert_frame_equal(original_phasors_table, sample_phasors_table)
     # Check init calibration widget
     main_widget = CalibrationWidget(viewer)
     assert (
@@ -419,6 +419,8 @@ def test_writer_widget(make_napari_viewer, tmp_path):
     assert main_widget.save_path.text() == ""
     assert main_widget.export_layer_combobox.count() == 0
     assert main_widget.export_file_name.text() == ""
+    assert main_widget.export_format_combobox.count() == 2
+    assert main_widget.export_format_combobox.currentText() == "OME-TIFF"
     # Create a synthetic FLIM data and an intensity image layer with phasors
     raw_flim_data = make_raw_flim_data()
     harmonic = [1, 2, 3]
@@ -483,6 +485,27 @@ def test_writer_widget(make_napari_viewer, tmp_path):
             2,
             3,
         ]
+
+    # Export as CSV
+    main_widget.export_format_combobox.setCurrentIndex(1)
+    assert main_widget.export_format_combobox.currentText() == "CSV"
+    with patch("napari_phasors._widget.show_info") as mock_show_info:
+        main_widget.btn.click()
+        export_layer_name = main_widget.export_layer_combobox.currentText()
+        export_path = os.path.join(
+            main_widget.save_path.text(),
+            f'{main_widget.export_file_name.text()}.csv',
+        )
+        # Check if the show_info was called
+        mock_show_info.assert_called_once_with(
+            f"Exported {export_layer_name} to {export_path}"
+        )
+        # Check if the file was created and has expected data when read
+        assert os.path.exists(export_path)
+        df = pd.read_csv(export_path)
+        df = df.astype(phasor_features.features.dtypes)
+        pd.testing.assert_frame_equal(df, phasor_features.features)
+
     # Check error messages if path or name are empty
     with patch("napari_phasors._widget.show_error") as mock_show_error:
         main_widget.save_path.setText("")
