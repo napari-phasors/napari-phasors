@@ -106,7 +106,7 @@ class AdvancedOptionsWidget(QWidget):
         super().__init__()
         self.viewer = viewer
         self.path = path
-        self.reader_options = None
+        self.reader_options = {}
         self.harmonics = [1]
         self.initUI()
 
@@ -205,7 +205,8 @@ class FbdWidget(AdvancedOptionsWidget):
             self.all_frames = len(fbd.frames(None)[1])
             self.all_channels = fbd.channels
         super().__init__(viewer, path)
-        self.reader_options = {"frame": -1, "channel": None}
+        self.reader_options["frame"] = -1
+        self.reader_options["channel"] = None
 
     def initUI(self):
         super().initUI()
@@ -253,7 +254,8 @@ class PtuWidget(AdvancedOptionsWidget):
             self.all_frames = ptu.shape[0]
             self.all_channels = ptu.shape[-2]
         super().__init__(viewer, path)
-        self.reader_options = {"frame": -1, "channel": None}
+        self.reader_options["frame"] = -1
+        self.reader_options["channel"] = None
 
     def initUI(self):
         """Initialize the user interface."""
@@ -346,7 +348,7 @@ class SdtWidget(AdvancedOptionsWidget):
     def _on_click(self, path, reader_options, harmonics):
         """Callback whenever the calculate phasor button is clicked."""
         if self.index.text():
-            reader_options["index"] = float(self.index.text())
+            reader_options["index"] = int(self.index.text())
         super()._on_click(path, reader_options, harmonics)
 
 
