@@ -631,7 +631,9 @@ class PlotterWidget(QWidget):
         )
         num_valid_rows = valid_rows.sum()
         # Tile the manual_selection array to match the number of valid rows
-        tiled_manual_selection = np.tile(manual_selection, (num_valid_rows // len(manual_selection)) + 1)[:num_valid_rows]
+        tiled_manual_selection = np.tile(
+            manual_selection, (num_valid_rows // len(manual_selection)) + 1
+        )[:num_valid_rows]
         self._labels_layer_with_phasor_features.features.loc[
             valid_rows, column
         ] = tiled_manual_selection
@@ -678,8 +680,7 @@ class PlotterWidget(QWidget):
             self._labels_layer_with_phasor_features.features["harmonic"].max()
         )
         max_mean_value = np.nanmax(
-            self.viewer.layers[labels_layer_name]
-            .metadata["original_mean"]
+            self.viewer.layers[labels_layer_name].metadata["original_mean"]
         )
         # Determine the threshold factor based on max_mean_value using logarithmic scaling
         if max_mean_value > 0:
