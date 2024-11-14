@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas.testing as pdt
+from phasorpy.datasets import fetch
 from phasorpy.phasor import phasor_calibrate
 from PyQt5.QtCore import QModelIndex
 from qtpy.QtWidgets import QWidget
@@ -19,6 +20,7 @@ from napari_phasors._widget import (
     LsmWidget,
     PhasorTransform,
     PtuWidget,
+    SdtWidget,
     WriterWidget,
 )
 
@@ -26,6 +28,7 @@ TEST_FORMATS = [
     (".fbd", FbdWidget),
     (".ptu", PtuWidget),
     (".lsm", LsmWidget),
+    (".sdt", SdtWidget),
     (".ome.tif", None),
 ]
 
@@ -47,6 +50,10 @@ def test_phasor_trasfrom_widget(make_napari_viewer):
             if extension == ".fbd":
                 model.filePath.return_value = (
                     "src/napari_phasors/_tests/test_data/test_file$EI0S.fbd"
+                )
+            elif extension == ".sdt":
+                model.filePath.return_value = fetch(
+                    "seminal_receptacle_FLIM_single_image.sdt"
                 )
             else:
                 model.filePath.return_value = (
@@ -227,6 +234,64 @@ def test_phasor_transform_ptu_widget(make_napari_viewer):
     # TODO: test dtime parameter
 
 
+def test_phasor_transform_sdt_widget(make_napari_viewer):
+    """Test SdtWidget from PhasorTransfrom widget."""
+    viewer = make_napari_viewer()
+    file_path = fetch("seminal_receptacle_FLIM_single_image.sdt")
+    PhasorTransform(viewer)
+    widget = SdtWidget(viewer, path=file_path)
+    assert widget.viewer is viewer
+    # Init values
+    assert isinstance(widget, AdvancedOptionsWidget)
+    assert widget.path == file_path
+    assert widget.reader_options == {}
+    assert widget.harmonics == [1]
+    assert widget.harmonic_start.value() == 1
+    assert widget.harmonic_end.value() == 1
+    # Modify harmonic values
+    widget.harmonic_start.setValue(2)
+    assert (
+        widget.harmonic_start.value() == 2 and widget.harmonic_end.value() == 2
+    )
+    assert widget.harmonics == [2]
+    widget.harmonic_end.setValue(3)
+    assert (
+        widget.harmonic_start.value() == 2 and widget.harmonic_end.value() == 3
+    )
+    assert widget.harmonics == [2, 3]
+    # Init index parameter
+    assert widget.index.text() == "0"
+    # Click button of phasor transform and check layers
+    widget.btn.click()
+    assert widget.reader_options == {"index": 0}
+    assert len(viewer.layers) == 1
+    assert (
+        viewer.layers[0].name
+        == "seminal_receptacle_FLIM_single_image Intensity Image"
+    )
+    assert viewer.layers[0].data.shape == (512, 512)
+    phasor_data = (
+        viewer.layers[0].metadata["phasor_features_labels_layer"].features
+    )
+    assert phasor_data.shape == (524288, 6)
+    assert phasor_data["harmonic"].unique().tolist() == [2, 3]
+    # Modify harmonics and phasor transform again
+    widget.harmonic_end.setValue(2)
+    widget.btn.click()
+    assert len(viewer.layers) == 2
+    assert (
+        viewer.layers[1].name
+        == "seminal_receptacle_FLIM_single_image Intensity Image [1]"
+    )
+    assert viewer.layers[1].data.shape == (512, 512)
+    phasor_data = (
+        viewer.layers[1].metadata["phasor_features_labels_layer"].features
+    )
+    assert phasor_data.shape == (262144, 6)
+    assert phasor_data["harmonic"].unique().tolist() == [2]
+    # TODO: test index parameter
+
+
 def test_phasor_transform_lsm_widget(make_napari_viewer):
     """Test LsmWidget from PhasorTransfrom widget."""
     viewer = make_napari_viewer()
@@ -238,7 +303,7 @@ def test_phasor_transform_lsm_widget(make_napari_viewer):
     # Init values
     assert isinstance(widget, AdvancedOptionsWidget)
     assert widget.path == "src/napari_phasors/_tests/test_data/test_file.lsm"
-    assert widget.reader_options is None
+    assert widget.reader_options == {}
     assert widget.harmonics == [1]
     assert widget.harmonic_start.value() == 1
     assert widget.harmonic_end.value() == 1

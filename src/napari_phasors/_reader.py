@@ -30,6 +30,12 @@ extension_mapping = {
             {"frame": (-1, False), "keepdims": (True, False)},
             reader_options,
         ),
+        ".sdt": lambda path, reader_options: _parse_and_call_io_function(
+            path,
+            io.read_sdt,
+            {},
+            reader_options,
+        ),
         ".lsm": lambda path, reader_options: _parse_and_call_io_function(
             path,
             io.read_lsm,
@@ -43,7 +49,6 @@ extension_mapping = {
             reader_options,
         ),
         # ".flif": lambda path: io.read_flif(path),
-        # ".sdt": lambda path: io.read_sdt(path),
         # ".bh": lambda path: io.read_bh(path),
         # ".bhz": lambda path: io.read_bhz(path),
         # ".ifli": lambda path: io.read_ifli(),
@@ -64,7 +69,13 @@ Commented file extensions are not supported at the moment.
 
 """
 
-iter_index_mapping = {".ptu": "C", ".fbd": "C", ".lsm": None, ".tif": None}
+iter_index_mapping = {
+    ".ptu": "C",
+    ".fbd": "C",
+    ".lsm": None,
+    ".tif": None,
+    '.sdt': None,
+}
 """This dictionary contains the mapping for the axis to iterate over
 when calculating phasor coordinates in the file.
 """
@@ -150,6 +161,10 @@ def raw_file_reader(
         if file_extension == ".tif":
             mean_intensity_image, G_image, S_image = phasor_from_signal(
                 raw_data, axis=0, harmonic=harmonics
+            )
+        elif file_extension == '.sdt':
+            mean_intensity_image, G_image, S_image = phasor_from_signal(
+                raw_data, axis=-1, harmonic=harmonics
             )
         else:
             # Calculate phasor over channels if file is of hyperspectral type

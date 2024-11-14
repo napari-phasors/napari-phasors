@@ -74,6 +74,7 @@ class PhasorTransform(QWidget):
             ".ptu": PtuWidget,
             ".lsm": LsmWidget,
             ".tif": LsmWidget,
+            ".sdt": SdtWidget,
         }
 
     def _on_change(self, current, model):
@@ -105,7 +106,7 @@ class AdvancedOptionsWidget(QWidget):
         super().__init__()
         self.viewer = viewer
         self.path = path
-        self.reader_options = None
+        self.reader_options = {}
         self.harmonics = [1]
         self.initUI()
 
@@ -204,7 +205,8 @@ class FbdWidget(AdvancedOptionsWidget):
             self.all_frames = len(fbd.frames(None)[1])
             self.all_channels = fbd.channels
         super().__init__(viewer, path)
-        self.reader_options = {"frame": -1, "channel": None}
+        self.reader_options["frame"] = -1
+        self.reader_options["channel"] = None
 
     def initUI(self):
         super().initUI()
@@ -252,7 +254,8 @@ class PtuWidget(AdvancedOptionsWidget):
             self.all_frames = ptu.shape[0]
             self.all_channels = ptu.shape[-2]
         super().__init__(viewer, path)
-        self.reader_options = {"frame": -1, "channel": None}
+        self.reader_options["frame"] = -1
+        self.reader_options["channel"] = None
 
     def initUI(self):
         """Initialize the user interface."""
@@ -309,6 +312,44 @@ class LsmWidget(AdvancedOptionsWidget):
             )
         )
         self.mainLayout.addWidget(self.btn)
+
+
+class SdtWidget(AdvancedOptionsWidget):
+    """Widget for SDT files."""
+
+    def __init__(self, viewer, path):
+        """Initialize the widget."""
+        super().__init__(viewer, path)
+
+    def initUI(self):
+        """Initialize the user interface."""
+        super().initUI()
+        self._harmonic_widget()
+
+        # Index selector
+        self.mainLayout.addWidget(QLabel("Index (optional): "))
+        self.index = QLineEdit()
+        self.index.setText("0")
+        self.index.setToolTip(
+            "Index of dataset to read in case the file contains multiple "
+            "datasets. By default, the first dataset is read."
+        )
+        self.mainLayout.addWidget(self.index)
+
+        # Calculate phasor button
+        self.btn = QPushButton("Phasor Transform")
+        self.btn.clicked.connect(
+            lambda: self._on_click(
+                self.path, self.reader_options, self.harmonics
+            )
+        )
+        self.mainLayout.addWidget(self.btn)
+
+    def _on_click(self, path, reader_options, harmonics):
+        """Callback whenever the calculate phasor button is clicked."""
+        if self.index.text():
+            reader_options["index"] = int(self.index.text())
+        super()._on_click(path, reader_options, harmonics)
 
 
 class CalibrationWidget(QWidget):
