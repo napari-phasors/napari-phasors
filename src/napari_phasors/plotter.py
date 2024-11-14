@@ -790,9 +790,7 @@ class PlotterWidget(QWidget):
             self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram
             is not None
         ):
-            h = self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram[
-                    0
-                ]
+            h = self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram[0]
             if self.histogram_log_scale:
                 # Set min_value to a small positive number
                 vmin = max(h[h > 0].min(), 1e-10) if np.any(h > 0) else 1
@@ -801,7 +799,9 @@ class PlotterWidget(QWidget):
                 if np.isnan(vmax) or vmax <= vmin:
                     vmax = vmin * 2
                 if np.all(h <= 1):
-                    norm = Normalize(vmin=vmin, vmax=vmax)  # Use linear for binary data (0s and 1s)
+                    norm = Normalize(
+                        vmin=vmin, vmax=vmax
+                    )  # Use linear for binary data (0s and 1s)
                 else:
                     norm = LogNorm(vmin=vmin, vmax=vmax)
             else:
@@ -809,8 +809,8 @@ class PlotterWidget(QWidget):
                 vmax = np.nanmax(h)
                 norm = Normalize(vmin=vmin, vmax=vmax)
             self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram[
-                    -1
-                ].set_norm(norm)
+                -1
+            ].set_norm(norm)
 
         # Add a colorbar
         if self.colorbar is not None:
@@ -827,7 +827,7 @@ class PlotterWidget(QWidget):
             ].histogram_colormap,
             norm=norm,
         )
-       
+
         self.set_colorbar_style(color="white")
         # Update axes limits
         self._redefine_axes_limits()
