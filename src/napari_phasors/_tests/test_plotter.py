@@ -77,7 +77,6 @@ def test_phasor_plotter(make_napari_viewer):
     plotter.histogram_colormap = "viridis"
     plotter.histogram_bins = 5
     plotter.histogram_log_scale = True
-    plotter.plot_type = ArtistType.SCATTER.name
     threshold = 1
     plotter.plotter_inputs_widget.threshold_slider.setValue(threshold)
     plotter.plotter_inputs_widget.median_filter_spinbox.setValue(3)
