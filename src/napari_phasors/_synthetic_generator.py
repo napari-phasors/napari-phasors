@@ -83,12 +83,15 @@ def make_intensity_layer_with_phasors(
     if len(harmonic) > 1:
         table = pd.DataFrame([])
         for i in range(G_image.shape[0]):
+            x, y = np.unravel_index(np.arange(G_image[i].size), G_image[i].shape)
             sub_table = pd.DataFrame(
                 {
                     "label": pixel_id,
                     # "Average Image": mean_intensity_image.ravel(),
                     "G_original": G_image[i].ravel(),
                     "S_original": S_image[i].ravel(),
+                    "Pixel X Coordinates": x,
+                    "Pixel Y Coordinates": y,
                     "G": G_image[i].ravel(),
                     "S": S_image[i].ravel(),
                     "harmonic": harmonic[i],
@@ -96,12 +99,15 @@ def make_intensity_layer_with_phasors(
             )
             table = pd.concat([table, sub_table])
     else:
+        x, y = np.unravel_index(np.arange(G_image.size), G_image.shape)
         table = pd.DataFrame(
             {
                 "label": pixel_id,
                 # "Average Image": mean_intensity_image.ravel(),
                 "G_original": G_image[i].ravel(),
                 "S_original": S_image[i].ravel(),
+                "Pixel X Coordinates": x,
+                "Pixel Y Coordinates": y,
                 "G": G_image.ravel(),
                 "S": S_image.ravel(),
                 "harmonic": harmonic,
