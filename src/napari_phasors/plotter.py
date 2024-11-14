@@ -99,8 +99,6 @@ class PlotterWidget(QWidget):
             The checkbox for displaying the universal semi-circle (if True) or the full polar plot (if False).
     extra_inputs_widget : QWidget
         The extra plotter inputs widget. It is collapsible. The widget contains:
-        - plot_type_combobox : QComboBox
-            The combobox for selecting the plot type.
         - colormap_combobox : QComboBox
             The combobox for selecting the histogram colormap.
         - number_of_bins_spinbox : QSpinBox
@@ -180,10 +178,6 @@ class PlotterWidget(QWidget):
         )
         self.plot_button.clicked.connect(self.plot)
 
-        # Populate plot type combobox
-        self.extra_inputs_widget.plot_type_combobox.addItems(
-            [ArtistType.SCATTER.name, ArtistType.HISTOGRAM2D.name]
-        )
         # Populate colormap combobox
         self.extra_inputs_widget.colormap_combobox.addItems(
             list(colormaps.ALL_COLORMAPS.keys())
@@ -193,9 +187,6 @@ class PlotterWidget(QWidget):
         )
 
         # Connect canvas signals
-        self.canvas_widget.artists[
-            ArtistType.SCATTER
-        ].color_indices_changed_signal.connect(self.manual_selection_changed)
         self.canvas_widget.artists[
             ArtistType.HISTOGRAM2D
         ].color_indices_changed_signal.connect(self.manual_selection_changed)
@@ -214,8 +205,6 @@ class PlotterWidget(QWidget):
         self._histogram_colormap = self.canvas_widget.artists[
             ArtistType.HISTOGRAM2D
         ].histogram_colormap
-        # Start with the histogram2d plot type
-        self.plot_type = ArtistType.HISTOGRAM2D.name
 
         # Set intial axes limits
         self._redefine_axes_limits()
@@ -559,22 +548,6 @@ class PlotterWidget(QWidget):
         self.canvas_widget.figure.canvas.draw_idle()
 
     @property
-    def plot_type(self):
-        """Gets or sets the plot type from the plot type combobox.
-
-        Returns
-        -------
-        str
-            The plot type.
-        """
-        return self.extra_inputs_widget.plot_type_combobox.currentText()
-
-    @plot_type.setter
-    def plot_type(self, type):
-        """Sets the plot type from the plot type combobox."""
-        self.extra_inputs_widget.plot_type_combobox.setCurrentText(type)
-
-    @property
     def histogram_colormap(self):
         """Gets or sets the histogram colormap from the colormap combobox.
 
@@ -759,12 +732,6 @@ class PlotterWidget(QWidget):
 
     def set_axes_labels(self):
         """Set the axes labels in the canvas widget."""
-        self.canvas_widget.artists[ArtistType.SCATTER].ax.set_xlabel(
-            "G", color="white"
-        )
-        self.canvas_widget.artists[ArtistType.SCATTER].ax.set_ylabel(
-            "S", color="white"
-        )
         self.canvas_widget.artists[ArtistType.HISTOGRAM2D].ax.set_xlabel(
             "G", color="white"
         )
@@ -792,7 +759,7 @@ class PlotterWidget(QWidget):
         x_data, y_data, selection_id_data = self.get_features()
         # Set active artist
         self.canvas_widget.active_artist = self.canvas_widget.artists[
-            ArtistType[self.plot_type]
+            ArtistType.HISTOGRAM2D
         ]
         self.canvas_widget.active_artist.ax.set_facecolor('white')
         self.canvas_widget.artists[ArtistType.HISTOGRAM2D].cmin = 1
@@ -831,50 +798,44 @@ class PlotterWidget(QWidget):
         self.canvas_widget.artists[ArtistType.HISTOGRAM2D].bins = (
             self.histogram_bins
         )
-        # Temporarily set active artist "again" to have it displayed on top #TODO: Fix this
-        self.canvas_widget.active_artist = self.canvas_widget.artists[
-            ArtistType[self.plot_type]
-        ]
+        # # Temporarily set active artist "again" to have it displayed on top #TODO: Fix this
+        # self.canvas_widget.active_artist = self.canvas_widget.artists[
+        #     ArtistType[self.plot_type]
+        # ]
 
-        # if active artist is histogram, add a colorbar
-        if self.plot_type == ArtistType.HISTOGRAM2D.name:
-            if self.colorbar is not None:
-                self.colorbar.remove()
-            # creat cax for colorbar on the right side of the histogram
-            self.cax = self.canvas_widget.artists[
+        # Add a colorbar
+        if self.colorbar is not None:
+            self.colorbar.remove()
+        # creat cax for colorbar on the right side of the histogram
+        self.cax = self.canvas_widget.artists[
+            ArtistType.HISTOGRAM2D
+        ].ax.inset_axes([1.05, 0, 0.05, 1])
+        # Create colorbar
+        self.colorbar = Colorbar(
+            ax=self.cax,
+            cmap=self.canvas_widget.artists[
                 ArtistType.HISTOGRAM2D
-            ].ax.inset_axes([1.05, 0, 0.05, 1])
-            # Create colorbar
-            self.colorbar = Colorbar(
-                ax=self.cax,
-                cmap=self.canvas_widget.artists[
-                    ArtistType.HISTOGRAM2D
-                ].histogram_colormap,
-                norm=self.canvas_widget.artists[ArtistType.HISTOGRAM2D]
-                .histogram[-1]
-                .norm,
-            )
-            # set colorbar tick color
-            self.colorbar.ax.yaxis.set_tick_params(color="white")
-            # set colorbar edgecolor
-            self.colorbar.outline.set_edgecolor("white")
+            ].histogram_colormap,
+            norm=self.canvas_widget.artists[ArtistType.HISTOGRAM2D]
+            .histogram[-1]
+            .norm,
+        )
+        # set colorbar tick color
+        self.colorbar.ax.yaxis.set_tick_params(color="white")
+        # set colorbar edgecolor
+        self.colorbar.outline.set_edgecolor("white")
 
-            # Get the current ticks
-            ticks = self.colorbar.ax.get_yticks()
+        # Get the current ticks
+        ticks = self.colorbar.ax.get_yticks()
 
-            # Set the ticks using a FixedLocator
-            self.colorbar.ax.yaxis.set_major_locator(
-                ticker.FixedLocator(ticks)
-            )
-            # set colorbar ticklabels
-            self.colorbar.ax.set_yticklabels(
-                self.colorbar.ax.get_yticklabels(), color="white"
-            )
-        else:
-            if self.colorbar is not None:
-                # remove colorbar
-                self.colorbar.remove()
-                self.colorbar = None
+        # Set the ticks using a FixedLocator
+        self.colorbar.ax.yaxis.set_major_locator(
+            ticker.FixedLocator(ticks)
+        )
+        # set colorbar ticklabels
+        self.colorbar.ax.set_yticklabels(
+            self.colorbar.ax.get_yticklabels(), color="white"
+        )
         # Update axes limits
         self._redefine_axes_limits()
         self._update_plot_bg_color(color="white")
