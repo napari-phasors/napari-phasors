@@ -98,6 +98,8 @@ class PlotterWidget(QWidget):
 
         # Load canvas widget
         self.canvas_widget = CanvasWidget(napari_viewer)
+        self.canvas_widget.axes.set_aspect(1, adjustable='box')
+        self.canvas_widget.setMinimumSize(300, 300)
         self.canvas_widget.class_spinbox.setValue(1)
         self.set_axes_labels()
         self.layout().addWidget(self.canvas_widget)
@@ -132,7 +134,7 @@ class PlotterWidget(QWidget):
         self.layout().addItem(spacer)
 
         # Set minimum size
-        self.setMinimumSize(300, 300)
+        self.setMinimumSize(600, 300)
 
         # Connect napari signals when new layer is inseted or removed
         self.viewer.layers.events.inserted.connect(self.reset_layer_choices)
@@ -331,6 +333,7 @@ class PlotterWidget(QWidget):
                 self.canvas_widget.axes, visible=False
             )
             self._update_polar_plot(self.canvas_widget.axes)
+        self.canvas_widget.axes.set_aspect(1, adjustable='box')
         self._redefine_axes_limits()
 
     def on_toggle_semi_circle(self, state):
@@ -787,19 +790,6 @@ class PlotterWidget(QWidget):
         self.canvas_widget.artists[
             ArtistType.HISTOGRAM2D
         ].histogram_colormap = selected_histogram_colormap
-        # Set log scale in the active artist
-        if (
-            self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram
-            is not None
-        ):
-            if self.histogram_log_scale:
-                self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram[
-                    -1
-                ].set_norm(LogNorm())
-            else:
-                self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram[
-                    -1
-                ].set_norm(Normalize())
         # Set number of bins in the active artist
         self.canvas_widget.artists[ArtistType.HISTOGRAM2D].bins = (
             self.histogram_bins
@@ -808,12 +798,38 @@ class PlotterWidget(QWidget):
         self.canvas_widget.active_artist = self.canvas_widget.artists[
             ArtistType[self.plot_type]
         ]
+        # Set log scale in the active artist
+        if (
+            self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram
+            is not None
+        ):
+            h = self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram[0]
+            if self.histogram_log_scale:
+                # Set min_value to a small positive number
+                vmin = max(h[h > 0].min(), 1e-10) if np.any(h > 0) else 1
+                vmax = np.nanmax(h)  # Finds the maximum, ignoring NaNs
+                # Adjust vmax if it's NaN or insufficient for log scaling
+                if np.isnan(vmax) or vmax <= vmin:
+                    vmax = vmin * 2
+                if np.all(h <= 1):
+                    norm = Normalize(
+                        vmin=vmin, vmax=vmax
+                    )  # Use linear for binary data (0s and 1s)
+                else:
+                    norm = LogNorm(vmin=vmin, vmax=vmax)
+            else:
+                vmin = np.nanmin(h)
+                vmax = np.nanmax(h)
+                norm = Normalize(vmin=vmin, vmax=vmax)
+            self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram[
+                -1
+            ].set_norm(norm)
 
         # if active artist is histogram, add a colorbar
         if self.plot_type == ArtistType.HISTOGRAM2D.name:
             if self.colorbar is not None:
                 self.colorbar.remove()
-            # creat cax for colorbar on the right side of the histogram
+            # Create cax for colorbar on the right side of the histogram
             self.cax = self.canvas_widget.artists[
                 ArtistType.HISTOGRAM2D
             ].ax.inset_axes([1.05, 0, 0.05, 1])
@@ -823,26 +839,10 @@ class PlotterWidget(QWidget):
                 cmap=self.canvas_widget.artists[
                     ArtistType.HISTOGRAM2D
                 ].histogram_colormap,
-                norm=self.canvas_widget.artists[ArtistType.HISTOGRAM2D]
-                .histogram[-1]
-                .norm,
+                norm=norm,
             )
-            # set colorbar tick color
-            self.colorbar.ax.yaxis.set_tick_params(color="white")
-            # set colorbar edgecolor
-            self.colorbar.outline.set_edgecolor("white")
 
-            # Get the current ticks
-            ticks = self.colorbar.ax.get_yticks()
-
-            # Set the ticks using a FixedLocator
-            self.colorbar.ax.yaxis.set_major_locator(
-                ticker.FixedLocator(ticks)
-            )
-            # set colorbar ticklabels
-            self.colorbar.ax.set_yticklabels(
-                self.colorbar.ax.get_yticklabels(), color="white"
-            )
+            self.set_colorbar_style(color="white")
         else:
             if self.colorbar is not None:
                 # remove colorbar
@@ -850,8 +850,29 @@ class PlotterWidget(QWidget):
                 self.colorbar = None
         # Update axes limits
         self._redefine_axes_limits()
+        self.canvas_widget.axes.set_aspect(1, adjustable='box')
         self._update_plot_bg_color(color="white")
         self.create_phasors_selected_layer()
+
+    def set_colorbar_style(self, color="white"):
+        """Set the colorbar style in the canvas widget."""
+        # Set colorbar tick color
+        self.colorbar.ax.yaxis.set_tick_params(color=color)
+        # Set colorbar edgecolor
+        self.colorbar.outline.set_edgecolor(color)
+        # Add label to colorbar
+        if isinstance(self.colorbar.norm, LogNorm):
+            self.colorbar.ax.set_ylabel("Log10(Count)", color=color)
+        else:
+            self.colorbar.ax.set_ylabel("Count", color=color)
+        # Get the current ticks
+        ticks = self.colorbar.ax.get_yticks()
+        # Set the ticks using a FixedLocator
+        self.colorbar.ax.yaxis.set_major_locator(ticker.FixedLocator(ticks))
+        # Set colorbar ticklabels colors individually (this may fail for some math expressions)
+        tick_labels = self.colorbar.ax.get_yticklabels()
+        for tick_label in tick_labels:
+            tick_label.set_color(color)
 
     def create_phasors_selected_layer(self):
         """Create or update the phasors selected layer."""
