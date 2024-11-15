@@ -1,5 +1,5 @@
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -9,7 +9,6 @@ from phasorpy.phasor import (
     phasor_from_signal,
     phasor_to_apparent_lifetime,
 )
-from PyQt5.QtCore import QModelIndex
 from qtpy.QtWidgets import QWidget
 
 from napari_phasors._reader import napari_get_reader
@@ -38,37 +37,44 @@ TEST_FORMATS = [
 ]
 
 
-def test_phasor_trasfrom_widget(make_napari_viewer):
-    """Test PhasorTransform widget call for specific file formats."""
+def test_phasor_transform_widget(make_napari_viewer):
+    """Test PhasorTransform widget behavior with mocked QFileDialog."""
     viewer = make_napari_viewer()
     widget = PhasorTransform(viewer)
+
     assert widget.viewer is viewer
     assert isinstance(widget, QWidget)
-    model = MagicMock()
-    current = MagicMock(spec=QModelIndex)
 
-    for extension, expected_widget_class in TEST_FORMATS:
-        with patch(
-            "napari_phasors._widget._get_filename_extension",
-            return_value=("filename", extension),
+    for extension, expected_widget_class in widget.reader_options.items():
+        # Handle special cases for specific extensions
+        if extension == ".fbd":
+            test_file_path = (
+                "src/napari_phasors/_tests/test_data/test_file$EI0S.fbd"
+            )
+        elif extension == ".sdt":
+            test_file_path = fetch("seminal_receptacle_FLIM_single_image.sdt")
+        else:
+            test_file_path = (
+                f"src/napari_phasors/_tests/test_data/test_file{extension}"
+            )
+
+        with (
+            patch(
+                "napari_phasors._widget.QFileDialog.exec_", return_value=True
+            ),
+            patch(
+                "napari_phasors._widget.QFileDialog.selectedFiles",
+                return_value=[test_file_path],
+            ),
         ):
-            if extension == ".fbd":
-                model.filePath.return_value = (
-                    "src/napari_phasors/_tests/test_data/test_file$EI0S.fbd"
-                )
-            elif extension == ".sdt":
-                model.filePath.return_value = fetch(
-                    "seminal_receptacle_FLIM_single_image.sdt"
-                )
-            else:
-                model.filePath.return_value = (
-                    f"src/napari_phasors/_tests/test_data/test_file{extension}"
-                )
-            for i in reversed(range(widget.dynamic_widget_layout.count())):
-                widget_item = widget.dynamic_widget_layout.takeAt(i).widget()
-                if widget_item:
-                    widget_item.deleteLater()
-            widget._on_change(current, model)
+
+            # Simulate button click to open file dialog
+            widget.search_button.click()
+
+            # Verify the save path was updated
+            assert widget.save_path.text() == test_file_path
+
+            # Verify dynamic widget layout is updated
             if expected_widget_class:
                 assert widget.dynamic_widget_layout.count() == 1
                 added_widget = widget.dynamic_widget_layout.itemAt(0).widget()
@@ -483,14 +489,14 @@ def test_writer_widget(make_napari_viewer, tmp_path):
     main_widget = WriterWidget(viewer)
     assert main_widget.viewer is viewer
     assert isinstance(main_widget, QWidget)
-    model = MagicMock()
-    current = MagicMock(spec=QModelIndex)
     # Check init values are empty
-    assert main_widget.save_path.text() == ""
     assert main_widget.export_layer_combobox.count() == 0
-    assert main_widget.export_file_name.text() == ""
-    assert main_widget.export_format_combobox.count() == 2
-    assert main_widget.export_format_combobox.currentText() == "OME-TIFF"
+    # Check error messages if there are no phasor layers
+    with patch("napari_phasors._widget.show_error") as mock_show_error:
+        main_widget.search_button.click()
+        mock_show_error.assert_called_once_with(
+            "No layer with phasor data selected"
+        )
     # Create a synthetic FLIM data and an intensity image layer with phasors
     raw_flim_data = make_raw_flim_data()
     harmonic = [1, 2, 3]
@@ -507,23 +513,31 @@ def test_writer_widget(make_napari_viewer, tmp_path):
         main_widget.export_layer_combobox.currentText()
         == sample_image_layer.name
     )
-    assert main_widget.export_file_name.text() == sample_image_layer.name
-    # Simulate a path selection from the search tree
-    model.filePath.return_value = str(tmp_path)
-    main_widget._on_search_tree_change(current, model)
-    assert main_widget.save_path.text() == str(tmp_path)
-    # Click export button and check if the file was created
-    with patch("napari_phasors._widget.show_info") as mock_show_info:
-        main_widget.btn.click()
+
+    # Simulate saving as OME-TIFF
+    with (
+        patch("napari_phasors._widget.QFileDialog.exec_", return_value=True),
+        patch(
+            "napari_phasors._widget.QFileDialog.selectedFiles",
+            return_value=[str(tmp_path / "test.ome.tif")],
+        ),
+        patch(
+            "napari_phasors._widget.QFileDialog.selectedNameFilter",
+            return_value="Phasor as OME-TIFF (*.ome.tif)",
+        ),
+        patch("napari_phasors._widget.show_info") as mock_show_info,
+    ):
+
+        # Simulate button click
+        main_widget.search_button.click()
+
+        # Verify file saving logic
         export_layer_name = main_widget.export_layer_combobox.currentText()
-        export_path = os.path.join(
-            main_widget.save_path.text(),
-            f'{main_widget.export_file_name.text()}.ome.tif',
-        )
-        # Check if the show_info was called
+        export_path = str(tmp_path / "test.ome.tif")
         mock_show_info.assert_called_once_with(
             f"Exported {export_layer_name} to {export_path}"
         )
+
         # Check if the file was created and has expected data when read
         assert os.path.exists(export_path)
         reader = napari_get_reader(export_path, harmonics=harmonic)
@@ -556,35 +570,42 @@ def test_writer_widget(make_napari_viewer, tmp_path):
             3,
         ]
 
-    # Export as CSV
-    main_widget.export_format_combobox.setCurrentIndex(1)
-    assert main_widget.export_format_combobox.currentText() == "CSV"
-    with patch("napari_phasors._widget.show_info") as mock_show_info:
-        main_widget.btn.click()
+    # Simulate saving as CSV
+    with (
+        patch("napari_phasors._widget.QFileDialog.exec_", return_value=True),
+        patch(
+            "napari_phasors._widget.QFileDialog.selectedFiles",
+            return_value=[str(tmp_path / "test.csv")],
+        ),
+        patch(
+            "napari_phasors._widget.QFileDialog.selectedNameFilter",
+            return_value="Phasor table as CSV (*.csv)",
+        ),
+        patch("napari_phasors._widget.show_info") as mock_show_info,
+    ):
+
+        # Simulate button click
+        main_widget.search_button.click()
+
+        # Verify CSV export logic
         export_layer_name = main_widget.export_layer_combobox.currentText()
-        export_path = os.path.join(
-            main_widget.save_path.text(),
-            f'{main_widget.export_file_name.text()}.csv',
-        )
-        # Check if the show_info was called
+        export_path = str(tmp_path / "test.csv")
         mock_show_info.assert_called_once_with(
             f"Exported {export_layer_name} to {export_path}"
         )
+
         # Check if the file was created and has expected data when read
         assert os.path.exists(export_path)
-        df = pd.read_csv(export_path)
-        df = df.astype(phasor_features.features.dtypes)
-        pd.testing.assert_frame_equal(df, phasor_features.features)
-
-    # Check error messages if path or name are empty
-    with patch("napari_phasors._widget.show_error") as mock_show_error:
-        main_widget.save_path.setText("")
-        main_widget.btn.click()
-        mock_show_error.assert_called_once_with("Select export location")
-        main_widget.save_path.setText(str(tmp_path))
-        main_widget.export_file_name.setText("")
-        main_widget.btn.click()
-        mock_show_error.assert_called_with("Enter name of exported file")
+        exported_table = pd.read_csv(export_path)
+        exported_table = exported_table.astype(phasor_features.features.dtypes)
+        coords = np.unravel_index(
+            np.arange(sample_image_layer.data.size),
+            sample_image_layer.data.shape,
+        )
+        coords = [np.tile(coord, len(harmonic)) for coord in coords]
+        for dim, coord in enumerate(coords):
+            phasor_features.features[f'dim_{dim}'] = coord
+        pd.testing.assert_frame_equal(exported_table, phasor_features.features)
 
 
 def test_lifetime_widget(make_napari_viewer):

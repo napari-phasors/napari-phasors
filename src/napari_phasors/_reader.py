@@ -302,14 +302,11 @@ def make_phasors_labels_layer(
     if len(G_image.shape) > 2:
         for i in range(G_image.shape[0]):
             harmonic_value = harmonics[i] if harmonics is not None else i + 1
-            x, y = np.unravel_index(np.arange(G_image[i].size), G_image[i].shape)
             sub_table = pd.DataFrame(
                 {
                     "label": pixel_id,
                     "G_original": G_image[i].ravel(),
                     "S_original": S_image[i].ravel(),
-                    "Pixel X Coordinates": x,
-                    "Pixel Y Coordinates": y,
                     "G": G_image[i].ravel(),
                     "S": S_image[i].ravel(),
                     "harmonic": harmonic_value,
@@ -322,14 +319,11 @@ def make_phasors_labels_layer(
         else:
             harmonic_value = harmonics if harmonics is not None else 1
         # Get pixel coordinates from G_image
-        x, y = np.unravel_index(np.arange(G_image.size), G_image.shape)
         table = pd.DataFrame(
             {
                 "label": pixel_id,
                 "G_original": G_image.ravel(),
                 "S_original": S_image.ravel(),
-                "Pixel X Coordinates": x,
-                "Pixel Y Coordinates": y,
                 "G": G_image.ravel(),
                 "S": S_image.ravel(),
                 "harmonic": harmonic_value,

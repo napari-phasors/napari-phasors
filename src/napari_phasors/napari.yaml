@@ -44,13 +44,13 @@ contributions:
       display_name: Napari Phasors
       key: unique_id.1
   widgets:
-    - command: napari-phasors.plot_phasor
-      display_name: Phasor Plot
     - command: napari-phasors.PhasorTransform
       display_name: Phasor Transform
     - command: napari-phasors.CalibrationWidget
       display_name: Calibration Widget
-    - command: napari-phasors.WriterWidget
-      display_name: Export Phasor
+    - command: napari-phasors.plot_phasor
+      display_name: Phasor Plot
     - command: napari-phasors.LifetimeWidget
       display_name: Lifetime Widget
+    - command: napari-phasors.WriterWidget
+      display_name: Export Phasor
