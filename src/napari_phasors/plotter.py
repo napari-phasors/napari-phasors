@@ -818,6 +818,10 @@ class PlotterWidget(QWidget):
         self.canvas_widget.artists[ArtistType.HISTOGRAM2D].bins = (
             self.histogram_bins
         )
+        # Temporarily set active artist "again" to have it displayed on top #TODO: Fix this
+        self.canvas_widget.active_artist = self.canvas_widget.artists[
+            ArtistType[self.plot_type]
+        ]
         # Set log scale in the active artist
         if (
             self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram
