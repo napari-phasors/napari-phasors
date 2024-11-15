@@ -128,6 +128,8 @@ class PlotterWidget(QWidget):
 
         # Load canvas widget
         self.canvas_widget = CanvasWidget(napari_viewer)
+        self.canvas_widget.axes.set_aspect(1, adjustable='box')
+        self.canvas_widget.setMinimumSize(300, 300)
         self.canvas_widget.class_spinbox.setValue(1)
         self.set_axes_labels()
         self.layout().addWidget(self.canvas_widget)
@@ -162,7 +164,7 @@ class PlotterWidget(QWidget):
         self.layout().addItem(spacer)
 
         # Set minimum size
-        self.setMinimumSize(300, 300)
+        self.setMinimumSize(600, 300)
 
         # Connect napari signals when new layer is inseted or removed
         self.viewer.layers.events.inserted.connect(self.reset_layer_choices)
@@ -361,6 +363,7 @@ class PlotterWidget(QWidget):
                 self.canvas_widget.axes, visible=False
             )
             self._update_polar_plot(self.canvas_widget.axes)
+        self.canvas_widget.axes.set_aspect(1, adjustable='box')
         self._redefine_axes_limits()
 
     def on_toggle_semi_circle(self, state):
@@ -877,6 +880,7 @@ class PlotterWidget(QWidget):
                 self.colorbar = None
         # Update axes limits
         self._redefine_axes_limits()
+        self.canvas_widget.axes.set_aspect(1, adjustable='box')
         self._update_plot_bg_color(color="white")
         self.create_phasors_selected_layer()
 
