@@ -23,47 +23,17 @@ from qtpy.QtWidgets import (
 from skimage.util import map_array
 from superqt import QCollapsible
 
-from napari_phasors._synthetic_generator import (
+from ._synthetic_generator import (
     make_intensity_layer_with_phasors,
     make_raw_flim_data,
 )
-from napari_phasors._utils import apply_filter_and_threshold
+from ._utils import apply_filter_and_threshold, colormap_to_dict
 
 if TYPE_CHECKING:
     import napari
 
 #: The columns in the phasor features table that should not be used as selection id.
 DATA_COLUMNS = ["label", "G_original", "S_original", "G", "S", "harmonic"]
-
-
-def colormap_to_dict(colormap, num_colors=10, exclude_first=True):
-    """
-    Converts a matplotlib colormap into a dictionary of RGBA colors.
-
-    Parameters
-    ----------
-    colormap : matplotlib.colors.Colormap
-        The colormap to convert.
-    num_colors : int, optional
-        The number of colors in the colormap, by default 10.
-    exclude_first : bool, optional
-        Whether to exclude the first color in the colormap, by default True.
-
-    Returns
-    -------
-    color_dict: dict
-        A dictionary with keys as positive integers and values as RGBA colors.
-    """
-    color_dict = {}
-    start = 0
-    if exclude_first:
-        start = 1
-    for i in range(start, num_colors + start):
-        pos = i / (num_colors - 1)
-        color = colormap(pos)
-        color_dict[i + 1 - start] = color
-    color_dict[None] = (0, 0, 0, 0)
-    return color_dict
 
 
 class PlotterWidget(QWidget):
@@ -662,9 +632,14 @@ class PlotterWidget(QWidget):
             ~self._labels_layer_with_phasor_features.features["G"].isna()
             & ~self._labels_layer_with_phasor_features.features["S"].isna()
         )
+        num_valid_rows = valid_rows.sum()
+        # Tile the manual_selection array to match the number of valid rows
+        tiled_manual_selection = np.tile(
+            manual_selection, (num_valid_rows // len(manual_selection)) + 1
+        )[:num_valid_rows]
         self._labels_layer_with_phasor_features.features.loc[
             valid_rows, column
-        ] = np.tile(manual_selection, len(harmonics))[: valid_rows.sum()]
+        ] = tiled_manual_selection
         self.create_phasors_selected_layer()
 
     def reset_layer_choices(self):
@@ -707,10 +682,8 @@ class PlotterWidget(QWidget):
         self.plotter_inputs_widget.harmonic_spinbox.setMaximum(
             self._labels_layer_with_phasor_features.features["harmonic"].max()
         )
-        max_mean_value = (
-            self.viewer.layers[labels_layer_name]
-            .metadata["original_mean"]
-            .max()
+        max_mean_value = np.nanmax(
+            self.viewer.layers[labels_layer_name].metadata["original_mean"]
         )
         # Determine the threshold factor based on max_mean_value using logarithmic scaling
         if max_mean_value > 0:
