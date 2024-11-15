@@ -3,7 +3,12 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
-from phasorpy.phasor import phasor_calibrate
+from phasorpy.datasets import fetch
+from phasorpy.phasor import (
+    phasor_calibrate,
+    phasor_from_signal,
+    phasor_to_apparent_lifetime,
+)
 from PyQt5.QtCore import QModelIndex
 from qtpy.QtWidgets import QWidget
 
@@ -16,9 +21,11 @@ from napari_phasors._widget import (
     AdvancedOptionsWidget,
     CalibrationWidget,
     FbdWidget,
+    LifetimeWidget,
     LsmWidget,
     PhasorTransform,
     PtuWidget,
+    SdtWidget,
     WriterWidget,
 )
 
@@ -26,6 +33,7 @@ TEST_FORMATS = [
     (".fbd", FbdWidget),
     (".ptu", PtuWidget),
     (".lsm", LsmWidget),
+    (".sdt", SdtWidget),
     (".ome.tif", None),
 ]
 
@@ -47,6 +55,10 @@ def test_phasor_trasfrom_widget(make_napari_viewer):
             if extension == ".fbd":
                 model.filePath.return_value = (
                     "src/napari_phasors/_tests/test_data/test_file$EI0S.fbd"
+                )
+            elif extension == ".sdt":
+                model.filePath.return_value = fetch(
+                    "seminal_receptacle_FLIM_single_image.sdt"
                 )
             else:
                 model.filePath.return_value = (
@@ -227,6 +239,64 @@ def test_phasor_transform_ptu_widget(make_napari_viewer):
     # TODO: test dtime parameter
 
 
+def test_phasor_transform_sdt_widget(make_napari_viewer):
+    """Test SdtWidget from PhasorTransfrom widget."""
+    viewer = make_napari_viewer()
+    file_path = fetch("seminal_receptacle_FLIM_single_image.sdt")
+    PhasorTransform(viewer)
+    widget = SdtWidget(viewer, path=file_path)
+    assert widget.viewer is viewer
+    # Init values
+    assert isinstance(widget, AdvancedOptionsWidget)
+    assert widget.path == file_path
+    assert widget.reader_options == {}
+    assert widget.harmonics == [1]
+    assert widget.harmonic_start.value() == 1
+    assert widget.harmonic_end.value() == 1
+    # Modify harmonic values
+    widget.harmonic_start.setValue(2)
+    assert (
+        widget.harmonic_start.value() == 2 and widget.harmonic_end.value() == 2
+    )
+    assert widget.harmonics == [2]
+    widget.harmonic_end.setValue(3)
+    assert (
+        widget.harmonic_start.value() == 2 and widget.harmonic_end.value() == 3
+    )
+    assert widget.harmonics == [2, 3]
+    # Init index parameter
+    assert widget.index.text() == "0"
+    # Click button of phasor transform and check layers
+    widget.btn.click()
+    assert widget.reader_options == {"index": 0}
+    assert len(viewer.layers) == 1
+    assert (
+        viewer.layers[0].name
+        == "seminal_receptacle_FLIM_single_image Intensity Image"
+    )
+    assert viewer.layers[0].data.shape == (512, 512)
+    phasor_data = (
+        viewer.layers[0].metadata["phasor_features_labels_layer"].features
+    )
+    assert phasor_data.shape == (524288, 6)
+    assert phasor_data["harmonic"].unique().tolist() == [2, 3]
+    # Modify harmonics and phasor transform again
+    widget.harmonic_end.setValue(2)
+    widget.btn.click()
+    assert len(viewer.layers) == 2
+    assert (
+        viewer.layers[1].name
+        == "seminal_receptacle_FLIM_single_image Intensity Image [1]"
+    )
+    assert viewer.layers[1].data.shape == (512, 512)
+    phasor_data = (
+        viewer.layers[1].metadata["phasor_features_labels_layer"].features
+    )
+    assert phasor_data.shape == (262144, 6)
+    assert phasor_data["harmonic"].unique().tolist() == [2]
+    # TODO: test index parameter
+
+
 def test_phasor_transform_lsm_widget(make_napari_viewer):
     """Test LsmWidget from PhasorTransfrom widget."""
     viewer = make_napari_viewer()
@@ -238,7 +308,7 @@ def test_phasor_transform_lsm_widget(make_napari_viewer):
     # Init values
     assert isinstance(widget, AdvancedOptionsWidget)
     assert widget.path == "src/napari_phasors/_tests/test_data/test_file.lsm"
-    assert widget.reader_options is None
+    assert widget.reader_options == {}
     assert widget.harmonics == [1]
     assert widget.harmonic_start.value() == 1
     assert widget.harmonic_end.value() == 1
@@ -515,3 +585,93 @@ def test_writer_widget(make_napari_viewer, tmp_path):
         main_widget.export_file_name.setText("")
         main_widget.btn.click()
         mock_show_error.assert_called_with("Enter name of exported file")
+
+
+def test_lifetime_widget(make_napari_viewer):
+    """Test the LifetimeWidget class."""
+    # Initialize viewer and add intensity image layer with phasors data
+    viewer = make_napari_viewer()
+    main_widget = LifetimeWidget(viewer)
+    assert main_widget.viewer is viewer
+    assert isinstance(main_widget, QWidget)
+    # Check init values
+    assert main_widget.lifetime_data is None
+    assert main_widget.harmonics is None
+    assert main_widget.selected_harmonic is None
+    assert main_widget.lifetime_layer is None
+    assert main_widget._labels_layer_with_phasor_features is None
+    assert main_widget.layer_combobox.count() == 0
+    assert main_widget.frequency_input.text() == ""
+    assert (
+        main_widget.lifetime_colormap_combobox.currentText() == 'turbo'
+    )  # default colormap
+    assert (
+        main_widget.lifetime_type_combobox.currentText() == 'Phase'
+    )  # default lifetime type
+    assert main_widget.lifetime_type_combobox.count() == 2
+    # Create a synthetic FLIM data and an intensity image layer with phasors
+    raw_flim_data = make_raw_flim_data()
+    harmonic = [1, 2, 3]
+    sample_image_layer = make_intensity_layer_with_phasors(
+        raw_flim_data, harmonic=harmonic
+    )
+    viewer.add_layer(sample_image_layer)
+    # Check for values changed after adding layer
+    assert main_widget.layer_combobox.count() == 1
+    assert main_widget.layer_combobox.currentText() == sample_image_layer.name
+    assert main_widget.lifetime_data is None
+    np.testing.assert_array_equal(main_widget.harmonics, harmonic)
+    assert main_widget.selected_harmonic is None
+    assert main_widget.lifetime_layer is None
+    assert main_widget._labels_layer_with_phasor_features is not None
+    main_widget.frequency_input.setText("80")
+    assert main_widget.frequency_input.text() == "80"
+    # Click Plot Lifetime Button and check expected changes
+    main_widget.plot_lifetime_button.click()
+    frequency = np.array(harmonic) * 80
+    real, imag = phasor_from_signal(raw_flim_data, axis=0, harmonic=harmonic)[
+        1:
+    ]
+    expected_phase_lifetimes = []
+    expected_modulation_lifetimes = []
+    for i in range(len(harmonic)):
+        phase_lifetime, modulation_lifetime = phasor_to_apparent_lifetime(
+            real[i], imag[i], frequency=frequency[i]
+        )
+        expected_phase_lifetimes.append(phase_lifetime)
+        expected_modulation_lifetimes.append(modulation_lifetime)
+    np.testing.assert_array_equal(
+        main_widget.lifetime_data, expected_phase_lifetimes
+    )
+    assert main_widget.selected_harmonic == harmonic[0]
+    assert (
+        main_widget.lifetime_layer.name
+        == "Lifetime: FLIM data Intensity Image"
+    )
+    # Check harmonic selector
+    main_widget.harmonic_selector.setValue(2)
+    assert main_widget.selected_harmonic == harmonic[1]
+    # Check colormap selector
+    main_widget.lifetime_colormap_combobox.setCurrentText('viridis')
+    assert main_widget.lifetime_colormap_combobox.currentText() == 'viridis'
+    # Check lifetime type selector
+    main_widget.lifetime_type_combobox.setCurrentText('Modulation')
+    assert main_widget.lifetime_type_combobox.currentText() == 'Modulation'
+    # Check error messages if frequency is empty
+    with patch("napari_phasors._widget.show_error") as mock_show_error:
+        main_widget.frequency_input.setText("")
+        main_widget.plot_lifetime_button.click()
+        mock_show_error.assert_called_once_with("Enter frequency")
+    # Click Plot Lifetime button again and check values
+    main_widget.frequency_input.setText("80")
+    main_widget.plot_lifetime_button.click()
+    np.testing.assert_array_equal(
+        main_widget.lifetime_data, expected_modulation_lifetimes
+    )
+    assert main_widget.selected_harmonic == harmonic[1]
+    assert (
+        main_widget.lifetime_layer.name
+        == "Lifetime: FLIM data Intensity Image"
+    )
+    # assert no other layer is created
+    assert len(viewer.layers) == 2

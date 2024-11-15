@@ -1,6 +1,8 @@
 import numpy as np
 import pandas as pd
 from napari.layers import Labels
+from phasorpy.datasets import fetch
+from phasorpy.io import read_sdt
 
 from napari_phasors import napari_get_reader
 
@@ -112,6 +114,49 @@ def test_reader_fbd():
     assert phasor_features.data.shape == (1, 256, 256)
     assert isinstance(phasor_features.features, pd.DataFrame)
     assert phasor_features.features.shape == (65536, 6)
+    expected_columns = [
+        "label",
+        "G_original",
+        "S_original",
+        "G",
+        "S",
+        "harmonic",
+    ]
+    actual_columns = phasor_features.features.columns.tolist()
+    assert actual_columns == expected_columns
+
+
+def test_reader_sdt():
+    """Test reading a sdt file"""
+    sdt_file = fetch('seminal_receptacle_FLIM_single_image.sdt')
+    reader = napari_get_reader(sdt_file)
+    assert callable(reader)
+    layer_data_list = reader(sdt_file)
+    assert isinstance(layer_data_list, list) and len(layer_data_list) == 1
+    # First Channel
+    layer_data_tuple = layer_data_list[0]
+    assert isinstance(layer_data_tuple, tuple) and len(layer_data_tuple) == 2
+    assert isinstance(layer_data_tuple[0], np.ndarray) and isinstance(
+        layer_data_tuple[1], dict
+    )
+    assert layer_data_tuple[0].shape == (512, 512)
+    assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
+    assert (
+        layer_data_tuple[1]["name"]
+        == "seminal_receptacle_FLIM_single_image Intensity Image"
+    )
+    assert (
+        len(layer_data_tuple[1]["metadata"]) == 2
+        and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
+        and "original_mean" in layer_data_tuple[1]["metadata"]
+    )
+    phasor_features = layer_data_tuple[1]["metadata"][
+        "phasor_features_labels_layer"
+    ]
+    assert isinstance(phasor_features, Labels)
+    assert phasor_features.data.shape == (512, 512)
+    assert isinstance(phasor_features.features, pd.DataFrame)
+    assert phasor_features.features.shape == (262144, 6)
     expected_columns = [
         "label",
         "G_original",

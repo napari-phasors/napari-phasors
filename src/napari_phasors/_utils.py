@@ -69,3 +69,33 @@ def apply_filter_and_threshold(
     layer.data = mean
     layer.refresh()
     return
+
+
+def colormap_to_dict(colormap, num_colors=10, exclude_first=True):
+    """
+    Converts a matplotlib colormap into a dictionary of RGBA colors.
+
+    Parameters
+    ----------
+    colormap : matplotlib.colors.Colormap
+        The colormap to convert.
+    num_colors : int, optional
+        The number of colors in the colormap, by default 10.
+    exclude_first : bool, optional
+        Whether to exclude the first color in the colormap, by default True.
+
+    Returns
+    -------
+    color_dict: dict
+        A dictionary with keys as positive integers and values as RGBA colors.
+    """
+    color_dict = {}
+    start = 0
+    if exclude_first:
+        start = 1
+    for i in range(start, num_colors + start):
+        pos = i / (num_colors - 1)
+        color = colormap(pos)
+        color_dict[i + 1 - start] = color
+    color_dict[None] = (0, 0, 0, 0)
+    return color_dict
