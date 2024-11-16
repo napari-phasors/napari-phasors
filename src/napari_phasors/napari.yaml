@@ -12,6 +12,12 @@ contributions:
     - id: napari-phasors.convallaria_FLIM_sample_data
       python_name: napari_phasors._sample_data:convallaria_FLIM_sample_data
       title: Load convallaria FLIM sample data
+    - id: napari-phasors.embryo_FLIM_sample_data
+      python_name: napari_phasors._sample_data:embryo_FLIM_sample_data
+      title: Load FLUTE's FLIM Embryo sample data
+    - id: napari-phasors.paramecium_HSI_sample_data
+      python_name: napari_phasors._sample_data:paramecium_HSI_sample_data
+      title: Load Paramecium Hyperspectral Image sample data
     - id: napari-phasors.plot_phasor
       python_name: napari_phasors:PlotterWidget
       title: Plot Phasor
@@ -41,8 +47,14 @@ contributions:
       filename_extensions: []
   sample_data:
     - command: napari-phasors.convallaria_FLIM_sample_data
-      display_name: Convallaria FLIM sample data
+      display_name: Convallaria FLIM
       key: unique_id.1
+    - command: napari-phasors.embryo_FLIM_sample_data
+      display_name: FLUTE's FLIM Embryo sample data FLIM
+      key: unique_id.2
+    - command: napari-phasors.paramecium_HSI_sample_data
+      display_name: Paramecium Hyperspectral Image
+      key: unique_id.3
   widgets:
     - command: napari-phasors.PhasorTransform
       display_name: Phasor Transform
@@ -54,3 +66,5 @@ contributions:
       display_name: Lifetime Widget
     - command: napari-phasors.WriterWidget
       display_name: Export Phasor
+
+
