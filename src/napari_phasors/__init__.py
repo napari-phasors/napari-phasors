@@ -1,7 +1,11 @@
 __version__ = "0.0.1"
 
 from ._reader import napari_get_reader
-from ._sample_data import convallaria_FLIM_sample_data, embryo_FLIM_sample_data, paramecium_HSI_sample_data
+from ._sample_data import (
+    convallaria_FLIM_sample_data,
+    embryo_FLIM_sample_data,
+    paramecium_HSI_sample_data,
+)
 from ._widget import (
     CalibrationWidget,
     LifetimeWidget,
