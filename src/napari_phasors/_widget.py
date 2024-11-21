@@ -1,11 +1,16 @@
 """
 This module contains widgets to:
 
-    - Transform FLIM and hyperspectral images into phasor space
+    - Transform FLIM and hyperspectral images into phasor space from
+      the following file formats: FBD, PTU, LSM, SDT, TIF, OME-TIFF.
+    - Export phasor data to OME-TIFF or CSV files.
+    - Calibrate a FLIM image layer using a calibration image of known lifetime
+      and frequency.
+    - Calculate and plot the phase or modulation apparent lifetime of a FLIM
+      image layer.
 
 """
 
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -24,13 +29,12 @@ from qtpy.QtGui import QDoubleValidator
 from qtpy.QtWidgets import (
     QComboBox,
     QCompleter,
-    QDirModel,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
     QSpinBox,
-    QTreeView,
     QVBoxLayout,
     QWidget,
 )
@@ -51,26 +55,21 @@ class PhasorTransform(QWidget):
         self.viewer = viewer
 
         # Create main layout
-        main_layout = QVBoxLayout(self)
+        self.main_layout = QVBoxLayout(self)
 
-        # Create search tree
-        search_tree = QTreeView()
-        model = QDirModel()
-        search_tree.setModel(model)
-        search_tree.setColumnHidden(1, True)
-        search_tree.setColumnHidden(2, True)
-        search_tree.setColumnHidden(3, True)
-        main_layout.addWidget(search_tree)
+        # Create button to select file to be read
+        self.search_button = QPushButton("Select file to be read")
+        self.search_button.clicked.connect(self._open_file_dialog)
+        self.main_layout.addWidget(self.search_button)
+
+        # Save path display
+        self.save_path = QLineEdit()
+        self.save_path.setReadOnly(True)
+        self.main_layout.addWidget(self.save_path)
 
         # Create layout for dynamic widgets
         self.dynamic_widget_layout = QVBoxLayout()
-        main_layout.addLayout(self.dynamic_widget_layout)
-
-        # Set up callbacks whenever the selection changes
-        selection = search_tree.selectionModel()
-        selection.currentChanged.connect(
-            lambda current: self._on_change(current, model)
-        )
+        self.main_layout.addLayout(self.dynamic_widget_layout)
 
         # Define reader options (example)
         self.reader_options = {
@@ -81,25 +80,29 @@ class PhasorTransform(QWidget):
             ".sdt": SdtWidget,
         }
 
-    def _on_change(self, current, model):
-        """Callback whenever the selection changes."""
-        path = model.filePath(current)
-        _, extension = _get_filename_extension(path)
-        if extension in self.reader_options:
-            # Clear existing widgets
-            for i in reversed(range(self.dynamic_widget_layout.count())):
-                widget = self.dynamic_widget_layout.takeAt(i).widget()
-                widget.deleteLater()
+    def _open_file_dialog(self):
+        """Open a `QFileDialog` to select a directory or file with specific extensions."""
+        options = QFileDialog.Options()
+        dialog = QFileDialog(self, "Select Export Location", options=options)
+        dialog.setFileMode(QFileDialog.AnyFile)
+        # Filter files by extension
+        dialog.setNameFilter(
+            "All files (*.tif *.ome.tif *.ptu *.fbd *.sdt *.lsm)"
+        )
+        if dialog.exec_():
+            selected_file = dialog.selectedFiles()[0]
+            self.save_path.setText(selected_file)
+            _, extension = _get_filename_extension(selected_file)
+            if extension in self.reader_options:
+                # Clear existing widgets
+                for i in reversed(range(self.dynamic_widget_layout.count())):
+                    widget = self.dynamic_widget_layout.takeAt(i).widget()
+                    widget.deleteLater()
 
-            # Create new widgets based on extension
-            create_widget_class = self.reader_options[extension]
-            new_widget = create_widget_class(self.viewer, path)
-            self.dynamic_widget_layout.addWidget(new_widget)
-        else:
-            # Clear existing widgets
-            for i in reversed(range(self.dynamic_widget_layout.count())):
-                widget = self.dynamic_widget_layout.takeAt(i).widget()
-                widget.deleteLater()
+                # Create new widgets based on extension
+                create_widget_class = self.reader_options[extension]
+                new_widget = create_widget_class(self.viewer, selected_file)
+                self.dynamic_widget_layout.addWidget(new_widget)
 
 
 class AdvancedOptionsWidget(QWidget):
@@ -476,7 +479,7 @@ class CalibrationWidget(QWidget):
 
 
 class WriterWidget(QWidget):
-    """Widget to export phasor data to a OME-TIF file."""
+    """Widget to export phasor data to a OME-TIF or CSV file."""
 
     def __init__(self, viewer: "napari.viewer.Viewer"):
         """Initialize the widget."""
@@ -486,39 +489,17 @@ class WriterWidget(QWidget):
         # Create main layout
         self.main_layout = QVBoxLayout(self)
 
-        # Set export location
-        self.main_layout.addWidget(QLabel("Select export location: "))
-        self.save_path = QLineEdit()
-        self.main_layout.addWidget(self.save_path)
-
-        # Create search tree
-        search_tree = QTreeView()
-        self.model = QDirModel()
-        search_tree.setModel(self.model)
-        search_tree.setColumnHidden(1, True)
-        search_tree.setColumnHidden(2, True)
-        search_tree.setColumnHidden(3, True)
-        self.main_layout.addWidget(search_tree)
-
-        # Set up callbacks whenever the selection changes
-        self.selection = search_tree.selectionModel()
-        self.selection.currentChanged.connect(
-            lambda current: self._on_search_tree_change(current, self.model)
-        )
         # Combobox to select image layer with phasor data for export
         self.main_layout.addWidget(
-            QLabel("Select image layer to be exported: ")
+            QLabel("Select Image Layer to be Exported: ")
         )
         self.export_layer_combobox = QComboBox()
-        self.export_layer_combobox.currentIndexChanged.connect(
-            self._on_combobox_change
-        )
         self.main_layout.addWidget(self.export_layer_combobox)
 
-        # Line edit to input name of exported file
-        self.main_layout.addWidget(QLabel("Name of exported file: "))
-        self.export_file_name = QLineEdit()
-        self.main_layout.addWidget(self.export_file_name)
+        # Button to open save dialog to select export location and name
+        self.search_button = QPushButton("Select Export Location and Name")
+        self.search_button.clicked.connect(self._open_file_dialog)
+        self.main_layout.addWidget(self.search_button)
 
         # Connect layer events to populate combobox
         self.viewer.layers.events.inserted.connect(self._populate_combobox)
@@ -527,18 +508,42 @@ class WriterWidget(QWidget):
         # Populate combobox
         self._populate_combobox()
 
-        # Export button
-        self.btn = QPushButton("Export")
-        self.btn.clicked.connect(self._on_click)
-        self.main_layout.addWidget(self.btn)
+    def _open_file_dialog(self):
+        """Open a `QFileDialog` to select a directory or specify a filename."""
+        if self.export_layer_combobox.currentText() == "":
+            show_error("No layer with phasor data selected")
+            return
+        options = QFileDialog.Options()
+        file_dialog = QFileDialog()
+        file_dialog.setFileMode(QFileDialog.AnyFile)
+        file_dialog.setAcceptMode(QFileDialog.AcceptSave)
+        file_dialog.setOptions(options)
 
-    def _on_search_tree_change(self, current, model):
-        """Callback whenever the selection of the search tree changes."""
-        path = model.filePath(current)
-        if os.path.isdir(path):
-            self.save_path.setText(path)
-        else:
-            self.save_path.setText(os.path.dirname(path))
+        # Define multiple file types for the dropdown
+        file_dialog.setNameFilters(
+            ["Phasor as OME-TIFF (*.ome.tif)", "Phasor table as CSV (*.csv)"]
+        )
+
+        # Execute the dialog and retrieve the selected file path
+        if file_dialog.exec_():
+            selected_filter = file_dialog.selectedNameFilter()
+            file_path = file_dialog.selectedFiles()[0]
+
+            # Append appropriate file extension if not present
+            if (
+                selected_filter == "Phasor as OME-TIFF (*.ome.tif)"
+                and not file_path.endswith(".ome.tif")
+            ):
+                if file_path.endswith(".tif"):
+                    file_path = file_path[:-4]  # Remove the .tif extension
+                file_path += ".ome.tif"
+            elif (
+                selected_filter == "Phasor table as CSV (*.csv)"
+                and not file_path.endswith(".csv")
+            ):
+                file_path += ".csv"
+
+            self._save_file(file_path, selected_filter)
 
     def _populate_combobox(self):
         """Populate combobox with image layers."""
@@ -549,25 +554,34 @@ class WriterWidget(QWidget):
         for layer in image_layers:
             self.export_layer_combobox.addItem(layer.name)
 
-    def _on_combobox_change(self):
-        """Callback whenever the combobox changes."""
-        export_layer_name = self.export_layer_combobox.currentText()
-        self.export_file_name.setText(export_layer_name)
-
-    def _on_click(self):
-        """Callback whenever the export button is clicked."""
-        if not self.save_path.text():
-            show_error("Select export location")
-            return
-        if not self.export_file_name.text():
-            show_error("Enter name of exported file")
-            return
-        export_layer_name = self.export_layer_combobox.currentText()
-        export_layer = self.viewer.layers[export_layer_name]
-        export_file_name = self.export_file_name.text()
-        export_path = os.path.join(self.save_path.text(), export_file_name)
-        export_path = write_ome_tiff(export_path, export_layer)
-        show_info(f"Exported {export_layer_name} to {export_path}")
+    def _save_file(self, file_path, selected_filter):
+        """Callback whenever the export location and name are specified."""
+        export_layer = self.viewer.layers[
+            self.export_layer_combobox.currentText()
+        ]
+        if selected_filter == "Phasor as OME-TIFF (*.ome.tif)":
+            write_ome_tiff(file_path, export_layer)
+        elif selected_filter == "Phasor table as CSV (*.csv)":
+            if not file_path.endswith(".csv"):
+                file_path += ".csv"
+            phasor_table = export_layer.metadata[
+                "phasor_features_labels_layer"
+            ].features
+            harmonics = np.unique(phasor_table["harmonic"])
+            # Get coordinates of each pixel
+            coords = np.unravel_index(
+                np.arange(export_layer.data.size), export_layer.data.shape
+            )
+            # Tile coordinates for each harmonic
+            coords = [np.tile(coord, len(harmonics)) for coord in coords]
+            # Add coordinates to phasor table
+            for dim, coord in enumerate(coords):
+                phasor_table[f'dim_{dim}'] = coord
+            phasor_table.to_csv(
+                file_path,
+                index=False,
+            )
+        show_info(f"Exported {export_layer.name} to {file_path}")
 
 
 class LifetimeWidget(QWidget):

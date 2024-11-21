@@ -623,9 +623,6 @@ class PlotterWidget(QWidget):
             return
         column = self.selection_id
         # Update the manual selection in the labels layer with phasor features for each harmonic
-        harmonics = np.unique(
-            self._labels_layer_with_phasor_features.features["harmonic"]
-        )
         self._labels_layer_with_phasor_features.features[column] = 0
         # Filter rows where 'G' is not NaN
         valid_rows = (

@@ -2,7 +2,6 @@ import numpy as np
 import pandas as pd
 from napari.layers import Labels
 from phasorpy.datasets import fetch
-from phasorpy.io import read_sdt
 
 from napari_phasors import napari_get_reader
 

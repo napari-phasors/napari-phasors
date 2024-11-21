@@ -9,9 +9,15 @@ contributions:
     - id: napari-phasors.get_reader
       python_name: napari_phasors._reader:napari_get_reader
       title: Open data with Napari Phasors
-    - id: napari-phasors.make_sample_data
-      python_name: napari_phasors._sample_data:make_sample_data
-      title: Load sample data from Napari Phasors
+    - id: napari-phasors.convallaria_FLIM_sample_data
+      python_name: napari_phasors._sample_data:convallaria_FLIM_sample_data
+      title: Load convallaria FLIM sample data
+    - id: napari-phasors.embryo_FLIM_sample_data
+      python_name: napari_phasors._sample_data:embryo_FLIM_sample_data
+      title: Load FLUTE's FLIM Embryo sample data
+    - id: napari-phasors.paramecium_HSI_sample_data
+      python_name: napari_phasors._sample_data:paramecium_HSI_sample_data
+      title: Load Paramecium Hyperspectral Image sample data
     - id: napari-phasors.plot_phasor
       python_name: napari_phasors:PlotterWidget
       title: Plot Phasor
@@ -26,7 +32,7 @@ contributions:
       title: Calibration Widget
     - id: napari-phasors.WriterWidget
       python_name: napari_phasors:WriterWidget
-      title: Export to OME-TIF Widget
+      title: Export Phasor
     - id: napari-phasors.LifetimeWidget
       python_name: napari_phasors:LifetimeWidget
       title: Plot lifetime image
@@ -40,17 +46,25 @@ contributions:
       layer_types: ['image*','labels*']
       filename_extensions: []
   sample_data:
-    - command: napari-phasors.make_sample_data
-      display_name: Napari Phasors
+    - command: napari-phasors.convallaria_FLIM_sample_data
+      display_name: Convallaria FLIM
       key: unique_id.1
+    - command: napari-phasors.embryo_FLIM_sample_data
+      display_name: FLUTE's FLIM Embryo sample data FLIM
+      key: unique_id.2
+    - command: napari-phasors.paramecium_HSI_sample_data
+      display_name: Paramecium Hyperspectral Image
+      key: unique_id.3
   widgets:
-    - command: napari-phasors.plot_phasor
-      display_name: Phasor Plot
     - command: napari-phasors.PhasorTransform
       display_name: Phasor Transform
     - command: napari-phasors.CalibrationWidget
       display_name: Calibration Widget
-    - command: napari-phasors.WriterWidget
-      display_name: Export to OME-TIF Widget
+    - command: napari-phasors.plot_phasor
+      display_name: Phasor Plot
     - command: napari-phasors.LifetimeWidget
       display_name: Lifetime Widget
+    - command: napari-phasors.WriterWidget
+      display_name: Export Phasor
+
+
