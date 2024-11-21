@@ -26,7 +26,7 @@ contributions:
       title: Write OME-TIFF
     - id: napari-phasors.PhasorTransform
       python_name: napari_phasors:PhasorTransform
-      title: Phasor Transform
+      title: Phasor Custom Import
     - id: napari-phasors.CalibrationWidget
       python_name: napari_phasors:CalibrationWidget
       title: Calibration Widget
@@ -57,7 +57,7 @@ contributions:
       key: unique_id.3
   widgets:
     - command: napari-phasors.PhasorTransform
-      display_name: Phasor Transform
+      display_name: Phasor Custom Import
     - command: napari-phasors.CalibrationWidget
       display_name: Calibration Widget
     - command: napari-phasors.plot_phasor
@@ -67,4 +67,25 @@ contributions:
     - command: napari-phasors.WriterWidget
       display_name: Export Phasor
 
+  menus:
+    napari/file/io_utilities:
+      - submenu: io_phasors_submenu
+    napari/layers/visualize:
+      - submenu: phasors_submenu
+      - submenu: lifetimes_submenu
+    phasors_submenu:
+      - command: napari-phasors.plot_phasor
+      - command: napari-phasors.CalibrationWidget
+    lifetimes_submenu:
+      - command: napari-phasors.LifetimeWidget
+    io_phasors_submenu:
+      - command: napari-phasors.PhasorTransform
+      - command: napari-phasors.WriterWidget
 
+  submenus:
+    - id: phasors_submenu
+      label: Phasors
+    - id: lifetimes_submenu
+      label: Lifetimes
+    - id: io_phasors_submenu
+      label: Phasors
