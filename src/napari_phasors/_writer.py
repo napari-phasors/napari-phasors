@@ -38,16 +38,16 @@ def write_ome_tiff(path: str, image_layer: Any) -> List[str]:
     if isinstance(image_layer, Image):
         mean = image_layer.metadata["original_mean"]
         phasor_data = image_layer.metadata["phasor_features_labels_layer"]
-        if image_layer.metadata["settings"]:
+        if "settings" in image_layer.metadata:
             settings = image_layer.metadata["settings"]
         else:
-            settings = None
+            settings = {}
     else:
         mean = image_layer[0][1]["metadata"]["original_mean"]
         phasor_data = image_layer[0][1]["metadata"][
             "phasor_features_labels_layer"
         ]
-        if image_layer[0][1]["settings"]:
+        if "settings" in image_layer[0][1]["metadata"]:
             settings = image_layer[0][1]["settings"]
         else:
             settings = {}

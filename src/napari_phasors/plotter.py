@@ -666,7 +666,6 @@ class PlotterWidget(QWidget):
 
         This function updates the `_labels_layer_with_phasor_features` attribute with the Labels layer in the metadata of the selected image layer.
         """
-        print('prueba')
         labels_layer_name = (
             self.plotter_inputs_widget.image_layer_with_phasor_features_combobox.currentText()
         )
@@ -674,7 +673,6 @@ class PlotterWidget(QWidget):
             self._labels_layer_with_phasor_features = None
             return
         layer_metadata = self.viewer.layers[labels_layer_name].metadata
-        print(layer_metadata['settings'])
         self._labels_layer_with_phasor_features = layer_metadata[
             "phasor_features_labels_layer"
         ]

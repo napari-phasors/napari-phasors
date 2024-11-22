@@ -245,7 +245,7 @@ def processed_file_reader(
 
     """
     filename, file_extension = _get_filename_extension(path)
-    reader_options = reader_options or {'harmonic': harmonics}
+    reader_options = reader_options or {"harmonic": harmonics}
     mean_intensity_image, G_image, S_image, attrs = extension_mapping[
         "processed"
     ][file_extension](path, reader_options)
@@ -257,11 +257,11 @@ def processed_file_reader(
         harmonics=harmonics,
     )
     layers = []
-    if attrs['description']:
+    if "description" in attrs.keys():
         description = ast.literal_eval(attrs["description"])
         if "napari_phasors_settings" in description:
             settings = description["napari_phasors_settings"]
-            if "calibrated" in settings:
+            if "calibrated" in settings.keys():
                 settings["calibrated"] = bool(settings["calibrated"])
     else:
         settings = {}
