@@ -318,7 +318,6 @@ def make_phasors_labels_layer(
             harmonic_value = harmonics[0]
         else:
             harmonic_value = harmonics if harmonics is not None else 1
-        # Get pixel coordinates from G_image
         table = pd.DataFrame(
             {
                 "label": pixel_id,
