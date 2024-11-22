@@ -71,10 +71,16 @@ contributions:
     napari/file/io_utilities:
       - submenu: io_phasors_submenu
     napari/layers/visualize:
-      - submenu: phasors_submenu
+      - submenu: phasor_plot_submenu
       - submenu: lifetimes_submenu
-    phasors_submenu:
+    napari/layers/transform:
+      - submenu: calibration_submenu
+    napari/layers/data:
+      - submenu: io_phasors_submenu
+
+    phasor_plot_submenu:
       - command: napari-phasors.plot_phasor
+    calibration_submenu:
       - command: napari-phasors.CalibrationWidget
     lifetimes_submenu:
       - command: napari-phasors.LifetimeWidget
@@ -83,7 +89,9 @@ contributions:
       - command: napari-phasors.WriterWidget
 
   submenus:
-    - id: phasors_submenu
+    - id: phasor_plot_submenu
+      label: Phasors
+    - id: calibration_submenu
       label: Phasors
     - id: lifetimes_submenu
       label: Lifetimes
