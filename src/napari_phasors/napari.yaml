@@ -9,9 +9,15 @@ contributions:
     - id: napari-phasors.get_reader
       python_name: napari_phasors._reader:napari_get_reader
       title: Open data with Napari Phasors
-    - id: napari-phasors.make_sample_data
-      python_name: napari_phasors._sample_data:make_sample_data
-      title: Load sample data from Napari Phasors
+    - id: napari-phasors.convallaria_FLIM_sample_data
+      python_name: napari_phasors._sample_data:convallaria_FLIM_sample_data
+      title: Load convallaria FLIM sample data
+    - id: napari-phasors.embryo_FLIM_sample_data
+      python_name: napari_phasors._sample_data:embryo_FLIM_sample_data
+      title: Load FLUTE's FLIM Embryo sample data
+    - id: napari-phasors.paramecium_HSI_sample_data
+      python_name: napari_phasors._sample_data:paramecium_HSI_sample_data
+      title: Load Paramecium Hyperspectral Image sample data
     - id: napari-phasors.plot_phasor
       python_name: napari_phasors:PlotterWidget
       title: Plot Phasor
@@ -20,7 +26,7 @@ contributions:
       title: Write OME-TIFF
     - id: napari-phasors.PhasorTransform
       python_name: napari_phasors:PhasorTransform
-      title: Phasor Transform
+      title: Phasor Custom Import
     - id: napari-phasors.CalibrationWidget
       python_name: napari_phasors:CalibrationWidget
       title: Calibration Widget
@@ -40,12 +46,18 @@ contributions:
       layer_types: ['image*','labels*']
       filename_extensions: []
   sample_data:
-    - command: napari-phasors.make_sample_data
-      display_name: Napari Phasors
+    - command: napari-phasors.convallaria_FLIM_sample_data
+      display_name: Convallaria FLIM
       key: unique_id.1
+    - command: napari-phasors.embryo_FLIM_sample_data
+      display_name: FLUTE's FLIM Embryo sample data FLIM
+      key: unique_id.2
+    - command: napari-phasors.paramecium_HSI_sample_data
+      display_name: Paramecium Hyperspectral Image
+      key: unique_id.3
   widgets:
     - command: napari-phasors.PhasorTransform
-      display_name: Phasor Transform
+      display_name: Phasor Custom Import
     - command: napari-phasors.CalibrationWidget
       display_name: Calibration Widget
     - command: napari-phasors.plot_phasor
@@ -54,3 +66,34 @@ contributions:
       display_name: Lifetime Widget
     - command: napari-phasors.WriterWidget
       display_name: Export Phasor
+
+  menus:
+    napari/file/io_utilities:
+      - submenu: io_phasors_submenu
+    napari/layers/visualize:
+      - submenu: phasor_plot_submenu
+      - submenu: lifetimes_submenu
+    napari/layers/transform:
+      - submenu: calibration_submenu
+    napari/layers/data:
+      - submenu: io_phasors_submenu
+
+    phasor_plot_submenu:
+      - command: napari-phasors.plot_phasor
+    calibration_submenu:
+      - command: napari-phasors.CalibrationWidget
+    lifetimes_submenu:
+      - command: napari-phasors.LifetimeWidget
+    io_phasors_submenu:
+      - command: napari-phasors.PhasorTransform
+      - command: napari-phasors.WriterWidget
+
+  submenus:
+    - id: phasor_plot_submenu
+      label: Phasors
+    - id: calibration_submenu
+      label: Phasors
+    - id: lifetimes_submenu
+      label: Lifetimes
+    - id: io_phasors_submenu
+      label: Phasors
