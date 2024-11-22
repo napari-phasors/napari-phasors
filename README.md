@@ -7,11 +7,11 @@
 [![codecov](https://codecov.io/gh/napari-phasors/napari-phasors/branch/main/graph/badge.svg)](https://codecov.io/gh/napari-phasors/napari-phasors)
 [![napari hub](https://img.shields.io/endpoint?url=https://api.napari-hub.org/shields/napari-phasors)](https://napari-hub.org/plugins/napari-phasors)
 
-A simple plugin to use phasor analysis
+A simple plugin to do phasor analysis in napari. Based on the [phasorpy](https://www.phasorpy.org/) library.
+
+[Jump to Intallation](#installation)
 
 ----------------------------------
-
-This [napari] plugin was generated with [Cookiecutter] using [@napari]'s [cookiecutter-napari-plugin] template.
 
 <!--
 Don't miss the full getting started guide to set up your new package:
@@ -21,18 +21,62 @@ and review the napari docs for plugin developers:
 https://napari.org/stable/plugins/index.html
 -->
 
+## Usage
+
+napari-phasors is composed of a few widgets that allow reading a few specific FLIM and hyperspectral file formats, perform phasor analysis, and display and export the results of manual phasor selections.
+
+### Sample Data
+
+![sample_data](https://github.com/napari-phasors/napari-phasors/raw/main/gifs/sample_data.gif)
+
+### Phasor Analysis
+
+#### FLIM Data
+
+![phasors_flim](https://github.com/napari-phasors/napari-phasors/raw/main/gifs/phasors_flim.gif)
+
+#### Hyperspectral Data
+
+![phasors_hyperspectral](https://github.com/napari-phasors/napari-phasors/raw/main/gifs/phasors_hyperspectral.gif)
+
+### Apparent Lifetime Display
+
+![lifetimes](https://github.com/napari-phasors/napari-phasors/raw/main/gifs/lifetimes.gif)
+
+### Phasor Calibration
+
+![calibration](https://github.com/napari-phasors/napari-phasors/raw/main/gifs/calibration.gif)
+
+### Phasor Custom Import
+
+![custom_import](https://github.com/napari-phasors/napari-phasors/raw/main/gifs/custom_import.gif)
+
+### Phasor Export
+
+![export_phasors](https://github.com/napari-phasors/napari-phasors/raw/main/gifs/export_phasors.gif)
+
 ## Installation
 
-You can install `napari-phasors` via [pip]:
+You can install `napari-phasors` via [pip]. Follow these steps from a terminal.
+
+We recommend using `miniforge` whenever possible. Click [here](https://github.com/conda-forge/miniforge?tab=readme-ov-file#miniforge) to choose the right download option for your OS.
+**If you do not use `miniforge`, but rather Anaconda or Miniconda, replace the `mamba` term whenever you see it below with `conda`.**
+
+Create a conda environment with napari by typing :
+
+    mamba create -n napari-phasors-env napari pyqt python=3.10
+    
+Activate the environment :
+
+    mamba activate napari-phasors-env
+
+Install `napari-phasors` via [pip] :
 
     pip install napari-phasors
 
-
-
-To install latest development version :
+Alternatively, install latest development version with :
 
     pip install git+https://github.com/napari-phasors/napari-phasors.git
-
 
 ## Contributing
 
