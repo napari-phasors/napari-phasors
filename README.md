@@ -35,7 +35,7 @@ Two sample datasets for FLIM are provided, along with their corresponding calibr
 
 #### Plot FLIM Data
 
-FLIM phasor data can be plotted as a 2D histogram or scatter plot. The colormap and the number of bins can be customized.
+FLIM phasor data can be plotted as a 2D histogram or scatter plot. The colormap, the number of bins and the scale of the colors can be customized.
 Filtering and thresholding can also be applied to process phasor data and the mean intensity image. 
 
 ![phasors_flim](https://github.com/napari-phasors/napari-phasors/raw/main/gifs/phasors_flim.gif)
