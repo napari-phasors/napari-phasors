@@ -77,6 +77,7 @@ class PhasorTransform(QWidget):
             ".ptu": PtuWidget,
             ".lsm": LsmWidget,
             ".tif": LsmWidget,
+            ".ome.tif": LsmWidget,
             ".sdt": SdtWidget,
         }
 
@@ -577,6 +578,8 @@ class WriterWidget(QWidget):
             # Add coordinates to phasor table
             for dim, coord in enumerate(coords):
                 phasor_table[f'dim_{dim}'] = coord
+            # Drop rows with NaNs
+            phasor_table = phasor_table.dropna()
             phasor_table.to_csv(
                 file_path,
                 index=False,
