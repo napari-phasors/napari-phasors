@@ -27,31 +27,46 @@ napari-phasors is composed of a few widgets that allow reading a few specific FL
 
 ### Sample Data
 
+Two sample datasets for FLIM are provided, along with their corresponding calibration images. Additionally, a paramecium image is included as sample data for hyperspectral analysis.
+
 ![sample_data](https://github.com/napari-phasors/napari-phasors/raw/main/gifs/sample_data.gif)
 
 ### Phasor Analysis
 
-#### FLIM Data
+#### Plot FLIM Data
+
+FLIM phasor data can be plotted as a 2D histogram or scatter plot. The colormap and the number of bins can be customized.
+Filtering and thresholding can also be applied to process phasor data and the mean intensity image. 
 
 ![phasors_flim](https://github.com/napari-phasors/napari-phasors/raw/main/gifs/phasors_flim.gif)
 
-#### Hyperspectral Data
+#### Plot Hyperspectral Data
+
+Hyperspectral phasor data can also be plotted as a 2D histogram or scatter plot and visualized in the full universal circle.
 
 ![phasors_hyperspectral](https://github.com/napari-phasors/napari-phasors/raw/main/gifs/phasors_hyperspectral.gif)
 
 ### Apparent Lifetime Display
 
+A FLIM image can be colormapped according to the phase or modulation apparent lifetime. A histogram is also created for visualization of the distribution of apparent lifetimes of the FLIM image.
+
 ![lifetimes](https://github.com/napari-phasors/napari-phasors/raw/main/gifs/lifetimes.gif)
 
 ### Phasor Calibration
+
+FLIM images can be calibrated using a reference image acquired under the same experimental parameters. This reference image should consist of a homogeneous solution of a fluorophore with a known fluorescence lifetime and the laser frequency used in the experiment. This ensures accuracy and consistency in lifetime measurements.
 
 ![calibration](https://github.com/napari-phasors/napari-phasors/raw/main/gifs/calibration.gif)
 
 ### Phasor Custom Import
 
+Supported file formats ('.tif', '.ptu', '.sdt', '.fbd', '.lsm', '.ome.tif') can be read and transformed to the phasor space. Additional options, such as the harmonics, channels and frames, can be specified depending on the file format to be read.
+
 ![custom_import](https://github.com/napari-phasors/napari-phasors/raw/main/gifs/custom_import.gif)
 
 ### Phasor Export
+
+The average intensity image and the phasor coordinates can be exported as OME-TIF files that can be read by napari-phasors and PhasorPy. Alternatively, the phasor coordinates, as well as the selections (cursors) can be exported as a CSV file.
 
 ![export_phasors](https://github.com/napari-phasors/napari-phasors/raw/main/gifs/export_phasors.gif)
 
