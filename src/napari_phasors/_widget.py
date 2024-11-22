@@ -431,12 +431,12 @@ class CalibrationWidget(QWidget):
             .features
         )
         harmonics = np.unique(sample_phasor_data["harmonic"])
-        original_mean_shape = (
-            self.viewer.layers[sample_name].metadata["original_mean"].shape
-        )
+        original_mean_shape = sample_metadata["original_mean"].shape
+        if "settings" not in sample_metadata.keys():
+            sample_metadata['settings'] = {}
         if (
-            "calibrated" not in sample_metadata.keys()
-            or sample_metadata["calibrated"] is False
+            "calibrated" not in sample_metadata["settings"].keys()
+            or sample_metadata["settings"]["calibrated"] is False
         ):
             skip_axis = None
             if len(np.unique(sample_phasor_data["harmonic"])) > 1:
@@ -473,9 +473,9 @@ class CalibrationWidget(QWidget):
                 )
             sample_phasor_data["G_original"] = real.flatten()
             sample_phasor_data["S_original"] = imag.flatten()
-            sample_metadata["calibrated"] = True
+            sample_metadata["settings"]["calibrated"] = True
             show_info(f"Calibrated {sample_name}")
-        elif sample_metadata["calibrated"] is True:
+        elif sample_metadata["settings"]["calibrated"] is True:
             show_error("Layer already calibrated")
 
 

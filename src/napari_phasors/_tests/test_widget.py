@@ -453,7 +453,7 @@ def test_calibration_widget(make_napari_viewer):
         )
         mock_show_info.assert_called_once_with(f"Calibrated {sample_name}")
     # Check if the calibration was successful
-    assert viewer.layers[0].metadata["calibrated"] is True
+    assert viewer.layers[0].metadata["settings"]["calibrated"] is True
     calibrated_real = np.reshape(
         viewer.layers[0]
         .metadata["phasor_features_labels_layer"]

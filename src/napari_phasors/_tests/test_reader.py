@@ -225,7 +225,7 @@ def test_reader_ometif():
     assert (
         len(layer_data_tuple[1]["metadata"]) == 3
         and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
-        and "attrs" in layer_data_tuple[1]["metadata"]
+        and "settings" in layer_data_tuple[1]["metadata"]
         and "original_mean" in layer_data_tuple[1]["metadata"]
     )
     phasor_features = layer_data_tuple[1]["metadata"][

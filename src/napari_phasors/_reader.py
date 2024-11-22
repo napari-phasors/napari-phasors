@@ -4,6 +4,7 @@ and computes phasor coordinates with `phasorpy.phasor.phasor_from_signal`
 
 """
 
+import ast
 import inspect
 import os
 from typing import Any, Callable, Optional, Sequence, Union
@@ -244,7 +245,7 @@ def processed_file_reader(
 
     """
     filename, file_extension = _get_filename_extension(path)
-    reader_options = reader_options or {'harmonic': harmonics}
+    reader_options = reader_options or {"harmonic": harmonics}
     mean_intensity_image, G_image, S_image, attrs = extension_mapping[
         "processed"
     ][file_extension](path, reader_options)
@@ -256,12 +257,20 @@ def processed_file_reader(
         harmonics=harmonics,
     )
     layers = []
+    if "description" in attrs.keys():
+        description = ast.literal_eval(attrs["description"])
+        if "napari_phasors_settings" in description:
+            settings = description["napari_phasors_settings"]
+            if "calibrated" in settings.keys():
+                settings["calibrated"] = bool(settings["calibrated"])
+    else:
+        settings = {}
     add_kwargs = {
         "name": filename + " Intensity Image",
         "metadata": {
             "phasor_features_labels_layer": labels_layer,
             "original_mean": mean_intensity_image,
-            "attrs": attrs,
+            "settings": settings,
         },
     }
     layers.append((mean_intensity_image, add_kwargs))
