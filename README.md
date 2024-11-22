@@ -60,7 +60,7 @@ FLIM images can be calibrated using a reference image acquired under the same ex
 
 ### Phasor Custom Import
 
-Supported file formats ('.tif', '.ptu', '.sdt', '.fbd', '.lsm', '.ome.tif') can be read and transformed to the phasor space. Additional options, such as the harmonics, channels and frames, can be specified depending on the file format to be read.
+Supported file formats (`.tif`, `.ptu`, `.sdt`, `.fbd`, `.lsm`, `.ome.tif`) can be read and transformed to the phasor space. Additional options, such as the harmonics, channels and frames, can be specified depending on the file format to be read.
 
 ![custom_import](https://github.com/napari-phasors/napari-phasors/raw/main/gifs/custom_import.gif)
 
