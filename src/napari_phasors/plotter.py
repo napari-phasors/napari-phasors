@@ -666,22 +666,23 @@ class PlotterWidget(QWidget):
 
         This function updates the `_labels_layer_with_phasor_features` attribute with the Labels layer in the metadata of the selected image layer.
         """
+        print('prueba')
         labels_layer_name = (
             self.plotter_inputs_widget.image_layer_with_phasor_features_combobox.currentText()
         )
         if labels_layer_name == "":
             self._labels_layer_with_phasor_features = None
             return
-        self._labels_layer_with_phasor_features = self.viewer.layers[
-            labels_layer_name
-        ].metadata["phasor_features_labels_layer"]
+        layer_metadata = self.viewer.layers[labels_layer_name].metadata
+        print(layer_metadata['settings'])
+        self._labels_layer_with_phasor_features = layer_metadata[
+            "phasor_features_labels_layer"
+        ]
         # Set harmonic spinbox maximum value based on maximum harmonic in the table
         self.plotter_inputs_widget.harmonic_spinbox.setMaximum(
             self._labels_layer_with_phasor_features.features["harmonic"].max()
         )
-        max_mean_value = np.nanmax(
-            self.viewer.layers[labels_layer_name].metadata["original_mean"]
-        )
+        max_mean_value = np.nanmax(layer_metadata["original_mean"])
         # Determine the threshold factor based on max_mean_value using logarithmic scaling
         if max_mean_value > 0:
             magnitude = int(log10(max_mean_value))
@@ -694,6 +695,20 @@ class PlotterWidget(QWidget):
         self.plotter_inputs_widget.threshold_slider.setMaximum(
             ceil(max_mean_value * self.threshold_factor)
         )
+        if "settings" in layer_metadata.keys():
+            settings = layer_metadata["settings"]
+            if "threshold" in settings.keys():
+                self.plotter_inputs_widget.threshold_slider.setValue(
+                    int(settings["threshold"]) * self.threshold_factor
+                )
+                self.on_threshold_slider_change()
+            if "filter" in settings.keys():
+                self.plotter_inputs_widget.median_filter_spinbox.setValue(
+                    int(settings["filter"]["size"])
+                )
+                self.plotter_inputs_widget.median_filter_repetition_spinbox.setValue(
+                    int(settings["filter"]["repeat"])
+                )
         # Add default selection id to table if not present
         self.add_selection_id_to_features("MANUAL SELECTION #1")
 

@@ -36,17 +36,36 @@ def write_ome_tiff(path: str, image_layer: Any) -> List[str]:
     A list containing the string path to the saved file.
     """
     if isinstance(image_layer, Image):
-        mean = image_layer.data
+        mean = image_layer.metadata["original_mean"]
         phasor_data = image_layer.metadata["phasor_features_labels_layer"]
+        if image_layer.metadata["settings"]:
+            settings = image_layer.metadata["settings"]
+        else:
+            settings = None
     else:
-        mean = image_layer[0][0]
+        mean = image_layer[0][1]["metadata"]["original_mean"]
         phasor_data = image_layer[0][1]["metadata"][
             "phasor_features_labels_layer"
         ]
+        if image_layer[0][1]["settings"]:
+            settings = image_layer[0][1]["settings"]
+        else:
+            settings = {}
     harmonics = phasor_data.features["harmonic"].unique()
-    G = np.reshape(phasor_data.features["G"], (len(harmonics), *mean.shape))
-    S = np.reshape(phasor_data.features["S"], (len(harmonics), *mean.shape))
+    G = np.reshape(
+        phasor_data.features["G_original"], (len(harmonics), *mean.shape)
+    )
+    S = np.reshape(
+        phasor_data.features["S_original"], (len(harmonics), *mean.shape)
+    )
     if not path.endswith(".ome.tif"):
         path += ".ome.tif"
-    phasor_to_ometiff(path, mean, G, S, harmonic=harmonics)
+    phasor_to_ometiff(
+        path,
+        mean,
+        G,
+        S,
+        harmonic=harmonics,
+        description={'napari_phasors_settings': settings},
+    )
     return path

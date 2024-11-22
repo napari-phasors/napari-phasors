@@ -67,6 +67,15 @@ def apply_filter_and_threshold(
             merged_mean[np.isnan(np.nanmin(mean, axis=0))] = np.nan
             mean = merged_mean
     layer.data = mean
+    # Update the settings dictionary of the layer
+    if 'settings' not in layer.metadata:
+        layer.metadata['settings'] = {}
+    layer.metadata['settings']['filter'] = {
+        'method': method,
+        'size': size,
+        'repeat': repeat,
+    }
+    layer.metadata['settings']['threshold'] = threshold
     layer.refresh()
     return
 
