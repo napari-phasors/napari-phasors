@@ -4,9 +4,10 @@ and computes phasor coordinates with `phasorpy.phasor.phasor_from_signal`
 
 """
 
-import ast
 import inspect
+import json
 import os
+import sys
 from typing import Any, Callable, Optional, Sequence, Union
 
 import numpy as np
@@ -258,9 +259,11 @@ def processed_file_reader(
     )
     layers = []
     if "description" in attrs.keys():
-        description = ast.literal_eval(attrs["description"])
+        description = json.loads(attrs["description"])
+        if sys.getsizeof(description) > 512 * 512:  # Threshold: 256 KB
+            raise ValueError("Description dictionary is too large.")
         if "napari_phasors_settings" in description:
-            settings = description["napari_phasors_settings"]
+            settings = json.loads(description["napari_phasors_settings"])
             if "calibrated" in settings.keys():
                 settings["calibrated"] = bool(settings["calibrated"])
     else:

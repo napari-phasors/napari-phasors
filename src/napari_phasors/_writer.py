@@ -6,6 +6,8 @@ to `OME-TIFF` format.
 
 from __future__ import annotations
 
+import importlib.metadata
+import json
 from typing import TYPE_CHECKING, Any, List, Sequence, Tuple, Union
 
 import numpy as np
@@ -60,12 +62,14 @@ def write_ome_tiff(path: str, image_layer: Any) -> List[str]:
     )
     if not path.endswith(".ome.tif"):
         path += ".ome.tif"
+    settings["version"] = str(importlib.metadata.version('napari-phasors'))
+    description = json.dumps({"napari_phasors_settings": json.dumps(settings)})
     phasor_to_ometiff(
         path,
         mean,
         G,
         S,
         harmonic=harmonics,
-        description={'napari_phasors_settings': settings},
+        description=description,
     )
     return path
