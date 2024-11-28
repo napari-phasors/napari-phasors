@@ -433,7 +433,7 @@ class CalibrationWidget(QWidget):
         harmonics = np.unique(sample_phasor_data["harmonic"])
         original_mean_shape = sample_metadata["original_mean"].shape
         if "settings" not in sample_metadata.keys():
-            sample_metadata['settings'] = {}
+            sample_metadata["settings"] = {}
         if (
             "calibrated" not in sample_metadata["settings"].keys()
             or sample_metadata["settings"]["calibrated"] is False

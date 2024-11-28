@@ -1,4 +1,5 @@
 # %%
+import importlib.metadata
 import os
 
 import numpy as np
@@ -48,6 +49,9 @@ def test_write_ometif(tmp_path):
     assert len(layer_data_tuple) == 2
     np.testing.assert_array_almost_equal(
         layer_data_tuple[0], intensity_image_layer.data
+    )
+    assert layer_data_tuple[1]["metadata"]["settings"]["version"] == str(
+        importlib.metadata.version("napari-phasors")
     )
     phasor_features = layer_data_tuple[1]["metadata"][
         "phasor_features_labels_layer"
