@@ -409,18 +409,24 @@ class CalibrationWidget(QWidget):
             self.calibration_widget.sample_layer_combobox.addItem(layer.name)
 
     def _on_click(self):
-        frequency = int(
-            self.calibration_widget.frequency_line_edit_widget.text()
-        )
-        lifetime = float(
-            self.calibration_widget.lifetime_line_edit_widget.text()
-        )
+        frequency = self.calibration_widget.frequency_line_edit_widget.text()
+        lifetime = self.calibration_widget.lifetime_line_edit_widget.text()
+        if frequency == "":
+            show_error("Enter frequency")
+            return
+        if lifetime == "":
+            show_error("Enter reference lifetime")
+            return
+        frequency = int(frequency)
+        lifetime = float(lifetime)
         sample_name = (
             self.calibration_widget.sample_layer_combobox.currentText()
         )
         calibration_name = (
             self.calibration_widget.calibration_layer_combobox.currentText()
         )
+        if sample_name == "" or calibration_name == "":
+            return
         sample_metadata = self.viewer.layers[sample_name].metadata
         sample_phasor_data = sample_metadata[
             "phasor_features_labels_layer"
@@ -438,39 +444,28 @@ class CalibrationWidget(QWidget):
             "calibrated" not in sample_metadata["settings"].keys()
             or sample_metadata["settings"]["calibrated"] is False
         ):
-            skip_axis = None
-            if len(np.unique(sample_phasor_data["harmonic"])) > 1:
-                skip_axis = (0,)
-                real, imag = phasor_calibrate(
-                    np.reshape(
-                        sample_phasor_data["G_original"],
-                        (len(harmonics),) + original_mean_shape,
-                    ),
-                    np.reshape(
-                        sample_phasor_data["S_original"],
-                        (len(harmonics),) + original_mean_shape,
-                    ),
-                    np.reshape(
-                        calibration_phasor_data["G_original"],
-                        (len(harmonics),) + original_mean_shape,
-                    ),
-                    np.reshape(
-                        calibration_phasor_data["S_original"],
-                        (len(harmonics),) + original_mean_shape,
-                    ),
-                    frequency=frequency * np.array(harmonics),
-                    lifetime=lifetime,
-                    skip_axis=skip_axis,
-                )
-            else:
-                real, imag = phasor_calibrate(
+            real, imag = phasor_calibrate(
+                np.reshape(
                     sample_phasor_data["G_original"],
+                    (len(harmonics),) + original_mean_shape,
+                ),
+                np.reshape(
                     sample_phasor_data["S_original"],
+                    (len(harmonics),) + original_mean_shape,
+                ),
+                np.reshape(
                     calibration_phasor_data["G_original"],
+                    (len(harmonics),) + original_mean_shape,
+                ),
+                np.reshape(
                     calibration_phasor_data["S_original"],
-                    frequency=frequency,
-                    lifetime=lifetime,
-                )
+                    (len(harmonics),) + original_mean_shape,
+                ),
+                frequency=frequency,
+                lifetime=lifetime,
+                harmonic=harmonics.tolist(),
+                skip_axis=0,
+            )
             sample_phasor_data["G_original"] = real.flatten()
             sample_phasor_data["S_original"] = imag.flatten()
             sample_metadata["settings"]["calibrated"] = True

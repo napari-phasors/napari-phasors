@@ -471,8 +471,9 @@ def test_calibration_widget(make_napari_viewer):
         original_imag,
         calibration_real,
         calibration_imag,
-        frequency=80 * np.array(harmonic),
+        frequency=80,
         lifetime=2,
+        harmonic=harmonic,
         skip_axis=0,
     )
     assert np.allclose(calibrated_real, expected_real)
