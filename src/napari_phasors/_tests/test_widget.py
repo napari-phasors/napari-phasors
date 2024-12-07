@@ -369,6 +369,12 @@ def test_calibration_widget(make_napari_viewer):
     )
     # Intialize viewer and add intensity image layer with phasors data
     viewer = make_napari_viewer()
+    main_widget = CalibrationWidget(viewer)
+    with patch("napari_phasors._widget.show_error") as mock_show_error:
+        main_widget.calibration_widget.calibrate_push_button.click()
+        mock_show_error.assert_called_once_with(
+            "Select sample and calibration layers"
+        )
     viewer.add_layer(sample_image_layer)
     viewer.add_layer(calibration_image_layer)
     original_phasors_table = sample_image_layer.metadata[
@@ -399,7 +405,6 @@ def test_calibration_widget(make_napari_viewer):
     )
     pd.testing.assert_frame_equal(original_phasors_table, sample_phasors_table)
     # Check init calibration widget
-    main_widget = CalibrationWidget(viewer)
     assert (
         main_widget.calibration_widget.frequency_line_edit_widget.text() == ""
     )
@@ -424,6 +429,13 @@ def test_calibration_widget(make_napari_viewer):
     ]
     assert calibration_image_layer.name in calibration_layer_combobox_items
     assert sample_image_layer.name in calibration_layer_combobox_items
+    with patch("napari_phasors._widget.show_error") as mock_show_error:
+        main_widget.calibration_widget.calibrate_push_button.click()
+        mock_show_error.assert_called_once_with("Enter frequency")
+    with patch("napari_phasors._widget.show_error") as mock_show_error:
+        main_widget.calibration_widget.frequency_line_edit_widget.setText("80")
+        main_widget.calibration_widget.calibrate_push_button.click()
+        mock_show_error.assert_called_once_with("Enter reference lifetime")
     # Modify comboboxes selection, frequency and lifetime and calibrate
     main_widget.calibration_widget.sample_layer_combobox.setCurrentIndex(0)
     assert (
