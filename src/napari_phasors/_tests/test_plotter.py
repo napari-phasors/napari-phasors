@@ -141,7 +141,7 @@ def test_phasor_plotter(make_napari_viewer):
         (len(harmonics),) + original_mean.data.shape,
     )
     original_g, original_s = phasor_filter(
-        original_g, original_s, repeat=3, size=3, axes=(1, 2)
+        original_g, original_s, repeat=3, size=3, skip_axis=0
     )
     _, original_g, original_s = phasor_threshold(
         original_mean,
