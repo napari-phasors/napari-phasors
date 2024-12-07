@@ -409,6 +409,15 @@ class CalibrationWidget(QWidget):
             self.calibration_widget.sample_layer_combobox.addItem(layer.name)
 
     def _on_click(self):
+        sample_name = (
+            self.calibration_widget.sample_layer_combobox.currentText()
+        )
+        calibration_name = (
+            self.calibration_widget.calibration_layer_combobox.currentText()
+        )
+        if sample_name == "" or calibration_name == "":
+            show_error("Select sample and calibration layers")
+            return
         frequency = self.calibration_widget.frequency_line_edit_widget.text()
         lifetime = self.calibration_widget.lifetime_line_edit_widget.text()
         if frequency == "":
@@ -419,14 +428,6 @@ class CalibrationWidget(QWidget):
             return
         frequency = int(frequency)
         lifetime = float(lifetime)
-        sample_name = (
-            self.calibration_widget.sample_layer_combobox.currentText()
-        )
-        calibration_name = (
-            self.calibration_widget.calibration_layer_combobox.currentText()
-        )
-        if sample_name == "" or calibration_name == "":
-            return
         sample_metadata = self.viewer.layers[sample_name].metadata
         sample_phasor_data = sample_metadata[
             "phasor_features_labels_layer"
