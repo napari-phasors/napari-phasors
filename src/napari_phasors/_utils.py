@@ -52,7 +52,6 @@ def apply_filter_and_threshold(
             repeat=repeat,
             size=size,
             skip_axis=0,
-            # axes=tuple(range(1, real.ndim)),
         )
     mean, real, imag = phasor_threshold(mean, real, imag, threshold)
     (
