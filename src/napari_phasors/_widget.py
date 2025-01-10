@@ -789,7 +789,7 @@ class LifetimeWidget(QWidget):
             self.selected_harmonic = self.harmonics.min()
 
         self.harmonic_selector.setMinimum(self.harmonics.min())
-        self.harmonic_selector.setMaximum(self.harmonics.min())
+        self.harmonic_selector.setMaximum(self.harmonics.max())
 
         harmonic_index = list(self.harmonics).index(self.selected_harmonic)
         lifetime_data = self.lifetime_data[harmonic_index]
