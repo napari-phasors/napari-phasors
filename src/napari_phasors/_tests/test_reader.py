@@ -25,9 +25,10 @@ def test_reader_ptu():
         layer_data_tuple[1]["name"] == "test_file Intensity Image: Channel 0"
     )
     assert (
-        len(layer_data_tuple[1]["metadata"]) == 2
+        len(layer_data_tuple[1]["metadata"]) == 3
         and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
         and "original_mean" in layer_data_tuple[1]["metadata"]
+        and "settings" in layer_data_tuple[1]["metadata"]
     )
     phasor_features = layer_data_tuple[1]["metadata"][
         "phasor_features_labels_layer"
@@ -68,9 +69,10 @@ def test_reader_fbd():
         == "test_file$EI0S Intensity Image: Channel 0"
     )
     assert (
-        len(layer_data_tuple[1]["metadata"]) == 2
+        len(layer_data_tuple[1]["metadata"]) == 3
         and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
         and "original_mean" in layer_data_tuple[1]["metadata"]
+        and "settings" in layer_data_tuple[1]["metadata"]
     )
     phasor_features = layer_data_tuple[1]["metadata"][
         "phasor_features_labels_layer"
@@ -102,9 +104,10 @@ def test_reader_fbd():
         == "test_file$EI0S Intensity Image: Channel 1"
     )
     assert (
-        len(layer_data_tuple[1]["metadata"]) == 2
+        len(layer_data_tuple[1]["metadata"]) == 3
         and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
         and "original_mean" in layer_data_tuple[1]["metadata"]
+        and "settings" in layer_data_tuple[1]["metadata"]
     )
     phasor_features = layer_data_tuple[1]["metadata"][
         "phasor_features_labels_layer"
@@ -145,9 +148,10 @@ def test_reader_sdt():
         == "seminal_receptacle_FLIM_single_image Intensity Image"
     )
     assert (
-        len(layer_data_tuple[1]["metadata"]) == 2
+        len(layer_data_tuple[1]["metadata"]) == 3
         and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
         and "original_mean" in layer_data_tuple[1]["metadata"]
+        and "settings" in layer_data_tuple[1]["metadata"]
     )
     phasor_features = layer_data_tuple[1]["metadata"][
         "phasor_features_labels_layer"
@@ -184,9 +188,10 @@ def test_reader_lsm():
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert layer_data_tuple[1]["name"] == "test_file Intensity Image"
     assert (
-        len(layer_data_tuple[1]["metadata"]) == 2
+        len(layer_data_tuple[1]["metadata"]) == 3
         and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
         and "original_mean" in layer_data_tuple[1]["metadata"]
+        and "settings" in layer_data_tuple[1]["metadata"]
     )
     phasor_features = layer_data_tuple[1]["metadata"][
         "phasor_features_labels_layer"

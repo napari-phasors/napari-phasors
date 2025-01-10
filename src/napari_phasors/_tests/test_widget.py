@@ -636,9 +636,13 @@ def test_lifetime_widget(make_napari_viewer):
     assert main_widget._labels_layer_with_phasor_features is None
     assert main_widget.layer_combobox.count() == 0
     assert main_widget.frequency_input.text() == ""
-    assert (
-        main_widget.lifetime_colormap_combobox.currentText() == 'turbo'
-    )  # default colormap
+    assert main_widget.lifetime_colormap == None
+    assert main_widget.colormap_contrast_limits == None
+    assert main_widget.hist_fig is not None
+    assert main_widget.hist_ax is not None
+    assert main_widget.counts is None
+    assert main_widget.bin_edges is None
+    assert main_widget.bin_centers is None
     assert (
         main_widget.lifetime_type_combobox.currentText() == 'Phase'
     )  # default lifetime type
@@ -680,14 +684,8 @@ def test_lifetime_widget(make_napari_viewer):
     assert main_widget.selected_harmonic == harmonic[0]
     assert (
         main_widget.lifetime_layer.name
-        == "Lifetime: FLIM data Intensity Image"
+        == "Phase Lifetime: FLIM data Intensity Image"
     )
-    # Check harmonic selector
-    main_widget.harmonic_selector.setValue(2)
-    assert main_widget.selected_harmonic == harmonic[1]
-    # Check colormap selector
-    main_widget.lifetime_colormap_combobox.setCurrentText('viridis')
-    assert main_widget.lifetime_colormap_combobox.currentText() == 'viridis'
     # Check lifetime type selector
     main_widget.lifetime_type_combobox.setCurrentText('Modulation')
     assert main_widget.lifetime_type_combobox.currentText() == 'Modulation'
@@ -702,10 +700,9 @@ def test_lifetime_widget(make_napari_viewer):
     np.testing.assert_array_equal(
         main_widget.lifetime_data, expected_modulation_lifetimes
     )
-    assert main_widget.selected_harmonic == harmonic[1]
     assert (
         main_widget.lifetime_layer.name
-        == "Lifetime: FLIM data Intensity Image"
+        == "Modulation Lifetime: FLIM data Intensity Image"
     )
-    # assert no other layer is created
-    assert len(viewer.layers) == 2
+    # assert one layer for modulation and one for phase were created
+    assert len(viewer.layers) == 3

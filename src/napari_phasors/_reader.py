@@ -157,6 +157,13 @@ def raw_file_reader(
     """
     filename, file_extension = _get_filename_extension(path)
     raw_data = extension_mapping["raw"][file_extension](path, reader_options)
+    settings = {}
+    if (
+        file_extension != '.fbd'
+        and hasattr(raw_data, "attrs")
+        and 'frequency' in raw_data.attrs.keys()
+    ):
+        settings['frequency'] = raw_data.attrs['frequency']
     layers = []
     iter_axis = iter_index_mapping[file_extension]
     if iter_axis is None:
@@ -185,6 +192,7 @@ def raw_file_reader(
             "metadata": {
                 "phasor_features_labels_layer": labels_layer,
                 "original_mean": mean_intensity_image,
+                "settings": settings,
             },
         }
         layers.append((mean_intensity_image, add_kwargs))
@@ -209,6 +217,7 @@ def raw_file_reader(
                 "metadata": {
                     "phasor_features_labels_layer": labels_layer,
                     "original_mean": mean_intensity_image,
+                    "settings": settings,
                 },
             }
             layers.append((mean_intensity_image, add_kwargs))
@@ -268,6 +277,8 @@ def processed_file_reader(
                 settings["calibrated"] = bool(settings["calibrated"])
     else:
         settings = {}
+    if "frequency" in attrs.keys():
+        settings["frequency"] = attrs["frequency"]
     add_kwargs = {
         "name": filename + " Intensity Image",
         "metadata": {
