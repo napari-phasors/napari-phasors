@@ -445,6 +445,8 @@ class CalibrationWidget(QWidget):
             show_error("Enter reference lifetime")
             return
         frequency = float(frequency)
+        if "settings" not in self.viewer.layers[sample_name].metadata.keys():
+            self.viewer.layers[sample_name].metadata["settings"] = {}
         self.viewer.layers[sample_name].metadata["settings"][
             "frequency"
         ] = frequency
@@ -788,7 +790,6 @@ class LifetimeWidget(QWidget):
 
         self.harmonic_selector.setMinimum(self.harmonics.min())
         self.harmonic_selector.setMaximum(self.harmonics.min())
-        self.harmonic_selector.setValue(self.selected_harmonic)
 
         harmonic_index = list(self.harmonics).index(self.selected_harmonic)
         lifetime_data = self.lifetime_data[harmonic_index]

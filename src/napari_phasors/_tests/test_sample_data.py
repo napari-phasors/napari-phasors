@@ -26,9 +26,10 @@ def test_convallaria_FLIM_sample_data(make_napari_viewer):
         == "Convallaria_$EI0S Intensity Image: Channel 0"
     )
     assert (
-        len(layer_data_tuple[1]["metadata"]) == 2
+        len(layer_data_tuple[1]["metadata"]) == 3
         and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
         and "original_mean" in layer_data_tuple[1]["metadata"]
+        and "settings" in layer_data_tuple[1]["metadata"]
     )
     phasor_features = layer_data_tuple[1]["metadata"][
         "phasor_features_labels_layer"
@@ -60,9 +61,10 @@ def test_convallaria_FLIM_sample_data(make_napari_viewer):
         == "Calibration_Rhodamine110_$EI0S Intensity Image: Channel 0"
     )
     assert (
-        len(layer_data_tuple[1]["metadata"]) == 2
+        len(layer_data_tuple[1]["metadata"]) == 3
         and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
         and "original_mean" in layer_data_tuple[1]["metadata"]
+        and "settings" in layer_data_tuple[1]["metadata"]
     )
     phasor_features = layer_data_tuple[1]["metadata"][
         "phasor_features_labels_layer"
@@ -97,9 +99,10 @@ def test_embryo_FLIM_sample_data(make_napari_viewer):
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert layer_data_tuple[1]["name"] == "Embryo Intensity Image"
     assert (
-        len(layer_data_tuple[1]["metadata"]) == 2
+        len(layer_data_tuple[1]["metadata"]) == 3
         and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
         and "original_mean" in layer_data_tuple[1]["metadata"]
+        and "settings" in layer_data_tuple[1]["metadata"]
     )
     phasor_features = layer_data_tuple[1]["metadata"][
         "phasor_features_labels_layer"
@@ -128,9 +131,10 @@ def test_embryo_FLIM_sample_data(make_napari_viewer):
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert layer_data_tuple[1]["name"] == "Fluorescein_Embryo Intensity Image"
     assert (
-        len(layer_data_tuple[1]["metadata"]) == 2
+        len(layer_data_tuple[1]["metadata"]) == 3
         and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
         and "original_mean" in layer_data_tuple[1]["metadata"]
+        and "settings" in layer_data_tuple[1]["metadata"]
     )
     phasor_features = layer_data_tuple[1]["metadata"][
         "phasor_features_labels_layer"
@@ -164,9 +168,10 @@ def test_paramecium_HSI_sample_data(make_napari_viewer):
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert layer_data_tuple[1]["name"] == "paramecium Intensity Image"
     assert (
-        len(layer_data_tuple[1]["metadata"]) == 2
+        len(layer_data_tuple[1]["metadata"]) == 3
         and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
         and "original_mean" in layer_data_tuple[1]["metadata"]
+        and "settings" in layer_data_tuple[1]["metadata"]
     )
     phasor_features = layer_data_tuple[1]["metadata"][
         "phasor_features_labels_layer"
