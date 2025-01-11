@@ -11,12 +11,12 @@ This module contains widgets to:
 
 """
 
+from math import ceil, log10
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib import colormaps
 from matplotlib.backends.backend_qt5agg import (
     FigureCanvasQTAgg as FigureCanvas,
 )
@@ -25,6 +25,7 @@ from napari.layers import Image
 from napari.utils.notifications import show_error, show_info
 from phasorpy.phasor import phasor_calibrate, phasor_to_apparent_lifetime
 from qtpy import uic
+from qtpy.QtCore import Qt
 from qtpy.QtGui import QDoubleValidator
 from qtpy.QtWidgets import (
     QComboBox,
@@ -34,12 +35,14 @@ from qtpy.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSlider,
     QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 from ._reader import _get_filename_extension, napari_get_reader
+from ._utils import apply_filter_and_threshold
 from ._writer import write_ome_tiff
 
 if TYPE_CHECKING:
@@ -623,6 +626,7 @@ class LifetimeWidget(QWidget):
         self.counts = None
         self.bin_edges = None
         self.bin_centers = None
+        self.threshold_factor = None
 
         # Create main layout
         self.main_layout = QVBoxLayout(self)
@@ -640,6 +644,16 @@ class LifetimeWidget(QWidget):
         self.frequency_input = QLineEdit()
         self.frequency_input.setValidator(QDoubleValidator())
         self.main_layout.addWidget(self.frequency_input)
+        # Add threshold slider
+        self.threshold_label = QLabel("Apply mean intensity threshold: 0.0")
+        self.main_layout.addWidget(self.threshold_label)
+        self.threshold_slider = QSlider(Qt.Horizontal)
+        self.threshold_slider.setMinimum(0)
+        self.threshold_slider.setMaximum(0)
+        self.threshold_slider.valueChanged.connect(
+            self.on_threshold_slider_change
+        )
+        self.main_layout.addWidget(self.threshold_slider)
         # Add combobox to select between phase or modulation apparent lifetime
         self.main_layout.addWidget(
             QLabel("Display phase or modulation apparent lifetimes: ")
@@ -681,6 +695,12 @@ class LifetimeWidget(QWidget):
         # Populate combobox
         self._populate_layers_combobox()
 
+    def on_threshold_slider_change(self):
+        self.threshold_label.setText(
+            'Apply mean intensity threshold: '
+            + str(self.threshold_slider.value() / self.threshold_factor)
+        )
+
     def _populate_layers_combobox(self):
         """Populate combobox with image layers."""
         self.layer_combobox.clear()
@@ -706,13 +726,39 @@ class LifetimeWidget(QWidget):
         self.harmonics = np.unique(
             self._labels_layer_with_phasor_features.features['harmonic']
         )
-        if (
-            'settings' in layer_metadata.keys()
-            and 'frequency' in layer_metadata['settings'].keys()
-        ):
-            self.frequency_input.setText(
-                str(layer_metadata['settings']['frequency'])
+        max_mean_value = np.nanmax(layer_metadata["original_mean"])
+        # Determine the threshold factor based on max_mean_value using logarithmic scaling
+        if max_mean_value > 0:
+            magnitude = int(log10(max_mean_value))
+            self.threshold_factor = (
+                10 ** (2 - magnitude) if magnitude <= 2 else 1
             )
+        else:
+            self.threshold_factor = 1  # Default case for values less than 1
+        self.threshold_slider.setMaximum(
+            ceil(max_mean_value * self.threshold_factor)
+        )
+        if 'settings' in layer_metadata.keys():
+            settings = layer_metadata['settings']
+            if 'frequency' in layer_metadata['settings'].keys():
+                self.frequency_input.setText(
+                    str(layer_metadata['settings']['frequency'])
+                )
+            if 'threshold' in settings.keys():
+                self.threshold_slider.setValue(
+                    int(settings['threshold'] * self.threshold_factor)
+                )
+                self.on_threshold_slider_change()
+            else:
+                self.threshold_slider.setValue(
+                    int(max_mean_value * 0.1 * self.threshold_factor)
+                )
+                self.on_threshold_slider_change()
+        else:
+            self.threshold_slider.setValue(
+                int(max_mean_value * 0.1 * self.threshold_factor)
+            )
+            self.on_threshold_slider_change()
 
     def calculate_lifetimes(self):
         """Calculate the lifetimes for all harmonics."""
@@ -727,7 +773,6 @@ class LifetimeWidget(QWidget):
         phase_lifetimes = []
         modulation_lifetimes = []
         for i in range(len(frequency)):
-            # Select only the rows where column 'harmonic' == self.harmonics[i]
             harmonic_mask = phasor_data['harmonic'] == self.harmonics[i]
             real = phasor_data.loc[harmonic_mask, 'G']
             imag = phasor_data.loc[harmonic_mask, 'S']
@@ -758,7 +803,6 @@ class LifetimeWidget(QWidget):
         if self.lifetime_data is None:
             return
 
-        # Build lifetime layer
         lifetime_layer_name = f"{self.lifetime_type_combobox.currentText()} Lifetime: {self.layer_combobox.currentText()}"
         selected_lifetime_layer = Image(
             self.lifetime_data,
@@ -849,6 +893,12 @@ class LifetimeWidget(QWidget):
         if self.frequency_input.text() == "":
             show_error("Enter frequency")
             return
+        layer_name = self.layer_combobox.currentText()
+        apply_filter_and_threshold(
+            self.viewer.layers[layer_name],
+            threshold=self.threshold_slider.value() / self.threshold_factor,
+            repeat=0,
+        )
         self.calculate_lifetimes()
         self.create_lifetime_layer()
         self.plot_lifetime_histogram()
