@@ -6,7 +6,9 @@ import pandas as pd
 from phasorpy.datasets import fetch
 from phasorpy.phasor import (
     phasor_calibrate,
+    phasor_filter,
     phasor_from_signal,
+    phasor_threshold,
     phasor_to_apparent_lifetime,
 )
 from qtpy.QtWidgets import QWidget
@@ -643,6 +645,7 @@ def test_lifetime_widget(make_napari_viewer):
     assert main_widget.counts is None
     assert main_widget.bin_edges is None
     assert main_widget.bin_centers is None
+    assert main_widget.threshold_factor is None
     assert (
         main_widget.lifetime_type_combobox.currentText() == 'Phase'
     )  # default lifetime type
@@ -667,17 +670,25 @@ def test_lifetime_widget(make_napari_viewer):
     # Click Plot Lifetime Button and check expected changes
     main_widget.plot_lifetime_button.click()
     frequency = np.array(harmonic) * 80
-    real, imag = phasor_from_signal(raw_flim_data, axis=0, harmonic=harmonic)[
-        1:
-    ]
+    mean, real, imag = phasor_from_signal(
+        raw_flim_data, axis=0, harmonic=harmonic
+    )
+    _, real, imag = phasor_threshold(
+        mean,
+        real,
+        imag,
+        main_widget.threshold_slider.value() / main_widget.threshold_factor,
+    )
     expected_phase_lifetimes = []
     expected_modulation_lifetimes = []
     for i in range(len(harmonic)):
         phase_lifetime, modulation_lifetime = phasor_to_apparent_lifetime(
             real[i], imag[i], frequency=frequency[i]
         )
-        expected_phase_lifetimes.append(phase_lifetime)
-        expected_modulation_lifetimes.append(modulation_lifetime)
+        expected_phase_lifetimes.append(np.nan_to_num(phase_lifetime))
+        expected_modulation_lifetimes.append(
+            np.nan_to_num(modulation_lifetime)
+        )
     np.testing.assert_array_equal(
         main_widget.lifetime_data, expected_phase_lifetimes
     )

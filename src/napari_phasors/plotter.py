@@ -689,7 +689,7 @@ class PlotterWidget(QWidget):
             )
         else:
             self.threshold_factor = 1  # Default case for values less than 1
-        # Set harmonic spinbox maximum value based on maximum mean
+        # Set threshold slider maximum value based on maximum mean
         self.plotter_inputs_widget.threshold_slider.setMaximum(
             ceil(max_mean_value * self.threshold_factor)
         )
@@ -697,7 +697,12 @@ class PlotterWidget(QWidget):
             settings = layer_metadata["settings"]
             if "threshold" in settings.keys():
                 self.plotter_inputs_widget.threshold_slider.setValue(
-                    int(settings["threshold"]) * self.threshold_factor
+                    int(settings["threshold"] * self.threshold_factor)
+                )
+                self.on_threshold_slider_change()
+            else:
+                self.plotter_inputs_widget.threshold_slider.setValue(
+                    int(max_mean_value * 0.1 * self.threshold_factor)
                 )
                 self.on_threshold_slider_change()
             if "filter" in settings.keys():
@@ -707,6 +712,11 @@ class PlotterWidget(QWidget):
                 self.plotter_inputs_widget.median_filter_repetition_spinbox.setValue(
                     int(settings["filter"]["repeat"])
                 )
+        else:
+            self.plotter_inputs_widget.threshold_slider.setValue(
+                int(max_mean_value * 0.1 * self.threshold_factor)
+            )
+            self.on_threshold_slider_change()
         # Add default selection id to table if not present
         self.add_selection_id_to_features("MANUAL SELECTION #1")
 
