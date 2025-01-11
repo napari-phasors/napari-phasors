@@ -1,6 +1,6 @@
 import numpy as np
 from biaplotter.plotter import ArtistType
-from phasorpy.phasor import phasor_filter, phasor_threshold
+from phasorpy.phasor import phasor_filter_median, phasor_threshold
 
 from napari_phasors._synthetic_generator import (
     make_intensity_layer_with_phasors,
@@ -140,7 +140,7 @@ def test_phasor_plotter(make_napari_viewer):
         phasor_features['S_original'],
         (len(harmonics),) + original_mean.data.shape,
     )
-    original_g, original_s = phasor_filter(
+    original_g, original_s = phasor_filter_median(
         original_g, original_s, repeat=3, size=3, skip_axis=0
     )
     _, original_g, original_s = phasor_threshold(
