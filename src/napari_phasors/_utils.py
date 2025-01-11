@@ -44,8 +44,8 @@ def apply_filter_and_threshold(
     real = np.reshape(real, (len(harmonics),) + mean.shape)
     imag = np.reshape(imag, (len(harmonics),) + mean.shape)
     if repeat > 0:
-        real, imag = phasor_filter_median(
-            mean
+        mean, real, imag = phasor_filter_median(
+            mean,
             real,
             imag,
             repeat=repeat,

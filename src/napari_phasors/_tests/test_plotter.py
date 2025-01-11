@@ -140,8 +140,8 @@ def test_phasor_plotter(make_napari_viewer):
         phasor_features['S_original'],
         (len(harmonics),) + original_mean.data.shape,
     )
-    original_g, original_s = phasor_filter_median(
-        original_g, original_s, repeat=3, size=3, skip_axis=0
+    original_mean, original_g, original_s = phasor_filter_median(
+        original_mean, original_g, original_s, repeat=3, size=3, skip_axis=0
     )
     _, original_g, original_s = phasor_threshold(
         original_mean,
