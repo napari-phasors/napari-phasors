@@ -463,7 +463,9 @@ class CalibrationWidget(QWidget):
             .metadata["phasor_features_labels_layer"]
             .features
         )
-        calibration_mean = self.viewer.layers[calibration_name].metadata["original_mean"]
+        calibration_mean = self.viewer.layers[calibration_name].metadata[
+            "original_mean"
+        ]
         harmonics = np.unique(sample_phasor_data["harmonic"])
         original_mean_shape = sample_metadata["original_mean"].shape
         if "settings" not in sample_metadata.keys():
