@@ -6,7 +6,6 @@ import pandas as pd
 from phasorpy.datasets import fetch
 from phasorpy.phasor import (
     phasor_calibrate,
-    phasor_filter,
     phasor_from_signal,
     phasor_threshold,
     phasor_to_apparent_lifetime,
@@ -402,6 +401,7 @@ def test_calibration_widget(make_napari_viewer):
         calibration_phasors_table["S_original"],
         (len(harmonic),) + original_mean.data.shape,
     )
+    calibration_mean = calibration_image_layer.metadata["original_mean"]
     sample_phasors_table = (
         viewer.layers[0].metadata["phasor_features_labels_layer"].features
     )
@@ -483,12 +483,12 @@ def test_calibration_widget(make_napari_viewer):
     expected_real, expected_imag = phasor_calibrate(
         original_real,
         original_imag,
+        calibration_mean,
         calibration_real,
         calibration_imag,
         frequency=80,
         lifetime=2,
         harmonic=harmonic,
-        skip_axis=0,
     )
     assert np.allclose(calibrated_real, expected_real)
     assert np.allclose(calibrated_imag, expected_imag)

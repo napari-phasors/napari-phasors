@@ -52,11 +52,13 @@ def apply_filter_and_threshold(
             size=size,
             skip_axis=0,
         )
-    mean, real, imag = phasor_threshold(mean, real, imag, threshold)
-    (
-        layer.metadata['phasor_features_labels_layer'].features['G'],
-        layer.metadata['phasor_features_labels_layer'].features['S'],
-    ) = (real.flatten(), imag.flatten())
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        mean, real, imag = phasor_threshold(mean, real, imag, threshold)
+        (
+            layer.metadata['phasor_features_labels_layer'].features['G'],
+            layer.metadata['phasor_features_labels_layer'].features['S'],
+        ) = (real.flatten(), imag.flatten())
     layer.data = mean
     # Update the settings dictionary of the layer
     if "settings" not in layer.metadata:
