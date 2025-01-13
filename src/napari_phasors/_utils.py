@@ -50,7 +50,6 @@ def apply_filter_and_threshold(
             imag,
             repeat=repeat,
             size=size,
-            skip_axis=0,
         )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)

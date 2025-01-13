@@ -23,7 +23,13 @@ from matplotlib.backends.backend_qt5agg import (
 from matplotlib.colors import LinearSegmentedColormap
 from napari.layers import Image
 from napari.utils.notifications import show_error, show_info
-from phasorpy.phasor import phasor_calibrate, phasor_to_apparent_lifetime
+from phasorpy.phasor import (
+    phasor_calibrate,
+    phasor_center,
+    phasor_from_lifetime,
+    phasor_to_apparent_lifetime,
+    polar_from_reference_phasor,
+)
 from qtpy import uic
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QDoubleValidator
@@ -458,6 +464,8 @@ class CalibrationWidget(QWidget):
         sample_phasor_data = sample_metadata[
             "phasor_features_labels_layer"
         ].features
+        harmonics = np.unique(sample_phasor_data["harmonic"])
+        original_mean_shape = sample_metadata["original_mean"].shape
         calibration_phasor_data = (
             self.viewer.layers[calibration_name]
             .metadata["phasor_features_labels_layer"]
@@ -466,8 +474,20 @@ class CalibrationWidget(QWidget):
         calibration_mean = self.viewer.layers[calibration_name].metadata[
             "original_mean"
         ]
-        harmonics = np.unique(sample_phasor_data["harmonic"])
-        original_mean_shape = sample_metadata["original_mean"].shape
+        calibration_harmonics = np.unique(calibration_phasor_data["harmonic"])
+        if not np.array_equal(harmonics, calibration_harmonics):
+            show_error(
+                "Harmonics in sample and calibration layers do not match"
+            )
+            return
+        calibration_g = np.reshape(
+            calibration_phasor_data["G_original"],
+            (len(calibration_harmonics),) + calibration_mean.shape,
+        )
+        calibration_s = np.reshape(
+            calibration_phasor_data["S_original"],
+            (len(calibration_harmonics),) + calibration_mean.shape,
+        )
         if "settings" not in sample_metadata.keys():
             sample_metadata["settings"] = {}
         if (
@@ -484,14 +504,8 @@ class CalibrationWidget(QWidget):
                     (len(harmonics),) + original_mean_shape,
                 ),
                 calibration_mean,
-                np.reshape(
-                    calibration_phasor_data["G_original"],
-                    (len(harmonics),) + calibration_mean.shape,
-                ),
-                np.reshape(
-                    calibration_phasor_data["S_original"],
-                    (len(harmonics),) + calibration_mean.shape,
-                ),
+                calibration_g,
+                calibration_s,
                 frequency=frequency,
                 lifetime=lifetime,
                 harmonic=harmonics.tolist(),
@@ -499,6 +513,21 @@ class CalibrationWidget(QWidget):
             sample_phasor_data["G_original"] = real.flatten()
             sample_phasor_data["S_original"] = imag.flatten()
             sample_metadata["settings"]["calibrated"] = True
+            calibration_phase, calibration_modulation = (
+                polar_from_reference_phasor(
+                    *phasor_center(
+                        calibration_mean, calibration_g, calibration_s
+                    )[1:],
+                    *phasor_from_lifetime(frequency, lifetime),
+                )
+            )
+            sample_metadata["settings"]["calibration_phase"] = float(
+                calibration_phase[0]
+            )
+            sample_metadata["settings"]["calibration_modulation"] = float(
+                calibration_modulation[0]
+            )
+            print(sample_metadata["settings"])
             show_info(f"Calibrated {sample_name}")
         elif sample_metadata["settings"]["calibrated"] is True:
             show_error("Layer already calibrated")

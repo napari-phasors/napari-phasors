@@ -8,6 +8,7 @@ import inspect
 import json
 import os
 import sys
+import warnings
 from typing import Any, Callable, Optional, Sequence, Union
 
 import numpy as np
@@ -16,7 +17,11 @@ import phasorpy.io as io
 import tifffile
 from napari.layers import Labels
 from napari.utils.notifications import show_error
-from phasorpy.phasor import phasor_from_signal
+from phasorpy.phasor import (
+    phasor_filter_median,
+    phasor_from_signal,
+    phasor_threshold,
+)
 
 extension_mapping = {
     "raw": {
@@ -259,14 +264,6 @@ def processed_file_reader(
     mean_intensity_image, G_image, S_image, attrs = extension_mapping[
         "processed"
     ][file_extension](path, reader_options)
-    labels_layer = make_phasors_labels_layer(
-        mean_intensity_image,
-        G_image,
-        S_image,
-        name=filename,
-        harmonics=harmonics,
-    )
-    layers = []
     if "description" in attrs.keys():
         description = json.loads(attrs["description"])
         if sys.getsizeof(description) > 512 * 512:  # Threshold: 256 KB
@@ -279,6 +276,55 @@ def processed_file_reader(
         settings = {}
     if "frequency" in attrs.keys():
         settings["frequency"] = attrs["frequency"]
+    labels_layer = make_phasors_labels_layer(
+        mean_intensity_image,
+        G_image,
+        S_image,
+        name=filename,
+        harmonics=harmonics,
+    )
+
+    filter_size = None
+    filter_repeat = None
+    if "filter" in settings.keys():
+        filter_size = settings["filter"]["size"]
+        filter_repeat = settings["filter"]["repeat"]
+    threshold = None
+    if "threshold" in settings.keys():
+        threshold = settings["threshold"]
+
+    if threshold is not None or filter_repeat is not None:
+        harmonics = np.unique(labels_layer.features['harmonic'])
+        real, imag = (
+            labels_layer.features['G_original'].copy(),
+            labels_layer.features['S_original'].copy(),
+        )
+        mean = mean_intensity_image
+        real = np.reshape(real, (len(harmonics),) + mean.shape)
+        imag = np.reshape(imag, (len(harmonics),) + mean.shape)
+        if filter_repeat is not None and filter_repeat > 0:
+            if filter_size is None:
+                filter_size = 3
+            mean, real, imag = phasor_filter_median(
+                mean,
+                real,
+                imag,
+                repeat=filter_repeat,
+                size=filter_size,
+            )
+        if threshold is not None:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=RuntimeWarning)
+                mean, real, imag = phasor_threshold(
+                    mean, real, imag, threshold
+                )
+                (
+                    labels_layer.features['G'],
+                    labels_layer.features['S'],
+                ) = (real.flatten(), imag.flatten())
+            mean_intensity_image = mean
+
+    layers = []
     add_kwargs = {
         "name": filename + " Intensity Image",
         "metadata": {
