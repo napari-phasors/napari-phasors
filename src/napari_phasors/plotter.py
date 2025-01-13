@@ -781,7 +781,6 @@ class PlotterWidget(QWidget):
             self.viewer.layers[labels_layer_name],
             threshold=self.plotter_inputs_widget.threshold_slider.value()
             / self.threshold_factor,
-            method='median',
             size=self.plotter_inputs_widget.median_filter_spinbox.value(),
             repeat=self.plotter_inputs_widget.median_filter_repetition_spinbox.value(),
         )

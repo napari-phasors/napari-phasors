@@ -463,6 +463,9 @@ class CalibrationWidget(QWidget):
             .metadata["phasor_features_labels_layer"]
             .features
         )
+        calibration_mean = self.viewer.layers[calibration_name].metadata[
+            "original_mean"
+        ]
         harmonics = np.unique(sample_phasor_data["harmonic"])
         original_mean_shape = sample_metadata["original_mean"].shape
         if "settings" not in sample_metadata.keys():
@@ -480,18 +483,18 @@ class CalibrationWidget(QWidget):
                     sample_phasor_data["S_original"],
                     (len(harmonics),) + original_mean_shape,
                 ),
+                calibration_mean,
                 np.reshape(
                     calibration_phasor_data["G_original"],
-                    (len(harmonics),) + original_mean_shape,
+                    (len(harmonics),) + calibration_mean.shape,
                 ),
                 np.reshape(
                     calibration_phasor_data["S_original"],
-                    (len(harmonics),) + original_mean_shape,
+                    (len(harmonics),) + calibration_mean.shape,
                 ),
                 frequency=frequency,
                 lifetime=lifetime,
                 harmonic=harmonics.tolist(),
-                skip_axis=0,
             )
             sample_phasor_data["G_original"] = real.flatten()
             sample_phasor_data["S_original"] = imag.flatten()

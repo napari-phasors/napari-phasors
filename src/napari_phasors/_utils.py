@@ -7,7 +7,7 @@ import warnings
 
 import numpy as np
 from napari.layers import Image
-from phasorpy.phasor import phasor_filter, phasor_threshold
+from phasorpy.phasor import phasor_filter_median, phasor_threshold
 
 
 def apply_filter_and_threshold(
@@ -15,7 +15,6 @@ def apply_filter_and_threshold(
     /,
     *,
     threshold: float = 0,
-    method: str = 'median',
     size: int = 3,
     repeat: int = 1,
 ):
@@ -45,33 +44,26 @@ def apply_filter_and_threshold(
     real = np.reshape(real, (len(harmonics),) + mean.shape)
     imag = np.reshape(imag, (len(harmonics),) + mean.shape)
     if repeat > 0:
-        real, imag = phasor_filter(
+        mean, real, imag = phasor_filter_median(
+            mean,
             real,
             imag,
-            method=method,
             repeat=repeat,
             size=size,
             skip_axis=0,
         )
-    mean, real, imag = phasor_threshold(mean, real, imag, threshold)
-    (
-        layer.metadata['phasor_features_labels_layer'].features['G'],
-        layer.metadata['phasor_features_labels_layer'].features['S'],
-    ) = (real.flatten(), imag.flatten())
-    if len(harmonics) > 1:
-        # TODO: remove this when `phasor_threshold` handles multiple harmonics.
-        # Catch the RuntimeWarning for all-NaN slices
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-            merged_mean = np.nanmax(mean, axis=0)
-            merged_mean[np.isnan(np.nanmin(mean, axis=0))] = np.nan
-            mean = merged_mean
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        mean, real, imag = phasor_threshold(mean, real, imag, threshold)
+        (
+            layer.metadata['phasor_features_labels_layer'].features['G'],
+            layer.metadata['phasor_features_labels_layer'].features['S'],
+        ) = (real.flatten(), imag.flatten())
     layer.data = mean
     # Update the settings dictionary of the layer
     if "settings" not in layer.metadata:
         layer.metadata["settings"] = {}
     layer.metadata["settings"]["filter"] = {
-        "method": method,
         "size": size,
         "repeat": repeat,
     }
