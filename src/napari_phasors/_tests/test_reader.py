@@ -253,3 +253,4 @@ def test_reader_ometif():
 
 
 # TODO: Add tests for .tif files
+# TODO: test filter and threshold when reading OME-TIF
