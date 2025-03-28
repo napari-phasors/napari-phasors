@@ -9,14 +9,17 @@ import json
 import os
 import sys
 import warnings
+import itertools
 from typing import Any, Callable, Optional, Sequence, Union
 
 import numpy as np
+import xarray as xr
 import pandas as pd
 import phasorpy.io as io
 import tifffile
 from napari.layers import Labels
 from napari.utils.notifications import show_error
+from napari.utils.colormaps.colormap_utils import MAGENTA_GREEN, CYMRGB
 from phasorpy.phasor import (
     phasor_filter_median,
     phasor_from_signal,
@@ -81,7 +84,7 @@ iter_index_mapping = {
     ".fbd": "C",
     ".lsm": None,
     ".tif": None,
-    '.sdt': None,
+    '.sdt': "C",
 }
 """This dictionary contains the mapping for the axis to iterate over
 when calculating phasor coordinates in the file.
@@ -161,7 +164,23 @@ def raw_file_reader(
 
     """
     filename, file_extension = _get_filename_extension(path)
-    raw_data = extension_mapping["raw"][file_extension](path, reader_options)
+    if file_extension == ".sdt":
+        # Try reading .sdt with increasing 'index' numbers to collect all files as channels
+        i=0
+        raw_data=[]
+        while True:
+            try:
+                _data = extension_mapping["raw"][".sdt"](path, {"index": i})
+                raw_data.append(_data)
+                i += 1
+            except IndexError:
+                break
+        # Stack list of xarrays in a new axis "C" (shapes must match)
+        for _data in raw_data:
+            assert _data.shape == raw_data[0].shape, "Shapes from files in .sdt do not match!"
+        raw_data = xr.concat(raw_data, dim="C")
+    else:
+        raw_data = extension_mapping["raw"][file_extension](path, reader_options)
     settings = {}
     if (
         file_extension != '.fbd'
@@ -175,10 +194,6 @@ def raw_file_reader(
         if file_extension == ".tif":
             mean_intensity_image, G_image, S_image = phasor_from_signal(
                 raw_data, axis=0, harmonic=harmonics
-            )
-        elif file_extension == '.sdt':
-            mean_intensity_image, G_image, S_image = phasor_from_signal(
-                raw_data, axis=-1, harmonic=harmonics
             )
         else:
             # Calculate phasor over channels if file is of hyperspectral type
@@ -226,6 +241,18 @@ def raw_file_reader(
                 },
             }
             layers.append((mean_intensity_image, add_kwargs))
+    # Set colormaps if multichannel image
+    if len(layers) == 2:
+        # add colormaps MAGENTA_GREEN
+        for layer, cmap in zip(layers, MAGENTA_GREEN):
+            layer[1]["colormap"] = cmap
+            layer[1]['blending'] = 'additive'
+    elif len(layers) > 2:
+        # add colormaps CYMRGB in a cycle
+        for layer, cmap in zip(layers, itertools.cycle(CYMRGB)):
+            layer[1]["colormap"] = cmap
+            layer[1]['blending'] = 'additive'
+
     return layers
 
 
