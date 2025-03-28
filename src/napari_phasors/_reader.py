@@ -166,8 +166,8 @@ def raw_file_reader(
     filename, file_extension = _get_filename_extension(path)
     if file_extension == ".sdt":
         # Try reading .sdt with increasing 'index' numbers to collect all files as channels
-        i=0
-        raw_data=[]
+        i = 0
+        raw_data = []
         while True:
             try:
                 _data = extension_mapping["raw"][".sdt"](path, {"index": i})
@@ -177,10 +177,14 @@ def raw_file_reader(
                 break
         # Stack list of xarrays in a new axis "C" (shapes must match)
         for _data in raw_data:
-            assert _data.shape == raw_data[0].shape, "Shapes from files in .sdt do not match!"
+            assert (
+                _data.shape == raw_data[0].shape
+            ), "Shapes from files in .sdt do not match!"
         raw_data = xr.concat(raw_data, dim="C")
     else:
-        raw_data = extension_mapping["raw"][file_extension](path, reader_options)
+        raw_data = extension_mapping["raw"][file_extension](
+            path, reader_options
+        )
     settings = {}
     if (
         file_extension != '.fbd'
