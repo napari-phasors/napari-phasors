@@ -30,25 +30,25 @@ extension_mapping = {
     "raw": {
         ".ptu": lambda path, reader_options: _parse_and_call_io_function(
             path,
-            io.read_ptu,
+            io.signal_from_ptu,
             {"frame": (-1, False), "keepdims": (True, False)},
             reader_options,
         ),
         ".fbd": lambda path, reader_options: _parse_and_call_io_function(
             path,
-            io.read_fbd,
+            io.signal_from_fbd,
             {"frame": (-1, False), "keepdims": (True, False)},
             reader_options,
         ),
         ".sdt": lambda path, reader_options: _parse_and_call_io_function(
             path,
-            io.read_sdt,
+            io.signal_from_sdt,
             {},
             reader_options,
         ),
         ".lsm": lambda path, reader_options: _parse_and_call_io_function(
             path,
-            io.read_lsm,
+            io.signal_from_lsm,
             {},
             reader_options,
         ),
