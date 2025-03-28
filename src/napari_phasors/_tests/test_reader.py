@@ -145,7 +145,7 @@ def test_reader_sdt():
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert (
         layer_data_tuple[1]["name"]
-        == "seminal_receptacle_FLIM_single_image Intensity Image"
+        == "seminal_receptacle_FLIM_single_image Intensity Image: Channel 0"
     )
     assert (
         len(layer_data_tuple[1]["metadata"]) == 3
