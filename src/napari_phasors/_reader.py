@@ -5,21 +5,21 @@ and computes phasor coordinates with `phasorpy.phasor.phasor_from_signal`
 """
 
 import inspect
+import itertools
 import json
 import os
 import sys
 import warnings
-import itertools
 from typing import Any, Callable, Optional, Sequence, Union
 
 import numpy as np
-import xarray as xr
 import pandas as pd
 import phasorpy.io as io
 import tifffile
+import xarray as xr
 from napari.layers import Labels
+from napari.utils.colormaps.colormap_utils import CYMRGB, MAGENTA_GREEN
 from napari.utils.notifications import show_error
-from napari.utils.colormaps.colormap_utils import MAGENTA_GREEN, CYMRGB
 from phasorpy.phasor import (
     phasor_filter_median,
     phasor_from_signal,
