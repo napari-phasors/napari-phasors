@@ -399,7 +399,8 @@ def make_phasors_labels_layer(
     """
     pixel_id = np.arange(1, mean_intensity_image.size + 1)
     table = pd.DataFrame()
-    if len(G_image.shape) > 2:
+    if len(G_image.shape) > len(mean_intensity_image.shape):
+        # If G_image has more dimensions than mean_intensity_image, it means it has multiple harmonics in the first axis
         for i in range(G_image.shape[0]):
             harmonic_value = harmonics[i] if harmonics is not None else i + 1
             sub_table = pd.DataFrame(
