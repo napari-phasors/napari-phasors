@@ -124,7 +124,7 @@ def napari_get_reader(
     path = Path(path) # Convert to Path object for easier manipulation
     if path.is_dir():
         return lambda path: stack_reader(
-            path, reader_options=reader_options, harmonics=harmonics
+            Path(path), reader_options=reader_options, harmonics=harmonics
         )
     else:
         suffix = ''.join(path.suffixes) # Get the full suffix (e.g. .ome.tif)
@@ -144,7 +144,7 @@ def _stack_sdt_channels(path):
 
     Parameters
     ----------
-    path : Path
+    path : str
         Path to file.
     
     Returns
@@ -452,16 +452,20 @@ def stack_reader(
         path: Path,
         reader_options: Optional[dict] = None,
         harmonics: Union[int, Sequence[int], None] = None,
-) -> list[tuple]:
-    file_paths, suffixes = [(p, p.stem,''.join(p.suffixes)) for p in path.iterdir()]
+) -> Optional[Callable]:
+    file_paths, suffixes = zip(*[(p,''.join(p.suffixes)) for p in path.iterdir() if p.is_file()])
     most_frequent_file_extension = max(set(suffixes), key=suffixes.count)
+    # Filter out files that do not have the most frequent extension
+    file_paths = [p for p, s in zip(file_paths, suffixes) if s == most_frequent_file_extension]
     if most_frequent_file_extension in tuple(extension_mapping["processed"].keys()):
-            return lambda path: processed_file_reader(
-                file_paths, most_frequent_file_extension, reader_options=reader_options, harmonics=harmonics
-            )
+        print("To be implemented")
+        return
+            # return lambda path: processed_stack_reader(
+            #     file_paths, most_frequent_file_extension, reader_options=reader_options, harmonics=harmonics
+            # )
     elif most_frequent_file_extension in tuple(extension_mapping["raw"].keys()):
-        return lambda path: raw_file_reader(
-            file_paths, most_frequent_file_extension, reader_options=reader_options, harmonics=harmonics
+        return raw_stack_reader(
+            file_paths=file_paths, file_extension=most_frequent_file_extension, reader_options=reader_options, harmonics=harmonics
         )
     else:
         show_error("File extension not supported.")
@@ -528,7 +532,7 @@ def raw_stack_reader(
             z_list_G.append(G_image)
             z_list_S.append(S_image)
             progress_bar.update(1)
-        z_stack_mean_intensity = np.stack(z_list_mean_intensity)
+        z_stack_mean_intensity = np.stack(z_list_mean_intensity, axis=1)
         z_stack_G = np.stack(z_list_G)
         z_stack_S = np.stack(z_list_S)
         t_list_mean_intensity.append(z_stack_mean_intensity)
@@ -537,7 +541,7 @@ def raw_stack_reader(
         z_list_mean_intensity.clear()
         z_list_G.clear()
         z_list_S.clear()
-    stack_mean_intensity = np.stack(t_list_mean_intensity) # TZYXC
+    stack_mean_intensity = np.stack(t_list_mean_intensity, axis=1) # TZYXC
     stack_G = np.stack(t_list_G) # QTZYXC (Q for number of harmonics)
     stack_S = np.stack(t_list_S)
     progress_bar.close()
@@ -551,9 +555,9 @@ def raw_stack_reader(
     layers = []
     for ch in range(stack_mean_intensity.shape[-1]):
         labels_layer = make_phasors_labels_layer(
-                stack_mean_intensity,
-                stack_G,
-                stack_S,
+                stack_mean_intensity[..., ch],
+                stack_G[..., ch],
+                stack_S[..., ch],
                 name=folder_name,
                 harmonics=harmonics,
             )
@@ -562,11 +566,11 @@ def raw_stack_reader(
             "name": layer_name,
             "metadata": {
                 "phasor_features_labels_layer": labels_layer,
-                "original_mean": mean_intensity_image,
+                "original_mean": stack_mean_intensity[..., ch],
                 "settings": settings,
             },
         }
-        layers.append((mean_intensity_image, add_kwargs))
+        layers.append((stack_mean_intensity[..., ch], add_kwargs))
         # Set colormaps if multichannel image
     if len(layers) == 2:
         # add colormaps MAGENTA_GREEN
