@@ -10,13 +10,13 @@ import json
 import os
 import sys
 import warnings
+from pathlib import Path
 from typing import Any, Callable, Optional, Sequence, Union
 
 import numpy as np
 import pandas as pd
 import phasorpy.io as io
 import tifffile
-from pathlib import Path
 from napari.layers import Labels
 from napari.utils.colormaps.colormap_utils import CYMRGB, MAGENTA_GREEN
 from napari.utils.notifications import show_error
@@ -121,13 +121,13 @@ def napari_get_reader(
         in 'metadata' contain phasor coordinates as columns 'G' and 'S'.
 
     """
-    path = Path(path) # Convert to Path object for easier manipulation
+    path = Path(path)  # Convert to Path object for easier manipulation
     if path.is_dir():
         return lambda path: stack_reader(
             Path(path), reader_options=reader_options, harmonics=harmonics
         )
     else:
-        suffix = ''.join(path.suffixes) # Get the full suffix (e.g. .ome.tif)
+        suffix = ''.join(path.suffixes)  # Get the full suffix (e.g. .ome.tif)
         if suffix in tuple(extension_mapping["processed"].keys()):
             return lambda path: processed_file_reader(
                 path, reader_options=reader_options, harmonics=harmonics
@@ -139,6 +139,7 @@ def napari_get_reader(
         else:
             show_error("File extension not supported.")
 
+
 def _stack_sdt_channels(path):
     """Read .sdt files with increasing 'index' numbers and stack them as channels.
 
@@ -146,13 +147,14 @@ def _stack_sdt_channels(path):
     ----------
     path : str
         Path to file.
-    
+
     Returns
     -------
     raw_data : xarray.DataArray
         Stacked xarray DataArray with all channels.
     """
     from xarray import concat
+
     # Try reading .sdt with increasing 'index' numbers to collect all files as channels
     i = 0
     raw_data = []
@@ -169,6 +171,7 @@ def _stack_sdt_channels(path):
             _data.shape == raw_data[0].shape
         ), "Shapes from files in .sdt do not match!"
     return concat(raw_data, dim="C")
+
 
 def raw_file_reader(
     path: str,
@@ -267,17 +270,7 @@ def raw_file_reader(
                 },
             }
             layers.append((mean_intensity_image, add_kwargs))
-    # Set colormaps if multichannel image
-    if len(layers) == 2:
-        # add colormaps MAGENTA_GREEN
-        for layer, cmap in zip(layers, MAGENTA_GREEN):
-            layer[1]["colormap"] = cmap
-            layer[1]['blending'] = 'additive'
-    elif len(layers) > 2:
-        # add colormaps CYMRGB in a cycle
-        for layer, cmap in zip(layers, itertools.cycle(CYMRGB)):
-            layer[1]["colormap"] = cmap
-            layer[1]['blending'] = 'additive'
+    _set_colormaps_for_layers(layers)
 
     return layers
 
@@ -389,90 +382,45 @@ def processed_file_reader(
     layers.append((mean_intensity_image, add_kwargs))
     return layers
 
-def extract_value_after_prefix(path, prefix='t'):
-    """
-    Extracts an the integer value from the file path based on the given prefix.
-    For example, if prefix is 't', it will search for the pattern '_t<number>'.
-    Strips the 0s from the beginning of the number.
-    Returns the matching string with leading 0s stripped if found, otherwise an empty string.
-
-    Parameters
-    ----------
-    path : Path
-        Path object of the file.
-    prefix : str
-        Prefix to search for in the file name. Default is 't'.
-
-    Returns
-    -------
-    str
-        Extracted value after the prefix, with leading 0s stripped.
-        If no match is found, returns an empty string.
-    """
-    import re
-    regex = r'_' + prefix + r'(\d+)'
-    match = re.search(regex, path.stem)
-    return match.group(1).lstrip('0') if match else ''
-
-def extract_paths_with_same_value_after_prefix(file_paths, extract_prefix='t', sort_prefix='z'):
-    """
-    Extracts all file paths with the same value after the given prefix.
-    Returns a dictionary where the key is the extract prefix + value and the value is a list of paths sorted by the sort prefix.
-    For example, if prefix is 't' and sort prefix is 'z', it will search for the pattern '_t<number>' and sort by '_z<number>'.
-
-    Parameters
-    ----------
-    file_paths : list of Path
-        List of Path objects of the files.
-    extract_prefix : str
-        Prefix to search for in the file name. Default is 't'.
-    sort_prefix : str
-        Prefix to sort the file paths by. Default is 'z'.
-
-    Returns
-    -------
-    dict
-        Dictionary where the key is the extract prefix + value and the value is a list of paths sorted by the sort prefix.
-    """
-    from natsort import natsorted
-    file_paths = natsorted(file_paths, key=lambda x: extract_value_after_prefix(x, prefix=extract_prefix))
-    paths_dict = {}
-    for path in file_paths:
-        value = extract_value_after_prefix(path, extract_prefix)
-        if (extract_prefix+value) not in paths_dict:
-            paths_dict[extract_prefix+value] = []
-        paths_dict[extract_prefix+value].append(path)
-
-    # Sort the paths in each list
-    for k in paths_dict:
-        paths_dict[k] = natsorted(paths_dict[k], key=lambda x: extract_value_after_prefix(x, sort_prefix))
-    return paths_dict
 
 def stack_reader(
-        path: Path,
-        reader_options: Optional[dict] = None,
-        harmonics: Union[int, Sequence[int], None] = None,
+    path: Path,
+    reader_options: Optional[dict] = None,
+    harmonics: Union[int, Sequence[int], None] = None,
 ) -> Optional[Callable]:
-    file_paths, suffixes = zip(*[(p,''.join(p.suffixes)) for p in path.iterdir() if p.is_file()])
+    file_paths, suffixes = zip(
+        *[(p, ''.join(p.suffixes)) for p in path.iterdir() if p.is_file()]
+    )
     most_frequent_file_extension = max(set(suffixes), key=suffixes.count)
     # Filter out files that do not have the most frequent extension
-    file_paths = [p for p, s in zip(file_paths, suffixes) if s == most_frequent_file_extension]
+    file_paths = [
+        p
+        for p, s in zip(file_paths, suffixes)
+        if s == most_frequent_file_extension
+    ]
     if most_frequent_file_extension in tuple(extension_mapping["raw"].keys()):
         return raw_stack_reader(
-            file_paths=file_paths, file_extension=most_frequent_file_extension, reader_options=reader_options, harmonics=harmonics
+            file_paths=file_paths,
+            file_extension=most_frequent_file_extension,
+            reader_options=reader_options,
+            harmonics=harmonics,
         )
     else:
         show_error("File extension not supported.")
 
+
 def raw_stack_reader(
-          file_paths: list[Path],
-          file_extension: str,
-            reader_options: Optional[dict] = None,
-            harmonics: Union[int, Sequence[int], None] = None,
+    file_paths: list[Path],
+    file_extension: str,
+    reader_options: Optional[dict] = None,
+    harmonics: Union[int, Sequence[int], None] = None,
 ) -> tuple[np.ndarray, dict]:
     from tqdm import tqdm
+
     folder_name = file_paths[0].parent.name
-    structured_file_path_dict = extract_paths_with_same_value_after_prefix(file_paths, extract_prefix='t', sort_prefix='z')
+    structured_file_path_dict = _extract_paths_with_same_value_after_prefix(
+        file_paths, extract_prefix='t', sort_prefix='z'
+    )
 
     progress_bar = tqdm(
         total=sum((len(v) for v in structured_file_path_dict.values())),
@@ -480,7 +428,14 @@ def raw_stack_reader(
         unit="files",
     )
 
-    z_list_mean_intensity, z_list_G, z_list_S, t_list_mean_intensity, t_list_G, t_list_S = [], [], [], [], [], []
+    (
+        z_list_mean_intensity,
+        z_list_G,
+        z_list_S,
+        t_list_mean_intensity,
+        t_list_G,
+        t_list_S,
+    ) = ([], [], [], [], [], [])
     for t, list_of_z_slice_paths in structured_file_path_dict.items():
         for z_slice_path in list_of_z_slice_paths:
             if file_extension == ".sdt":
@@ -493,16 +448,24 @@ def raw_stack_reader(
             if iter_axis is None:
                 # Single channel analysis
                 if file_extension == ".tif":
-                    mean_intensity_image, G_image, S_image = phasor_from_signal(
-                        _raw_data, axis=0, harmonic=harmonics
+                    mean_intensity_image, G_image, S_image = (
+                        phasor_from_signal(
+                            _raw_data, axis=0, harmonic=harmonics
+                        )
                     )
                 else:
                     # Calculate phasor over channels if file is of hyperspectral type
-                    mean_intensity_image, G_image, S_image = phasor_from_signal(
-                        _raw_data, axis=_raw_data.dims.index("C"), harmonic=harmonics
+                    mean_intensity_image, G_image, S_image = (
+                        phasor_from_signal(
+                            _raw_data,
+                            axis=_raw_data.dims.index("C"),
+                            harmonic=harmonics,
+                        )
                     )
                 # Add unitary axis representing channels
-                mean_intensity_image = np.expand_dims(mean_intensity_image, axis=-1)
+                mean_intensity_image = np.expand_dims(
+                    mean_intensity_image, axis=-1
+                )
                 G_image = np.expand_dims(G_image, axis=-1)
                 S_image = np.expand_dims(S_image, axis=-1)
             else:
@@ -510,10 +473,12 @@ def raw_stack_reader(
                 c_list_mean_intensity, c_list_G, c_list_S = [], [], []
                 for channel in range(_raw_data.shape[iter_axis_index]):
                     # Calculate phasor over photon counts dimension if file is FLIM
-                    mean_intensity_image, G_image, S_image = phasor_from_signal(
-                        _raw_data.sel(C=channel),
-                        axis=_raw_data.sel(C=channel).dims.index("H"),
-                        harmonic=harmonics,
+                    mean_intensity_image, G_image, S_image = (
+                        phasor_from_signal(
+                            _raw_data.sel(C=channel),
+                            axis=_raw_data.sel(C=channel).dims.index("H"),
+                            harmonic=harmonics,
+                        )
                     )
                     c_list_mean_intensity.append(mean_intensity_image)
                     c_list_G.append(G_image)
@@ -535,8 +500,8 @@ def raw_stack_reader(
         z_list_mean_intensity.clear()
         z_list_G.clear()
         z_list_S.clear()
-    stack_mean_intensity = np.stack(t_list_mean_intensity, axis=1) # TZYXC
-    stack_G = np.stack(t_list_G) # QTZYXC (Q for number of harmonics)
+    stack_mean_intensity = np.stack(t_list_mean_intensity, axis=1)  # TZYXC
+    stack_G = np.stack(t_list_G)  # QTZYXC (Q for number of harmonics)
     stack_S = np.stack(t_list_S)
     progress_bar.close()
     settings = {}
@@ -549,13 +514,19 @@ def raw_stack_reader(
     layers = []
     for ch in range(stack_mean_intensity.shape[-1]):
         labels_layer = make_phasors_labels_layer(
-                stack_mean_intensity[..., ch],
-                stack_G[..., ch],
-                stack_S[..., ch],
-                name=folder_name,
-                harmonics=harmonics,
+            stack_mean_intensity[..., ch],
+            stack_G[..., ch],
+            stack_S[..., ch],
+            name=folder_name,
+            harmonics=harmonics,
+        )
+        layer_name = [
+            (
+                f"{folder_name} Intensity Image: "
+                if stack_mean_intensity.shape[-1] == 1
+                else f"{folder_name} Intensity Image: Channel {ch}"
             )
-        layer_name = [f"{folder_name} Intensity Image: " if stack_mean_intensity.shape[-1] == 1 else f"{folder_name} Intensity Image: Channel {ch}"][0]
+        ][0]
         add_kwargs = {
             "name": layer_name,
             "metadata": {
@@ -565,19 +536,10 @@ def raw_stack_reader(
             },
         }
         layers.append((stack_mean_intensity[..., ch], add_kwargs))
-        # Set colormaps if multichannel image
-    if len(layers) == 2:
-        # add colormaps MAGENTA_GREEN
-        for layer, cmap in zip(layers, MAGENTA_GREEN):
-            layer[1]["colormap"] = cmap
-            layer[1]['blending'] = 'additive'
-    elif len(layers) > 2:
-        # add colormaps CYMRGB in a cycle
-        for layer, cmap in zip(layers, itertools.cycle(CYMRGB)):
-            layer[1]["colormap"] = cmap
-            layer[1]['blending'] = 'additive'
+    _set_colormaps_for_layers(layers)
 
     return layers
+
 
 def make_phasors_labels_layer(
     mean_intensity_image: Any,
@@ -645,10 +607,104 @@ def make_phasors_labels_layer(
     labels_layer = Labels(
         labels_data,
         name=f"{name} Phasor Features Layer",
-        scale=tuple(np.ones(mean_intensity_image.ndim)), #TODO: apply proper scale based on metadata
+        scale=tuple(
+            np.ones(mean_intensity_image.ndim)
+        ),  # TODO: apply proper scale based on metadata
         features=table,
     )
     return labels_layer
+
+
+def _set_colormaps_for_layers(layers):
+    """
+    Set colormaps and blending modes for multichannel image layers.
+
+    Parameters
+    ----------
+    layers : list
+        List of layers where each layer is a tuple containing data and metadata.
+    """
+    if len(layers) == 2:
+        # Add colormaps MAGENTA_GREEN
+        for layer, cmap in zip(layers, MAGENTA_GREEN):
+            layer[1]["colormap"] = cmap
+            layer[1]['blending'] = 'additive'
+    elif len(layers) > 2:
+        # Add colormaps CYMRGB in a cycle
+        for layer, cmap in zip(layers, itertools.cycle(CYMRGB)):
+            layer[1]["colormap"] = cmap
+            layer[1]['blending'] = 'additive'
+
+
+def _extract_value_after_prefix(path, prefix='t'):
+    """
+    Extracts an the integer value from the file path based on the given prefix.
+    For example, if prefix is 't', it will search for the pattern '_t<number>'.
+    Strips the 0s from the beginning of the number.
+    Returns the matching string with leading 0s stripped if found, otherwise an empty string.
+
+    Parameters
+    ----------
+    path : Path
+        Path object of the file.
+    prefix : str
+        Prefix to search for in the file name. Default is 't'.
+
+    Returns
+    -------
+    str
+        Extracted value after the prefix, with leading 0s stripped.
+        If no match is found, returns an empty string.
+    """
+    import re
+
+    regex = r'_' + prefix + r'(\d+)'
+    match = re.search(regex, path.stem)
+    return match.group(1).lstrip('0') if match else ''
+
+
+def _extract_paths_with_same_value_after_prefix(
+    file_paths, extract_prefix='t', sort_prefix='z'
+):
+    """
+    Extracts all file paths with the same value after the given prefix.
+    Returns a dictionary where the key is the extract prefix + value and the value is a list of paths sorted by the sort prefix.
+    For example, if prefix is 't' and sort prefix is 'z', it will search for the pattern '_t<number>' and sort by '_z<number>'.
+
+    Parameters
+    ----------
+    file_paths : list of Path
+        List of Path objects of the files.
+    extract_prefix : str
+        Prefix to search for in the file name. Default is 't'.
+    sort_prefix : str
+        Prefix to sort the file paths by. Default is 'z'.
+
+    Returns
+    -------
+    dict
+        Dictionary where the key is the extract prefix + value and the value is a list of paths sorted by the sort prefix.
+    """
+    from natsort import natsorted
+
+    file_paths = natsorted(
+        file_paths,
+        key=lambda x: _extract_value_after_prefix(x, prefix=extract_prefix),
+    )
+    paths_dict = {}
+    for path in file_paths:
+        value = _extract_value_after_prefix(path, extract_prefix)
+        if (extract_prefix + value) not in paths_dict:
+            paths_dict[extract_prefix + value] = []
+        paths_dict[extract_prefix + value].append(path)
+
+    # Sort the paths in each list
+    for k in paths_dict:
+        paths_dict[k] = natsorted(
+            paths_dict[k],
+            key=lambda x: _extract_value_after_prefix(x, sort_prefix),
+        )
+    return paths_dict
 
 
 def _parse_and_call_io_function(
