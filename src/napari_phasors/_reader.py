@@ -457,13 +457,7 @@ def stack_reader(
     most_frequent_file_extension = max(set(suffixes), key=suffixes.count)
     # Filter out files that do not have the most frequent extension
     file_paths = [p for p, s in zip(file_paths, suffixes) if s == most_frequent_file_extension]
-    if most_frequent_file_extension in tuple(extension_mapping["processed"].keys()):
-        print("To be implemented")
-        return
-            # return lambda path: processed_stack_reader(
-            #     file_paths, most_frequent_file_extension, reader_options=reader_options, harmonics=harmonics
-            # )
-    elif most_frequent_file_extension in tuple(extension_mapping["raw"].keys()):
+    if most_frequent_file_extension in tuple(extension_mapping["raw"].keys()):
         return raw_stack_reader(
             file_paths=file_paths, file_extension=most_frequent_file_extension, reader_options=reader_options, harmonics=harmonics
         )
