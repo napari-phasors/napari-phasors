@@ -468,9 +468,11 @@ class PlotterWidget(QWidget):
         ):
             # Get histogram data limits
             x_edges = self.canvas_widget.artists[
-                ArtistType.HISTOGRAM2D].histogram[1]
+                ArtistType.HISTOGRAM2D
+            ].histogram[1]
             y_edges = self.canvas_widget.artists[
-                ArtistType.HISTOGRAM2D].histogram[2]
+                ArtistType.HISTOGRAM2D
+            ].histogram[2]
             plotted_data_limits = [
                 x_edges[0],
                 x_edges[-1],
@@ -822,9 +824,13 @@ class PlotterWidget(QWidget):
             is not None
         ):
             if self.histogram_log_scale:
-                self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram_color_normalization_method = "log"
+                self.canvas_widget.artists[
+                    ArtistType.HISTOGRAM2D
+                ].histogram_color_normalization_method = "log"
             else:
-                self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram_color_normalization_method = "linear"
+                self.canvas_widget.artists[
+                    ArtistType.HISTOGRAM2D
+                ].histogram_color_normalization_method = "linear"
 
         # if active artist is histogram, add a colorbar
         if self.plot_type == ArtistType.HISTOGRAM2D.name:
