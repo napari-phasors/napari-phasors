@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 import phasorpy.io as io
 import tifffile
+import xarray as xr
 from napari.layers import Labels
 from napari.utils.colormaps.colormap_utils import CYMRGB, MAGENTA_GREEN
 from napari.utils.notifications import show_error
