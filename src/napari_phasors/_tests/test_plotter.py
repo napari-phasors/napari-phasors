@@ -1,5 +1,4 @@
 import numpy as np
-from biaplotter.plotter import ArtistType
 from phasorpy.phasor import phasor_filter_median, phasor_threshold
 
 from napari_phasors._synthetic_generator import (
@@ -77,7 +76,7 @@ def test_phasor_plotter(make_napari_viewer):
     plotter.histogram_colormap = "viridis"
     plotter.histogram_bins = 5
     plotter.histogram_log_scale = True
-    plotter.plot_type = ArtistType.SCATTER.name
+    plotter.plot_type = 'SCATTER'
     threshold = 1
     plotter.plotter_inputs_widget.threshold_slider.setValue(threshold)
     plotter.plotter_inputs_widget.median_filter_spinbox.setValue(3)
