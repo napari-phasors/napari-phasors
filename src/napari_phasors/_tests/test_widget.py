@@ -279,7 +279,7 @@ def test_phasor_transform_sdt_widget(make_napari_viewer):
     assert len(viewer.layers) == 1
     assert (
         viewer.layers[0].name
-        == "seminal_receptacle_FLIM_single_image Intensity Image"
+        == "seminal_receptacle_FLIM_single_image Intensity Image: Channel 0"
     )
     assert viewer.layers[0].data.shape == (512, 512)
     phasor_data = (
@@ -293,7 +293,7 @@ def test_phasor_transform_sdt_widget(make_napari_viewer):
     assert len(viewer.layers) == 2
     assert (
         viewer.layers[1].name
-        == "seminal_receptacle_FLIM_single_image Intensity Image [1]"
+        == "seminal_receptacle_FLIM_single_image Intensity Image: Channel 0 [1]"
     )
     assert viewer.layers[1].data.shape == (512, 512)
     phasor_data = (
