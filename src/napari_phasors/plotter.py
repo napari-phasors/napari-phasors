@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 import matplotlib.ticker as ticker
 import numpy as np
-from biaplotter.plotter import ArtistType, CanvasWidget
+from biaplotter.plotter import CanvasWidget
 from matplotlib.colorbar import Colorbar
 from matplotlib.colors import LinearSegmentedColormap, LogNorm, Normalize
 from matplotlib.lines import Line2D
@@ -154,7 +154,7 @@ class PlotterWidget(QWidget):
 
         # Populate plot type combobox
         self.extra_inputs_widget.plot_type_combobox.addItems(
-            [ArtistType.SCATTER.name, ArtistType.HISTOGRAM2D.name]
+            ['SCATTER', 'HISTOGRAM2D']
         )
         # Populate colormap combobox
         self.extra_inputs_widget.colormap_combobox.addItems(
@@ -166,10 +166,10 @@ class PlotterWidget(QWidget):
 
         # Connect canvas signals
         self.canvas_widget.artists[
-            ArtistType.SCATTER
+            'SCATTER'
         ].color_indices_changed_signal.connect(self.manual_selection_changed)
         self.canvas_widget.artists[
-            ArtistType.HISTOGRAM2D
+            'HISTOGRAM2D'
         ].color_indices_changed_signal.connect(self.manual_selection_changed)
 
         # Initialize attributes
@@ -181,13 +181,13 @@ class PlotterWidget(QWidget):
         self.toggle_semi_circle = True
         self.colorbar = None
         self._colormap = self.canvas_widget.artists[
-            ArtistType.HISTOGRAM2D
-        ].categorical_colormap
+            'HISTOGRAM2D'
+        ].overlay_colormap
         self._histogram_colormap = self.canvas_widget.artists[
-            ArtistType.HISTOGRAM2D
+            'HISTOGRAM2D'
         ].histogram_colormap
         # Start with the histogram2d plot type
-        self.plot_type = ArtistType.HISTOGRAM2D.name
+        self.plot_type = 'HISTOGRAM2D'
 
         # Set intial axes limits
         self._redefine_axes_limits()
@@ -462,21 +462,15 @@ class PlotterWidget(QWidget):
             # Get polar plot limits
             circle_plot_limits = [-1, 1, -1, 1]  # xmin, xmax, ymin, ymax
         # Check if histogram is plotted
-        if (
-            self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram
-            is not None
-        ):
+        if self.canvas_widget.artists['HISTOGRAM2D'].histogram is not None:
             # Get histogram data limits
-            histogram_limits = (
-                self.canvas_widget.artists[ArtistType.HISTOGRAM2D]
-                .histogram[-1]
-                .get_datalim(self.canvas_widget.axes.transData)
-            )
+            x_edges = self.canvas_widget.artists['HISTOGRAM2D'].histogram[1]
+            y_edges = self.canvas_widget.artists['HISTOGRAM2D'].histogram[2]
             plotted_data_limits = [
-                histogram_limits.x0,
-                histogram_limits.x1,
-                histogram_limits.y0,
-                histogram_limits.y1,
+                x_edges[0],
+                x_edges[-1],
+                y_edges[0],
+                y_edges[-1],
             ]
         else:
             plotted_data_limits = circle_plot_limits
@@ -523,9 +517,7 @@ class PlotterWidget(QWidget):
         """
         if color is None:
             self.canvas_widget.axes.set_facecolor(
-                self.canvas_widget.artists[
-                    ArtistType.HISTOGRAM2D
-                ].histogram_colormap(0)
+                self.canvas_widget.artists['HISTOGRAM2D'].histogram_colormap(0)
             )
         else:
             self.canvas_widget.axes.set_facecolor(color)
@@ -755,16 +747,12 @@ class PlotterWidget(QWidget):
 
     def set_axes_labels(self):
         """Set the axes labels in the canvas widget."""
-        self.canvas_widget.artists[ArtistType.SCATTER].ax.set_xlabel(
+        self.canvas_widget.artists['SCATTER'].ax.set_xlabel("G", color="white")
+        self.canvas_widget.artists['SCATTER'].ax.set_ylabel("S", color="white")
+        self.canvas_widget.artists['HISTOGRAM2D'].ax.set_xlabel(
             "G", color="white"
         )
-        self.canvas_widget.artists[ArtistType.SCATTER].ax.set_ylabel(
-            "S", color="white"
-        )
-        self.canvas_widget.artists[ArtistType.HISTOGRAM2D].ax.set_xlabel(
-            "G", color="white"
-        )
-        self.canvas_widget.artists[ArtistType.HISTOGRAM2D].ax.set_ylabel(
+        self.canvas_widget.artists['HISTOGRAM2D'].ax.set_ylabel(
             "S", color="white"
         )
 
@@ -786,15 +774,13 @@ class PlotterWidget(QWidget):
         )
         x_data, y_data, selection_id_data = self.get_features()
         # Set active artist
-        self.canvas_widget.active_artist = self.canvas_widget.artists[
-            ArtistType[self.plot_type]
-        ]
+        self.canvas_widget.active_artist = self.plot_type
         self.canvas_widget.active_artist.ax.set_facecolor('white')
-        self.canvas_widget.artists[ArtistType.HISTOGRAM2D].cmin = 1
         # Set data in the active artist
         self.canvas_widget.active_artist.data = np.column_stack(
             (x_data, y_data)
         )
+        self.canvas_widget.artists['HISTOGRAM2D'].cmin = 1
         # Set selection data in the active artist
         self.canvas_widget.active_artist.color_indices = selection_id_data
         # Set colormap in the active artist
@@ -806,59 +792,42 @@ class PlotterWidget(QWidget):
             selected_histogram_colormap.name,
             selected_histogram_colormap.colors,
         )
-        self.canvas_widget.artists[
-            ArtistType.HISTOGRAM2D
-        ].histogram_colormap = selected_histogram_colormap
-        # Set number of bins in the active artist
-        self.canvas_widget.artists[ArtistType.HISTOGRAM2D].bins = (
-            self.histogram_bins
+        self.canvas_widget.artists['HISTOGRAM2D'].histogram_colormap = (
+            selected_histogram_colormap
         )
+        # Set number of bins in the active artist
+        self.canvas_widget.artists['HISTOGRAM2D'].bins = self.histogram_bins
         # Temporarily set active artist "again" to have it displayed on top #TODO: Fix this
-        self.canvas_widget.active_artist = self.canvas_widget.artists[
-            ArtistType[self.plot_type]
-        ]
+        self.canvas_widget.active_artist = self.plot_type
         # Set log scale in the active artist
-        if (
-            self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram
-            is not None
-        ):
-            h = self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram[0]
+        if self.canvas_widget.artists['HISTOGRAM2D'].histogram is not None:
             if self.histogram_log_scale:
-                # Set min_value to a small positive number
-                vmin = max(h[h > 0].min(), 1e-10) if np.any(h > 0) else 1
-                vmax = np.nanmax(h)  # Finds the maximum, ignoring NaNs
-                # Adjust vmax if it's NaN or insufficient for log scaling
-                if np.isnan(vmax) or vmax <= vmin:
-                    vmax = vmin * 2
-                if np.all(h <= 1):
-                    norm = Normalize(
-                        vmin=vmin, vmax=vmax
-                    )  # Use linear for binary data (0s and 1s)
-                else:
-                    norm = LogNorm(vmin=vmin, vmax=vmax)
+                self.canvas_widget.artists[
+                    'HISTOGRAM2D'
+                ].histogram_color_normalization_method = "log"
             else:
-                vmin = np.nanmin(h)
-                vmax = np.nanmax(h)
-                norm = Normalize(vmin=vmin, vmax=vmax)
-            self.canvas_widget.artists[ArtistType.HISTOGRAM2D].histogram[
-                -1
-            ].set_norm(norm)
+                self.canvas_widget.artists[
+                    'HISTOGRAM2D'
+                ].histogram_color_normalization_method = "linear"
 
         # if active artist is histogram, add a colorbar
-        if self.plot_type == ArtistType.HISTOGRAM2D.name:
+        if self.plot_type == 'HISTOGRAM2D':
             if self.colorbar is not None:
                 self.colorbar.remove()
             # Create cax for colorbar on the right side of the histogram
-            self.cax = self.canvas_widget.artists[
-                ArtistType.HISTOGRAM2D
-            ].ax.inset_axes([1.05, 0, 0.05, 1])
+            self.cax = self.canvas_widget.artists['HISTOGRAM2D'].ax.inset_axes(
+                [1.05, 0, 0.05, 1]
+            )
             # Create colorbar
             self.colorbar = Colorbar(
                 ax=self.cax,
-                cmap=self.canvas_widget.artists[
-                    ArtistType.HISTOGRAM2D
-                ].histogram_colormap,
-                norm=norm,
+                cmap=selected_histogram_colormap,
+                norm=self.canvas_widget.artists[
+                    'HISTOGRAM2D'
+                ]._get_normalization(
+                    self.canvas_widget.artists['HISTOGRAM2D'].histogram[0],
+                    is_overlay=False,
+                ),
             )
 
             self.set_colorbar_style(color="white")
