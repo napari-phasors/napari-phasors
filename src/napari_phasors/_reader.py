@@ -37,7 +37,7 @@ extension_mapping = {
         ".fbd": lambda path, reader_options: _parse_and_call_io_function(
             path,
             io.signal_from_fbd,
-            {"frame": (-1, False), "keepdims": (True, False)},
+            {"frame": (-1, False), "keepdims": (True, False), "channel": (None, False)},
             reader_options,
         ),
         ".sdt": lambda path, reader_options: _parse_and_call_io_function(
