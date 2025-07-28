@@ -1,7 +1,90 @@
+[project]
+name = "napari-phasors"
+dynamic = ["version"]
+description = "A simple plugin to use phasor analysis"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Bruno Pannunzio", email = "bpannunzio@pasteur.edu.uy" },
+    { name = "Marcelo Leomil Zoccoler", email = "marzoccoler@gmail.com" },
+    { name = "Bruno Schuty", email = "schutyb@schutyb.com" },
+    { name = "Leonel Malacrida", email = "lmalacrida@pasteur.edu.uy" },
+    ]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Framework :: napari",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "Topic :: Scientific/Engineering :: Visualization"
+]
+dependencies = [
+    "phasorpy==0.6",
+    "qtpy",
+    "scikit-image",
+    "biaplotter>=0.2.0",
+    "lfdfiles",
+    "sdtfile",
+    "ptufile",
+    "tifffile",
+    "pandas",
+    "pyqt5"
+]
+
+[project.optional-dependencies]
+testing = [
+    "tox",
+    "pytest",  # https://docs.pytest.org/en/latest/contents.html
+    "pytest-cov",  # https://pytest-cov.readthedocs.io/en/latest/
+    "pytest-qt",  # https://pytest-qt.readthedocs.io/en/latest/
+    "napari",
+    "qtpy",
+    "scikit-image",
+    "biaplotter>=0.2.0",
+    "PyQt5",
+    "pandas",
+    "black",
+    "isort",
+    "phasorpy==0.6",
+    "tifffile",
+    "lfdfiles",
+    "sdtfile",
+    "ptufile"
+]
+
+[project.entry-points."napari.manifest"]
+"napari-phasors" = "napari_phasors:napari.yaml"
+
+[project.urls]
+"Homepage" = "https://github.com/napari-phasors/napari-phasors"
+"Bug Tracker" = "https://github.com/napari-phasors/napari-phasors/issues"
+"Documentation" = "https://github.com/napari-phasors/napari-phasors#README.md"
+"Source Code" = "https://github.com/napari-phasors/napari-phasors"
+"User Support" = "https://github.com/napari-phasors/napari-phasors/issues"
+
 [build-system]
-requires = ["setuptools>=42.0.0", "wheel"]
+requires = ["setuptools>=42.0.0", "wheel", "setuptools_scm"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"*" = ["*.yaml"]
+
+[tool.setuptools_scm]
+write_to = "src/napari_phasors/_version.py"
+fallback_version = "0.0.1+nogit"
 
 [tool.black]
 line-length = 79
@@ -11,7 +94,6 @@ skip-string-normalization = true
 [tool.isort]
 profile = "black"
 line_length = 79
-
 
 [tool.ruff]
 line-length = 79
@@ -56,5 +138,5 @@ exclude = [
     "*_vendor*",
 ]
 
-target-version = "py38"
+target-version = "py311"
 fix = true
