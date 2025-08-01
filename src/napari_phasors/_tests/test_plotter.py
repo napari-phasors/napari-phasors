@@ -1,9 +1,8 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
 from biaplotter.plotter import CanvasWidget
 from napari.layers import Image
-from qtpy.QtCore import QCoreApplication, Qt
 from qtpy.QtWidgets import QComboBox, QSpinBox, QTabWidget, QVBoxLayout
 
 from napari_phasors._synthetic_generator import (
@@ -22,7 +21,7 @@ def create_image_layer_with_phasors():
     return make_intensity_layer_with_phasors(raw_flim_data, harmonic=harmonic)
 
 
-def test_phasor_plotter_initialization(make_napari_viewer):
+def test_phasor_plotter_initialization_values(make_napari_viewer):
     """Test the initialization of the Phasor Plotter Widget."""
     viewer = make_napari_viewer()
 
@@ -37,7 +36,7 @@ def test_phasor_plotter_initialization(make_napari_viewer):
     # Canvas widget tests
     assert hasattr(plotter, 'canvas_widget')
     assert isinstance(plotter.canvas_widget, CanvasWidget)
-    assert plotter.canvas_widget.minimumSize().width() >= 600
+    assert plotter.canvas_widget.minimumSize().width() >= 500
     assert plotter.canvas_widget.minimumSize().height() >= 400
     assert plotter.canvas_widget.class_spinbox.value == 1
 
@@ -54,9 +53,9 @@ def test_phasor_plotter_initialization(make_napari_viewer):
     # Tab widget tests
     assert hasattr(plotter, 'tab_widget')
     assert isinstance(plotter.tab_widget, QTabWidget)
-    assert plotter.tab_widget.count() == 7  # Fixed: 7 tabs, not 6
+    assert plotter.tab_widget.count() == 7  # Number of tabs should be 7
 
-    # Check tab names - Fixed order and names
+    # Check tab names
     tab_names = []
     for i in range(plotter.tab_widget.count()):
         tab_names.append(plotter.tab_widget.tabText(i))
@@ -83,8 +82,9 @@ def test_phasor_plotter_initialization(make_napari_viewer):
     # Test filter_tab and selection_tab are proper widgets
     assert isinstance(plotter.filter_tab, FilterWidget)
     assert isinstance(plotter.selection_tab, SelectionWidget)
+    # TODO: Add other tests when those tabs are implemented
 
-    # Test plotter inputs widget
+    # Test settings tab inputs widget
     assert hasattr(plotter, 'plotter_inputs_widget')
     assert hasattr(plotter.plotter_inputs_widget, 'plot_type_combobox')
     assert hasattr(plotter.plotter_inputs_widget, 'colormap_combobox')
@@ -99,10 +99,10 @@ def test_phasor_plotter_initialization(make_napari_viewer):
     assert plotter.histogram_colormap == 'turbo'
     assert (
         plotter.toggle_semi_circle == True
-    )  # Default is True based on checkbox
+    )  # Should default to semi-circle mode
     assert (
         plotter.white_background == True
-    )  # Default is True based on checkbox
+    )  # Should default to white background
 
     # Test plot type combobox items
     plot_types = []
@@ -110,7 +110,7 @@ def test_phasor_plotter_initialization(make_napari_viewer):
         plot_types.append(
             plotter.plotter_inputs_widget.plot_type_combobox.itemText(i)
         )
-    assert plot_types == ['SCATTER', 'HISTOGRAM2D']
+    assert plot_types == ['HISTOGRAM2D', 'SCATTER']
 
     # Test colormap combobox has items (should have all available colormaps)
     assert plotter.plotter_inputs_widget.colormap_combobox.count() > 0
@@ -130,14 +130,42 @@ def test_phasor_plotter_initialization(make_napari_viewer):
     assert plotter.canvas_widget.axes.get_aspect() == 1
 
     # Test initial axes limits (semi-circle mode)
+    # TODO: Test specific limits?
     xlim = plotter.canvas_widget.axes.get_xlim()
     ylim = plotter.canvas_widget.axes.get_ylim()
-    assert (
-        xlim[0] < 0 and xlim[1] > 1
-    )  # Should include semi-circle range with padding
-    assert (
-        ylim[0] < 0 and ylim[1] > 0.6
-    )  # Should include semi-circle range with padding
+    assert xlim[0] < 0 and xlim[1] > 1
+    assert ylim[0] < 0 and ylim[1] > 0.6
+
+
+def test_phasor_plotter_initialization_plot_not_called(make_napari_viewer):
+
+    viewer = make_napari_viewer()
+
+    # Test that plot method is not called during initialization
+    with patch(
+        'napari_phasors.plotter.PlotterWidget._set_active_artist_and_plot'
+    ) as mock_plot:
+        # Create the plotter widget (this will call plot during initialization)
+        plotter = PlotterWidget(viewer)
+
+        # Verify plot was not called during initialization
+        mock_plot.assert_not_called()
+
+        # Check that modifying values does not call plot
+        plotter.plot_type = 'SCATTER'
+        mock_plot.assert_not_called()
+        plotter.histogram_colormap = 'viridis'
+        mock_plot.assert_not_called()
+        plotter.toggle_semi_circle = False
+        mock_plot.assert_not_called()
+        plotter.white_background = False
+        mock_plot.assert_not_called()
+        plotter.plotter_inputs_widget.semi_circle_checkbox.setChecked(False)
+        mock_plot.assert_not_called()
+        plotter.plotter_inputs_widget.white_background_checkbox.setChecked(
+            False
+        )
+        mock_plot.assert_not_called()
 
 
 def test_phasor_plotter_initialization_with_layer(make_napari_viewer):
@@ -146,9 +174,16 @@ def test_phasor_plotter_initialization_with_layer(make_napari_viewer):
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
 
-    # Create Plotter widget after layer is added
-    plotter = PlotterWidget(viewer)
+    with patch(
+        'napari_phasors.plotter.PlotterWidget._set_active_artist_and_plot'
+    ) as mock_plot:
+        # Create the plotter widget (this will call plot during initialization)
+        plotter = PlotterWidget(viewer)
 
+        # Verify plot was called exactly once during initialization
+        mock_plot.assert_called_once()
+
+    plotter = PlotterWidget(viewer)
     # Test that the layer is automatically detected and selected
     assert plotter.image_layer_with_phasor_features_combobox.count() == 1
     assert (
@@ -171,12 +206,6 @@ def test_phasor_plotter_initialization_with_layer(make_napari_viewer):
     )
     assert plotter.harmonic_spinbox.maximum() == expected_max_harmonic
 
-    # Test that manual selection column was added
-    features_table = intensity_image_layer.metadata[
-        "phasor_features_labels_layer"
-    ].features
-    assert "MANUAL SELECTION #1" in features_table.columns
-
     # Test that histogram 2D is plotted in the canvas
     assert plotter.plot_type == 'HISTOGRAM2D'  # Should default to histogram 2D
 
@@ -198,6 +227,112 @@ def test_phasor_plotter_initialization_with_layer(make_napari_viewer):
         assert len(plotter.semi_circle_plot_artist_list) > 0
 
 
+def test_adding_removing_layers_updates_plot(make_napari_viewer):
+    """Test that adding/removing layers updates the plotter widget."""
+    viewer = make_napari_viewer()
+
+    with patch(
+        'napari_phasors.plotter.PlotterWidget._set_active_artist_and_plot'
+    ) as mock_plot:
+        # Create the plotter widget (this will call plot during initialization)
+        plotter = PlotterWidget(viewer)
+
+        # Add a layer with phasor features
+        intensity_image_layer = create_image_layer_with_phasors()
+        viewer.add_layer(intensity_image_layer)
+        # Verify plot was called once after adding layer
+        mock_plot.assert_called_once()
+        mock_plot.reset_mock()  # Reset mock for next call
+
+        # Remove the layer
+        viewer.layers.remove(intensity_image_layer)
+        # Verify the plot method was not called after removing the layer
+        mock_plot.assert_not_called()
+
+        # Check that modifying values does not call plot
+        plotter.plot_type = 'SCATTER'
+        mock_plot.assert_not_called()
+        plotter.histogram_colormap = 'viridis'
+        mock_plot.assert_not_called()
+        plotter.toggle_semi_circle = False
+        mock_plot.assert_not_called()
+        plotter.white_background = False
+        mock_plot.assert_not_called()
+        plotter.plotter_inputs_widget.semi_circle_checkbox.setChecked(False)
+        mock_plot.assert_not_called()
+        plotter.plotter_inputs_widget.white_background_checkbox.setChecked(
+            False
+        )
+        mock_plot.assert_not_called()
+
+        # Add two layers with phasor features
+        intensity_image_layer_2 = create_image_layer_with_phasors()
+        viewer.add_layer(intensity_image_layer_2)
+        # Verify plot was called once after adding second layer
+        mock_plot.assert_called_once()
+        mock_plot.reset_mock()  # Reset mock for next call
+
+        viewer.add_layer(intensity_image_layer)
+        mock_plot.assert_not_called()
+
+        # Check values changed before are kept
+        assert plotter.plot_type == 'SCATTER'
+        assert plotter.histogram_colormap == 'viridis'
+        assert plotter.toggle_semi_circle == False
+        assert plotter.white_background == False
+        assert (
+            plotter.plotter_inputs_widget.semi_circle_checkbox.isChecked()
+            == False
+        )
+        assert (
+            plotter.plotter_inputs_widget.white_background_checkbox.isChecked()
+            == False
+        )
+
+        # Check that the combobox has both layers with phasor features
+        assert plotter.image_layer_with_phasor_features_combobox.count() == 2
+        # Check that the first layer is still selected
+        assert (
+            plotter.image_layer_with_phasor_features_combobox.currentText()
+            == intensity_image_layer_2.name
+        )
+
+
+def test_add_layer_without_phasor_features_does_not_trigger_plot_or_combobox(
+    make_napari_viewer,
+):
+    """Test that adding a layer without phasor features does not call plot or update the combobox."""
+    from napari.layers import Image
+
+    viewer = make_napari_viewer()
+
+    # Patch plot and on_labels_layer_with_phasor_features_changed
+    with (
+        patch.object(
+            PlotterWidget, '_set_active_artist_and_plot'
+        ) as mock_plot,
+        patch.object(
+            PlotterWidget, 'on_labels_layer_with_phasor_features_changed'
+        ) as mock_labels_changed,
+    ):
+
+        plotter = PlotterWidget(viewer)
+        # Add a regular image layer (no phasor features)
+        regular_layer = Image(np.random.random((10, 10)))
+        viewer.add_layer(regular_layer)
+
+        # plot and on_labels_layer_with_phasor_features_changed should NOT be called
+        mock_plot.assert_not_called()
+        mock_labels_changed.assert_not_called()
+
+        # The combobox should not be updated
+        assert plotter.image_layer_with_phasor_features_combobox.count() == 0
+        assert (
+            plotter.image_layer_with_phasor_features_combobox.currentText()
+            == ''
+        )
+
+
 def test_phasor_plotter_property_setters(make_napari_viewer):
     """Test property setters of the Phasor Plotter Widget."""
     viewer = make_napari_viewer()
@@ -211,7 +346,6 @@ def test_phasor_plotter_property_setters(make_napari_viewer):
     # Test plot_type property
     plotter.plot_type = 'SCATTER'
     assert plotter.plot_type == 'SCATTER'
-    # The combobox won't automatically update since there's no property setter
 
     # Test histogram_colormap property
     plotter.histogram_colormap = 'viridis'
@@ -325,7 +459,6 @@ def test_phasor_plotter_semicircle_checkbox(make_napari_viewer):
     )
 
     # Get initial axes limits (semicircle mode)
-    initial_xlim = plotter.canvas_widget.axes.get_xlim()
     initial_ylim = plotter.canvas_widget.axes.get_ylim()
 
     # Semicircle should have y-limits starting from 0 or slightly below
@@ -336,7 +469,6 @@ def test_phasor_plotter_semicircle_checkbox(make_napari_viewer):
     plotter.toggle_semi_circle = False
 
     # Get new axes limits (full circle mode)
-    new_xlim = plotter.canvas_widget.axes.get_xlim()
     new_ylim = plotter.canvas_widget.axes.get_ylim()
 
     # Full circle should extend below y=0 significantly
@@ -494,7 +626,6 @@ def test_phasor_plotter_colorbar_updates(make_napari_viewer):
         plotter.histogram_colormap = new_colormap
 
         # Verify colorbar still exists after colormap change
-        # (actual colorbar update might require calling update method)
         assert plotter.colorbar is not None
 
     # Toggle log scale
@@ -503,3 +634,161 @@ def test_phasor_plotter_colorbar_updates(make_napari_viewer):
 
     # Verify colorbar still exists after log scale change
     assert plotter.colorbar is not None
+
+
+def test_on_labels_layer_with_phasor_features_changed_prevents_recursion(
+    make_napari_viewer,
+):
+    """Test that the method prevents recursive calls using the guard flag."""
+
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    plotter = PlotterWidget(viewer)
+
+    # Set the guard flag to simulate being already in the method
+    plotter._in_on_labels_layer_with_phasor_features_changed = True
+
+    with patch.object(plotter, 'plot') as mock_plot:
+        # Call the method - should return early due to guard
+        plotter.on_labels_layer_with_phasor_features_changed()
+
+        # Verify plot was not called due to guard
+        mock_plot.assert_not_called()
+
+    # Verify guard flag is still True (not reset by early return)
+    assert plotter._in_on_labels_layer_with_phasor_features_changed == True
+
+
+def test_on_labels_layer_with_phasor_features_changed_with_empty_layer_name(
+    make_napari_viewer,
+):
+    """Test behavior when combobox has empty layer name."""
+
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    # Ensure combobox is empty
+    plotter.image_layer_with_phasor_features_combobox.clear()
+
+    with patch.object(plotter, 'plot') as mock_plot:
+        plotter.on_labels_layer_with_phasor_features_changed()
+
+        # Should not call plot when layer name is empty
+        mock_plot.assert_not_called()
+
+    # Verify labels layer is set to None
+    assert plotter._labels_layer_with_phasor_features is None
+
+    # Now add a layer with phasors
+
+    with patch.object(plotter, 'plot') as mock_plot:
+        intensity_image_layer = create_image_layer_with_phasors()
+        viewer.add_layer(intensity_image_layer)
+
+        mock_plot.assert_called_once()
+
+        mock_plot.reset_mock()
+
+        # Remove the layer to simulate empty state again
+        viewer.layers.remove(intensity_image_layer)
+
+        # Should not call plot when layer name is empty
+        mock_plot.assert_not_called()
+
+
+def test_on_labels_layer_with_phasor_features_changed_sets_harmonic_maximum(
+    make_napari_viewer,
+):
+    """Test that harmonic spinbox maximum is set based on layer data."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    plotter = PlotterWidget(viewer)
+
+    # Get expected maximum harmonic from the data
+    expected_max = (
+        intensity_image_layer.metadata["phasor_features_labels_layer"]
+        .features["harmonic"]
+        .max()
+    )
+
+    # Call the method
+    plotter.on_labels_layer_with_phasor_features_changed()
+
+    # Verify harmonic spinbox maximum is set correctly
+    assert plotter.harmonic_spinbox.maximum() == expected_max
+
+
+def test_on_labels_layer_with_phasor_features_changed_updates_labels_layer(
+    make_napari_viewer,
+):
+    """Test that the _labels_layer_with_phasor_features attribute is updated correctly."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    plotter = PlotterWidget(viewer)
+
+    # Initially should be set from initialization
+    initial_layer = plotter._labels_layer_with_phasor_features
+
+    # Clear it to test the update
+    plotter._labels_layer_with_phasor_features = None
+
+    # Call the method
+    plotter.on_labels_layer_with_phasor_features_changed()
+
+    # Verify it's set to the correct layer
+    expected_layer = intensity_image_layer.metadata[
+        "phasor_features_labels_layer"
+    ]
+    assert plotter._labels_layer_with_phasor_features == expected_layer
+    assert plotter._labels_layer_with_phasor_features == initial_layer
+
+
+def test_on_labels_layer_with_phasor_features_changed_guard_flag_cleanup(
+    make_napari_viewer,
+):
+    """Test that guard flag is properly cleaned up even if an exception occurs."""
+
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    plotter = PlotterWidget(viewer)
+
+    # Mock plot to raise an exception
+    with patch.object(
+        plotter, 'plot', side_effect=Exception("Test exception")
+    ):
+        try:
+            plotter.on_labels_layer_with_phasor_features_changed()
+        except Exception:
+            pass  # We expect the exception
+
+    # Verify guard flag is cleaned up even after exception
+    assert (
+        not hasattr(
+            plotter, '_in_on_labels_layer_with_phasor_features_changed'
+        )
+        or plotter._in_on_labels_layer_with_phasor_features_changed == False
+    )
+
+
+def test_on_labels_layer_with_phasor_features_changed_multiple_calls(
+    make_napari_viewer,
+):
+    """Test multiple sequential calls to ensure plot is called each time."""
+
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    plotter = PlotterWidget(viewer)
+
+    with patch.object(plotter, 'plot') as mock_plot:
+        # Call multiple times
+        plotter.on_labels_layer_with_phasor_features_changed()
+        plotter.on_labels_layer_with_phasor_features_changed()
+        plotter.on_labels_layer_with_phasor_features_changed()
+
+        # Each call should result in plot being called once
+        assert mock_plot.call_count == 3

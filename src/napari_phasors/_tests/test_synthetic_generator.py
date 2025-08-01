@@ -5,7 +5,7 @@ def test_synthetic_generator():
         make_intensity_layer_with_phasors,
         make_raw_flim_data,
     )
-    from napari_phasors.plotter import DATA_COLUMNS
+    from napari_phasors.selection_tab import DATA_COLUMNS
 
     # Create a synthetic FLIM data and an intensity image layer with phasors
     raw_flim_data = make_raw_flim_data()
