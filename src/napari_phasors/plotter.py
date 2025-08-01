@@ -158,7 +158,7 @@ class PlotterWidget(QWidget):
             napari_viewer, highlight_enabled=False
         )
         self.canvas_widget.axes.set_aspect(1, adjustable='box')
-        self.canvas_widget.setMinimumSize(600, 400)
+        self.canvas_widget.setMinimumSize(500, 400)
         self.canvas_widget.class_spinbox.setValue(1)
         self.set_axes_labels()
         canvas_container.layout().addWidget(self.canvas_widget)
@@ -199,6 +199,9 @@ class PlotterWidget(QWidget):
         controls_container.setMinimumHeight(300)
         splitter.setSizes([400, 600])
 
+        # Add a flag to prevent recursive calls
+        self._updating_plot = False
+
         # Create Settings tab
         self.settings_tab = QWidget()
         self.settings_tab.setLayout(QVBoxLayout())
@@ -213,6 +216,14 @@ class PlotterWidget(QWidget):
         self.settings_tab.layout().addWidget(self.plotter_inputs_widget)
         self.setMinimumSize(600, 800)
 
+        # Create other tabs
+        self._create_calibration_tab()
+        self._create_filter_tab()
+        self._create_selection_tab()
+        self._create_components_tab()
+        self._create_lifetime_tab()
+        self._create_fret_tab()
+
         # Connect napari signals when new layer is inseted or removed
         self.viewer.layers.events.inserted.connect(self.reset_layer_choices)
         self.viewer.layers.events.removed.connect(self.reset_layer_choices)
@@ -225,18 +236,18 @@ class PlotterWidget(QWidget):
         self.plotter_inputs_widget.semi_circle_checkbox.stateChanged.connect(
             self.on_toggle_semi_circle
         )
-        self.harmonic_spinbox.valueChanged.connect(self.plot)
+        self.harmonic_spinbox.valueChanged.connect(self.refresh_current_plot)
         self.plotter_inputs_widget.plot_type_combobox.currentIndexChanged.connect(
-            self.plot
+            self._on_plot_type_changed
         )
         self.plotter_inputs_widget.colormap_combobox.currentIndexChanged.connect(
-            self.plot
+            self._on_colormap_changed
         )
         self.plotter_inputs_widget.number_of_bins_spinbox.valueChanged.connect(
-            self.plot
+            self._on_bins_changed
         )
         self.plotter_inputs_widget.log_scale_checkbox.stateChanged.connect(
-            self.plot
+            self._on_log_scale_changed
         )
         self.plotter_inputs_widget.white_background_checkbox.stateChanged.connect(
             self.on_white_background_changed
@@ -244,7 +255,7 @@ class PlotterWidget(QWidget):
 
         # Populate plot type combobox
         self.plotter_inputs_widget.plot_type_combobox.addItems(
-            ['SCATTER', 'HISTOGRAM2D']
+            ['HISTOGRAM2D', 'SCATTER']
         )
 
         # Populate colormap combobox
@@ -272,32 +283,17 @@ class PlotterWidget(QWidget):
         self.plot_type = 'HISTOGRAM2D'
         self._current_plot_type = 'HISTOGRAM2D'
 
-        # Create other tabs
-        self._create_calibration_tab()
-        self._create_filter_tab()
-        self._create_selection_tab()
-        self._create_components_tab()
-        self._create_lifetime_tab()
-        self._create_fret_tab()
-
-        # Connect canvas signals
-        self.canvas_widget.artists[
-            'SCATTER'
-        ].color_indices_changed_signal.connect(
-            self.selection_tab.manual_selection_changed
-        )
-        self.canvas_widget.artists[
-            'HISTOGRAM2D'
-        ].color_indices_changed_signal.connect(
-            self.selection_tab.manual_selection_changed
-        )
+        # Connect only the initial active artist
+        self._connect_active_artist_signals()
 
         # Set the initial plot
         self._redefine_axes_limits()
         self._update_plot_bg_color()
+
         # Populate labels layer combobox
         self.reset_layer_choices()
 
+        # Connect canvas click event
         self.canvas_widget.figure.canvas.mpl_connect(
             'button_press_event', self._on_canvas_click
         )
@@ -306,6 +302,7 @@ class PlotterWidget(QWidget):
         """Handle click events on the canvas widget."""
         if event.inaxes != self.canvas_widget.axes:
             return None, None
+
         # Check if the click is on the canvas widget axes
         if event.button == 1:  # Left click
             x, y = event.xdata, event.ydata
@@ -313,7 +310,35 @@ class PlotterWidget(QWidget):
                 return x, y
         return None, None
 
-    def on_white_background_changed(self, state):
+    def _on_plot_type_changed(self):
+        """Callback for plot type change."""
+        new_plot_type = (
+            self.plotter_inputs_widget.plot_type_combobox.currentText()
+        )
+
+        # Store the old plot type before it gets updated
+        old_plot_type = getattr(self, '_current_plot_type', None)
+
+        if new_plot_type != old_plot_type:
+            self._current_plot_type = new_plot_type
+            self._connect_active_artist_signals()
+            self.switch_plot_type(new_plot_type)
+
+    def _on_colormap_changed(self):
+        """Callback for colormap change."""
+        if self.plot_type == 'HISTOGRAM2D':
+            self.refresh_current_plot()
+
+    def _on_bins_changed(self):
+        """Callback for bins change."""
+        self.refresh_current_plot()
+
+    def _on_log_scale_changed(self):
+        """Callback for log scale change."""
+        if self.plot_type == 'HISTOGRAM2D':
+            self.refresh_current_plot()
+
+    def on_white_background_changed(self):
         """Callback function when the white background checkbox is toggled."""
         self.set_axes_labels()
         if self.toggle_semi_circle:
@@ -321,6 +346,7 @@ class PlotterWidget(QWidget):
         else:
             self._update_polar_plot(self.canvas_widget.axes, visible=True)
         self.canvas_widget.figure.canvas.draw_idle()
+
         self.plot()
 
     @property
@@ -1081,6 +1107,47 @@ class PlotterWidget(QWidget):
         """Sets the histogram log scale from the histogram log scale checkbox."""
         self.plotter_inputs_widget.log_scale_checkbox.setChecked(value)
 
+    def _connect_active_artist_signals(self):
+        """Connect signals for the currently active artist only."""
+        # Disconnect all existing connections first
+        self._disconnect_all_artist_signals()
+
+        # Connect only the active artist
+        if self.plot_type == 'HISTOGRAM2D':
+            self.canvas_widget.artists[
+                'HISTOGRAM2D'
+            ].color_indices_changed_signal.connect(
+                self.selection_tab.manual_selection_changed
+            )
+        elif self.plot_type == 'SCATTER':
+            self.canvas_widget.artists[
+                'SCATTER'
+            ].color_indices_changed_signal.connect(
+                self.selection_tab.manual_selection_changed
+            )
+
+    def _disconnect_all_artist_signals(self):
+        """Disconnect all artist signals to prevent conflicts."""
+        try:
+            self.canvas_widget.artists[
+                'SCATTER'
+            ].color_indices_changed_signal.disconnect(
+                self.selection_tab.manual_selection_changed
+            )
+        except (TypeError, AttributeError):
+            # Signal wasn't connected, ignore
+            pass
+
+        try:
+            self.canvas_widget.artists[
+                'HISTOGRAM2D'
+            ].color_indices_changed_signal.disconnect(
+                self.selection_tab.manual_selection_changed
+            )
+        except (TypeError, AttributeError):
+            # Signal wasn't connected, ignore
+            pass
+
     def reset_layer_choices(self):
         """Reset the image layer with phasor features combobox choices.
 
@@ -1090,7 +1157,16 @@ class PlotterWidget(QWidget):
         It also updates `_labels_layer_with_phasor_features` attribute with the
         Labels layer in the metadata of the selected image layer.
         """
+        # Temporarily disconnect the signal to prevent double execution
+        self.image_layer_with_phasor_features_combobox.currentIndexChanged.disconnect(
+            self.on_labels_layer_with_phasor_features_changed
+        )
+
+        current_text = (
+            self.image_layer_with_phasor_features_combobox.currentText()
+        )
         self.image_layer_with_phasor_features_combobox.clear()
+
         layer_names = [
             layer.name
             for layer in self.viewer.layers
@@ -1116,6 +1192,7 @@ class PlotterWidget(QWidget):
             self.on_labels_layer_with_phasor_features_changed()
 
     def on_labels_layer_with_phasor_features_changed(self):
+        """Handle changes to the labels layer with phasor features."""
         if getattr(
             self, "_in_on_labels_layer_with_phasor_features_changed", False
         ):
@@ -1137,11 +1214,9 @@ class PlotterWidget(QWidget):
                     "harmonic"
                 ].max()
             )
-            self.selection_tab.add_selection_id_to_features(
-                "MANUAL SELECTION #1"
-            )
 
             self.plot()
+
         finally:
             self._in_on_labels_layer_with_phasor_features_changed = False
 
@@ -1169,11 +1244,13 @@ class PlotterWidget(QWidget):
         mask = np.isnan(x_data) & np.isnan(y_data)
         x_data = x_data[~mask]
         y_data = y_data[~mask]
+
         if (
             self.selection_tab.selection_id is None
             or self.selection_tab.selection_id == ""
+            or self.selection_tab.selection_id not in table.columns
         ):
-            return x_data, y_data, np.zeros_like(x_data)
+            return x_data, y_data, None
         else:
             selection_data = table[self.selection_tab.selection_id][
             selection_data = table[self.selection_tab.selection_id][
@@ -1220,32 +1297,34 @@ class PlotterWidget(QWidget):
         ].ax.spines.values():
             spine.set_color(text_color)
 
-    def plot(self, x_data=None, y_data=None, selection_id_data=None):
-        """Plot the selected phasor features.
-
-        This function plots the selected phasor features in the canvas widget.
-        It also creates the phasors selected layer.
-        """
-        if self._labels_layer_with_phasor_features is None:
+    def _update_scatter_plot(self, x_data, y_data, selection_id_data=None):
+        """Update the scatter plot with new data."""
+        if len(x_data) == 0 or len(y_data) == 0:
             return
 
-        if x_data is None or y_data is None or selection_id_data is None:
-            features = self.get_features()
-            if features is None:
-                return
-            x_data, y_data, selection_id_data = features
+        plot_data = np.column_stack((x_data, y_data))
+        self.canvas_widget.artists['SCATTER'].data = plot_data
 
-        self.canvas_widget.active_artist = self.plot_type
-        self.canvas_widget.active_artist.data = np.column_stack(
-            (x_data, y_data)
-        )
+        if selection_id_data is not None:
+            self.canvas_widget.artists['SCATTER'].color_indices = (
+                selection_id_data
+            )
+        else:
+            self.canvas_widget.artists['SCATTER'].color_indices = None
+
+    def _update_histogram_plot(self, x_data, y_data, selection_id_data=None):
+        """Update the histogram plot with new data."""
+        plot_data = np.column_stack((x_data, y_data))
+
+        # Configure histogram artist properties
+        self.canvas_widget.artists['HISTOGRAM2D'].data = plot_data
         self.canvas_widget.artists['HISTOGRAM2D'].cmin = 1
-        self.canvas_widget.active_artist.color_indices = selection_id_data
+        self.canvas_widget.artists['HISTOGRAM2D'].bins = self.histogram_bins
+
+        # Set colormap
         selected_histogram_colormap = colormaps.ALL_COLORMAPS[
             self.histogram_colormap
         ]
-        # Temporary convertion to LinearSegmentedColormap to match matplotlib
-        # format, while biaplotter is not updated
         selected_histogram_colormap = LinearSegmentedColormap.from_list(
             self.histogram_colormap,
             selected_histogram_colormap.colors,
@@ -1254,10 +1333,7 @@ class PlotterWidget(QWidget):
             selected_histogram_colormap
         )
 
-        self.canvas_widget.artists['HISTOGRAM2D'].bins = self.histogram_bins
-        # Temporarily set active artist "again" to have it displayed on top #TODO: Fix this
-        self.canvas_widget.active_artist = self.plot_type
-
+        # Set normalization method
         if self.canvas_widget.artists['HISTOGRAM2D'].histogram is not None:
             if self.histogram_log_scale:
                 self.canvas_widget.artists[
@@ -1284,8 +1360,6 @@ class PlotterWidget(QWidget):
         self._remove_colorbar()
         # Create new colorbar for histogram
         if self.plot_type == 'HISTOGRAM2D':
-            if self.colorbar is not None:
-                self.colorbar.remove()
             self.cax = self.canvas_widget.artists['HISTOGRAM2D'].ax.inset_axes(
                 [1.05, 0, 0.05, 1]
             )
@@ -1300,18 +1374,95 @@ class PlotterWidget(QWidget):
                 ),
             )
             self.set_colorbar_style(color="white")
-        else:
-            if self.colorbar is not None:
-                self.colorbar.remove()
-                self.colorbar = None
 
-        # Update semicircle plot if it's visible
+    def _remove_colorbar(self):
+        """Remove colorbar if it exists."""
+        if self.colorbar is not None:
+            self.colorbar.remove()
+            self.colorbar = None
+
+    def _update_plot_elements(self):
+        """Update common plot elements like semicircle, axes, etc."""
         if self.toggle_semi_circle:
             self._update_semi_circle_plot(self.canvas_widget.axes)
 
         self._redefine_axes_limits()
         self.canvas_widget.axes.set_aspect(1, adjustable='box')
         self._update_plot_bg_color()
+
+    def plot(self, x_data=None, y_data=None, selection_id_data=None):
+        """Plot the selected phasor features efficiently."""
+        if self._labels_layer_with_phasor_features is None:
+            return
+
+        # Check if we're already updating to prevent infinite recursion
+        if getattr(self, '_updating_plot', False):
+            return
+
+        # Set flag to prevent recursion from canvas events
+        self._updating_plot = True
+
+        if x_data is None or y_data is None:
+            features = self.get_features()
+            if features is None:
+                return
+            x_data, y_data, selection_id_data = features
+
+        if len(x_data) == 0 or len(y_data) == 0:
+            return
+
+        self._set_active_artist_and_plot(
+            self.plot_type, x_data, y_data, selection_id_data
+        )
+
+        self._updating_plot = False
+
+    def refresh_current_plot(self):
+        """Refresh the current plot with existing data."""
+        self.plot()
+
+    def switch_plot_type(self, new_plot_type):
+        """Switch between plot types efficiently."""
+        self._connect_active_artist_signals()
+
+        features = self.get_features()
+        if features is not None:
+            x_data, y_data, selection_id_data = features
+            self._set_active_artist_and_plot(
+                new_plot_type, x_data, y_data, selection_id_data
+            )
+
+    def _set_active_artist_and_plot(
+        self, plot_type, x_data, y_data, selection_id_data=None
+    ):
+        """Set the active artist and update only the relevant plot."""
+        if len(x_data) == 0 or len(y_data) == 0:
+            return
+        if plot_type != self.plot_type:
+            self.plotter_inputs_widget.plot_type_combobox.blockSignals(True)
+            self.plotter_inputs_widget.plot_type_combobox.setCurrentText(
+                plot_type
+            )
+            self.plotter_inputs_widget.plot_type_combobox.blockSignals(False)
+            self._connect_active_artist_signals()
+
+        if plot_type == 'HISTOGRAM2D':
+            self._update_histogram_plot(x_data, y_data, selection_id_data)
+        elif plot_type == 'SCATTER':
+            self._remove_colorbar()
+            self._update_scatter_plot(x_data, y_data, selection_id_data)
+
+        current_active = getattr(self.canvas_widget, 'active_artist', None)
+
+        if (
+            current_active != plot_type
+            and plot_type in self.canvas_widget.artists
+        ):
+            self.canvas_widget.active_artist = plot_type
+        elif plot_type not in self.canvas_widget.artists:
+            return
+
+        self._update_plot_elements()
 
     def set_colorbar_style(self, color="white"):
         """Set the colorbar style in the canvas widget."""

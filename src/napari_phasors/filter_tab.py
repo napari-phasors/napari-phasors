@@ -275,7 +275,6 @@ class FilterWidget(QWidget):
         if (
             not self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
         ):
-            show_error("Please select an image layer with phasor features.")
             return
 
         labels_layer_name = (
