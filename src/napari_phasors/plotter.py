@@ -100,7 +100,9 @@ class PlotterWidget(QWidget):
         canvas_container.setLayout(QVBoxLayout())
 
         # Load canvas widget (fixed at the top)
-        self.canvas_widget = CanvasWidget(napari_viewer)
+        self.canvas_widget = CanvasWidget(
+            napari_viewer, highlight_enabled=False
+        )
         self.canvas_widget.axes.set_aspect(1, adjustable='box')
         self.canvas_widget.setMinimumSize(500, 400)
         self.canvas_widget.class_spinbox.setValue(1)
