@@ -436,7 +436,9 @@ class SelectionWidget(QWidget):
         )
 
         layer_name = f"Selection: {self.selection_id}"
-
+        # replace np.nan with -1 for Labels layer
+        if np.isnan(mapped_data).any():
+            mapped_data = np.nan_to_num(mapped_data, nan=-1).astype(int)
         phasors_selected_layer = Labels(
             mapped_data,
             name=layer_name,
@@ -487,6 +489,8 @@ class SelectionWidget(QWidget):
         mapped_data = map_array(
             input_array, input_array_values, phasors_layer_data
         )
-
+        # replace np.nan with -1 for Labels layer
+        if np.isnan(mapped_data).any():
+            mapped_data = np.nan_to_num(mapped_data, nan=-1).astype(int)
         existing_layer.data = mapped_data
         self._phasors_selected_layer = existing_layer
