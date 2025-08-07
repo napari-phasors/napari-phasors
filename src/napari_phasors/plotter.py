@@ -990,7 +990,7 @@ class PlotterWidget(QWidget):
                 selection_id_data
             )
         else:
-            self.canvas_widget.artists['SCATTER'].color_indices = None
+            self.canvas_widget.artists['SCATTER'].color_indices = np.nan
 
     def _update_histogram_plot(self, x_data, y_data, selection_id_data=None):
         """Update the histogram plot with new data."""
@@ -1030,7 +1030,7 @@ class PlotterWidget(QWidget):
                 selection_id_data
             )
         else:
-            self.canvas_widget.artists['HISTOGRAM2D'].color_indices = None
+            self.canvas_widget.artists['HISTOGRAM2D'].color_indices = np.nan
 
         # Update colorbar for histogram
         self._update_colorbar(selected_histogram_colormap)
