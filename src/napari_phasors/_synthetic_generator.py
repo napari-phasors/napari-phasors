@@ -100,11 +100,11 @@ def make_intensity_layer_with_phasors(
             {
                 "label": pixel_id,
                 # "Average Image": mean_intensity_image.ravel(),
-                "G_original": G_image[i].ravel(),
-                "S_original": S_image[i].ravel(),
+                "G_original": G_image.ravel(),
+                "S_original": S_image.ravel(),
                 "G": G_image.ravel(),
                 "S": S_image.ravel(),
-                "harmonic": harmonic,
+                "harmonic": np.full(len(pixel_id), harmonic),
             }
         )
     labels_data = pixel_id.reshape(mean_intensity_image.shape)
