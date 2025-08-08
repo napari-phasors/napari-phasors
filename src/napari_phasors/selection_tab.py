@@ -184,6 +184,23 @@ class SelectionWidget(QWidget):
                 return layer
         return None
 
+    def _on_show_color_overlay(self, visible: bool):
+        """Slot to show/hide the current phasors_selected_layer."""
+        if self._phasors_selected_layer is not None:
+            self._phasors_selected_layer.visible = visible
+
+    def _connect_show_overlay_signal(self):
+        """Ensure show_color_overlay_signal is connected only to the current layer's visibility."""
+        try:
+            self.parent_widget.canvas_widget.show_color_overlay_signal.disconnect(
+                self._on_show_color_overlay
+            )
+        except (TypeError, RuntimeError):
+            pass
+        self.parent_widget.canvas_widget.show_color_overlay_signal.connect(
+            self._on_show_color_overlay
+        )
+
     def on_selection_id_changed(self):
         """Callback function when the selection id combobox is changed.
 
@@ -230,6 +247,15 @@ class SelectionWidget(QWidget):
                     in self.parent_widget._labels_layer_with_phasor_features.features.columns
                 ):
                     self.create_phasors_selected_layer()
+                else:
+                    # If layer exists, just update the reference
+                    self._phasors_selected_layer = existing_layer
+            else:
+                # If "None" is selected, set phasors_selected_layer to None
+                self._phasors_selected_layer = None
+
+            # Always (re)connect the overlay signal to the current layer
+            self._connect_show_overlay_signal()
 
             processed_selection_id = new_selection_id
 
@@ -452,15 +478,20 @@ class SelectionWidget(QWidget):
             phasors_selected_layer
         )
 
+        # Always (re)connect the overlay signal to the new layer
+        self._connect_show_overlay_signal()
+
     def update_phasors_layer(self):
         """Update the existing phasors layer data without recreating it."""
         if self.parent_widget._labels_layer_with_phasor_features is None:
             return
 
         layer_name = f"Selection: {self.selection_id}"
-        existing_layer = self._find_phasors_layer_by_name(layer_name)
+        existing_phasors_selected_layer = self._find_phasors_layer_by_name(
+            layer_name
+        )
 
-        if existing_layer is None:
+        if existing_phasors_selected_layer is None:
             self.create_phasors_selected_layer()
             return
 
@@ -492,5 +523,5 @@ class SelectionWidget(QWidget):
         # replace np.nan with -1 for Labels layer
         if np.isnan(mapped_data).any():
             mapped_data = np.nan_to_num(mapped_data, nan=-1).astype(int)
-        existing_layer.data = mapped_data
-        self._phasors_selected_layer = existing_layer
+        existing_phasors_selected_layer.data = mapped_data
+        self._phasors_selected_layer = existing_phasors_selected_layer
