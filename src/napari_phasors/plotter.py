@@ -105,7 +105,6 @@ class PlotterWidget(QWidget):
         )
         self.canvas_widget.axes.set_aspect(1, adjustable='box')
         self.canvas_widget.setMinimumSize(500, 400)
-        self.canvas_widget.class_spinbox.setValue(1)
         self.set_axes_labels()
         canvas_container.layout().addWidget(self.canvas_widget)
 
@@ -236,23 +235,6 @@ class PlotterWidget(QWidget):
 
         # Populate labels layer combobox
         self.reset_layer_choices()
-
-        # Connect canvas click event
-        self.canvas_widget.figure.canvas.mpl_connect(
-            'button_press_event', self._on_canvas_click
-        )
-
-    def _on_canvas_click(self, event):
-        """Handle click events on the canvas widget."""
-        if event.inaxes != self.canvas_widget.axes:
-            return None, None
-
-        # Check if the click is on the canvas widget axes
-        if event.button == 1:  # Left click
-            x, y = event.xdata, event.ydata
-            if x is not None and y is not None:
-                return x, y
-        return None, None
 
     def _on_plot_type_changed(self):
         """Callback for plot type change."""
