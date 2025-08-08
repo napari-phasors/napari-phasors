@@ -512,8 +512,16 @@ class SelectionWidget(QWidget):
                 self.parent_widget._labels_layer_with_phasor_features.features[
                     self.selection_id
                 ].values
-            )
-
+            ).copy()
+        valid_rows = (
+            ~self.parent_widget._labels_layer_with_phasor_features.features[
+                "G"
+            ].isna()
+            & ~self.parent_widget._labels_layer_with_phasor_features.features[
+                "S"
+            ].isna()
+        )
+        phasors_layer_data[~valid_rows] = 0
         mapped_data = map_array(
             input_array, input_array_values, phasors_layer_data
         )

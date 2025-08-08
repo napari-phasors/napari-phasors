@@ -286,5 +286,9 @@ class FilterWidget(QWidget):
             size=self.median_filter_spinbox.value(),
             repeat=self.median_filter_repetition_spinbox.value(),
         )
+        # update data in the selected layer
+
+        self.parent_widget.selection_tab.update_phasors_layer()
+        
         if self.parent_widget is not None:
             self.parent_widget.plot()
