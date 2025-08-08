@@ -289,6 +289,6 @@ class FilterWidget(QWidget):
         # update data in the selected layer
 
         self.parent_widget.selection_tab.update_phasors_layer()
-        
+
         if self.parent_widget is not None:
             self.parent_widget.plot()
