@@ -264,6 +264,9 @@ class SelectionWidget(QWidget):
                 self.update_phasor_plot_with_selection_id(
                     processed_selection_id
                 )
+                # update phasor_selected_layer (needed if filtering was applied)
+                if self._phasors_selected_layer is not None:
+                    self.update_phasors_layer()
 
             self._switching_selection_id = False
 
