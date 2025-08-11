@@ -228,6 +228,7 @@ class PlotterWidget(QWidget):
 
         # Connect only the initial active artist
         self._connect_active_artist_signals()
+        self._connect_selector_signals()
 
         # Set the initial plot
         self._redefine_axes_limits()
@@ -783,6 +784,18 @@ class PlotterWidget(QWidget):
     def histogram_log_scale(self, value: bool):
         """Sets the histogram log scale from the histogram log scale checkbox."""
         self.plotter_inputs_widget.log_scale_checkbox.setChecked(value)
+
+    def _enforce_axes_aspect(self):
+        """Ensure the axes aspect is set to 'box' after artist redraws."""
+        self.canvas_widget.active_artist.ax.set_aspect(1, adjustable='box')
+        self.canvas_widget.figure.canvas.draw_idle()
+
+    def _connect_selector_signals(self):
+        """Connect selection applied signal from all selectors to enforce axes aspect."""
+        for selector in self.canvas_widget.selectors.values():
+            selector.selection_applied_signal.connect(
+                self._enforce_axes_aspect
+            )
 
     def _connect_active_artist_signals(self):
         """Connect signals for the currently active artist only."""
