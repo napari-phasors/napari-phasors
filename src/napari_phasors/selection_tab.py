@@ -432,6 +432,8 @@ class SelectionWidget(QWidget):
         """Create the phasors selected layer."""
         if self.parent_widget._labels_layer_with_phasor_features is None:
             return
+        if self.selection_id is None or self.selection_id == "":
+            return
 
         input_array = np.asarray(
             self.parent_widget._labels_layer_with_phasor_features.data
@@ -442,18 +444,11 @@ class SelectionWidget(QWidget):
             ].values
         )
 
-        if self.selection_id is None or self.selection_id == "":
-            phasors_layer_data = np.zeros_like(
-                self.parent_widget._labels_layer_with_phasor_features.features[
-                    "label"
-                ].values
-            )
-        else:
-            phasors_layer_data = np.asarray(
-                self.parent_widget._labels_layer_with_phasor_features.features[
-                    self.selection_id
-                ].values
-            )
+        phasors_layer_data = np.asarray(
+            self.parent_widget._labels_layer_with_phasor_features.features[
+                self.selection_id
+            ].values
+        )
 
         mapped_data = map_array(
             input_array, input_array_values, phasors_layer_data

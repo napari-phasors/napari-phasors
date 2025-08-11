@@ -55,11 +55,13 @@ class FilterWidget(QWidget):
         self.parent_widget._labels_layer_with_phasor_features = None
         self._phasors_selected_layer = None
         self.threshold_factor = 1
-        self.hist_fig, self.hist_ax = plt.subplots(figsize=(8, 4))
-        self.hist_fig.subplots_adjust(
-            top=0.98, bottom=0.2, left=0.05, right=0.98
+        self.hist_fig, self.hist_ax = plt.subplots(
+            figsize=(8, 4), constrained_layout=True
         )
         self.threshold_line = None
+
+        # Style the histogram axes and figure initially
+        self.style_histogram_axes()
 
         # Create UI elements
         self.setup_ui()
@@ -203,26 +205,10 @@ class FilterWidget(QWidget):
             'Median Filter Kernel Size: ' + f'{kernel_value} x {kernel_value}'
         )
 
-    def plot_mean_histogram(self):
-        """Plot the histogram of the mean intensity data as a line plot."""
-        if self.parent_widget._labels_layer_with_phasor_features is None:
-            return
-        labels_layer_name = (
-            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-        )
-        mean_data = (
-            self.viewer.layers[labels_layer_name]
-            .metadata['original_mean']
-            .copy()
-        )
-        self.hist_ax.clear()
-        self.threshold_line = None  # Reset line reference when clearing
-        self.hist_ax.hist(
-            mean_data.flatten(), bins=100, color='white', edgecolor='white'
-        )
+    def style_histogram_axes(self):
+        """Apply consistent styling to the histogram axes and figure."""
         self.hist_ax.patch.set_alpha(0)
         self.hist_fig.patch.set_alpha(0)
-
         for spine in self.hist_ax.spines.values():
             spine.set_color('grey')
             spine.set_linewidth(1)
@@ -240,6 +226,26 @@ class FilterWidget(QWidget):
         self.hist_ax.tick_params(
             axis='y', which='minor', labelsize=7, colors='grey'
         )
+
+    def plot_mean_histogram(self):
+        """Plot the histogram of the mean intensity data as a line plot."""
+        if self.parent_widget._labels_layer_with_phasor_features is None:
+            return
+        labels_layer_name = (
+            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        )
+        mean_data = (
+            self.viewer.layers[labels_layer_name]
+            .metadata['original_mean']
+            .copy()
+        )
+        self.hist_ax.clear()
+        self.threshold_line = None  # Reset line reference when clearing
+        self.hist_ax.hist(
+            mean_data.flatten(), bins=100, color='white', edgecolor='white'
+        )
+        # Apply styling after clearing/plotting
+        self.style_histogram_axes()
 
         # Add the threshold line if slider has a value
         self.update_threshold_line()
@@ -275,6 +281,7 @@ class FilterWidget(QWidget):
         if (
             not self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
         ):
+            show_error("Please select an image layer with phasor features.")
             return
 
         labels_layer_name = (
@@ -286,9 +293,5 @@ class FilterWidget(QWidget):
             size=self.median_filter_spinbox.value(),
             repeat=self.median_filter_repetition_spinbox.value(),
         )
-        # update data in the selected layer
-
-        self.parent_widget.selection_tab.update_phasors_layer()
-
         if self.parent_widget is not None:
             self.parent_widget.plot()

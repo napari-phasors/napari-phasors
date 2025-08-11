@@ -860,9 +860,13 @@ class PlotterWidget(QWidget):
         Labels layer in the metadata of the selected image layer.
         """
         # Temporarily disconnect the signal to prevent double execution
-        self.image_layer_with_phasor_features_combobox.currentIndexChanged.disconnect(
-            self.on_labels_layer_with_phasor_features_changed
-        )
+        try:
+            self.image_layer_with_phasor_features_combobox.currentIndexChanged.disconnect(
+                self.on_labels_layer_with_phasor_features_changed
+            )
+        except TypeError:
+            # Signal wasn't connected, ignore
+            pass
 
         current_text = (
             self.image_layer_with_phasor_features_combobox.currentText()

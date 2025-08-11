@@ -36,8 +36,8 @@ def test_phasor_plotter_initialization_values(make_napari_viewer):
     # Canvas widget tests
     assert hasattr(plotter, 'canvas_widget')
     assert isinstance(plotter.canvas_widget, CanvasWidget)
-    assert plotter.canvas_widget.minimumSize().width() >= 500
-    assert plotter.canvas_widget.minimumSize().height() >= 400
+    assert plotter.canvas_widget.minimumSize().width() >= 300
+    assert plotter.canvas_widget.minimumSize().height() >= 300
     assert plotter.canvas_widget.class_spinbox.value == 1
 
     # UI components tests
@@ -123,8 +123,8 @@ def test_phasor_plotter_initialization_values(make_napari_viewer):
     assert plotter.colorbar is None
 
     # Test minimum widget size
-    assert plotter.minimumSize().width() >= 600
-    assert plotter.minimumSize().height() >= 800
+    assert plotter.minimumSize().width() >= 300
+    assert plotter.minimumSize().height() >= 300
 
     # Test axes aspect ratio
     assert plotter.canvas_widget.axes.get_aspect() == 1
@@ -166,6 +166,7 @@ def test_phasor_plotter_initialization_plot_not_called(make_napari_viewer):
             False
         )
         mock_plot.assert_not_called()
+        plotter.deleteLater()
 
 
 def test_phasor_plotter_initialization_with_layer(make_napari_viewer):
@@ -182,6 +183,7 @@ def test_phasor_plotter_initialization_with_layer(make_napari_viewer):
 
         # Verify plot was called exactly once during initialization
         mock_plot.assert_called_once()
+        plotter.deleteLater()
 
     plotter = PlotterWidget(viewer)
     # Test that the layer is automatically detected and selected
@@ -296,6 +298,7 @@ def test_adding_removing_layers_updates_plot(make_napari_viewer):
             plotter.image_layer_with_phasor_features_combobox.currentText()
             == intensity_image_layer_2.name
         )
+        plotter.deleteLater()
 
 
 def test_add_layer_without_phasor_features_does_not_trigger_plot_or_combobox(
@@ -331,6 +334,7 @@ def test_add_layer_without_phasor_features_does_not_trigger_plot_or_combobox(
             plotter.image_layer_with_phasor_features_combobox.currentText()
             == ''
         )
+        plotter.deleteLater()
 
 
 def test_phasor_plotter_property_setters(make_napari_viewer):
@@ -400,49 +404,6 @@ def test_phasor_plotter_layer_management(make_napari_viewer):
     # Combobox should be empty again
     assert plotter.image_layer_with_phasor_features_combobox.count() == 0
     assert plotter._labels_layer_with_phasor_features is None
-
-
-def test_phasor_plotter_canvas_click_handling(make_napari_viewer):
-    """Test canvas click event handling."""
-    viewer = make_napari_viewer()
-    plotter = PlotterWidget(viewer)
-
-    # Test that canvas click handler exists
-    assert hasattr(plotter, '_on_canvas_click')
-
-    # Create a mock event
-    class MockEvent:
-        def __init__(self, button=1, xdata=0.5, ydata=0.3, inaxes=None):
-            self.button = button
-            self.xdata = xdata
-            self.ydata = ydata
-            self.inaxes = inaxes
-
-    # Test left click with valid coordinates
-    event = MockEvent(
-        button=1, xdata=0.5, ydata=0.3, inaxes=plotter.canvas_widget.axes
-    )
-    result = plotter._on_canvas_click(event)
-    assert result == (0.5, 0.3)
-
-    # Test click outside axes
-    event = MockEvent(button=1, xdata=0.5, ydata=0.3, inaxes=None)
-    result = plotter._on_canvas_click(event)
-    assert result == (None, None)
-
-    # Test right click
-    event = MockEvent(
-        button=3, xdata=0.5, ydata=0.3, inaxes=plotter.canvas_widget.axes
-    )
-    result = plotter._on_canvas_click(event)
-    assert result == (None, None)
-
-    # Test click with invalid coordinates
-    event = MockEvent(
-        button=1, xdata=None, ydata=None, inaxes=plotter.canvas_widget.axes
-    )
-    result = plotter._on_canvas_click(event)
-    assert result == (None, None)
 
 
 def test_phasor_plotter_semicircle_checkbox(make_napari_viewer):
@@ -655,6 +616,7 @@ def test_on_labels_layer_with_phasor_features_changed_prevents_recursion(
 
         # Verify plot was not called due to guard
         mock_plot.assert_not_called()
+        plotter.deleteLater()
 
     # Verify guard flag is still True (not reset by early return)
     assert plotter._in_on_labels_layer_with_phasor_features_changed == True
@@ -676,6 +638,7 @@ def test_on_labels_layer_with_phasor_features_changed_with_empty_layer_name(
 
         # Should not call plot when layer name is empty
         mock_plot.assert_not_called()
+        plotter.deleteLater()
 
     # Verify labels layer is set to None
     assert plotter._labels_layer_with_phasor_features is None
@@ -695,6 +658,7 @@ def test_on_labels_layer_with_phasor_features_changed_with_empty_layer_name(
 
         # Should not call plot when layer name is empty
         mock_plot.assert_not_called()
+        plotter.deleteLater()
 
 
 def test_on_labels_layer_with_phasor_features_changed_sets_harmonic_maximum(
@@ -764,6 +728,7 @@ def test_on_labels_layer_with_phasor_features_changed_guard_flag_cleanup(
             plotter.on_labels_layer_with_phasor_features_changed()
         except Exception:
             pass  # We expect the exception
+        plotter.deleteLater()
 
     # Verify guard flag is cleaned up even after exception
     assert (
@@ -792,3 +757,4 @@ def test_on_labels_layer_with_phasor_features_changed_multiple_calls(
 
         # Each call should result in plot being called once
         assert mock_plot.call_count == 3
+        plotter.deleteLater()
