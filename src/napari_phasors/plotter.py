@@ -139,10 +139,23 @@ class PlotterWidget(QWidget):
         splitter.setStretchFactor(1, 0)  # Controls maintain minimum size
         splitter.setCollapsible(0, False)  # Canvas cannot be collapsed
         splitter.setCollapsible(1, True)  # Controls can be collapsed if needed
+        splitter.setStyleSheet(
+            """
+            QSplitter::handle {
+                background: #414851;         /* default state */
+            }
+            QSplitter::handle:hover {
+                background: #414851;         /* on hover */
+            }
+            QSplitter::handle:pressed {
+                background: #7b8d8e;         /* while dragging */
+            }
+        """
+        )
 
         canvas_container.setMinimumHeight(400)
         controls_container.setMinimumHeight(300)
-        splitter.setSizes([400, 600])
+        splitter.setSizes([800, 400])
 
         # Add a flag to prevent recursive calls
         self._updating_plot = False
