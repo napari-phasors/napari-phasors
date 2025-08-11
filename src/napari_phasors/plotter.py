@@ -104,7 +104,7 @@ class PlotterWidget(QWidget):
             napari_viewer, highlight_enabled=False
         )
         self.canvas_widget.axes.set_aspect(1, adjustable='box')
-        self.canvas_widget.setMinimumSize(500, 400)
+        self.canvas_widget.setMinimumSize(300, 300)
         self.set_axes_labels()
         canvas_container.layout().addWidget(self.canvas_widget)
 
@@ -153,7 +153,7 @@ class PlotterWidget(QWidget):
         """
         )
 
-        canvas_container.setMinimumHeight(400)
+        canvas_container.setMinimumHeight(300)
         controls_container.setMinimumHeight(300)
         splitter.setSizes([800, 400])
 
@@ -172,7 +172,7 @@ class PlotterWidget(QWidget):
             self.plotter_inputs_widget,
         )
         self.settings_tab.layout().addWidget(self.plotter_inputs_widget)
-        self.setMinimumSize(600, 800)
+        self.setMinimumSize(300, 400)
 
         # Create other tabs
         self._create_calibration_tab()
