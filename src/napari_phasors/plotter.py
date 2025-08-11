@@ -242,7 +242,9 @@ class PlotterWidget(QWidget):
         # Connect only the initial active artist
         self._connect_active_artist_signals()
         self._connect_selector_signals()
-        self.canvas_widget.show_color_overlay_signal.connect(self._enforce_axes_aspect)
+        self.canvas_widget.show_color_overlay_signal.connect(
+            self._enforce_axes_aspect
+        )
 
         # Set the initial plot
         self._redefine_axes_limits()
