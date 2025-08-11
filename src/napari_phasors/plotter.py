@@ -242,6 +242,7 @@ class PlotterWidget(QWidget):
         # Connect only the initial active artist
         self._connect_active_artist_signals()
         self._connect_selector_signals()
+        self.canvas_widget.show_color_overlay_signal.connect(self._enforce_axes_aspect)
 
         # Set the initial plot
         self._redefine_axes_limits()
@@ -439,10 +440,7 @@ class PlotterWidget(QWidget):
                 self.canvas_widget.axes, visible=False
             )
             self._update_polar_plot(self.canvas_widget.axes)
-        self.canvas_widget.axes.set_aspect(1, adjustable='box')
-        self._redefine_axes_limits()
-        # Force canvas redraw
-        self.canvas_widget.figure.canvas.draw_idle()
+        self._enforce_axes_aspect()
 
     def on_toggle_semi_circle(self, state):
         """Callback function when the semi circle checkbox is toggled.
@@ -800,6 +798,7 @@ class PlotterWidget(QWidget):
 
     def _enforce_axes_aspect(self):
         """Ensure the axes aspect is set to 'box' after artist redraws."""
+        self._redefine_axes_limits()
         self.canvas_widget.active_artist.ax.set_aspect(1, adjustable='box')
         self.canvas_widget.figure.canvas.draw_idle()
 
@@ -1074,8 +1073,7 @@ class PlotterWidget(QWidget):
         if self.toggle_semi_circle:
             self._update_semi_circle_plot(self.canvas_widget.axes)
 
-        self._redefine_axes_limits()
-        self.canvas_widget.axes.set_aspect(1, adjustable='box')
+        self._enforce_axes_aspect()
         self._update_plot_bg_color()
 
     def plot(self, x_data=None, y_data=None, selection_id_data=None):
