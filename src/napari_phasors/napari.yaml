@@ -27,9 +27,6 @@ contributions:
     - id: napari-phasors.PhasorTransform
       python_name: napari_phasors:PhasorTransform
       title: Phasor Custom Import
-    - id: napari-phasors.CalibrationWidget
-      python_name: napari_phasors:CalibrationWidget
-      title: Calibration Widget
     - id: napari-phasors.WriterWidget
       python_name: napari_phasors:WriterWidget
       title: Export Phasor
@@ -58,8 +55,6 @@ contributions:
   widgets:
     - command: napari-phasors.PhasorTransform
       display_name: Phasor Custom Import
-    - command: napari-phasors.CalibrationWidget
-      display_name: Calibration Widget
     - command: napari-phasors.plot_phasor
       display_name: Phasor Plot
     - command: napari-phasors.LifetimeWidget

@@ -25,7 +25,7 @@ from qtpy.QtWidgets import (
 
 from .filter_tab import FilterWidget
 
-# from .calibration_tab import CalibrationWidget
+from .calibration_tab import CalibrationWidget
 # from .components_tab import ComponentsWidget
 from .selection_tab import SelectionWidget
 
@@ -312,19 +312,11 @@ class PlotterWidget(QWidget):
 
     def _create_calibration_tab(self):
         """Create the Calibration tab."""
-        # self.calibration_tab = CalibrationWidget(self.viewer, parent=self)
-        # self.tab_widget.addTab(self.calibration_tab, "Calibration")
-
-        # self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
-        #     self.calibration_tab._on_image_layer_changed
-        # )
-
-        # Placeholder for future calibration tab implementation
-        self.calibration_tab = QWidget()
-        self.calibration_tab.setLayout(QVBoxLayout())
+        self.calibration_tab = CalibrationWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.calibration_tab, "Calibration")
-        self.calibration_tab.layout().addWidget(
-            QLabel("Calibration widget will be implemented here.")
+
+        self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
+            self.calibration_tab._on_image_layer_changed
         )
 
     def _create_filter_tab(self):

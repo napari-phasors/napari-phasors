@@ -10,7 +10,6 @@ from ._sample_data import (
     paramecium_HSI_sample_data,
 )
 from ._widget import (
-    CalibrationWidget,
     LifetimeWidget,
     PhasorTransform,
     WriterWidget,
@@ -26,7 +25,6 @@ __all__ = (
     "paramecium_HSI_sample_data",
     "PhasorTransform",
     "PlotterWidget",
-    "CalibrationWidget",
     "WriterWidget",
     "LifetimeWidget",
 )
