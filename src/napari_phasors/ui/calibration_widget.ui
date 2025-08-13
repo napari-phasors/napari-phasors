@@ -14,52 +14,42 @@
    <string>Form</string>
   </property>
   <layout class="QGridLayout" name="gridLayout">
-   <item row="0" column="0">
-    <widget class="QLabel" name="sample_layer_label_widget">
-     <property name="text">
-      <string>Sample Layer:</string>
-     </property>
-    </widget>
-   </item>
    <item row="1" column="0">
-    <widget class="QLabel" name="calibration_layer_label_widget">
-     <property name="text">
-      <string>Calibration Layer:</string>
-     </property>
-    </widget>
-   </item>
-   <item row="1" column="1" colspan="2">
-    <widget class="QComboBox" name="calibration_layer_combobox"/>
-   </item>
-   <item row="2" column="0">
     <widget class="QLabel" name="frequency_label_widget">
      <property name="text">
       <string>Frequency (MHz):</string>
      </property>
     </widget>
    </item>
-   <item row="2" column="1" colspan="2">
-    <widget class="QLineEdit" name="frequency_line_edit_widget"/>
-   </item>
-   <item row="3" column="0">
+   <item row="2" column="0">
     <widget class="QLabel" name="lifetime_label_widget">
      <property name="text">
       <string>Lifetime (ns):</string>
      </property>
     </widget>
    </item>
-   <item row="3" column="1" colspan="2">
+   <item row="0" column="0">
+    <widget class="QLabel" name="calibration_layer_label_widget">
+     <property name="text">
+      <string>Calibration Layer:</string>
+     </property>
+    </widget>
+   </item>
+   <item row="2" column="1" colspan="2">
     <widget class="QLineEdit" name="lifetime_line_edit_widget"/>
    </item>
-   <item row="0" column="1" colspan="2">
-    <widget class="QComboBox" name="sample_layer_combobox"/>
-   </item>
-   <item row="4" column="1">
+   <item row="3" column="1">
     <widget class="QPushButton" name="calibrate_push_button">
      <property name="text">
       <string>Calibrate</string>
      </property>
     </widget>
+   </item>
+   <item row="1" column="1" colspan="2">
+    <widget class="QLineEdit" name="frequency_input"/>
+   </item>
+   <item row="0" column="1" colspan="2">
+    <widget class="QComboBox" name="calibration_layer_combobox"/>
    </item>
   </layout>
  </widget>

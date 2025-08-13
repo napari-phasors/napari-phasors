@@ -349,7 +349,7 @@ def test_filter_widget_apply_button_with_layer(make_napari_viewer):
     filter_widget = parent.filter_tab
 
     # Set some values
-    filter_widget.threshold_slider.setValue(50)
+    filter_widget.threshold_slider.setValue(10)
     filter_widget.median_filter_spinbox.setValue(5)
     filter_widget.median_filter_repetition_spinbox.setValue(2)
 
@@ -366,7 +366,7 @@ def test_filter_widget_apply_button_with_layer(make_napari_viewer):
         # Check that apply_filter_and_threshold was called with correct parameters
         mock_apply.assert_called_once_with(
             intensity_image_layer,
-            threshold=50
+            threshold=10
             / filter_widget.threshold_factor,  # slider value / threshold factor
             size=5,
             repeat=2,
@@ -383,7 +383,7 @@ def test_filter_widget_layer_with_settings(make_napari_viewer):
 
     # Add metadata with settings
     intensity_image_layer.metadata["settings"] = {
-        "threshold": 0.7,
+        "threshold": 0.3,
         "filter": {"size": 7, "repeat": 3},
     }
     viewer.add_layer(intensity_image_layer)
@@ -394,7 +394,7 @@ def test_filter_widget_layer_with_settings(make_napari_viewer):
     # Check that settings are loaded correctly
     assert (
         filter_widget.threshold_slider.value()
-        == 0.7 * filter_widget.threshold_factor
+        == 0.3 * filter_widget.threshold_factor
     )
     assert filter_widget.median_filter_spinbox.value() == 7
     assert filter_widget.median_filter_repetition_spinbox.value() == 3

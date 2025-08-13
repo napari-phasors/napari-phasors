@@ -5,7 +5,6 @@ import numpy as np
 import pandas as pd
 from phasorpy.datasets import fetch
 from phasorpy.phasor import (
-    phasor_calibrate,
     phasor_from_signal,
     phasor_threshold,
     phasor_to_apparent_lifetime,
@@ -19,7 +18,6 @@ from napari_phasors._synthetic_generator import (
 )
 from napari_phasors._widget import (
     AdvancedOptionsWidget,
-    CalibrationWidget,
     FbdWidget,
     LifetimeWidget,
     LsmWidget,
@@ -351,151 +349,6 @@ def test_phasor_transform_lsm_widget(make_napari_viewer):
     )
     assert phasor_data.shape == (262144, 6)
     assert phasor_data["harmonic"].unique().tolist() == [2]
-
-
-def test_calibration_widget(make_napari_viewer):
-    """Test the CalibrationWidget class."""
-    # Create a synthetic FLIM data and an intensity image layer with phasors
-    raw_flim_data = make_raw_flim_data()
-    harmonic = [1, 2, 3]
-    sample_image_layer = make_intensity_layer_with_phasors(
-        raw_flim_data, harmonic=harmonic
-    )
-    # Create a synthetic calibration FLIM data and an calibration image layer
-    raw_calibration_flim_data = make_raw_flim_data(
-        shape=(2, 5), time_constants=[0.02, 0.2, 0.4, 1, 2, 4, 10, 20, 40, 100]
-    )
-    calibration_image_layer = make_intensity_layer_with_phasors(
-        raw_calibration_flim_data, harmonic=harmonic
-    )
-    # Intialize viewer and add intensity image layer with phasors data
-    viewer = make_napari_viewer()
-    main_widget = CalibrationWidget(viewer)
-    with patch("napari_phasors._widget.show_error") as mock_show_error:
-        main_widget.calibration_widget.calibrate_push_button.click()
-        mock_show_error.assert_called_once_with(
-            "Select sample and calibration layers"
-        )
-    viewer.add_layer(sample_image_layer)
-    viewer.add_layer(calibration_image_layer)
-    original_phasors_table = sample_image_layer.metadata[
-        "phasor_features_labels_layer"
-    ].features
-    original_mean = sample_image_layer.metadata["original_mean"]
-    original_real = np.reshape(
-        original_phasors_table["G_original"],
-        (len(harmonic),) + original_mean.data.shape,
-    )
-    original_imag = np.reshape(
-        original_phasors_table["S_original"],
-        (len(harmonic),) + original_mean.data.shape,
-    )
-    calibration_phasors_table = calibration_image_layer.metadata[
-        "phasor_features_labels_layer"
-    ].features
-    calibration_real = np.reshape(
-        calibration_phasors_table["G_original"],
-        (len(harmonic),) + original_mean.data.shape,
-    )
-    calibration_imag = np.reshape(
-        calibration_phasors_table["S_original"],
-        (len(harmonic),) + original_mean.data.shape,
-    )
-    calibration_mean = calibration_image_layer.metadata["original_mean"]
-    sample_phasors_table = (
-        viewer.layers[0].metadata["phasor_features_labels_layer"].features
-    )
-    pd.testing.assert_frame_equal(original_phasors_table, sample_phasors_table)
-    # Check init calibration widget
-    assert (
-        main_widget.calibration_widget.frequency_line_edit_widget.text() == ""
-    )
-    assert (
-        main_widget.calibration_widget.lifetime_line_edit_widget.text() == ""
-    )
-    assert "calibrated" not in viewer.layers[0].metadata.keys()
-    assert "calibrated" not in viewer.layers[1].metadata.keys()
-    sample_layer_combobox_items = [
-        main_widget.calibration_widget.sample_layer_combobox.itemText(i)
-        for i in range(
-            main_widget.calibration_widget.sample_layer_combobox.count()
-        )
-    ]
-    assert sample_image_layer.name in sample_layer_combobox_items
-    assert calibration_image_layer.name in sample_layer_combobox_items
-    calibration_layer_combobox_items = [
-        main_widget.calibration_widget.calibration_layer_combobox.itemText(i)
-        for i in range(
-            main_widget.calibration_widget.calibration_layer_combobox.count()
-        )
-    ]
-    assert calibration_image_layer.name in calibration_layer_combobox_items
-    assert sample_image_layer.name in calibration_layer_combobox_items
-    with patch("napari_phasors._widget.show_error") as mock_show_error:
-        main_widget.calibration_widget.calibrate_push_button.click()
-        mock_show_error.assert_called_once_with("Enter frequency")
-    with patch("napari_phasors._widget.show_error") as mock_show_error:
-        main_widget.calibration_widget.frequency_line_edit_widget.setText("80")
-        main_widget.calibration_widget.calibrate_push_button.click()
-        mock_show_error.assert_called_once_with("Enter reference lifetime")
-    # Modify comboboxes selection, frequency and lifetime and calibrate
-    main_widget.calibration_widget.sample_layer_combobox.setCurrentIndex(0)
-    assert (
-        main_widget.calibration_widget.sample_layer_combobox.currentText()
-        == sample_image_layer.name
-    )
-    main_widget.calibration_widget.calibration_layer_combobox.setCurrentIndex(
-        1
-    )
-    assert (
-        main_widget.calibration_widget.calibration_layer_combobox.currentText()
-        == calibration_image_layer.name
-    )
-    main_widget.calibration_widget.frequency_line_edit_widget.setText("80")
-    assert (
-        main_widget.calibration_widget.frequency_line_edit_widget.text()
-        == "80"
-    )
-    main_widget.calibration_widget.lifetime_line_edit_widget.setText("2")
-    assert (
-        main_widget.calibration_widget.lifetime_line_edit_widget.text() == "2"
-    )
-    with patch("napari_phasors._widget.show_info") as mock_show_info:
-        main_widget.calibration_widget.calibrate_push_button.click()
-        sample_name = (
-            main_widget.calibration_widget.sample_layer_combobox.currentText()
-        )
-        mock_show_info.assert_called_once_with(f"Calibrated {sample_name}")
-    # Check if the calibration was successful
-    assert viewer.layers[0].metadata["settings"]["calibrated"] is True
-    # TODO: check 'calibration_phase' and 'calibration_modulation' values
-    calibrated_real = np.reshape(
-        viewer.layers[0]
-        .metadata["phasor_features_labels_layer"]
-        .features["G_original"],
-        (len(harmonic),) + original_mean.data.shape,
-    )
-    calibrated_imag = np.reshape(
-        viewer.layers[0]
-        .metadata["phasor_features_labels_layer"]
-        .features["S_original"],
-        (len(harmonic),) + original_mean.data.shape,
-    )
-    expected_real, expected_imag = phasor_calibrate(
-        original_real,
-        original_imag,
-        calibration_mean,
-        calibration_real,
-        calibration_imag,
-        frequency=80,
-        lifetime=2,
-        harmonic=harmonic,
-    )
-    assert np.allclose(calibrated_real, expected_real)
-    assert np.allclose(calibrated_imag, expected_imag)
-    with patch("napari_phasors._widget.show_error") as mock_show_error:
-        main_widget.calibration_widget.calibrate_push_button.click()
-        mock_show_error.assert_called_once_with("Layer already calibrated")
 
 
 def test_writer_widget(make_napari_viewer, tmp_path):

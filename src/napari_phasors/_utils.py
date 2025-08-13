@@ -8,6 +8,7 @@ import warnings
 import numpy as np
 from napari.layers import Image
 from phasorpy.phasor import phasor_filter_median, phasor_threshold
+from qtpy.QtWidgets import QWidget
 
 
 def apply_filter_and_threshold(
@@ -99,3 +100,21 @@ def colormap_to_dict(colormap, num_colors=10, exclude_first=True):
         color_dict[i + 1 - start] = color
     color_dict[None] = (0, 0, 0, 0)
     return color_dict
+
+
+def update_frequency_in_metadata(
+    parent_widget: QWidget,
+    frequency: float,
+):
+    """Update the frequency in the layer metadata."""
+    layer = parent_widget.viewer.layers[
+        parent_widget.image_layer_with_phasor_features_combobox.currentText()
+    ]
+    if "settings" not in layer.metadata.keys():
+        layer.metadata["settings"] = {}
+    layer.metadata["settings"]["frequency"] = frequency
+    parent_widget.calibration_tab.calibration_widget.frequency_input.setText(
+        str(frequency)
+    )
+    # parent_widget.lifetime_tab.frequency_input.setText(str(frequency))
+    # parent_widget.fret_tab.frequency_input.setText(str(frequency))

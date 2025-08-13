@@ -9,12 +9,7 @@ from ._sample_data import (
     embryo_FLIM_sample_data,
     paramecium_HSI_sample_data,
 )
-from ._widget import (
-    CalibrationWidget,
-    LifetimeWidget,
-    PhasorTransform,
-    WriterWidget,
-)
+from ._widget import LifetimeWidget, PhasorTransform, WriterWidget
 from ._writer import write_ome_tiff
 from .plotter import PlotterWidget
 
@@ -26,7 +21,6 @@ __all__ = (
     "paramecium_HSI_sample_data",
     "PhasorTransform",
     "PlotterWidget",
-    "CalibrationWidget",
     "WriterWidget",
     "LifetimeWidget",
 )
