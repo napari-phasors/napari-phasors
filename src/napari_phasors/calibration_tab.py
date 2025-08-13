@@ -24,6 +24,7 @@ class CalibrationWidget(QWidget):
     """Widget to calibrate a FLIM image layer using a calibration image."""
 
     def __init__(self, viewer: "napari.viewer.Viewer", parent=None):
+        """Initialize the calibration widget."""
         super().__init__()
         self.viewer = viewer
         self.parent_widget = parent
@@ -60,6 +61,7 @@ class CalibrationWidget(QWidget):
         self.setLayout(mainLayout)
 
     def _populate_comboboxes(self):
+        """Populate calibration layer combobox with image layers."""
         self.calibration_widget.calibration_layer_combobox.clear()
         image_layers = [
             layer for layer in self.viewer.layers if isinstance(layer, Image)
@@ -70,6 +72,7 @@ class CalibrationWidget(QWidget):
             )
 
     def _on_image_layer_changed(self):
+        """Handle changes to the image layer selection."""
         layer_name = (
             self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
         )
@@ -106,6 +109,7 @@ class CalibrationWidget(QWidget):
             self.calibration_widget.calibrate_push_button.setText("Calibrate")
 
     def _on_click(self):
+        """Handle calibration button click."""
         sample_name = (
             self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
         )
@@ -172,7 +176,8 @@ class CalibrationWidget(QWidget):
         if "settings" not in sample_metadata.keys():
             sample_metadata["settings"] = {}
 
-        real, imag = phasor_calibrate(
+        # Perform calibration
+        real_original, imag_original = phasor_calibrate(
             np.reshape(
                 sample_phasor_data["G_original"],
                 (len(harmonics),) + original_mean_shape,
@@ -188,32 +193,52 @@ class CalibrationWidget(QWidget):
             lifetime=lifetime,
             harmonic=harmonics.tolist(),
         )
-        sample_phasor_data["G_original"] = real.flatten()
-        sample_phasor_data["S_original"] = imag.flatten()
+        real, imag = phasor_calibrate(
+            np.reshape(
+                sample_phasor_data["G"],
+                (len(harmonics),) + original_mean_shape,
+            ),
+            np.reshape(
+                sample_phasor_data["S"],
+                (len(harmonics),) + original_mean_shape,
+            ),
+            calibration_mean,
+            calibration_g,
+            calibration_s,
+            frequency=frequency,
+            lifetime=lifetime,
+            harmonic=harmonics.tolist(),
+        )
+        sample_phasor_data["G_original"] = real_original.flatten()
+        sample_phasor_data["S_original"] = imag_original.flatten()
         sample_phasor_data["G"] = real.flatten()
         sample_phasor_data["S"] = imag.flatten()
         sample_metadata["settings"]["calibrated"] = True
-        calibration_phase, calibration_modulation = (
-            polar_from_reference_phasor(
-                *phasor_center(calibration_mean, calibration_g, calibration_s)[
-                    1:
-                ],
-                *phasor_from_lifetime(frequency, lifetime),
-            )
+
+        # First calculate the correction values manually to store them
+        _, measured_re, measured_im = phasor_center(
+            calibration_mean,
+            calibration_g,
+            calibration_s,
         )
-        sample_metadata["settings"]["calibration_phase"] = float(
-            calibration_phase[0]
+
+        known_re, known_im = phasor_from_lifetime(
+            frequency * harmonics, lifetime
         )
-        sample_metadata["settings"]["calibration_modulation"] = float(
-            calibration_modulation[0]
+
+        # Get the phase and modulation correction values
+        phi_zero, mod_zero = polar_from_reference_phasor(
+            measured_re, measured_im, known_re, known_im
         )
+        sample_metadata["settings"]["calibration_phase"] = phi_zero
+        sample_metadata["settings"]["calibration_modulation"] = mod_zero
 
         show_info(f"Calibrated {sample_name}")
         self._update_button_state()  # Update button text after calibration
         self.parent_widget.plot()
 
     def _uncalibrate_layer(self, sample_name):
-        """Uncalibrate a layer - placeholder for your implementation."""
+        """Uncalibrate a layer."""
         if sample_name == "":
             return
         sample_metadata = self.viewer.layers[sample_name].metadata
@@ -233,18 +258,25 @@ class CalibrationWidget(QWidget):
             show_error("Layer is not calibrated")
             return
 
+        harmonics = np.unique(sample_phasor_data["harmonic"])
+        original_mean_shape = sample_metadata["original_mean"].shape
+        axis = None
+        if len(harmonics) > 1:
+            # axis is all dimensions except the first one
+            axis = tuple(range(1, len(original_mean_shape) + 1))
+
         # Reset phasor features
         if np.ndim(phi_zero) > 0:
             np.negative(phi_zero, out=phi_zero)
             np.reciprocal(mod_zero, out=mod_zero)
+            if axis is not None:
+                phi_zero = np.expand_dims(phi_zero, axis=axis)
+                mod_zero = np.expand_dims(mod_zero, axis=axis)
         else:
             phi_zero = -phi_zero
             mod_zero = 1.0 / mod_zero
 
-        harmonics = np.unique(sample_phasor_data["harmonic"])
-        original_mean_shape = sample_metadata["original_mean"].shape
-
-        real, imag = phasor_transform(
+        real_original, imag_original = phasor_transform(
             np.reshape(
                 sample_phasor_data["G_original"],
                 (len(harmonics),) + original_mean_shape,
@@ -256,9 +288,21 @@ class CalibrationWidget(QWidget):
             phi_zero,
             mod_zero,
         )
+        real, imag = phasor_transform(
+            np.reshape(
+                sample_phasor_data["G"],
+                (len(harmonics),) + original_mean_shape,
+            ),
+            np.reshape(
+                sample_phasor_data["S"],
+                (len(harmonics),) + original_mean_shape,
+            ),
+            phi_zero,
+            mod_zero,
+        )
 
-        sample_phasor_data["G_original"] = real.flatten()
-        sample_phasor_data["S_original"] = imag.flatten()
+        sample_phasor_data["G_original"] = real_original.flatten()
+        sample_phasor_data["S_original"] = imag_original.flatten()
         sample_phasor_data["G"] = real.flatten()
         sample_phasor_data["S"] = imag.flatten()
 

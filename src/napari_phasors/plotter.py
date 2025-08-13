@@ -23,9 +23,9 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from .calibration_tab import CalibrationWidget
 from .filter_tab import FilterWidget
 
-from .calibration_tab import CalibrationWidget
 # from .components_tab import ComponentsWidget
 from .selection_tab import SelectionWidget
 
