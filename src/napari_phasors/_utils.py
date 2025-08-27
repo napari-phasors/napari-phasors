@@ -4,12 +4,12 @@ This module contains utility functions used by other modules.
 """
 
 import warnings
+from typing import TYPE_CHECKING
 
 import numpy as np
 from napari.layers import Image
 from phasorpy.phasor import phasor_filter_median, phasor_threshold
 from qtpy.QtWidgets import QWidget
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import napari
