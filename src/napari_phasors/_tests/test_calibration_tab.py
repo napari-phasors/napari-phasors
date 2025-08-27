@@ -454,21 +454,5 @@ def test_on_image_layer_changed_with_frequency(make_napari_viewer):
     test_layer.metadata["settings"] = {"frequency": 80}
     viewer.add_layer(test_layer)
 
-    widget._on_image_layer_changed()
+    parent._sync_frequency_inputs_from_metadata()
     assert widget.calibration_widget.frequency_input.text() == "80"
-
-
-def test_on_image_layer_changed_no_layer(make_napari_viewer):
-    """Test _on_image_layer_changed with no layer selected."""
-    viewer = make_napari_viewer()
-    parent = PlotterWidget(viewer)
-    parent.image_layer_with_phasor_features_combobox = Mock()
-    parent.image_layer_with_phasor_features_combobox.currentText.return_value = (
-        ""
-    )
-
-    widget = parent.calibration_tab
-
-    # Should return early without error
-    result = widget._on_image_layer_changed()
-    assert result is None

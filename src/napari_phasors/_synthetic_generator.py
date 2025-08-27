@@ -75,7 +75,7 @@ def make_intensity_layer_with_phasors(
     from phasorpy.phasor import phasor_from_signal
 
     if harmonic is None:
-        harmonic = 1
+        harmonic = [1]
     mean_intensity_image, G_image, S_image = phasor_from_signal(
         raw_flim_data, axis=axis, harmonic=harmonic
     )

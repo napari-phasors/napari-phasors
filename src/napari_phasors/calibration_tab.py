@@ -71,22 +71,6 @@ class CalibrationWidget(QWidget):
                 layer.name
             )
 
-    def _on_image_layer_changed(self):
-        """Handle changes to the image layer selection."""
-        layer_name = (
-            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-        )
-        if layer_name == "":
-            return
-        layer_metadata = self.viewer.layers[layer_name].metadata
-        if (
-            'settings' in layer_metadata.keys()
-            and 'frequency' in layer_metadata['settings'].keys()
-        ):
-            self.calibration_widget.frequency_input.setText(
-                str(layer_metadata['settings']['frequency'])
-            )
-
     def _update_button_state(self):
         """Update button text and state based on current layer's calibration status."""
         sample_name = (
@@ -120,7 +104,9 @@ class CalibrationWidget(QWidget):
             show_error("Select sample and calibration layers")
             return
 
-        sample_metadata = self.viewer.layers[sample_name].metadata
+        sample_layer = self.viewer.layers[sample_name]
+        sample_metadata = sample_layer.metadata
+        calibration_layer = self.viewer.layers[calibration_name]
 
         # Check if layer is already calibrated
         if (
@@ -144,21 +130,17 @@ class CalibrationWidget(QWidget):
             show_error("Enter reference lifetime")
             return
         frequency = float(frequency)
-        update_frequency_in_metadata(self.parent_widget, frequency)
+        update_frequency_in_metadata(sample_layer, frequency)
         lifetime = float(lifetime)
         sample_phasor_data = sample_metadata[
             "phasor_features_labels_layer"
         ].features
         harmonics = np.unique(sample_phasor_data["harmonic"])
         original_mean_shape = sample_metadata["original_mean"].shape
-        calibration_phasor_data = (
-            self.viewer.layers[calibration_name]
-            .metadata["phasor_features_labels_layer"]
-            .features
-        )
-        calibration_mean = self.viewer.layers[calibration_name].metadata[
-            "original_mean"
-        ]
+        calibration_phasor_data = calibration_layer.metadata[
+            "phasor_features_labels_layer"
+        ].features
+        calibration_mean = calibration_layer.metadata["original_mean"]
         calibration_harmonics = np.unique(calibration_phasor_data["harmonic"])
         if not np.array_equal(harmonics, calibration_harmonics):
             show_error(

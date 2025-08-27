@@ -118,58 +118,22 @@ def test_colormap_to_dict():
 
 def test_update_frequency_in_metadata(make_napari_viewer):
     """Test update_frequency_in_metadata function."""
-    # Create a mock widget structure
-    mock_widget = Mock(spec=QWidget)
+    # Create a test image layer
+    raw_flim_data = make_raw_flim_data(n_time_bins=10)
+    intensity_layer = make_intensity_layer_with_phasors(raw_flim_data)
 
-    # Create a real viewer and layer
-    viewer = make_napari_viewer()
-    raw_flim_data = make_raw_flim_data(shape=(5, 5))
-    intensity_layer = make_intensity_layer_with_phasors(
-        raw_flim_data, harmonic=[1, 2]
-    )
-    viewer.add_layer(intensity_layer)
-
-    # Setup mock widget with viewer
-    mock_widget.viewer = viewer
-
-    # Mock the combobox
-    mock_combobox = Mock(spec=QComboBox)
-    mock_combobox.currentText.return_value = intensity_layer.name
-    mock_widget.image_layer_with_phasor_features_combobox = mock_combobox
-
-    # Mock the calibration tab and frequency input
-    mock_calibration_tab = Mock()
-    mock_calibration_widget = Mock()
-    mock_frequency_input = Mock(spec=QLineEdit)
-    mock_calibration_widget.frequency_input = mock_frequency_input
-    mock_calibration_tab.calibration_widget = mock_calibration_widget
-    mock_widget.calibration_tab = mock_calibration_tab
-
-    # Test updating frequency
+    # Test updating frequency when no settings exist
     test_frequency = 80.0
-
-    # Ensure layer has no settings initially
     if "settings" in intensity_layer.metadata:
         del intensity_layer.metadata["settings"]
-
-    update_frequency_in_metadata(mock_widget, test_frequency)
-
-    # Check that settings were created and frequency was set
+    update_frequency_in_metadata(intensity_layer, test_frequency)
     assert "settings" in intensity_layer.metadata
     assert "frequency" in intensity_layer.metadata["settings"]
     assert intensity_layer.metadata["settings"]["frequency"] == test_frequency
 
-    # Check that the frequency input was updated
-    mock_frequency_input.setText.assert_called_once_with(str(test_frequency))
-
     # Test updating frequency when settings already exist
     intensity_layer.metadata["settings"]["existing_setting"] = "test"
-    mock_frequency_input.reset_mock()
-
     new_frequency = 120.0
-    update_frequency_in_metadata(mock_widget, new_frequency)
-
-    # Check that frequency was updated and existing settings preserved
+    update_frequency_in_metadata(intensity_layer, new_frequency)
     assert intensity_layer.metadata["settings"]["frequency"] == new_frequency
     assert intensity_layer.metadata["settings"]["existing_setting"] == "test"
-    mock_frequency_input.setText.assert_called_once_with(str(new_frequency))
