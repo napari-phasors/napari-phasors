@@ -30,9 +30,6 @@ contributions:
     - id: napari-phasors.WriterWidget
       python_name: napari_phasors:WriterWidget
       title: Export Phasor
-    - id: napari-phasors.LifetimeWidget
-      python_name: napari_phasors:LifetimeWidget
-      title: Plot lifetime image
   readers:
     - command: napari-phasors.get_reader
       accepts_directories: false
@@ -57,8 +54,6 @@ contributions:
       display_name: Phasor Custom Import
     - command: napari-phasors.plot_phasor
       display_name: Phasor Plot
-    - command: napari-phasors.LifetimeWidget
-      display_name: Lifetime Widget
     - command: napari-phasors.WriterWidget
       display_name: Export Phasor
 
@@ -76,9 +71,9 @@ contributions:
     phasor_plot_submenu:
       - command: napari-phasors.plot_phasor
     calibration_submenu:
-      - command: napari-phasors.CalibrationWidget
+      - command: napari-phasors.plot_phasor
     lifetimes_submenu:
-      - command: napari-phasors.LifetimeWidget
+      - command: napari-phasors.plot_phasor
     io_phasors_submenu:
       - command: napari-phasors.PhasorTransform
       - command: napari-phasors.WriterWidget
