@@ -133,7 +133,9 @@ class CalibrationWidget(QWidget):
         )
 
         if not np.array_equal(harmonics, calibration_harmonics):
-            show_error("Harmonics in sample and calibration layers do not match")
+            show_error(
+                "Harmonics in sample and calibration layers do not match"
+            )
             return
 
         # Calculate calibration parameters
@@ -145,7 +147,7 @@ class CalibrationWidget(QWidget):
             harmonics,
             lifetime,
         )
-        
+
         # Store calibration parameters
         settings = sample_layer.metadata.setdefault("settings", {})
         settings["calibration_phase"] = phi_zero
@@ -296,7 +298,9 @@ class CalibrationWidget(QWidget):
     def _apply_phasor_transformation(self, sample_name, phi_zero, mod_zero):
         """Apply phasor transformation with given correction parameters."""
         sample_metadata = self.viewer.layers[sample_name].metadata
-        sample_phasor_data = sample_metadata["phasor_features_labels_layer"].features
+        sample_phasor_data = sample_metadata[
+            "phasor_features_labels_layer"
+        ].features
         harmonics = np.unique(sample_phasor_data["harmonic"])
         original_mean_shape = sample_metadata["original_mean"].shape
 
