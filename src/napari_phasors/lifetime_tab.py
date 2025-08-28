@@ -358,6 +358,7 @@ class LifetimeWidget(QWidget):
         flattened_data = self.lifetime_data.flatten()
         flattened_data = flattened_data[~np.isnan(flattened_data)]
         flattened_data = flattened_data[flattened_data > 0]
+        flattened_data = flattened_data[np.isfinite(flattened_data)]
 
         if len(flattened_data) == 0:
             self.hist_ax.clear()
