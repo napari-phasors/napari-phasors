@@ -8,7 +8,10 @@ from matplotlib.backends.backend_qt5agg import (
 from matplotlib.colors import LinearSegmentedColormap
 from napari.layers import Image
 from napari.utils.notifications import show_error
-from phasorpy.phasor import phasor_to_apparent_lifetime, phasor_to_normal_lifetime
+from phasorpy.phasor import (
+    phasor_to_apparent_lifetime,
+    phasor_to_normal_lifetime,
+)
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QDoubleValidator
 from qtpy.QtWidgets import (
@@ -44,7 +47,9 @@ class LifetimeWidget(QWidget):
         self.lifetime_colormap = None
         self.colormap_contrast_limits = None
         self.lifetime_type = None
-        self.hist_fig, self.hist_ax = plt.subplots(figsize=(8, 4), constrained_layout=True)
+        self.hist_fig, self.hist_ax = plt.subplots(
+            figsize=(8, 4), constrained_layout=True
+        )
         self.counts = None
         self.bin_edges = None
         self.bin_centers = None
@@ -52,6 +57,9 @@ class LifetimeWidget(QWidget):
             1000  # Factor to convert to integer for slider
         )
         self._slider_being_dragged = False  # Track drag state
+        self._updating_contrast_limits = (
+            False  # Flag to track contrast limits updates
+        )
 
         # Style the histogram axes and figure initially
         self.style_histogram_axes()
@@ -80,16 +88,23 @@ class LifetimeWidget(QWidget):
         self.frequency_input.setValidator(QDoubleValidator())
         self.main_layout.addWidget(self.frequency_input)
 
-        # Add combobox to select between phase or modulation apparent lifetime
-        self.main_layout.addWidget(
-            QLabel("Select lifetime to display: ")
-        )
+        # Add combobox to select lifetime type
+        self.main_layout.addWidget(QLabel("Select lifetime to display: "))
         self.lifetime_type_combobox = QComboBox()
-        self.lifetime_type_combobox.addItems(["None", "Apparent Phase Lifetime", "Apparent Modulation Lifetime", "Normal Lifetime"])
+        self.lifetime_type_combobox.addItems(
+            [
+                "None",
+                "Apparent Phase Lifetime",
+                "Apparent Modulation Lifetime",
+                "Normal Lifetime",
+            ]
+        )
         self.lifetime_type_combobox.setCurrentText("None")
         self.main_layout.addWidget(self.lifetime_type_combobox)
 
-        self.lifetime_type_combobox.currentTextChanged.connect(self._on_lifetime_type_changed)
+        self.lifetime_type_combobox.currentTextChanged.connect(
+            self._on_lifetime_type_changed
+        )
 
         # Add lifetime range slider
         self.lifetime_range_label = QLabel("Lifetime range (ns): 0.0 - 100.0")
@@ -111,7 +126,7 @@ class LifetimeWidget(QWidget):
         self.lifetime_range_slider.setRange(0, 100)
         self.lifetime_range_slider.setValue((0, 100))
         self.lifetime_range_slider.setBarMovesAllHandles(False)
-        
+
         # Connect to valueChanged for label updates only
         self.lifetime_range_slider.valueChanged.connect(
             self._on_lifetime_range_label_update
@@ -139,7 +154,7 @@ class LifetimeWidget(QWidget):
 
         # Embed the Matplotlib figure into the widget with fixed size
         canvas = FigureCanvas(self.hist_fig)
-        canvas.setFixedHeight(150)  # Match filter tab height
+        canvas.setFixedHeight(150)
         canvas.setSizePolicy(
             canvas.sizePolicy().Expanding, canvas.sizePolicy().Fixed
         )
@@ -183,20 +198,19 @@ class LifetimeWidget(QWidget):
 
     def _on_lifetime_range_label_update(self, value):
         """Update only the label while dragging, not the histogram."""
-        min_val, max_val = value  # Unpack the tuple
+        min_val, max_val = value
         min_lifetime = min_val / self.lifetime_range_factor
         max_lifetime = max_val / self.lifetime_range_factor
         self.lifetime_range_label.setText(
             f"Lifetime range (ns): {min_lifetime:.2f} - {max_lifetime:.2f}"
         )
 
-        # Update line edits
         self.lifetime_min_edit.setText(f"{min_lifetime:.2f}")
         self.lifetime_max_edit.setText(f"{max_lifetime:.2f}")
 
     def _on_lifetime_range_changed(self, value):
-        """Callback when lifetime range slider changes - now only for data updates."""
-        min_val, max_val = value  # Unpack the tuple
+        """Callback when lifetime range slider changes."""
+        min_val, max_val = value
         min_lifetime = min_val / self.lifetime_range_factor
         max_lifetime = max_val / self.lifetime_range_factor
 
@@ -209,10 +223,21 @@ class LifetimeWidget(QWidget):
             # Update the lifetime layer if it exists
             if self.lifetime_layer is not None:
                 self.lifetime_layer.data = self.lifetime_data
-                self.lifetime_layer.contrast_limits = [
-                    min_lifetime,
-                    max_lifetime,
-                ]
+
+                # Set flag to prevent recursive updates from colormap change event
+                self._updating_contrast_limits = True
+                try:
+                    self.lifetime_layer.contrast_limits = [
+                        min_lifetime,
+                        max_lifetime,
+                    ]
+                    # Update our stored contrast limits to match
+                    self.colormap_contrast_limits = [
+                        min_lifetime,
+                        max_lifetime,
+                    ]
+                finally:
+                    self._updating_contrast_limits = False
 
             # Update histogram with clipped data
             self.plot_lifetime_histogram()
@@ -231,14 +256,21 @@ class LifetimeWidget(QWidget):
         imag = phasor_data.loc[harmonic_mask, 'S']
 
         if self.lifetime_type_combobox.currentText() == "Normal Lifetime":
-            self.lifetime_data_original = phasor_to_normal_lifetime(real, imag, frequency=frequency)
+            self.lifetime_data_original = phasor_to_normal_lifetime(
+                real, imag, frequency=frequency
+            )
         else:
             phase_lifetime, modulation_lifetime = phasor_to_apparent_lifetime(
                 real, imag, frequency=frequency
             )
 
-            if self.lifetime_type_combobox.currentText() == "Apparent Phase Lifetime":
-                self.lifetime_data_original = np.clip(phase_lifetime, a_min=0, a_max=None)
+            if (
+                self.lifetime_type_combobox.currentText()
+                == "Apparent Phase Lifetime"
+            ):
+                self.lifetime_data_original = np.clip(
+                    phase_lifetime, a_min=0, a_max=None
+                )
             else:
                 self.lifetime_data_original = np.clip(
                     modulation_lifetime, a_min=0, a_max=None
@@ -252,7 +284,6 @@ class LifetimeWidget(QWidget):
         # Initialize clipped data as copy of original
         self.lifetime_data = self.lifetime_data_original.copy()
 
-        # Update lifetime range slider based on calculated data
         self._update_lifetime_range_slider()
 
     def _update_lifetime_range_slider(self):
@@ -265,9 +296,7 @@ class LifetimeWidget(QWidget):
         valid_data = flattened_data[
             ~np.isnan(flattened_data)
             & (flattened_data > 0)
-            & np.isfinite(
-                flattened_data
-            )  # Add this to exclude infinite values
+            & np.isfinite(flattened_data)
         ]
 
         if len(valid_data) == 0:
@@ -370,7 +399,7 @@ class LifetimeWidget(QWidget):
                 ha='center',
             )
             self.hist_fig.canvas.draw_idle()
-            self.histogram_widget.show()  # <-- Always show, even if no data
+            self.histogram_widget.show()
             return
 
         self.counts, self.bin_edges = np.histogram(flattened_data, bins=300)
@@ -458,48 +487,15 @@ class LifetimeWidget(QWidget):
 
     def _on_colormap_changed(self, event):
         """Callback whenever the colormap changes."""
+        if getattr(self, '_updating_contrast_limits', False):
+            return
+
         layer = event.source
         self.lifetime_colormap = layer.colormap.colors
-        old_contrast_limits = self.colormap_contrast_limits
         self.colormap_contrast_limits = layer.contrast_limits
-        
-        # Check if contrast limits changed and update slider accordingly
-        if old_contrast_limits != self.colormap_contrast_limits:
-            self._update_slider_from_contrast_limits()
-        
-        self._update_lifetime_histogram()
 
-    def _update_slider_from_contrast_limits(self):
-        """Update the slider range and values based on contrast limits."""
-        if self.colormap_contrast_limits is None:
-            return
-            
-        min_contrast, max_contrast = self.colormap_contrast_limits
-        
-        # Update slider range to accommodate the contrast limits
-        min_slider_val = int(min_contrast * self.lifetime_range_factor)
-        max_slider_val = int(max_contrast * self.lifetime_range_factor)
-        
-        # Ensure slider range is wide enough
-        current_slider_max = self.lifetime_range_slider.maximum()
-        if max_slider_val > current_slider_max:
-            self.lifetime_range_slider.setRange(0, max_slider_val)
-        
-        # Update slider values to match contrast limits
-        self.lifetime_range_slider.setValue((min_slider_val, max_slider_val))
-        
-        # Update the labels and line edits
-        self.lifetime_range_label.setText(
-            f"Lifetime range (ns): {min_contrast:.2f} - {max_contrast:.2f}"
-        )
-        self.lifetime_min_edit.setText(f"{min_contrast:.2f}")
-        self.lifetime_max_edit.setText(f"{max_contrast:.2f}")
-        
-        # Update the clipped data based on new contrast limits
-        if self.lifetime_data_original is not None:
-            self.lifetime_data = np.clip(
-                self.lifetime_data_original, min_contrast, max_contrast
-            )
+        # Only update the histogram visualization, don't change slider or data
+        self._update_lifetime_histogram()
 
     def _on_image_layer_changed(self):
         """Callback whenever the image layer with phasor features changes."""
@@ -537,7 +533,6 @@ class LifetimeWidget(QWidget):
                 self.lifetime_data = None
                 self.lifetime_data_original = None
         else:
-            # Plot lifetime when Phase or Modulation is selected
             sample_name = (
                 self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
             )
@@ -552,4 +547,6 @@ class LifetimeWidget(QWidget):
             self.calculate_lifetimes()
             self.create_lifetime_layer()
             self.plot_lifetime_histogram()
-            update_frequency_in_metadata(self.viewer.layers[sample_name], frequency)
+            update_frequency_in_metadata(
+                self.viewer.layers[sample_name], frequency
+            )
