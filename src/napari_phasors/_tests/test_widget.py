@@ -3,7 +3,6 @@ from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
-from phasorpy.datasets import fetch
 from phasorpy.phasor import (
     phasor_calibrate,
     phasor_from_signal,
@@ -17,6 +16,7 @@ from napari_phasors._synthetic_generator import (
     make_intensity_layer_with_phasors,
     make_raw_flim_data,
 )
+from napari_phasors._tests.test_data_utils import get_test_file_path
 from napari_phasors._widget import (
     AdvancedOptionsWidget,
     CalibrationWidget,
@@ -49,15 +49,19 @@ def test_phasor_transform_widget(make_napari_viewer):
     for extension, expected_widget_class in widget.reader_options.items():
         # Handle special cases for specific extensions
         if extension == ".fbd":
-            test_file_path = (
-                "src/napari_phasors/_tests/test_data/test_file$EI0S.fbd"
-            )
+            test_file_path = get_test_file_path("test_file$EI0S.fbd")
         elif extension == ".sdt":
-            test_file_path = fetch("seminal_receptacle_FLIM_single_image.sdt")
-        else:
-            test_file_path = (
-                f"src/napari_phasors/_tests/test_data/test_file{extension}"
+            test_file_path = get_test_file_path(
+                "seminal_receptacle_FLIM_single_image.sdt"
             )
+        elif extension == ".lsm":
+            test_file_path = get_test_file_path("test_file.lsm")
+        elif extension == ".ptu":
+            test_file_path = get_test_file_path("test_file.ptu")
+        elif extension == ".ome.tif":
+            test_file_path = get_test_file_path("test_file.ome.tif")
+        else:
+            continue
 
         with (
             patch(
@@ -88,15 +92,12 @@ def test_phasor_transform_fbd_widget(make_napari_viewer):
     """Test FbdWidget from PhasorTransfrom widget."""
     viewer = make_napari_viewer()
     PhasorTransform(viewer)
-    widget = FbdWidget(
-        viewer, path="src/napari_phasors/_tests/test_data/test_file$EI0S.fbd"
-    )
+    test_file_path = get_test_file_path("test_file$EI0S.fbd")
+    widget = FbdWidget(viewer, path=test_file_path)
     assert widget.viewer is viewer
     # Init values
     assert isinstance(widget, AdvancedOptionsWidget)
-    assert (
-        widget.path == "src/napari_phasors/_tests/test_data/test_file$EI0S.fbd"
-    )
+    assert widget.path == test_file_path
     assert widget.reader_options == {"frame": -1, "channel": None}
     assert widget.harmonics == [1]
     assert widget.all_frames == 9
@@ -172,13 +173,12 @@ def test_phasor_transform_ptu_widget(make_napari_viewer):
     """Test PtuWidget from PhasorTransfrom widget."""
     viewer = make_napari_viewer()
     PhasorTransform(viewer)
-    widget = PtuWidget(
-        viewer, path="src/napari_phasors/_tests/test_data/test_file.ptu"
-    )
+    test_file_path = get_test_file_path("test_file.ptu")
+    widget = PtuWidget(viewer, path=test_file_path)
     assert widget.viewer is viewer
     # Init values
     assert isinstance(widget, AdvancedOptionsWidget)
-    assert widget.path == "src/napari_phasors/_tests/test_data/test_file.ptu"
+    assert widget.path == test_file_path
     assert widget.reader_options == {"frame": -1, "channel": None}
     assert widget.harmonics == [1]
     assert widget.all_frames == 5
@@ -249,7 +249,7 @@ def test_phasor_transform_ptu_widget(make_napari_viewer):
 def test_phasor_transform_sdt_widget(make_napari_viewer):
     """Test SdtWidget from PhasorTransfrom widget."""
     viewer = make_napari_viewer()
-    file_path = fetch("seminal_receptacle_FLIM_single_image.sdt")
+    file_path = get_test_file_path("seminal_receptacle_FLIM_single_image.sdt")
     PhasorTransform(viewer)
     widget = SdtWidget(viewer, path=file_path)
     assert widget.viewer is viewer
@@ -308,13 +308,12 @@ def test_phasor_transform_lsm_widget(make_napari_viewer):
     """Test LsmWidget from PhasorTransfrom widget."""
     viewer = make_napari_viewer()
     PhasorTransform(viewer)
-    widget = LsmWidget(
-        viewer, path="src/napari_phasors/_tests/test_data/test_file.lsm"
-    )
+    test_file_path = get_test_file_path("test_file.lsm")
+    widget = LsmWidget(viewer, path=test_file_path)
     assert widget.viewer is viewer
     # Init values
     assert isinstance(widget, AdvancedOptionsWidget)
-    assert widget.path == "src/napari_phasors/_tests/test_data/test_file.lsm"
+    assert widget.path == test_file_path
     assert widget.reader_options == {}
     assert widget.harmonics == [1]
     assert widget.harmonic_start.value() == 1
