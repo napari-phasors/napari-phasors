@@ -190,9 +190,17 @@ def raw_file_reader(
             ), "Shapes from files in .sdt do not match!"
         raw_data = xr.concat(raw_data, dim="C")
     else:
-        raw_data = extension_mapping["raw"][file_extension](
-            path, reader_options
-        )
+        # Try reading with default harmonics [1, 2], fall back to None if not available
+        try:
+            raw_data = extension_mapping["raw"][file_extension](
+                path, reader_options
+            )
+        except Exception:
+            # If harmonics [1, 2] are not available, set to None and retry
+            harmonics = None
+            raw_data = extension_mapping["raw"][file_extension](
+                path, reader_options
+            )
     settings = {}
     if (
         file_extension != '.fbd'
