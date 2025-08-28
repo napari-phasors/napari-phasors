@@ -153,7 +153,8 @@ def raw_file_reader(
         Dictionary containing the arguments to pass to the function.
     harmonics : Union[int, Sequence[int], None], optional
         Harmonic(s) to be processed. Can be a single integer, a sequence of
-        integers, or None. Default is None.
+        integers, or None. Default is None, which sets the first two harmonics
+        to be processed.
 
     Returns
     -------
@@ -167,6 +168,9 @@ def raw_file_reader(
         in 'metadata' contain phasor coordinates as columns 'G' and 'S'.
 
     """
+    # Set default harmonics if None is passed
+    if harmonics is None:
+        harmonics = [1, 2]
     filename, file_extension = _get_filename_extension(path)
     if file_extension == ".sdt":
         # Try reading .sdt with increasing 'index' numbers to collect all files as channels
@@ -280,7 +284,8 @@ def processed_file_reader(
         Dictionary containing the arguments to pass to the function.
     harmonics : Union[int, Sequence[int], None], optional
         Harmonic(s) to be processed. Can be a single integer, a sequence of
-        integers, or None. Default is None.
+        integers, or None. Default is None, which sets all harmonics present
+        in the file to be processed.
 
     Returns
     -------
@@ -294,6 +299,9 @@ def processed_file_reader(
         in 'metadata' contain phasor coordinates as columns 'G' and 'S'.
 
     """
+    # Set default harmonics if None is passed
+    if harmonics is None:
+        harmonics = 'all'
     filename, file_extension = _get_filename_extension(path)
     reader_options = reader_options or {"harmonic": harmonics}
     mean_intensity_image, G_image, S_image, attrs = extension_mapping[
@@ -311,12 +319,14 @@ def processed_file_reader(
         settings = {}
     if "frequency" in attrs.keys():
         settings["frequency"] = attrs["frequency"]
+    harmonics_read = attrs.get("harmonic", None)
+
     labels_layer = make_phasors_labels_layer(
         mean_intensity_image,
         G_image,
         S_image,
         name=filename,
-        harmonics=harmonics,
+        harmonics=harmonics_read,
     )
 
     filter_size = None
