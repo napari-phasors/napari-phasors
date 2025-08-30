@@ -36,7 +36,7 @@ def test_reader_ptu():
     assert isinstance(phasor_features, Labels)
     assert phasor_features.data.shape == (1, 256, 256)
     assert isinstance(phasor_features.features, pd.DataFrame)
-    assert phasor_features.features.shape == (65536, 6)
+    assert phasor_features.features.shape == (131072, 6)
     expected_columns = [
         "label",
         "G_original",
@@ -47,6 +47,7 @@ def test_reader_ptu():
     ]
     actual_columns = phasor_features.features.columns.tolist()
     assert actual_columns == expected_columns
+    assert np.unique(phasor_features.features["harmonic"]).tolist() == [1, 2]
 
 
 def test_reader_fbd():
@@ -80,7 +81,7 @@ def test_reader_fbd():
     assert isinstance(phasor_features, Labels)
     assert phasor_features.data.shape == (1, 256, 256)
     assert isinstance(phasor_features.features, pd.DataFrame)
-    assert phasor_features.features.shape == (65536, 6)
+    assert phasor_features.features.shape == (131072, 6)
     expected_columns = [
         "label",
         "G_original",
@@ -91,6 +92,7 @@ def test_reader_fbd():
     ]
     actual_columns = phasor_features.features.columns.tolist()
     assert actual_columns == expected_columns
+    assert np.unique(phasor_features.features["harmonic"]).tolist() == [1, 2]
     # Second Channel
     layer_data_tuple = layer_data_list[1]
     assert isinstance(layer_data_tuple, tuple) and len(layer_data_tuple) == 2
@@ -115,7 +117,7 @@ def test_reader_fbd():
     assert isinstance(phasor_features, Labels)
     assert phasor_features.data.shape == (1, 256, 256)
     assert isinstance(phasor_features.features, pd.DataFrame)
-    assert phasor_features.features.shape == (65536, 6)
+    assert phasor_features.features.shape == (131072, 6)
     expected_columns = [
         "label",
         "G_original",
@@ -126,6 +128,7 @@ def test_reader_fbd():
     ]
     actual_columns = phasor_features.features.columns.tolist()
     assert actual_columns == expected_columns
+    assert np.unique(phasor_features.features["harmonic"]).tolist() == [1, 2]
 
 
 def test_reader_sdt():
@@ -159,7 +162,7 @@ def test_reader_sdt():
     assert isinstance(phasor_features, Labels)
     assert phasor_features.data.shape == (512, 512)
     assert isinstance(phasor_features.features, pd.DataFrame)
-    assert phasor_features.features.shape == (262144, 6)
+    assert phasor_features.features.shape == (524288, 6)
     expected_columns = [
         "label",
         "G_original",
@@ -170,6 +173,7 @@ def test_reader_sdt():
     ]
     actual_columns = phasor_features.features.columns.tolist()
     assert actual_columns == expected_columns
+    assert np.unique(phasor_features.features["harmonic"]).tolist() == [1, 2]
 
 
 def test_reader_lsm():
@@ -199,7 +203,7 @@ def test_reader_lsm():
     assert isinstance(phasor_features, Labels)
     assert phasor_features.data.shape == (512, 512)
     assert isinstance(phasor_features.features, pd.DataFrame)
-    assert phasor_features.features.shape == (262144, 6)
+    assert phasor_features.features.shape == (524288, 6)
     expected_columns = [
         "label",
         "G_original",
@@ -210,6 +214,7 @@ def test_reader_lsm():
     ]
     actual_columns = phasor_features.features.columns.tolist()
     assert actual_columns == expected_columns
+    assert np.unique(phasor_features.features["harmonic"]).tolist() == [1, 2]
 
 
 def test_reader_ometif():
@@ -250,6 +255,7 @@ def test_reader_ometif():
     ]
     actual_columns = phasor_features.features.columns.tolist()
     assert actual_columns == expected_columns
+    assert np.unique(phasor_features.features["harmonic"]).tolist() == [1]
 
 
 # TODO: Add tests for .tif files
