@@ -23,9 +23,9 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from .calibration_tab import CalibrationWidget
 from .filter_tab import FilterWidget
 
-# from .calibration_tab import CalibrationWidget
 # from .components_tab import ComponentsWidget
 from .selection_tab import SelectionWidget
 
@@ -190,6 +190,10 @@ class PlotterWidget(QWidget):
         self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
             self.on_labels_layer_with_phasor_features_changed
         )
+        # Update all frequency widgets from layer metadata if layer changes
+        self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
+            self._sync_frequency_inputs_from_metadata
+        )
         self.plotter_inputs_widget.semi_circle_checkbox.stateChanged.connect(
             self.on_toggle_semi_circle
         )
@@ -312,19 +316,11 @@ class PlotterWidget(QWidget):
 
     def _create_calibration_tab(self):
         """Create the Calibration tab."""
-        # self.calibration_tab = CalibrationWidget(self.viewer, parent=self)
-        # self.tab_widget.addTab(self.calibration_tab, "Calibration")
-
-        # self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
-        #     self.calibration_tab._on_image_layer_changed
-        # )
-
-        # Placeholder for future calibration tab implementation
-        self.calibration_tab = QWidget()
-        self.calibration_tab.setLayout(QVBoxLayout())
+        self.calibration_tab = CalibrationWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.calibration_tab, "Calibration")
-        self.calibration_tab.layout().addWidget(
-            QLabel("Calibration widget will be implemented here.")
+        # Broadcast frequency changes from the calibration tab to all tabs
+        self.calibration_tab.calibration_widget.frequency_input.textEdited.connect(
+            self._broadcast_frequency_value_across_tabs
         )
 
     def _create_filter_tab(self):
@@ -644,6 +640,21 @@ class PlotterWidget(QWidget):
 
         return None
 
+    def _sync_frequency_inputs_from_metadata(self):
+        """Sync the frequency widget input fields with metadata."""
+        frequency = self._get_frequency_from_layer()
+        if frequency is None:
+            return
+        self._broadcast_frequency_value_across_tabs(str(frequency))
+
+    def _broadcast_frequency_value_across_tabs(self, value):
+        """
+        Broadcast the frequency value to all relevant input fields.
+        """
+        self.calibration_tab.calibration_widget.frequency_input.setText(value)
+        # widget.lifetime_tab.lifetime_widget.frequency_input.setText(value)
+        # widget.fret_tab.fret_widget.frequency_input.setText(value)
+
     def _redefine_axes_limits(self, ensure_full_circle_displayed=True):
         """
         Redefine axes limits based on the data plotted in the canvas widget.
@@ -859,10 +870,13 @@ class PlotterWidget(QWidget):
         It also updates `_labels_layer_with_phasor_features` attribute with the
         Labels layer in the metadata of the selected image layer.
         """
-        # Temporarily disconnect the signal to prevent double execution
+        # Temporarily disconnect the signals to prevent double execution
         try:
             self.image_layer_with_phasor_features_combobox.currentIndexChanged.disconnect(
                 self.on_labels_layer_with_phasor_features_changed
+            )
+            self.image_layer_with_phasor_features_combobox.currentIndexChanged.disconnect(
+                self._sync_frequency_inputs_from_metadata
             )
         except TypeError:
             # Signal wasn't connected, ignore
@@ -885,9 +899,12 @@ class PlotterWidget(QWidget):
             layer = self.viewer.layers[layer_name]
             layer.events.name.connect(self.reset_layer_choices)
 
-        # Reconnect the signal
+        # Reconnect the signals
         self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
             self.on_labels_layer_with_phasor_features_changed
+        )
+        self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
+            self._sync_frequency_inputs_from_metadata
         )
 
         # Only call the method if the selection actually changed or if it's the first item

@@ -4,10 +4,15 @@ This module contains utility functions used by other modules.
 """
 
 import warnings
+from typing import TYPE_CHECKING
 
 import numpy as np
 from napari.layers import Image
 from phasorpy.phasor import phasor_filter_median, phasor_threshold
+from qtpy.QtWidgets import QWidget
+
+if TYPE_CHECKING:
+    import napari
 
 
 def apply_filter_and_threshold(
@@ -99,3 +104,13 @@ def colormap_to_dict(colormap, num_colors=10, exclude_first=True):
         color_dict[i + 1 - start] = color
     color_dict[None] = (0, 0, 0, 0)
     return color_dict
+
+
+def update_frequency_in_metadata(
+    image_layer: "napari.layers.Image",
+    frequency: float,
+):
+    """Update the frequency in the layer metadata."""
+    if "settings" not in image_layer.metadata.keys():
+        image_layer.metadata["settings"] = {}
+    image_layer.metadata["settings"]["frequency"] = frequency

@@ -16,7 +16,8 @@ from napari_phasors.selection_tab import SelectionWidget
 
 def create_image_layer_with_phasors():
     """Create an intensity image layer with phasors for testing."""
-    raw_flim_data = make_raw_flim_data()
+    time_constants = [0.1, 1, 2, 3, 4, 5, 10]
+    raw_flim_data = make_raw_flim_data(time_constants=time_constants)
     harmonic = [1, 2, 3]
     return make_intensity_layer_with_phasors(raw_flim_data, harmonic=harmonic)
 
