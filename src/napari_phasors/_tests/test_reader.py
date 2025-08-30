@@ -1,14 +1,14 @@
 import numpy as np
 import pandas as pd
 from napari.layers import Labels
-from phasorpy.datasets import fetch
 
 from napari_phasors import napari_get_reader
+from napari_phasors._tests.test_data_utils import get_test_file_path
 
 
 def test_reader_ptu():
     """Test reading a PTU file"""
-    ptu_file = "src/napari_phasors/_tests/test_data/test_file.ptu"
+    ptu_file = get_test_file_path("test_file.ptu")
     reader = napari_get_reader(ptu_file)
     assert callable(reader)
     layer_data_list = reader(ptu_file)
@@ -52,7 +52,7 @@ def test_reader_ptu():
 
 def test_reader_fbd():
     """Test reading a FBD file"""
-    fbd_file = "src/napari_phasors/_tests/test_data/test_file$EI0S.fbd"
+    fbd_file = get_test_file_path("test_file$EI0S.fbd")
     reader = napari_get_reader(fbd_file)
     assert callable(reader)
     layer_data_list = reader(fbd_file)
@@ -133,7 +133,7 @@ def test_reader_fbd():
 
 def test_reader_sdt():
     """Test reading a sdt file"""
-    sdt_file = fetch('seminal_receptacle_FLIM_single_image.sdt')
+    sdt_file = get_test_file_path('seminal_receptacle_FLIM_single_image.sdt')
     reader = napari_get_reader(sdt_file)
     assert callable(reader)
     layer_data_list = reader(sdt_file)
@@ -178,7 +178,7 @@ def test_reader_sdt():
 
 def test_reader_lsm():
     """Test reading a LSM file"""
-    lsm_file = "src/napari_phasors/_tests/test_data/test_file.lsm"
+    lsm_file = get_test_file_path("test_file.lsm")
     reader = napari_get_reader(lsm_file)
     assert callable(reader)
     layer_data_list = reader(lsm_file)
@@ -219,7 +219,7 @@ def test_reader_lsm():
 
 def test_reader_ometif():
     """Test reading a ome.tif file"""
-    ometif_file = "src/napari_phasors/_tests/test_data/test_file.ome.tif"
+    ometif_file = get_test_file_path("test_file.ome.tif")
     reader = napari_get_reader(ometif_file)
     assert callable(reader)
     layer_data_list = reader(ometif_file)
@@ -229,7 +229,7 @@ def test_reader_ometif():
     assert isinstance(layer_data_tuple[0], np.ndarray) and isinstance(
         layer_data_tuple[1], dict
     )
-    assert layer_data_tuple[0].shape == (256, 256)
+    assert layer_data_tuple[0].shape == (512, 512)
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert layer_data_tuple[1]["name"] == "test_file Intensity Image"
     assert (
@@ -242,9 +242,9 @@ def test_reader_ometif():
         "phasor_features_labels_layer"
     ]
     assert isinstance(phasor_features, Labels)
-    assert phasor_features.data.shape == (256, 256)
+    assert phasor_features.data.shape == (512, 512)
     assert isinstance(phasor_features.features, pd.DataFrame)
-    assert phasor_features.features.shape == (65536, 6)
+    assert phasor_features.features.shape == (262144, 6)
     expected_columns = [
         "label",
         "G_original",
