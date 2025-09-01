@@ -3,17 +3,14 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pytest
 from numpy.testing import assert_almost_equal, assert_array_equal
-from phasorpy.phasor import (
+from phasorpy.lifetime import (
     phasor_calibrate,
-    phasor_center,
-    phasor_filter_median,
     phasor_from_lifetime,
-    phasor_threshold,
     polar_from_reference_phasor,
 )
+from phasorpy.phasor import phasor_center
 
 from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
-from napari_phasors._utils import apply_filter_and_threshold
 from napari_phasors.plotter import PlotterWidget
 
 

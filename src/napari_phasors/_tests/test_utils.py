@@ -1,10 +1,6 @@
-from unittest.mock import MagicMock, Mock
-
 import numpy as np
-import pytest
 from matplotlib.colors import ListedColormap
 from phasorpy.phasor import phasor_filter_median, phasor_threshold
-from qtpy.QtWidgets import QComboBox, QLineEdit, QWidget
 
 from napari_phasors._synthetic_generator import (
     make_intensity_layer_with_phasors,
