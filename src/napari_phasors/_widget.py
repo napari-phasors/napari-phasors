@@ -22,9 +22,7 @@ from matplotlib.backends.backend_qt5agg import (
 from matplotlib.colors import LinearSegmentedColormap
 from napari.layers import Image
 from napari.utils.notifications import show_error, show_info
-from phasorpy.lifetime import (
-    phasor_to_apparent_lifetime,
-)
+from phasorpy.lifetime import phasor_to_apparent_lifetime
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QDoubleValidator
 from qtpy.QtWidgets import (
