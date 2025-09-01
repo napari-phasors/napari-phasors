@@ -26,11 +26,11 @@ from qtpy.QtWidgets import (
 from .calibration_tab import CalibrationWidget
 from .filter_tab import FilterWidget
 
+# from .fret_tab import FretWidget
+from .lifetime_tab import LifetimeWidget
+
 # from .components_tab import ComponentsWidget
 from .selection_tab import SelectionWidget
-
-# from .fret_tab import FretWidget
-# from .lifetime_tab import LifetimeWidget
 
 
 class PlotterWidget(QWidget):
@@ -318,7 +318,6 @@ class PlotterWidget(QWidget):
         """Create the Calibration tab."""
         self.calibration_tab = CalibrationWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.calibration_tab, "Calibration")
-        # Broadcast frequency changes from the calibration tab to all tabs
         self.calibration_tab.calibration_widget.frequency_input.textEdited.connect(
             self._broadcast_frequency_value_across_tabs
         )
@@ -348,22 +347,17 @@ class PlotterWidget(QWidget):
 
     def _create_lifetime_tab(self):
         """Create the Lifetime tab."""
-        # self.lifetime_tab = LifetimeWidget(self.viewer, parent=self)
-        # self.tab_widget.addTab(self.lifetime_tab, "Lifetime")
-
-        # self.harmonic_spinbox.valueChanged.connect(
-        #     self.lifetime_tab._on_harmonic_changed
-        # )
-        # self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
-        #     self.lifetime_tab._on_image_layer_changed
-        # )
-
-        # Placeholder for future lifetime tab implementation
-        self.lifetime_tab = QWidget()
-        self.lifetime_tab.setLayout(QVBoxLayout())
+        self.lifetime_tab = LifetimeWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.lifetime_tab, "Lifetime")
-        self.lifetime_tab.layout().addWidget(
-            QLabel("Lifetime widget will be implemented here.")
+
+        self.harmonic_spinbox.valueChanged.connect(
+            self.lifetime_tab._on_harmonic_changed
+        )
+        self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
+            self.lifetime_tab._on_image_layer_changed
+        )
+        self.lifetime_tab.frequency_input.textEdited.connect(
+            self._broadcast_frequency_value_across_tabs
         )
 
     def _create_fret_tab(self):
@@ -652,8 +646,8 @@ class PlotterWidget(QWidget):
         Broadcast the frequency value to all relevant input fields.
         """
         self.calibration_tab.calibration_widget.frequency_input.setText(value)
-        # widget.lifetime_tab.lifetime_widget.frequency_input.setText(value)
-        # widget.fret_tab.fret_widget.frequency_input.setText(value)
+        self.lifetime_tab.frequency_input.setText(value)
+        # self.fret_tab.fret_widget.frequency_input.setText(value)
 
     def _redefine_axes_limits(self, ensure_full_circle_displayed=True):
         """
