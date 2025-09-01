@@ -10,7 +10,7 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Circle
 from napari.layers import Image
 from napari.utils import colormaps, notifications
-from phasorpy.phasor import phasor_from_lifetime
+from phasorpy.lifetime import phasor_from_lifetime
 from qtpy import uic
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (

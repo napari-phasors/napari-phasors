@@ -12,7 +12,6 @@ This module contains widgets to:
 """
 
 from math import ceil, log10
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
@@ -23,14 +22,9 @@ from matplotlib.backends.backend_qt5agg import (
 from matplotlib.colors import LinearSegmentedColormap
 from napari.layers import Image
 from napari.utils.notifications import show_error, show_info
-from phasorpy.phasor import (
-    phasor_calibrate,
-    phasor_center,
-    phasor_from_lifetime,
+from phasorpy.lifetime import (
     phasor_to_apparent_lifetime,
-    polar_from_reference_phasor,
 )
-from qtpy import uic
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QDoubleValidator
 from qtpy.QtWidgets import (

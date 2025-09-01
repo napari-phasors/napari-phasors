@@ -6,10 +6,9 @@ from napari.layers import Image
 from napari.utils.notifications import show_error, show_info
 from phasorpy.phasor import (
     phasor_center,
-    phasor_from_lifetime,
     phasor_transform,
-    polar_from_reference_phasor,
 )
+from phasorpy.lifetime import phasor_from_lifetime, polar_from_reference_phasor
 from qtpy import uic
 from qtpy.QtWidgets import QVBoxLayout, QWidget
 
