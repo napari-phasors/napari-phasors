@@ -244,7 +244,7 @@ def test_reader_ometif():
     assert isinstance(phasor_features, Labels)
     assert phasor_features.data.shape == (512, 512)
     assert isinstance(phasor_features.features, pd.DataFrame)
-    assert phasor_features.features.shape == (262144, 6)
+    assert phasor_features.features.shape == (524288, 6)
     expected_columns = [
         "label",
         "G_original",
@@ -255,7 +255,7 @@ def test_reader_ometif():
     ]
     actual_columns = phasor_features.features.columns.tolist()
     assert actual_columns == expected_columns
-    assert np.unique(phasor_features.features["harmonic"]).tolist() == [1]
+    assert np.unique(phasor_features.features["harmonic"]).tolist() == [1, 2]
 
 
 # TODO: Add tests for .tif files
