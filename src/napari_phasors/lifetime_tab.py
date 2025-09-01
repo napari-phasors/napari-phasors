@@ -38,7 +38,11 @@ class LifetimeWidget(QWidget):
         super().__init__()
         self.viewer = viewer
         self.parent_widget = parent
+<<<<<<< HEAD
         self.frequency = None
+=======
+        self.frequency = 0.0
+>>>>>>> 2c27a4b (Refactor lifetime functionality into a new LifetimeWidget class)
         self.lifetime_data = None
         self.lifetime_data_original = None  # Store original unclipped data
         self.lifetime_layer = None
@@ -246,6 +250,7 @@ class LifetimeWidget(QWidget):
         """Calculate the lifetimes for all harmonics."""
         if self.parent_widget._labels_layer_with_phasor_features is None:
             return
+<<<<<<< HEAD
 
         frequency_text = self.frequency_input.text().strip()
         if not frequency_text:
@@ -276,6 +281,19 @@ class LifetimeWidget(QWidget):
 
         if self.lifetime_type_combobox.currentText() == "Normal Lifetime":
             lifetime_values = phasor_to_normal_lifetime(
+=======
+        phasor_data = (
+            self.parent_widget._labels_layer_with_phasor_features.features
+        )
+        self.frequency = float(self.frequency_input.text().strip())
+        frequency = self.frequency * self.parent_widget.harmonic
+        harmonic_mask = phasor_data['harmonic'] == self.parent_widget.harmonic
+        real = phasor_data.loc[harmonic_mask, 'G']
+        imag = phasor_data.loc[harmonic_mask, 'S']
+
+        if self.lifetime_type_combobox.currentText() == "Normal Lifetime":
+            self.lifetime_data_original = phasor_to_normal_lifetime(
+>>>>>>> 2c27a4b (Refactor lifetime functionality into a new LifetimeWidget class)
                 real, imag, frequency=frequency
             )
         else:
@@ -287,6 +305,7 @@ class LifetimeWidget(QWidget):
                 self.lifetime_type_combobox.currentText()
                 == "Apparent Phase Lifetime"
             ):
+<<<<<<< HEAD
                 lifetime_values = np.clip(phase_lifetime, a_min=0, a_max=None)
             else:
                 lifetime_values = np.clip(
@@ -305,6 +324,21 @@ class LifetimeWidget(QWidget):
 
         self.lifetime_data_original = lifetime_flat.reshape(layer_data.shape)
 
+=======
+                self.lifetime_data_original = np.clip(
+                    phase_lifetime, a_min=0, a_max=None
+                )
+            else:
+                self.lifetime_data_original = np.clip(
+                    modulation_lifetime, a_min=0, a_max=None
+                )
+
+        self.lifetime_data_original = np.reshape(
+            self.lifetime_data_original,
+            self.parent_widget._labels_layer_with_phasor_features.data.shape,
+        )
+
+>>>>>>> 2c27a4b (Refactor lifetime functionality into a new LifetimeWidget class)
         # Initialize clipped data as copy of original
         self.lifetime_data = self.lifetime_data_original.copy()
 
@@ -314,8 +348,12 @@ class LifetimeWidget(QWidget):
         """Update the lifetime range slider based on the calculated lifetime data."""
         if self.lifetime_data_original is None:
             return
+<<<<<<< HEAD
         if self.frequency is None:
             return
+=======
+
+>>>>>>> 2c27a4b (Refactor lifetime functionality into a new LifetimeWidget class)
         # Get the range of lifetime values (excluding NaNs, zeros, and infinite values)
         flattened_data = self.lifetime_data_original.flatten()
         valid_data = flattened_data[
@@ -323,6 +361,10 @@ class LifetimeWidget(QWidget):
             & (flattened_data > 0)
             & np.isfinite(flattened_data)
         ]
+<<<<<<< HEAD
+=======
+
+>>>>>>> 2c27a4b (Refactor lifetime functionality into a new LifetimeWidget class)
         if len(valid_data) == 0:
             # If no valid data, set default values
             self.min_lifetime = 0.0
@@ -333,6 +375,7 @@ class LifetimeWidget(QWidget):
             self.min_lifetime = np.min(valid_data)
             self.max_lifetime = np.max(valid_data)
 
+<<<<<<< HEAD
             # Additional safety check for infinite or unrealistic very large values
             if (
                 not np.isfinite(self.min_lifetime)
@@ -346,6 +389,16 @@ class LifetimeWidget(QWidget):
                 max_slider_val = int(
                     self.max_lifetime * self.lifetime_range_factor
                 )
+=======
+            # Additional safety check for infinite values
+            if not np.isfinite(self.min_lifetime) or not np.isfinite(
+                self.max_lifetime
+            ):
+                self.min_lifetime = 0.0
+                self.max_lifetime = 10.0
+                min_slider_val = 0
+                max_slider_val = 10000
+>>>>>>> 2c27a4b (Refactor lifetime functionality into a new LifetimeWidget class)
             else:
                 # Set slider range
                 min_slider_val = int(
@@ -354,12 +407,23 @@ class LifetimeWidget(QWidget):
                 max_slider_val = int(
                     self.max_lifetime * self.lifetime_range_factor
                 )
+<<<<<<< HEAD
         self.lifetime_range_slider.setRange(0, max_slider_val)
         self.lifetime_range_slider.setValue((min_slider_val, max_slider_val))
+=======
+
+        self.lifetime_range_slider.setRange(0, max_slider_val)
+        self.lifetime_range_slider.setValue((min_slider_val, max_slider_val))
+
+>>>>>>> 2c27a4b (Refactor lifetime functionality into a new LifetimeWidget class)
         # Update label
         self.lifetime_range_label.setText(
             f"Lifetime range (ns): {self.min_lifetime:.2f} - {self.max_lifetime:.2f}"
         )
+<<<<<<< HEAD
+=======
+
+>>>>>>> 2c27a4b (Refactor lifetime functionality into a new LifetimeWidget class)
         # Update line edits
         self.lifetime_min_edit.setText(f"{self.min_lifetime:.2f}")
         self.lifetime_max_edit.setText(f"{self.max_lifetime:.2f}")
@@ -438,12 +502,20 @@ class LifetimeWidget(QWidget):
         """Create or update the lifetime layer for all harmonics."""
         if self.lifetime_data is None:
             return
+<<<<<<< HEAD
         lifetime_layer_name = f"{self.lifetime_type_combobox.currentText()}: {self.parent_widget.image_layer_with_phasor_features_combobox.currentText()}"
+=======
+        lifetime_layer_name = f"{self.lifetime_type_combobox.currentText()} Lifetime: {self.parent_widget.image_layer_with_phasor_features_combobox.currentText()}"
+>>>>>>> 2c27a4b (Refactor lifetime functionality into a new LifetimeWidget class)
         selected_lifetime_layer = Image(
             self.lifetime_data,
             name=lifetime_layer_name,
             scale=self.parent_widget._labels_layer_with_phasor_features.scale,
+<<<<<<< HEAD
             colormap='plasma',
+=======
+            colormap='turbo',
+>>>>>>> 2c27a4b (Refactor lifetime functionality into a new LifetimeWidget class)
         )
 
         # Check if the layer is in the viewer before attempting to remove it
@@ -469,7 +541,11 @@ class LifetimeWidget(QWidget):
             or self.colormap_contrast_limits is None
         ):
             # Use a default colormap if napari colormap is not available yet
+<<<<<<< HEAD
             cmap = plt.cm.plasma
+=======
+            cmap = plt.cm.turbo
+>>>>>>> 2c27a4b (Refactor lifetime functionality into a new LifetimeWidget class)
             norm = plt.Normalize(
                 vmin=(
                     np.min(self.bin_centers)
@@ -525,6 +601,7 @@ class LifetimeWidget(QWidget):
 
     def _on_image_layer_changed(self):
         """Callback whenever the image layer with phasor features changes."""
+<<<<<<< HEAD
         # Hide histogram and clears previous data
         self.lifetime_type_combobox.setCurrentText("None")
 
@@ -535,6 +612,27 @@ class LifetimeWidget(QWidget):
             )
         else:
             self.frequency = None
+=======
+        layer_name = (
+            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        )
+        if layer_name == "":
+            self.histogram_widget.hide()
+            return
+
+        layer_metadata = self.viewer.layers[layer_name].metadata
+        if (
+            'settings' in layer_metadata.keys()
+            and 'frequency' in layer_metadata['settings'].keys()
+        ):
+            self.frequency_input.setText(
+                str(layer_metadata['settings']['frequency'])
+            )
+            self.frequency = (
+                float(self.frequency_input.text())
+                * self.parent_widget.harmonic
+            )
+>>>>>>> 2c27a4b (Refactor lifetime functionality into a new LifetimeWidget class)
 
         # Clear histogram plot
         self.hist_ax.clear()
@@ -562,9 +660,14 @@ class LifetimeWidget(QWidget):
                 return
 
             self.calculate_lifetimes()
+<<<<<<< HEAD
             self._update_lifetime_range_slider()
             self.create_lifetime_layer()
             self._on_lifetime_range_changed(self.lifetime_range_slider.value())
+=======
+            self.create_lifetime_layer()
+            self.plot_lifetime_histogram()
+>>>>>>> 2c27a4b (Refactor lifetime functionality into a new LifetimeWidget class)
             update_frequency_in_metadata(
                 self.viewer.layers[sample_name], frequency
             )
