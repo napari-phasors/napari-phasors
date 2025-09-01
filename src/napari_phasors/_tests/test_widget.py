@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
-from phasorpy.lifetime import phasor_from_lifetime
+from phasorpy.lifetime import phasor_to_apparent_lifetime
 from phasorpy.phasor import phasor_from_signal, phasor_threshold
 from qtpy.QtWidgets import QWidget
 
