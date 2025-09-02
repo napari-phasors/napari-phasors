@@ -547,7 +547,9 @@ class LifetimeWidget(QWidget):
 
             self.calculate_lifetimes()
             self.create_lifetime_layer()
-            self.plot_lifetime_histogram()
+            self._on_lifetime_range_changed(
+                self.lifetime_range_slider.value()
+            )
             update_frequency_in_metadata(
                 self.viewer.layers[sample_name], frequency
             )
