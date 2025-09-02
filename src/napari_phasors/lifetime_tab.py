@@ -413,7 +413,7 @@ class LifetimeWidget(QWidget):
         """Create or update the lifetime layer for all harmonics."""
         if self.lifetime_data is None:
             return
-        lifetime_layer_name = f"{self.lifetime_type_combobox.currentText()} Lifetime: {self.parent_widget.image_layer_with_phasor_features_combobox.currentText()}"
+        lifetime_layer_name = f"{self.lifetime_type_combobox.currentText()}: {self.parent_widget.image_layer_with_phasor_features_combobox.currentText()}"
         selected_lifetime_layer = Image(
             self.lifetime_data,
             name=lifetime_layer_name,
