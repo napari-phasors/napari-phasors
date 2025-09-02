@@ -507,18 +507,10 @@ class LifetimeWidget(QWidget):
             self.histogram_widget.hide()
             return
 
-        layer_metadata = self.viewer.layers[layer_name].metadata
-        if (
-            'settings' in layer_metadata.keys()
-            and 'frequency' in layer_metadata['settings'].keys()
-        ):
-            self.frequency_input.setText(
-                str(layer_metadata['settings']['frequency'])
-            )
-            self.frequency = (
-                float(self.frequency_input.text())
-                * self.parent_widget.harmonic
-            )
+        self.frequency = (
+            float(self.frequency_input.text())
+            * self.parent_widget.harmonic
+        )
 
         # Clear histogram plot
         self.hist_ax.clear()
