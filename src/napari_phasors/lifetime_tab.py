@@ -500,13 +500,8 @@ class LifetimeWidget(QWidget):
 
     def _on_image_layer_changed(self):
         """Callback whenever the image layer with phasor features changes."""
-        layer_name = (
-            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-        )
-        if layer_name == "":
-            self.histogram_widget.hide()
-            return
-
+        # Hide histogram and clears previous data
+        self.lifetime_type_combobox.setCurrentText("None")
         self.frequency = (
             float(self.frequency_input.text())
             * self.parent_widget.harmonic
