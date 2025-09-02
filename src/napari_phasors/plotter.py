@@ -15,6 +15,7 @@ from qtpy import uic
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QComboBox,
+    QHBoxLayout,
     QLabel,
     QSpinBox,
     QSplitter,
@@ -113,18 +114,30 @@ class PlotterWidget(QWidget):
         controls_container.setLayout(QVBoxLayout())
 
         # Add select image combobox
-        controls_container.layout().addWidget(QLabel("Image Layer:"))
+        image_layer_layout = QHBoxLayout()
+        image_layer_layout.addWidget(QLabel("Image Layer:"))
         self.image_layer_with_phasor_features_combobox = QComboBox()
-        controls_container.layout().addWidget(
-            self.image_layer_with_phasor_features_combobox
-        )
+        image_layer_layout.addWidget(
+            self.image_layer_with_phasor_features_combobox, 1
+        )  # Add stretch factor of 1
+
+        image_layer_widget = QWidget()
+        image_layer_widget.setLayout(image_layer_layout)
+        controls_container.layout().addWidget(image_layer_widget)
 
         # Add harmonic spinbox below image layer combobox
-        controls_container.layout().addWidget(QLabel("Harmonic:"))
+        harmonic_layout = QHBoxLayout()
+        harmonic_layout.addWidget(QLabel("Harmonic:"))
         self.harmonic_spinbox = QSpinBox()
         self.harmonic_spinbox.setMinimum(1)
         self.harmonic_spinbox.setValue(1)
-        controls_container.layout().addWidget(self.harmonic_spinbox)
+        harmonic_layout.addWidget(
+            self.harmonic_spinbox, 1
+        )  # Add stretch factor of 1
+
+        harmonic_widget = QWidget()
+        harmonic_widget.setLayout(harmonic_layout)
+        controls_container.layout().addWidget(harmonic_widget)
 
         # Create tab widget
         self.tab_widget = QTabWidget()
@@ -858,12 +871,7 @@ class PlotterWidget(QWidget):
             pass
 
     def reset_layer_choices(self):
-        """Reset the image layer with phasor features combobox choices.
-
-        This function is called when a new layer is added or removed.
-        It also updates `_labels_layer_with_phasor_features` attribute with the
-        Labels layer in the metadata of the selected image layer.
-        """
+        """Reset the image layer with phasor features combobox choices."""
         # Temporarily disconnect the signals to prevent double execution
         try:
             self.image_layer_with_phasor_features_combobox.currentIndexChanged.disconnect(
@@ -892,6 +900,12 @@ class PlotterWidget(QWidget):
         for layer_name in layer_names:
             layer = self.viewer.layers[layer_name]
             layer.events.name.connect(self.reset_layer_choices)
+
+        # Try to restore the previous selection before reconnecting signals
+        if current_text in layer_names:
+            self.image_layer_with_phasor_features_combobox.setCurrentText(
+                current_text
+            )
 
         # Reconnect the signals
         self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
