@@ -393,9 +393,9 @@ class LifetimeWidget(QWidget):
             # Additional safety check for infinite values
             if not np.isfinite(self.min_lifetime) or not np.isfinite(
                 self.max_lifetime
-            ):
+            ) or self.max_lifetime * self.lifetime_range_factor > (2e3 / self.frequency) or self.min_lifetime < 0:
                 self.min_lifetime = 0.0
-                self.max_lifetime = 10.0
+                self.max_lifetime = 2e3 / self.frequency  # 2 periods in ns
                 min_slider_val = 0
                 max_slider_val = 10000
 >>>>>>> 2c27a4b (Refactor lifetime functionality into a new LifetimeWidget class)
