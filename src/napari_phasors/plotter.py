@@ -8,7 +8,7 @@ from matplotlib.colorbar import Colorbar
 from matplotlib.colors import LinearSegmentedColormap, LogNorm
 from matplotlib.lines import Line2D
 from matplotlib.patches import Circle
-from napari.layers import Image
+from napari.layers import Image, Labels, Shapes
 from napari.utils import colormaps, notifications
 from phasorpy.lifetime import phasor_from_lifetime
 from qtpy import uic
@@ -125,6 +125,14 @@ class PlotterWidget(QWidget):
         self.harmonic_spinbox.setMinimum(1)
         self.harmonic_spinbox.setValue(1)
         controls_container.layout().addWidget(self.harmonic_spinbox)
+
+        # Add mask layer combobox
+        controls_container.layout().addWidget(QLabel("Mask Layer:"))
+        self.mask_layer_combobox = QComboBox()
+        controls_container.layout().addWidget(
+            self.mask_layer_combobox
+        )
+        self.mask_layer_combobox.addItem("None")
 
         # Create tab widget
         self.tab_widget = QTabWidget()
@@ -882,20 +890,33 @@ class PlotterWidget(QWidget):
             # Signal wasn't connected, ignore
             pass
 
-        current_text = (
+        image_layer_combobox_current_text = (
             self.image_layer_with_phasor_features_combobox.currentText()
         )
         self.image_layer_with_phasor_features_combobox.clear()
 
-        layer_names = [
+        valid_image_layer_names = [
             layer.name
             for layer in self.viewer.layers
             if isinstance(layer, Image)
             and "phasor_features_labels_layer" in layer.metadata.keys()
         ]
-        self.image_layer_with_phasor_features_combobox.addItems(layer_names)
+        self.image_layer_with_phasor_features_combobox.addItems(valid_image_layer_names)
 
-        for layer_name in layer_names:
+        mask_layer_combobox_current_text = (
+            self.mask_layer_combobox.currentText()
+        )
+        self.mask_layer_combobox.clear()
+        
+        allowed_mask_layers = [
+            layer.name
+            for layer in self.viewer.layers
+            if isinstance(layer, Labels) or isinstance(layer, Shapes)
+        ]
+        self.mask_layer_combobox.addItems(["None"] + allowed_mask_layers)
+
+        # Ensure this function is called if layers are renamed
+        for layer_name in valid_image_layer_names + allowed_mask_layers:
             layer = self.viewer.layers[layer_name]
             layer.events.name.connect(self.reset_layer_choices)
 
@@ -909,7 +930,7 @@ class PlotterWidget(QWidget):
 
         # Only call the method if the selection actually changed or if it's the first item
         new_text = self.image_layer_with_phasor_features_combobox.currentText()
-        if new_text != current_text or (current_text == "" and new_text != ""):
+        if new_text != image_layer_combobox_current_text or (image_layer_combobox_current_text == "" and new_text != ""):
             self.on_labels_layer_with_phasor_features_changed()
 
     def on_labels_layer_with_phasor_features_changed(self):
