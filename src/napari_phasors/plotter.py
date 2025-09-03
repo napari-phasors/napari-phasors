@@ -926,6 +926,11 @@ class PlotterWidget(QWidget):
         for layer_name in valid_image_layer_names + allowed_mask_layers:
             layer = self.viewer.layers[layer_name]
             layer.events.name.connect(self.reset_layer_choices)
+            if isinstance(layer, Shapes):
+                layer.events.data.connect(self.on_mask_data_changed)
+            if isinstance(layer, Labels):
+                layer.events.paint.connect(self.on_mask_data_changed)
+                layer.events.set_data.connect(self.on_mask_data_changed)
 
         # Reconnect the signals
         self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
@@ -972,16 +977,37 @@ class PlotterWidget(QWidget):
         finally:
             self._in_on_labels_layer_with_phasor_features_changed = False
 
+    def on_mask_data_changed(self, event):
+        """Handle changes to the mask layer data."""
+        if self.mask_layer_combobox.currentText() != event.source.name:
+            return
+        mask_layer = event.source
+        self.update_mask_column_and_plot(mask_layer)
+
     def on_mask_layer_changed(self, text):
-        """Handle changes to the mask layer."""
+        """Handle changes to the mask layer combo box."""
         if text == "None":
-            self._mask = None
+            self.update_mask_column_and_plot(None)
         else:
             mask_layer = self.viewer.layers[text]
-            if isinstance(mask_layer, Shapes):
-                self._mask = mask_layer.to_labels(labels_shape=self._labels_layer_with_phasor_features.shape)
-            elif isinstance(mask_layer, Labels):
-                self._mask = mask_layer.data
+            self.update_mask_column_and_plot(mask_layer)
+
+    def update_mask_column_and_plot(self, mask_layer):
+        """Update the mask column in the labels layer with phasor features."""
+        self._mask = None
+        if isinstance(mask_layer, Shapes) and len(mask_layer.data) > 0:
+            self._mask = mask_layer.to_labels(labels_shape=self._labels_layer_with_phasor_features.data.shape)
+        elif isinstance(mask_layer, Labels) and mask_layer.data.any():
+            self._mask = mask_layer.data
+        if self._mask is None:
+            # empty mask layer
+            self._labels_layer_with_phasor_features.features['mask'] = 1
+        else:
+            # Update the mask feature in the labels layer with phasor features
+            self._labels_layer_with_phasor_features.features['mask'] = np.tile(self._mask.flatten(), self._labels_layer_with_phasor_features.features[
+                        "harmonic"
+                    ].max())
+        self.plot()
 
     def get_features(self):
         """Get the G and S features for the selected harmonic and selection id.
@@ -1001,8 +1027,8 @@ class PlotterWidget(QWidget):
             return None
 
         table = self._labels_layer_with_phasor_features.features
-        x_data = table['G'][table['harmonic'] == self.harmonic].values
-        y_data = table['S'][table['harmonic'] == self.harmonic].values
+        x_data = table['G'][(table['harmonic'] == self.harmonic) & (table['mask'] > 0)].values
+        y_data = table['S'][(table['harmonic'] == self.harmonic) & (table['mask'] > 0)].values
         mask = np.isnan(x_data) & np.isnan(y_data)
         x_data = x_data[~mask]
         y_data = y_data[~mask]
