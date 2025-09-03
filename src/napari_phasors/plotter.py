@@ -133,6 +133,7 @@ class PlotterWidget(QWidget):
             self.mask_layer_combobox
         )
         self.mask_layer_combobox.addItem("None")
+        self._mask = None
 
         # Create tab widget
         self.tab_widget = QTabWidget()
@@ -201,6 +202,9 @@ class PlotterWidget(QWidget):
         # Update all frequency widgets from layer metadata if layer changes
         self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
             self._sync_frequency_inputs_from_metadata
+        )
+        self.mask_layer_combobox.currentTextChanged.connect(
+            self.on_mask_layer_changed
         )
         self.plotter_inputs_widget.semi_circle_checkbox.stateChanged.connect(
             self.on_toggle_semi_circle
@@ -886,6 +890,9 @@ class PlotterWidget(QWidget):
             self.image_layer_with_phasor_features_combobox.currentIndexChanged.disconnect(
                 self._sync_frequency_inputs_from_metadata
             )
+            self.mask_layer_combobox.currentTextChanged.disconnect(
+                self.on_mask_layer_changed
+            )
         except TypeError:
             # Signal wasn't connected, ignore
             pass
@@ -907,7 +914,7 @@ class PlotterWidget(QWidget):
             self.mask_layer_combobox.currentText()
         )
         self.mask_layer_combobox.clear()
-        
+
         allowed_mask_layers = [
             layer.name
             for layer in self.viewer.layers
@@ -926,6 +933,9 @@ class PlotterWidget(QWidget):
         )
         self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
             self._sync_frequency_inputs_from_metadata
+        )
+        self.mask_layer_combobox.currentTextChanged.connect(
+            self.on_mask_layer_changed
         )
 
         # Only call the method if the selection actually changed or if it's the first item
@@ -961,6 +971,17 @@ class PlotterWidget(QWidget):
 
         finally:
             self._in_on_labels_layer_with_phasor_features_changed = False
+
+    def on_mask_layer_changed(self, text):
+        """Handle changes to the mask layer."""
+        if text == "None":
+            self._mask = None
+        else:
+            mask_layer = self.viewer.layers[text]
+            if isinstance(mask_layer, Shapes):
+                self._mask = mask_layer.to_labels(labels_shape=self._labels_layer_with_phasor_features.shape)
+            elif isinstance(mask_layer, Labels):
+                self._mask = mask_layer.data
 
     def get_features(self):
         """Get the G and S features for the selected harmonic and selection id.
