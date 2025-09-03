@@ -1029,11 +1029,13 @@ class PlotterWidget(QWidget):
             return None
 
         table = self._labels_layer_with_phasor_features.features
-        x_data = table['G'][(table['harmonic'] == self.harmonic) & (table['mask'] > 0)].values
-        y_data = table['S'][(table['harmonic'] == self.harmonic) & (table['mask'] > 0)].values
-        mask = np.isnan(x_data) & np.isnan(y_data)
-        x_data = x_data[~mask]
-        y_data = y_data[~mask]
+        layer_mask = table['mask'] > 0
+        harmonic_filter = table['harmonic'] == self.harmonic
+        x_data = table['G'][harmonic_filter & layer_mask].values
+        y_data = table['S'][harmonic_filter & layer_mask].values
+        nan_mask = np.isnan(x_data) & np.isnan(y_data)
+        x_data = x_data[~nan_mask]
+        y_data = y_data[~nan_mask]
 
         if (
             self.selection_tab.selection_id is None
@@ -1043,9 +1045,9 @@ class PlotterWidget(QWidget):
             return x_data, y_data, None
         else:
             selection_data = table[self.selection_tab.selection_id][
-                table['harmonic'] == self.harmonic
+                harmonic_filter & layer_mask
             ].values
-            selection_data = selection_data[~mask]
+            selection_data = selection_data[~nan_mask]
             return x_data, y_data, selection_data
 
     def set_axes_labels(self):
