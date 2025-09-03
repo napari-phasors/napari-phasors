@@ -921,6 +921,8 @@ class PlotterWidget(QWidget):
             if isinstance(layer, Labels) or isinstance(layer, Shapes)
         ]
         self.mask_layer_combobox.addItems(["None"] + allowed_mask_layers)
+        if mask_layer_combobox_current_text in allowed_mask_layers:
+            self.mask_layer_combobox.setCurrentText(mask_layer_combobox_current_text)
 
         # Ensure this function is called if layers are renamed
         for layer_name in valid_image_layer_names + allowed_mask_layers:
