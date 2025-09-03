@@ -10,7 +10,7 @@ from skimage.util import map_array
 from ._utils import colormap_to_dict
 
 #: The columns in the phasor features table that should not be used as selection id.
-DATA_COLUMNS = ["label", "G_original", "S_original", "G", "S", "harmonic"]
+DATA_COLUMNS = ["label", "G_original", "S_original", "G", "S", "harmonic", "mask"]
 
 
 class SelectionWidget(QWidget):
@@ -391,16 +391,11 @@ class SelectionWidget(QWidget):
             column
         ] = 0
 
+        layer_mask = self.parent_widget._labels_layer_with_phasor_features.features["mask"] > 0
+        G_filtered = self.parent_widget._labels_layer_with_phasor_features.features["G"][layer_mask]
+        S_filtered = self.parent_widget._labels_layer_with_phasor_features.features["S"][layer_mask]
         # Filter rows where 'G' and 'S' is not NaN
-        valid_rows = (
-            ~self.parent_widget._labels_layer_with_phasor_features.features[
-                "G"
-            ].isna()
-            & ~self.parent_widget._labels_layer_with_phasor_features.features[
-                "S"
-            ].isna()
-        )
-        num_valid_rows = valid_rows.sum()
+        not_nan_mask = ~G_filtered.isna() & ~S_filtered.isna()
 
         selection_to_use = manual_selection
         if (
@@ -415,15 +410,15 @@ class SelectionWidget(QWidget):
         if selection_to_use is None:
             # Set all values to 0 (no selection)
             self.parent_widget._labels_layer_with_phasor_features.features.loc[
-                valid_rows, column
+                not_nan_mask.index, column
             ] = 0
         else:
-            tiled_manual_selection = np.tile(
-                selection_to_use, (num_valid_rows // len(selection_to_use)) + 1
-            )[:num_valid_rows]
+            tiled_manual_selection = np.tile(selection_to_use, self.parent_widget._labels_layer_with_phasor_features.features[
+                        "harmonic"
+                    ].max())
 
             self.parent_widget._labels_layer_with_phasor_features.features.loc[
-                valid_rows, column
+                not_nan_mask.index, column
             ] = tiled_manual_selection
 
         self.update_phasors_layer()
