@@ -21,6 +21,7 @@ from qtpy.QtWidgets import (
     QTabWidget,
     QVBoxLayout,
     QWidget,
+    QPushButton,
 )
 
 from .calibration_tab import CalibrationWidget
@@ -126,11 +127,24 @@ class PlotterWidget(QWidget):
         self.harmonic_spinbox.setValue(1)
         controls_container.layout().addWidget(self.harmonic_spinbox)
 
-        # Add mask layer combobox
-        controls_container.layout().addWidget(QLabel("Mask Layer:"))
+        # Add mask enable button (initially visible)
+        self.enable_mask_button = QPushButton("Provide Mask Layer")
+        controls_container.layout().addWidget(self.enable_mask_button)
+        self.enable_mask_button.clicked.connect(self.show_mask_combobox)
+
+        # Add mask layer combobox (initially hidden)
+        self.mask_layer_label = QLabel("Mask Layer:")
+        controls_container.layout().addWidget(self.mask_layer_label)
         self.mask_layer_combobox = QComboBox()
         controls_container.layout().addWidget(self.mask_layer_combobox)
+        # set tooltip for combobox
+        self.mask_layer_combobox.setToolTip(
+            "Create or select a Labels or Shapes layer with a mask to restrict analysis to specific regions. "
+            "Selecting 'None' will disable masking."
+        )
         self.mask_layer_combobox.addItem("None")
+        self.mask_layer_label.hide()
+        self.mask_layer_combobox.hide()
         self._mask = None
 
         # Create tab widget
@@ -201,9 +215,15 @@ class PlotterWidget(QWidget):
         self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
             self._sync_frequency_inputs_from_metadata
         )
+        # Update mask when mask layer selection changes
         self.mask_layer_combobox.currentTextChanged.connect(
             self.on_mask_layer_changed
         )
+        # Hide mask combobox when user selects 'None'
+        self.mask_layer_combobox.activated.connect(
+            self.on_mask_layer_activated
+        )
+
         self.plotter_inputs_widget.semi_circle_checkbox.stateChanged.connect(
             self.on_toggle_semi_circle
         )
@@ -983,12 +1003,17 @@ class PlotterWidget(QWidget):
         finally:
             self._in_on_labels_layer_with_phasor_features_changed = False
 
-    def on_mask_data_changed(self, event):
-        """Handle changes to the mask layer data."""
-        if self.mask_layer_combobox.currentText() != event.source.name:
-            return
-        mask_layer = event.source
-        self.update_mask_column_and_plot(mask_layer)
+    def show_mask_combobox(self):
+        self.enable_mask_button.hide()
+        self.mask_layer_label.show()
+        self.mask_layer_combobox.show()
+
+    def on_mask_layer_activated(self, index):
+        # Only hide if user actively selects 'None'
+        if self.mask_layer_combobox.itemText(index) == "None":
+            self.mask_layer_label.hide()
+            self.mask_layer_combobox.hide()
+            self.enable_mask_button.show()
 
     def on_mask_layer_changed(self, text):
         """Handle changes to the mask layer combo box."""
@@ -997,6 +1022,13 @@ class PlotterWidget(QWidget):
         else:
             mask_layer = self.viewer.layers[text]
             self.update_mask_column_and_plot(mask_layer)
+
+    def on_mask_data_changed(self, event):
+        """Handle changes to the mask layer data."""
+        if self.mask_layer_combobox.currentText() != event.source.name:
+            return
+        mask_layer = event.source
+        self.update_mask_column_and_plot(mask_layer)
 
     def update_mask_column_and_plot(self, mask_layer):
         """Update the mask column in the labels layer with phasor features."""
