@@ -129,9 +129,7 @@ class PlotterWidget(QWidget):
         # Add mask layer combobox
         controls_container.layout().addWidget(QLabel("Mask Layer:"))
         self.mask_layer_combobox = QComboBox()
-        controls_container.layout().addWidget(
-            self.mask_layer_combobox
-        )
+        controls_container.layout().addWidget(self.mask_layer_combobox)
         self.mask_layer_combobox.addItem("None")
         self._mask = None
 
@@ -908,7 +906,9 @@ class PlotterWidget(QWidget):
             if isinstance(layer, Image)
             and "phasor_features_labels_layer" in layer.metadata.keys()
         ]
-        self.image_layer_with_phasor_features_combobox.addItems(valid_image_layer_names)
+        self.image_layer_with_phasor_features_combobox.addItems(
+            valid_image_layer_names
+        )
 
         mask_layer_combobox_current_text = (
             self.mask_layer_combobox.currentText()
@@ -922,7 +922,9 @@ class PlotterWidget(QWidget):
         ]
         self.mask_layer_combobox.addItems(["None"] + allowed_mask_layers)
         if mask_layer_combobox_current_text in allowed_mask_layers:
-            self.mask_layer_combobox.setCurrentText(mask_layer_combobox_current_text)
+            self.mask_layer_combobox.setCurrentText(
+                mask_layer_combobox_current_text
+            )
 
         # Ensure this function is called if layers are renamed
         for layer_name in valid_image_layer_names + allowed_mask_layers:
@@ -947,7 +949,9 @@ class PlotterWidget(QWidget):
 
         # Only call the method if the selection actually changed or if it's the first item
         new_text = self.image_layer_with_phasor_features_combobox.currentText()
-        if new_text != image_layer_combobox_current_text or (image_layer_combobox_current_text == "" and new_text != ""):
+        if new_text != image_layer_combobox_current_text or (
+            image_layer_combobox_current_text == "" and new_text != ""
+        ):
             self.on_labels_layer_with_phasor_features_changed()
 
     def on_labels_layer_with_phasor_features_changed(self):
@@ -998,7 +1002,9 @@ class PlotterWidget(QWidget):
         """Update the mask column in the labels layer with phasor features."""
         self._mask = None
         if isinstance(mask_layer, Shapes) and len(mask_layer.data) > 0:
-            self._mask = mask_layer.to_labels(labels_shape=self._labels_layer_with_phasor_features.data.shape)
+            self._mask = mask_layer.to_labels(
+                labels_shape=self._labels_layer_with_phasor_features.data.shape
+            )
         elif isinstance(mask_layer, Labels) and mask_layer.data.any():
             self._mask = mask_layer.data
         if self._mask is None:
@@ -1006,9 +1012,12 @@ class PlotterWidget(QWidget):
             self._labels_layer_with_phasor_features.features['mask'] = 1
         else:
             # Update the mask feature in the labels layer with phasor features
-            self._labels_layer_with_phasor_features.features['mask'] = np.tile(self._mask.flatten(), self._labels_layer_with_phasor_features.features[
-                        "harmonic"
-                    ].max())
+            self._labels_layer_with_phasor_features.features['mask'] = np.tile(
+                self._mask.flatten(),
+                self._labels_layer_with_phasor_features.features[
+                    "harmonic"
+                ].max(),
+            )
         self.plot()
 
     def get_features(self):
