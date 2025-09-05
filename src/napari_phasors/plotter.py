@@ -27,7 +27,7 @@ from qtpy.QtWidgets import (
 from .calibration_tab import CalibrationWidget
 from .filter_tab import FilterWidget
 
-# from .fret_tab import FretWidget
+from .fret_tab import FretWidget
 from .lifetime_tab import LifetimeWidget
 
 # from .components_tab import ComponentsWidget
@@ -722,7 +722,7 @@ class PlotterWidget(QWidget):
         """
         self.calibration_tab.calibration_widget.frequency_input.setText(value)
         self.lifetime_tab.frequency_input.setText(value)
-        # self.fret_tab.fret_widget.frequency_input.setText(value)
+        self.fret_tab.frequency_input.setText(value)
 
     def _redefine_axes_limits(self, ensure_full_circle_displayed=True):
         """
