@@ -278,6 +278,69 @@ class PlotterWidget(QWidget):
         # Populate labels layer combobox
         self.reset_layer_choices()
 
+        # Connect canvas click event
+        self.canvas_widget.figure.canvas.mpl_connect(
+            'button_press_event', self._on_canvas_click
+        )
+
+        # Connect tab change signal
+        self.tab_widget.currentChanged.connect(self._on_tab_changed)
+
+    def _on_tab_changed(self, index):
+        """Handle tab change events to show/hide tab-specific lines."""
+        # Get the current tab widget
+        current_tab = self.tab_widget.widget(index)
+        
+        # Hide all tab-specific artists first
+        self._hide_all_tab_artists()
+        
+        # Show artists for the current tab
+        self._show_tab_artists(current_tab)
+        
+        # Refresh canvas
+        self.canvas_widget.figure.canvas.draw_idle()
+
+    def _hide_all_tab_artists(self):
+        """Hide all tab-specific artists."""
+        # Hide components tab artists
+        if hasattr(self, 'components_tab'):
+            self._set_components_visibility(False)
+        
+        # Hide other tabs' artists (add similar methods for other tabs)
+        if hasattr(self, 'fret_tab'):
+            self._set_fret_visibility(False)
+        
+
+    def _show_tab_artists(self, current_tab):
+        """Show artists for the specified tab."""
+        if current_tab == getattr(self, 'components_tab', None):
+            self._set_components_visibility(True)
+        elif current_tab == getattr(self, 'fret_tab', None):
+            self._set_fret_visibility(True)
+
+    def _set_components_visibility(self, visible):
+        """Set visibility of components tab artists."""
+        # if hasattr(self, 'components_tab'):
+        #     self.components_tab.set_artists_visible(visible)
+        pass
+
+    def _set_fret_visibility(self, visible):
+        """Set visibility of FRET tab artists."""
+        if hasattr(self, 'fret_tab'):
+            self.fret_tab.set_artists_visible(visible)
+    
+    def _on_canvas_click(self, event):
+        """Handle click events on the canvas widget."""
+        if event.inaxes != self.canvas_widget.axes:
+            return None, None
+        # Check if the click is on the canvas widget axes
+        if event.button == 1:  # Left click
+            # Get the coordinates of the click
+            x, y = event.xdata, event.ydata
+            if x is not None and y is not None:
+                return x, y
+        return None, None
+
     def _on_plot_type_changed(self):
         """Callback for plot type change."""
         new_plot_type = (
@@ -383,19 +446,10 @@ class PlotterWidget(QWidget):
 
     def _create_fret_tab(self):
         """Create the FRET tab."""
-        # self.fret_tab = FretWidget(self.viewer, parent=self)
-        # self.tab_widget.addTab(self.fret_tab, "FRET")
-
-        # self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
-        #     self.lifetime_tab._on_image_layer_changed
-        # )
-
-        # Placeholder for future FRET tab implementation
-        self.fret_tab = QWidget()
-        self.fret_tab.setLayout(QVBoxLayout())
+        self.fret_tab = FretWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.fret_tab, "FRET")
-        self.fret_tab.layout().addWidget(
-            QLabel("FRET widget will be implemented here.")
+        self.fret_tab.frequency_input.textEdited.connect(
+            self._broadcast_frequency_value_across_tabs
         )
 
     @property
