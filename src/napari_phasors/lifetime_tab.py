@@ -285,11 +285,23 @@ class LifetimeWidget(QWidget):
         phasor_data = (
             self.parent_widget._labels_layer_with_phasor_features.features
         )
-        self.frequency = float(self.frequency_input.text().strip())
         frequency = self.frequency * self.parent_widget.harmonic
         harmonic_mask = phasor_data['harmonic'] == self.parent_widget.harmonic
-        real = phasor_data.loc[harmonic_mask, 'G']
-        imag = phasor_data.loc[harmonic_mask, 'S']
+
+        # Get the current layer data to check for filtered pixels
+        layer_data = self.parent_widget._labels_layer_with_phasor_features.data
+
+        # Create a mask for valid (non-NaN, non-zero) pixels in the layer
+        valid_pixel_mask = ~np.isnan(layer_data) & (layer_data != 0)
+        valid_pixel_indices = np.where(valid_pixel_mask.flatten())[0]
+
+        # Filter phasor data to only include valid pixels
+        filtered_harmonic_mask = harmonic_mask & phasor_data.index.isin(
+            valid_pixel_indices
+        )
+
+        real = phasor_data.loc[filtered_harmonic_mask, 'G']
+        imag = phasor_data.loc[filtered_harmonic_mask, 'S']
 
         if self.lifetime_type_combobox.currentText() == "Normal Lifetime":
             self.lifetime_data_original = phasor_to_normal_lifetime(
@@ -329,7 +341,7 @@ class LifetimeWidget(QWidget):
                     phase_lifetime, a_min=0, a_max=None
                 )
             else:
-                self.lifetime_data_original = np.clip(
+                lifetime_values = np.clip(
                     modulation_lifetime, a_min=0, a_max=None
                 )
 
