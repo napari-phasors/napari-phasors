@@ -15,6 +15,7 @@ from qtpy import uic
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QComboBox,
+    QHBoxLayout,
     QLabel,
     QSpinBox,
     QSplitter,
@@ -26,11 +27,11 @@ from qtpy.QtWidgets import (
 from .calibration_tab import CalibrationWidget
 from .filter_tab import FilterWidget
 
+# from .fret_tab import FretWidget
+from .lifetime_tab import LifetimeWidget
+
 # from .components_tab import ComponentsWidget
 from .selection_tab import SelectionWidget
-
-# from .fret_tab import FretWidget
-# from .lifetime_tab import LifetimeWidget
 
 
 class PlotterWidget(QWidget):
@@ -113,18 +114,38 @@ class PlotterWidget(QWidget):
         controls_container.setLayout(QVBoxLayout())
 
         # Add select image combobox
-        controls_container.layout().addWidget(QLabel("Image Layer:"))
+        image_layer_layout = QHBoxLayout()
+        image_layer_layout.setContentsMargins(0, 0, 0, 0)  # Remove margins
+        image_layer_layout.setSpacing(5)  # Reduce spacing between widgets
+        image_layer_layout.addWidget(QLabel("Image Layer:"))
         self.image_layer_with_phasor_features_combobox = QComboBox()
-        controls_container.layout().addWidget(
-            self.image_layer_with_phasor_features_combobox
-        )
+        self.image_layer_with_phasor_features_combobox.setMaximumHeight(
+            25
+        )  # Set smaller height
+        image_layer_layout.addWidget(
+            self.image_layer_with_phasor_features_combobox, 1
+        )  # Add stretch factor of 1
+
+        image_layer_widget = QWidget()
+        image_layer_widget.setLayout(image_layer_layout)
+        controls_container.layout().addWidget(image_layer_widget)
 
         # Add harmonic spinbox below image layer combobox
-        controls_container.layout().addWidget(QLabel("Harmonic:"))
+        harmonic_layout = QHBoxLayout()
+        harmonic_layout.setContentsMargins(0, 0, 0, 0)  # Remove margins
+        harmonic_layout.setSpacing(5)  # Reduce spacing between widgets
+        harmonic_layout.addWidget(QLabel("Harmonic:"))
         self.harmonic_spinbox = QSpinBox()
         self.harmonic_spinbox.setMinimum(1)
         self.harmonic_spinbox.setValue(1)
-        controls_container.layout().addWidget(self.harmonic_spinbox)
+        self.harmonic_spinbox.setMaximumHeight(25)  # Set smaller height
+        harmonic_layout.addWidget(
+            self.harmonic_spinbox, 1
+        )  # Add stretch factor of 1
+
+        harmonic_widget = QWidget()
+        harmonic_widget.setLayout(harmonic_layout)
+        controls_container.layout().addWidget(harmonic_widget)
 
         # Create tab widget
         self.tab_widget = QTabWidget()
@@ -318,7 +339,6 @@ class PlotterWidget(QWidget):
         """Create the Calibration tab."""
         self.calibration_tab = CalibrationWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.calibration_tab, "Calibration")
-        # Broadcast frequency changes from the calibration tab to all tabs
         self.calibration_tab.calibration_widget.frequency_input.textEdited.connect(
             self._broadcast_frequency_value_across_tabs
         )
@@ -348,22 +368,17 @@ class PlotterWidget(QWidget):
 
     def _create_lifetime_tab(self):
         """Create the Lifetime tab."""
-        # self.lifetime_tab = LifetimeWidget(self.viewer, parent=self)
-        # self.tab_widget.addTab(self.lifetime_tab, "Lifetime")
-
-        # self.harmonic_spinbox.valueChanged.connect(
-        #     self.lifetime_tab._on_harmonic_changed
-        # )
-        # self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
-        #     self.lifetime_tab._on_image_layer_changed
-        # )
-
-        # Placeholder for future lifetime tab implementation
-        self.lifetime_tab = QWidget()
-        self.lifetime_tab.setLayout(QVBoxLayout())
+        self.lifetime_tab = LifetimeWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.lifetime_tab, "Lifetime")
-        self.lifetime_tab.layout().addWidget(
-            QLabel("Lifetime widget will be implemented here.")
+
+        self.harmonic_spinbox.valueChanged.connect(
+            self.lifetime_tab._on_harmonic_changed
+        )
+        self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
+            self.lifetime_tab._on_image_layer_changed
+        )
+        self.lifetime_tab.frequency_input.textEdited.connect(
+            self._broadcast_frequency_value_across_tabs
         )
 
     def _create_fret_tab(self):
@@ -652,8 +667,8 @@ class PlotterWidget(QWidget):
         Broadcast the frequency value to all relevant input fields.
         """
         self.calibration_tab.calibration_widget.frequency_input.setText(value)
-        # widget.lifetime_tab.lifetime_widget.frequency_input.setText(value)
-        # widget.fret_tab.fret_widget.frequency_input.setText(value)
+        self.lifetime_tab.frequency_input.setText(value)
+        # self.fret_tab.fret_widget.frequency_input.setText(value)
 
     def _redefine_axes_limits(self, ensure_full_circle_displayed=True):
         """
@@ -864,53 +879,70 @@ class PlotterWidget(QWidget):
             pass
 
     def reset_layer_choices(self):
-        """Reset the image layer with phasor features combobox choices.
+        """Reset the image layer with phasor features combobox choices."""
+        # Prevent recursive calls
+        if getattr(self, '_resetting_layer_choices', False):
+            return
 
-        This function is called when a new layer is added or removed.
-        It also updates `_labels_layer_with_phasor_features` attribute with the
-        Labels layer in the metadata of the selected image layer.
-        """
-        # Temporarily disconnect the signals to prevent double execution
+        self._resetting_layer_choices = True
+
         try:
-            self.image_layer_with_phasor_features_combobox.currentIndexChanged.disconnect(
-                self.on_labels_layer_with_phasor_features_changed
+            # Store current selection
+            current_text = (
+                self.image_layer_with_phasor_features_combobox.currentText()
             )
-            self.image_layer_with_phasor_features_combobox.currentIndexChanged.disconnect(
-                self._sync_frequency_inputs_from_metadata
+
+            # Temporarily disconnect signals to prevent cascading updates
+            self.image_layer_with_phasor_features_combobox.blockSignals(True)
+
+            # Clear and repopulate
+            self.image_layer_with_phasor_features_combobox.clear()
+
+            layer_names = [
+                layer.name
+                for layer in self.viewer.layers
+                if isinstance(layer, Image)
+                and "phasor_features_labels_layer" in layer.metadata.keys()
+            ]
+
+            self.image_layer_with_phasor_features_combobox.addItems(
+                layer_names
             )
-        except TypeError:
-            # Signal wasn't connected, ignore
-            pass
 
-        current_text = (
-            self.image_layer_with_phasor_features_combobox.currentText()
-        )
-        self.image_layer_with_phasor_features_combobox.clear()
+            # Restore selection if it still exists
+            if current_text in layer_names:
+                index = (
+                    self.image_layer_with_phasor_features_combobox.findText(
+                        current_text
+                    )
+                )
+                if index >= 0:
+                    self.image_layer_with_phasor_features_combobox.setCurrentIndex(
+                        index
+                    )
 
-        layer_names = [
-            layer.name
-            for layer in self.viewer.layers
-            if isinstance(layer, Image)
-            and "phasor_features_labels_layer" in layer.metadata.keys()
-        ]
-        self.image_layer_with_phasor_features_combobox.addItems(layer_names)
+            # Re-enable signals
+            self.image_layer_with_phasor_features_combobox.blockSignals(False)
 
-        for layer_name in layer_names:
-            layer = self.viewer.layers[layer_name]
-            layer.events.name.connect(self.reset_layer_choices)
+            # Connect layer name change events (disconnect first to avoid duplicates)
+            for layer_name in layer_names:
+                layer = self.viewer.layers[layer_name]
+                try:
+                    layer.events.name.disconnect(self.reset_layer_choices)
+                except (TypeError, ValueError):
+                    pass  # Not connected, ignore
+                layer.events.name.connect(self.reset_layer_choices)
 
-        # Reconnect the signals
-        self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
-            self.on_labels_layer_with_phasor_features_changed
-        )
-        self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
-            self._sync_frequency_inputs_from_metadata
-        )
+            # Trigger updates only if selection changed
+            new_text = (
+                self.image_layer_with_phasor_features_combobox.currentText()
+            )
+            if new_text != current_text:
+                self.on_labels_layer_with_phasor_features_changed()
+                self._sync_frequency_inputs_from_metadata()
 
-        # Only call the method if the selection actually changed or if it's the first item
-        new_text = self.image_layer_with_phasor_features_combobox.currentText()
-        if new_text != current_text or (current_text == "" and new_text != ""):
-            self.on_labels_layer_with_phasor_features_changed()
+        finally:
+            self._resetting_layer_choices = False
 
     def on_labels_layer_with_phasor_features_changed(self):
         """Handle changes to the labels layer with phasor features."""
@@ -935,6 +967,9 @@ class PlotterWidget(QWidget):
                     "harmonic"
                 ].max()
             )
+            # Update filter widget when layer changes
+            if hasattr(self, 'filter_tab'):
+                self.filter_tab.on_labels_layer_with_phasor_features_changed()
 
             self.plot()
 
