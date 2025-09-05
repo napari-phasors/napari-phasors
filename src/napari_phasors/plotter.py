@@ -115,8 +115,13 @@ class PlotterWidget(QWidget):
 
         # Add select image combobox
         image_layer_layout = QHBoxLayout()
+        image_layer_layout.setContentsMargins(0, 0, 0, 0)  # Remove margins
+        image_layer_layout.setSpacing(5)  # Reduce spacing between widgets
         image_layer_layout.addWidget(QLabel("Image Layer:"))
         self.image_layer_with_phasor_features_combobox = QComboBox()
+        self.image_layer_with_phasor_features_combobox.setMaximumHeight(
+            25
+        )  # Set smaller height
         image_layer_layout.addWidget(
             self.image_layer_with_phasor_features_combobox, 1
         )  # Add stretch factor of 1
@@ -127,10 +132,13 @@ class PlotterWidget(QWidget):
 
         # Add harmonic spinbox below image layer combobox
         harmonic_layout = QHBoxLayout()
+        harmonic_layout.setContentsMargins(0, 0, 0, 0)  # Remove margins
+        harmonic_layout.setSpacing(5)  # Reduce spacing between widgets
         harmonic_layout.addWidget(QLabel("Harmonic:"))
         self.harmonic_spinbox = QSpinBox()
         self.harmonic_spinbox.setMinimum(1)
         self.harmonic_spinbox.setValue(1)
+        self.harmonic_spinbox.setMaximumHeight(25)  # Set smaller height
         harmonic_layout.addWidget(
             self.harmonic_spinbox, 1
         )  # Add stretch factor of 1
@@ -872,53 +880,69 @@ class PlotterWidget(QWidget):
 
     def reset_layer_choices(self):
         """Reset the image layer with phasor features combobox choices."""
-        # Temporarily disconnect the signals to prevent double execution
+        # Prevent recursive calls
+        if getattr(self, '_resetting_layer_choices', False):
+            return
+
+        self._resetting_layer_choices = True
+
         try:
-            self.image_layer_with_phasor_features_combobox.currentIndexChanged.disconnect(
-                self.on_labels_layer_with_phasor_features_changed
-            )
-            self.image_layer_with_phasor_features_combobox.currentIndexChanged.disconnect(
-                self._sync_frequency_inputs_from_metadata
-            )
-        except TypeError:
-            # Signal wasn't connected, ignore
-            pass
-
-        current_text = (
-            self.image_layer_with_phasor_features_combobox.currentText()
-        )
-        self.image_layer_with_phasor_features_combobox.clear()
-
-        layer_names = [
-            layer.name
-            for layer in self.viewer.layers
-            if isinstance(layer, Image)
-            and "phasor_features_labels_layer" in layer.metadata.keys()
-        ]
-        self.image_layer_with_phasor_features_combobox.addItems(layer_names)
-
-        for layer_name in layer_names:
-            layer = self.viewer.layers[layer_name]
-            layer.events.name.connect(self.reset_layer_choices)
-
-        # Try to restore the previous selection before reconnecting signals
-        if current_text in layer_names:
-            self.image_layer_with_phasor_features_combobox.setCurrentText(
-                current_text
+            # Store current selection
+            current_text = (
+                self.image_layer_with_phasor_features_combobox.currentText()
             )
 
-        # Reconnect the signals
-        self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
-            self.on_labels_layer_with_phasor_features_changed
-        )
-        self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
-            self._sync_frequency_inputs_from_metadata
-        )
+            # Temporarily disconnect signals to prevent cascading updates
+            self.image_layer_with_phasor_features_combobox.blockSignals(True)
 
-        # Only call the method if the selection actually changed or if it's the first item
-        new_text = self.image_layer_with_phasor_features_combobox.currentText()
-        if new_text != current_text or (current_text == "" and new_text != ""):
-            self.on_labels_layer_with_phasor_features_changed()
+            # Clear and repopulate
+            self.image_layer_with_phasor_features_combobox.clear()
+
+            layer_names = [
+                layer.name
+                for layer in self.viewer.layers
+                if isinstance(layer, Image)
+                and "phasor_features_labels_layer" in layer.metadata.keys()
+            ]
+
+            self.image_layer_with_phasor_features_combobox.addItems(
+                layer_names
+            )
+
+            # Restore selection if it still exists
+            if current_text in layer_names:
+                index = (
+                    self.image_layer_with_phasor_features_combobox.findText(
+                        current_text
+                    )
+                )
+                if index >= 0:
+                    self.image_layer_with_phasor_features_combobox.setCurrentIndex(
+                        index
+                    )
+
+            # Re-enable signals
+            self.image_layer_with_phasor_features_combobox.blockSignals(False)
+
+            # Connect layer name change events (disconnect first to avoid duplicates)
+            for layer_name in layer_names:
+                layer = self.viewer.layers[layer_name]
+                try:
+                    layer.events.name.disconnect(self.reset_layer_choices)
+                except (TypeError, ValueError):
+                    pass  # Not connected, ignore
+                layer.events.name.connect(self.reset_layer_choices)
+
+            # Trigger updates only if selection changed
+            new_text = (
+                self.image_layer_with_phasor_features_combobox.currentText()
+            )
+            if new_text != current_text:
+                self.on_labels_layer_with_phasor_features_changed()
+                self._sync_frequency_inputs_from_metadata()
+
+        finally:
+            self._resetting_layer_choices = False
 
     def on_labels_layer_with_phasor_features_changed(self):
         """Handle changes to the labels layer with phasor features."""
@@ -943,6 +967,9 @@ class PlotterWidget(QWidget):
                     "harmonic"
                 ].max()
             )
+            # Update filter widget when layer changes
+            if hasattr(self, 'filter_tab'):
+                self.filter_tab.on_labels_layer_with_phasor_features_changed()
 
             self.plot()
 

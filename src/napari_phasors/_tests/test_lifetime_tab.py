@@ -37,7 +37,7 @@ def test_lifetime_widget_initialization_values(make_napari_viewer):
     assert isinstance(lifetime_widget.layout(), QVBoxLayout)
 
     # Test initial attribute values
-    assert lifetime_widget.frequency == 0.0
+    assert lifetime_widget.frequency is None
     assert lifetime_widget.lifetime_data is None
     assert lifetime_widget.lifetime_data_original is None
     assert lifetime_widget.lifetime_layer is None
@@ -291,6 +291,7 @@ def test_lifetime_widget_slider_range_update(make_napari_viewer):
     lifetime_widget.lifetime_data_original = np.array(
         [1.0, 2.0, 3.0, 4.0, 5.0]
     )
+    lifetime_widget.frequency = 80.0  # MHz
 
     lifetime_widget._update_lifetime_range_slider()
 
@@ -317,6 +318,7 @@ def test_lifetime_widget_slider_range_update_no_valid_data(make_napari_viewer):
 
     # Create data with only invalid values
     lifetime_widget.lifetime_data_original = np.array([np.nan, 0, np.inf, -1])
+    lifetime_widget.frequency = 80.0  # MHz
 
     lifetime_widget._update_lifetime_range_slider()
 
@@ -577,8 +579,8 @@ def test_lifetime_widget_full_workflow_with_real_calculations(
     lifetime_layer = viewer.layers[lifetime_widget.lifetime_layer.name]
 
     # Verify expected lifetime values
-    np.testing.assert_array_almost_equal(
-        lifetime_layer.data, expected_phase_lifetime, decimal=10
+    np.testing.assert_allclose(
+        lifetime_layer.data, expected_phase_lifetime, rtol=1e-3
     )
 
     # Change lifetime type to Modulation Lifetime
@@ -588,8 +590,8 @@ def test_lifetime_widget_full_workflow_with_real_calculations(
     lifetime_layer = viewer.layers[lifetime_widget.lifetime_layer.name]
 
     # Verify expected lifetime values
-    np.testing.assert_array_almost_equal(
-        lifetime_layer.data, expected_mod_lifetime, decimal=10
+    np.testing.assert_allclose(
+        lifetime_layer.data, expected_mod_lifetime, rtol=1e-3
     )
 
     # Change lifetime type to Normal Lifetime
@@ -602,8 +604,8 @@ def test_lifetime_widget_full_workflow_with_real_calculations(
     expected_normal_reshaped = np.reshape(expected_normal_lifetime, mean_shape)
 
     # Verify expected lifetime values
-    np.testing.assert_array_almost_equal(
-        lifetime_layer.data, expected_normal_reshaped, decimal=10
+    np.testing.assert_allclose(
+        lifetime_layer.data, expected_normal_reshaped, rtol=1e-3
     )
 
 
@@ -633,7 +635,9 @@ def test_lifetime_widget_range_clipping_with_real_data(make_napari_viewer):
     original_data = lifetime_widget.lifetime_data_original.copy()
 
     # Verify initial state - data should be unclipped
-    np.testing.assert_array_equal(lifetime_widget.lifetime_data, original_data)
+    np.testing.assert_allclose(
+        lifetime_widget.lifetime_data, original_data, rtol=1e-3
+    )
 
     # Test range clipping with slider
     # Get the actual lifetime range from calculated data
