@@ -16,12 +16,12 @@ from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QComboBox,
     QLabel,
+    QHBoxLayout,
     QSpinBox,
     QSplitter,
     QTabWidget,
     QVBoxLayout,
     QWidget,
-    QPushButton,
 )
 
 from .calibration_tab import CalibrationWidget
@@ -119,32 +119,30 @@ class PlotterWidget(QWidget):
         controls_container.layout().addWidget(
             self.image_layer_with_phasor_features_combobox
         )
-
+        
         # Create a horizontal box for harmonic and mask controls
-        from qtpy.QtWidgets import QHBoxLayout
-
-        hbox = QHBoxLayout()
+        harmonics_and_mask_container = QHBoxLayout()
 
         # Harmonic label and spinbox (left side)
         self.harmonic_label = QLabel("Harmonic:")
-        hbox.addWidget(self.harmonic_label)
+        harmonics_and_mask_container.addWidget(self.harmonic_label)
         self.harmonic_spinbox = QSpinBox()
         self.harmonic_spinbox.setMinimum(1)
         self.harmonic_spinbox.setValue(1)
-        hbox.addWidget(self.harmonic_spinbox)
+        harmonics_and_mask_container.addWidget(self.harmonic_spinbox)
 
         # Mask label and combobox (right side)
         self.mask_layer_label = QLabel("Mask Layer:")
-        hbox.addWidget(self.mask_layer_label)
+        harmonics_and_mask_container.addWidget(self.mask_layer_label)
         self.mask_layer_combobox = QComboBox()
         self.mask_layer_combobox.setToolTip(
             "Create or select a Labels or Shapes layer with a mask to restrict analysis to specific regions. "
             "Selecting 'None' will disable masking."
         )
         self.mask_layer_combobox.addItem("None")
-        hbox.addWidget(self.mask_layer_combobox)
+        harmonics_and_mask_container.addWidget(self.mask_layer_combobox)
 
-        controls_container.layout().addLayout(hbox)
+        controls_container.layout().addLayout(harmonics_and_mask_container)
         self._mask = None
 
         # Create tab widget
