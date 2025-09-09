@@ -309,6 +309,7 @@ class SelectionWidget(QWidget):
             if layer.name.startswith("Selection: "):
                 layer.visible = layer.name == target_layer_name
 
+        harmonic_mask = self.parent_widget._labels_layer_with_phasor_features.features['harmonic'] == self.parent_widget.harmonic
         # Filter rows where 'G' and 'S' is not NaN
         valid_rows = (
             ~self.parent_widget._labels_layer_with_phasor_features.features[
@@ -317,6 +318,7 @@ class SelectionWidget(QWidget):
             & ~self.parent_widget._labels_layer_with_phasor_features.features[
                 "S"
             ].isna()
+            & harmonic_mask
         )
 
         selection_data = (
