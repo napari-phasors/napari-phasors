@@ -119,7 +119,7 @@ class PlotterWidget(QWidget):
         controls_container.layout().addWidget(
             self.image_layer_with_phasor_features_combobox
         )
-        
+
         # Create a horizontal box for harmonic and mask controls
         harmonics_and_mask_container = QHBoxLayout()
 
@@ -143,7 +143,7 @@ class PlotterWidget(QWidget):
         harmonics_and_mask_container.addWidget(self.mask_layer_combobox)
 
         controls_container.layout().addLayout(harmonics_and_mask_container)
-        self._mask = None
+        self.mask = None
 
         # Create tab widget
         self.tab_widget = QTabWidget()
@@ -1014,20 +1014,32 @@ class PlotterWidget(QWidget):
 
     def update_mask_column_and_plot(self, mask_layer):
         """Update the mask column in the labels layer with phasor features."""
-        self._mask = None
+        self.mask = None
         if isinstance(mask_layer, Shapes) and len(mask_layer.data) > 0:
-            self._mask = mask_layer.to_labels(
+            self.mask = mask_layer.to_labels(
                 labels_shape=self._labels_layer_with_phasor_features.data.shape
             )
         elif isinstance(mask_layer, Labels) and mask_layer.data.any():
-            self._mask = mask_layer.data
-        if self._mask is None:
+            self.mask = mask_layer.data
+        image_layer_name = (
+            self.image_layer_with_phasor_features_combobox.currentText()
+        )
+        layer = self.viewer.layers[image_layer_name]
+
+        if self.mask is None:
+            phasor_features = self._labels_layer_with_phasor_features.features
+            self._labels_layer_with_phasor_features.features['G'] = (
+                phasor_features['G_original'].copy()
+            )
+            self._labels_layer_with_phasor_features.features['S'] = (
+                phasor_features['S_original'].copy()
+            )
             # empty mask layer
             self._labels_layer_with_phasor_features.features['mask'] = 1
         else:
             # Update the mask feature in the labels layer with phasor features
             self._labels_layer_with_phasor_features.features['mask'] = np.tile(
-                self._mask.flatten(),
+                self.mask.flatten(),
                 self._labels_layer_with_phasor_features.features[
                     "harmonic"
                 ].max(),
