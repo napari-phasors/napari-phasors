@@ -7,7 +7,7 @@ from napari.utils.notifications import show_error, show_info
 from phasorpy.lifetime import phasor_from_lifetime, polar_from_reference_phasor
 from phasorpy.phasor import phasor_center, phasor_transform
 from qtpy import uic
-from qtpy.QtWidgets import QVBoxLayout, QWidget
+from qtpy.QtWidgets import QScrollArea, QVBoxLayout, QWidget
 
 from ._utils import apply_filter_and_threshold, update_frequency_in_metadata
 
@@ -51,8 +51,13 @@ class CalibrationWidget(QWidget):
         # Populate combobox
         self._populate_comboboxes()
 
+        # Create scroll area and add calibration widget to it
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setWidget(self.calibration_widget)
+
         mainLayout = QVBoxLayout()
-        mainLayout.addWidget(self.calibration_widget)
+        mainLayout.addWidget(scroll_area)
         self.setLayout(mainLayout)
 
     def _populate_comboboxes(self):

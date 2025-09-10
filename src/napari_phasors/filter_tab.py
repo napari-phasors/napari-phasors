@@ -295,3 +295,16 @@ class FilterWidget(QWidget):
         )
         if self.parent_widget is not None:
             self.parent_widget.plot()
+
+            # Update lifetime tab if it exists and has a lifetime type selected
+            if (
+                hasattr(self.parent_widget, 'lifetime_tab')
+                and self.parent_widget.lifetime_tab is not None
+            ):
+                current_lifetime_type = (
+                    self.parent_widget.lifetime_tab.lifetime_type_combobox.currentText()
+                )
+                if current_lifetime_type != "None":
+                    self.parent_widget.lifetime_tab._on_lifetime_type_changed(
+                        current_lifetime_type
+                    )
