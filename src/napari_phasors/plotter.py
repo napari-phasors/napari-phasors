@@ -1036,6 +1036,8 @@ class PlotterWidget(QWidget):
             )
             # empty mask layer
             self._labels_layer_with_phasor_features.features['mask'] = 1
+            # Restore layer data from original data
+            layer.data = layer.metadata["original_mean"].copy()
         else:
             # Update the mask feature in the labels layer with phasor features
             self._labels_layer_with_phasor_features.features['mask'] = np.tile(
@@ -1044,6 +1046,12 @@ class PlotterWidget(QWidget):
                     "harmonic"
                 ].max(),
             )
+        # Save mask to metadata
+        if "settings" not in layer.metadata:
+            layer.metadata["settings"] = {}
+        layer.metadata["settings"]["mask"] = self.mask
+        self.selection_tab.update_phasors_layer()
+        self.filter_tab.on_labels_layer_with_phasor_features_changed()
         self.plot()
 
     def get_features(self):
