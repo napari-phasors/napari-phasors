@@ -316,7 +316,12 @@ class SelectionWidget(QWidget):
         for layer in self.viewer.layers:
             if layer.name.startswith("Selection: "):
                 layer.visible = layer.name == target_layer_name
-
+        harmonic_mask = (
+            self.parent_widget._labels_layer_with_phasor_features.features[
+                'harmonic'
+            ]
+            == self.parent_widget.harmonic
+        )
         # Filter rows where 'G' and 'S' is not NaN
         valid_rows = (
             ~self.parent_widget._labels_layer_with_phasor_features.features[
@@ -325,6 +330,7 @@ class SelectionWidget(QWidget):
             & ~self.parent_widget._labels_layer_with_phasor_features.features[
                 "S"
             ].isna()
+            & harmonic_mask
         )
 
         selection_data = (
@@ -335,7 +341,9 @@ class SelectionWidget(QWidget):
 
         # Update the color indices only for the active artist
         active_plot_type = self.parent_widget.plot_type
-        if active_plot_type in self.parent_widget.canvas_widget.artists:
+        if (
+            active_plot_type in self.parent_widget.canvas_widget.artists
+        ):  # TODO: check error of size here again
             self.parent_widget.canvas_widget.artists[
                 active_plot_type
             ].color_indices = selection_data
@@ -394,11 +402,7 @@ class SelectionWidget(QWidget):
 
         self.add_selection_id_to_features(self.selection_id)
         column = self.selection_id
-
-        self.parent_widget._labels_layer_with_phasor_features.features[
-            column
-        ] = 0
-
+        # Apply layer mask to features if available
         layer_mask = (
             self.parent_widget._labels_layer_with_phasor_features.features[
                 "mask"
@@ -429,7 +433,7 @@ class SelectionWidget(QWidget):
         ].data.flatten()
         mean_column = np.tile(image_layer_current_data_flattened, n_harmonics)
         mean_filtered_mask = ~np.isnan(mean_column[layer_mask])
-        # Filter rows where 'G' and 'S' is not NaN
+        # Filter rows where 'G' and 'S' is not NaN and mean masked is not NaN
         not_nan_mask = ~G_masked.isna() & ~S_masked.isna() & mean_filtered_mask
         not_nan_indices = not_nan_mask[not_nan_mask].index
         selection_to_use = manual_selection
@@ -551,8 +555,12 @@ class SelectionWidget(QWidget):
             ].isna()
         )
         phasors_layer_data[~valid_rows] = 0
+
         mapped_data = map_array(
             input_array, input_array_values, phasors_layer_data
         )
+        layer_mask = self.parent_widget.mask
+        if layer_mask is not None:
+            mapped_data[layer_mask == 0] = 0
         existing_phasors_selected_layer.data = mapped_data
         self._phasors_selected_layer = existing_phasors_selected_layer
