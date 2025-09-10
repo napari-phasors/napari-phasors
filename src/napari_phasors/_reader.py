@@ -434,6 +434,7 @@ def make_phasors_labels_layer(
                     "harmonic": harmonic_value,
                 }
             )
+            sub_table['mask'] = 1
             table = pd.concat([table, sub_table])
     else:
         if isinstance(harmonics, list):
@@ -450,6 +451,7 @@ def make_phasors_labels_layer(
                 "harmonic": harmonic_value,
             }
         )
+        table['mask'] = 1
 
     labels_data = pixel_id.reshape(mean_intensity_image.shape)
     labels_layer = Labels(

@@ -22,6 +22,7 @@ def apply_filter_and_threshold(
     threshold: float = 0,
     size: int = 3,
     repeat: int = 1,
+    mask: np.ndarray | None = None,
 ):
     """Apply filter to an image layer.
 
@@ -37,6 +38,9 @@ def apply_filter_and_threshold(
         Size of the filter.
     repeat : int
         Number of times to apply the filter.
+    mask : np.ndarray, optional
+        Mask to apply to the image. If provided, the filter will only be applied to the
+        pixels where the mask is True.
 
     """
     mean = layer.metadata['original_mean'].copy()
@@ -46,6 +50,11 @@ def apply_filter_and_threshold(
         phasor_features['G_original'].copy(),
         phasor_features['S_original'].copy(),
     )
+    if mask is not None:
+        mean[mask == 0] = np.nan
+        real[phasor_features['mask'] == 0] = np.nan
+        imag[phasor_features['mask'] == 0] = np.nan
+
     real = np.reshape(real, (len(harmonics),) + mean.shape)
     imag = np.reshape(imag, (len(harmonics),) + mean.shape)
     if repeat > 0:
@@ -64,6 +73,10 @@ def apply_filter_and_threshold(
             layer.metadata['phasor_features_labels_layer'].features['S'],
         ) = (real.flatten(), imag.flatten())
     layer.data = mean
+    if mask is not None:
+        layer.data[mask == 0] = layer.metadata['original_mean'].copy()[
+            mask == 0
+        ]
     # Update the settings dictionary of the layer
     if "settings" not in layer.metadata:
         layer.metadata["settings"] = {}
@@ -72,6 +85,7 @@ def apply_filter_and_threshold(
         "repeat": repeat,
     }
     layer.metadata["settings"]["threshold"] = threshold
+    layer.metadata["settings"]["mask"] = mask
     layer.refresh()
     return
 
