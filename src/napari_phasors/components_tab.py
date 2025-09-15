@@ -462,7 +462,7 @@ class ComponentsWidget(QWidget):
         ):
             colormap = ListedColormap(self.fractions_colormap)
         else:
-            colormap = plt.cm.turbo  # Use turbo as fallback
+            colormap = plt.cm.plasma  # Use plasma as fallback
 
         # Get the actual contrast limits from the fractions layer
         if (
@@ -570,10 +570,6 @@ class ComponentsWidget(QWidget):
         ):
             self.dragging_component = 2
             self.press_event = event
-        else:
-            # If not on a component, let the original click handler work
-            if hasattr(self.parent_widget, '_on_canvas_click'):
-                self.parent_widget._on_canvas_click(event)
 
     def _on_motion(self, event):
         """Handle mouse motion for dragging components."""
@@ -694,14 +690,6 @@ class ComponentsWidget(QWidget):
                     self.temp_click_cid
                 )
 
-                # Reconnect original click handler
-                self.parent_widget.click_cid = (
-                    self.parent_widget.canvas_widget.canvas.mpl_connect(
-                        'button_press_event',
-                        self.parent_widget._on_canvas_click,
-                    )
-                )
-
                 # Restore button state
                 self.my_button.setText(original_text)
                 self.my_button.setEnabled(True)
@@ -803,14 +791,6 @@ class ComponentsWidget(QWidget):
                     self.temp_click_cid
                 )
 
-                # Reconnect original click handler
-                self.parent_widget.click_cid = (
-                    self.parent_widget.canvas_widget.canvas.mpl_connect(
-                        'button_press_event',
-                        self.parent_widget._on_canvas_click,
-                    )
-                )
-
                 # Restore button state
                 self.second_button.setText(original_text)
                 self.second_button.setEnabled(True)
@@ -857,7 +837,7 @@ class ComponentsWidget(QWidget):
             fractions,
             name=fractions_layer_name,
             scale=self.parent_widget._labels_layer_with_phasor_features.scale,
-            colormap='turbo',
+            colormap='plasma',
             contrast_limits=(0, 1),
         )
 
