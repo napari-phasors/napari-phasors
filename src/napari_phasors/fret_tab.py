@@ -29,14 +29,16 @@ class FretWidget(QWidget):
         super().__init__()
         self.viewer = viewer
         self.parent_widget = parent
-        self.frequency = 0.0
-        self.donor_lifetime = 0.0
+        self.frequency = 80.0  # Default frequency in MHz
+        self.donor_lifetime = 2.0  # Default donor lifetime in ns
         self._fret_efficiencies = np.linspace(0, 1, 500)
         self.current_donor_line = None
         self.fret_layer = None
         self.colormap_contrast_limits = None
         self.fret_colormap = None
         self.use_colormap = True
+        self.colormap_density_factor = 5  # Controls trajectory colormap detail level
+
 
         # Initialize parameters
         self.donor_background = 0.1
@@ -305,9 +307,8 @@ class FretWidget(QWidget):
 
     def _draw_colormap_trajectory(self, ax, trajectory_real, trajectory_imag):
         """Draw a colormap trajectory line."""
-        density_factor = 5  # This value controls the detail level
         num_segments = min(
-            len(trajectory_real) * density_factor, len(trajectory_real) - 1
+            len(trajectory_real) * self.colormap_density_factor, len(trajectory_real) - 1
         )  # Number of color segments
 
         # Get colormap from stored colors or fallback
@@ -439,7 +440,7 @@ class FretWidget(QWidget):
             fret_efficiency,
             name=fret_layer_name,
             scale=self.parent_widget._labels_layer_with_phasor_features.scale,
-            colormap='turbo',
+            colormap='plasma',
             contrast_limits=(0, 1),  # Force contrast limits to 0-1
         )
 
