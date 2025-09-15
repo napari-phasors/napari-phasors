@@ -277,11 +277,6 @@ class PlotterWidget(QWidget):
         # Populate labels layer combobox
         self.reset_layer_choices()
 
-        # Connect canvas click event
-        self.canvas_widget.figure.canvas.mpl_connect(
-            'button_press_event', self._on_canvas_click
-        )
-
         # Connect tab change signal
         self.tab_widget.currentChanged.connect(self._on_tab_changed)
 
@@ -318,26 +313,13 @@ class PlotterWidget(QWidget):
 
     def _set_components_visibility(self, visible):
         """Set visibility of components tab artists."""
-        # if hasattr(self, 'components_tab'):
-        #     self.components_tab.set_artists_visible(visible)
-        pass
+        if hasattr(self, 'components_tab'):
+            self.components_tab.set_artists_visible(visible)
 
     def _set_fret_visibility(self, visible):
         """Set visibility of FRET tab artists."""
         if hasattr(self, 'fret_tab'):
             self.fret_tab.set_artists_visible(visible)
-
-    def _on_canvas_click(self, event):
-        """Handle click events on the canvas widget."""
-        if event.inaxes != self.canvas_widget.axes:
-            return None, None
-        # Check if the click is on the canvas widget axes
-        if event.button == 1:  # Left click
-            # Get the coordinates of the click
-            x, y = event.xdata, event.ydata
-            if x is not None and y is not None:
-                return x, y
-        return None, None
 
     def _on_plot_type_changed(self):
         """Callback for plot type change."""
