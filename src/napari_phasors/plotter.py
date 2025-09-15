@@ -29,7 +29,7 @@ from .filter_tab import FilterWidget
 from .fret_tab import FretWidget
 from .lifetime_tab import LifetimeWidget
 
-# from .components_tab import ComponentsWidget
+from .components_tab import ComponentsWidget
 from .selection_tab import SelectionWidget
 
 
@@ -399,16 +399,8 @@ class PlotterWidget(QWidget):
 
     def _create_components_tab(self):
         """Create the Components tab."""
-        # self.components_tab = ComponentsWidget(self.viewer, parent=self)
-        # self.tab_widget.addTab(self.components_tab, "Components")
-
-        # Placeholder for future components tab implementation
-        self.components_tab = QWidget()
-        self.components_tab.setLayout(QVBoxLayout())
+        self.components_tab = ComponentsWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.components_tab, "Components")
-        self.components_tab.layout().addWidget(
-            QLabel("Components widget will be implemented here.")
-        )
 
     def _create_lifetime_tab(self):
         """Create the Lifetime tab."""
