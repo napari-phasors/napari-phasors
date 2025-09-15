@@ -26,7 +26,6 @@ from qtpy.QtWidgets import (
 
 from .calibration_tab import CalibrationWidget
 from .filter_tab import FilterWidget
-
 from .fret_tab import FretWidget
 from .lifetime_tab import LifetimeWidget
 
@@ -290,13 +289,13 @@ class PlotterWidget(QWidget):
         """Handle tab change events to show/hide tab-specific lines."""
         # Get the current tab widget
         current_tab = self.tab_widget.widget(index)
-        
+
         # Hide all tab-specific artists first
         self._hide_all_tab_artists()
-        
+
         # Show artists for the current tab
         self._show_tab_artists(current_tab)
-        
+
         # Refresh canvas
         self.canvas_widget.figure.canvas.draw_idle()
 
@@ -305,11 +304,10 @@ class PlotterWidget(QWidget):
         # Hide components tab artists
         if hasattr(self, 'components_tab'):
             self._set_components_visibility(False)
-        
+
         # Hide other tabs' artists (add similar methods for other tabs)
         if hasattr(self, 'fret_tab'):
             self._set_fret_visibility(False)
-        
 
     def _show_tab_artists(self, current_tab):
         """Show artists for the specified tab."""
@@ -328,7 +326,7 @@ class PlotterWidget(QWidget):
         """Set visibility of FRET tab artists."""
         if hasattr(self, 'fret_tab'):
             self.fret_tab.set_artists_visible(visible)
-    
+
     def _on_canvas_click(self, event):
         """Handle click events on the canvas widget."""
         if event.inaxes != self.canvas_widget.axes:

@@ -1,8 +1,11 @@
+import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.collections import LineCollection
+from matplotlib.colors import ListedColormap
 from napari.layers import Image
 from napari.utils.notifications import show_error
-from phasorpy.phasor import phasor_nearest_neighbor, phasor_center
 from phasorpy.lifetime import phasor_from_fret_donor
+from phasorpy.phasor import phasor_center, phasor_nearest_neighbor
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QDoubleValidator
 from qtpy.QtWidgets import (
@@ -15,9 +18,6 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-import matplotlib.pyplot as plt
-from matplotlib.collections import LineCollection
-from matplotlib.colors import ListedColormap
 
 from ._utils import update_frequency_in_metadata
 
@@ -335,17 +335,19 @@ class FretWidget(QWidget):
             # Get indices for this segment with overlap
             start_idx = int(i * (len(trajectory_real) - 1) / num_segments)
             end_idx = int((i + 1) * (len(trajectory_real) - 1) / num_segments)
-            
+
             # Ensure we don't go out of bounds
             end_idx = min(end_idx, len(trajectory_real) - 1)
-            
+
             # For segments after the first, start slightly before to overlap
             if i > 0:
                 start_idx = max(0, start_idx - 1)
 
             # Create line segment
-            segment = [(trajectory_real[start_idx], trajectory_imag[start_idx]),
-                      (trajectory_real[end_idx], trajectory_imag[end_idx])]
+            segment = [
+                (trajectory_real[start_idx], trajectory_imag[start_idx]),
+                (trajectory_real[end_idx], trajectory_imag[end_idx]),
+            ]
             segments.append(segment)
 
             # FRET efficiency value for this segment (0 to 1)
@@ -375,7 +377,7 @@ class FretWidget(QWidget):
         if self.fret_layer is not None:
             layer = event.source
             self.colormap_contrast_limits = layer.contrast_limits
-            
+
             # Redraw the donor trajectory with updated contrast limits
             self.plot_donor_trajectory()
 
@@ -400,7 +402,9 @@ class FretWidget(QWidget):
         # Get trajectory data depending on the type of line object
         if hasattr(self.current_donor_line, 'get_xydata'):
             # Regular line plot
-            neighbor_real, neighbor_imag = self.current_donor_line.get_xydata().T
+            neighbor_real, neighbor_imag = (
+                self.current_donor_line.get_xydata().T
+            )
         else:
             # LineCollection - use the original trajectory data
             donor_trajectory_real, donor_trajectory_imag = (
@@ -414,7 +418,10 @@ class FretWidget(QWidget):
                     donor_fretting=self.donor_fretting_proportion,
                 )
             )
-            neighbor_real, neighbor_imag = donor_trajectory_real, donor_trajectory_imag
+            neighbor_real, neighbor_imag = (
+                donor_trajectory_real,
+                donor_trajectory_imag,
+            )
 
         fret_efficiency = phasor_nearest_neighbor(
             np.array(real),

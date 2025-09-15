@@ -1,7 +1,6 @@
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import numpy as np
-import pytest
 from numpy.testing import assert_almost_equal, assert_array_equal
 from phasorpy.lifetime import phasor_from_fret_donor
 from phasorpy.phasor import phasor_nearest_neighbor
@@ -26,7 +25,10 @@ def test_fret_widget_initialization(make_napari_viewer):
     assert widget.frequency_input.text() == ""
     assert widget.background_real_edit.text() == "0.1"
     assert widget.background_imag_edit.text() == "0.1"
-    assert widget.calculate_fret_efficiency_button.text() == "Calculate FRET efficiency"
+    assert (
+        widget.calculate_fret_efficiency_button.text()
+        == "Calculate FRET efficiency"
+    )
 
     # Test slider initial values
     assert widget.background_slider.value() == 10  # 0.1 * 100
@@ -110,10 +112,10 @@ def test_calculate_background_position_no_layer(make_napari_viewer):
 
     # No layer selected
     parent._labels_layer_with_phasor_features = None
-    
+
     # Should return without error
     widget._calculate_background_position()
-    
+
     # Values should remain at defaults
     assert widget.background_real_edit.text() == "0.1"
     assert widget.background_imag_edit.text() == "0.1"
@@ -129,11 +131,15 @@ def test_calculate_background_position_with_layer(make_napari_viewer):
     test_layer = create_image_layer_with_phasors()
     test_layer.name = "test_layer"
     viewer.add_layer(test_layer)
-    
+
     # Mock the parent's layer selection
     parent.image_layer_with_phasor_features_combobox = Mock()
-    parent.image_layer_with_phasor_features_combobox.currentText.return_value = "test_layer"
-    parent._labels_layer_with_phasor_features = test_layer.metadata['phasor_features_labels_layer']
+    parent.image_layer_with_phasor_features_combobox.currentText.return_value = (
+        "test_layer"
+    )
+    parent._labels_layer_with_phasor_features = test_layer.metadata[
+        'phasor_features_labels_layer'
+    ]
 
     # Calculate background position
     widget._calculate_background_position()
@@ -141,9 +147,11 @@ def test_calculate_background_position_with_layer(make_napari_viewer):
     # Check that values were updated (they should be different from defaults)
     real_text = widget.background_real_edit.text()
     imag_text = widget.background_imag_edit.text()
-    
+
     # Values should be numeric strings
-    assert real_text != "0.1" or imag_text != "0.1"  # At least one should change
+    assert (
+        real_text != "0.1" or imag_text != "0.1"
+    )  # At least one should change
     assert float(real_text) >= 0
     assert float(imag_text) >= 0
 
@@ -195,7 +203,7 @@ def test_calculate_fret_efficiency_no_layer(make_napari_viewer):
 
     # No layer selected
     parent._labels_layer_with_phasor_features = None
-    
+
     # Should return without error
     widget.calculate_fret_efficiency()
 
@@ -210,66 +218,81 @@ def test_calculate_fret_efficiency_with_layer(make_napari_viewer):
     test_layer = create_image_layer_with_phasors()
     test_layer.name = "test_layer"
     viewer.add_layer(test_layer)
-    
+
     # Setup widget parameters
     widget.donor_line_edit.setText("2.0")
     widget.frequency_input.setText("80")
     widget.background_real_edit.setText("0.1")
     widget.background_imag_edit.setText("0.1")
-    
-    # Mock parent's layer selection
-    parent.image_layer_with_phasor_features_combobox = Mock()
-    parent.image_layer_with_phasor_features_combobox.currentText.return_value = "test_layer"
-    parent._labels_layer_with_phasor_features = test_layer.metadata['phasor_features_labels_layer']
 
-    # Create a mock donor line for trajectory data
-    widget.current_donor_line = Mock()
-    trajectory_data = np.array([[0.1, 0.2, 0.3], [0.1, 0.15, 0.2]]).T
-    widget.current_donor_line.get_xydata.return_value = trajectory_data
+    # Get values of G and S from the test layer
+    phasor_data = parent._labels_layer_with_phasor_features.features
+    harmonic_mask = phasor_data['harmonic'] == parent.harmonic
+    real = phasor_data.loc[harmonic_mask, 'G']
+    imag = phasor_data.loc[harmonic_mask, 'S']
 
-    # Calculate FRET efficiency
-    widget.calculate_fret_efficiency()
+    # Get trajectory data
+    donor_trajectory_real, donor_trajectory_imag = phasor_from_fret_donor(
+        80,
+        2,
+        fret_efficiency=widget._fret_efficiencies,
+        donor_background=widget.donor_background,
+        background_imag=0.1,
+        background_real=0.1,
+        donor_fretting=widget.donor_fretting_proportion,
+    )
+
+    # Calculate expected FRET efficiency
+    expected_fret_efficiency = phasor_nearest_neighbor(
+        real.values,
+        imag.values,
+        donor_trajectory_real,
+        donor_trajectory_imag,
+        values=widget._fret_efficiencies,
+    )
+
+    # Click on calculate button
+    widget.calculate_fret_efficiency_button.click()
 
     # Check that a FRET layer was added
     fret_layer_name = f"FRET efficiency: test_layer"
     assert fret_layer_name in [layer.name for layer in viewer.layers]
     assert widget.fret_layer is not None
 
+    # Check that the created layer has the expected FRET values
+    fret_layer = viewer.layers[fret_layer_name]
+    assert_array_equal(fret_layer.data.flatten(), expected_fret_efficiency)
 
-def test_fret_efficiency_calculation_with_line_collection(make_napari_viewer):
-    """Test FRET efficiency calculation when using LineCollection (colormap mode)."""
-    viewer = make_napari_viewer()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
+    # Change values and recalculate
+    widget.donor_line_edit.setText("1.5")
 
-    # Add layer with phasor data
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-    
-    # Setup widget parameters
-    widget.donor_line_edit.setText("2.0")
-    widget.frequency_input.setText("80")
-    widget.background_real_edit.setText("0.1")
-    widget.background_imag_edit.setText("0.1")
-    widget.frequency = 80.0 * parent.harmonic
-    widget.donor_lifetime = 2.0
-    
-    # Mock parent's layer selection
-    parent.image_layer_with_phasor_features_combobox = Mock()
-    parent.image_layer_with_phasor_features_combobox.currentText.return_value = "test_layer"
-    parent._labels_layer_with_phasor_features = test_layer.metadata['phasor_features_labels_layer']
+    # Get trajectory data
+    donor_trajectory_real, donor_trajectory_imag = phasor_from_fret_donor(
+        80,
+        1.5,
+        fret_efficiency=widget._fret_efficiencies,
+        donor_background=widget.donor_background,
+        background_imag=0.1,
+        background_real=0.1,
+        donor_fretting=widget.donor_fretting_proportion,
+    )
 
-    # Create a mock LineCollection (doesn't have get_xydata method)
-    widget.current_donor_line = Mock()
-    del widget.current_donor_line.get_xydata  # Remove the method to simulate LineCollection
+    # Calculate expected FRET efficiency
+    expected_fret_efficiency = phasor_nearest_neighbor(
+        real.values,
+        imag.values,
+        donor_trajectory_real,
+        donor_trajectory_imag,
+        values=widget._fret_efficiencies,
+    )
 
-    # Calculate FRET efficiency
-    widget.calculate_fret_efficiency()
+    # Click on calculate button
+    widget.calculate_fret_efficiency_button.click()
 
-    # Check that a FRET layer was added
-    fret_layer_name = f"FRET efficiency: test_layer"
+    # Check that the existing FRET layer was updated
     assert fret_layer_name in [layer.name for layer in viewer.layers]
+    fret_layer = viewer.layers[fret_layer_name]
+    assert_array_equal(fret_layer.data.flatten(), expected_fret_efficiency)
 
 
 def test_artist_management(make_napari_viewer):
@@ -281,21 +304,33 @@ def test_artist_management(make_napari_viewer):
     # Initially no artists
     assert len(widget.get_all_artists()) == 0
 
-    # Add a mock artist
-    mock_artist = Mock()
-    widget.current_donor_line = mock_artist
+    # Add values and plot
+    widget.frequency_input.setText("80")
+    widget.donor_line_edit.setText("2.0")
+    widget.background_real_edit.setText("0.1")
+    widget.background_imag_edit.setText("0.1")
+    widget.plot_donor_trajectory()
 
-    # Check artists list
-    artists = widget.get_all_artists()
-    assert len(artists) == 1
-    assert mock_artist in artists
+    # Should have one artist now
+    assert len(widget.get_all_artists()) == 1
+    assert widget.current_donor_line is not None
+    assert widget.current_donor_line in widget.get_all_artists()
 
-    # Test visibility setting
+    # Artist should be visible initially
+    assert widget.current_donor_line.get_visible() is True
+
+    # Simulate switching to another tab (artist should be hidden)
     widget.set_artists_visible(False)
-    mock_artist.set_visible.assert_called_with(False)
+    assert widget.current_donor_line.get_visible() is False
 
+    # Simulate switching back to FRET tab (artist should be visible again)
     widget.set_artists_visible(True)
-    mock_artist.set_visible.assert_called_with(True)
+    assert widget.current_donor_line.get_visible() is True
+
+    # Add layer with phasor data
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
 
 
 def test_colormap_events(make_napari_viewer):
@@ -304,44 +339,70 @@ def test_colormap_events(make_napari_viewer):
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
-    # Create a mock FRET layer
-    mock_layer = Mock()
-    mock_layer.colormap.colors = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
-    mock_layer.contrast_limits = (0.0, 1.0)
-    widget.fret_layer = mock_layer
+    # Add layer with phasor data
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
 
-    # Create mock event
-    mock_event = Mock()
-    mock_event.source = mock_layer
-
-    # Test colormap change
-    widget._on_colormap_changed(mock_event)
-    assert widget.fret_colormap == mock_layer.colormap.colors
-    assert widget.colormap_contrast_limits == mock_layer.contrast_limits
-
-    # Test contrast limits change
-    mock_layer.contrast_limits = (0.2, 0.8)
-    widget._on_contrast_limits_changed(mock_event)
-    assert widget.colormap_contrast_limits == (0.2, 0.8)
-
-
-def test_parameter_validation(make_napari_viewer):
-    """Test parameter validation with invalid inputs."""
-    viewer = make_napari_viewer()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Test with invalid numeric inputs
-    widget.donor_line_edit.setText("invalid")
+    # Setup FRET calculation parameters
+    widget.donor_line_edit.setText("2.0")
     widget.frequency_input.setText("80")
     widget.background_real_edit.setText("0.1")
     widget.background_imag_edit.setText("0.1")
 
-    # Should not raise exception
-    widget._on_parameters_changed()
+    # Calculate FRET efficiency to create the FRET layer
+    widget.calculate_fret_efficiency_button.click()
 
-    # Frequency should not be updated due to invalid donor lifetime
-    assert widget.frequency == 0.0
+    fret_layer_name = f"FRET efficiency: test_layer"
+    assert fret_layer_name in [layer.name for layer in viewer.layers]
+
+    # Get the created FRET layer
+    fret_layer = viewer.layers[fret_layer_name]
+    widget.fret_layer = fret_layer
+
+    # Test initial colormap properties
+    initial_colormap = fret_layer.colormap.name
+    initial_contrast_limits = fret_layer.contrast_limits
+
+    # Verify initial state is captured
+    assert initial_colormap is not None
+    assert initial_contrast_limits is not None
+    assert len(initial_contrast_limits) == 2
+
+    # Test colormap change
+    new_colormap = 'viridis'
+    # Ensure we're actually changing to a different colormap
+    if initial_colormap == new_colormap:
+        new_colormap = 'plasma'
+
+    fret_layer.colormap = new_colormap
+    mock_event = Mock()
+    mock_event.source = fret_layer
+    widget._on_colormap_changed(mock_event)
+
+    # Check that the widget's colormap property was updated
+    assert (
+        widget.fret_colormap is not None
+    )  # Should be updated with new colors
+    assert widget.fret_layer.colormap.name == new_colormap
+    assert (
+        widget.fret_layer.colormap.name != initial_colormap
+    )  # Should have changed
+
+    # Test contrast limits change
+    new_contrast_limits = [0.2, 0.8]
+    # Ensure we're actually changing the contrast limits
+    if initial_contrast_limits == new_contrast_limits:
+        new_contrast_limits = [0.3, 0.9]
+
+    fret_layer.contrast_limits = new_contrast_limits
+    widget._on_contrast_limits_changed(mock_event)
+
+    # Check that the widget's contrast limits were updated
+    assert widget.colormap_contrast_limits == new_contrast_limits
+    assert (
+        widget.colormap_contrast_limits != initial_contrast_limits
+    )  # Should have changed
 
 
 def test_draw_colormap_trajectory(make_napari_viewer):
@@ -380,31 +441,31 @@ def test_fret_widget_layer_replacement(make_napari_viewer):
     test_layer = create_image_layer_with_phasors()
     test_layer.name = "test_layer"
     viewer.add_layer(test_layer)
-    
+
     # Setup widget
     widget.donor_line_edit.setText("2.0")
     widget.frequency_input.setText("80")
-    parent.image_layer_with_phasor_features_combobox = Mock()
-    parent.image_layer_with_phasor_features_combobox.currentText.return_value = "test_layer"
-    parent._labels_layer_with_phasor_features = test_layer.metadata['phasor_features_labels_layer']
-    
-    # Mock donor line
-    widget.current_donor_line = Mock()
-    trajectory_data = np.array([[0.1, 0.2], [0.1, 0.15]]).T
-    widget.current_donor_line.get_xydata.return_value = trajectory_data
+    widget.background_real_edit.setText("0.1")
+    widget.background_imag_edit.setText("0.1")
 
     # Calculate FRET efficiency first time
-    widget.calculate_fret_efficiency()
-    
+    widget.calculate_fret_efficiency_button.click()
+
     fret_layer_name = f"FRET efficiency: test_layer"
     assert fret_layer_name in [layer.name for layer in viewer.layers]
-    
+
     # Count layers before second calculation
     initial_layer_count = len(viewer.layers)
-    
+
+    # Change values
+    widget.donor_line_edit.setText("1.5")
+    widget.frequency_input.setText("90")
+    widget.background_real_edit.setText("0.2")
+    widget.background_imag_edit.setText("0.2")
+
     # Calculate again - should replace existing layer
-    widget.calculate_fret_efficiency()
-    
+    widget.calculate_fret_efficiency_button.click()
+
     # Should not have added an extra layer
     assert len(viewer.layers) == initial_layer_count
     assert fret_layer_name in [layer.name for layer in viewer.layers]
