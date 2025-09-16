@@ -37,8 +37,9 @@ class FretWidget(QWidget):
         self.colormap_contrast_limits = None
         self.fret_colormap = None
         self.use_colormap = True
-        self.colormap_density_factor = 5  # Controls trajectory colormap detail level
-
+        self.colormap_density_factor = (
+            5  # Controls trajectory colormap detail level
+        )
 
         # Initialize parameters
         self.donor_background = 0.1
@@ -308,7 +309,8 @@ class FretWidget(QWidget):
     def _draw_colormap_trajectory(self, ax, trajectory_real, trajectory_imag):
         """Draw a colormap trajectory line."""
         num_segments = min(
-            len(trajectory_real) * self.colormap_density_factor, len(trajectory_real) - 1
+            len(trajectory_real) * self.colormap_density_factor,
+            len(trajectory_real) - 1,
         )  # Number of color segments
 
         # Get colormap from stored colors or fallback
