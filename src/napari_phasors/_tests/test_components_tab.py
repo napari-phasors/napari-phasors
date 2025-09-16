@@ -32,7 +32,9 @@ def test_components_widget_initialization_values(make_napari_viewer):
     assert comp_widget.calculate_button is not None
 
 
-def test_components_widget_lifetime_inputs_visibility_no_frequency(make_napari_viewer):
+def test_components_widget_lifetime_inputs_visibility_no_frequency(
+    make_napari_viewer,
+):
     viewer = make_napari_viewer()
     layer = create_image_layer_with_phasors()
     # Ensure no frequency
@@ -49,7 +51,9 @@ def test_components_widget_lifetime_inputs_visibility_no_frequency(make_napari_v
     assert comp_widget.second_lifetime_edit.isHidden()
 
 
-def test_components_widget_lifetime_inputs_visibility_with_frequency(make_napari_viewer):
+def test_components_widget_lifetime_inputs_visibility_with_frequency(
+    make_napari_viewer,
+):
     viewer = make_napari_viewer()
     layer = create_image_layer_with_phasors()
     layer.metadata["settings"] = {"frequency": 80.0}

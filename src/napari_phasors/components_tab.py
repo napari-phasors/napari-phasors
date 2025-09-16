@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
@@ -25,10 +26,10 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from dataclasses import dataclass
 
 if TYPE_CHECKING:
     import napari
+
 
 @dataclass
 class ComponentState:
@@ -42,6 +43,7 @@ class ComponentState:
     select_button: QPushButton | None = None
     text_offset: tuple[float, float] = (0.02, 0.02)
     label: str = "Component"
+
 
 class ComponentsWidget(QWidget):
     """Widget to perform component analysis on phasor coordinates."""
@@ -214,14 +216,30 @@ class ComponentsWidget(QWidget):
         self.components = [comp1, comp2]
 
         # Connect generic signals
-        comp1.name_edit.textChanged.connect(lambda: self._on_component_name_changed(0))
-        comp2.name_edit.textChanged.connect(lambda: self._on_component_name_changed(1))
-        comp1.g_edit.editingFinished.connect(lambda: self._on_component_coords_changed(0))
-        comp1.s_edit.editingFinished.connect(lambda: self._on_component_coords_changed(0))
-        comp2.g_edit.editingFinished.connect(lambda: self._on_component_coords_changed(1))
-        comp2.s_edit.editingFinished.connect(lambda: self._on_component_coords_changed(1))
-        comp1.lifetime_edit.editingFinished.connect(lambda: self._update_component_from_lifetime(0))
-        comp2.lifetime_edit.editingFinished.connect(lambda: self._update_component_from_lifetime(1))
+        comp1.name_edit.textChanged.connect(
+            lambda: self._on_component_name_changed(0)
+        )
+        comp2.name_edit.textChanged.connect(
+            lambda: self._on_component_name_changed(1)
+        )
+        comp1.g_edit.editingFinished.connect(
+            lambda: self._on_component_coords_changed(0)
+        )
+        comp1.s_edit.editingFinished.connect(
+            lambda: self._on_component_coords_changed(0)
+        )
+        comp2.g_edit.editingFinished.connect(
+            lambda: self._on_component_coords_changed(1)
+        )
+        comp2.s_edit.editingFinished.connect(
+            lambda: self._on_component_coords_changed(1)
+        )
+        comp1.lifetime_edit.editingFinished.connect(
+            lambda: self._update_component_from_lifetime(0)
+        )
+        comp2.lifetime_edit.editingFinished.connect(
+            lambda: self._update_component_from_lifetime(1)
+        )
         comp1.select_button.clicked.connect(lambda: self._select_component(0))
         comp2.select_button.clicked.connect(lambda: self._select_component(1))
 
@@ -340,6 +358,7 @@ class ComponentsWidget(QWidget):
         vbox.addWidget(buttons)
 
         self.style_dialog.show()
+
     def get_all_artists(self):
         artists = []
         for comp in self.components:
@@ -513,12 +532,16 @@ class ComponentsWidget(QWidget):
         c1_color, c2_color = self._get_component_colors()
         color = c1_color if idx == 0 else c2_color
         ax = self.parent_widget.canvas_widget.figure.gca()
-        comp.dot = ax.plot(x, y, 'o', color=color, markersize=8, label=comp.label)[0]
+        comp.dot = ax.plot(
+            x, y, 'o', color=color, markersize=8, label=comp.label
+        )[0]
         name = comp.name_edit.text().strip()
         if name:
             ox, oy = comp.text_offset
             comp.text = ax.text(
-                x + ox, y + oy, name,
+                x + ox,
+                y + oy,
+                name,
                 fontsize=self.label_fontsize,
                 fontweight='bold' if self.label_bold else 'normal',
                 fontstyle='italic' if self.label_italic else 'normal',
@@ -549,7 +572,9 @@ class ComponentsWidget(QWidget):
                 comp.text_offset = (base_x - dx[0], base_y - dy[0])
             ax = self.parent_widget.canvas_widget.figure.gca()
             comp.text = ax.text(
-                base_x, base_y, name,
+                base_x,
+                base_y,
+                name,
                 fontsize=self.label_fontsize,
                 fontweight='bold' if self.label_bold else 'normal',
                 fontstyle='italic' if self.label_italic else 'normal',
@@ -641,7 +666,7 @@ class ComponentsWidget(QWidget):
         else:
             # Default colors if no colormap is available
             return 'red', 'blue'
-        
+
     def _update_component_colors(self):
         """Update the colors of the component dots to match colormap ends."""
         c1_color, c2_color = self._get_component_colors()
@@ -730,7 +755,6 @@ class ComponentsWidget(QWidget):
 
         except Exception as e:
             show_error(f"Error drawing line: {str(e)}")
-
 
     def _draw_colormap_line(self, ax, x1, y1, x2, y2):
         """Draw a colormap bar between two components."""
