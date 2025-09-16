@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.collections import LineCollection
-from matplotlib.colors import ListedColormap
+from matplotlib.colors import LinearSegmentedColormap, ListedColormap
 from napari.layers import Image
 from napari.utils.notifications import show_error
 from phasorpy.component import phasor_component_fraction
@@ -796,26 +796,27 @@ class ComponentsWidget(QWidget):
         dx = x2 - x1
         dy = y2 - y1
         length = np.sqrt(dx**2 + dy**2)
-
         if length == 0:
             return
 
         t_values = np.linspace(0, 1, 500)
-
         trajectory_real = x1 + t_values * dx
         trajectory_imag = y1 + t_values * dy
 
-        # Higher density_factor = more segments = smoother appearance
         density_factor = 2
         num_segments = min(
             len(trajectory_real) * density_factor, len(trajectory_real) - 1
         )
 
-        if (
-            hasattr(self, 'fractions_colormap')
-            and self.fractions_colormap is not None
-        ):
-            colormap = ListedColormap(self.fractions_colormap)
+        # Build a continuous colormap
+        if self.fractions_colormap is not None:
+            if len(self.fractions_colormap) <= 32:
+                # Create a smooth interpolated cmap from sparse control points
+                colormap = LinearSegmentedColormap.from_list(
+                    "fractions_interp", self.fractions_colormap, N=256
+                )
+            else:
+                colormap = ListedColormap(self.fractions_colormap)
         else:
             colormap = plt.cm.plasma
 
