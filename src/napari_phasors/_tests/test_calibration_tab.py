@@ -436,4 +436,4 @@ def test_on_image_layer_changed_with_frequency(make_napari_viewer):
     viewer.add_layer(test_layer)
 
     parent._sync_frequency_inputs_from_metadata()
-    assert widget.calibration_widget.frequency_input.text() == "80"
+    assert widget.calibration_widget.frequency_input.text() == "80.0"

@@ -418,7 +418,6 @@ class ComponentsWidget(QWidget):
             if self.parent_widget is not None:
                 self.parent_widget.canvas_widget.canvas.draw_idle()
         else:
-
             self.draw_line_between_components()
             if self.parent_widget is not None:
                 self.parent_widget.canvas_widget.canvas.draw_idle()
@@ -472,7 +471,6 @@ class ComponentsWidget(QWidget):
             self.second_lifetime_edit,
         ):
             w.setVisible(has_freq)
-            print(f"Setting visibility of {w} to {has_freq}")
 
         if has_freq:
             for i, comp in enumerate(self.components):
