@@ -25,10 +25,23 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from dataclasses import dataclass
 
 if TYPE_CHECKING:
     import napari
 
+@dataclass
+class ComponentState:
+    idx: int
+    dot: any = None
+    text: any = None
+    name_edit: QLineEdit | None = None
+    lifetime_edit: QLineEdit | None = None
+    g_edit: QLineEdit | None = None
+    s_edit: QLineEdit | None = None
+    select_button: QPushButton | None = None
+    text_offset: tuple[float, float] = (0.02, 0.02)
+    label: str = "Component"
 
 class ComponentsWidget(QWidget):
     """Widget to perform component analysis on phasor coordinates."""
@@ -38,42 +51,37 @@ class ComponentsWidget(QWidget):
         self.viewer = viewer
         self.parent_widget = parent
 
-        # Initialize dot and line references
-        self.component1_dot = None
-        self.component2_dot = None
-        self.component1_text = None
-        self.component2_text = None
+        # Replace individual attributes with list
+        self.components: list[ComponentState] = []
+
+        # Keep fractions / line attributes
         self.component_line = None
         self.fractions_layer = None
         self.fractions_colormap = None
         self.colormap_contrast_limits = None
-        self.plot_dialog = None
-        self.style_dialog = None
 
-        # Text offsets
-        self.component1_text_offset = (0.02, 0.02)
-        self.component2_text_offset = (0.02, 0.02)
-
-        # Label style state
+        # Style state
         self.label_fontsize = 10
         self.label_bold = False
         self.label_italic = False
         self.label_color = 'black'
 
-        # Plot settings state
+        # Line settings
         self.show_colormap_line = True
         self.show_component_dots = True
         self.line_offset = 0.0
         self.line_width = 3.0
         self.line_alpha = 0.8
 
-        # Dragging state
-        self.dragging_component = None
-        self.dragging_component_label = None
-        self.press_event = None
+        # Dialog / event flags
+        self.plot_dialog = None
+        self.style_dialog = None
         self.drag_events_connected = False
 
-        # Setup UI
+        # Drag state
+        self.dragging_component_idx = None
+        self.dragging_label_idx = None
+
         self.setup_ui()
 
         # Connect to layer selection change to show/hide lifetime inputs
@@ -109,38 +117,25 @@ class ComponentsWidget(QWidget):
         comp1_layout.addWidget(QLabel("Component 1:"))
         self.comp1_name_edit = QLineEdit()
         self.comp1_name_edit.setPlaceholderText("Component name (optional)")
-        self.comp1_name_edit.textChanged.connect(
-            self._on_component1_name_changed
-        )
         comp1_layout.addWidget(self.comp1_name_edit)
-        self.my_button = QPushButton("Select Component 1")
-        self.my_button.clicked.connect(self.on_first_button_clicked)
-        comp1_layout.addWidget(self.my_button)
+        self.first_button = QPushButton("Select Component 1")
+        comp1_layout.addWidget(self.first_button)
 
         # Component 1 coordinates
         coord1_layout = QHBoxLayout()
         self.first_lifetime_label = QLabel("τ:")
         self.first_lifetime_edit = QLineEdit()
         self.first_lifetime_edit.setPlaceholderText("Lifetime (optional)")
-        self.first_lifetime_edit.editingFinished.connect(
-            self._on_component1_lifetime_changed
-        )
         coord1_layout.addWidget(self.first_lifetime_label)
         coord1_layout.addWidget(self.first_lifetime_edit)
 
         coord1_layout.addWidget(QLabel("G:"))
         self.first_edit1 = QLineEdit()
         self.first_edit1.setPlaceholderText("Real coordinate")
-        self.first_edit1.editingFinished.connect(
-            self._on_component1_coords_changed
-        )
         coord1_layout.addWidget(self.first_edit1)
         coord1_layout.addWidget(QLabel("S:"))
         self.first_edit2 = QLineEdit()
         self.first_edit2.setPlaceholderText("Imaginary coordinate")
-        self.first_edit2.editingFinished.connect(
-            self._on_component1_coords_changed
-        )
         coord1_layout.addWidget(self.first_edit2)
 
         # Component 2 section
@@ -148,12 +143,8 @@ class ComponentsWidget(QWidget):
         comp2_layout.addWidget(QLabel("Component 2:"))
         self.comp2_name_edit = QLineEdit()
         self.comp2_name_edit.setPlaceholderText("Component name (optional)")
-        self.comp2_name_edit.textChanged.connect(
-            self._on_component2_name_changed
-        )
         comp2_layout.addWidget(self.comp2_name_edit)
         self.second_button = QPushButton("Select Component 2")
-        self.second_button.clicked.connect(self.on_second_button_clicked)
         comp2_layout.addWidget(self.second_button)
 
         # Component 2 coordinates
@@ -161,25 +152,16 @@ class ComponentsWidget(QWidget):
         self.second_lifetime_label = QLabel("τ:")
         self.second_lifetime_edit = QLineEdit()
         self.second_lifetime_edit.setPlaceholderText("Lifetime (optional)")
-        self.second_lifetime_edit.editingFinished.connect(
-            self._on_component2_lifetime_changed
-        )
         coord2_layout.addWidget(self.second_lifetime_label)
         coord2_layout.addWidget(self.second_lifetime_edit)
 
         coord2_layout.addWidget(QLabel("G:"))
         self.second_edit1 = QLineEdit()
         self.second_edit1.setPlaceholderText("Real coordinate")
-        self.second_edit1.editingFinished.connect(
-            self._on_component2_coords_changed
-        )
         coord2_layout.addWidget(self.second_edit1)
         coord2_layout.addWidget(QLabel("S:"))
         self.second_edit2 = QLineEdit()
         self.second_edit2.setPlaceholderText("Imaginary coordinate")
-        self.second_edit2.editingFinished.connect(
-            self._on_component2_coords_changed
-        )
         coord2_layout.addWidget(self.second_edit2)
 
         # Calculate button
@@ -203,11 +185,45 @@ class ComponentsWidget(QWidget):
         self.label_style_btn.clicked.connect(self._open_label_style_dialog)
         buttons_row.addWidget(self.label_style_btn)
 
-        # buttons_row.addStretch()
+        buttons_row.addStretch()
         layout.addLayout(buttons_row)
 
         layout.addWidget(self.calculate_button)
         layout.addStretch()
+
+        comp1 = ComponentState(
+            idx=0,
+            name_edit=self.comp1_name_edit,
+            lifetime_edit=self.first_lifetime_edit,
+            g_edit=self.first_edit1,
+            s_edit=self.first_edit2,
+            select_button=self.first_button,
+            label="Component 1",
+            text_offset=(0.02, 0.02),
+        )
+        comp2 = ComponentState(
+            idx=1,
+            name_edit=self.comp2_name_edit,
+            lifetime_edit=self.second_lifetime_edit,
+            g_edit=self.second_edit1,
+            s_edit=self.second_edit2,
+            select_button=self.second_button,
+            label="Component 2",
+            text_offset=(0.02, 0.02),
+        )
+        self.components = [comp1, comp2]
+
+        # Connect generic signals
+        comp1.name_edit.textChanged.connect(lambda: self._on_component_name_changed(0))
+        comp2.name_edit.textChanged.connect(lambda: self._on_component_name_changed(1))
+        comp1.g_edit.editingFinished.connect(lambda: self._on_component_coords_changed(0))
+        comp1.s_edit.editingFinished.connect(lambda: self._on_component_coords_changed(0))
+        comp2.g_edit.editingFinished.connect(lambda: self._on_component_coords_changed(1))
+        comp2.s_edit.editingFinished.connect(lambda: self._on_component_coords_changed(1))
+        comp1.lifetime_edit.editingFinished.connect(lambda: self._update_component_from_lifetime(0))
+        comp2.lifetime_edit.editingFinished.connect(lambda: self._update_component_from_lifetime(1))
+        comp1.select_button.clicked.connect(lambda: self._select_component(0))
+        comp2.select_button.clicked.connect(lambda: self._select_component(1))
 
         self.setLayout(root_layout)
 
@@ -324,31 +340,26 @@ class ComponentsWidget(QWidget):
         vbox.addWidget(buttons)
 
         self.style_dialog.show()
-
     def get_all_artists(self):
-        """Return a list of all matplotlib artists created by this widget."""
         artists = []
-        if self.component1_dot is not None:
-            artists.append(self.component1_dot)
-        if self.component2_dot is not None:
-            artists.append(self.component2_dot)
-        if self.component1_text is not None:
-            artists.append(self.component1_text)
-        if self.component2_text is not None:
-            artists.append(self.component2_text)
+        for comp in self.components:
+            if comp.dot is not None:
+                artists.append(comp.dot)
+            if comp.text is not None:
+                artists.append(comp.text)
         if self.component_line is not None:
             artists.append(self.component_line)
         return artists
 
     def set_artists_visible(self, visible):
         """Set visibility of all artists created by this widget."""
-        for artist in self.get_all_artists():
-            if artist is None:
-                continue
-            if artist in (self.component1_dot, self.component2_dot):
-                artist.set_visible(visible and self.show_component_dots)
-            else:
-                artist.set_visible(visible)
+        for comp in self.components:
+            if comp.dot is not None:
+                comp.dot.set_visible(visible and self.show_component_dots)
+            if comp.text is not None:
+                comp.text.set_visible(visible)
+        if self.component_line is not None:
+            self.component_line.set_visible(visible)
 
     def _toggle_plot_section(self, checked):
         self.plot_section.setVisible(checked)
@@ -422,12 +433,12 @@ class ComponentsWidget(QWidget):
     def _apply_styles_to_labels(self):
         weight = 'bold' if self.label_bold else 'normal'
         style = 'italic' if self.label_italic else 'normal'
-        for txt in (self.component1_text, self.component2_text):
-            if txt is not None:
-                txt.set_fontsize(self.label_fontsize)
-                txt.set_fontweight(weight)
-                txt.set_fontstyle(style)
-                txt.set_color(self.label_color)
+        for comp in self.components:
+            if comp.text is not None:
+                comp.text.set_fontsize(self.label_fontsize)
+                comp.text.set_fontweight(weight)
+                comp.text.set_fontstyle(style)
+                comp.text.set_color(self.label_color)
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
@@ -442,11 +453,12 @@ class ComponentsWidget(QWidget):
             self.second_lifetime_edit,
         ):
             w.setVisible(has_freq)
+            print(f"Setting visibility of {w} to {has_freq}")
 
-        # Also update lifetime-based G,S if frequency is now available
         if has_freq:
-            self._on_component1_lifetime_changed()
-            self._on_component2_lifetime_changed()
+            for i, comp in enumerate(self.components):
+                if comp.lifetime_edit.text().strip():
+                    self._update_component_from_lifetime(i)
 
     def _compute_phasor_from_lifetime(self, lifetime_text):
         """Compute (G,S) from lifetime string; return tuple or (None,None)."""
@@ -466,197 +478,123 @@ class ComponentsWidget(QWidget):
             im = float(np.array(im).ravel()[0])
         return re, im
 
-    def _on_component1_lifetime_changed(self):
-        """Update component 1 G,S from lifetime input."""
-        if self.first_lifetime_edit.text().strip() == "":
+    def _update_component_from_lifetime(self, idx: int):
+        comp = self.components[idx]
+        txt = comp.lifetime_edit.text().strip()
+        if not txt:
             return
-        G, S = self._compute_phasor_from_lifetime(
-            self.first_lifetime_edit.text().strip()
-        )
+        G, S = self._compute_phasor_from_lifetime(txt)
         if G is None:
             return
-        self.first_edit1.setText(f"{G:.6f}")
-        self.first_edit2.setText(f"{S:.6f}")
-        self._on_component1_coords_changed()
+        comp.g_edit.setText(f"{G:.6f}")
+        comp.s_edit.setText(f"{S:.6f}")
+        self._on_component_coords_changed(idx)
 
-    def _on_component2_lifetime_changed(self):
-        """Update component 2 G,S from lifetime input."""
-        if self.second_lifetime_edit.text().strip() == "":
-            return
-        G, S = self._compute_phasor_from_lifetime(
-            self.second_lifetime_edit.text().strip()
-        )
-        if G is None:
-            return
-        self.second_edit1.setText(f"{G:.6f}")
-        self.second_edit2.setText(f"{S:.6f}")
-        self._on_component2_coords_changed()
-
-    def _on_component1_coords_changed(self):
-        """Handle changes to component 1 coordinates in line edits."""
+    def _on_component_coords_changed(self, idx: int):
+        comp = self.components[idx]
         try:
-            x = float(self.first_edit1.text())
-            y = float(self.first_edit2.text())
-
-            if self.component1_dot is not None:
-                self.component1_dot.set_data([x], [y])
-                if self.component1_text is not None:
-                    ox, oy = self.component1_text_offset
-                    self.component1_text.set_position((x + ox, y + oy))
-                self.draw_line_between_components()
-            else:
-                self._create_component1_at_coordinates(x, y)
+            x = float(comp.g_edit.text())
+            y = float(comp.s_edit.text())
         except ValueError:
-            pass
+            return
+        if comp.dot is not None:
+            comp.dot.set_data([x], [y])
+            if comp.text is not None:
+                ox, oy = comp.text_offset
+                comp.text.set_position((x + ox, y + oy))
+            self.draw_line_between_components()
+        else:
+            self._create_component_at_coordinates(idx, x, y)
 
-    def _on_component2_coords_changed(self):
-        """Handle changes to component 2 coordinates in line edits."""
-        try:
-            x = float(self.second_edit1.text())
-            y = float(self.second_edit2.text())
-
-            if self.component2_dot is not None:
-                self.component2_dot.set_data([x], [y])
-                if self.component2_text is not None:
-                    ox, oy = self.component2_text_offset
-                    self.component2_text.set_position((x + ox, y + oy))
-                self.draw_line_between_components()
-            else:
-                self._create_component2_at_coordinates(x, y)
-        except ValueError:
-            pass
-
-    def _create_component1_at_coordinates(self, x, y):
-        """Create component 1 at the specified coordinates."""
+    def _create_component_at_coordinates(self, idx: int, x: float, y: float):
         if self.parent_widget is None:
             return
-
-        component1_color, _ = self._get_component_colors()
-
+        comp = self.components[idx]
+        c1_color, c2_color = self._get_component_colors()
+        color = c1_color if idx == 0 else c2_color
         ax = self.parent_widget.canvas_widget.figure.gca()
-        self.component1_dot = ax.plot(
-            x,
-            y,
-            'o',
-            color=component1_color,
-            markersize=8,
-            label='Component 1',
-        )[0]
-
-        name = self.comp1_name_edit.text().strip()
+        comp.dot = ax.plot(x, y, 'o', color=color, markersize=8, label=comp.label)[0]
+        name = comp.name_edit.text().strip()
         if name:
-            ox, oy = self.component1_text_offset
-            self.component1_text = ax.text(
-                x + ox,
-                y + oy,
-                name,
+            ox, oy = comp.text_offset
+            comp.text = ax.text(
+                x + ox, y + oy, name,
                 fontsize=self.label_fontsize,
                 fontweight='bold' if self.label_bold else 'normal',
                 fontstyle='italic' if self.label_italic else 'normal',
                 color=self.label_color,
                 picker=True,
             )
-
         self._make_components_draggable()
         self.parent_widget.canvas_widget.canvas.draw_idle()
         self.draw_line_between_components()
 
-    def _create_component2_at_coordinates(self, x, y):
-        """Create component 2 at the specified coordinates."""
+    def _on_component_name_changed(self, idx: int):
+        comp = self.components[idx]
+        if comp.dot is None:
+            return
+        name = comp.name_edit.text().strip()
+        prev_pos = None
+        if comp.text is not None:
+            prev_pos = comp.text.get_position()
+            comp.text.remove()
+            comp.text = None
+        if name:
+            dx, dy = comp.dot.get_data()
+            if prev_pos is None:
+                ox, oy = comp.text_offset
+                base_x, base_y = dx[0] + ox, dy[0] + oy
+            else:
+                base_x, base_y = prev_pos
+                comp.text_offset = (base_x - dx[0], base_y - dy[0])
+            ax = self.parent_widget.canvas_widget.figure.gca()
+            comp.text = ax.text(
+                base_x, base_y, name,
+                fontsize=self.label_fontsize,
+                fontweight='bold' if self.label_bold else 'normal',
+                fontstyle='italic' if self.label_italic else 'normal',
+                color=self.label_color,
+                picker=True,
+            )
+        self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def _select_component(self, idx: int):
         if self.parent_widget is None:
             return
+        comp = self.components[idx]
 
-        _, component2_color = self._get_component_colors()
-
-        ax = self.parent_widget.canvas_widget.figure.gca()
-        self.component2_dot = ax.plot(
-            x,
-            y,
-            'o',
-            color=component2_color,
-            markersize=8,
-            label='Component 2',
-        )[0]
-
-        name = self.comp2_name_edit.text().strip()
-        if name:
-            ox, oy = self.component2_text_offset
-            self.component2_text = ax.text(
-                x + ox,
-                y + oy,
-                name,
-                fontsize=self.label_fontsize,
-                fontweight='bold' if self.label_bold else 'normal',
-                fontstyle='italic' if self.label_italic else 'normal',
-                color=self.label_color,
-                picker=True,
-            )
-
-        self._make_components_draggable()
-        self.parent_widget.canvas_widget.canvas.draw_idle()
-        self.draw_line_between_components()
-
-    def _on_component1_name_changed(self):
-        """Handle changes to component 1 name."""
-        if self.component1_dot is None:
-            return
-        name = self.comp1_name_edit.text().strip()
-        prev_pos = None
-        if self.component1_text is not None:
-            prev_pos = self.component1_text.get_position()
-            self.component1_text.remove()
-            self.component1_text = None
-        if name:
-            dx, dy = self.component1_dot.get_data()
-            if prev_pos is None:
-                ox, oy = self.component1_text_offset
-                base_x, base_y = dx[0] + ox, dy[0] + oy
-            else:
-                base_x, base_y = prev_pos
-                self.component1_text_offset = (base_x - dx[0], base_y - dy[0])
-            ax = self.parent_widget.canvas_widget.figure.gca()
-            self.component1_text = ax.text(
-                base_x,
-                base_y,
-                name,
-                fontsize=self.label_fontsize,
-                fontweight='bold' if self.label_bold else 'normal',
-                fontstyle='italic' if self.label_italic else 'normal',
-                color=self.label_color,
-                picker=True,
-            )
+        if comp.dot is not None:
+            comp.dot.remove()
+            comp.dot = None
+        if comp.text is not None:
+            comp.text.remove()
+            comp.text = None
+        if self.component_line is not None:
+            try:
+                self.component_line.remove()
+            except Exception:
+                pass
+            self.component_line = None
         self.parent_widget.canvas_widget.canvas.draw_idle()
 
-    def _on_component2_name_changed(self):
-        """Handle changes to component 2 name."""
-        if self.component2_dot is None:
-            return
-        name = self.comp2_name_edit.text().strip()
-        prev_pos = None
-        if self.component2_text is not None:
-            prev_pos = self.component2_text.get_position()
-            self.component2_text.remove()
-            self.component2_text = None
-        if name:
-            dx, dy = self.component2_dot.get_data()
-            if prev_pos is None:
-                ox, oy = self.component2_text_offset
-                base_x, base_y = dx[0] + ox, dy[0] + oy
-            else:
-                base_x, base_y = prev_pos
-                self.component2_text_offset = (base_x - dx[0], base_y - dy[0])
-            ax = self.parent_widget.canvas_widget.figure.gca()
-            self.component2_text = ax.text(
-                base_x,
-                base_y,
-                name,
-                fontsize=self.label_fontsize,
-                fontweight='bold' if self.label_bold else 'normal',
-                fontstyle='italic' if self.label_italic else 'normal',
-                color=self.label_color,
-                picker=True,
-            )
-        self.parent_widget.canvas_widget.canvas.draw_idle()
+        original_text = comp.select_button.text()
+        comp.select_button.setText("Click on plot...")
+        comp.select_button.setEnabled(False)
+
+        def handler(event):
+            if not event.inaxes:
+                return
+            x, y = event.xdata, event.ydata
+            comp.g_edit.setText(f"{x:.6f}")
+            comp.s_edit.setText(f"{y:.6f}")
+            self._create_component_at_coordinates(idx, x, y)
+            self.parent_widget.canvas_widget.canvas.mpl_disconnect(temp_cid)
+            comp.select_button.setText(original_text)
+            comp.select_button.setEnabled(True)
+
+        temp_cid = self.parent_widget.canvas_widget.canvas.mpl_connect(
+            'button_press_event', handler
+        )
 
     def _get_component_colors(self):
         """Get colors for components based on the colormap ends."""
@@ -703,24 +641,25 @@ class ComponentsWidget(QWidget):
         else:
             # Default colors if no colormap is available
             return 'red', 'blue'
-
+        
     def _update_component_colors(self):
         """Update the colors of the component dots to match colormap ends."""
-        component1_color, component2_color = self._get_component_colors()
-
-        if self.component1_dot is not None:
-            self.component1_dot.set_color(component1_color)
-
-        if self.component2_dot is not None:
-            self.component2_dot.set_color(component2_color)
-
+        c1_color, c2_color = self._get_component_colors()
+        if len(self.components) > 0 and self.components[0].dot is not None:
+            self.components[0].dot.set_color(c1_color)
+        if len(self.components) > 1 and self.components[1].dot is not None:
+            self.components[1].dot.set_color(c2_color)
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
     def draw_line_between_components(self):
-        """Draw a line between component 1 and component 2 if both exist."""
-        if self.component1_dot is None or self.component2_dot is None:
+        """Draw a line between the first two components if both exist."""
+        if len(self.components) < 2:
             return
+        if not all(c.dot is not None for c in self.components[:2]):
+            return
+
+        # Remove previous line
         if self.component_line is not None:
             try:
                 self.component_line.remove()
@@ -729,13 +668,15 @@ class ComponentsWidget(QWidget):
             self.component_line = None
 
         try:
-            x1, y1 = self.component1_dot.get_data()
-            x2, y2 = self.component2_dot.get_data()
+            x1_data, y1_data = self.components[0].dot.get_data()
+            x2_data, y2_data = self.components[1].dot.get_data()
+            ox1, oy1 = x1_data[0], y1_data[0]
+            ox2, oy2 = x2_data[0], y2_data[0]
 
-            ox1, oy1, ox2, oy2 = x1[0], y1[0], x2[0], y2[0]
+            # Apply perpendicular offset if requested
             if self.line_offset != 0.0:
-                vx = x2[0] - x1[0]
-                vy = y2[0] - y1[0]
+                vx = ox2 - ox1
+                vy = oy2 - oy1
                 length = np.hypot(vx, vy)
                 if length > 0:
                     nx = -vy / length
@@ -756,7 +697,6 @@ class ComponentsWidget(QWidget):
             if use_colormap:
                 self._draw_colormap_line(ax, ox1, oy1, ox2, oy2)
                 self._update_component_colors()
-
                 if hasattr(self.component_line, "set_capstyle"):
                     try:
                         self.component_line.set_capstyle('butt')
@@ -770,16 +710,16 @@ class ComponentsWidget(QWidget):
                     linewidth=self.line_width,
                     alpha=self.line_alpha,
                 )[0]
-
                 if hasattr(self.component_line, "set_solid_capstyle"):
                     try:
                         self.component_line.set_solid_capstyle('butt')
                     except Exception:
                         pass
 
+            # Refresh canvas
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
-            # Only show line if this tab is active
+            # Visibility depending on active tab
             components_tab_is_active = (
                 self.parent_widget is not None
                 and getattr(self.parent_widget, "tab_widget", None) is not None
@@ -790,6 +730,7 @@ class ComponentsWidget(QWidget):
 
         except Exception as e:
             show_error(f"Error drawing line: {str(e)}")
+
 
     def _draw_colormap_line(self, ax, x1, y1, x2, y2):
         """Draw a colormap bar between two components."""
@@ -911,296 +852,58 @@ class ComponentsWidget(QWidget):
         )
         self.drag_events_connected = True
 
+    # Update dragging handlers similarly:
     def _on_press(self, event):
-        """Handle mouse press for dragging components."""
         if event.inaxes is None:
             return
-
-        # Check text labels first
-        if (
-            self.component1_text is not None
-            and self.component1_text.contains(event)[0]
-        ):
-            self.dragging_component_label = 1
-            return
-        if (
-            self.component2_text is not None
-            and self.component2_text.contains(event)[0]
-        ):
-            self.dragging_component_label = 2
-            return
-
-        # Check if we clicked on a component dot
-        if (
-            self.component1_dot is not None
-            and self.component1_dot.contains(event)[0]
-        ):
-            self.dragging_component = 1
-            self.press_event = event
-        elif (
-            self.component2_dot is not None
-            and self.component2_dot.contains(event)[0]
-        ):
-            self.dragging_component = 2
-            self.press_event = event
+        # label first
+        for comp in self.components:
+            if comp.text is not None and comp.text.contains(event)[0]:
+                self.dragging_label_idx = comp.idx
+                return
+        for comp in self.components:
+            if comp.dot is not None and comp.dot.contains(event)[0]:
+                self.dragging_component_idx = comp.idx
+                return
 
     def _on_motion(self, event):
-        """Handle mouse motion for dragging components or labels."""
         if event.inaxes is None:
             return
-
-        # Dragging a label
-        if self.dragging_component_label is not None:
-            x, y = event.xdata, event.ydata
-            if (
-                self.dragging_component_label == 1
-                and self.component1_text is not None
-            ):
-                self.component1_text.set_position((x, y))
-                if self.component1_dot is not None:
-                    dx, dy = self.component1_dot.get_data()
-                    self.component1_text_offset = (x - dx[0], y - dy[0])
-            elif (
-                self.dragging_component_label == 2
-                and self.component2_text is not None
-            ):
-                self.component2_text.set_position((x, y))
-                if self.component2_dot is not None:
-                    dx, dy = self.component2_dot.get_data()
-                    self.component2_text_offset = (x - dx[0], y - dy[0])
-            if self.parent_widget is not None:
+        if self.dragging_label_idx is not None:
+            comp = self.components[self.dragging_label_idx]
+            if comp.text is not None and comp.dot is not None:
+                x, y = event.xdata, event.ydata
+                comp.text.set_position((x, y))
+                dx, dy = comp.dot.get_data()
+                comp.text_offset = (x - dx[0], y - dy[0])
                 self.parent_widget.canvas_widget.canvas.draw_idle()
             return
-
-        # Dragging a component dot
-        if self.dragging_component is None:
+        if self.dragging_component_idx is None:
             return
-
+        comp = self.components[self.dragging_component_idx]
+        if comp.dot is None:
+            return
         x, y = event.xdata, event.ydata
-
-        if self.dragging_component == 1 and self.component1_dot is not None:
-            self.component1_dot.set_data([x], [y])
-            self.first_edit1.setText(f"{x:.6f}")
-            self.first_edit2.setText(f"{y:.6f}")
-            if self.component1_text is not None:
-                ox, oy = self.component1_text_offset
-                self.component1_text.set_position((x + ox, y + oy))
-        elif self.dragging_component == 2 and self.component2_dot is not None:
-            self.component2_dot.set_data([x], [y])
-            self.second_edit1.setText(f"{x:.6f}")
-            self.second_edit2.setText(f"{y:.6f}")
-            if self.component2_text is not None:
-                ox, oy = self.component2_text_offset
-                self.component2_text.set_position((x + ox, y + oy))
-
+        comp.dot.set_data([x], [y])
+        comp.g_edit.setText(f"{x:.6f}")
+        comp.s_edit.setText(f"{y:.6f}")
+        if comp.text is not None:
+            ox, oy = comp.text_offset
+            comp.text.set_position((x + ox, y + oy))
         self.draw_line_between_components()
 
     def _on_release(self, event):
-        """Handle mouse release for dragging components."""
-        self.dragging_component = None
-        self.dragging_component_label = None
-        self.press_event = None
-
-    def on_first_button_clicked(self):
-        """Function called when the first button is clicked."""
-        if self.parent_widget is None:
-            show_error("Parent widget not available")
-            return
-
-        # Remove existing dot and text if they exist
-        if self.component1_dot is not None:
-            self.component1_dot.remove()
-            self.component1_dot = None
-        if self.component1_text is not None:
-            self.component1_text.remove()
-            self.component1_text = None
-        # Remove line as well since component 1 changed
-        if self.component_line is not None:
-            try:
-                self.component_line.remove()
-            except (ValueError, AttributeError):
-                pass
-            self.component_line = None
-        self.parent_widget.canvas_widget.canvas.draw_idle()
-
-        original_text = self.my_button.text()
-        self.my_button.setText("Click on plot...")
-        self.my_button.setEnabled(False)
-
-        # Disconnect original click handler
-        if hasattr(self.parent_widget, 'click_cid'):
-            self.parent_widget.canvas_widget.canvas.mpl_disconnect(
-                self.parent_widget.click_cid
-            )
-
-        # Create a new click handler for component 1
-        def handle_first_component_click(event):
-            if not event.inaxes:
-                return
-
-            x, y = event.xdata, event.ydata
-
-            try:
-                self.first_edit1.setText(f"{x:.6f}")
-                self.first_edit2.setText(f"{y:.6f}")
-
-                component1_color, _ = self._get_component_colors()
-
-                ax = self.parent_widget.canvas_widget.figure.gca()
-                self.component1_dot = ax.plot(
-                    x,
-                    y,
-                    'o',
-                    color=component1_color,
-                    markersize=8,
-                    label='Component 1',
-                )[0]
-
-                name = self.comp1_name_edit.text().strip()
-                if name:
-                    ox, oy = self.component1_text_offset
-                    self.component1_text = ax.text(
-                        x + ox,
-                        y + oy,
-                        name,
-                        fontsize=self.label_fontsize,
-                        fontweight='bold' if self.label_bold else 'normal',
-                        fontstyle='italic' if self.label_italic else 'normal',
-                        color=self.label_color,
-                        picker=True,
-                    )
-
-                self._make_components_draggable()
-                self.parent_widget.canvas_widget.canvas.draw_idle()
-                self.draw_line_between_components()
-
-            except Exception as e:
-                show_error(f"Error setting coordinates: {str(e)}")
-            finally:
-                # Disconnect temporary handler
-                self.parent_widget.canvas_widget.canvas.mpl_disconnect(
-                    self.temp_click_cid
-                )
-
-                # Restore button state
-                self.my_button.setText(original_text)
-                self.my_button.setEnabled(True)
-
-        # Connect temporary click handler
-        self.temp_click_cid = (
-            self.parent_widget.canvas_widget.canvas.mpl_connect(
-                'button_press_event', handle_first_component_click
-            )
-        )
-
-    def on_second_button_clicked(self):
-        """Function called when the second button is clicked."""
-        if self.parent_widget is None:
-            show_error("Parent widget not available")
-            return
-
-        # Remove existing dot and text if they exist
-        if self.component2_dot is not None:
-            self.component2_dot.remove()
-            self.component2_dot = None
-        if self.component2_text is not None:
-            self.component2_text.remove()
-            self.component2_text = None
-        # Remove line as well since component 2 changed
-        if self.component_line is not None:
-            try:
-                self.component_line.remove()
-            except (ValueError, AttributeError):
-                pass
-            self.component_line = None
-        self.parent_widget.canvas_widget.canvas.draw_idle()
-
-        original_text = self.second_button.text()
-        self.second_button.setText("Click on plot...")
-        self.second_button.setEnabled(False)
-
-        # Disconnect original click handler
-        if hasattr(self.parent_widget, 'click_cid'):
-            self.parent_widget.canvas_widget.canvas.mpl_disconnect(
-                self.parent_widget.click_cid
-            )
-
-        # Create a new click handler for component 2
-        def handle_second_component_click(event):
-            if not event.inaxes:
-                return
-
-            x, y = event.xdata, event.ydata
-
-            try:
-                self.second_edit1.setText(f"{x:.6f}")
-                self.second_edit2.setText(f"{y:.6f}")
-
-                _, component2_color = self._get_component_colors()
-
-                ax = self.parent_widget.canvas_widget.figure.gca()
-                self.component2_dot = ax.plot(
-                    x,
-                    y,
-                    'o',
-                    color=component2_color,
-                    markersize=8,
-                    label='Component 2',
-                )[0]
-
-                name = self.comp2_name_edit.text().strip()
-                if name:
-                    ox, oy = self.component2_text_offset
-                    self.component2_text = ax.text(
-                        x + ox,
-                        y + oy,
-                        name,
-                        fontsize=self.label_fontsize,
-                        fontweight='bold' if self.label_bold else 'normal',
-                        fontstyle='italic' if self.label_italic else 'normal',
-                        color=self.label_color,
-                        picker=True,
-                    )
-
-                self._make_components_draggable()
-                self.parent_widget.canvas_widget.canvas.draw_idle()
-                self.draw_line_between_components()
-
-            except Exception as e:
-                show_error(f"Error setting coordinates: {str(e)}")
-
-            finally:
-                # Disconnect temporary handler
-                self.parent_widget.canvas_widget.canvas.mpl_disconnect(
-                    self.temp_click_cid
-                )
-
-                # Restore button state
-                self.second_button.setText(original_text)
-                self.second_button.setEnabled(True)
-
-        # Connect temporary click handler
-        self.temp_click_cid = (
-            self.parent_widget.canvas_widget.canvas.mpl_connect(
-                'button_press_event', handle_second_component_click
-            )
-        )
+        self.dragging_component_idx = None
+        self.dragging_label_idx = None
 
     def on_calculate_button_clicked(self):
-        """Function called when the calculate button is clicked."""
         if self.parent_widget._labels_layer_with_phasor_features is None:
             return
-        if self.component1_dot is None or self.component2_dot is None:
+        if not all(c.dot is not None for c in self.components[:2]):
             return
-
-        component_real = (
-            self.component1_dot.get_data()[0][0],
-            self.component2_dot.get_data()[0][0],
-        )
-        component_imag = (
-            self.component1_dot.get_data()[1][0],
-            self.component2_dot.get_data()[1][0],
-        )
+        c0, c1 = self.components[:2]
+        component_real = (c0.dot.get_data()[0][0], c1.dot.get_data()[0][0])
+        component_imag = (c0.dot.get_data()[1][0], c1.dot.get_data()[1][0])
 
         phasor_data = (
             self.parent_widget._labels_layer_with_phasor_features.features
@@ -1216,7 +919,10 @@ class ComponentsWidget(QWidget):
             self.parent_widget._labels_layer_with_phasor_features.data.shape
         )
 
-        fractions_layer_name = f"Component 1 fractions: {self.parent_widget.image_layer_with_phasor_features_combobox.currentText()}"
+        # Use the user-entered name (fallback if empty)
+        comp0_name = c0.name_edit.text().strip() or "Component 1"
+        fractions_layer_name = f"{comp0_name} fractions: {self.parent_widget.image_layer_with_phasor_features_combobox.currentText()}"
+
         selected_fractions_layer = Image(
             fractions,
             name=fractions_layer_name,
@@ -1225,7 +931,6 @@ class ComponentsWidget(QWidget):
             contrast_limits=(0, 1),
         )
 
-        # Check if the layer is in the viewer before attempting to remove it
         if fractions_layer_name in self.viewer.layers:
             self.viewer.layers.remove(self.viewer.layers[fractions_layer_name])
 
@@ -1233,7 +938,6 @@ class ComponentsWidget(QWidget):
         self.fractions_colormap = self.fractions_layer.colormap.colors
         self.colormap_contrast_limits = self.fractions_layer.contrast_limits
 
-        # Connect to both colormap and contrast limits events
         self.fractions_layer.events.colormap.connect(self._on_colormap_changed)
         self.fractions_layer.events.contrast_limits.connect(
             self._on_contrast_limits_changed
