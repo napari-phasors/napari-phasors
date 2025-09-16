@@ -587,18 +587,12 @@ class ComponentsWidget(QWidget):
         comp = self.components[idx]
 
         if comp.dot is not None:
-            comp.dot.remove()
-            comp.dot = None
+            comp.dot.set_visible(False)
         if comp.text is not None:
-            comp.text.remove()
-            comp.text = None
+            comp.text.set_visible(False)
         if self.component_line is not None:
-            try:
-                self.component_line.remove()
-            except Exception:
-                pass
-            self.component_line = None
-        self.parent_widget.canvas_widget.canvas.draw_idle()
+            self.component_line.set_visible(False)
+        self._redraw(force=True)
 
         original_text = comp.select_button.text()
         comp.select_button.setText("Click on plot...")
@@ -610,10 +604,41 @@ class ComponentsWidget(QWidget):
             x, y = event.xdata, event.ydata
             comp.g_edit.setText(f"{x:.6f}")
             comp.s_edit.setText(f"{y:.6f}")
-            self._create_component_at_coordinates(idx, x, y)
+
+            if comp.dot is None:
+                self._create_component_at_coordinates(idx, x, y)
+            else:
+                comp.dot.set_data([x], [y])
+                comp.dot.set_visible(self.show_component_dots)
+                name = comp.name_edit.text().strip()
+                if name:
+                    if comp.text is None:
+                        ax = self.parent_widget.canvas_widget.figure.gca()
+                        ox, oy = comp.text_offset
+                        comp.text = ax.text(
+                            x + ox,
+                            y + oy,
+                            name,
+                            fontsize=self.label_fontsize,
+                            fontweight='bold' if self.label_bold else 'normal',
+                            fontstyle=(
+                                'italic' if self.label_italic else 'normal'
+                            ),
+                            color=self.label_color,
+                            picker=True,
+                        )
+                    else:
+                        ox, oy = comp.text_offset
+                        comp.text.set_position((x + ox, y + oy))
+                        comp.text.set_visible(True)
+
+                self.draw_line_between_components()
+
+            # Disconnect temporary handler and restore UI
             self.parent_widget.canvas_widget.canvas.mpl_disconnect(temp_cid)
             comp.select_button.setText(original_text)
             comp.select_button.setEnabled(True)
+            self._redraw(force=True)
 
         temp_cid = self.parent_widget.canvas_widget.canvas.mpl_connect(
             'button_press_event', handler
@@ -874,11 +899,9 @@ class ComponentsWidget(QWidget):
         )
         self.drag_events_connected = True
 
-    # Update dragging handlers similarly:
     def _on_press(self, event):
         if event.inaxes is None:
             return
-        # label first
         for comp in self.components:
             if comp.text is not None and comp.text.contains(event)[0]:
                 self.dragging_label_idx = comp.idx
@@ -917,6 +940,16 @@ class ComponentsWidget(QWidget):
     def _on_release(self, event):
         self.dragging_component_idx = None
         self.dragging_label_idx = None
+
+    def _redraw(self, force=False):
+        """Redraw the canvas. Use force=True to avoid stale blit artifacts."""
+        if self.parent_widget is None:
+            return
+        canvas = self.parent_widget.canvas_widget.canvas
+        if force and hasattr(canvas, "draw"):
+            canvas.draw()
+        else:
+            canvas.draw_idle()
 
     def on_calculate_button_clicked(self):
         if self.parent_widget._labels_layer_with_phasor_features is None:
