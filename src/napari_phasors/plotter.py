@@ -24,12 +24,12 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from ._utils import update_frequency_in_metadata
 from .calibration_tab import CalibrationWidget
+from .components_tab import ComponentsWidget
 from .filter_tab import FilterWidget
 from .fret_tab import FretWidget
 from .lifetime_tab import LifetimeWidget
-
-from .components_tab import ComponentsWidget
 from .selection_tab import SelectionWidget
 
 
@@ -297,6 +297,12 @@ class PlotterWidget(QWidget):
     def _hide_all_tab_artists(self):
         """Hide all tab-specific artists."""
         # Hide components tab artists
+        if hasattr(self, 'components_tab'):
+            self._set_components_visibility(False)
+
+        # Hide other tabs' artists (add similar methods for other tabs)
+        if hasattr(self, 'fret_tab'):
+            self._set_fret_visibility(False)
         # if hasattr(self, 'components_tab'):
         #     self._set_components_visibility(False)
 
@@ -383,8 +389,10 @@ class PlotterWidget(QWidget):
         """Create the Calibration tab."""
         self.calibration_tab = CalibrationWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.calibration_tab, "Calibration")
-        self.calibration_tab.calibration_widget.frequency_input.textEdited.connect(
-            self._broadcast_frequency_value_across_tabs
+        self.calibration_tab.calibration_widget.frequency_input.editingFinished.connect(
+            lambda: self._broadcast_frequency_value_across_tabs(
+                self.calibration_tab.calibration_widget.frequency_input.text()
+            )
         )
 
     def _create_filter_tab(self):
@@ -413,8 +421,10 @@ class PlotterWidget(QWidget):
         self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
             self.lifetime_tab._on_image_layer_changed
         )
-        self.lifetime_tab.frequency_input.textEdited.connect(
-            self._broadcast_frequency_value_across_tabs
+        self.lifetime_tab.frequency_input.editingFinished.connect(
+            lambda: self._broadcast_frequency_value_across_tabs(
+                self.lifetime_tab.frequency_input.text()
+            )
         )
 
     def _create_fret_tab(self):
