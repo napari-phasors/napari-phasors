@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.collections import LineCollection
-from matplotlib.colors import ListedColormap
+from matplotlib.colors import LinearSegmentedColormap, ListedColormap
 from napari.layers import Image
 from napari.utils.notifications import show_error
 from phasorpy.lifetime import phasor_from_fret_donor
@@ -315,7 +315,10 @@ class FretWidget(QWidget):
 
         # Get colormap from stored colors or fallback
         if hasattr(self, 'fret_colormap') and self.fret_colormap is not None:
-            colormap = ListedColormap(self.fret_colormap)
+            # Create a smooth interpolated cmap from sparse control points
+            colormap = LinearSegmentedColormap.from_list(
+                "fret_interp", self.fret_colormap, N=256
+            )
         else:
             colormap = plt.cm.turbo  # Use turbo as fallback
 

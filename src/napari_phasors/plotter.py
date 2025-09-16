@@ -297,8 +297,8 @@ class PlotterWidget(QWidget):
     def _hide_all_tab_artists(self):
         """Hide all tab-specific artists."""
         # Hide components tab artists
-        if hasattr(self, 'components_tab'):
-            self._set_components_visibility(False)
+        # if hasattr(self, 'components_tab'):
+        #     self._set_components_visibility(False)
 
         # Hide other tabs' artists (add similar methods for other tabs)
         if hasattr(self, 'fret_tab'):
@@ -313,8 +313,9 @@ class PlotterWidget(QWidget):
 
     def _set_components_visibility(self, visible):
         """Set visibility of components tab artists."""
-        if hasattr(self, 'components_tab'):
-            self.components_tab.set_artists_visible(visible)
+        # if hasattr(self, 'components_tab'):
+        #     self.components_tab.set_artists_visible(visible)
+        pass
 
     def _set_fret_visibility(self, visible):
         """Set visibility of FRET tab artists."""
