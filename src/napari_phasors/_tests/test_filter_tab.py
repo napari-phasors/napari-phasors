@@ -5,6 +5,7 @@ from matplotlib.figure import Figure
 from napari.layers import Image
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QHBoxLayout,
@@ -62,6 +63,14 @@ def test_filter_widget_initialization_values(make_napari_viewer):
     assert filter_widget.threshold_method_combobox.itemText(3) == "Li"
     assert filter_widget.threshold_method_combobox.itemText(4) == "Yen"
     assert filter_widget.threshold_method_combobox.currentText() == "Otsu"
+
+    # Test log scale checkbox
+    assert hasattr(filter_widget, 'log_scale_checkbox')
+    assert isinstance(filter_widget.log_scale_checkbox, QCheckBox)
+    assert filter_widget.log_scale_checkbox.text() == "Log scale"
+    assert (
+        not filter_widget.log_scale_checkbox.isChecked()
+    )  # Should start unchecked
 
     # Test median filter UI components
     assert hasattr(filter_widget, 'median_filter_label')
@@ -134,19 +143,16 @@ def test_filter_method_switching(make_napari_viewer):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    # Initially should be median
     assert filter_widget.filter_method_combobox.currentText() == "Median"
     assert not filter_widget.median_filter_widget.isHidden()
     assert filter_widget.wavelet_filter_widget.isHidden()
 
-    # Switch to wavelet
     filter_widget.filter_method_combobox.setCurrentText("Wavelet")
     filter_widget.on_filter_method_changed()
 
     assert filter_widget.median_filter_widget.isHidden()
     assert not filter_widget.wavelet_filter_widget.isHidden()
 
-    # Switch back to median
     filter_widget.filter_method_combobox.setCurrentText("Median")
     filter_widget.on_filter_method_changed()
 
@@ -167,11 +173,9 @@ def test_threshold_method_none_option(make_napari_viewer):
     filter_widget.on_threshold_slider_change()
     assert filter_widget.threshold_slider.value() == 10
 
-    # Switch to None method
     filter_widget.threshold_method_combobox.setCurrentText("None")
     filter_widget.on_threshold_method_changed()
 
-    # Should reset to 0
     assert filter_widget.threshold_slider.value() == 0
     assert filter_widget.label_3.text() == "Intensity threshold: 0"
 
@@ -184,28 +188,23 @@ def test_automatic_threshold_methods(make_napari_viewer):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    # Test Otsu method
     filter_widget.threshold_method_combobox.setCurrentText("Otsu")
     filter_widget.on_threshold_method_changed()
     otsu_value = filter_widget.threshold_slider.value()
     assert otsu_value > 0
 
-    # Test Li method
     filter_widget.threshold_method_combobox.setCurrentText("Li")
     filter_widget.on_threshold_method_changed()
     li_value = filter_widget.threshold_slider.value()
     assert li_value > 0
 
-    # Test Yen method
     filter_widget.threshold_method_combobox.setCurrentText("Yen")
     filter_widget.on_threshold_method_changed()
     yen_value = filter_widget.threshold_slider.value()
     assert yen_value > 0
 
-    # Values should be different (generally)
-    # Note: They might be the same for some data, but usually different
     values = [otsu_value, li_value, yen_value]
-    assert len(set(values)) >= 1  # At least one unique value
+    assert len(set(values)) >= 1
 
 
 def test_manual_threshold_switching(make_napari_viewer):
@@ -216,16 +215,13 @@ def test_manual_threshold_switching(make_napari_viewer):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    # Start with Otsu
     filter_widget.threshold_method_combobox.setCurrentText("Otsu")
     filter_widget.on_threshold_method_changed()
     assert filter_widget.threshold_method_combobox.currentText() == "Otsu"
 
-    # Manually change slider
     filter_widget.threshold_slider.setValue(42)
     filter_widget.on_threshold_slider_change()
 
-    # Should switch to Manual
     assert filter_widget.threshold_method_combobox.currentText() == "Manual"
 
 
@@ -237,28 +233,22 @@ def test_none_threshold_slider_behavior(make_napari_viewer):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    # Set to None method
     filter_widget.threshold_method_combobox.setCurrentText("None")
     filter_widget.on_threshold_method_changed()
     assert filter_widget.threshold_method_combobox.currentText() == "None"
     assert filter_widget.threshold_slider.value() == 0
 
-    # Trigger slider change at 0 value
     filter_widget.on_threshold_slider_change()
 
-    # Should still be None, not Manual
     assert filter_widget.threshold_method_combobox.currentText() == "None"
 
 
 def create_image_layer_with_incompatible_harmonics():
     """Create an image layer with incompatible harmonics for wavelet filtering."""
-    # Create base layer
     layer = create_image_layer_with_phasors()
 
-    # Modify harmonics to be incompatible (e.g., [1, 3, 5] - no doubles/halves)
     phasor_features = layer.metadata['phasor_features_labels_layer']
 
-    # Create new harmonics that don't have double/half relationships
     num_pixels = len(phasor_features.features['harmonic'])
     incompatible_harmonics = np.random.choice([1, 3, 5], size=num_pixels)
     phasor_features.features['harmonic'] = incompatible_harmonics
@@ -271,7 +261,6 @@ def test_wavelet_harmonics_validation_compatible(make_napari_viewer):
     viewer = make_napari_viewer()
     intensity_image_layer = create_image_layer_with_phasors()
 
-    # Ensure compatible harmonics (e.g., [1, 2] where 2 = 1*2)
     phasor_features = intensity_image_layer.metadata[
         'phasor_features_labels_layer'
     ]
@@ -283,11 +272,9 @@ def test_wavelet_harmonics_validation_compatible(make_napari_viewer):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    # Switch to wavelet method
     filter_widget.filter_method_combobox.setCurrentText("Wavelet")
     filter_widget.on_filter_method_changed()
 
-    # Should not show warning and should show parameters
     assert filter_widget.harmonic_warning_label.isHidden()
     assert not filter_widget.wavelet_params_widget.isHidden()
 
@@ -300,15 +287,12 @@ def test_wavelet_harmonics_validation_incompatible(make_napari_viewer):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    # Switch to wavelet method
     filter_widget.filter_method_combobox.setCurrentText("Wavelet")
     filter_widget.on_filter_method_changed()
 
-    # Should show warning and hide parameters
     assert not filter_widget.harmonic_warning_label.isVisible()
     assert filter_widget.wavelet_params_widget.isHidden()
 
-    # Warning text should mention incompatible harmonics
     warning_text = filter_widget.harmonic_warning_label.text()
     assert "Warning: Harmonics" in warning_text
     assert "not compatible" in warning_text
@@ -319,7 +303,6 @@ def test_apply_button_with_wavelet_filter(make_napari_viewer):
     viewer = make_napari_viewer()
     intensity_image_layer = create_image_layer_with_phasors()
 
-    # Set up compatible harmonics
     phasor_features = intensity_image_layer.metadata[
         'phasor_features_labels_layer'
     ]
@@ -331,7 +314,6 @@ def test_apply_button_with_wavelet_filter(make_napari_viewer):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    # Set wavelet parameters
     filter_widget.filter_method_combobox.setCurrentText("Wavelet")
     filter_widget.wavelet_sigma_spinbox.setValue(1.5)
     filter_widget.wavelet_levels_spinbox.setValue(2)
@@ -345,11 +327,10 @@ def test_apply_button_with_wavelet_filter(make_napari_viewer):
     ):
         filter_widget.apply_button_clicked()
 
-        # Check that apply_filter_and_threshold was called with wavelet parameters
         mock_apply.assert_called_once()
         call_args = mock_apply.call_args
 
-        assert call_args[0][0] == intensity_image_layer  # layer
+        assert call_args[0][0] == intensity_image_layer
         assert call_args[1]['filter_method'] == 'wavelet'
         assert call_args[1]['sigma'] == 1.5
         assert call_args[1]['levels'] == 2
@@ -366,7 +347,6 @@ def test_apply_button_with_median_filter(make_napari_viewer):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    # Set median parameters
     filter_widget.filter_method_combobox.setCurrentText("Median")
     filter_widget.median_filter_spinbox.setValue(5)
     filter_widget.median_filter_repetition_spinbox.setValue(2)
@@ -380,11 +360,10 @@ def test_apply_button_with_median_filter(make_napari_viewer):
     ):
         filter_widget.apply_button_clicked()
 
-        # Check that apply_filter_and_threshold was called with median parameters
         mock_apply.assert_called_once()
         call_args = mock_apply.call_args
 
-        assert call_args[0][0] == intensity_image_layer  # layer
+        assert call_args[0][0] == intensity_image_layer
         assert call_args[1]['filter_method'] == 'median'
         assert call_args[1]['size'] == 5
         assert call_args[1]['repeat'] == 2
@@ -398,13 +377,11 @@ def test_threshold_method_storage_in_metadata(make_napari_viewer):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    # Set threshold method
     filter_widget.threshold_method_combobox.setCurrentText("Li")
 
     with patch('napari_phasors.filter_tab.apply_filter_and_threshold'):
         filter_widget.apply_button_clicked()
 
-    # Check that threshold method was stored
     assert "settings" in intensity_image_layer.metadata
     assert (
         intensity_image_layer.metadata["settings"]["threshold_method"] == "Li"
@@ -417,10 +394,8 @@ def test_calculate_automatic_threshold(make_napari_viewer):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    # Create test data
     test_data = np.random.rand(100, 100) * 100
 
-    # Test each method
     otsu_threshold = filter_widget.calculate_automatic_threshold(
         "Otsu", test_data
     )
@@ -429,7 +404,6 @@ def test_calculate_automatic_threshold(make_napari_viewer):
         "Yen", test_data
     )
 
-    # All should return valid numbers
     assert isinstance(otsu_threshold, (int, float))
     assert isinstance(li_threshold, (int, float))
     assert isinstance(yen_threshold, (int, float))
@@ -437,12 +411,10 @@ def test_calculate_automatic_threshold(make_napari_viewer):
     assert li_threshold >= 0
     assert yen_threshold >= 0
 
-    # Test with empty data
     empty_data = np.array([])
     result = filter_widget.calculate_automatic_threshold("Otsu", empty_data)
     assert result == 0
 
-    # Test with NaN data
     nan_data = np.full((10, 10), np.nan)
     result = filter_widget.calculate_automatic_threshold("Otsu", nan_data)
     assert result == 0
@@ -453,7 +425,6 @@ def test_settings_restoration_with_wavelet(make_napari_viewer):
     viewer = make_napari_viewer()
     intensity_image_layer = create_image_layer_with_phasors()
 
-    # Set up compatible harmonics
     phasor_features = intensity_image_layer.metadata[
         'phasor_features_labels_layer'
     ]
@@ -461,7 +432,6 @@ def test_settings_restoration_with_wavelet(make_napari_viewer):
     compatible_harmonics = np.random.choice([1, 2], size=num_pixels)
     phasor_features.features['harmonic'] = compatible_harmonics
 
-    # Add wavelet settings to metadata
     intensity_image_layer.metadata["settings"] = {
         "threshold": 0.1,
         "threshold_method": "Li",
@@ -476,7 +446,6 @@ def test_settings_restoration_with_wavelet(make_napari_viewer):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    # Check that wavelet settings are restored
     assert filter_widget.filter_method_combobox.currentText() == "Wavelet"
     assert filter_widget.wavelet_sigma_spinbox.value() == 3.5
     assert filter_widget.wavelet_levels_spinbox.value() == 4
@@ -488,7 +457,6 @@ def test_settings_restoration_with_incompatible_wavelet(make_napari_viewer):
     viewer = make_napari_viewer()
     intensity_image_layer = create_image_layer_with_incompatible_harmonics()
 
-    # Add wavelet settings to metadata (but harmonics are incompatible)
     intensity_image_layer.metadata["settings"] = {
         "filter": {
             "method": "wavelet",
@@ -501,16 +469,13 @@ def test_settings_restoration_with_incompatible_wavelet(make_napari_viewer):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    # Should fall back to Median since harmonics are incompatible
     assert filter_widget.filter_method_combobox.currentText() == "Median"
 
 
-# Keep all the existing tests that are still relevant
 def test_filter_widget_histogram_styling(make_napari_viewer):
     """Test that histogram styling is applied correctly."""
     viewer = make_napari_viewer()
 
-    # Test that style_histogram_axes method exists and is called
     with patch.object(FilterWidget, 'style_histogram_axes') as mock_style:
         parent = PlotterWidget(viewer)
         filter_widget = parent.filter_tab
@@ -519,11 +484,9 @@ def test_filter_widget_histogram_styling(make_napari_viewer):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    # Check axes styling
     assert filter_widget.hist_ax.patch.get_alpha() == 0
     assert filter_widget.hist_fig.patch.get_alpha() == 0
 
-    # Check spine colors - use numpy.allclose for RGBA comparison
     import matplotlib.colors as mcolors
 
     grey_rgba = mcolors.to_rgba('grey')
@@ -532,7 +495,6 @@ def test_filter_widget_histogram_styling(make_napari_viewer):
         np.testing.assert_array_almost_equal(spine.get_edgecolor(), grey_rgba)
         assert spine.get_linewidth() == 1
 
-    # Check labels
     assert filter_widget.hist_ax.get_ylabel() == "Count"
     assert filter_widget.hist_ax.get_xlabel() == "Mean Intensity"
 
@@ -546,7 +508,6 @@ def test_filter_widget_with_layer_data(make_napari_viewer):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    # Check that threshold factor is calculated correctly
     max_mean_value = np.nanmax(intensity_image_layer.metadata["original_mean"])
     expected_magnitude = int(np.log10(max_mean_value))
     expected_threshold_factor = (
@@ -554,13 +515,11 @@ def test_filter_widget_with_layer_data(make_napari_viewer):
     )
     assert filter_widget.threshold_factor == expected_threshold_factor
 
-    # Check that slider maximum is set correctly
     expected_max = int(
         np.ceil(max_mean_value * filter_widget.threshold_factor)
     )
     assert filter_widget.threshold_slider.maximum() == expected_max
 
-    # Check that default threshold is now set using Otsu method (not 10% of max)
     mean_data = intensity_image_layer.metadata["original_mean"]
     expected_otsu_threshold = filter_widget.calculate_automatic_threshold(
         "Otsu", mean_data
@@ -570,7 +529,6 @@ def test_filter_widget_with_layer_data(make_napari_viewer):
     )
     assert filter_widget.threshold_slider.value() == expected_default_threshold
 
-    # Also check that the default threshold method is "Otsu"
     assert filter_widget.threshold_method_combobox.currentText() == "Otsu"
 
 
@@ -580,15 +538,12 @@ def test_filter_widget_threshold_slider_callback(make_napari_viewer):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    # Set a threshold factor for testing
     filter_widget.threshold_factor = 10
 
-    # Change slider value
     test_value = 50
     filter_widget.threshold_slider.setValue(test_value)
     filter_widget.on_threshold_slider_change()
 
-    # Check that label is updated correctly
     expected_text = (
         f"Intensity threshold: {test_value / filter_widget.threshold_factor}"
     )
@@ -601,11 +556,9 @@ def test_filter_widget_kernel_size_callback(make_napari_viewer):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    # Change kernel size
     test_value = 5
     filter_widget.median_filter_spinbox.setValue(test_value)
 
-    # Check that label is updated correctly
     expected_text = f"Median Filter Kernel Size: {test_value} x {test_value}"
     assert filter_widget.median_filter_label.text() == expected_text
 
@@ -619,13 +572,10 @@ def test_filter_widget_histogram_plotting(make_napari_viewer):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    # Test plotting histogram
     filter_widget.plot_mean_histogram()
 
-    # Check that histogram was plotted (axes should have children)
     assert len(filter_widget.hist_ax.get_children()) > 0
 
-    # Test that threshold line can be updated
     filter_widget.threshold_slider.setValue(50)
     filter_widget.update_threshold_line()
 
@@ -637,11 +587,9 @@ def test_spinbox_and_slider_do_not_call_plot(make_napari_viewer):
     filter_widget = parent.filter_tab
 
     with patch.object(parent, 'plot') as mock_plot:
-        # Change spinbox and slider
         filter_widget.median_filter_spinbox.setValue(5)
         filter_widget.threshold_slider.setValue(42)
 
-        # plot() should not be called
         mock_plot.assert_not_called()
 
 
@@ -655,7 +603,6 @@ def test_slider_value_modifies_threshold_line(make_napari_viewer):
     filter_widget.on_labels_layer_with_phasor_features_changed()
     filter_widget.plot_mean_histogram()
 
-    # Set slider to a value and check threshold line
     filter_widget.threshold_slider.setValue(77)
     filter_widget.on_threshold_slider_change()
     assert filter_widget.threshold_line is not None
@@ -672,17 +619,13 @@ def test_no_plot_called_if_combobox_empty(make_napari_viewer):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    # Mock the plot method
     with patch.object(parent, 'plot') as mock_plot:
-        # Try to trigger plot via apply button
         with patch('napari_phasors.filter_tab.apply_filter_and_threshold'):
             filter_widget.apply_button.click()
         mock_plot.assert_not_called()
 
-    # Try to plot histogram and update threshold line
     filter_widget.plot_mean_histogram()
     filter_widget.update_threshold_line()
-    # No error, nothing should happen
 
 
 def test_slider_and_histogram_update_on_layer_add_and_select(
@@ -693,14 +636,11 @@ def test_slider_and_histogram_update_on_layer_add_and_select(
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    # No layer present, slider max should be default
     assert filter_widget.threshold_slider.maximum() == 100
 
-    # Add first layer
     intensity_image_layer1 = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer1)
 
-    # Slider max and threshold line should update
     expected_max1 = int(
         np.ceil(
             np.nanmax(intensity_image_layer1.metadata["original_mean"])
@@ -709,16 +649,14 @@ def test_slider_and_histogram_update_on_layer_add_and_select(
     )
     assert filter_widget.threshold_slider.maximum() == expected_max1
     assert filter_widget.threshold_line is not None
-    assert len(filter_widget.hist_ax.patches) > 0  # Histogram drawn
+    assert len(filter_widget.hist_ax.patches) > 0
 
-    # Add second layer, but do not select it
     intensity_image_layer2 = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer2)
-    # Combobox still points to first layer, so nothing should change
+
     prev_max = filter_widget.threshold_slider.maximum()
     assert filter_widget.threshold_slider.maximum() == prev_max
 
-    # Now select the new layer
     parent.image_layer_with_phasor_features_combobox.setCurrentText(
         intensity_image_layer2.name
     )
@@ -736,7 +674,7 @@ def test_slider_and_histogram_update_on_layer_add_and_select(
 def test_layer_with_no_phasor_features_does_nothing(make_napari_viewer):
     """If a layer with no phasor features is added, nothing should happen."""
     viewer = make_napari_viewer()
-    # Patch the relevant FilterWidget methods to check they are NOT called
+
     with (
         patch.object(
             FilterWidget, 'on_labels_layer_with_phasor_features_changed'
@@ -769,7 +707,7 @@ def test_layer_with_no_phasor_features_does_nothing(make_napari_viewer):
             parent.image_layer_with_phasor_features_combobox.currentText()
             == ''
         )
-    # No threshold line or histogram should be drawn
+
     assert filter_widget.threshold_line is None
 
 
@@ -778,7 +716,6 @@ def test_filter_widget_layer_with_settings(make_napari_viewer):
     viewer = make_napari_viewer()
     intensity_image_layer = create_image_layer_with_phasors()
 
-    # Add metadata with settings
     intensity_image_layer.metadata["settings"] = {
         "threshold": 0.1,
         "threshold_method": "Li",
@@ -789,7 +726,6 @@ def test_filter_widget_layer_with_settings(make_napari_viewer):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    # Check that settings are loaded correctly
     assert (
         filter_widget.threshold_slider.value()
         == 0.1 * filter_widget.threshold_factor
@@ -805,14 +741,11 @@ def test_filter_widget_plot_histogram_no_layer(make_napari_viewer):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    # Should return early without plotting
     filter_widget.plot_mean_histogram()
 
-    # Histogram should be empty or have minimal elements
     children_before = len(filter_widget.hist_ax.get_children())
 
-    # The function should handle the None case gracefully
-    assert children_before >= 0  # Should not crash
+    assert children_before >= 0
 
 
 def test_filter_widget_update_threshold_line_no_layer(make_napari_viewer):
@@ -822,7 +755,6 @@ def test_filter_widget_update_threshold_line_no_layer(make_napari_viewer):
     filter_widget = parent.filter_tab
     filter_widget.update_threshold_line()
 
-    # Should handle gracefully without crashing
     assert filter_widget.threshold_line is None
 
 
@@ -832,11 +764,9 @@ def test_filter_widget_ui_layout(make_napari_viewer):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    # Check main layout
     main_layout = filter_widget.layout()
     assert isinstance(main_layout, QVBoxLayout)
 
-    # Check scroll area exists
     scroll_areas = filter_widget.findChildren(QScrollArea)
     assert len(scroll_areas) == 1
 
@@ -849,32 +779,61 @@ def test_filter_widget_ui_layout(make_napari_viewer):
     ][0]
     assert apply_button == filter_widget.apply_button
 
-    # Check horizontal layouts exist (now more due to additional filter options)
     h_layouts = filter_widget.findChildren(QHBoxLayout)
-    assert (
-        len(h_layouts)
-        >= 5  # More layouts now due to filter method selection, threshold method, etc.
-    )
+    assert len(h_layouts) >= 5
 
 
 def test_filter_widget_canvas_properties(make_napari_viewer):
     """Test canvas and figure properties."""
-    # Find the canvas widget
     from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    # Check figure size
     assert filter_widget.hist_fig.get_figwidth() == 8
     assert filter_widget.hist_fig.get_figheight() == 4
 
-    # Check that constrained_layout is used
     assert filter_widget.hist_fig.get_constrained_layout()
 
     canvas_widgets = filter_widget.findChildren(FigureCanvasQTAgg)
     assert len(canvas_widgets) == 1
 
     canvas = canvas_widgets[0]
-    assert canvas.height() == 150  # Fixed height as set in setup_ui
+    assert canvas.height() == 150
+
+
+def test_log_scale_checkbox_functionality(make_napari_viewer):
+    """Test log scale checkbox functionality."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    filter_widget = parent.filter_tab
+
+    filter_widget.plot_mean_histogram()
+
+    assert filter_widget.hist_ax.get_yscale() == 'linear'
+    assert not filter_widget.log_scale_checkbox.isChecked()
+
+    filter_widget.log_scale_checkbox.setChecked(True)
+    filter_widget.on_log_scale_changed(2)  # Qt.Checked = 2
+
+    assert filter_widget.hist_ax.get_yscale() == 'log'
+
+    filter_widget.log_scale_checkbox.setChecked(False)
+    filter_widget.on_log_scale_changed(0)  # Qt.Unchecked = 0
+
+    assert filter_widget.hist_ax.get_yscale() == 'linear'
+
+
+def test_log_scale_checkbox_with_no_layer(make_napari_viewer):
+    """Test log scale checkbox when no layer is available."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    filter_widget = parent.filter_tab
+
+    filter_widget.log_scale_checkbox.setChecked(True)
+    filter_widget.on_log_scale_changed(2)
+
+    assert filter_widget.hist_ax.get_yscale() == 'linear'

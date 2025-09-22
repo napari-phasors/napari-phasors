@@ -8,6 +8,7 @@ from matplotlib.backends.backend_qt5agg import (
 from napari.utils.notifications import show_error
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QHBoxLayout,
@@ -126,6 +127,13 @@ class FilterWidget(QWidget):
         self.threshold_method_combobox.setCurrentText("Otsu")
         threshold_method_layout.addWidget(self.threshold_method_combobox)
         scroll_layout.addLayout(threshold_method_layout)
+
+        # Add log scale checkbox to the same line
+        self.log_scale_checkbox = QCheckBox("Log scale")
+        self.log_scale_checkbox.setChecked(False)
+        self.log_scale_checkbox.stateChanged.connect(self.on_log_scale_changed)
+        threshold_method_layout.addWidget(self.log_scale_checkbox)
+        threshold_method_layout.addStretch()
 
         # Threshold slider and label
         theshold_slider_layout = QHBoxLayout()
@@ -552,6 +560,18 @@ class FilterWidget(QWidget):
             linewidth=2,
             label='Threshold',
         )
+
+        self.hist_fig.canvas.draw_idle()
+
+    def on_log_scale_changed(self, state):
+        """Callback when log scale checkbox is toggled."""
+        if self.parent_widget._labels_layer_with_phasor_features is None:
+            return
+
+        if state == 2:
+            self.hist_ax.set_yscale('log')
+        else:
+            self.hist_ax.set_yscale('linear')
 
         self.hist_fig.canvas.draw_idle()
 
