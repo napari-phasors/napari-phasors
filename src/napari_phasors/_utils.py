@@ -8,11 +8,36 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from napari.layers import Image
-from phasorpy.phasor import phasor_filter_median, phasor_threshold
-from qtpy.QtWidgets import QWidget
+from phasorpy.phasor import phasor_filter_median, phasor_threshold, phasor_filter_pawflim
 
 if TYPE_CHECKING:
     import napari
+
+
+def validate_harmonics_for_wavelet(harmonics):
+    """Validate that harmonics have their double or half correspondent.
+    
+    Parameters
+    ----------
+    harmonics : array-like
+        Array of harmonic values
+        
+    Returns
+    -------
+    bool
+        True if harmonics are valid for wavelet filtering, False otherwise
+    """
+    harmonics = np.array(harmonics)
+    
+    for harmonic in harmonics:
+        # Check if double or half exists
+        has_double = (harmonic * 2) in harmonics
+        has_half = (harmonic / 2) in harmonics
+        
+        if not (has_double or has_half):
+            return False
+    
+    return True
 
 
 def apply_filter_and_threshold(
@@ -20,8 +45,12 @@ def apply_filter_and_threshold(
     /,
     *,
     threshold: float = 0,
+    filter_method: str = "median",
     size: int = 3,
     repeat: int = 1,
+    sigma: float = 1.0,
+    levels: int = 3,
+    harmonics: np.ndarray = None,
 ):
     """Apply filter to an image layer.
 
@@ -31,24 +60,34 @@ def apply_filter_and_threshold(
         Napari image layer with phasor features.
     threshold : float
         Threshold value for the mean value to be applied to G and S.
-    method : str
-        Filter method. Options are 'median'.
+    filter_method : str
+        Filter method. Options are 'median' or 'wavelet'.
     size : int
-        Size of the filter.
+        Size of the median filter.
     repeat : int
-        Number of times to apply the filter.
+        Number of times to apply the median filter.
+    sigma : float
+        Sigma parameter for wavelet filter.
+    levels : int
+        Number of levels for wavelet filter.
+    harmonics : np.ndarray, optional
+        Harmonic values for wavelet filter. If None, will be extracted from layer.
 
     """
     mean = layer.metadata['original_mean'].copy()
     phasor_features = layer.metadata['phasor_features_labels_layer'].features
-    harmonics = np.unique(phasor_features['harmonic'])
+    
+    if harmonics is None:
+        harmonics = np.unique(phasor_features['harmonic'])
+    
     real, imag = (
         phasor_features['G_original'].copy(),
         phasor_features['S_original'].copy(),
     )
     real = np.reshape(real, (len(harmonics),) + mean.shape)
     imag = np.reshape(imag, (len(harmonics),) + mean.shape)
-    if repeat > 0:
+    
+    if filter_method == "median" and repeat > 0:
         mean, real, imag = phasor_filter_median(
             mean,
             real,
@@ -56,6 +95,16 @@ def apply_filter_and_threshold(
             repeat=repeat,
             size=size,
         )
+    elif filter_method == "wavelet" and validate_harmonics_for_wavelet(harmonics):
+        mean, real, imag = phasor_filter_pawflim(
+            mean,
+            real,
+            imag,
+            sigma=sigma,
+            levels=levels,
+            harmonic=harmonics,
+        )
+    
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)
         mean, real, imag = phasor_threshold(mean, real, imag, threshold)
@@ -68,8 +117,11 @@ def apply_filter_and_threshold(
     if "settings" not in layer.metadata:
         layer.metadata["settings"] = {}
     layer.metadata["settings"]["filter"] = {
+        "method": filter_method,
         "size": size,
         "repeat": repeat,
+        "sigma": sigma,
+        "levels": levels,
     }
     layer.metadata["settings"]["threshold"] = threshold
     layer.refresh()
