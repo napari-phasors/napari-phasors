@@ -26,6 +26,8 @@ from phasorpy.phasor import (
     phasor_threshold,
 )
 
+from ._utils import apply_filter_and_threshold
+
 extension_mapping = {
     "raw": {
         ".ptu": lambda path, reader_options: _parse_and_call_io_function(
@@ -307,7 +309,6 @@ def processed_file_reader(
         in 'metadata' contain phasor coordinates as columns 'G' and 'S'.
 
     """
-    # Set default harmonics if None is passed
     if harmonics is None:
         harmonics = 'all'
     filename, file_extension = _get_filename_extension(path)
@@ -337,56 +338,55 @@ def processed_file_reader(
         harmonics=harmonics_read,
     )
 
-    filter_size = None
-    filter_repeat = None
-    if "filter" in settings.keys():
-        filter_size = settings["filter"]["size"]
-        filter_repeat = settings["filter"]["repeat"]
-    threshold = None
-    if "threshold" in settings.keys():
-        threshold = settings["threshold"]
+    original_mean_intensity_image = mean_intensity_image.copy()
 
-    if threshold is not None or filter_repeat is not None:
-        harmonics = np.unique(labels_layer.features['harmonic'])
-        real, imag = (
-            labels_layer.features['G_original'].copy(),
-            labels_layer.features['S_original'].copy(),
+    from napari.layers import Image
+
+    temp_layer = Image(
+        mean_intensity_image,
+        name=filename + " Intensity Image",
+        metadata={
+            "phasor_features_labels_layer": labels_layer,
+            "original_mean": original_mean_intensity_image,
+            "settings": settings,
+        },
+    )
+
+    should_apply_processing = False
+    filter_params = {}
+    threshold_value = 0
+
+    if "filter" in settings.keys():
+        filter_settings = settings["filter"]
+        if filter_settings.get("repeat", 0) > 0:
+            should_apply_processing = True
+            filter_params = {
+                "filter_method": filter_settings.get("method", "median"),
+                "size": filter_settings.get("size", 3),
+                "repeat": filter_settings.get("repeat", 1),
+                "sigma": filter_settings.get("sigma", 1.0),
+                "levels": filter_settings.get("levels", 3),
+            }
+
+    if "threshold" in settings.keys() and settings["threshold"] is not None:
+        should_apply_processing = True
+        threshold_value = settings["threshold"]
+
+    if should_apply_processing:
+        harmonics_array = np.unique(labels_layer.features['harmonic'])
+        apply_filter_and_threshold(
+            temp_layer,
+            threshold=threshold_value,
+            harmonics=harmonics_array,
+            **filter_params,
         )
-        mean = mean_intensity_image
-        real = np.reshape(real, (len(harmonics),) + mean.shape)
-        imag = np.reshape(imag, (len(harmonics),) + mean.shape)
-        if filter_repeat is not None and filter_repeat > 0:
-            if filter_size is None:
-                filter_size = 3
-            mean, real, imag = phasor_filter_median(
-                mean,
-                real,
-                imag,
-                repeat=filter_repeat,
-                size=filter_size,
-            )
-        if threshold is not None:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", category=RuntimeWarning)
-                mean, real, imag = phasor_threshold(
-                    mean, real, imag, threshold
-                )
-                (
-                    labels_layer.features['G'],
-                    labels_layer.features['S'],
-                ) = (real.flatten(), imag.flatten())
-            mean_intensity_image = mean
 
     layers = []
     add_kwargs = {
         "name": filename + " Intensity Image",
-        "metadata": {
-            "phasor_features_labels_layer": labels_layer,
-            "original_mean": mean_intensity_image,
-            "settings": settings,
-        },
+        "metadata": temp_layer.metadata,
     }
-    layers.append((mean_intensity_image, add_kwargs))
+    layers.append((temp_layer.data, add_kwargs))
     return layers
 
 

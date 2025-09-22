@@ -19,7 +19,7 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from skimage.filters import threshold_otsu, threshold_li, threshold_yen
+from skimage.filters import threshold_li, threshold_otsu, threshold_yen
 
 from ._utils import apply_filter_and_threshold, validate_harmonics_for_wavelet
 
@@ -119,9 +119,9 @@ class FilterWidget(QWidget):
         threshold_method_layout.addWidget(QLabel("Threshold Method:"))
         self.threshold_method_combobox = QComboBox()
         self.threshold_method_combobox = QComboBox()
-        self.threshold_method_combobox.addItems([
-            "None", "Manual", "Otsu", "Li", "Yen"
-        ])
+        self.threshold_method_combobox.addItems(
+            ["None", "Manual", "Otsu", "Li", "Yen"]
+        )
         # Set Otsu as default
         self.threshold_method_combobox.setCurrentText("Otsu")
         threshold_method_layout.addWidget(self.threshold_method_combobox)
@@ -191,7 +191,9 @@ class FilterWidget(QWidget):
 
         # Warning label for incompatible harmonics
         self.harmonic_warning_label = QLabel()
-        self.harmonic_warning_label.setStyleSheet("color: orange; font-style: italic;")
+        self.harmonic_warning_label.setStyleSheet(
+            "color: orange; font-style: italic;"
+        )
         self.harmonic_warning_label.setVisible(False)
         layout.addWidget(self.harmonic_warning_label)
 
@@ -226,14 +228,14 @@ class FilterWidget(QWidget):
     def on_filter_method_changed(self):
         """Callback when filter method is changed."""
         method = self.filter_method_combobox.currentText()
-        
+
         if method == "Median":
             self.median_filter_widget.setVisible(True)
             self.wavelet_filter_widget.setVisible(False)
         elif method == "Wavelet":
             self.median_filter_widget.setVisible(False)
             self.wavelet_filter_widget.setVisible(True)
-            
+
         if self.parent_widget._labels_layer_with_phasor_features is not None:
             self.check_harmonics_compatibility()
 
@@ -241,20 +243,22 @@ class FilterWidget(QWidget):
         """Check if current layer's harmonics are compatible with wavelet filtering."""
         if self.parent_widget._labels_layer_with_phasor_features is None:
             return
-            
+
         labels_layer_name = (
             self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
         )
-        
+
         if not labels_layer_name:
             return
-            
+
         layer_metadata = self.viewer.layers[labels_layer_name].metadata
-        phasor_features = layer_metadata['phasor_features_labels_layer'].features
+        phasor_features = layer_metadata[
+            'phasor_features_labels_layer'
+        ].features
         harmonics = np.unique(phasor_features['harmonic'])
-        
+
         is_valid = validate_harmonics_for_wavelet(harmonics)
-        
+
         if not is_valid:
             harmonics_str = ", ".join(map(str, sorted(harmonics)))
             self.harmonic_warning_label.setText(
@@ -264,22 +268,21 @@ class FilterWidget(QWidget):
             )
             self.harmonic_warning_label.setVisible(True)
             self.wavelet_params_widget.setVisible(False)
-                
+
         else:
             self.harmonic_warning_label.setVisible(False)
             self.wavelet_params_widget.setVisible(True)
 
-
     def calculate_automatic_threshold(self, method, data):
         """Calculate automatic threshold using the specified method.
-        
+
         Parameters
         ----------
         method : str
             Threshold method ('Otsu', 'Li', 'Yen')
         data : np.ndarray
             Image data to calculate threshold from
-            
+
         Returns
         -------
         float
@@ -287,10 +290,10 @@ class FilterWidget(QWidget):
         """
         # Remove NaN values for threshold calculation
         clean_data = data[~np.isnan(data)]
-        
+
         if len(clean_data) == 0:
             return 0
-            
+
         try:
             if method == "Otsu":
                 return threshold_otsu(clean_data)
@@ -301,23 +304,26 @@ class FilterWidget(QWidget):
         except Exception:
             # Fallback to 10% of max if automatic method fails
             return np.nanmax(data) * 0.1
-        
+
         return 0
 
     def on_threshold_method_changed(self):
         """Callback when threshold method is changed."""
-        if self._updating_threshold or self.parent_widget._labels_layer_with_phasor_features is None:
+        if (
+            self._updating_threshold
+            or self.parent_widget._labels_layer_with_phasor_features is None
+        ):
             return
-            
+
         method = self.threshold_method_combobox.currentText()
-        
+
         if method == "None":
             self._updating_threshold = True
             self.threshold_slider.setValue(0)
             self.label_3.setText('Intensity threshold: 0')
             self.update_threshold_line()
             self._updating_threshold = False
-            
+
         elif method != "Manual":
             labels_layer_name = (
                 self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
@@ -327,11 +333,15 @@ class FilterWidget(QWidget):
                 .metadata['original_mean']
                 .copy()
             )
-            
-            threshold_value = self.calculate_automatic_threshold(method, mean_data)
-            
+
+            threshold_value = self.calculate_automatic_threshold(
+                method, mean_data
+            )
+
             self._updating_threshold = True
-            self.threshold_slider.setValue(int(threshold_value * self.threshold_factor))
+            self.threshold_slider.setValue(
+                int(threshold_value * self.threshold_factor)
+            )
             self.label_3.setText(
                 'Intensity threshold: '
                 + str(self.threshold_slider.value() / self.threshold_factor)
@@ -365,24 +375,28 @@ class FilterWidget(QWidget):
         self.threshold_slider.setMaximum(
             ceil(max_mean_value * self.threshold_factor)
         )
-        
+
         # Block threshold method updates while setting initial values
         self._updating_threshold = True
-        
+
         if "settings" in layer_metadata.keys():
             settings = layer_metadata["settings"]
             if "threshold_method" in settings.keys():
-                self.threshold_method_combobox.setCurrentText(settings["threshold_method"])
+                self.threshold_method_combobox.setCurrentText(
+                    settings["threshold_method"]
+                )
             else:
                 self.threshold_method_combobox.setCurrentText("Otsu")
-            
+
             if "threshold" in settings.keys():
                 self.threshold_slider.setValue(
                     int(settings["threshold"] * self.threshold_factor)
                 )
                 self.label_3.setText(
                     'Intensity threshold: '
-                    + str(self.threshold_slider.value() / self.threshold_factor)
+                    + str(
+                        self.threshold_slider.value() / self.threshold_factor
+                    )
                 )
             else:
                 self.threshold_slider.setValue(
@@ -390,7 +404,9 @@ class FilterWidget(QWidget):
                 )
                 self.label_3.setText(
                     'Intensity threshold: '
-                    + str(self.threshold_slider.value() / self.threshold_factor)
+                    + str(
+                        self.threshold_slider.value() / self.threshold_factor
+                    )
                 )
             if "filter" in settings.keys():
                 filter_settings = settings["filter"]
@@ -399,22 +415,36 @@ class FilterWidget(QWidget):
                     if method == "median":
                         self.filter_method_combobox.setCurrentText("Median")
                     elif method == "wavelet":
-                        phasor_features = layer_metadata['phasor_features_labels_layer'].features
+                        phasor_features = layer_metadata[
+                            'phasor_features_labels_layer'
+                        ].features
                         harmonics = np.unique(phasor_features['harmonic'])
                         if validate_harmonics_for_wavelet(harmonics):
-                            self.filter_method_combobox.setCurrentText("Wavelet")
+                            self.filter_method_combobox.setCurrentText(
+                                "Wavelet"
+                            )
                         else:
-                            self.filter_method_combobox.setCurrentText("Median")
-                
+                            self.filter_method_combobox.setCurrentText(
+                                "Median"
+                            )
+
                 # Restore filter parameters
                 if "size" in filter_settings:
-                    self.median_filter_spinbox.setValue(int(filter_settings["size"]))
+                    self.median_filter_spinbox.setValue(
+                        int(filter_settings["size"])
+                    )
                 if "repeat" in filter_settings:
-                    self.median_filter_repetition_spinbox.setValue(int(filter_settings["repeat"]))
+                    self.median_filter_repetition_spinbox.setValue(
+                        int(filter_settings["repeat"])
+                    )
                 if "sigma" in filter_settings:
-                    self.wavelet_sigma_spinbox.setValue(float(filter_settings["sigma"]))
+                    self.wavelet_sigma_spinbox.setValue(
+                        float(filter_settings["sigma"])
+                    )
                 if "levels" in filter_settings:
-                    self.wavelet_levels_spinbox.setValue(int(filter_settings["levels"]))
+                    self.wavelet_levels_spinbox.setValue(
+                        int(filter_settings["levels"])
+                    )
         else:
             self.threshold_method_combobox.setCurrentText("Otsu")
             self.threshold_slider.setValue(
@@ -427,9 +457,9 @@ class FilterWidget(QWidget):
 
         self._updating_threshold = False
         self.plot_mean_histogram()
-        
+
         self.check_harmonics_compatibility()
-        
+
         current_method = self.threshold_method_combobox.currentText()
         if current_method != "Manual":
             self.on_threshold_method_changed()
@@ -439,10 +469,10 @@ class FilterWidget(QWidget):
         if not self._updating_threshold:
             current_method = self.threshold_method_combobox.currentText()
             slider_value = self.threshold_slider.value()
-            
+
             if not (current_method == "None" and slider_value == 0):
                 self.threshold_method_combobox.setCurrentText("Manual")
-            
+
         self.label_3.setText(
             'Intensity threshold: '
             + str(self.threshold_slider.value() / self.threshold_factor)
@@ -536,20 +566,26 @@ class FilterWidget(QWidget):
         labels_layer_name = (
             self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
         )
-        
+
         layer = self.viewer.layers[labels_layer_name]
         if "settings" not in layer.metadata:
             layer.metadata["settings"] = {}
-        layer.metadata["settings"]["threshold_method"] = self.threshold_method_combobox.currentText()
-        
+        layer.metadata["settings"][
+            "threshold_method"
+        ] = self.threshold_method_combobox.currentText()
+
         # Determine filter method and parameters
         filter_method = self.filter_method_combobox.currentText().lower()
-        
+
         # Get harmonics for wavelet filter
         harmonics = None
         if filter_method == "wavelet":
-            harmonics =  np.unique(layer.metadata['phasor_features_labels_layer'].features['harmonic'])
-        
+            harmonics = np.unique(
+                layer.metadata['phasor_features_labels_layer'].features[
+                    'harmonic'
+                ]
+            )
+
         apply_filter_and_threshold(
             layer,
             threshold=self.threshold_slider.value() / self.threshold_factor,

@@ -59,14 +59,17 @@ def test_filter_widget_initialization_values(make_napari_viewer):
     assert filter_widget.threshold_method_combobox.itemText(0) == "None"
     assert filter_widget.threshold_method_combobox.itemText(1) == "Manual"
     assert filter_widget.threshold_method_combobox.itemText(2) == "Otsu"
-    assert filter_widget.threshold_method_combobox.itemText(3) == "Li" 
+    assert filter_widget.threshold_method_combobox.itemText(3) == "Li"
     assert filter_widget.threshold_method_combobox.itemText(4) == "Yen"
     assert filter_widget.threshold_method_combobox.currentText() == "Otsu"
 
     # Test median filter UI components
     assert hasattr(filter_widget, 'median_filter_label')
     assert isinstance(filter_widget.median_filter_label, QLabel)
-    assert filter_widget.median_filter_label.text() == "Median Filter Kernel Size: 3 x 3"
+    assert (
+        filter_widget.median_filter_label.text()
+        == "Median Filter Kernel Size: 3 x 3"
+    )
 
     assert hasattr(filter_widget, 'median_filter_spinbox')
     assert isinstance(filter_widget.median_filter_spinbox, QSpinBox)
@@ -139,7 +142,7 @@ def test_filter_method_switching(make_napari_viewer):
     # Switch to wavelet
     filter_widget.filter_method_combobox.setCurrentText("Wavelet")
     filter_widget.on_filter_method_changed()
-    
+
     assert filter_widget.median_filter_widget.isHidden()
     assert not filter_widget.wavelet_filter_widget.isHidden()
 
@@ -251,15 +254,15 @@ def create_image_layer_with_incompatible_harmonics():
     """Create an image layer with incompatible harmonics for wavelet filtering."""
     # Create base layer
     layer = create_image_layer_with_phasors()
-    
+
     # Modify harmonics to be incompatible (e.g., [1, 3, 5] - no doubles/halves)
     phasor_features = layer.metadata['phasor_features_labels_layer']
-    
+
     # Create new harmonics that don't have double/half relationships
     num_pixels = len(phasor_features.features['harmonic'])
     incompatible_harmonics = np.random.choice([1, 3, 5], size=num_pixels)
     phasor_features.features['harmonic'] = incompatible_harmonics
-    
+
     return layer
 
 
@@ -267,13 +270,15 @@ def test_wavelet_harmonics_validation_compatible(make_napari_viewer):
     """Test wavelet harmonics validation with compatible harmonics."""
     viewer = make_napari_viewer()
     intensity_image_layer = create_image_layer_with_phasors()
-    
+
     # Ensure compatible harmonics (e.g., [1, 2] where 2 = 1*2)
-    phasor_features = intensity_image_layer.metadata['phasor_features_labels_layer']
+    phasor_features = intensity_image_layer.metadata[
+        'phasor_features_labels_layer'
+    ]
     num_pixels = len(phasor_features.features['harmonic'])
     compatible_harmonics = np.random.choice([1, 2], size=num_pixels)
     phasor_features.features['harmonic'] = compatible_harmonics
-    
+
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
@@ -313,13 +318,15 @@ def test_apply_button_with_wavelet_filter(make_napari_viewer):
     """Test apply button with wavelet filter method."""
     viewer = make_napari_viewer()
     intensity_image_layer = create_image_layer_with_phasors()
-    
+
     # Set up compatible harmonics
-    phasor_features = intensity_image_layer.metadata['phasor_features_labels_layer']
+    phasor_features = intensity_image_layer.metadata[
+        'phasor_features_labels_layer'
+    ]
     num_pixels = len(phasor_features.features['harmonic'])
     compatible_harmonics = np.random.choice([1, 2], size=num_pixels)
     phasor_features.features['harmonic'] = compatible_harmonics
-    
+
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
@@ -331,7 +338,9 @@ def test_apply_button_with_wavelet_filter(make_napari_viewer):
     filter_widget.threshold_slider.setValue(10)
 
     with (
-        patch('napari_phasors.filter_tab.apply_filter_and_threshold') as mock_apply,
+        patch(
+            'napari_phasors.filter_tab.apply_filter_and_threshold'
+        ) as mock_apply,
         patch.object(parent, 'plot') as mock_plot,
     ):
         filter_widget.apply_button_clicked()
@@ -339,13 +348,13 @@ def test_apply_button_with_wavelet_filter(make_napari_viewer):
         # Check that apply_filter_and_threshold was called with wavelet parameters
         mock_apply.assert_called_once()
         call_args = mock_apply.call_args
-        
+
         assert call_args[0][0] == intensity_image_layer  # layer
         assert call_args[1]['filter_method'] == 'wavelet'
         assert call_args[1]['sigma'] == 1.5
         assert call_args[1]['levels'] == 2
         assert 'harmonics' in call_args[1]
-        
+
         mock_plot.assert_called_once()
 
 
@@ -364,7 +373,9 @@ def test_apply_button_with_median_filter(make_napari_viewer):
     filter_widget.threshold_slider.setValue(10)
 
     with (
-        patch('napari_phasors.filter_tab.apply_filter_and_threshold') as mock_apply,
+        patch(
+            'napari_phasors.filter_tab.apply_filter_and_threshold'
+        ) as mock_apply,
         patch.object(parent, 'plot') as mock_plot,
     ):
         filter_widget.apply_button_clicked()
@@ -372,7 +383,7 @@ def test_apply_button_with_median_filter(make_napari_viewer):
         # Check that apply_filter_and_threshold was called with median parameters
         mock_apply.assert_called_once()
         call_args = mock_apply.call_args
-        
+
         assert call_args[0][0] == intensity_image_layer  # layer
         assert call_args[1]['filter_method'] == 'median'
         assert call_args[1]['size'] == 5
@@ -395,7 +406,9 @@ def test_threshold_method_storage_in_metadata(make_napari_viewer):
 
     # Check that threshold method was stored
     assert "settings" in intensity_image_layer.metadata
-    assert intensity_image_layer.metadata["settings"]["threshold_method"] == "Li"
+    assert (
+        intensity_image_layer.metadata["settings"]["threshold_method"] == "Li"
+    )
 
 
 def test_calculate_automatic_threshold(make_napari_viewer):
@@ -408,9 +421,13 @@ def test_calculate_automatic_threshold(make_napari_viewer):
     test_data = np.random.rand(100, 100) * 100
 
     # Test each method
-    otsu_threshold = filter_widget.calculate_automatic_threshold("Otsu", test_data)
+    otsu_threshold = filter_widget.calculate_automatic_threshold(
+        "Otsu", test_data
+    )
     li_threshold = filter_widget.calculate_automatic_threshold("Li", test_data)
-    yen_threshold = filter_widget.calculate_automatic_threshold("Yen", test_data)
+    yen_threshold = filter_widget.calculate_automatic_threshold(
+        "Yen", test_data
+    )
 
     # All should return valid numbers
     assert isinstance(otsu_threshold, (int, float))
@@ -435,16 +452,18 @@ def test_settings_restoration_with_wavelet(make_napari_viewer):
     """Test that wavelet settings are properly restored from metadata."""
     viewer = make_napari_viewer()
     intensity_image_layer = create_image_layer_with_phasors()
-    
+
     # Set up compatible harmonics
-    phasor_features = intensity_image_layer.metadata['phasor_features_labels_layer']
+    phasor_features = intensity_image_layer.metadata[
+        'phasor_features_labels_layer'
+    ]
     num_pixels = len(phasor_features.features['harmonic'])
     compatible_harmonics = np.random.choice([1, 2], size=num_pixels)
     phasor_features.features['harmonic'] = compatible_harmonics
 
     # Add wavelet settings to metadata
     intensity_image_layer.metadata["settings"] = {
-        "threshold": 0.3,
+        "threshold": 0.1,
         "threshold_method": "Li",
         "filter": {
             "method": "wavelet",
@@ -452,7 +471,7 @@ def test_settings_restoration_with_wavelet(make_napari_viewer):
             "levels": 4,
         },
     }
-    
+
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
@@ -477,7 +496,7 @@ def test_settings_restoration_with_incompatible_wavelet(make_napari_viewer):
             "levels": 4,
         },
     }
-    
+
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
@@ -543,12 +562,14 @@ def test_filter_widget_with_layer_data(make_napari_viewer):
 
     # Check that default threshold is now set using Otsu method (not 10% of max)
     mean_data = intensity_image_layer.metadata["original_mean"]
-    expected_otsu_threshold = filter_widget.calculate_automatic_threshold("Otsu", mean_data)
+    expected_otsu_threshold = filter_widget.calculate_automatic_threshold(
+        "Otsu", mean_data
+    )
     expected_default_threshold = int(
         expected_otsu_threshold * filter_widget.threshold_factor
     )
     assert filter_widget.threshold_slider.value() == expected_default_threshold
-    
+
     # Also check that the default threshold method is "Otsu"
     assert filter_widget.threshold_method_combobox.currentText() == "Otsu"
 
@@ -759,7 +780,7 @@ def test_filter_widget_layer_with_settings(make_napari_viewer):
 
     # Add metadata with settings
     intensity_image_layer.metadata["settings"] = {
-        "threshold": 0.3,
+        "threshold": 0.1,
         "threshold_method": "Li",
         "filter": {"method": "median", "size": 7, "repeat": 3},
     }
@@ -771,7 +792,7 @@ def test_filter_widget_layer_with_settings(make_napari_viewer):
     # Check that settings are loaded correctly
     assert (
         filter_widget.threshold_slider.value()
-        == 0.3 * filter_widget.threshold_factor
+        == 0.1 * filter_widget.threshold_factor
     )
     assert filter_widget.median_filter_spinbox.value() == 7
     assert filter_widget.median_filter_repetition_spinbox.value() == 3
@@ -831,7 +852,8 @@ def test_filter_widget_ui_layout(make_napari_viewer):
     # Check horizontal layouts exist (now more due to additional filter options)
     h_layouts = filter_widget.findChildren(QHBoxLayout)
     assert (
-        len(h_layouts) >= 5  # More layouts now due to filter method selection, threshold method, etc.
+        len(h_layouts)
+        >= 5  # More layouts now due to filter method selection, threshold method, etc.
     )
 
 

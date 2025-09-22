@@ -8,7 +8,11 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from napari.layers import Image
-from phasorpy.phasor import phasor_filter_median, phasor_threshold, phasor_filter_pawflim
+from phasorpy.phasor import (
+    phasor_filter_median,
+    phasor_filter_pawflim,
+    phasor_threshold,
+)
 
 if TYPE_CHECKING:
     import napari
@@ -16,27 +20,27 @@ if TYPE_CHECKING:
 
 def validate_harmonics_for_wavelet(harmonics):
     """Validate that harmonics have their double or half correspondent.
-    
+
     Parameters
     ----------
     harmonics : array-like
         Array of harmonic values
-        
+
     Returns
     -------
     bool
         True if harmonics are valid for wavelet filtering, False otherwise
     """
     harmonics = np.array(harmonics)
-    
+
     for harmonic in harmonics:
         # Check if double or half exists
         has_double = (harmonic * 2) in harmonics
         has_half = (harmonic / 2) in harmonics
-        
+
         if not (has_double or has_half):
             return False
-    
+
     return True
 
 
@@ -76,17 +80,17 @@ def apply_filter_and_threshold(
     """
     mean = layer.metadata['original_mean'].copy()
     phasor_features = layer.metadata['phasor_features_labels_layer'].features
-    
+
     if harmonics is None:
         harmonics = np.unique(phasor_features['harmonic'])
-    
+
     real, imag = (
         phasor_features['G_original'].copy(),
         phasor_features['S_original'].copy(),
     )
     real = np.reshape(real, (len(harmonics),) + mean.shape)
     imag = np.reshape(imag, (len(harmonics),) + mean.shape)
-    
+
     if filter_method == "median" and repeat > 0:
         mean, real, imag = phasor_filter_median(
             mean,
@@ -95,7 +99,9 @@ def apply_filter_and_threshold(
             repeat=repeat,
             size=size,
         )
-    elif filter_method == "wavelet" and validate_harmonics_for_wavelet(harmonics):
+    elif filter_method == "wavelet" and validate_harmonics_for_wavelet(
+        harmonics
+    ):
         mean, real, imag = phasor_filter_pawflim(
             mean,
             real,
@@ -104,7 +110,7 @@ def apply_filter_and_threshold(
             levels=levels,
             harmonic=harmonics,
         )
-    
+
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)
         mean, real, imag = phasor_threshold(mean, real, imag, threshold)
