@@ -119,7 +119,6 @@ class FilterWidget(QWidget):
         threshold_method_layout = QHBoxLayout()
         threshold_method_layout.addWidget(QLabel("Threshold Method:"))
         self.threshold_method_combobox = QComboBox()
-        self.threshold_method_combobox = QComboBox()
         self.threshold_method_combobox.addItems(
             ["None", "Manual", "Otsu", "Li", "Yen"]
         )
@@ -271,8 +270,9 @@ class FilterWidget(QWidget):
             harmonics_str = ", ".join(map(str, sorted(harmonics)))
             self.harmonic_warning_label.setText(
                 f"Warning: Harmonics [{harmonics_str}] are not compatible "
-                f"for Wavelet filtering.\n Each harmonic must have its double "
-                f"or half correspondent. No filtering will be applied."
+                f"for Wavelet filtering.\n Each harmonic must have a "
+                f"corresponding double or half value. No filtering will be "
+                f"applied."
             )
             self.harmonic_warning_label.setVisible(True)
             self.wavelet_params_widget.setVisible(False)

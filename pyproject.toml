@@ -36,7 +36,8 @@ dependencies = [
     "ptufile",
     "tifffile",
     "pandas",
-    "pyqt5"
+    "pyqt5",
+    "pawflim"
 ]
 
 [project.optional-dependencies]
@@ -58,7 +59,8 @@ testing = [
     "lfdfiles",
     "fbdfile",
     "sdtfile",
-    "ptufile"
+    "ptufile",
+    "pawflim"
 ]
 
 [project.entry-points."napari.manifest"]
