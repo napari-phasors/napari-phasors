@@ -30,6 +30,7 @@ dependencies = [
     "qtpy",
     "scikit-image",
     "biaplotter>=0.4.2",
+    "lfdfiles",
     "fbdfile",
     "sdtfile",
     "ptufile",
@@ -54,6 +55,7 @@ testing = [
     "isort",
     "phasorpy==0.7",
     "tifffile",
+    "lfdfiles",
     "fbdfile",
     "sdtfile",
     "ptufile"
