@@ -40,6 +40,8 @@ class FretWidget(QWidget):
         self.colormap_density_factor = (
             5  # Controls trajectory colormap detail level
         )
+        self.current_donor_circle = None
+        self.current_background_circle = None
 
         # Initialize parameters
         self.donor_background = 0.1
@@ -172,6 +174,10 @@ class FretWidget(QWidget):
         artists = []
         if self.current_donor_line is not None:
             artists.append(self.current_donor_line)
+        if self.current_donor_circle is not None:
+            artists.append(self.current_donor_circle)
+        if self.current_background_circle is not None:
+            artists.append(self.current_background_circle)
         return artists
 
     def set_artists_visible(self, visible):
@@ -252,6 +258,20 @@ class FretWidget(QWidget):
                     pass
                 self.current_donor_line = None
 
+            if self.current_donor_circle is not None:
+                try:
+                    self.current_donor_circle.remove()
+                except ValueError:
+                    pass
+                self.current_donor_circle = None
+
+            if self.current_background_circle is not None:
+                try:
+                    self.current_background_circle.remove()
+                except ValueError:
+                    pass
+                self.current_background_circle = None
+
             if not (
                 self.donor_line_edit.text() and self.frequency_input.text()
             ):
@@ -285,22 +305,60 @@ class FretWidget(QWidget):
             # Get the current axes
             ax = self.parent_widget.canvas_widget.figure.gca()
 
+            # Determine colors for circles
+            if self.fret_layer is not None and self.use_colormap:
+                if (
+                    hasattr(self, 'fret_colormap')
+                    and self.fret_colormap is not None
+                ):
+                    colormap = LinearSegmentedColormap.from_list(
+                        "fret_interp", self.fret_colormap, N=256
+                    )
+                else:
+                    colormap = plt.cm.turbo
+
+                # Get colors from the ends of the colormap
+                donor_color = colormap(0.0)[:3]
+                background_color = colormap(1.0)[:3]
+            else:
+                donor_color = 'gray'
+                background_color = 'gray'
+
             if self.fret_layer is not None and self.use_colormap:
                 # Create colormap trajectory
                 self._draw_colormap_trajectory(
                     ax, donor_trajectory_real, donor_trajectory_imag
                 )
             else:
-                # Plot simple green line
+                # Plot simple gray line
                 self.current_donor_line = ax.plot(
                     donor_trajectory_real,
                     donor_trajectory_imag,
-                    color='green',
+                    color='gray',
                     linewidth=2,
                     label='Donor Trajectory',
                 )[0]
 
-            # Refresh the canvas
+            circle_radius = 0.02
+
+            donor_circle = plt.Circle(
+                (donor_trajectory_real[0], donor_trajectory_imag[0]),
+                circle_radius,
+                fill=False,
+                edgecolor=donor_color,
+                linewidth=2,
+            )
+            self.current_donor_circle = ax.add_patch(donor_circle)
+
+            background_circle = plt.Circle(
+                (donor_trajectory_real[-1], donor_trajectory_imag[-1]),
+                circle_radius,
+                fill=False,
+                edgecolor=background_color,
+                linewidth=2,
+            )
+            self.current_background_circle = ax.add_patch(background_circle)
+
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
         except Exception as e:

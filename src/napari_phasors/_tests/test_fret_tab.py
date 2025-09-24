@@ -312,7 +312,7 @@ def test_artist_management(make_napari_viewer):
     widget.plot_donor_trajectory()
 
     # Should have one artist now
-    assert len(widget.get_all_artists()) == 1
+    assert len(widget.get_all_artists()) == 3
     assert widget.current_donor_line is not None
     assert widget.current_donor_line in widget.get_all_artists()
 
