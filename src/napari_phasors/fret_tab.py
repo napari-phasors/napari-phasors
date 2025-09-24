@@ -378,8 +378,8 @@ class FretWidget(QWidget):
                 donor_color = colormap(0.0)[:3]
                 background_color = colormap(1.0)[:3]
             else:
-                donor_color = 'gray'
-                background_color = 'gray'
+                donor_color = 'dimgray'
+                background_color = 'dimgray'
 
             trajectory_zorder = 10
             dot_zorder = 11
@@ -395,7 +395,7 @@ class FretWidget(QWidget):
                 self.current_donor_line = ax.plot(
                     donor_trajectory_real,
                     donor_trajectory_imag,
-                    color='gray',
+                    color='dimgray',
                     linewidth=3,
                     label='Donor Trajectory',
                     zorder=trajectory_zorder,
@@ -558,7 +558,7 @@ class FretWidget(QWidget):
             fret_efficiency,
             name=fret_layer_name,
             scale=self.parent_widget._labels_layer_with_phasor_features.scale,
-            colormap='plasma',
+            colormap='virdis',
             contrast_limits=(0, 1),
         )
 
