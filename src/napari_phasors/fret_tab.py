@@ -123,7 +123,9 @@ class FretWidget(QWidget):
         )
         bg_pos_layout.addWidget(self.background_imag_edit)
 
-        self.calculate_bg_button = QPushButton("Get from image")
+        self.calculate_bg_button = QPushButton(
+            "Get center from background image"
+        )
         self.calculate_bg_button.clicked.connect(
             self._calculate_background_position
         )
@@ -558,7 +560,7 @@ class FretWidget(QWidget):
             fret_efficiency,
             name=fret_layer_name,
             scale=self.parent_widget._labels_layer_with_phasor_features.scale,
-            colormap='virdis',
+            colormap='viridis',
             contrast_limits=(0, 1),
         )
 
