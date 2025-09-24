@@ -1,7 +1,7 @@
 from unittest.mock import Mock
 
 import numpy as np
-from numpy.testing import assert_almost_equal, assert_array_equal
+from numpy.testing import assert_array_equal
 from phasorpy.lifetime import phasor_from_fret_donor
 from phasorpy.phasor import phasor_nearest_neighbor
 
@@ -469,3 +469,241 @@ def test_fret_widget_layer_replacement(make_napari_viewer):
     # Should not have added an extra layer
     assert len(viewer.layers) == initial_layer_count
     assert fret_layer_name in [layer.name for layer in viewer.layers]
+
+
+def test_harmonic_change_updates_trajectory(make_napari_viewer):
+    """Test that changing harmonics updates the donor trajectory."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Set up initial parameters
+    widget.donor_line_edit.setText("2.0")
+    widget.frequency_input.setText("80")
+    widget.background_real_edit.setText("0.1")
+    widget.background_imag_edit.setText("0.1")
+
+    # Mock the canvas and figure
+    parent.canvas_widget = Mock()
+    parent.canvas_widget.figure = Mock()
+    ax_mock = Mock()
+    parent.canvas_widget.figure.gca.return_value = ax_mock
+    parent.canvas_widget.canvas = Mock()
+
+    # Set initial harmonic to 1
+    parent.harmonic = 1
+    widget.current_harmonic = 1
+
+    # Plot initial trajectory
+    widget.plot_donor_trajectory()
+    initial_frequency = widget.frequency
+
+    # Verify initial state
+    assert widget.current_harmonic == 1
+    assert initial_frequency == 80.0  # base_frequency * harmonic (80 * 1)
+
+    # Change harmonic to 2
+    parent.harmonic = 2
+    widget._on_harmonic_changed()
+
+    # Verify harmonic updated
+    assert widget.current_harmonic == 2
+    assert widget.frequency == 160.0  # base_frequency * harmonic (80 * 2)
+
+    # Change harmonic to 3
+    parent.harmonic = 3
+    widget._on_harmonic_changed()
+
+    # Verify harmonic updated again
+    assert widget.current_harmonic == 3
+    assert widget.frequency == 240.0  # base_frequency * harmonic (80 * 3)
+
+
+def test_background_position_storage_by_harmonic(make_napari_viewer):
+    """Test that background positions are stored and retrieved by harmonic."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Set initial harmonic and background position
+    parent.harmonic = 1
+    widget.current_harmonic = 1
+    widget.background_real_edit.setText("0.2")
+    widget.background_imag_edit.setText("0.3")
+
+    # Store current position for harmonic 1
+    widget._store_current_background_position()
+
+    # Verify position was stored
+    assert 1 in widget.background_positions_by_harmonic
+    assert widget.background_positions_by_harmonic[1]['real'] == 0.2
+    assert widget.background_positions_by_harmonic[1]['imag'] == 0.3
+
+    # Change to harmonic 2 (should get default position)
+    parent.harmonic = 2
+    widget._on_harmonic_changed()
+
+    # Should have default position for harmonic 2
+    assert widget.background_real_edit.text() == "0.000"
+    assert widget.background_imag_edit.text() == "0.000"
+    assert widget.current_harmonic == 2
+
+    # Set different position for harmonic 2
+    widget.background_real_edit.setText("0.5")
+    widget.background_imag_edit.setText("0.6")
+    widget._store_current_background_position()
+
+    # Verify position stored for harmonic 2
+    assert 2 in widget.background_positions_by_harmonic
+    assert widget.background_positions_by_harmonic[2]['real'] == 0.5
+    assert widget.background_positions_by_harmonic[2]['imag'] == 0.6
+
+    # Switch back to harmonic 1
+    parent.harmonic = 1
+    widget._on_harmonic_changed()
+
+    # Should restore original position for harmonic 1
+    assert widget.background_real_edit.text() == "0.200"
+    assert widget.background_imag_edit.text() == "0.300"
+    assert widget.current_harmonic == 1
+
+
+def test_trajectory_calculation_with_different_harmonics(make_napari_viewer):
+    """Test that trajectory calculations use effective frequency (base * harmonic)."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Set base parameters
+    base_frequency = 80.0
+    donor_lifetime = 2.0
+    widget.donor_line_edit.setText(str(donor_lifetime))
+    widget.frequency_input.setText(str(base_frequency))
+    widget.background_real_edit.setText("0.1")
+    widget.background_imag_edit.setText("0.1")
+
+    # Test harmonic 1
+    parent.harmonic = 1
+    widget._on_parameters_changed()
+    trajectory_h1_real, trajectory_h1_imag = phasor_from_fret_donor(
+        base_frequency * 1,  # effective frequency
+        donor_lifetime,
+        fret_efficiency=widget._fret_efficiencies,
+        donor_background=widget.donor_background,
+        background_imag=0.1,
+        background_real=0.1,
+        donor_fretting=widget.donor_fretting_proportion,
+    )
+
+    # Test harmonic 2
+    parent.harmonic = 2
+    widget._on_parameters_changed()
+    trajectory_h2_real, trajectory_h2_imag = phasor_from_fret_donor(
+        base_frequency * 2,  # effective frequency
+        donor_lifetime,
+        fret_efficiency=widget._fret_efficiencies,
+        donor_background=widget.donor_background,
+        background_imag=0.1,
+        background_real=0.1,
+        donor_fretting=widget.donor_fretting_proportion,
+    )
+
+    # Test harmonic 3
+    parent.harmonic = 3
+    widget._on_parameters_changed()
+    trajectory_h3_real, trajectory_h3_imag = phasor_from_fret_donor(
+        base_frequency * 3,  # effective frequency
+        donor_lifetime,
+        fret_efficiency=widget._fret_efficiencies,
+        donor_background=widget.donor_background,
+        background_imag=0.1,
+        background_real=0.1,
+        donor_fretting=widget.donor_fretting_proportion,
+    )
+
+    # Trajectories should be different for different harmonics
+    assert not np.array_equal(trajectory_h1_real, trajectory_h2_real)
+    assert not np.array_equal(trajectory_h1_real, trajectory_h3_real)
+    assert not np.array_equal(trajectory_h2_real, trajectory_h3_real)
+
+
+def test_fret_efficiency_calculation_with_harmonics(make_napari_viewer):
+    """Test FRET efficiency calculation respects harmonic changes."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Add layer with phasor data
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+
+    # Setup widget parameters
+    widget.donor_line_edit.setText("2.0")
+    widget.frequency_input.setText("80")
+    widget.background_real_edit.setText("0.1")
+    widget.background_imag_edit.setText("0.1")
+
+    # Test with harmonic 1
+    parent.harmonic = 1
+    widget._on_harmonic_changed()
+    widget.calculate_fret_efficiency_button.click()
+
+    fret_layer_name_h1 = f"FRET efficiency: test_layer"
+    assert fret_layer_name_h1 in [layer.name for layer in viewer.layers]
+    fret_data_h1 = viewer.layers[fret_layer_name_h1].data.copy()
+
+    # Change to harmonic 2 and recalculate
+    parent.harmonic = 2
+    widget._on_harmonic_changed()
+    widget.calculate_fret_efficiency_button.click()
+
+    # Same layer name but data should be different
+    fret_data_h2 = viewer.layers[fret_layer_name_h1].data.copy()
+
+    # FRET efficiency should be different for different harmonics
+    assert not np.array_equal(fret_data_h1, fret_data_h2)
+
+
+def test_background_position_manual_changes_stored_by_harmonic(
+    make_napari_viewer,
+):
+    """Test that manual background position changes are stored per harmonic."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Start with harmonic 1
+    parent.harmonic = 1
+    widget.current_harmonic = 1
+
+    # Manually change background position
+    widget.background_real_edit.setText("0.15")
+    widget.background_imag_edit.setText("0.25")
+    widget._on_background_position_changed()
+
+    # Verify stored for harmonic 1
+    assert 1 in widget.background_positions_by_harmonic
+    assert widget.background_positions_by_harmonic[1]['real'] == 0.15
+    assert widget.background_positions_by_harmonic[1]['imag'] == 0.25
+
+    # Switch to harmonic 2
+    parent.harmonic = 2
+    widget._on_harmonic_changed()
+
+    # Should be default for harmonic 2
+    assert widget.background_real_edit.text() == "0.000"
+    assert widget.background_imag_edit.text() == "0.000"
+
+    # Set different values for harmonic 2
+    widget.background_real_edit.setText("0.35")
+    widget.background_imag_edit.setText("0.45")
+    widget._on_background_position_changed()
+
+    # Switch back to harmonic 1
+    parent.harmonic = 1
+    widget._on_harmonic_changed()
+
+    # Should restore harmonic 1 values
+    assert float(widget.background_real_edit.text()) == 0.15
+    assert float(widget.background_imag_edit.text()) == 0.25

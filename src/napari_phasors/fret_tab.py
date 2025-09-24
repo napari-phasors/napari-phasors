@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.collections import LineCollection
-from matplotlib.colors import LinearSegmentedColormap, ListedColormap
+from matplotlib.colors import LinearSegmentedColormap
 from napari.layers import Image
 from napari.utils.notifications import show_error
 from phasorpy.lifetime import phasor_from_fret_donor
@@ -14,6 +14,7 @@ from qtpy.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSlider,
     QVBoxLayout,
     QWidget,
@@ -29,8 +30,8 @@ class FretWidget(QWidget):
         super().__init__()
         self.viewer = viewer
         self.parent_widget = parent
-        self.frequency = 80.0  # Default frequency in MHz
-        self.donor_lifetime = 2.0  # Default donor lifetime in ns
+        self.frequency = 80.0
+        self.donor_lifetime = 2.0
         self._fret_efficiencies = np.linspace(0, 1, 500)
         self.current_donor_line = None
         self.fret_layer = None
@@ -45,16 +46,21 @@ class FretWidget(QWidget):
 
         # Initialize parameters
         self.donor_background = 0.1
-        self.background_real = 0.1
-        self.background_imag = 0.1
+        self.background_real = 0.0
+        self.background_imag = 0.0
         self.donor_fretting_proportion = 1.0
+
+        # Store background positions for different harmonics
+        self.background_positions_by_harmonic = {}
+
+        # Track current harmonic
+        self.current_harmonic = 1
 
         # Setup UI
         self.setup_ui()
 
     def setup_ui(self):
         """Set up the user interface for the FRET widget with a scroll area."""
-        from qtpy.QtWidgets import QScrollArea
 
         # Create the scroll area and the content widget
         scroll_area = QScrollArea()
@@ -103,7 +109,7 @@ class FretWidget(QWidget):
         self.background_real_edit.setValidator(QDoubleValidator())
         self.background_real_edit.setText("0.1")
         self.background_real_edit.textChanged.connect(
-            self._on_parameters_changed
+            self._on_background_position_changed
         )
         bg_pos_layout.addWidget(self.background_real_edit)
 
@@ -113,7 +119,7 @@ class FretWidget(QWidget):
         self.background_imag_edit.setValidator(QDoubleValidator())
         self.background_imag_edit.setText("0.1")
         self.background_imag_edit.textChanged.connect(
-            self._on_parameters_changed
+            self._on_background_position_changed
         )
         bg_pos_layout.addWidget(self.background_imag_edit)
 
@@ -186,6 +192,56 @@ class FretWidget(QWidget):
             if hasattr(artist, 'set_visible'):
                 artist.set_visible(visible)
 
+    def _on_harmonic_changed(self):
+        """Handle harmonic changes from the parent widget."""
+        if self.parent_widget is None:
+            return
+
+        new_harmonic = self.parent_widget.harmonic
+
+        if self.current_harmonic != new_harmonic:
+            self._store_current_background_position()
+
+        self.current_harmonic = new_harmonic
+
+        self._load_background_position_for_harmonic(new_harmonic)
+
+        self.plot_donor_trajectory()
+
+    def _store_current_background_position(self):
+        """Store the current background position for the current harmonic."""
+        if (
+            self.background_real_edit.text()
+            and self.background_imag_edit.text()
+        ):
+            try:
+                real = float(self.background_real_edit.text().strip())
+                imag = float(self.background_imag_edit.text().strip())
+                self.background_positions_by_harmonic[
+                    self.current_harmonic
+                ] = {'real': real, 'imag': imag}
+            except ValueError:
+                pass
+
+    def _load_background_position_for_harmonic(self, harmonic):
+        """Load background position for the specified harmonic."""
+        if harmonic in self.background_positions_by_harmonic:
+            stored = self.background_positions_by_harmonic[harmonic]
+            self.background_real_edit.setText(f"{stored['real']:.3f}")
+            self.background_imag_edit.setText(f"{stored['imag']:.3f}")
+            self.background_real = stored['real']
+            self.background_imag = stored['imag']
+        else:
+            self.background_real_edit.setText("0.0")
+            self.background_imag_edit.setText("0.0")
+            self.background_real = 0.0
+            self.background_imag = 0.0
+
+    def _on_background_position_changed(self):
+        """Handle manual changes to background position fields."""
+        self._store_current_background_position()
+        self._on_parameters_changed()
+
     def _on_background_slider_changed(self):
         """Handle background slider value change."""
         value = self.background_slider.value() / 100.0
@@ -214,10 +270,8 @@ class FretWidget(QWidget):
             and self.background_imag_edit.text()
         ):
             try:
-                self.frequency = (
-                    float(self.frequency_input.text().strip())
-                    * self.parent_widget.harmonic
-                )
+                base_frequency = float(self.frequency_input.text().strip())
+                self.frequency = base_frequency * self.parent_widget.harmonic
                 self.donor_lifetime = float(self.donor_line_edit.text())
                 self.background_real = float(self.background_real_edit.text())
                 self.background_imag = float(self.background_imag_edit.text())
@@ -241,12 +295,21 @@ class FretWidget(QWidget):
         harmonic_mask = phasor_data['harmonic'] == self.parent_widget.harmonic
         real = phasor_data.loc[harmonic_mask, 'G']
         imag = phasor_data.loc[harmonic_mask, 'S']
+
+        if len(real) == 0 or len(imag) == 0:
+            return
+
         mean = np.empty_like(real)
 
         _, center_real, center_imag = phasor_center(mean, real, imag)
 
-        self.background_real_edit.setText(f"{center_real:.2f}")
-        self.background_imag_edit.setText(f"{center_imag:.2f}")
+        self.background_real_edit.setText(f"{center_real:.3f}")
+        self.background_imag_edit.setText(f"{center_imag:.3f}")
+
+        self.background_positions_by_harmonic[self.parent_widget.harmonic] = {
+            'real': center_real,
+            'imag': center_imag,
+        }
 
     def plot_donor_trajectory(self):
         """Plot the donor trajectory with current parameters."""
@@ -277,10 +340,8 @@ class FretWidget(QWidget):
             ):
                 return
 
-            self.frequency = (
-                float(self.frequency_input.text().strip())
-                * self.parent_widget.harmonic
-            )
+            base_frequency = float(self.frequency_input.text().strip())
+            self.frequency = base_frequency * self.parent_widget.harmonic
             self.donor_lifetime = float(self.donor_line_edit.text().strip())
             self.background_real = float(
                 self.background_real_edit.text().strip()
@@ -289,7 +350,6 @@ class FretWidget(QWidget):
                 self.background_imag_edit.text().strip()
             )
 
-            # Calculate donor trajectory
             donor_trajectory_real, donor_trajectory_imag = (
                 phasor_from_fret_donor(
                     self.frequency,
@@ -302,10 +362,8 @@ class FretWidget(QWidget):
                 )
             )
 
-            # Get the current axes
             ax = self.parent_widget.canvas_widget.figure.gca()
 
-            # Determine colors for circles
             if self.fret_layer is not None and self.use_colormap:
                 if (
                     hasattr(self, 'fret_colormap')
@@ -317,26 +375,30 @@ class FretWidget(QWidget):
                 else:
                     colormap = plt.cm.turbo
 
-                # Get colors from the ends of the colormap
                 donor_color = colormap(0.0)[:3]
                 background_color = colormap(1.0)[:3]
             else:
                 donor_color = 'gray'
                 background_color = 'gray'
 
+            trajectory_zorder = 10
+            dot_zorder = 11
+
             if self.fret_layer is not None and self.use_colormap:
-                # Create colormap trajectory
                 self._draw_colormap_trajectory(
-                    ax, donor_trajectory_real, donor_trajectory_imag
+                    ax,
+                    donor_trajectory_real,
+                    donor_trajectory_imag,
+                    zorder=trajectory_zorder,
                 )
             else:
-                # Plot simple gray line
                 self.current_donor_line = ax.plot(
                     donor_trajectory_real,
                     donor_trajectory_imag,
                     color='gray',
-                    linewidth=2,
+                    linewidth=3,
                     label='Donor Trajectory',
+                    zorder=trajectory_zorder,
                 )[0]
 
             circle_radius = 0.02
@@ -344,18 +406,20 @@ class FretWidget(QWidget):
             donor_circle = plt.Circle(
                 (donor_trajectory_real[0], donor_trajectory_imag[0]),
                 circle_radius,
-                fill=False,
-                edgecolor=donor_color,
-                linewidth=2,
+                fill=True,
+                facecolor=donor_color,
+                linewidth=1,
+                zorder=dot_zorder,
             )
             self.current_donor_circle = ax.add_patch(donor_circle)
 
             background_circle = plt.Circle(
                 (donor_trajectory_real[-1], donor_trajectory_imag[-1]),
                 circle_radius,
-                fill=False,
-                edgecolor=background_color,
-                linewidth=2,
+                fill=True,
+                facecolor=background_color,
+                linewidth=1,
+                zorder=dot_zorder,
             )
             self.current_background_circle = ax.add_patch(background_circle)
 
@@ -364,23 +428,22 @@ class FretWidget(QWidget):
         except Exception as e:
             show_error(f"Error drawing line: {str(e)}")
 
-    def _draw_colormap_trajectory(self, ax, trajectory_real, trajectory_imag):
+    def _draw_colormap_trajectory(
+        self, ax, trajectory_real, trajectory_imag, zorder=10
+    ):
         """Draw a colormap trajectory line."""
         num_segments = min(
             len(trajectory_real) * self.colormap_density_factor,
             len(trajectory_real) - 1,
-        )  # Number of color segments
+        )
 
-        # Get colormap from stored colors or fallback
         if hasattr(self, 'fret_colormap') and self.fret_colormap is not None:
-            # Create a smooth interpolated cmap from sparse control points
             colormap = LinearSegmentedColormap.from_list(
                 "fret_interp", self.fret_colormap, N=256
             )
         else:
-            colormap = plt.cm.turbo  # Use turbo as fallback
+            colormap = plt.cm.turbo
 
-        # Get the actual contrast limits from the FRET layer
         if (
             hasattr(self, 'colormap_contrast_limits')
             and self.colormap_contrast_limits is not None
@@ -391,39 +454,33 @@ class FretWidget(QWidget):
         else:
             vmin, vmax = 0, 1
 
-        # Create line segments
         segments = []
         colors = []
 
         for i in range(num_segments):
-            # Get indices for this segment with overlap
             start_idx = int(i * (len(trajectory_real) - 1) / num_segments)
             end_idx = int((i + 1) * (len(trajectory_real) - 1) / num_segments)
 
-            # Ensure we don't go out of bounds
             end_idx = min(end_idx, len(trajectory_real) - 1)
 
-            # For segments after the first, start slightly before to overlap
             if i > 0:
                 start_idx = max(0, start_idx - 1)
 
-            # Create line segment
             segment = [
                 (trajectory_real[start_idx], trajectory_imag[start_idx]),
                 (trajectory_real[end_idx], trajectory_imag[end_idx]),
             ]
             segments.append(segment)
 
-            # FRET efficiency value for this segment (0 to 1)
             fret_value = self._fret_efficiencies[start_idx]
             colors.append(fret_value)
 
-        # Create line collection
-        lc = LineCollection(segments, cmap=colormap, linewidths=3)
+        lc = LineCollection(
+            segments, cmap=colormap, linewidths=3, zorder=zorder
+        )
         lc.set_array(np.array(colors))
         lc.set_clim(vmin, vmax)
 
-        # Add to axes
         self.current_donor_line = ax.add_collection(lc)
 
     def _on_colormap_changed(self, event):
@@ -433,7 +490,6 @@ class FretWidget(QWidget):
             self.fret_colormap = layer.colormap.colors
             self.colormap_contrast_limits = layer.contrast_limits
 
-            # Redraw the donor trajectory with updated colormap
             self.plot_donor_trajectory()
 
     def _on_contrast_limits_changed(self, event):
@@ -442,7 +498,6 @@ class FretWidget(QWidget):
             layer = event.source
             self.colormap_contrast_limits = layer.contrast_limits
 
-            # Redraw the donor trajectory with updated contrast limits
             self.plot_donor_trajectory()
 
     def calculate_fret_efficiency(self):
@@ -463,17 +518,17 @@ class FretWidget(QWidget):
         real = phasor_data.loc[harmonic_mask, 'G']
         imag = phasor_data.loc[harmonic_mask, 'S']
 
-        # Get trajectory data depending on the type of line object
         if hasattr(self.current_donor_line, 'get_xydata'):
-            # Regular line plot
             neighbor_real, neighbor_imag = (
                 self.current_donor_line.get_xydata().T
             )
         else:
-            # LineCollection - use the original trajectory data
+            base_frequency = float(self.frequency_input.text().strip())
+            effective_frequency = base_frequency * self.parent_widget.harmonic
+
             donor_trajectory_real, donor_trajectory_imag = (
                 phasor_from_fret_donor(
-                    self.frequency,
+                    effective_frequency,
                     self.donor_lifetime,
                     fret_efficiency=self._fret_efficiencies,
                     donor_background=self.donor_background,
@@ -504,22 +559,20 @@ class FretWidget(QWidget):
             name=fret_layer_name,
             scale=self.parent_widget._labels_layer_with_phasor_features.scale,
             colormap='plasma',
-            contrast_limits=(0, 1),  # Force contrast limits to 0-1
+            contrast_limits=(0, 1),
         )
 
-        # Check if the layer is in the viewer before attempting to remove it
         if fret_layer_name in self.viewer.layers:
             self.viewer.layers.remove(self.viewer.layers[fret_layer_name])
 
         self.fret_layer = self.viewer.add_layer(selected_fret_layer)
         self.fret_colormap = self.fret_layer.colormap.colors
         self.fret_layer.events.colormap.connect(self._on_colormap_changed)
-        self.colormap_contrast_limits = (0, 1)  # Set to 0-1 by default
+        self.colormap_contrast_limits = (0, 1)
         self.fret_layer.events.contrast_limits.connect(
             self._on_contrast_limits_changed
         )
 
-        # Redraw the trajectory with the new colormap
         self.plot_donor_trajectory()
 
         update_frequency_in_metadata(

@@ -432,6 +432,10 @@ class PlotterWidget(QWidget):
         self.fret_tab.frequency_input.textEdited.connect(
             self._broadcast_frequency_value_across_tabs
         )
+        # Add this line to connect harmonic changes
+        self.harmonic_spinbox.valueChanged.connect(
+            self.fret_tab._on_harmonic_changed
+        )
 
     @property
     def harmonic(self):
@@ -601,6 +605,8 @@ class PlotterWidget(QWidget):
         if frequency is None:
             return
 
+        effective_frequency = frequency * self.harmonic
+
         tick_color = 'black' if self.white_background else 'darkgray'
 
         # Generate lifetime values using powers of 2
@@ -610,7 +616,9 @@ class PlotterWidget(QWidget):
         for t in range(-8, 32):
             lifetime_val = 2**t
             try:
-                g_pos, s_pos = phasor_from_lifetime(frequency, lifetime_val)
+                g_pos, s_pos = phasor_from_lifetime(
+                    effective_frequency, lifetime_val
+                )
                 if s_pos >= 0.18:
                     lifetimes.append(lifetime_val)
             except:
@@ -620,7 +628,9 @@ class PlotterWidget(QWidget):
             if lifetime == 0:
                 g_pos, s_pos = 1.0, 0.0
             else:
-                g_pos, s_pos = phasor_from_lifetime(frequency, lifetime)
+                g_pos, s_pos = phasor_from_lifetime(
+                    effective_frequency, lifetime
+                )
 
             center_x, center_y = 0.5, 0.0
             dx = g_pos - center_x
@@ -699,11 +709,16 @@ class PlotterWidget(QWidget):
 
     def _broadcast_frequency_value_across_tabs(self, value):
         """
-        Broadcast the frequency value to all relevant input fields.
+        Broadcast the frequency value to all relevant input fields and update semicircle.
         """
         self.calibration_tab.calibration_widget.frequency_input.setText(value)
         self.lifetime_tab.frequency_input.setText(value)
         self.fret_tab.frequency_input.setText(value)
+
+        # Update semicircle ticks when frequency changes
+        if self.toggle_semi_circle:
+            self._update_semi_circle_plot(self.canvas_widget.axes)
+            self.canvas_widget.figure.canvas.draw_idle()
 
     def _redefine_axes_limits(self, ensure_full_circle_displayed=True):
         """
