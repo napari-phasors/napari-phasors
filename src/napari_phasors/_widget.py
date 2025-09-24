@@ -194,9 +194,9 @@ class FbdWidget(AdvancedOptionsWidget):
 
     def __init__(self, viewer, path):
         """Initialize the widget."""
-        import lfdfiles
+        from fbdfile import FbdFile
 
-        with lfdfiles.FlimboxFbd(path) as fbd:
+        with FbdFile(path) as fbd:
             self.all_frames = len(fbd.frames(None)[1])
             self.all_channels = fbd.channels
         super().__init__(viewer, path)
