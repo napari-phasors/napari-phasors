@@ -327,7 +327,7 @@ class FretWidget(QWidget):
         self._update_background_combobox()
 
     def _calculate_background_position(self):
-        """Calculate the background position from selected background image layer."""
+        """Calculate the background position from selected background image layer for all harmonics."""
         background_layer_name = self.background_image_combobox.currentText()
         if not background_layer_name or background_layer_name == "None":
             return
@@ -341,27 +341,44 @@ class FretWidget(QWidget):
             return
 
         phasor_data = background_phasor_layer.features
-        harmonic_mask = phasor_data['harmonic'] == self.parent_widget.harmonic
-        real = phasor_data.loc[harmonic_mask, 'G']
-        imag = phasor_data.loc[harmonic_mask, 'S']
 
-        if len(real) == 0 or len(imag) == 0:
+        if 'harmonic' not in phasor_data.columns:
             return
 
-        _, center_real, center_imag = phasor_center(
-            background_layer.data.flatten(), real, imag
-        )
+        unique_harmonics = phasor_data['harmonic'].unique()
 
-        self.background_real_edit.setText(f"{center_real:.3f}")
-        self.background_imag_edit.setText(f"{center_imag:.3f}")
+        for harmonic in unique_harmonics:
+            harmonic_mask = phasor_data['harmonic'] == harmonic
+            real = phasor_data.loc[harmonic_mask, 'G']
+            imag = phasor_data.loc[harmonic_mask, 'S']
 
-        self.background_positions_by_harmonic[self.parent_widget.harmonic] = {
-            'real': center_real,
-            'imag': center_imag,
-        }
+            if len(real) == 0 or len(imag) == 0:
+                continue
 
-        self.background_real = center_real
-        self.background_imag = center_imag
+            try:
+                _, center_real, center_imag = phasor_center(
+                    background_layer.data.flatten(), real, imag
+                )
+
+                self.background_positions_by_harmonic[harmonic] = {
+                    'real': center_real,
+                    'imag': center_imag,
+                }
+            except Exception:
+                continue
+
+        current_harmonic = self.parent_widget.harmonic
+        if current_harmonic in self.background_positions_by_harmonic:
+            stored = self.background_positions_by_harmonic[current_harmonic]
+            self.background_real_edit.setText(f"{stored['real']:.3f}")
+            self.background_imag_edit.setText(f"{stored['imag']:.3f}")
+            self.background_real = stored['real']
+            self.background_imag = stored['imag']
+        else:
+            self.background_real_edit.setText("0.0")
+            self.background_imag_edit.setText("0.0")
+            self.background_real = 0.0
+            self.background_imag = 0.0
 
         self.plot_donor_trajectory()
 
