@@ -10,6 +10,7 @@ from qtpy.QtCore import Qt
 from qtpy.QtGui import QDoubleValidator
 from qtpy.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -27,6 +28,7 @@ class FretWidget(QWidget):
     """Widget to perform FLIM FRET analysis."""
 
     def __init__(self, viewer, parent=None):
+        """Initialize the FretWidget."""
         super().__init__()
         self.viewer = viewer
         self.parent_widget = parent
@@ -58,6 +60,10 @@ class FretWidget(QWidget):
 
         # Setup UI
         self.setup_ui()
+
+        # Connect to layer events to update background combobox
+        self.viewer.layers.events.inserted.connect(self._on_layer_changed)
+        self.viewer.layers.events.removed.connect(self._on_layer_changed)
 
     def setup_ui(self):
         """Set up the user interface for the FRET widget with a scroll area."""
@@ -123,15 +129,19 @@ class FretWidget(QWidget):
         )
         bg_pos_layout.addWidget(self.background_imag_edit)
 
-        self.calculate_bg_button = QPushButton(
-            "Get center from background image"
+        layout.addLayout(bg_pos_layout)
+
+        # Background image selection
+        bg_image_layout = QHBoxLayout()
+        bg_image_layout.addWidget(
+            QLabel("Calculate background position from image:")
         )
-        self.calculate_bg_button.clicked.connect(
+        self.background_image_combobox = QComboBox()
+        self.background_image_combobox.currentIndexChanged.connect(
             self._calculate_background_position
         )
-        bg_pos_layout.addWidget(self.calculate_bg_button)
-
-        layout.addLayout(bg_pos_layout)
+        bg_image_layout.addWidget(self.background_image_combobox)
+        layout.addLayout(bg_image_layout)
 
         # Donor fretting proportion slider (0 to 1)
         layout.addWidget(QLabel("Proportion of Donors Fretting:"))
@@ -176,6 +186,9 @@ class FretWidget(QWidget):
         # Set the scroll area as the main layout
         main_layout = QVBoxLayout(self)
         main_layout.addWidget(scroll_area)
+
+        # Initialize background combobox
+        self._update_background_combobox()
 
     def get_all_artists(self):
         """Return a list of all matplotlib artists created by this widget."""
@@ -281,19 +294,53 @@ class FretWidget(QWidget):
             except ValueError:
                 pass
 
+    def _update_background_combobox(self):
+        """Update the background image combobox with available layers."""
+        current_text = self.background_image_combobox.currentText()
+        self.background_image_combobox.blockSignals(True)
+        self.background_image_combobox.clear()
+
+        self.background_image_combobox.addItem("None")
+
+        from napari.layers import Image
+
+        layer_names = [
+            layer.name
+            for layer in self.viewer.layers
+            if isinstance(layer, Image)
+            and "phasor_features_labels_layer" in layer.metadata.keys()
+        ]
+
+        self.background_image_combobox.addItems(layer_names)
+
+        if current_text in layer_names:
+            index = self.background_image_combobox.findText(current_text)
+            if index >= 0:
+                self.background_image_combobox.setCurrentIndex(index)
+        elif current_text == "None" or current_text == "":
+            self.background_image_combobox.setCurrentIndex(0)
+
+        self.background_image_combobox.blockSignals(False)
+
+    def _on_layer_changed(self):
+        """Handle when layers are added/removed to update background combobox."""
+        self._update_background_combobox()
+
     def _calculate_background_position(self):
-        """Calculate the background position from image layer."""
-        if self.parent_widget._labels_layer_with_phasor_features is None:
-            return
-        labels_layer_name = (
-            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-        )
-        if not labels_layer_name:
+        """Calculate the background position from selected background image layer."""
+        background_layer_name = self.background_image_combobox.currentText()
+        if not background_layer_name or background_layer_name == "None":
             return
 
-        phasor_data = (
-            self.parent_widget._labels_layer_with_phasor_features.features
-        )
+        try:
+            background_layer = self.viewer.layers[background_layer_name]
+            background_phasor_layer = background_layer.metadata[
+                "phasor_features_labels_layer"
+            ]
+        except (KeyError, AttributeError):
+            return
+
+        phasor_data = background_phasor_layer.features
         harmonic_mask = phasor_data['harmonic'] == self.parent_widget.harmonic
         real = phasor_data.loc[harmonic_mask, 'G']
         imag = phasor_data.loc[harmonic_mask, 'S']
@@ -301,9 +348,9 @@ class FretWidget(QWidget):
         if len(real) == 0 or len(imag) == 0:
             return
 
-        mean = np.empty_like(real)
-
-        _, center_real, center_imag = phasor_center(mean, real, imag)
+        _, center_real, center_imag = phasor_center(
+            background_layer.data.flatten(), real, imag
+        )
 
         self.background_real_edit.setText(f"{center_real:.3f}")
         self.background_imag_edit.setText(f"{center_imag:.3f}")
@@ -312,6 +359,11 @@ class FretWidget(QWidget):
             'real': center_real,
             'imag': center_imag,
         }
+
+        self.background_real = center_real
+        self.background_imag = center_imag
+
+        self.plot_donor_trajectory()
 
     def plot_donor_trajectory(self):
         """Plot the donor trajectory with current parameters."""

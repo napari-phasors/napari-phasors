@@ -132,11 +132,22 @@ def test_calculate_background_position_with_layer(make_napari_viewer):
     test_layer.name = "test_layer"
     viewer.add_layer(test_layer)
 
-    # Mock the parent's layer selection
-    parent.image_layer_with_phasor_features_combobox = Mock()
-    parent.image_layer_with_phasor_features_combobox.currentText.return_value = (
-        "test_layer"
-    )
+    # Update the background combobox to include the new layer
+    widget._update_background_combobox()
+
+    # Check that the combobox has been populated correctly
+    combobox_items = [
+        widget.background_image_combobox.itemText(i)
+        for i in range(widget.background_image_combobox.count())
+    ]
+    assert "None" in combobox_items
+    assert "test_layer" in combobox_items
+
+    # Select the test layer in the background combobox
+    widget.background_image_combobox.setCurrentText("test_layer")
+
+    # Set up the parent widget properly
+    parent.harmonic = 1
     parent._labels_layer_with_phasor_features = test_layer.metadata[
         'phasor_features_labels_layer'
     ]
@@ -154,6 +165,30 @@ def test_calculate_background_position_with_layer(make_napari_viewer):
     )  # At least one should change
     assert float(real_text) >= 0
     assert float(imag_text) >= 0
+
+    # Check that the position was stored for the current harmonic
+    assert parent.harmonic in widget.background_positions_by_harmonic
+    stored_position = widget.background_positions_by_harmonic[parent.harmonic]
+
+    # Compare with proper precision handling - the stored values should match
+    # the displayed text when formatted to 3 decimal places
+    assert abs(stored_position['real'] - float(real_text)) < 0.001
+    assert abs(stored_position['imag'] - float(imag_text)) < 0.001
+
+    # Alternative: Check that the formatted stored values match the display
+    assert f"{stored_position['real']:.3f}" == real_text
+    assert f"{stored_position['imag']:.3f}" == imag_text
+
+    # Test with "None" selected - should not crash
+    widget.background_image_combobox.setCurrentText("None")
+    initial_real = widget.background_real_edit.text()
+    initial_imag = widget.background_imag_edit.text()
+
+    widget._calculate_background_position()
+
+    # Values should remain unchanged when "None" is selected
+    assert widget.background_real_edit.text() == initial_real
+    assert widget.background_imag_edit.text() == initial_imag
 
 
 def test_plot_donor_trajectory_no_parameters(make_napari_viewer):
