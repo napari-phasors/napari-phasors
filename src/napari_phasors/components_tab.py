@@ -73,7 +73,11 @@ class ComponentsWidget(QWidget):
         self.show_component_dots = True
         self.line_offset = 0.0
         self.line_width = 3.0
-        self.line_alpha = 0.8
+        self.line_alpha = 1
+        self.default_component_color = 'dimgray'
+
+        # Flag to prevent clearing lifetime when updating from lifetime
+        self._updating_from_lifetime = False
 
         # Dialog / event flags
         self.plot_dialog = None
@@ -127,7 +131,9 @@ class ComponentsWidget(QWidget):
         coord1_layout = QHBoxLayout()
         self.first_lifetime_label = QLabel("τ:")
         self.first_lifetime_edit = QLineEdit()
-        self.first_lifetime_edit.setPlaceholderText("Lifetime (optional)")
+        self.first_lifetime_edit.setPlaceholderText(
+            "Lifetime in ns (optional)"
+        )
         coord1_layout.addWidget(self.first_lifetime_label)
         coord1_layout.addWidget(self.first_lifetime_edit)
 
@@ -153,7 +159,9 @@ class ComponentsWidget(QWidget):
         coord2_layout = QHBoxLayout()
         self.second_lifetime_label = QLabel("τ:")
         self.second_lifetime_edit = QLineEdit()
-        self.second_lifetime_edit.setPlaceholderText("Lifetime (optional)")
+        self.second_lifetime_edit.setPlaceholderText(
+            "Lifetime in ns (optional)"
+        )
         coord2_layout.addWidget(self.second_lifetime_label)
         coord2_layout.addWidget(self.second_lifetime_edit)
 
@@ -167,7 +175,9 @@ class ComponentsWidget(QWidget):
         coord2_layout.addWidget(self.second_edit2)
 
         # Calculate button
-        self.calculate_button = QPushButton("Analyze components fractions")
+        self.calculate_button = QPushButton(
+            "Display Component Fraction Images"
+        )
         self.calculate_button.clicked.connect(self.on_calculate_button_clicked)
 
         # Add all layouts to content layout
@@ -178,12 +188,12 @@ class ComponentsWidget(QWidget):
 
         # Plot settings section
         buttons_row = QHBoxLayout()
-        self.plot_settings_btn = QPushButton("Component Line Settings")
+        self.plot_settings_btn = QPushButton("Edit Line Layout...")
         self.plot_settings_btn.clicked.connect(self._open_plot_settings_dialog)
         buttons_row.addWidget(self.plot_settings_btn)
 
         # Label style button
-        self.label_style_btn = QPushButton("Component Label Style")
+        self.label_style_btn = QPushButton("Edit Component Name Layout...")
         self.label_style_btn.clicked.connect(self._open_label_style_dialog)
         buttons_row.addWidget(self.label_style_btn)
 
@@ -311,10 +321,20 @@ class ComponentsWidget(QWidget):
         row3.addStretch()
         vbox.addLayout(row3)
 
-        # Close button
-        buttons = QDialogButtonBox(QDialogButtonBox.Close)
-        buttons.rejected.connect(self.plot_dialog.close)
-        vbox.addWidget(buttons)
+        # Buttons
+        buttons_layout = QHBoxLayout()
+
+        reset_button = QPushButton("Reset")
+        reset_button.clicked.connect(self._reset_plot_settings)
+        buttons_layout.addWidget(reset_button)
+
+        buttons_layout.addStretch()
+
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.plot_dialog.close)
+        buttons_layout.addWidget(close_button)
+
+        vbox.addLayout(buttons_layout)
 
         self.plot_dialog.show()
 
@@ -359,6 +379,48 @@ class ComponentsWidget(QWidget):
 
         self.style_dialog.show()
 
+    def _reset_plot_settings(self):
+        """Reset all plot settings to their default values."""
+        default_show_colormap_line = True
+        default_show_component_dots = True
+        default_line_offset = 0.0
+        default_line_width = 3.0
+        default_line_alpha = 1
+
+        self.show_colormap_line = default_show_colormap_line
+        self.show_component_dots = default_show_component_dots
+        self.line_offset = default_line_offset
+        self.line_width = default_line_width
+        self.line_alpha = default_line_alpha
+
+        self.colormap_line_checkbox.setChecked(default_show_colormap_line)
+        self.show_dots_checkbox.setChecked(default_show_component_dots)
+
+        self.line_offset_slider.setValue(int(default_line_offset * 1000))
+        self.line_offset_value_label.setText(f"{default_line_offset:.3f}")
+
+        self.line_width_spin.setValue(default_line_width)
+
+        self.line_alpha_slider.setValue(int(default_line_alpha * 100))
+        self.line_alpha_value_label.setText(f"{default_line_alpha:.2f}")
+
+        # Reset component dots alpha
+        for comp in self.components:
+            if comp.dot is not None:
+                comp.dot.set_alpha(default_line_alpha)
+
+        components_tab_is_active = (
+            self.parent_widget is not None
+            and getattr(self.parent_widget, "tab_widget", None) is not None
+            and self.parent_widget.tab_widget.currentWidget()
+            is self.parent_widget.components_tab
+        )
+        self.set_artists_visible(components_tab_is_active)
+
+        self.draw_line_between_components()
+        if self.parent_widget is not None:
+            self.parent_widget.canvas_widget.canvas.draw_idle()
+
     def get_all_artists(self):
         artists = []
         for comp in self.components:
@@ -386,6 +448,13 @@ class ComponentsWidget(QWidget):
     def _on_plot_setting_changed(self):
         self.show_colormap_line = self.colormap_line_checkbox.isChecked()
         self.show_component_dots = self.show_dots_checkbox.isChecked()
+
+        if self.show_colormap_line and self.fractions_colormap is not None:
+            self._update_component_colors()
+        else:
+            for comp in self.components:
+                if comp.dot is not None:
+                    comp.dot.set_color(self.default_component_color)
 
         components_tab_is_active = (
             self.parent_widget is not None
@@ -429,6 +498,11 @@ class ComponentsWidget(QWidget):
         if self.component_line is not None:
             if hasattr(self.component_line, 'set_alpha'):
                 self.component_line.set_alpha(self.line_alpha)
+
+        for comp in self.components:
+            if comp.dot is not None:
+                comp.dot.set_alpha(self.line_alpha)
+
         self.draw_line_between_components()
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
@@ -486,7 +560,7 @@ class ComponentsWidget(QWidget):
         freq = self.parent_widget._get_frequency_from_layer()
         if freq is None:
             return None, None
-        # Use current harmonic if available
+
         harmonic = getattr(self.parent_widget, "harmonic", 1)
         re, im = phasor_from_lifetime(freq * harmonic, lifetime)
         if np.ndim(re) > 0:
@@ -503,9 +577,12 @@ class ComponentsWidget(QWidget):
         G, S = self._compute_phasor_from_lifetime(txt)
         if G is None:
             return
+
+        self._updating_from_lifetime = True
         comp.g_edit.setText(f"{G:.6f}")
         comp.s_edit.setText(f"{S:.6f}")
         self._on_component_coords_changed(idx)
+        self._updating_from_lifetime = False
 
     def _on_component_coords_changed(self, idx: int):
         comp = self.components[idx]
@@ -514,6 +591,10 @@ class ComponentsWidget(QWidget):
             y = float(comp.s_edit.text())
         except ValueError:
             return
+
+        if comp.lifetime_edit is not None and not self._updating_from_lifetime:
+            comp.lifetime_edit.clear()
+
         if comp.dot is not None:
             comp.dot.set_data([x], [y])
             if comp.text is not None:
@@ -527,11 +608,23 @@ class ComponentsWidget(QWidget):
         if self.parent_widget is None:
             return
         comp = self.components[idx]
-        c1_color, c2_color = self._get_component_colors()
-        color = c1_color if idx == 0 else c2_color
+
+        if self.show_colormap_line and self.fractions_colormap is not None:
+            c1_color, c2_color = self._get_component_colors()
+            color = c1_color if idx == 0 else c2_color
+        else:
+            color = self.default_component_color
+
         ax = self.parent_widget.canvas_widget.figure.gca()
         comp.dot = ax.plot(
-            x, y, 'o', color=color, markersize=8, label=comp.label
+            x,
+            y,
+            'o',
+            color=color,
+            markersize=8,
+            label=comp.label,
+            alpha=self.line_alpha,
+            markeredgewidth=0,
         )[0]
         name = comp.name_edit.text().strip()
         if name:
@@ -581,9 +674,47 @@ class ComponentsWidget(QWidget):
             )
         self.parent_widget.canvas_widget.canvas.draw_idle()
 
+    def _on_escape(self, event):
+        """Clear any active tools and disable toggle buttons."""
+        if self.parent_widget is None:
+            return
+
+        canvas_widget = self.parent_widget.canvas_widget
+        if hasattr(canvas_widget, 'toolbar'):
+            toolbar = canvas_widget.toolbar
+
+            if hasattr(toolbar, 'zoom'):
+                toolbar.zoom()
+            if hasattr(toolbar, 'pan'):
+                toolbar.pan()
+
+            if hasattr(toolbar, 'mode'):
+                toolbar.mode = ''
+
+            if hasattr(toolbar, '_active'):
+                toolbar._active = None
+
+        if hasattr(canvas_widget, 'figure'):
+            ax = canvas_widget.figure.gca()
+
+            if hasattr(ax, 'widgets'):
+                for widget in ax.widgets[:]:
+                    if hasattr(widget, 'set_active'):
+                        widget.set_active(False)
+
+            for artist in ax.get_children():
+                if hasattr(artist, '_temp_selector'):
+                    artist.remove()
+
+        if hasattr(canvas_widget, 'canvas'):
+            canvas_widget.canvas.draw_idle()
+
     def _select_component(self, idx: int):
         if self.parent_widget is None:
             return
+
+        self._on_escape(None)
+
         comp = self.components[idx]
 
         if comp.dot is not None:
@@ -598,51 +729,60 @@ class ComponentsWidget(QWidget):
         comp.select_button.setText("Click on plot...")
         comp.select_button.setEnabled(False)
 
-        def handler(event):
-            if not event.inaxes:
-                return
-            x, y = event.xdata, event.ydata
-            comp.g_edit.setText(f"{x:.6f}")
-            comp.s_edit.setText(f"{y:.6f}")
-
-            if comp.dot is None:
-                self._create_component_at_coordinates(idx, x, y)
-            else:
-                comp.dot.set_data([x], [y])
-                comp.dot.set_visible(self.show_component_dots)
-                name = comp.name_edit.text().strip()
-                if name:
-                    if comp.text is None:
-                        ax = self.parent_widget.canvas_widget.figure.gca()
-                        ox, oy = comp.text_offset
-                        comp.text = ax.text(
-                            x + ox,
-                            y + oy,
-                            name,
-                            fontsize=self.label_fontsize,
-                            fontweight='bold' if self.label_bold else 'normal',
-                            fontstyle=(
-                                'italic' if self.label_italic else 'normal'
-                            ),
-                            color=self.label_color,
-                            picker=True,
-                        )
-                    else:
-                        ox, oy = comp.text_offset
-                        comp.text.set_position((x + ox, y + oy))
-                        comp.text.set_visible(True)
-
-                self.draw_line_between_components()
-
-            # Disconnect temporary handler and restore UI
-            self.parent_widget.canvas_widget.canvas.mpl_disconnect(temp_cid)
-            comp.select_button.setText(original_text)
-            comp.select_button.setEnabled(True)
-            self._redraw(force=True)
-
         temp_cid = self.parent_widget.canvas_widget.canvas.mpl_connect(
-            'button_press_event', handler
+            'button_press_event',
+            lambda event: self._handle_component_selection(
+                event, idx, temp_cid, original_text
+            ),
         )
+
+    def _handle_component_selection(self, event, idx, temp_cid, original_text):
+        """Handle the selection of a component by clicking on the plot."""
+        if not event.inaxes:
+            return
+
+        comp = self.components[idx]
+        x, y = event.xdata, event.ydata
+        comp.g_edit.setText(f"{x:.6f}")
+        comp.s_edit.setText(f"{y:.6f}")
+
+        if comp.lifetime_edit is not None:
+            comp.lifetime_edit.clear()
+
+        if comp.dot is None:
+            self._create_component_at_coordinates(idx, x, y)
+        else:
+            comp.dot.set_data([x], [y])
+            comp.dot.set_visible(self.show_component_dots)
+            comp.dot.set_markeredgewidth(0)
+            name = comp.name_edit.text().strip()
+            if name:
+                if comp.text is None:
+                    ax = self.parent_widget.canvas_widget.figure.gca()
+                    ox, oy = comp.text_offset
+                    comp.text = ax.text(
+                        x + ox,
+                        y + oy,
+                        name,
+                        fontsize=self.label_fontsize,
+                        fontweight='bold' if self.label_bold else 'normal',
+                        fontstyle=(
+                            'italic' if self.label_italic else 'normal'
+                        ),
+                        color=self.label_color,
+                        picker=True,
+                    )
+                else:
+                    ox, oy = comp.text_offset
+                    comp.text.set_position((x + ox, y + oy))
+                    comp.text.set_visible(True)
+
+            self.draw_line_between_components()
+
+        self.parent_widget.canvas_widget.canvas.mpl_disconnect(temp_cid)
+        comp.select_button.setText(original_text)
+        comp.select_button.setEnabled(True)
+        self._redraw(force=True)
 
     def _get_component_colors(self):
         """Get colors for components based on the colormap ends."""
@@ -707,7 +847,6 @@ class ComponentsWidget(QWidget):
         if not all(c.dot is not None for c in self.components[:2]):
             return
 
-        # Remove previous line
         if self.component_line is not None:
             try:
                 self.component_line.remove()
@@ -721,7 +860,6 @@ class ComponentsWidget(QWidget):
             ox1, oy1 = x1_data[0], y1_data[0]
             ox2, oy2 = x2_data[0], y2_data[0]
 
-            # Apply perpendicular offset if requested
             if self.line_offset != 0.0:
                 vx = ox2 - ox1
                 vy = oy2 - oy1
@@ -754,7 +892,7 @@ class ComponentsWidget(QWidget):
                 self.component_line = ax.plot(
                     [ox1, ox2],
                     [oy1, oy2],
-                    color='k',
+                    color=self.default_component_color,
                     linewidth=self.line_width,
                     alpha=self.line_alpha,
                 )[0]
@@ -763,11 +901,12 @@ class ComponentsWidget(QWidget):
                         self.component_line.set_solid_capstyle('butt')
                     except Exception:
                         pass
+                for comp in self.components:
+                    if comp.dot is not None:
+                        comp.dot.set_color(self.default_component_color)
 
-            # Refresh canvas
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
-            # Visibility depending on active tab
             components_tab_is_active = (
                 self.parent_widget is not None
                 and getattr(self.parent_widget, "tab_widget", None) is not None
@@ -806,7 +945,7 @@ class ComponentsWidget(QWidget):
             else:
                 colormap = ListedColormap(self.fractions_colormap)
         else:
-            colormap = plt.cm.plasma
+            colormap = plt.cm.PiYG
 
         # Get the actual contrast limits from the fractions layer
         if (
@@ -902,6 +1041,9 @@ class ComponentsWidget(QWidget):
     def _on_press(self, event):
         if event.inaxes is None:
             return
+
+        self._on_escape(None)
+
         for comp in self.components:
             if comp.text is not None and comp.text.contains(event)[0]:
                 self.dragging_label_idx = comp.idx
@@ -932,6 +1074,10 @@ class ComponentsWidget(QWidget):
         comp.dot.set_data([x], [y])
         comp.g_edit.setText(f"{x:.6f}")
         comp.s_edit.setText(f"{y:.6f}")
+
+        if comp.lifetime_edit is not None:
+            comp.lifetime_edit.clear()
+
         if comp.text is not None:
             ox, oy = comp.text_offset
             comp.text.set_position((x + ox, y + oy))
@@ -974,7 +1120,6 @@ class ComponentsWidget(QWidget):
             self.parent_widget._labels_layer_with_phasor_features.data.shape
         )
 
-        # Use the user-entered name (fallback if empty)
         comp0_name = c0.name_edit.text().strip() or "Component 1"
         fractions_layer_name = f"{comp0_name} fractions: {self.parent_widget.image_layer_with_phasor_features_combobox.currentText()}"
 
@@ -982,7 +1127,7 @@ class ComponentsWidget(QWidget):
             fractions,
             name=fractions_layer_name,
             scale=self.parent_widget._labels_layer_with_phasor_features.scale,
-            colormap='plasma',
+            colormap='PiYG',
             contrast_limits=(0, 1),
         )
 
