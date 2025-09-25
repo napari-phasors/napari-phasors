@@ -44,6 +44,107 @@ def validate_harmonics_for_wavelet(harmonics):
     return True
 
 
+def _extract_phasor_arrays_from_layer(
+    layer: Image, harmonics: np.ndarray = None
+):
+    """Extract phasor arrays from layer metadata.
+
+    Parameters
+    ----------
+    layer : napari.layers.Image
+        Napari image layer with phasor features.
+    harmonics : np.ndarray, optional
+        Harmonic values. If None, will be extracted from layer.
+
+    Returns
+    -------
+    tuple
+        (mean, real, imag, harmonics) arrays
+    """
+    mean = layer.metadata['original_mean'].copy()
+    phasor_features = layer.metadata['phasor_features_labels_layer'].features
+
+    if harmonics is None:
+        harmonics = np.unique(phasor_features['harmonic'])
+
+    real = phasor_features['G_original'].copy()
+    imag = phasor_features['S_original'].copy()
+    real = np.reshape(real, (len(harmonics),) + mean.shape)
+    imag = np.reshape(imag, (len(harmonics),) + mean.shape)
+
+    return mean, real, imag, harmonics
+
+
+def _apply_filter_and_threshold_to_phasor_arrays(
+    mean: np.ndarray,
+    real: np.ndarray,
+    imag: np.ndarray,
+    harmonics: np.ndarray,
+    *,
+    threshold: float = 0,
+    filter_method: str = "median",
+    size: int = 3,
+    repeat: int = 1,
+    sigma: float = 1.0,
+    levels: int = 3,
+):
+    """Apply filter and threshold to phasor arrays.
+
+    Parameters
+    ----------
+    mean : np.ndarray
+        Mean intensity array.
+    real : np.ndarray
+        Real part of phasor (G).
+    imag : np.ndarray
+        Imaginary part of phasor (S).
+    harmonics : np.ndarray
+        Harmonic values.
+    threshold : float
+        Threshold value for the mean value to be applied to G and S.
+    filter_method : str
+        Filter method. Options are 'median' or 'wavelet'.
+    size : int
+        Size of the median filter.
+    repeat : int
+        Number of times to apply the median filter.
+    sigma : float
+        Sigma parameter for wavelet filter.
+    levels : int
+        Number of levels for wavelet filter.
+
+    Returns
+    -------
+    tuple
+        (mean, real, imag) filtered and thresholded arrays
+    """
+    if filter_method == "median" and repeat > 0:
+        mean, real, imag = phasor_filter_median(
+            mean,
+            real,
+            imag,
+            repeat=repeat,
+            size=size,
+        )
+    elif filter_method == "wavelet" and validate_harmonics_for_wavelet(
+        harmonics
+    ):
+        mean, real, imag = phasor_filter_pawflim(
+            mean,
+            real,
+            imag,
+            sigma=sigma,
+            levels=levels,
+            harmonic=harmonics,
+        )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        mean, real, imag = phasor_threshold(mean, real, imag, threshold)
+
+    return mean, real, imag
+
+
 def apply_filter_and_threshold(
     layer: Image,
     /,
@@ -78,47 +179,34 @@ def apply_filter_and_threshold(
         Harmonic values for wavelet filter. If None, will be extracted from layer.
 
     """
-    mean = layer.metadata['original_mean'].copy()
-    phasor_features = layer.metadata['phasor_features_labels_layer'].features
-
-    if harmonics is None:
-        harmonics = np.unique(phasor_features['harmonic'])
-
-    real, imag = (
-        phasor_features['G_original'].copy(),
-        phasor_features['S_original'].copy(),
+    # Extract phasor arrays from layer
+    mean, real, imag, harmonics = _extract_phasor_arrays_from_layer(
+        layer, harmonics
     )
-    real = np.reshape(real, (len(harmonics),) + mean.shape)
-    imag = np.reshape(imag, (len(harmonics),) + mean.shape)
 
-    if filter_method == "median" and repeat > 0:
-        mean, real, imag = phasor_filter_median(
-            mean,
-            real,
-            imag,
-            repeat=repeat,
-            size=size,
-        )
-    elif filter_method == "wavelet" and validate_harmonics_for_wavelet(
-        harmonics
-    ):
-        mean, real, imag = phasor_filter_pawflim(
-            mean,
-            real,
-            imag,
-            sigma=sigma,
-            levels=levels,
-            harmonic=harmonics,
-        )
+    # Apply filter and threshold to phasor arrays
+    mean, real, imag = _apply_filter_and_threshold_to_phasor_arrays(
+        mean,
+        real,
+        imag,
+        harmonics,
+        threshold=threshold,
+        filter_method=filter_method,
+        size=size,
+        repeat=repeat,
+        sigma=sigma,
+        levels=levels,
+    )
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", category=RuntimeWarning)
-        mean, real, imag = phasor_threshold(mean, real, imag, threshold)
-        (
-            layer.metadata['phasor_features_labels_layer'].features['G'],
-            layer.metadata['phasor_features_labels_layer'].features['S'],
-        ) = (real.flatten(), imag.flatten())
+    # Update layer data and metadata
+    layer.metadata['phasor_features_labels_layer'].features[
+        'G'
+    ] = real.flatten()
+    layer.metadata['phasor_features_labels_layer'].features[
+        'S'
+    ] = imag.flatten()
     layer.data = mean
+
     # Update the settings dictionary of the layer
     if "settings" not in layer.metadata:
         layer.metadata["settings"] = {}

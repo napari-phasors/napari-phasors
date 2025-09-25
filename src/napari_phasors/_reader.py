@@ -20,11 +20,7 @@ import xarray as xr
 from napari.layers import Labels
 from napari.utils.colormaps.colormap_utils import CYMRGB, MAGENTA_GREEN
 from napari.utils.notifications import show_error
-from phasorpy.phasor import (
-    phasor_filter_median,
-    phasor_from_signal,
-    phasor_threshold,
-)
+from phasorpy.phasor import phasor_from_signal
 
 from ._utils import apply_filter_and_threshold
 
@@ -340,16 +336,14 @@ def processed_file_reader(
 
     original_mean_intensity_image = mean_intensity_image.copy()
 
-    from napari.layers import Image
-
-    temp_layer = Image(
-        mean_intensity_image,
-        name=filename + " Intensity Image",
-        metadata={
-            "phasor_features_labels_layer": labels_layer,
-            "original_mean": original_mean_intensity_image,
-            "settings": settings,
-        },
+    harmonics_array = np.unique(labels_layer.features['harmonic'])
+    real = labels_layer.features['G_original'].copy()
+    imag = labels_layer.features['S_original'].copy()
+    real = np.reshape(
+        real, (len(harmonics_array),) + mean_intensity_image.shape
+    )
+    imag = np.reshape(
+        imag, (len(harmonics_array),) + mean_intensity_image.shape
     )
 
     should_apply_processing = False
@@ -373,20 +367,43 @@ def processed_file_reader(
         threshold_value = settings["threshold"]
 
     if should_apply_processing:
-        harmonics_array = np.unique(labels_layer.features['harmonic'])
-        apply_filter_and_threshold(
-            temp_layer,
-            threshold=threshold_value,
-            harmonics=harmonics_array,
-            **filter_params,
+        from ._utils import _apply_filter_and_threshold_to_phasor_arrays
+
+        mean_intensity_image, real, imag = (
+            _apply_filter_and_threshold_to_phasor_arrays(
+                mean_intensity_image,
+                real,
+                imag,
+                harmonics_array,
+                threshold=threshold_value,
+                **filter_params,
+            )
         )
+
+        labels_layer.features['G'] = real.flatten()
+        labels_layer.features['S'] = imag.flatten()
+
+        if "settings" not in settings:
+            settings["settings"] = {}
+        settings["filter"] = {
+            "method": filter_params.get("filter_method", "median"),
+            "size": filter_params.get("size", 3),
+            "repeat": filter_params.get("repeat", 1),
+            "sigma": filter_params.get("sigma", 1.0),
+            "levels": filter_params.get("levels", 3),
+        }
+        settings["threshold"] = threshold_value
 
     layers = []
     add_kwargs = {
         "name": filename + " Intensity Image",
-        "metadata": temp_layer.metadata,
+        "metadata": {
+            "phasor_features_labels_layer": labels_layer,
+            "original_mean": original_mean_intensity_image,
+            "settings": settings,
+        },
     }
-    layers.append((temp_layer.data, add_kwargs))
+    layers.append((mean_intensity_image, add_kwargs))
     return layers
 
 
