@@ -155,8 +155,8 @@ class CalibrationWidget(QWidget):
 
         # Store calibration parameters
         settings = sample_layer.metadata.setdefault("settings", {})
-        settings["calibration_phase"] = phi_zero
-        settings["calibration_modulation"] = mod_zero
+        settings["calibration_phase"] = phi_zero.tolist()
+        settings["calibration_modulation"] = mod_zero.tolist()
         settings["calibrated"] = True
 
         # Apply calibration transformation
