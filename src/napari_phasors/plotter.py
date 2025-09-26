@@ -430,10 +430,11 @@ class PlotterWidget(QWidget):
         """Create the FRET tab."""
         self.fret_tab = FretWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.fret_tab, "FRET")
-        self.fret_tab.frequency_input.textEdited.connect(
-            self._broadcast_frequency_value_across_tabs
+        self.fret_tab.frequency_input.editingFinished.connect(
+            lambda: self._broadcast_frequency_value_across_tabs(
+                self.fret_tab.frequency_input.text()
+            )
         )
-        # Add this line to connect harmonic changes
         self.harmonic_spinbox.valueChanged.connect(
             self.fret_tab._on_harmonic_changed
         )
@@ -712,11 +713,22 @@ class PlotterWidget(QWidget):
         """
         Broadcast the frequency value to all relevant input fields and update semicircle.
         """
+        try:
+            freq_val = float(value)
+            layer_name = (
+                self.image_layer_with_phasor_features_combobox.currentText()
+            )
+            if layer_name:
+                layer = self.viewer.layers[layer_name]
+                update_frequency_in_metadata(layer, freq_val)
+        except Exception:
+            pass
+
         self.calibration_tab.calibration_widget.frequency_input.setText(value)
         self.lifetime_tab.frequency_input.setText(value)
         self.fret_tab.frequency_input.setText(value)
+        self.components_tab._update_lifetime_inputs_visibility()
 
-        # Update semicircle ticks when frequency changes
         if self.toggle_semi_circle:
             self._update_semi_circle_plot(self.canvas_widget.axes)
             self.canvas_widget.figure.canvas.draw_idle()
