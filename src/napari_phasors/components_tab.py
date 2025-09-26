@@ -675,46 +675,11 @@ class ComponentsWidget(QWidget):
             )
         self.parent_widget.canvas_widget.canvas.draw_idle()
 
-    def _on_escape(self, event):
-        """Clear any active tools and disable toggle buttons."""
-        if self.parent_widget is None:
-            return
-
-        canvas_widget = self.parent_widget.canvas_widget
-        if hasattr(canvas_widget, 'toolbar'):
-            toolbar = canvas_widget.toolbar
-
-            if hasattr(toolbar, 'zoom'):
-                toolbar.zoom()
-            if hasattr(toolbar, 'pan'):
-                toolbar.pan()
-
-            if hasattr(toolbar, 'mode'):
-                toolbar.mode = ''
-
-            if hasattr(toolbar, '_active'):
-                toolbar._active = None
-
-        if hasattr(canvas_widget, 'figure'):
-            ax = canvas_widget.figure.gca()
-
-            if hasattr(ax, 'widgets'):
-                for widget in ax.widgets[:]:
-                    if hasattr(widget, 'set_active'):
-                        widget.set_active(False)
-
-            for artist in ax.get_children():
-                if hasattr(artist, '_temp_selector'):
-                    artist.remove()
-
-        if hasattr(canvas_widget, 'canvas'):
-            canvas_widget.canvas.draw_idle()
-
     def _select_component(self, idx: int):
         if self.parent_widget is None:
             return
 
-        self._on_escape(None)
+        self.parent_widget.canvas_widget._on_escape(None)
 
         comp = self.components[idx]
 
@@ -1042,15 +1007,64 @@ class ComponentsWidget(QWidget):
     def _on_press(self, event):
         if event.inaxes is None:
             return
-
-        self._on_escape(None)
+        # skip processing if this tab is not active
+        components_tab_is_active = (
+            self.parent_widget is not None
+            and getattr(self.parent_widget, "tab_widget", None) is not None
+            and self.parent_widget.tab_widget.currentWidget()
+            is self.parent_widget.components_tab
+        )
+        if not components_tab_is_active:
+            return
 
         for comp in self.components:
             if comp.text is not None and comp.text.contains(event)[0]:
+                # Disable zoom, pan or any selectors if active when dragging the text label
+                if (
+                    self.parent_widget.canvas_widget.toolbar.mode
+                    == 'zoom rect'
+                ):
+                    try:
+                        self.parent_widget.canvas_widget.toolbar.release_zoom(
+                            event
+                        )  # simulate immediate zoom release
+                    except Exception:
+                        pass
+                if self.parent_widget.canvas_widget.toolbar.mode == 'pan/zoom':
+                    try:
+                        self.parent_widget.canvas_widget.toolbar.release_pan(
+                            event
+                        )  # simulate immediate pan release
+                    except Exception:
+                        pass
+                self.parent_widget.canvas_widget._on_escape(
+                    None
+                )  # deactivate all toolbar buttons and selectors
                 self.dragging_label_idx = comp.idx
                 return
         for comp in self.components:
             if comp.dot is not None and comp.dot.contains(event)[0]:
+                # Disable zoom, pan or any selectors if active when dragging a dot
+                if (
+                    self.parent_widget.canvas_widget.toolbar.mode
+                    == 'zoom rect'
+                ):
+                    try:
+                        self.parent_widget.canvas_widget.toolbar.release_zoom(
+                            event
+                        )  # simulate immediate zoom release
+                    except Exception:
+                        pass
+                if self.parent_widget.canvas_widget.toolbar.mode == 'pan/zoom':
+                    try:
+                        self.parent_widget.canvas_widget.toolbar.release_pan(
+                            event
+                        )  # simulate immediate pan release
+                    except Exception:
+                        pass
+                self.parent_widget.canvas_widget._on_escape(
+                    None
+                )  # deactivate all toolbar buttons and selectors
                 self.dragging_component_idx = comp.idx
                 return
 
@@ -1058,6 +1072,7 @@ class ComponentsWidget(QWidget):
         if event.inaxes is None:
             return
         if self.dragging_label_idx is not None:
+            # self.parent_widget.canvas_widget.toolbar.zoom()
             comp = self.components[self.dragging_label_idx]
             if comp.text is not None and comp.dot is not None:
                 x, y = event.xdata, event.ydata
@@ -1085,6 +1100,9 @@ class ComponentsWidget(QWidget):
         self.draw_line_between_components()
 
     def _on_release(self, event):
+        # if self.dragging_component_idx is not None:
+        #     if self.parent_widget.canvas_widget.toolbar.mode == 'zoom rect':
+        #         self.parent_widget.canvas_widget.toolbar.zoom()
         self.dragging_component_idx = None
         self.dragging_label_idx = None
 
