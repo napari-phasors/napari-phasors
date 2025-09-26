@@ -59,7 +59,8 @@ class ComponentsWidget(QWidget):
 
         # Keep fractions / line attributes
         self.component_line = None
-        self.comp0_fractions_layer = None
+        self.comp1_fractions_layer = None
+        self.comp2_fractions_layer = None  # Add this missing attribute
         self.fractions_colormap = None
         self.colormap_contrast_limits = None
 
@@ -842,7 +843,7 @@ class ComponentsWidget(QWidget):
 
             use_colormap = (
                 self.show_colormap_line
-                and self.comp0_fractions_layer is not None
+                and self.comp1_fractions_layer is not None
                 and self.fractions_colormap is not None
             )
 
@@ -919,8 +920,8 @@ class ComponentsWidget(QWidget):
             and self.colormap_contrast_limits is not None
         ):
             vmin, vmax = self.colormap_contrast_limits
-        elif self.comp0_fractions_layer is not None:
-            vmin, vmax = self.comp0_fractions_layer.contrast_limits
+        elif self.comp1_fractions_layer is not None:
+            vmin, vmax = self.comp1_fractions_layer.contrast_limits
         else:
             vmin, vmax = 0, 1
 
@@ -968,7 +969,7 @@ class ComponentsWidget(QWidget):
     def _on_colormap_changed(self, event):
         """Handle changes to the colormap of the fractions layer."""
         if (
-            self.comp0_fractions_layer is not None
+            self.comp1_fractions_layer is not None
             and self.component_line is not None
         ):
             layer = event.source
@@ -980,7 +981,7 @@ class ComponentsWidget(QWidget):
     def _on_contrast_limits_changed(self, event):
         """Handle changes to the contrast limits of the fractions layer."""
         if (
-            self.comp0_fractions_layer is not None
+            self.comp1_fractions_layer is not None
             and self.component_line is not None
         ):
             layer = event.source
@@ -1007,7 +1008,7 @@ class ComponentsWidget(QWidget):
     def _on_press(self, event):
         if event.inaxes is None:
             return
-        # skip processing if this tab is not active
+
         components_tab_is_active = (
             self.parent_widget is not None
             and getattr(self.parent_widget, "tab_widget", None) is not None
@@ -1019,7 +1020,6 @@ class ComponentsWidget(QWidget):
 
         for comp in self.components:
             if comp.text is not None and comp.text.contains(event)[0]:
-                # Disable zoom, pan or any selectors if active when dragging the text label
                 if (
                     self.parent_widget.canvas_widget.toolbar.mode
                     == 'zoom rect'
@@ -1027,24 +1027,21 @@ class ComponentsWidget(QWidget):
                     try:
                         self.parent_widget.canvas_widget.toolbar.release_zoom(
                             event
-                        )  # simulate immediate zoom release
+                        )
                     except Exception:
                         pass
                 if self.parent_widget.canvas_widget.toolbar.mode == 'pan/zoom':
                     try:
                         self.parent_widget.canvas_widget.toolbar.release_pan(
                             event
-                        )  # simulate immediate pan release
+                        )
                     except Exception:
                         pass
-                self.parent_widget.canvas_widget._on_escape(
-                    None
-                )  # deactivate all toolbar buttons and selectors
+                self.parent_widget.canvas_widget._on_escape(None)
                 self.dragging_label_idx = comp.idx
                 return
         for comp in self.components:
             if comp.dot is not None and comp.dot.contains(event)[0]:
-                # Disable zoom, pan or any selectors if active when dragging a dot
                 if (
                     self.parent_widget.canvas_widget.toolbar.mode
                     == 'zoom rect'
@@ -1052,19 +1049,17 @@ class ComponentsWidget(QWidget):
                     try:
                         self.parent_widget.canvas_widget.toolbar.release_zoom(
                             event
-                        )  # simulate immediate zoom release
+                        )
                     except Exception:
                         pass
                 if self.parent_widget.canvas_widget.toolbar.mode == 'pan/zoom':
                     try:
                         self.parent_widget.canvas_widget.toolbar.release_pan(
                             event
-                        )  # simulate immediate pan release
+                        )
                     except Exception:
                         pass
-                self.parent_widget.canvas_widget._on_escape(
-                    None
-                )  # deactivate all toolbar buttons and selectors
+                self.parent_widget.canvas_widget._on_escape(None)
                 self.dragging_component_idx = comp.idx
                 return
 
@@ -1072,7 +1067,6 @@ class ComponentsWidget(QWidget):
         if event.inaxes is None:
             return
         if self.dragging_label_idx is not None:
-            # self.parent_widget.canvas_widget.toolbar.zoom()
             comp = self.components[self.dragging_label_idx]
             if comp.text is not None and comp.dot is not None:
                 x, y = event.xdata, event.ydata
@@ -1100,9 +1094,6 @@ class ComponentsWidget(QWidget):
         self.draw_line_between_components()
 
     def _on_release(self, event):
-        # if self.dragging_component_idx is not None:
-        #     if self.parent_widget.canvas_widget.toolbar.mode == 'zoom rect':
-        #         self.parent_widget.canvas_widget.toolbar.zoom()
         self.dragging_component_idx = None
         self.dragging_label_idx = None
 
@@ -1116,14 +1107,125 @@ class ComponentsWidget(QWidget):
         else:
             canvas.draw_idle()
 
+    def _sync_colormaps(self, event):
+        """Synchronize colormaps between comp1 and comp2 layers with inversion."""
+        if (
+            self.comp1_fractions_layer is None
+            or self.comp2_fractions_layer is None
+        ):
+            return
+
+        try:
+            if event.source == self.comp1_fractions_layer:
+                current_colormap = self.comp1_fractions_layer.colormap
+
+                if (
+                    hasattr(current_colormap, 'colors')
+                    and current_colormap.colors is not None
+                ):
+                    inverted_colors = current_colormap.colors[::-1]
+
+                    self.comp2_fractions_layer.events.colormap.disconnect(
+                        self._sync_colormaps
+                    )
+
+                    from napari.utils.colormaps import Colormap
+
+                    inverted_cmap = Colormap(
+                        colors=inverted_colors, name="inverted_custom"
+                    )
+                    self.comp2_fractions_layer.colormap = inverted_cmap
+
+                    self.comp2_fractions_layer.events.colormap.connect(
+                        self._sync_colormaps
+                    )
+                else:
+                    self.comp2_fractions_layer.events.colormap.disconnect(
+                        self._sync_colormaps
+                    )
+                    self.comp2_fractions_layer.colormap = 'PiYG_r'
+                    self.comp2_fractions_layer.events.colormap.connect(
+                        self._sync_colormaps
+                    )
+
+            elif event.source == self.comp2_fractions_layer:
+                current_colormap = self.comp2_fractions_layer.colormap
+
+                if (
+                    hasattr(current_colormap, 'colors')
+                    and current_colormap.colors is not None
+                ):
+                    inverted_colors = current_colormap.colors[::-1]
+
+                    self.comp1_fractions_layer.events.colormap.disconnect(
+                        self._sync_colormaps
+                    )
+
+                    from napari.utils.colormaps import Colormap
+
+                    inverted_cmap = Colormap(
+                        colors=inverted_colors, name="inverted_custom"
+                    )
+                    self.comp1_fractions_layer.colormap = inverted_cmap
+
+                    self.comp1_fractions_layer.events.colormap.connect(
+                        self._sync_colormaps
+                    )
+                else:
+                    self.comp1_fractions_layer.events.colormap.disconnect(
+                        self._sync_colormaps
+                    )
+                    self.comp1_fractions_layer.colormap = 'PiYG'
+                    self.comp1_fractions_layer.events.colormap.connect(
+                        self._sync_colormaps
+                    )
+
+            if hasattr(self.comp1_fractions_layer.colormap, 'colors'):
+                self.fractions_colormap = (
+                    self.comp1_fractions_layer.colormap.colors
+                )
+
+            self.draw_line_between_components()
+
+        except Exception as e:
+            try:
+                if self.comp2_fractions_layer is not None:
+                    self.comp2_fractions_layer.events.colormap.disconnect(
+                        self._sync_colormaps
+                    )
+                if self.comp1_fractions_layer is not None:
+                    self.comp1_fractions_layer.events.colormap.disconnect(
+                        self._sync_colormaps
+                    )
+
+                if hasattr(event, 'source'):
+                    if event.source == self.comp1_fractions_layer:
+                        if self.comp2_fractions_layer is not None:
+                            self.comp2_fractions_layer.colormap = 'PiYG_r'
+                    else:
+                        if self.comp1_fractions_layer is not None:
+                            self.comp1_fractions_layer.colormap = 'PiYG'
+
+                if self.comp2_fractions_layer is not None:
+                    self.comp2_fractions_layer.events.colormap.connect(
+                        self._sync_colormaps
+                    )
+                if self.comp1_fractions_layer is not None:
+                    self.comp1_fractions_layer.events.colormap.connect(
+                        self._sync_colormaps
+                    )
+
+            except Exception:
+                pass
+
     def on_calculate_button_clicked(self):
         if self.parent_widget._labels_layer_with_phasor_features is None:
             return
         if not all(c.dot is not None for c in self.components[:2]):
             return
-        c0, c1 = self.components[:2]
-        component_real = (c0.dot.get_data()[0][0], c1.dot.get_data()[0][0])
-        component_imag = (c0.dot.get_data()[1][0], c1.dot.get_data()[1][0])
+        c1, c2 = self.components[:2]
+        component_real = (c1.dot.get_data()[0][0], c2.dot.get_data()[0][0])
+        component_imag = (c1.dot.get_data()[1][0], c2.dot.get_data()[1][0])
 
         phasor_data = (
             self.parent_widget._labels_layer_with_phasor_features.features
@@ -1139,54 +1241,60 @@ class ComponentsWidget(QWidget):
             self.parent_widget._labels_layer_with_phasor_features.data.shape
         )
 
-        comp0_name = c0.name_edit.text().strip() or "Component 1"
-        comp0_fractions_layer_name = f"{comp0_name} fractions: {self.parent_widget.image_layer_with_phasor_features_combobox.currentText()}"
-        comp1_name = c1.name_edit.text().strip() or "Component 2"
+        comp1_name = c1.name_edit.text().strip() or "Component 1"
         comp1_fractions_layer_name = f"{comp1_name} fractions: {self.parent_widget.image_layer_with_phasor_features_combobox.currentText()}"
+        comp2_name = c2.name_edit.text().strip() or "Component 2"
+        comp2_fractions_layer_name = f"{comp2_name} fractions: {self.parent_widget.image_layer_with_phasor_features_combobox.currentText()}"
 
-        comp0_selected_fractions_layer = Image(
-            fractions,
-            name=comp0_fractions_layer_name,
-            scale=self.parent_widget._labels_layer_with_phasor_features.scale,
-            colormap='PiYG',
-            contrast_limits=(0, 1),
-        )
         comp1_selected_fractions_layer = Image(
-            1.0 - fractions,
+            fractions,
             name=comp1_fractions_layer_name,
             scale=self.parent_widget._labels_layer_with_phasor_features.scale,
             colormap='PiYG',
             contrast_limits=(0, 1),
         )
+        comp2_selected_fractions_layer = Image(
+            1.0 - fractions,
+            name=comp2_fractions_layer_name,
+            scale=self.parent_widget._labels_layer_with_phasor_features.scale,
+            colormap='PiYG_r',  # Use inverted colormap
+            contrast_limits=(0, 1),
+        )
 
-        if comp0_fractions_layer_name in self.viewer.layers:
-            self.viewer.layers.remove(
-                self.viewer.layers[comp0_fractions_layer_name]
-            )
         if comp1_fractions_layer_name in self.viewer.layers:
             self.viewer.layers.remove(
                 self.viewer.layers[comp1_fractions_layer_name]
+            )
+        if comp2_fractions_layer_name in self.viewer.layers:
+            self.viewer.layers.remove(
+                self.viewer.layers[comp2_fractions_layer_name]
             )
 
         self.comp1_fractions_layer = self.viewer.add_layer(
             comp1_selected_fractions_layer
         )
-        self.comp0_fractions_layer = self.viewer.add_layer(
-            comp0_selected_fractions_layer
+        self.comp2_fractions_layer = self.viewer.add_layer(
+            comp2_selected_fractions_layer
         )
-        self.fractions_colormap = self.comp0_fractions_layer.colormap.colors
+        self.fractions_colormap = self.comp1_fractions_layer.colormap.colors
         self.colormap_contrast_limits = (
-            self.comp0_fractions_layer.contrast_limits
+            self.comp1_fractions_layer.contrast_limits
         )
 
-        self.comp0_fractions_layer.events.colormap.connect(
+        self.comp1_fractions_layer.events.colormap.connect(
             self._on_colormap_changed
         )
-        self.comp0_fractions_layer.events.contrast_limits.connect(
+        self.comp1_fractions_layer.events.colormap.connect(
+            self._sync_colormaps
+        )
+        self.comp2_fractions_layer.events.colormap.connect(
+            self._sync_colormaps
+        )
+        self.comp2_fractions_layer.events.contrast_limits.connect(
             self._on_contrast_limits_changed
         )
         link_layers(
-            [self.comp0_fractions_layer, self.comp1_fractions_layer],
-            ('contrast_limits', 'colormap', 'gamma'),
+            [self.comp1_fractions_layer, self.comp2_fractions_layer],
+            ('contrast_limits', 'gamma'),
         )
         self.draw_line_between_components()

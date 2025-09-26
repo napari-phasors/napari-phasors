@@ -17,7 +17,8 @@ def test_components_widget_initialization_values(make_napari_viewer):
     assert len(comp_widget.components) == 2
     # Initial state
     assert comp_widget.component_line is None
-    assert comp_widget.comp0_fractions_layer is None
+    assert comp_widget.comp1_fractions_layer is None
+    assert comp_widget.comp2_fractions_layer is None  # Updated
     assert comp_widget.fractions_colormap is None
     assert comp_widget.colormap_contrast_limits is None
     # UI elements exist
@@ -109,7 +110,10 @@ def test_components_widget_component_creation_and_line(make_napari_viewer):
     assert abs(x1[0] - 0.75) < 1e-9 and abs(y1[0] - 0.45) < 1e-9
 
 
-def test_components_widget_fraction_calculation(make_napari_viewer):
+def test_components_widget_fraction_calculation_creates_both_layers(
+    make_napari_viewer,
+):
+    """Test that fraction calculation creates both comp1 and comp2 layers."""
     viewer = make_napari_viewer()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
@@ -127,31 +131,120 @@ def test_components_widget_fraction_calculation(make_napari_viewer):
     comp_widget.second_edit2.setText("0.5")
     comp_widget._on_component_coords_changed(1)
 
-    # Expected fractions
+    # Calculate expected fractions
     phasor_labels_layer = layer.metadata["phasor_features_labels_layer"]
     features = phasor_labels_layer.features
     harmonic_mask = features["harmonic"] == parent.harmonic
     real = features.loc[harmonic_mask, "G"]
     imag = features.loc[harmonic_mask, "S"]
-    expected = phasor_component_fraction(
+    expected_comp1_fractions = phasor_component_fraction(
         np.array(real),
         np.array(imag),
         (0.2, 0.8),
         (0.1, 0.5),
     )
-    expected = expected.reshape(phasor_labels_layer.data.shape)
+    expected_comp1_fractions = expected_comp1_fractions.reshape(
+        phasor_labels_layer.data.shape
+    )
+    expected_comp2_fractions = 1.0 - expected_comp1_fractions
 
     comp_widget.on_calculate_button_clicked()
 
-    # Fractions layer added
-    assert comp_widget.comp0_fractions_layer in viewer.layers
-    out_data = comp_widget.comp0_fractions_layer.data
-    np.testing.assert_allclose(out_data, expected, rtol=1e-6, atol=1e-9)
+    # Both fractions layers should be created
+    assert comp_widget.comp1_fractions_layer in viewer.layers
+    assert comp_widget.comp2_fractions_layer in viewer.layers
+
+    # Check data
+    comp1_data = comp_widget.comp1_fractions_layer.data
+    comp2_data = comp_widget.comp2_fractions_layer.data
+    np.testing.assert_allclose(
+        comp1_data, expected_comp1_fractions, rtol=1e-6, atol=1e-9
+    )
+    np.testing.assert_allclose(
+        comp2_data, expected_comp2_fractions, rtol=1e-6, atol=1e-9
+    )
+
+    # Check initial colormaps
+    assert comp_widget.comp1_fractions_layer.colormap.name == 'PiYG'
+    assert comp_widget.comp2_fractions_layer.colormap.name == 'PiYG_r'
 
     assert isinstance(comp_widget.component_line, LineCollection)
 
 
-def test_components_widget_colormap_update(make_napari_viewer):
+def test_components_widget_colormap_synchronization(make_napari_viewer):
+    """Test that changing colormap on one layer updates the other with inverted colors."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(parent.components_tab)
+
+    # Create components and calculate fractions
+    comp_widget.first_edit1.setText("0.3")
+    comp_widget.first_edit2.setText("0.2")
+    comp_widget._on_component_coords_changed(0)
+    comp_widget.second_edit1.setText("0.9")
+    comp_widget.second_edit2.setText("0.6")
+    comp_widget._on_component_coords_changed(1)
+    comp_widget.on_calculate_button_clicked()
+
+    # Store original colormaps
+    orig_comp1_colors = (
+        comp_widget.comp1_fractions_layer.colormap.colors.copy()
+    )
+    orig_comp2_colors = (
+        comp_widget.comp2_fractions_layer.colormap.colors.copy()
+    )
+
+    # Change colormap on comp1 layer
+    comp_widget.comp1_fractions_layer.colormap = 'viridis'
+
+    # comp2 should automatically update with inverted colors
+    comp1_colors = comp_widget.comp1_fractions_layer.colormap.colors
+    comp2_colors = comp_widget.comp2_fractions_layer.colormap.colors
+
+    # Colors should be inverted
+    np.testing.assert_allclose(comp1_colors, comp2_colors[::-1], rtol=1e-6)
+
+    # Both should be different from original
+    assert not np.allclose(orig_comp1_colors, comp1_colors)
+    assert not np.allclose(orig_comp2_colors, comp2_colors)
+
+
+def test_components_widget_colormap_synchronization_from_comp2(
+    make_napari_viewer,
+):
+    """Test that changing colormap on comp2 layer updates comp1 with inverted colors."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(parent.components_tab)
+
+    # Create components and calculate fractions
+    comp_widget.first_edit1.setText("0.4")
+    comp_widget.first_edit2.setText("0.25")
+    comp_widget._on_component_coords_changed(0)
+    comp_widget.second_edit1.setText("0.7")
+    comp_widget.second_edit2.setText("0.45")
+    comp_widget._on_component_coords_changed(1)
+    comp_widget.on_calculate_button_clicked()
+
+    # Change colormap on comp2 layer
+    comp_widget.comp2_fractions_layer.colormap = 'plasma'
+
+    # comp1 should automatically update with inverted colors
+    comp1_colors = comp_widget.comp1_fractions_layer.colormap.colors
+    comp2_colors = comp_widget.comp2_fractions_layer.colormap.colors
+
+    # Colors should be inverted
+    np.testing.assert_allclose(comp1_colors, comp2_colors[::-1], rtol=1e-6)
+
+
+def test_components_widget_colormap_update_legacy(make_napari_viewer):
+    """Legacy test updated for new dual-layer structure."""
     viewer = make_napari_viewer()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
@@ -171,14 +264,40 @@ def test_components_widget_colormap_update(make_napari_viewer):
     # Original colormap snapshot
     orig_colors = comp_widget.fractions_colormap.copy()
 
-    # Change colormap
-    comp_widget.comp0_fractions_layer.colormap = 'viridis'
+    # Change colormap on comp1 layer
+    comp_widget.comp1_fractions_layer.colormap = 'viridis'
 
     # Ensure updated
     assert comp_widget.fractions_colormap is not None
-    assert comp_widget.comp0_fractions_layer.colormap.name == 'viridis'
+    assert comp_widget.comp1_fractions_layer.colormap.name == 'viridis'
     # Colors changed
     assert not np.array_equal(orig_colors, comp_widget.fractions_colormap)
+
+
+def test_components_widget_colormap_fallback_handling(make_napari_viewer):
+    """Test that colormap sync handles colormaps without colors attribute gracefully."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(parent.components_tab)
+
+    # Create components and calculate fractions
+    comp_widget.first_edit1.setText("0.5")
+    comp_widget.first_edit2.setText("0.3")
+    comp_widget._on_component_coords_changed(0)
+    comp_widget.second_edit1.setText("0.8")
+    comp_widget.second_edit2.setText("0.6")
+    comp_widget._on_component_coords_changed(1)
+    comp_widget.on_calculate_button_clicked()
+
+    # Use a built-in colormap name (these might not have colors attribute)
+    comp_widget.comp1_fractions_layer.colormap = 'gray'
+
+    # Should fall back to default colormaps without crashing
+    assert comp_widget.comp1_fractions_layer.colormap is not None
+    assert comp_widget.comp2_fractions_layer.colormap is not None
 
 
 def test_components_widget_visibility_toggle(make_napari_viewer):
