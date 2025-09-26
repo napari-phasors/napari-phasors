@@ -109,9 +109,9 @@ class FretWidget(QWidget):
         layout.addWidget(QLabel("Background Position:"))
         bg_pos_layout = QHBoxLayout()
 
-        bg_pos_layout.addWidget(QLabel("Real:"))
+        bg_pos_layout.addWidget(QLabel("G:"))
         self.background_real_edit = QLineEdit()
-        self.background_real_edit.setPlaceholderText("0.1")
+        self.background_real_edit.setPlaceholderText("Real coordinate")
         self.background_real_edit.setValidator(QDoubleValidator())
         self.background_real_edit.setText("0.1")
         self.background_real_edit.textChanged.connect(
@@ -119,9 +119,9 @@ class FretWidget(QWidget):
         )
         bg_pos_layout.addWidget(self.background_real_edit)
 
-        bg_pos_layout.addWidget(QLabel("Imag:"))
+        bg_pos_layout.addWidget(QLabel("S:"))
         self.background_imag_edit = QLineEdit()
-        self.background_imag_edit.setPlaceholderText("0.1")
+        self.background_imag_edit.setPlaceholderText("Imaginary coordinate")
         self.background_imag_edit.setValidator(QDoubleValidator())
         self.background_imag_edit.setText("0.1")
         self.background_imag_edit.textChanged.connect(
