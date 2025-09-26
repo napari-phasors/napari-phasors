@@ -971,6 +971,10 @@ class PlotterWidget(QWidget):
             if hasattr(self, 'filter_tab'):
                 self.filter_tab.on_labels_layer_with_phasor_features_changed()
 
+            # Update calibration button state when layer changes
+            if hasattr(self, 'calibration_tab'):
+                self.calibration_tab._update_button_state()
+
             self.plot()
 
         finally:
