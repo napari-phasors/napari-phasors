@@ -9,7 +9,7 @@ from phasorpy.phasor import phasor_center, phasor_transform
 from qtpy import uic
 from qtpy.QtWidgets import QScrollArea, QVBoxLayout, QWidget
 
-from ._utils import apply_filter_and_threshold, update_frequency_in_metadata
+from ._utils import apply_filter_and_threshold
 
 if TYPE_CHECKING:
     import napari
@@ -126,9 +126,6 @@ class CalibrationWidget(QWidget):
         frequency, lifetime = self._get_and_validate_inputs()
         if frequency is None or lifetime is None:
             return
-
-        # Update frequency in metadata
-        update_frequency_in_metadata(sample_layer, frequency)
 
         # Get phasor data and validate harmonics
         sample_phasor_data, harmonics = self._get_phasor_data(sample_layer)

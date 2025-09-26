@@ -24,12 +24,12 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from ._utils import update_frequency_in_metadata
 from .calibration_tab import CalibrationWidget
+from .components_tab import ComponentsWidget
 from .filter_tab import FilterWidget
 from .fret_tab import FretWidget
 from .lifetime_tab import LifetimeWidget
-
-# from .components_tab import ComponentsWidget
 from .selection_tab import SelectionWidget
 
 
@@ -297,8 +297,14 @@ class PlotterWidget(QWidget):
     def _hide_all_tab_artists(self):
         """Hide all tab-specific artists."""
         # Hide components tab artists
-        # if hasattr(self, 'components_tab'):
-        #     self._set_components_visibility(False)
+        if hasattr(self, 'components_tab'):
+            self._set_components_visibility(False)
+
+        # Hide other tabs' artists (add similar methods for other tabs)
+        if hasattr(self, 'fret_tab'):
+            self._set_fret_visibility(False)
+        if hasattr(self, 'components_tab'):
+            self._set_components_visibility(False)
 
         # Hide other tabs' artists (add similar methods for other tabs)
         if hasattr(self, 'fret_tab'):
@@ -313,9 +319,8 @@ class PlotterWidget(QWidget):
 
     def _set_components_visibility(self, visible):
         """Set visibility of components tab artists."""
-        # if hasattr(self, 'components_tab'):
-        #     self.components_tab.set_artists_visible(visible)
-        pass
+        if hasattr(self, 'components_tab'):
+            self.components_tab.set_artists_visible(visible)
 
     def _set_fret_visibility(self, visible):
         """Set visibility of FRET tab artists."""
@@ -383,8 +388,10 @@ class PlotterWidget(QWidget):
         """Create the Calibration tab."""
         self.calibration_tab = CalibrationWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.calibration_tab, "Calibration")
-        self.calibration_tab.calibration_widget.frequency_input.textEdited.connect(
-            self._broadcast_frequency_value_across_tabs
+        self.calibration_tab.calibration_widget.frequency_input.editingFinished.connect(
+            lambda: self._broadcast_frequency_value_across_tabs(
+                self.calibration_tab.calibration_widget.frequency_input.text()
+            )
         )
 
     def _create_filter_tab(self):
@@ -399,16 +406,8 @@ class PlotterWidget(QWidget):
 
     def _create_components_tab(self):
         """Create the Components tab."""
-        # self.components_tab = ComponentsWidget(self.viewer, parent=self)
-        # self.tab_widget.addTab(self.components_tab, "Components")
-
-        # Placeholder for future components tab implementation
-        self.components_tab = QWidget()
-        self.components_tab.setLayout(QVBoxLayout())
+        self.components_tab = ComponentsWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.components_tab, "Components")
-        self.components_tab.layout().addWidget(
-            QLabel("Components widget will be implemented here.")
-        )
 
     def _create_lifetime_tab(self):
         """Create the Lifetime tab."""
@@ -421,18 +420,21 @@ class PlotterWidget(QWidget):
         self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
             self.lifetime_tab._on_image_layer_changed
         )
-        self.lifetime_tab.frequency_input.textEdited.connect(
-            self._broadcast_frequency_value_across_tabs
+        self.lifetime_tab.frequency_input.editingFinished.connect(
+            lambda: self._broadcast_frequency_value_across_tabs(
+                self.lifetime_tab.frequency_input.text()
+            )
         )
 
     def _create_fret_tab(self):
         """Create the FRET tab."""
         self.fret_tab = FretWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.fret_tab, "FRET")
-        self.fret_tab.frequency_input.textEdited.connect(
-            self._broadcast_frequency_value_across_tabs
+        self.fret_tab.frequency_input.editingFinished.connect(
+            lambda: self._broadcast_frequency_value_across_tabs(
+                self.fret_tab.frequency_input.text()
+            )
         )
-        # Add this line to connect harmonic changes
         self.harmonic_spinbox.valueChanged.connect(
             self.fret_tab._on_harmonic_changed
         )
@@ -711,11 +713,22 @@ class PlotterWidget(QWidget):
         """
         Broadcast the frequency value to all relevant input fields and update semicircle.
         """
+        try:
+            freq_val = float(value)
+            layer_name = (
+                self.image_layer_with_phasor_features_combobox.currentText()
+            )
+            if layer_name:
+                layer = self.viewer.layers[layer_name]
+                update_frequency_in_metadata(layer, freq_val)
+        except Exception:
+            pass
+
         self.calibration_tab.calibration_widget.frequency_input.setText(value)
         self.lifetime_tab.frequency_input.setText(value)
         self.fret_tab.frequency_input.setText(value)
+        self.components_tab._update_lifetime_inputs_visibility()
 
-        # Update semicircle ticks when frequency changes
         if self.toggle_semi_circle:
             self._update_semi_circle_plot(self.canvas_widget.axes)
             self.canvas_widget.figure.canvas.draw_idle()
