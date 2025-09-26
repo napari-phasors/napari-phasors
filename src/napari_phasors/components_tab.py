@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.collections import LineCollection
 from matplotlib.colors import LinearSegmentedColormap, ListedColormap
+from napari.experimental import link_layers
 from napari.layers import Image
 from napari.utils.notifications import show_error
 from phasorpy.component import phasor_component_fraction
@@ -58,7 +59,7 @@ class ComponentsWidget(QWidget):
 
         # Keep fractions / line attributes
         self.component_line = None
-        self.fractions_layer = None
+        self.comp0_fractions_layer = None
         self.fractions_colormap = None
         self.colormap_contrast_limits = None
 
@@ -876,7 +877,7 @@ class ComponentsWidget(QWidget):
 
             use_colormap = (
                 self.show_colormap_line
-                and self.fractions_layer is not None
+                and self.comp0_fractions_layer is not None
                 and self.fractions_colormap is not None
             )
 
@@ -953,8 +954,8 @@ class ComponentsWidget(QWidget):
             and self.colormap_contrast_limits is not None
         ):
             vmin, vmax = self.colormap_contrast_limits
-        elif self.fractions_layer is not None:
-            vmin, vmax = self.fractions_layer.contrast_limits
+        elif self.comp0_fractions_layer is not None:
+            vmin, vmax = self.comp0_fractions_layer.contrast_limits
         else:
             vmin, vmax = 0, 1
 
@@ -1002,7 +1003,7 @@ class ComponentsWidget(QWidget):
     def _on_colormap_changed(self, event):
         """Handle changes to the colormap of the fractions layer."""
         if (
-            self.fractions_layer is not None
+            self.comp0_fractions_layer is not None
             and self.component_line is not None
         ):
             layer = event.source
@@ -1014,7 +1015,7 @@ class ComponentsWidget(QWidget):
     def _on_contrast_limits_changed(self, event):
         """Handle changes to the contrast limits of the fractions layer."""
         if (
-            self.fractions_layer is not None
+            self.comp0_fractions_layer is not None
             and self.component_line is not None
         ):
             layer = event.source
@@ -1121,26 +1122,53 @@ class ComponentsWidget(QWidget):
         )
 
         comp0_name = c0.name_edit.text().strip() or "Component 1"
-        fractions_layer_name = f"{comp0_name} fractions: {self.parent_widget.image_layer_with_phasor_features_combobox.currentText()}"
+        comp0_fractions_layer_name = f"{comp0_name} fractions: {self.parent_widget.image_layer_with_phasor_features_combobox.currentText()}"
+        comp1_name = c1.name_edit.text().strip() or "Component 2"
+        comp1_fractions_layer_name = f"{comp1_name} fractions: {self.parent_widget.image_layer_with_phasor_features_combobox.currentText()}"
 
-        selected_fractions_layer = Image(
+        comp0_selected_fractions_layer = Image(
             fractions,
-            name=fractions_layer_name,
+            name=comp0_fractions_layer_name,
+            scale=self.parent_widget._labels_layer_with_phasor_features.scale,
+            colormap='PiYG',
+            contrast_limits=(0, 1),
+        )
+        comp1_selected_fractions_layer = Image(
+            1.0 - fractions,
+            name=comp1_fractions_layer_name,
             scale=self.parent_widget._labels_layer_with_phasor_features.scale,
             colormap='PiYG',
             contrast_limits=(0, 1),
         )
 
-        if fractions_layer_name in self.viewer.layers:
-            self.viewer.layers.remove(self.viewer.layers[fractions_layer_name])
+        if comp0_fractions_layer_name in self.viewer.layers:
+            self.viewer.layers.remove(
+                self.viewer.layers[comp0_fractions_layer_name]
+            )
+        if comp1_fractions_layer_name in self.viewer.layers:
+            self.viewer.layers.remove(
+                self.viewer.layers[comp1_fractions_layer_name]
+            )
 
-        self.fractions_layer = self.viewer.add_layer(selected_fractions_layer)
-        self.fractions_colormap = self.fractions_layer.colormap.colors
-        self.colormap_contrast_limits = self.fractions_layer.contrast_limits
-
-        self.fractions_layer.events.colormap.connect(self._on_colormap_changed)
-        self.fractions_layer.events.contrast_limits.connect(
-            self._on_contrast_limits_changed
+        self.comp1_fractions_layer = self.viewer.add_layer(
+            comp1_selected_fractions_layer
+        )
+        self.comp0_fractions_layer = self.viewer.add_layer(
+            comp0_selected_fractions_layer
+        )
+        self.fractions_colormap = self.comp0_fractions_layer.colormap.colors
+        self.colormap_contrast_limits = (
+            self.comp0_fractions_layer.contrast_limits
         )
 
+        self.comp0_fractions_layer.events.colormap.connect(
+            self._on_colormap_changed
+        )
+        self.comp0_fractions_layer.events.contrast_limits.connect(
+            self._on_contrast_limits_changed
+        )
+        link_layers(
+            [self.comp0_fractions_layer, self.comp1_fractions_layer],
+            ('contrast_limits', 'colormap', 'gamma'),
+        )
         self.draw_line_between_components()

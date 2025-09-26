@@ -17,7 +17,7 @@ def test_components_widget_initialization_values(make_napari_viewer):
     assert len(comp_widget.components) == 2
     # Initial state
     assert comp_widget.component_line is None
-    assert comp_widget.fractions_layer is None
+    assert comp_widget.comp0_fractions_layer is None
     assert comp_widget.fractions_colormap is None
     assert comp_widget.colormap_contrast_limits is None
     # UI elements exist
@@ -144,8 +144,8 @@ def test_components_widget_fraction_calculation(make_napari_viewer):
     comp_widget.on_calculate_button_clicked()
 
     # Fractions layer added
-    assert comp_widget.fractions_layer in viewer.layers
-    out_data = comp_widget.fractions_layer.data
+    assert comp_widget.comp0_fractions_layer in viewer.layers
+    out_data = comp_widget.comp0_fractions_layer.data
     np.testing.assert_allclose(out_data, expected, rtol=1e-6, atol=1e-9)
 
     assert isinstance(comp_widget.component_line, LineCollection)
@@ -172,11 +172,11 @@ def test_components_widget_colormap_update(make_napari_viewer):
     orig_colors = comp_widget.fractions_colormap.copy()
 
     # Change colormap
-    comp_widget.fractions_layer.colormap = 'viridis'
+    comp_widget.comp0_fractions_layer.colormap = 'viridis'
 
     # Ensure updated
     assert comp_widget.fractions_colormap is not None
-    assert comp_widget.fractions_layer.colormap.name == 'viridis'
+    assert comp_widget.comp0_fractions_layer.colormap.name == 'viridis'
     # Colors changed
     assert not np.array_equal(orig_colors, comp_widget.fractions_colormap)
 
