@@ -26,8 +26,7 @@ from qtpy.QtWidgets import (
 
 from .calibration_tab import CalibrationWidget
 from .filter_tab import FilterWidget
-
-# from .fret_tab import FretWidget
+from .fret_tab import FretWidget
 from .lifetime_tab import LifetimeWidget
 
 # from .components_tab import ComponentsWidget
@@ -278,6 +277,51 @@ class PlotterWidget(QWidget):
         # Populate labels layer combobox
         self.reset_layer_choices()
 
+        # Connect tab change signal
+        self.tab_widget.currentChanged.connect(self._on_tab_changed)
+
+    def _on_tab_changed(self, index):
+        """Handle tab change events to show/hide tab-specific lines."""
+        # Get the current tab widget
+        current_tab = self.tab_widget.widget(index)
+
+        # Hide all tab-specific artists first
+        self._hide_all_tab_artists()
+
+        # Show artists for the current tab
+        self._show_tab_artists(current_tab)
+
+        # Refresh canvas
+        self.canvas_widget.figure.canvas.draw_idle()
+
+    def _hide_all_tab_artists(self):
+        """Hide all tab-specific artists."""
+        # Hide components tab artists
+        # if hasattr(self, 'components_tab'):
+        #     self._set_components_visibility(False)
+
+        # Hide other tabs' artists (add similar methods for other tabs)
+        if hasattr(self, 'fret_tab'):
+            self._set_fret_visibility(False)
+
+    def _show_tab_artists(self, current_tab):
+        """Show artists for the specified tab."""
+        if current_tab == getattr(self, 'components_tab', None):
+            self._set_components_visibility(True)
+        elif current_tab == getattr(self, 'fret_tab', None):
+            self._set_fret_visibility(True)
+
+    def _set_components_visibility(self, visible):
+        """Set visibility of components tab artists."""
+        # if hasattr(self, 'components_tab'):
+        #     self.components_tab.set_artists_visible(visible)
+        pass
+
+    def _set_fret_visibility(self, visible):
+        """Set visibility of FRET tab artists."""
+        if hasattr(self, 'fret_tab'):
+            self.fret_tab.set_artists_visible(visible)
+
     def _on_plot_type_changed(self):
         """Callback for plot type change."""
         new_plot_type = (
@@ -383,19 +427,14 @@ class PlotterWidget(QWidget):
 
     def _create_fret_tab(self):
         """Create the FRET tab."""
-        # self.fret_tab = FretWidget(self.viewer, parent=self)
-        # self.tab_widget.addTab(self.fret_tab, "FRET")
-
-        # self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
-        #     self.lifetime_tab._on_image_layer_changed
-        # )
-
-        # Placeholder for future FRET tab implementation
-        self.fret_tab = QWidget()
-        self.fret_tab.setLayout(QVBoxLayout())
+        self.fret_tab = FretWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.fret_tab, "FRET")
-        self.fret_tab.layout().addWidget(
-            QLabel("FRET widget will be implemented here.")
+        self.fret_tab.frequency_input.textEdited.connect(
+            self._broadcast_frequency_value_across_tabs
+        )
+        # Add this line to connect harmonic changes
+        self.harmonic_spinbox.valueChanged.connect(
+            self.fret_tab._on_harmonic_changed
         )
 
     @property
@@ -566,6 +605,8 @@ class PlotterWidget(QWidget):
         if frequency is None:
             return
 
+        effective_frequency = frequency * self.harmonic
+
         tick_color = 'black' if self.white_background else 'darkgray'
 
         # Generate lifetime values using powers of 2
@@ -575,7 +616,9 @@ class PlotterWidget(QWidget):
         for t in range(-8, 32):
             lifetime_val = 2**t
             try:
-                g_pos, s_pos = phasor_from_lifetime(frequency, lifetime_val)
+                g_pos, s_pos = phasor_from_lifetime(
+                    effective_frequency, lifetime_val
+                )
                 if s_pos >= 0.18:
                     lifetimes.append(lifetime_val)
             except:
@@ -585,7 +628,9 @@ class PlotterWidget(QWidget):
             if lifetime == 0:
                 g_pos, s_pos = 1.0, 0.0
             else:
-                g_pos, s_pos = phasor_from_lifetime(frequency, lifetime)
+                g_pos, s_pos = phasor_from_lifetime(
+                    effective_frequency, lifetime
+                )
 
             center_x, center_y = 0.5, 0.0
             dx = g_pos - center_x
@@ -664,11 +709,16 @@ class PlotterWidget(QWidget):
 
     def _broadcast_frequency_value_across_tabs(self, value):
         """
-        Broadcast the frequency value to all relevant input fields.
+        Broadcast the frequency value to all relevant input fields and update semicircle.
         """
         self.calibration_tab.calibration_widget.frequency_input.setText(value)
         self.lifetime_tab.frequency_input.setText(value)
-        # self.fret_tab.fret_widget.frequency_input.setText(value)
+        self.fret_tab.frequency_input.setText(value)
+
+        # Update semicircle ticks when frequency changes
+        if self.toggle_semi_circle:
+            self._update_semi_circle_plot(self.canvas_widget.axes)
+            self.canvas_widget.figure.canvas.draw_idle()
 
     def _redefine_axes_limits(self, ensure_full_circle_displayed=True):
         """
@@ -970,6 +1020,10 @@ class PlotterWidget(QWidget):
             # Update filter widget when layer changes
             if hasattr(self, 'filter_tab'):
                 self.filter_tab.on_labels_layer_with_phasor_features_changed()
+
+            # Update calibration button state when layer changes
+            if hasattr(self, 'calibration_tab'):
+                self.calibration_tab._update_button_state()
 
             self.plot()
 
