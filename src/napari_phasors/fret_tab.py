@@ -573,6 +573,21 @@ class FretWidget(QWidget):
 
     def calculate_fret_efficiency(self):
         """Calculate FRET efficiency based on donor intensities."""
+        if not self.donor_line_edit.text().strip():
+            show_error("Enter a Donor lifetime value.")
+            return
+
+        if not self.frequency_input.text().strip():
+            show_error("Enter a frequency value.")
+            return
+        try:
+            float(self.donor_line_edit.text().strip())
+            float(self.frequency_input.text().strip())
+        except ValueError:
+            show_error(
+                "Enter valid numeric values for donor lifetime and frequency."
+            )
+            return
         if self.parent_widget._labels_layer_with_phasor_features is None:
             return
         labels_layer_name = (
