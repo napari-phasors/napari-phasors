@@ -1145,15 +1145,23 @@ class PlotterWidget(QWidget):
             
             # Update filter widget when layer changes
             if hasattr(self, 'filter_tab'):
-                self.filter_tab.on_labels_layer_with_phasor_features_changed()
+                self.filter_tab._on_image_layer_changed()
 
             # Update calibration button state when layer changes
             if hasattr(self, 'calibration_tab'):
-                self.calibration_tab._update_button_state()
+                self.calibration_tab._on_image_layer_changed()
 
             # Update lifetime tab when layer changes
             if hasattr(self, 'lifetime_tab'):
                 self.lifetime_tab._on_image_layer_changed()
+
+            # Update components tab when layer changes
+            if hasattr(self, 'components_tab'):
+                self.components_tab._on_image_layer_changed()
+
+            # Update FRET tab when layer changes
+            if hasattr(self, 'fret_tab'):
+                self.fret_tab._on_image_layer_changed()
 
             self.plot()
 
