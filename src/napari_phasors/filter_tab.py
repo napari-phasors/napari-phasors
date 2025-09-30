@@ -389,12 +389,15 @@ class FilterWidget(QWidget):
 
         if "settings" in layer_metadata.keys():
             settings = layer_metadata["settings"]
+            
+            # Restore threshold settings only if they exist
             if "threshold_method" in settings.keys():
                 self.threshold_method_combobox.setCurrentText(
                     settings["threshold_method"]
                 )
             else:
-                self.threshold_method_combobox.setCurrentText("Otsu")
+                # Default to None if no threshold has been applied
+                self.threshold_method_combobox.setCurrentText("None")
 
             if "threshold" in settings.keys():
                 self.threshold_slider.setValue(
@@ -407,15 +410,11 @@ class FilterWidget(QWidget):
                     )
                 )
             else:
-                self.threshold_slider.setValue(
-                    int(max_mean_value * 0.1 * self.threshold_factor)
-                )
-                self.label_3.setText(
-                    'Intensity threshold: '
-                    + str(
-                        self.threshold_slider.value() / self.threshold_factor
-                    )
-                )
+                # Default to 0 if no threshold has been applied
+                self.threshold_slider.setValue(0)
+                self.label_3.setText('Intensity threshold: 0')
+                
+            # Restore filter settings only if they exist
             if "filter" in settings.keys():
                 filter_settings = settings["filter"]
                 if "method" in filter_settings:
@@ -436,7 +435,7 @@ class FilterWidget(QWidget):
                                 "Median"
                             )
 
-                # Restore filter parameters
+                # Restore filter parameters only if they exist
                 if "size" in filter_settings:
                     self.median_filter_spinbox.setValue(
                         int(filter_settings["size"])
@@ -453,15 +452,12 @@ class FilterWidget(QWidget):
                     self.wavelet_levels_spinbox.setValue(
                         int(filter_settings["levels"])
                     )
+            # If no filter settings exist, keep UI defaults but don't save to metadata
         else:
-            self.threshold_method_combobox.setCurrentText("Otsu")
-            self.threshold_slider.setValue(
-                int(max_mean_value * 0.1 * self.threshold_factor)
-            )
-            self.label_3.setText(
-                'Intensity threshold: '
-                + str(self.threshold_slider.value() / self.threshold_factor)
-            )
+            # Default to None for both threshold and filter if no settings exist
+            self.threshold_method_combobox.setCurrentText("None")
+            self.threshold_slider.setValue(0)
+            self.label_3.setText('Intensity threshold: 0')
 
         self._updating_threshold = False
         self.plot_mean_histogram()
@@ -469,7 +465,7 @@ class FilterWidget(QWidget):
         self.check_harmonics_compatibility()
 
         current_method = self.threshold_method_combobox.currentText()
-        if current_method != "Manual":
+        if current_method not in ["Manual", "None"]:
             self.on_threshold_method_changed()
 
     def on_threshold_slider_change(self):
@@ -588,34 +584,48 @@ class FilterWidget(QWidget):
         )
 
         layer = self.viewer.layers[labels_layer_name]
-        if "settings" not in layer.metadata:
-            layer.metadata["settings"] = {}
-        layer.metadata["settings"][
-            "threshold_method"
-        ] = self.threshold_method_combobox.currentText()
+        
+        # Determine threshold value and method
+        threshold_method = self.threshold_method_combobox.currentText()
+        threshold_value = None
+        if threshold_method != "None":
+            threshold_value = self.threshold_slider.value() / self.threshold_factor
 
         # Determine filter method and parameters
-        filter_method = self.filter_method_combobox.currentText().lower()
-
-        # Get harmonics for wavelet filter
+        filter_method = None
+        size = None
+        repeat = None
+        sigma = None
+        levels = None
         harmonics = None
-        if filter_method == "wavelet":
-            harmonics = np.unique(
-                layer.metadata['phasor_features_labels_layer'].features[
-                    'harmonic'
-                ]
-            )
+        
+        # Only set filter parameters if median filter has repetitions > 0 or wavelet is selected
+        current_filter_method = self.filter_method_combobox.currentText().lower()
+        if current_filter_method == "median" and self.median_filter_repetition_spinbox.value() > 0:
+            filter_method = "median"
+            size = self.median_filter_spinbox.value()
+            repeat = self.median_filter_repetition_spinbox.value()
+        elif current_filter_method == "wavelet":
+            # Check if harmonics are compatible
+            phasor_features = layer.metadata['phasor_features_labels_layer'].features
+            harmonics = np.unique(phasor_features['harmonic'])
+            if validate_harmonics_for_wavelet(harmonics):
+                filter_method = "wavelet"
+                sigma = self.wavelet_sigma_spinbox.value()
+                levels = self.wavelet_levels_spinbox.value()
 
         apply_filter_and_threshold(
             layer,
-            threshold=self.threshold_slider.value() / self.threshold_factor,
+            threshold=threshold_value,
+            threshold_method=threshold_method,
             filter_method=filter_method,
-            size=self.median_filter_spinbox.value(),
-            repeat=self.median_filter_repetition_spinbox.value(),
-            sigma=self.wavelet_sigma_spinbox.value(),
-            levels=self.wavelet_levels_spinbox.value(),
+            size=size,
+            repeat=repeat,
+            sigma=sigma,
+            levels=levels,
             harmonics=harmonics,
         )
+        
         if self.parent_widget is not None:
             self.parent_widget.plot()
 
