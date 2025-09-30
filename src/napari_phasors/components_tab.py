@@ -8,7 +8,7 @@ from matplotlib.colors import LinearSegmentedColormap, ListedColormap
 from napari.experimental import link_layers
 from napari.layers import Image
 from napari.utils.notifications import show_error
-from phasorpy.component import phasor_component_fraction
+from phasorpy.component import phasor_component_fraction, phasor_component_fit
 from phasorpy.lifetime import phasor_from_lifetime
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
@@ -26,7 +26,9 @@ from qtpy.QtWidgets import (
     QSpinBox,
     QVBoxLayout,
     QWidget,
+    QTabWidget,
 )
+
 
 if TYPE_CHECKING:
     import napari
@@ -54,52 +56,75 @@ class ComponentsWidget(QWidget):
         self.viewer = viewer
         self.parent_widget = parent
 
-        # Replace individual attributes with list
-        self.components: list[ComponentState] = []
+        self.setup_ui()
 
-        # Keep fractions / line attributes
+    def setup_ui(self):
+        """Set up the tabbed user interface."""
+        layout = QVBoxLayout()
+        
+        # Create tab widget
+        self.tab_widget = QTabWidget()
+        
+        # Create tabs
+        self.two_component_tab = TwoComponentTab(self.viewer, self.parent_widget)
+        self.multi_component_tab = MultiComponentTab(self.viewer, self.parent_widget)
+        
+        # Add tabs
+        self.tab_widget.addTab(self.two_component_tab, "2-Component Linear")
+        self.tab_widget.addTab(self.multi_component_tab, "2-4 Component Fit")
+        
+        layout.addWidget(self.tab_widget)
+        self.setLayout(layout)
+
+    def get_all_artists(self):
+        """Get all matplotlib artists from the active tab."""
+        current_tab = self.tab_widget.currentWidget()
+        if hasattr(current_tab, 'get_all_artists'):
+            return current_tab.get_all_artists()
+        return []
+
+    def set_artists_visible(self, visible):
+        """Set visibility of all artists from the active tab."""
+        current_tab = self.tab_widget.currentWidget()
+        if hasattr(current_tab, 'set_artists_visible'):
+            current_tab.set_artists_visible(visible)
+
+class TwoComponentTab(QWidget):
+    """Tab for two-component linear analysis."""
+    
+    def __init__(self, viewer: "napari.viewer.Viewer", parent=None):
+        super().__init__()
+        self.viewer = viewer
+        self.parent_widget = parent
+        
+        # Move all original attributes here
+        self.components: list[ComponentState] = []
         self.component_line = None
         self.comp1_fractions_layer = None
-        self.comp2_fractions_layer = None  # Add this missing attribute
+        self.comp2_fractions_layer = None
         self.fractions_colormap = None
         self.colormap_contrast_limits = None
-
-        # Style state
+        
+        # All the original style and line attributes...
         self.label_fontsize = 10
         self.label_bold = False
         self.label_italic = False
         self.label_color = 'black'
-
-        # Line settings
         self.show_colormap_line = True
         self.show_component_dots = True
         self.line_offset = 0.0
         self.line_width = 3.0
         self.line_alpha = 1
         self.default_component_color = 'dimgray'
-
-        # Flag to prevent clearing lifetime when updating from lifetime
+        
         self._updating_from_lifetime = False
-
-        # Dialog / event flags
         self.plot_dialog = None
         self.style_dialog = None
         self.drag_events_connected = False
-
-        # Drag state
         self.dragging_component_idx = None
         self.dragging_label_idx = None
-
+        
         self.setup_ui()
-
-        # Connect to layer selection change to show/hide lifetime inputs
-        if hasattr(
-            self.parent_widget, 'image_layer_with_phasor_features_combobox'
-        ):
-            self.parent_widget.image_layer_with_phasor_features_combobox.currentTextChanged.connect(
-                self._update_lifetime_inputs_visibility
-            )
-
         self._update_lifetime_inputs_visibility()
 
     def setup_ui(self):
@@ -1298,3 +1323,710 @@ class ComponentsWidget(QWidget):
             ('contrast_limits', 'gamma'),
         )
         self.draw_line_between_components()
+
+
+# New class for multi-component analysis
+class MultiComponentTab(QWidget):
+    """Tab for 2-4 component analysis using phasor_component_fit."""
+    
+    def __init__(self, viewer: "napari.viewer.Viewer", parent=None):
+        super().__init__()
+        self.viewer = viewer
+        self.parent_widget = parent
+        
+        self.components: list[ComponentState] = []
+        self.component_polygon = None  # Changed from polygon_layer
+        self.fraction_layers = []
+        
+        # Style attributes
+        self.label_fontsize = 10
+        self.label_bold = False
+        self.label_italic = False
+        self.label_color = 'black'
+        self.show_component_dots = True
+        self.default_component_color = 'dimgray'
+        
+        self._updating_from_lifetime = False
+        self.drag_events_connected = False
+        self.dragging_component_idx = None
+        self.dragging_label_idx = None
+        
+        self.setup_ui()
+
+    def setup_ui(self):
+        """Set up UI for multi-component analysis."""
+        layout = QVBoxLayout()
+        
+        # Scroll area
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        layout.addWidget(scroll_area)
+        
+        content_widget = QWidget()
+        scroll_area.setWidget(content_widget)
+        content_layout = QVBoxLayout()
+        content_widget.setLayout(content_layout)
+        
+        # Component selection section
+        comp_selection_layout = QVBoxLayout()
+        comp_selection_layout.addWidget(QLabel("Components (2-4):"))
+        
+        # Component controls
+        self.component_controls = []
+        for i in range(4):
+            comp_layout = self._create_component_controls(i)
+            comp_selection_layout.addLayout(comp_layout)
+            
+        content_layout.addLayout(comp_selection_layout)
+        
+        # Buttons
+        buttons_layout = QHBoxLayout()
+        
+        self.add_component_btn = QPushButton("Add Component")
+        self.add_component_btn.clicked.connect(self._add_component)
+        buttons_layout.addWidget(self.add_component_btn)
+        
+        self.remove_component_btn = QPushButton("Remove Component")
+        self.remove_component_btn.clicked.connect(self._remove_component)
+        buttons_layout.addWidget(self.remove_component_btn)
+        
+        self.clear_components_btn = QPushButton("Clear All")
+        self.clear_components_btn.clicked.connect(self._clear_components)
+        buttons_layout.addWidget(self.clear_components_btn)
+        
+        buttons_layout.addStretch()
+        content_layout.addLayout(buttons_layout)
+        
+        # Calculate button
+        self.calculate_button = QPushButton("Run Multi-Component Analysis")
+        self.calculate_button.clicked.connect(self._run_analysis)
+        content_layout.addWidget(self.calculate_button)
+        
+        content_layout.addStretch()
+        self.setLayout(layout)
+        
+        # Initialize with 2 components
+        self._update_component_visibility()
+
+    def _create_component_controls(self, idx):
+        """Create controls for a single component."""
+        layout = QHBoxLayout()
+        
+        # Component name
+        name_edit = QLineEdit()
+        name_edit.setPlaceholderText(f"Component {idx+1}")
+        layout.addWidget(name_edit)
+        
+        # Select button
+        select_btn = QPushButton(f"Select")
+        select_btn.clicked.connect(lambda: self._select_component(idx))
+        layout.addWidget(select_btn)
+        
+        # Coordinates
+        layout.addWidget(QLabel("G:"))
+        g_edit = QLineEdit()
+        g_edit.setPlaceholderText("G coordinate")
+        layout.addWidget(g_edit)
+        
+        layout.addWidget(QLabel("S:"))
+        s_edit = QLineEdit()
+        s_edit.setPlaceholderText("S coordinate")
+        layout.addWidget(s_edit)
+        
+        # Create component state
+        comp = ComponentState(
+            idx=idx,
+            name_edit=name_edit,
+            g_edit=g_edit,
+            s_edit=s_edit,
+            select_button=select_btn,
+            label=f"Component {idx+1}"
+        )
+        
+        # Connect signals
+        name_edit.textChanged.connect(lambda: self._on_component_name_changed(idx))
+        g_edit.editingFinished.connect(lambda: self._on_component_coords_changed(idx))
+        s_edit.editingFinished.connect(lambda: self._on_component_coords_changed(idx))
+        
+        # Store controls
+        self.component_controls.append({
+            'layout': layout,
+            'name_edit': name_edit,
+            'select_btn': select_btn,
+            'g_edit': g_edit,
+            's_edit': s_edit,
+            'visible': False
+        })
+        
+        # Add to components list
+        if len(self.components) <= idx:
+            self.components.extend([None] * (idx + 1 - len(self.components)))
+        self.components[idx] = comp
+        
+        return layout
+
+    def _update_component_visibility(self):
+        """Update visibility of component controls based on number of components."""
+        num_active = len([c for c in self.components if c is not None and c.dot is not None])
+        
+        for i, controls in enumerate(self.component_controls):
+            should_show = i < max(2, num_active + 1) and i < 4
+            for j in range(controls['layout'].count()):
+                widget = controls['layout'].itemAt(j).widget()
+                if widget:
+                    widget.setVisible(should_show)
+
+    def _add_component(self):
+        """Add a new component (up to 4 total)."""
+        active_count = len([c for c in self.components if c is not None and c.dot is not None])
+        if active_count >= 4:
+            show_error("Maximum 4 components allowed")
+            return
+        self._update_component_visibility()
+
+    def _remove_component(self):
+        """Remove the last component."""
+        for i in reversed(range(len(self.components))):
+            if self.components[i] is not None and self.components[i].dot is not None:
+                self._remove_component_at_index(i)
+                break
+        self._update_component_visibility()
+        self._update_polygon()
+
+    def _remove_component_at_index(self, idx):
+        """Remove component at specific index."""
+        if idx >= len(self.components) or self.components[idx] is None:
+            return
+            
+        comp = self.components[idx]
+        if comp.dot is not None:
+            comp.dot.remove()
+            comp.dot = None
+        if comp.text is not None:
+            comp.text.remove()
+            comp.text = None
+            
+        comp.g_edit.clear()
+        comp.s_edit.clear()
+        comp.name_edit.clear()
+
+    def _clear_components(self):
+        """Clear all components."""
+        for i in range(len(self.components)):
+            if self.components[i] is not None:
+                self._remove_component_at_index(i)
+        
+        # Remove polygon from matplotlib plot
+        if hasattr(self, 'component_polygon') and self.component_polygon is not None:
+            try:
+                self.component_polygon.remove()
+            except (ValueError, AttributeError):
+                pass
+            self.component_polygon = None
+        
+        if self.parent_widget is not None:
+            self.parent_widget.canvas_widget.canvas.draw_idle()
+            
+        self._update_component_visibility()
+
+    def _update_polygon(self):
+        """Update polygon visualization on the matplotlib plot."""
+        active_components = [c for c in self.components if c is not None and c.dot is not None]
+        
+        # Remove existing polygon
+        if hasattr(self, 'component_polygon') and self.component_polygon is not None:
+            try:
+                self.component_polygon.remove()
+            except (ValueError, AttributeError):
+                pass
+            self.component_polygon = None
+        
+        if len(active_components) < 3:
+            if self.parent_widget is not None:
+                self.parent_widget.canvas_widget.canvas.draw_idle()
+            return
+        
+        # Get component coordinates
+        points = []
+        for comp in active_components:
+            x_data, y_data = comp.dot.get_data()
+            points.append([x_data[0], y_data[0]])
+        
+        # Close the polygon by adding the first point at the end
+        points.append(points[0])
+        points = np.array(points)
+        
+        # Draw polygon on matplotlib axes
+        if self.parent_widget is not None:
+            ax = self.parent_widget.canvas_widget.figure.gca()
+            
+            # Create polygon patch
+            from matplotlib.patches import Polygon
+            
+            self.component_polygon = Polygon(
+                points[:-1],  # Don't include the duplicate closing point for the patch
+                closed=True,
+                fill=False,
+                edgecolor='red',
+                linewidth=2,
+                alpha=0.8
+            )
+            
+            ax.add_patch(self.component_polygon)
+            
+            # Check if multi-component tab is active to set visibility
+            components_tab_is_active = (
+                self.parent_widget is not None
+                and getattr(self.parent_widget, "tab_widget", None) is not None
+                and self.parent_widget.tab_widget.currentWidget()
+                is self.parent_widget.components_tab
+                and hasattr(self.parent_widget.components_tab, 'tab_widget')
+                and self.parent_widget.components_tab.tab_widget.currentWidget() is self
+            )
+            
+            self.component_polygon.set_visible(components_tab_is_active)
+            self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def _run_analysis(self):
+        """Run multi-component analysis using phasor_component_fit."""
+        if self.parent_widget._labels_layer_with_phasor_features is None:
+            show_error("No phasor data available")
+            return
+        
+        active_components = [c for c in self.components if c is not None and c.dot is not None]
+        if len(active_components) < 2:
+            show_error("At least 2 components required")
+            return
+        
+        # Get component coordinates
+        component_g = []
+        component_s = []
+        component_names = []
+        
+        for comp in active_components:
+            x_data, y_data = comp.dot.get_data()
+            component_g.append(x_data[0])
+            component_s.append(y_data[0])
+            name = comp.name_edit.text().strip() or comp.label
+            component_names.append(name)
+        
+        # Get phasor data
+        phasor_data = self.parent_widget._labels_layer_with_phasor_features.features
+        harmonics = phasor_data['harmonic'].unique()
+
+        layer_name = self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        mean = self.viewer.layers[layer_name].metadata['original_mean']
+        real =  np.reshape(
+            phasor_data["G"],
+            (len(harmonics),) + mean.shape,
+        )
+        imag =  np.reshape(
+            phasor_data["S"],
+            (len(harmonics),) + mean.shape,
+        )
+
+        try:
+            # Run phasor_component_fit
+            fractions = phasor_component_fit(
+                mean,
+                real,
+                imag,
+                component_g,
+                component_s
+            )
+            
+            # Create fraction layers
+            self._create_fraction_layers(fractions, component_names)
+            
+        except Exception as e:
+            show_error(f"Analysis failed: {str(e)}")
+
+    def _create_fraction_layers(self, fractions, component_names):
+        """Create fraction layers for each component."""
+        # Clear existing fraction layers
+        for layer in self.fraction_layers:
+            try:
+                self.viewer.layers.remove(layer)
+            except ValueError:
+                pass
+        self.fraction_layers.clear()
+        
+        # Create new fraction layers
+        base_name = self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        
+        for i, (fraction, name) in enumerate(zip(fractions.T, component_names)):
+            fraction_reshaped = fraction.reshape(
+                self.parent_widget._labels_layer_with_phasor_features.data.shape
+            )
+            
+            layer_name = f"{name} fraction: {base_name}"
+            
+            layer = self.viewer.add_image(
+                fraction_reshaped,
+                name=layer_name,
+                scale=self.parent_widget._labels_layer_with_phasor_features.scale,
+                colormap='viridis',
+                contrast_limits=(0, 1),
+                blending='additive'
+            )
+            
+            self.fraction_layers.append(layer)
+
+    def _select_component(self, idx):
+        """Select component by clicking on plot."""
+        if self.parent_widget is None:
+            return
+
+        self.parent_widget.canvas_widget._on_escape(None)
+
+        comp = self.components[idx]
+
+        if comp.dot is not None:
+            comp.dot.set_visible(False)
+        if comp.text is not None:
+            comp.text.set_visible(False)
+        self._redraw(force=True)
+
+        original_text = comp.select_button.text()
+        comp.select_button.setText("Click on plot...")
+        comp.select_button.setEnabled(False)
+
+        temp_cid = self.parent_widget.canvas_widget.canvas.mpl_connect(
+            'button_press_event',
+            lambda event: self._handle_component_selection(
+                event, idx, temp_cid, original_text
+            ),
+        )
+
+    def _handle_component_selection(self, event, idx, temp_cid, original_text):
+        """Handle the selection of a component by clicking on the plot."""
+        if not event.inaxes:
+            return
+
+        comp = self.components[idx]
+        x, y = event.xdata, event.ydata
+        comp.g_edit.setText(f"{x:.6f}")
+        comp.s_edit.setText(f"{y:.6f}")
+
+        if comp.dot is None:
+            self._create_component_at_coordinates(idx, x, y)
+        else:
+            comp.dot.set_data([x], [y])
+            comp.dot.set_visible(self.show_component_dots)
+            comp.dot.set_markeredgewidth(0)
+            name = comp.name_edit.text().strip()
+            if name:
+                if comp.text is None:
+                    ax = self.parent_widget.canvas_widget.figure.gca()
+                    ox, oy = comp.text_offset
+                    comp.text = ax.text(
+                        x + ox,
+                        y + oy,
+                        name,
+                        fontsize=self.label_fontsize,
+                        fontweight='bold' if self.label_bold else 'normal',
+                        fontstyle='italic' if self.label_italic else 'normal',
+                        color=self.label_color,
+                        picker=True,
+                    )
+                else:
+                    ox, oy = comp.text_offset
+                    comp.text.set_position((x + ox, y + oy))
+                    comp.text.set_visible(True)
+
+            self._update_polygon()
+
+        self.parent_widget.canvas_widget.canvas.mpl_disconnect(temp_cid)
+        comp.select_button.setText(original_text)
+        comp.select_button.setEnabled(True)
+        self._redraw(force=True)
+
+    def _create_component_at_coordinates(self, idx: int, x: float, y: float):
+        """Create a component at specific coordinates."""
+        if self.parent_widget is None:
+            return
+        comp = self.components[idx]
+
+        ax = self.parent_widget.canvas_widget.figure.gca()
+        comp.dot = ax.plot(
+            x,
+            y,
+            'o',
+            color=self.default_component_color,
+            markersize=8,
+            label=comp.label,
+            alpha=1.0,
+            markeredgewidth=0,
+        )[0]
+        
+        name = comp.name_edit.text().strip()
+        if name:
+            ox, oy = comp.text_offset
+            comp.text = ax.text(
+                x + ox,
+                y + oy,
+                name,
+                fontsize=self.label_fontsize,
+                fontweight='bold' if self.label_bold else 'normal',
+                fontstyle='italic' if self.label_italic else 'normal',
+                color=self.label_color,
+                picker=True,
+            )
+        
+        self._make_components_draggable()
+        self.parent_widget.canvas_widget.canvas.draw_idle()
+        self._update_polygon()
+
+    def _on_component_coords_changed(self, idx):
+        """Handle coordinate changes."""
+        comp = self.components[idx]
+        try:
+            x = float(comp.g_edit.text())
+            y = float(comp.s_edit.text())
+        except ValueError:
+            return
+
+        if comp.dot is not None:
+            comp.dot.set_data([x], [y])
+            if comp.text is not None:
+                ox, oy = comp.text_offset
+                comp.text.set_position((x + ox, y + oy))
+            self._update_polygon()
+            self.parent_widget.canvas_widget.canvas.draw_idle()
+        else:
+            self._create_component_at_coordinates(idx, x, y)
+
+    def _on_component_name_changed(self, idx):
+        """Handle name changes."""
+        comp = self.components[idx]
+        if comp.dot is None:
+            return
+        name = comp.name_edit.text().strip()
+        prev_pos = None
+        if comp.text is not None:
+            prev_pos = comp.text.get_position()
+            comp.text.remove()
+            comp.text = None
+        if name:
+            dx, dy = comp.dot.get_data()
+            if prev_pos is None:
+                ox, oy = comp.text_offset
+                base_x, base_y = dx[0] + ox, dy[0] + oy
+            else:
+                base_x, base_y = prev_pos
+                comp.text_offset = (base_x - dx[0], base_y - dy[0])
+            ax = self.parent_widget.canvas_widget.figure.gca()
+            comp.text = ax.text(
+                base_x,
+                base_y,
+                name,
+                fontsize=self.label_fontsize,
+                fontweight='bold' if self.label_bold else 'normal',
+                fontstyle='italic' if self.label_italic else 'normal',
+                color=self.label_color,
+                picker=True,
+            )
+        self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def _make_components_draggable(self):
+        """Make component dots draggable."""
+        if self.parent_widget is None or self.drag_events_connected:
+            return
+
+        self.parent_widget.canvas_widget.canvas.mpl_connect(
+            'button_press_event', self._on_press
+        )
+        self.parent_widget.canvas_widget.canvas.mpl_connect(
+            'button_release_event', self._on_release
+        )
+        self.parent_widget.canvas_widget.canvas.mpl_connect(
+            'motion_notify_event', self._on_motion
+        )
+        self.drag_events_connected = True
+
+    def _on_press(self, event):
+        """Handle mouse press events for dragging."""
+        if event.inaxes is None:
+            return
+
+        # Check if multi-component tab is active
+        components_tab_is_active = (
+            self.parent_widget is not None
+            and getattr(self.parent_widget, "tab_widget", None) is not None
+            and self.parent_widget.tab_widget.currentWidget()
+            is self.parent_widget.components_tab
+            and self.parent_widget.components_tab.tab_widget.currentWidget() is self
+        )
+        if not components_tab_is_active:
+            return
+
+        # Check for text dragging first
+        for comp in self.components:
+            if comp is not None and comp.text is not None and comp.text.contains(event)[0]:
+                if self.parent_widget.canvas_widget.toolbar.mode == 'zoom rect':
+                    try:
+                        self.parent_widget.canvas_widget.toolbar.release_zoom(event)
+                    except Exception:
+                        pass
+                if self.parent_widget.canvas_widget.toolbar.mode == 'pan/zoom':
+                    try:
+                        self.parent_widget.canvas_widget.toolbar.release_pan(event)
+                    except Exception:
+                        pass
+                self.parent_widget.canvas_widget._on_escape(None)
+                self.dragging_label_idx = comp.idx
+                return
+        
+        # Check for component dot dragging
+        for comp in self.components:
+            if comp is not None and comp.dot is not None and comp.dot.contains(event)[0]:
+                if self.parent_widget.canvas_widget.toolbar.mode == 'zoom rect':
+                    try:
+                        self.parent_widget.canvas_widget.toolbar.release_zoom(event)
+                    except Exception:
+                        pass
+                if self.parent_widget.canvas_widget.toolbar.mode == 'pan/zoom':
+                    try:
+                        self.parent_widget.canvas_widget.toolbar.release_pan(event)
+                    except Exception:
+                        pass
+                self.parent_widget.canvas_widget._on_escape(None)
+                self.dragging_component_idx = comp.idx
+                return
+
+    def _on_motion(self, event):
+        """Handle mouse motion events for dragging."""
+        if event.inaxes is None:
+            return
+        
+        if self.dragging_label_idx is not None:
+            comp = self.components[self.dragging_label_idx]
+            if comp.text is not None and comp.dot is not None:
+                x, y = event.xdata, event.ydata
+                comp.text.set_position((x, y))
+                dx, dy = comp.dot.get_data()
+                comp.text_offset = (x - dx[0], y - dy[0])
+                self.parent_widget.canvas_widget.canvas.draw_idle()
+            return
+        
+        if self.dragging_component_idx is None:
+            return
+        
+        comp = self.components[self.dragging_component_idx]
+        if comp.dot is None:
+            return
+        
+        x, y = event.xdata, event.ydata
+        comp.dot.set_data([x], [y])
+        comp.g_edit.setText(f"{x:.6f}")
+        comp.s_edit.setText(f"{y:.6f}")
+
+        if comp.text is not None:
+            ox, oy = comp.text_offset
+            comp.text.set_position((x + ox, y + oy))
+        
+        self._update_polygon()
+        self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def _on_release(self, event):
+        """Handle mouse release events."""
+        self.dragging_component_idx = None
+        self.dragging_label_idx = None
+
+    def _redraw(self, force=False):
+        """Redraw the canvas."""
+        if self.parent_widget is None:
+            return
+        canvas = self.parent_widget.canvas_widget.canvas
+        if force and hasattr(canvas, "draw"):
+            canvas.draw()
+        else:
+            canvas.draw_idle()
+
+
+    def _create_component_controls(self, idx):
+        """Create controls for a single component."""
+        layout = QHBoxLayout()
+        
+        # Component name
+        name_edit = QLineEdit()
+        name_edit.setPlaceholderText(f"Component {idx+1}")
+        layout.addWidget(name_edit)
+        
+        # Select button
+        select_btn = QPushButton(f"Select")
+        select_btn.clicked.connect(lambda: self._select_component(idx))
+        layout.addWidget(select_btn)
+        
+        # Coordinates
+        layout.addWidget(QLabel("G:"))
+        g_edit = QLineEdit()
+        g_edit.setPlaceholderText("G coordinate")
+        layout.addWidget(g_edit)
+        
+        layout.addWidget(QLabel("S:"))
+        s_edit = QLineEdit()
+        s_edit.setPlaceholderText("S coordinate")
+        layout.addWidget(s_edit)
+        
+        # Create component state with text_offset
+        comp = ComponentState(
+            idx=idx,
+            name_edit=name_edit,
+            g_edit=g_edit,
+            s_edit=s_edit,
+            select_button=select_btn,
+            label=f"Component {idx+1}",
+            text_offset=(0.02, 0.02)  # Add this line
+        )
+        
+        # Connect signals
+        name_edit.textChanged.connect(lambda: self._on_component_name_changed(idx))
+        g_edit.editingFinished.connect(lambda: self._on_component_coords_changed(idx))
+        s_edit.editingFinished.connect(lambda: self._on_component_coords_changed(idx))
+        
+        # Store controls
+        self.component_controls.append({
+            'layout': layout,
+            'name_edit': name_edit,
+            'select_btn': select_btn,
+            'g_edit': g_edit,
+            's_edit': s_edit,
+            'visible': False
+        })
+        
+        # Add to components list
+        if len(self.components) <= idx:
+            self.components.extend([None] * (idx + 1 - len(self.components)))
+        self.components[idx] = comp
+        
+        return layout
+
+    def get_all_artists(self):
+        """Get all matplotlib artists."""
+        artists = []
+        for comp in self.components:
+            if comp is not None:
+                if comp.dot is not None:
+                    artists.append(comp.dot)
+                if comp.text is not None:
+                    artists.append(comp.text)
+        
+        # Add polygon to artists list
+        if hasattr(self, 'component_polygon') and self.component_polygon is not None:
+            artists.append(self.component_polygon)
+        
+        return artists
+
+    def set_artists_visible(self, visible):
+        """Set visibility of all artists."""
+        for comp in self.components:
+            if comp is not None:
+                if comp.dot is not None:
+                    comp.dot.set_visible(visible and self.show_component_dots)
+                if comp.text is not None:
+                    comp.text.set_visible(visible)
+        
+        # Set polygon visibility
+        if hasattr(self, 'component_polygon') and self.component_polygon is not None:
+            self.component_polygon.set_visible(visible)
