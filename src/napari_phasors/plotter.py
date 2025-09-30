@@ -537,9 +537,6 @@ class PlotterWidget(QWidget):
         self.harmonic_spinbox.valueChanged.connect(
             self.lifetime_tab._on_harmonic_changed
         )
-        self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
-            self.lifetime_tab._on_image_layer_changed
-        )
         self.lifetime_tab.frequency_input.editingFinished.connect(
             lambda: self._broadcast_frequency_value_across_tabs(
                 self.lifetime_tab.frequency_input.text()
@@ -1153,6 +1150,10 @@ class PlotterWidget(QWidget):
             # Update calibration button state when layer changes
             if hasattr(self, 'calibration_tab'):
                 self.calibration_tab._update_button_state()
+
+            # Update lifetime tab when layer changes
+            if hasattr(self, 'lifetime_tab'):
+                self.lifetime_tab._on_image_layer_changed()
 
             self.plot()
 
