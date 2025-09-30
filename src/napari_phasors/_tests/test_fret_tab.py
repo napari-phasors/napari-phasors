@@ -746,44 +746,52 @@ def test_background_position_manual_changes_stored_by_harmonic(
 
 
 @pytest.mark.parametrize(
-    "donor_lifetime,frequency,expected_error",
+    "donor_lifetime,frequency,expected_message,message_type",
     [
-        # Empty values
-        ("", "80", "Enter a Donor lifetime value."),
-        ("2.0", "", "Enter a frequency value."),
-        ("", "", "Enter a Donor lifetime value."),
-        # Whitespace only values
-        ("   ", "80", "Enter a Donor lifetime value."),
-        ("2.0", "   ", "Enter a frequency value."),
-        ("   ", "   ", "Enter a Donor lifetime value."),
-        # Invalid numeric values
+        # Empty values - these should be warnings
+        ("", "80", "Enter a Donor lifetime value.", "warning"),
+        ("2.0", "", "Enter a frequency value.", "warning"),
+        ("", "", "Enter a Donor lifetime value.", "warning"),
+        # Whitespace only values - these should be warnings
+        ("   ", "80", "Enter a Donor lifetime value.", "warning"),
+        ("2.0", "   ", "Enter a frequency value.", "warning"),
+        ("   ", "   ", "Enter a Donor lifetime value.", "warning"),
+        # Invalid numeric values - these should be errors
         (
             "not_a_number",
             "80",
             "Enter valid numeric values for donor lifetime and frequency.",
+            "error",
         ),
         (
             "2.0",
             "invalid_frequency",
             "Enter valid numeric values for donor lifetime and frequency.",
+            "error",
         ),
         (
             "invalid_lifetime",
             "invalid_frequency",
             "Enter valid numeric values for donor lifetime and frequency.",
+            "error",
         ),
         (
             "abc",
             "xyz",
             "Enter valid numeric values for donor lifetime and frequency.",
+            "error",
         ),
-        # Mixed invalid cases
-        ("", "invalid_frequency", "Enter a Donor lifetime value."),
-        ("   ", "not_a_number", "Enter a Donor lifetime value."),
+        # Mixed invalid cases - empty/whitespace takes precedence, so warnings
+        ("", "invalid_frequency", "Enter a Donor lifetime value.", "warning"),
+        ("   ", "not_a_number", "Enter a Donor lifetime value.", "warning"),
     ],
 )
 def test_calculate_fret_efficiency_invalid_inputs(
-    make_napari_viewer, donor_lifetime, frequency, expected_error
+    make_napari_viewer,
+    donor_lifetime,
+    frequency,
+    expected_message,
+    message_type,
 ):
     """Test FRET efficiency calculation with various invalid inputs."""
     viewer = make_napari_viewer()
@@ -801,10 +809,16 @@ def test_calculate_fret_efficiency_invalid_inputs(
 
     initial_layer_count = len(viewer.layers)
 
-    with patch('napari_phasors.fret_tab.show_error') as mock_show_error:
-        widget.calculate_fret_efficiency()
-
-        mock_show_error.assert_called_once_with(expected_error)
+    if message_type == "warning":
+        with patch(
+            'napari_phasors.fret_tab.show_warning'
+        ) as mock_show_warning:
+            widget.calculate_fret_efficiency()
+            mock_show_warning.assert_called_once_with(expected_message)
+    else:  # message_type == "error"
+        with patch('napari_phasors.fret_tab.show_error') as mock_show_error:
+            widget.calculate_fret_efficiency()
+            mock_show_error.assert_called_once_with(expected_message)
 
     assert len(viewer.layers) == initial_layer_count
 

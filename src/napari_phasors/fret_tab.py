@@ -3,7 +3,7 @@ import numpy as np
 from matplotlib.collections import LineCollection
 from matplotlib.colors import LinearSegmentedColormap
 from napari.layers import Image
-from napari.utils.notifications import show_error
+from napari.utils.notifications import show_error, show_warning
 from phasorpy.lifetime import phasor_from_fret_donor
 from phasorpy.phasor import phasor_center, phasor_nearest_neighbor
 from qtpy.QtCore import Qt
@@ -574,11 +574,11 @@ class FretWidget(QWidget):
     def calculate_fret_efficiency(self):
         """Calculate FRET efficiency based on donor intensities."""
         if not self.donor_line_edit.text().strip():
-            show_error("Enter a Donor lifetime value.")
+            show_warning("Enter a Donor lifetime value.")
             return
 
         if not self.frequency_input.text().strip():
-            show_error("Enter a frequency value.")
+            show_warning("Enter a frequency value.")
             return
         try:
             float(self.donor_line_edit.text().strip())
