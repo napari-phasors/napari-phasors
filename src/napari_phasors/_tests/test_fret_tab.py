@@ -1,6 +1,7 @@
 from unittest.mock import Mock, patch
 
 import numpy as np
+import pytest
 from numpy.testing import assert_array_equal
 from phasorpy.lifetime import phasor_from_fret_donor
 from phasorpy.phasor import phasor_nearest_neighbor
@@ -744,8 +745,47 @@ def test_background_position_manual_changes_stored_by_harmonic(
     assert float(widget.background_imag_edit.text()) == 0.25
 
 
-def test_calculate_fret_efficiency_empty_donor_lifetime(make_napari_viewer):
-    """Test FRET efficiency calculation with empty donor lifetime."""
+@pytest.mark.parametrize(
+    "donor_lifetime,frequency,expected_error",
+    [
+        # Empty values
+        ("", "80", "Enter a Donor lifetime value."),
+        ("2.0", "", "Enter a frequency value."),
+        ("", "", "Enter a Donor lifetime value."),
+        # Whitespace only values
+        ("   ", "80", "Enter a Donor lifetime value."),
+        ("2.0", "   ", "Enter a frequency value."),
+        ("   ", "   ", "Enter a Donor lifetime value."),
+        # Invalid numeric values
+        (
+            "not_a_number",
+            "80",
+            "Enter valid numeric values for donor lifetime and frequency.",
+        ),
+        (
+            "2.0",
+            "invalid_frequency",
+            "Enter valid numeric values for donor lifetime and frequency.",
+        ),
+        (
+            "invalid_lifetime",
+            "invalid_frequency",
+            "Enter valid numeric values for donor lifetime and frequency.",
+        ),
+        (
+            "abc",
+            "xyz",
+            "Enter valid numeric values for donor lifetime and frequency.",
+        ),
+        # Mixed invalid cases
+        ("", "invalid_frequency", "Enter a Donor lifetime value."),
+        ("   ", "not_a_number", "Enter a Donor lifetime value."),
+    ],
+)
+def test_calculate_fret_efficiency_invalid_inputs(
+    make_napari_viewer, donor_lifetime, frequency, expected_error
+):
+    """Test FRET efficiency calculation with various invalid inputs."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
@@ -754,8 +794,8 @@ def test_calculate_fret_efficiency_empty_donor_lifetime(make_napari_viewer):
     test_layer.name = "test_layer"
     viewer.add_layer(test_layer)
 
-    widget.donor_line_edit.setText("")  # Empty donor lifetime
-    widget.frequency_input.setText("80")
+    widget.donor_line_edit.setText(donor_lifetime)
+    widget.frequency_input.setText(frequency)
     widget.background_real_edit.setText("0.1")
     widget.background_imag_edit.setText("0.1")
 
@@ -764,141 +804,7 @@ def test_calculate_fret_efficiency_empty_donor_lifetime(make_napari_viewer):
     with patch('napari_phasors.fret_tab.show_error') as mock_show_error:
         widget.calculate_fret_efficiency()
 
-        mock_show_error.assert_called_once_with(
-            "Enter a Donor lifetime value."
-        )
-
-    assert len(viewer.layers) == initial_layer_count
-
-    fret_layer_name = f"FRET efficiency: test_layer"
-    assert fret_layer_name not in [layer.name for layer in viewer.layers]
-
-    assert widget.fret_layer is None
-
-
-def test_calculate_fret_efficiency_empty_frequency(make_napari_viewer):
-    """Test FRET efficiency calculation with empty frequency."""
-    viewer = make_napari_viewer()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-
-    widget.donor_line_edit.setText("2.0")
-    widget.frequency_input.setText("")  # Empty frequency
-    widget.background_real_edit.setText("0.1")
-    widget.background_imag_edit.setText("0.1")
-
-    initial_layer_count = len(viewer.layers)
-
-    with patch('napari_phasors.fret_tab.show_error') as mock_show_error:
-        widget.calculate_fret_efficiency()
-
-        mock_show_error.assert_called_once_with("Enter a frequency value.")
-
-    assert len(viewer.layers) == initial_layer_count
-
-    fret_layer_name = f"FRET efficiency: test_layer"
-    assert fret_layer_name not in [layer.name for layer in viewer.layers]
-
-    assert widget.fret_layer is None
-
-
-def test_calculate_fret_efficiency_invalid_numeric_values(make_napari_viewer):
-    """Test FRET efficiency calculation with invalid numeric values."""
-    viewer = make_napari_viewer()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-
-    initial_layer_count = len(viewer.layers)
-
-    with patch('napari_phasors.fret_tab.show_error') as mock_show_error:
-        widget.donor_line_edit.setText("not_a_number")
-        widget.frequency_input.setText("80")
-        widget.background_real_edit.setText("0.1")
-        widget.background_imag_edit.setText("0.1")
-
-        widget.calculate_fret_efficiency()
-
-        mock_show_error.assert_called_once_with(
-            "Enter valid numeric values for donor lifetime and frequency."
-        )
-
-    assert len(viewer.layers) == initial_layer_count
-
-    with patch('napari_phasors.fret_tab.show_error') as mock_show_error:
-        widget.donor_line_edit.setText("2.0")
-        widget.frequency_input.setText("invalid_frequency")
-        widget.background_real_edit.setText("0.1")
-        widget.background_imag_edit.setText("0.1")
-
-        widget.calculate_fret_efficiency()
-
-        mock_show_error.assert_called_once_with(
-            "Enter valid numeric values for donor lifetime and frequency."
-        )
-
-    assert len(viewer.layers) == initial_layer_count
-
-    with patch('napari_phasors.fret_tab.show_error') as mock_show_error:
-        widget.donor_line_edit.setText("invalid_lifetime")
-        widget.frequency_input.setText("invalid_frequency")
-        widget.background_real_edit.setText("0.1")
-        widget.background_imag_edit.setText("0.1")
-
-        widget.calculate_fret_efficiency()
-
-        mock_show_error.assert_called_once_with(
-            "Enter valid numeric values for donor lifetime and frequency."
-        )
-
-    assert len(viewer.layers) == initial_layer_count
-
-    fret_layer_name = f"FRET efficiency: test_layer"
-    assert fret_layer_name not in [layer.name for layer in viewer.layers]
-
-    assert widget.fret_layer is None
-
-
-def test_calculate_fret_efficiency_whitespace_only_values(make_napari_viewer):
-    """Test FRET efficiency calculation with whitespace-only values."""
-    viewer = make_napari_viewer()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-
-    initial_layer_count = len(viewer.layers)
-
-    with patch('napari_phasors.fret_tab.show_error') as mock_show_error:
-        widget.donor_line_edit.setText("   ")  # Only whitespace
-        widget.frequency_input.setText("80")
-        widget.background_real_edit.setText("0.1")
-        widget.background_imag_edit.setText("0.1")
-
-        widget.calculate_fret_efficiency()
-
-        mock_show_error.assert_called_once_with(
-            "Enter a Donor lifetime value."
-        )
-
-    with patch('napari_phasors.fret_tab.show_error') as mock_show_error:
-        widget.donor_line_edit.setText("2.0")
-        widget.frequency_input.setText("   ")  # Only whitespace
-        widget.background_real_edit.setText("0.1")
-        widget.background_imag_edit.setText("0.1")
-
-        widget.calculate_fret_efficiency()
-
-        mock_show_error.assert_called_once_with("Enter a frequency value.")
+        mock_show_error.assert_called_once_with(expected_error)
 
     assert len(viewer.layers) == initial_layer_count
 
