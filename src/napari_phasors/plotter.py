@@ -179,6 +179,7 @@ class PlotterWidget(QWidget):
 
         # Add a flag to prevent recursive calls
         self._updating_plot = False
+        self._updating_settings = False
 
         # Create Settings tab
         self.settings_tab = QWidget()
@@ -214,10 +215,12 @@ class PlotterWidget(QWidget):
         self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
             self._sync_frequency_inputs_from_metadata
         )
+        
+        # Connect settings callbacks
         self.plotter_inputs_widget.semi_circle_checkbox.stateChanged.connect(
-            self.on_toggle_semi_circle
+            self._on_semi_circle_changed
         )
-        self.harmonic_spinbox.valueChanged.connect(self.refresh_current_plot)
+        self.harmonic_spinbox.valueChanged.connect(self._on_harmonic_changed)
         self.plotter_inputs_widget.plot_type_combobox.currentIndexChanged.connect(
             self._on_plot_type_changed
         )
@@ -231,7 +234,7 @@ class PlotterWidget(QWidget):
             self._on_log_scale_changed
         )
         self.plotter_inputs_widget.white_background_checkbox.stateChanged.connect(
-            self.on_white_background_changed
+            self._on_white_background_changed
         )
 
         # Populate plot type combobox
@@ -280,40 +283,127 @@ class PlotterWidget(QWidget):
         # Connect tab change signal
         self.tab_widget.currentChanged.connect(self._on_tab_changed)
 
+    def _get_default_settings(self):
+        """Get default settings dictionary for plot parameters."""
+
+        default_harmonic = 1  # fallback default
+        layer_name = self.image_layer_with_phasor_features_combobox.currentText()
+        if layer_name:
+            try:
+                layer_metadata = self.viewer.layers[layer_name].metadata
+                if "phasor_features_labels_layer" in layer_metadata:
+                    phasor_features = layer_metadata["phasor_features_labels_layer"]
+                    if phasor_features.features is not None and "harmonic" in phasor_features.features.columns:
+                        default_harmonic = int(phasor_features.features["harmonic"].min())
+            except (KeyError, AttributeError, ValueError):
+                pass
+        
+        return {
+            'harmonic': default_harmonic,
+            'semi_circle': True,
+            'white_background': True,
+            'plot_type': 'HISTOGRAM2D',
+            'colormap': 'turbo',
+            'number_of_bins': 150,
+            'log_scale': False
+        }
+
+    def _initialize_settings_in_metadata(self, layer):
+        """Initialize settings in layer metadata if not present."""
+        if 'settings' not in layer.metadata:
+            layer.metadata['settings'] = {}
+        
+        default_settings = self._get_default_settings()
+        for key, default_value in default_settings.items():
+            if key not in layer.metadata['settings']:
+                layer.metadata['settings'][key] = default_value
+
+    def _update_setting_in_metadata(self, key, value):
+        """Update a specific setting in the current layer's metadata."""
+        if self._updating_settings:
+            return
+            
+        layer_name = self.image_layer_with_phasor_features_combobox.currentText()
+        if layer_name:
+            layer = self.viewer.layers[layer_name]
+            if 'settings' not in layer.metadata:
+                layer.metadata['settings'] = {}
+            layer.metadata['settings'][key] = value
+
+    def _restore_settings_from_metadata(self):
+        """Restore all settings from the current layer's metadata."""
+        layer_name = self.image_layer_with_phasor_features_combobox.currentText()
+        if not layer_name:
+            return
+            
+        layer = self.viewer.layers[layer_name]
+        if 'settings' not in layer.metadata:
+            self._initialize_settings_in_metadata(layer)
+            return
+            
+        self._updating_settings = True
+        try:
+            settings = layer.metadata['settings']
+            
+            # Restore harmonic
+            if 'harmonic' in settings:
+                self.harmonic_spinbox.setValue(settings['harmonic'])
+            
+            # Restore white background first (this affects circle colors)
+            if 'white_background' in settings:
+                self.plotter_inputs_widget.white_background_checkbox.setChecked(settings['white_background'])
+                # Update axes labels and plot background immediately
+                self.set_axes_labels()
+                self._update_plot_bg_color()
+            
+            # Restore semi circle (this will update the circle/semicircle with correct colors)
+            if 'semi_circle' in settings:
+                # Use the setter to properly update the display
+                self.toggle_semi_circle = settings['semi_circle']
+            
+            # Restore plot type
+            if 'plot_type' in settings:
+                self.plotter_inputs_widget.plot_type_combobox.setCurrentText(settings['plot_type'])
+            
+            # Restore colormap
+            if 'colormap' in settings:
+                self.plotter_inputs_widget.colormap_combobox.setCurrentText(settings['colormap'])
+            
+            # Restore number of bins
+            if 'number_of_bins' in settings:
+                self.plotter_inputs_widget.number_of_bins_spinbox.setValue(settings['number_of_bins'])
+            
+            # Restore log scale
+            if 'log_scale' in settings:
+                self.plotter_inputs_widget.log_scale_checkbox.setChecked(settings['log_scale'])
+                
+        finally:
+            self._updating_settings = False
+
     def _on_tab_changed(self, index):
         """Handle tab change events to show/hide tab-specific lines."""
-        # Get the current tab widget
         current_tab = self.tab_widget.widget(index)
 
-        # Hide all tab-specific artists first
         self._hide_all_tab_artists()
 
-        # Show artists for the current tab
         self._show_tab_artists(current_tab)
 
-        # Refresh canvas
         self.canvas_widget.figure.canvas.draw_idle()
 
     def _hide_all_tab_artists(self):
         """Hide all tab-specific artists."""
-        # Hide components tab artists
         if hasattr(self, 'components_tab'):
             self._set_components_visibility(False)
 
-        # Hide other tabs' artists (add similar methods for other tabs)
         if hasattr(self, 'fret_tab'):
             self._set_fret_visibility(False)
-        if hasattr(self, 'components_tab'):
-            self._set_components_visibility(False)
 
-        # Hide other tabs' artists (add similar methods for other tabs)
-        if hasattr(self, 'fret_tab'):
-            self._set_fret_visibility(False)
 
     def _show_tab_artists(self, current_tab):
         """Show artists for the specified tab."""
         if current_tab == getattr(self, 'components_tab', None):
             self._set_components_visibility(True)
+
         elif current_tab == getattr(self, 'fret_tab', None):
             self._set_fret_visibility(True)
 
@@ -327,33 +417,63 @@ class PlotterWidget(QWidget):
         if hasattr(self, 'fret_tab'):
             self.fret_tab.set_artists_visible(visible)
 
+    def _on_semi_circle_changed(self, state):
+        """Callback for semi circle checkbox change."""
+        self._update_setting_in_metadata('semi_circle', bool(state))
+        if not self._updating_settings:
+            self.toggle_semi_circle = bool(state)
+
+    def _on_harmonic_changed(self, value):
+        """Callback for harmonic spinbox change."""
+        self._update_setting_in_metadata('harmonic', value)
+        if not self._updating_settings:
+            self.refresh_current_plot()
+
     def _on_plot_type_changed(self):
         """Callback for plot type change."""
-        new_plot_type = (
-            self.plotter_inputs_widget.plot_type_combobox.currentText()
-        )
-
-        # Store the old plot type before it gets updated
-        old_plot_type = getattr(self, '_current_plot_type', None)
-
-        if new_plot_type != old_plot_type:
-            self._current_plot_type = new_plot_type
-            self._connect_active_artist_signals()
-            self.switch_plot_type(new_plot_type)
+        new_plot_type = self.plotter_inputs_widget.plot_type_combobox.currentText()
+        self._update_setting_in_metadata('plot_type', new_plot_type)
+        
+        if not self._updating_settings:
+            old_plot_type = getattr(self, '_current_plot_type', None)
+            if new_plot_type != old_plot_type:
+                self._current_plot_type = new_plot_type
+                self._connect_active_artist_signals()
+                self.switch_plot_type(new_plot_type)
 
     def _on_colormap_changed(self):
         """Callback for colormap change."""
-        if self.plot_type == 'HISTOGRAM2D':
+        colormap = self.plotter_inputs_widget.colormap_combobox.currentText()
+        self._update_setting_in_metadata('colormap', colormap)
+        if not self._updating_settings and self.plot_type == 'HISTOGRAM2D':
             self.refresh_current_plot()
 
-    def _on_bins_changed(self):
+    def _on_bins_changed(self, value):
         """Callback for bins change."""
-        self.refresh_current_plot()
-
-    def _on_log_scale_changed(self):
-        """Callback for log scale change."""
-        if self.plot_type == 'HISTOGRAM2D':
+        self._update_setting_in_metadata('number_of_bins', value)
+        if not self._updating_settings:
             self.refresh_current_plot()
+
+    def _on_log_scale_changed(self, state):
+        """Callback for log scale change."""
+        self._update_setting_in_metadata('log_scale', bool(state))
+        if not self._updating_settings and self.plot_type == 'HISTOGRAM2D':
+            self.refresh_current_plot()
+
+    def _on_white_background_changed(self, state):
+        """Callback for white background checkbox change."""
+        self._update_setting_in_metadata('white_background', bool(state))
+        if not self._updating_settings:
+            self.set_axes_labels()
+            self._update_plot_bg_color()
+            
+            if self.toggle_semi_circle:
+                self._update_semi_circle_plot(self.canvas_widget.axes)
+            else:
+                self._update_polar_plot(self.canvas_widget.axes, visible=True)
+            
+            self.canvas_widget.figure.canvas.draw_idle()
+            self.plot()
 
     def on_white_background_changed(self):
         """Callback function when the white background checkbox is toggled."""
@@ -459,17 +579,6 @@ class PlotterWidget(QWidget):
             )
             value = 1
         self.harmonic_spinbox.setValue(value)
-
-    @property
-    def toggle_semi_circle(self):
-        """Gets the display semi circle value from the semi circle checkbox.
-
-        Returns
-        -------
-        bool
-            The display semi circle value.
-        """
-        return self.plotter_inputs_widget.semi_circle_checkbox.isChecked()
 
     @property
     def toggle_semi_circle(self):
@@ -902,7 +1011,6 @@ class PlotterWidget(QWidget):
 
     def _connect_active_artist_signals(self):
         """Connect signals for the currently active artist only."""
-        # Disconnect all existing connections first
         self._disconnect_all_artist_signals()
 
         # Connect only the active artist
@@ -1025,11 +1133,19 @@ class PlotterWidget(QWidget):
             self._labels_layer_with_phasor_features = layer_metadata[
                 "phasor_features_labels_layer"
             ]
-            self.harmonic_spinbox.setMaximum(
-                self._labels_layer_with_phasor_features.features[
-                    "harmonic"
-                ].max()
-            )
+            
+            available_harmonics = self._labels_layer_with_phasor_features.features["harmonic"].unique()
+            min_harmonic = int(available_harmonics.min())
+            max_harmonic = int(available_harmonics.max())
+            
+            self.harmonic_spinbox.setMinimum(min_harmonic)
+            self.harmonic_spinbox.setMaximum(max_harmonic)
+            
+            layer = self.viewer.layers[labels_layer_name]
+            self._initialize_settings_in_metadata(layer)
+            
+            self._restore_settings_from_metadata()
+            
             # Update filter widget when layer changes
             if hasattr(self, 'filter_tab'):
                 self.filter_tab.on_labels_layer_with_phasor_features_changed()
@@ -1170,7 +1286,7 @@ class PlotterWidget(QWidget):
     def _update_colorbar(self, colormap):
         """Update or create colorbar for histogram plot."""
         self._remove_colorbar()
-        # Create new colorbar for histogram
+
         if self.plot_type == 'HISTOGRAM2D':
             self.cax = self.canvas_widget.artists['HISTOGRAM2D'].ax.inset_axes(
                 [1.05, 0, 0.05, 1]
@@ -1206,11 +1322,9 @@ class PlotterWidget(QWidget):
         if self._labels_layer_with_phasor_features is None:
             return
 
-        # Check if we're already updating to prevent infinite recursion
         if getattr(self, '_updating_plot', False):
             return
 
-        # Set flag to prevent recursion from canvas events
         self._updating_plot = True
 
         if x_data is None or y_data is None:
