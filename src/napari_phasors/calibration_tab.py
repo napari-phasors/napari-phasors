@@ -71,6 +71,10 @@ class CalibrationWidget(QWidget):
                 layer.name
             )
 
+    def _on_image_layer_changed(self):
+        """Update button state when the selected image layer changes."""
+        self._update_button_state()
+
     def _update_button_state(self):
         """Update button text and state based on current layer's calibration status."""
         sample_name = (

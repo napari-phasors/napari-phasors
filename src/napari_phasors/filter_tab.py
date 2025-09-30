@@ -74,7 +74,7 @@ class FilterWidget(QWidget):
 
         # Connect callbacks
         self.parent_widget.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
-            self.on_labels_layer_with_phasor_features_changed
+            self._on_image_layer_changed
         )
         self.threshold_slider.valueChanged.connect(
             self.on_threshold_slider_change
@@ -357,7 +357,7 @@ class FilterWidget(QWidget):
             self.update_threshold_line()
             self._updating_threshold = False
 
-    def on_labels_layer_with_phasor_features_changed(self):
+    def _on_image_layer_changed(self):
         """Callback function when the image layer combobox is changed."""
         labels_layer_name = (
             self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
@@ -384,20 +384,17 @@ class FilterWidget(QWidget):
             ceil(max_mean_value * self.threshold_factor)
         )
 
-        # Block threshold method updates while setting initial values
         self._updating_threshold = True
 
         if "settings" in layer_metadata.keys():
             settings = layer_metadata["settings"]
             
-            # Restore threshold settings only if they exist
             if "threshold_method" in settings.keys():
                 self.threshold_method_combobox.setCurrentText(
                     settings["threshold_method"]
                 )
             else:
-                # Default to None if no threshold has been applied
-                self.threshold_method_combobox.setCurrentText("None")
+                self.threshold_method_combobox.setCurrentText("Otsu")
 
             if "threshold" in settings.keys():
                 self.threshold_slider.setValue(
@@ -410,11 +407,17 @@ class FilterWidget(QWidget):
                     )
                 )
             else:
-                # Default to 0 if no threshold has been applied
-                self.threshold_slider.setValue(0)
-                self.label_3.setText('Intensity threshold: 0')
+                # Calculate Otsu threshold as default
+                mean_data = layer_metadata["original_mean"].copy()
+                threshold_value = self.calculate_automatic_threshold("Otsu", mean_data)
+                self.threshold_slider.setValue(
+                    int(threshold_value * self.threshold_factor)
+                )
+                self.label_3.setText(
+                    'Intensity threshold: '
+                    + str(self.threshold_slider.value() / self.threshold_factor)
+                )
                 
-            # Restore filter settings only if they exist
             if "filter" in settings.keys():
                 filter_settings = settings["filter"]
                 if "method" in filter_settings:
@@ -435,7 +438,6 @@ class FilterWidget(QWidget):
                                 "Median"
                             )
 
-                # Restore filter parameters only if they exist
                 if "size" in filter_settings:
                     self.median_filter_spinbox.setValue(
                         int(filter_settings["size"])
@@ -452,12 +454,18 @@ class FilterWidget(QWidget):
                     self.wavelet_levels_spinbox.setValue(
                         int(filter_settings["levels"])
                     )
-            # If no filter settings exist, keep UI defaults but don't save to metadata
         else:
-            # Default to None for both threshold and filter if no settings exist
-            self.threshold_method_combobox.setCurrentText("None")
-            self.threshold_slider.setValue(0)
-            self.label_3.setText('Intensity threshold: 0')
+            self.threshold_method_combobox.setCurrentText("Otsu")
+            # Calculate Otsu threshold as default
+            mean_data = layer_metadata["original_mean"].copy()
+            threshold_value = self.calculate_automatic_threshold("Otsu", mean_data)
+            self.threshold_slider.setValue(
+                int(threshold_value * self.threshold_factor)
+            )
+            self.label_3.setText(
+                'Intensity threshold: '
+                + str(self.threshold_slider.value() / self.threshold_factor)
+            )
 
         self._updating_threshold = False
         self.plot_mean_histogram()
