@@ -19,7 +19,7 @@ def test_reader_ptu():
     assert isinstance(layer_data_tuple[0], np.ndarray) and isinstance(
         layer_data_tuple[1], dict
     )
-    assert layer_data_tuple[0].shape == (1, 256, 256)
+    assert layer_data_tuple[0].shape == (256, 256)
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert (
         layer_data_tuple[1]["name"] == "test_file Intensity Image: Channel 0"
@@ -34,7 +34,7 @@ def test_reader_ptu():
         "phasor_features_labels_layer"
     ]
     assert isinstance(phasor_features, Labels)
-    assert phasor_features.data.shape == (1, 256, 256)
+    assert phasor_features.data.shape == (256, 256)
     assert isinstance(phasor_features.features, pd.DataFrame)
     assert phasor_features.features.shape == (131072, 6)
     expected_columns = [
@@ -63,7 +63,7 @@ def test_reader_fbd():
     assert isinstance(layer_data_tuple[0], np.ndarray) and isinstance(
         layer_data_tuple[1], dict
     )
-    assert layer_data_tuple[0].shape == (1, 256, 256)
+    assert layer_data_tuple[0].shape == (256, 256)
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert (
         layer_data_tuple[1]["name"]
@@ -79,7 +79,7 @@ def test_reader_fbd():
         "phasor_features_labels_layer"
     ]
     assert isinstance(phasor_features, Labels)
-    assert phasor_features.data.shape == (1, 256, 256)
+    assert phasor_features.data.shape == (256, 256)
     assert isinstance(phasor_features.features, pd.DataFrame)
     assert phasor_features.features.shape == (131072, 6)
     expected_columns = [
@@ -99,7 +99,7 @@ def test_reader_fbd():
     assert isinstance(layer_data_tuple[0], np.ndarray) and isinstance(
         layer_data_tuple[1], dict
     )
-    assert layer_data_tuple[0].shape == (1, 256, 256)
+    assert layer_data_tuple[0].shape == (256, 256)
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert (
         layer_data_tuple[1]["name"]
@@ -115,7 +115,7 @@ def test_reader_fbd():
         "phasor_features_labels_layer"
     ]
     assert isinstance(phasor_features, Labels)
-    assert phasor_features.data.shape == (1, 256, 256)
+    assert phasor_features.data.shape == (256, 256)
     assert isinstance(phasor_features.features, pd.DataFrame)
     assert phasor_features.features.shape == (131072, 6)
     expected_columns = [
