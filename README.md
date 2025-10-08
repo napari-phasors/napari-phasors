@@ -129,14 +129,13 @@ You can install `napari-phasors` via [pip]. Follow these steps from a
 terminal.
 
 We recommend using `miniforge` whenever possible. Click 
-[here](https://github.com/conda-forge/miniforge?tab=readme-ov-file#miniforge) 
-to choose the right download option for your OS.
+[here](https://conda-forge.org/download/) to choose the right download option for your OS.
 **If you do not use `miniforge`, but rather Anaconda or Miniconda, replace 
 the `mamba` term whenever you see it below with `conda`.**
 
 Create a conda environment with napari by typing :
 
-    mamba create -n napari-phasors-env napari pyqt python=3.10
+    mamba create -y -n napari-phasors-env napari pyqt python=3.11
     
 Activate the environment :
 

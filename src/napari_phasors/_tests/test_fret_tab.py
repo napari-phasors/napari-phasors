@@ -1,6 +1,7 @@
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
+import pytest
 from numpy.testing import assert_array_equal
 from phasorpy.lifetime import phasor_from_fret_donor
 from phasorpy.phasor import phasor_nearest_neighbor
@@ -762,6 +763,89 @@ def test_background_position_manual_changes_stored_by_harmonic(
     # Should restore harmonic 1 values
     assert float(widget.background_real_edit.text()) == 0.15
     assert float(widget.background_imag_edit.text()) == 0.25
+
+
+@pytest.mark.parametrize(
+    "donor_lifetime,frequency,expected_message,message_type",
+    [
+        # Empty values - these should be warnings
+        ("", "80", "Enter a Donor lifetime value.", "warning"),
+        ("2.0", "", "Enter a frequency value.", "warning"),
+        ("", "", "Enter a Donor lifetime value.", "warning"),
+        # Whitespace only values - these should be warnings
+        ("   ", "80", "Enter a Donor lifetime value.", "warning"),
+        ("2.0", "   ", "Enter a frequency value.", "warning"),
+        ("   ", "   ", "Enter a Donor lifetime value.", "warning"),
+        # Invalid numeric values - these should be errors
+        (
+            "not_a_number",
+            "80",
+            "Enter valid numeric values for donor lifetime and frequency.",
+            "error",
+        ),
+        (
+            "2.0",
+            "invalid_frequency",
+            "Enter valid numeric values for donor lifetime and frequency.",
+            "error",
+        ),
+        (
+            "invalid_lifetime",
+            "invalid_frequency",
+            "Enter valid numeric values for donor lifetime and frequency.",
+            "error",
+        ),
+        (
+            "abc",
+            "xyz",
+            "Enter valid numeric values for donor lifetime and frequency.",
+            "error",
+        ),
+        # Mixed invalid cases - empty/whitespace takes precedence, so warnings
+        ("", "invalid_frequency", "Enter a Donor lifetime value.", "warning"),
+        ("   ", "not_a_number", "Enter a Donor lifetime value.", "warning"),
+    ],
+)
+def test_calculate_fret_efficiency_invalid_inputs(
+    make_napari_viewer,
+    donor_lifetime,
+    frequency,
+    expected_message,
+    message_type,
+):
+    """Test FRET efficiency calculation with various invalid inputs."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+
+    widget.donor_line_edit.setText(donor_lifetime)
+    widget.frequency_input.setText(frequency)
+    widget.background_real_edit.setText("0.1")
+    widget.background_imag_edit.setText("0.1")
+
+    initial_layer_count = len(viewer.layers)
+
+    if message_type == "warning":
+        with patch(
+            'napari_phasors.fret_tab.show_warning'
+        ) as mock_show_warning:
+            widget.calculate_fret_efficiency()
+            mock_show_warning.assert_called_once_with(expected_message)
+    else:  # message_type == "error"
+        with patch('napari_phasors.fret_tab.show_error') as mock_show_error:
+            widget.calculate_fret_efficiency()
+            mock_show_error.assert_called_once_with(expected_message)
+
+    assert len(viewer.layers) == initial_layer_count
+
+    fret_layer_name = f"FRET efficiency: test_layer"
+    assert fret_layer_name not in [layer.name for layer in viewer.layers]
+
+    assert widget.fret_layer is None
 
 
 def test_donor_lifetime_combobox_initialization(make_napari_viewer):
