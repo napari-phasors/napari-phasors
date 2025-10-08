@@ -98,7 +98,7 @@ class ComponentsWidget(QWidget):
         self.label_color = 'black'
 
         # Analysis type
-        self.analysis_type = "Linear Projection"  # Default
+        self.analysis_type = "Linear Projection"
 
         # Harmonic-specific component storage for multi-component analysis
         self.component_locations = {}  # {harmonic: [comp_data, ...]}
@@ -175,7 +175,7 @@ class ComponentsWidget(QWidget):
         for i in range(2):
             self._add_component_ui(i)
 
-        # Component management section (moved after components)
+        # Component management section
         comp_management_layout = QHBoxLayout()
         self.add_component_btn = QPushButton("Add Component")
         self.add_component_btn.clicked.connect(self._add_component)
@@ -252,7 +252,7 @@ class ComponentsWidget(QWidget):
         s_edit.setMaximumWidth(100)
         comp_layout.addWidget(s_edit)
 
-        # Lifetime input (moved to the end)
+        # Lifetime input
         lifetime_label = QLabel("τ:")
         lifetime_edit = QLineEdit()
         lifetime_edit.setPlaceholderText("Lifetime (ns)")
@@ -314,12 +314,11 @@ class ComponentsWidget(QWidget):
             self._update_button_states()
             return
 
-        # Add new component UI
         self._add_component_ui(total_count)
         self._update_component_visibility()
         self._update_analysis_options()
         self._update_button_states()
-        # Only update lifetime visibility if parent widget is available
+
         if self.parent_widget is not None:
             self._update_lifetime_inputs_visibility()
 
@@ -348,7 +347,6 @@ class ComponentsWidget(QWidget):
 
         self.components.pop()
 
-        # Clear existing line/polygon before redrawing
         if self.component_line is not None:
             try:
                 self.component_line.remove()
@@ -367,10 +365,8 @@ class ComponentsWidget(QWidget):
         self._update_analysis_options()
         self._update_button_states()
 
-        # Redraw the line/polygon based on remaining components
         self.draw_line_between_components()
 
-        # Only update lifetime visibility if parent widget is available and properly set up
         if self.parent_widget is not None and hasattr(
             self.parent_widget, '_get_frequency_from_layer'
         ):
@@ -419,7 +415,6 @@ class ComponentsWidget(QWidget):
                 if comp.lifetime_edit is not None:
                     comp.lifetime_edit.clear()
 
-        # Remove polygon/line
         if self.component_line is not None:
             try:
                 self.component_line.remove()
@@ -434,7 +429,6 @@ class ComponentsWidget(QWidget):
                 pass
             self.component_polygon = None
 
-        # Clear plot dots and text references
         for comp in self.components:
             if comp is not None:
                 comp.dot = None
@@ -444,6 +438,7 @@ class ComponentsWidget(QWidget):
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
     def _open_plot_settings_dialog(self):
+        """Open dialog to edit plot settings."""
         if self.plot_dialog is not None and self.plot_dialog.isVisible():
             self.plot_dialog.raise_()
             self.plot_dialog.activateWindow()
@@ -545,11 +540,11 @@ class ComponentsWidget(QWidget):
         color = QColorDialog.getColor()
         if color.isValid():
             self.default_component_color = color.name()
-            # Update button appearance
+
             self.color_button.setStyleSheet(
                 f"background-color: {self.default_component_color}; border: 1px solid black;"
             )
-            # Apply the color change
+
             self._on_plot_setting_changed()
 
     def _update_analysis_options(self):
@@ -566,7 +561,6 @@ class ComponentsWidget(QWidget):
         else:
             self.analysis_type_combo.addItems(["Component Fit"])
 
-        # Try to restore previous selection
         index = self.analysis_type_combo.findText(current_selection)
         if index >= 0:
             self.analysis_type_combo.setCurrentIndex(index)
@@ -577,7 +571,6 @@ class ComponentsWidget(QWidget):
         """Handle analysis type change."""
         self.analysis_type = analysis_type
 
-        # Update calculate button text
         if analysis_type == "Linear Projection":
             self.calculate_button.setText("Display Component Fraction Images")
         else:
@@ -586,22 +579,12 @@ class ComponentsWidget(QWidget):
     def _on_harmonic_changed(self, new_harmonic):
         """Handle harmonic changes - store current components and restore for new harmonic."""
         old_harmonic = self.current_harmonic
-
-        # Store current component locations
         self._store_current_components(old_harmonic)
-
-        # Clear current display
         self._clear_components_display()
-
-        # Update current harmonic
         self.current_harmonic = new_harmonic
-
-        # Restore components for new harmonic if they exist
         self._restore_components_for_harmonic(new_harmonic)
-
-        # Update visibility and info
         self._update_component_visibility()
-        # Only update lifetime visibility if parent widget is available
+
         if self.parent_widget is not None:
             self._update_lifetime_inputs_visibility()
 
@@ -619,33 +602,28 @@ class ComponentsWidget(QWidget):
         if harmonic not in self.component_locations:
             self.component_locations[harmonic] = []
 
-        # Clear existing data for this harmonic
         self.component_locations[harmonic] = []
 
-        # Store active components
         for comp in self.components:
             if comp is not None and comp.dot is not None:
                 x_data, y_data = comp.dot.get_data()
-                # Only store user-entered names, not default labels
                 name = comp.name_edit.text().strip()
-                # Don't store empty names or default component labels
+
                 if not name or name.startswith("Component "):
                     name = ""
 
                 comp_data = {
                     'g': x_data[0],
                     's': y_data[0],
-                    'name': name,  # This will be empty if no user name was entered
+                    'name': name,
                     'idx': comp.idx,
                 }
 
-                # Extend list if needed
                 while len(self.component_locations[harmonic]) <= comp.idx:
                     self.component_locations[harmonic].append(None)
 
                 self.component_locations[harmonic][comp.idx] = comp_data
             else:
-                # Ensure we have placeholder for inactive components
                 while (
                     len(self.component_locations[harmonic]) <= comp.idx
                     if comp is not None
@@ -664,12 +642,9 @@ class ComponentsWidget(QWidget):
                     comp.text.remove()
                     comp.text = None
 
-                # Clear input fields but preserve names (they'll be restored)
                 comp.g_edit.clear()
                 comp.s_edit.clear()
-                # Don't clear names here - they'll be restored in _restore_components_for_harmonic
 
-        # Remove polygon/line
         if (
             hasattr(self, 'component_polygon')
             and self.component_polygon is not None
@@ -705,13 +680,9 @@ class ComponentsWidget(QWidget):
             ):
                 comp = self.components[i]
 
-                # Restore coordinates in input fields
                 comp.g_edit.setText(f"{comp_data['g']:.6f}")
                 comp.s_edit.setText(f"{comp_data['s']:.6f}")
 
-                # Only restore name if:
-                # 1. There's a stored name (user entered it)
-                # 2. The current field is empty or has a default name
                 stored_name = comp_data.get('name', '')
                 current_name = comp.name_edit.text().strip()
 
@@ -720,12 +691,10 @@ class ComponentsWidget(QWidget):
                 ):
                     comp.name_edit.setText(stored_name)
 
-                # Recreate visual components
                 self._create_component_at_coordinates(
                     i, comp_data['g'], comp_data['s']
                 )
 
-        # Update visualization
         self.draw_line_between_components()
         self._update_component_colors()
         if self.parent_widget is not None:
@@ -739,6 +708,7 @@ class ComponentsWidget(QWidget):
             self._run_component_fit()
 
     def _open_label_style_dialog(self):
+        """Open dialog to edit label style settings."""
         if self.style_dialog is not None and self.style_dialog.isVisible():
             self.style_dialog.raise_()
             self.style_dialog.activateWindow()
@@ -806,13 +776,11 @@ class ComponentsWidget(QWidget):
         self.line_alpha_slider.setValue(int(default_line_alpha * 100))
         self.line_alpha_value_label.setText(f"{default_line_alpha:.2f}")
 
-        # Reset color button appearance
         if hasattr(self, 'color_button'):
             self.color_button.setStyleSheet(
                 f"background-color: {default_component_color}; border: 1px solid black;"
             )
 
-        # Reset component dots alpha
         for comp in self.components:
             if comp.dot is not None:
                 comp.dot.set_alpha(default_line_alpha)
@@ -858,13 +826,14 @@ class ComponentsWidget(QWidget):
             self.component_polygon.set_visible(visible)
 
     def _toggle_plot_section(self, checked):
+        """Toggle visibility of the plot section."""
         self.plot_section.setVisible(checked)
 
     def _on_plot_setting_changed(self):
+        """Handle changes to plot settings from dialog."""
         self.show_colormap_line = self.colormap_line_checkbox.isChecked()
         self.show_component_dots = self.show_dots_checkbox.isChecked()
 
-        # Update component colors based on current settings
         active_components = [
             c for c in self.components if c is not None and c.dot is not None
         ]
@@ -876,10 +845,8 @@ class ComponentsWidget(QWidget):
         ):
             self._update_component_colors()
         elif len(active_components) > 2:
-            # For 3+ components, always use fixed colors
             self._update_component_colors()
         else:
-            # Default color for all components
             for comp in self.components:
                 if comp.dot is not None:
                     comp.dot.set_color(self.default_component_color)
@@ -897,6 +864,7 @@ class ComponentsWidget(QWidget):
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
     def _on_line_offset_changed(self, value):
+        """Handle changes to line offset from slider."""
         self.line_offset = value / 1000.0
         self.line_offset_value_label.setText(f"{self.line_offset:.3f}")
         self.draw_line_between_components()
@@ -904,6 +872,7 @@ class ComponentsWidget(QWidget):
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
     def _on_line_width_changed(self, value):
+        """Handle changes to line width from spinbox."""
         self.line_width = float(value)
 
         if isinstance(self.component_line, LineCollection):
@@ -920,6 +889,7 @@ class ComponentsWidget(QWidget):
                 self.parent_widget.canvas_widget.canvas.draw_idle()
 
     def _on_line_alpha_changed(self, value):
+        """Handle changes to line alpha from slider."""
         self.line_alpha = value / 100.0
         self.line_alpha_value_label.setText(f"{self.line_alpha:.2f}")
 
@@ -936,21 +906,25 @@ class ComponentsWidget(QWidget):
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
     def _toggle_style_section(self, checked):
+        """Toggle visibility of the style section."""
         self.style_section.setVisible(checked)
 
     def _pick_label_color(self):
+        """Open color dialog to pick label color."""
         color = QColorDialog.getColor()
         if color.isValid():
             self.label_color = color.name()
             self._apply_styles_to_labels()
 
     def _on_label_style_changed(self):
+        """Handle changes to label style settings."""
         self.label_fontsize = self.fontsize_spin.value()
         self.label_bold = self.bold_checkbox.isChecked()
         self.label_italic = self.italic_checkbox.isChecked()
         self._apply_styles_to_labels()
 
     def _apply_styles_to_labels(self):
+        """Apply current style settings to all component labels."""
         weight = 'bold' if self.label_bold else 'normal'
         style = 'italic' if self.label_italic else 'normal'
         for comp in self.components:
@@ -973,7 +947,6 @@ class ComponentsWidget(QWidget):
                 and self.parent_widget._get_frequency_from_layer() is not None
             )
         except (AttributeError, TypeError):
-            # If there's any issue checking frequency, default to hiding lifetime inputs
             has_freq = False
 
         for comp in self.components:
@@ -1014,6 +987,7 @@ class ComponentsWidget(QWidget):
         return re, im
 
     def _update_component_from_lifetime(self, idx: int):
+        """Update component G/S coordinates based on lifetime input."""
         comp = self.components[idx]
         txt = comp.lifetime_edit.text().strip()
         if not txt:
@@ -1029,6 +1003,7 @@ class ComponentsWidget(QWidget):
         self._updating_from_lifetime = False
 
     def _on_component_coords_changed(self, idx: int):
+        """Handle changes to component G/S coordinates from text inputs."""
         comp = self.components[idx]
         try:
             x = float(comp.g_edit.text())
@@ -1052,21 +1027,16 @@ class ComponentsWidget(QWidget):
         """Get the maximum value colors from the default colormaps that will be used for components."""
         colors = []
         for i in range(num_components):
-            # Get the default colormap name for this component
             colormap_name = self.component_colormap_names[
                 i % len(self.component_colormap_names)
             ]
 
             try:
-                # Get the matplotlib colormap
                 cmap = plt.get_cmap(colormap_name)
-                # Get the color at maximum value (1.0) - this gives RGBA tuple
                 max_color_rgba = cmap(1.0)
-                # Convert RGBA to hex for consistency
                 max_color_hex = mcolors.to_hex(max_color_rgba)
                 colors.append(max_color_hex)
             except Exception:
-                # Fallback to fixed component colors if colormap loading fails
                 colors.append(
                     self.component_colors[i % len(self.component_colors)]
                 )
@@ -1074,32 +1044,26 @@ class ComponentsWidget(QWidget):
         return colors
 
     def _create_component_at_coordinates(self, idx: int, x: float, y: float):
+        """Create a component dot and label at specified coordinates."""
         if self.parent_widget is None:
             return
         comp = self.components[idx]
 
-        # Count ALL active components (not just the ones before this one)
         active_components = [
             c for c in self.components if c is not None and c.dot is not None
         ]
 
-        # This will be active after adding the current one
         active_count_after = len(active_components) + 1
 
-        # Use updated color logic that respects the colormap checkbox
         try:
-            # Get colors based on the final count (after this component is added)
             colors = self._get_component_colors_for_count(active_count_after)
 
-            # Use the component's actual index (idx) to determine color, not position in active list
             if len(colors) > idx:
                 color = colors[idx]
             else:
-                # Fallback: cycle through available colors
                 color = self.component_colors[idx % len(self.component_colors)]
 
         except Exception:
-            # Fallback in case of any error
             color = self.component_colors[idx % len(self.component_colors)]
 
         ax = self.parent_widget.canvas_widget.figure.gca()
@@ -1112,7 +1076,7 @@ class ComponentsWidget(QWidget):
             label=comp.label,
             alpha=self.line_alpha,
             markeredgewidth=0,
-            zorder=11,  # Higher z-order to draw in front of histogram and polygon
+            zorder=11,
         )[0]
         name = comp.name_edit.text().strip()
         if name:
@@ -1126,7 +1090,7 @@ class ComponentsWidget(QWidget):
                 fontstyle='italic' if self.label_italic else 'normal',
                 color=self.label_color,
                 picker=True,
-                zorder=12,  # Highest z-order for text labels
+                zorder=12,
             )
         self._make_components_draggable()
         self.parent_widget.canvas_widget.canvas.draw_idle()
@@ -1140,33 +1104,29 @@ class ComponentsWidget(QWidget):
 
         current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
 
-        # If requesting current harmonic, use active components from UI
         if harmonic == current_harmonic:
             for comp in self.components:
                 if comp is not None and comp.dot is not None:
                     x_data, y_data = comp.dot.get_data()
                     component_g.append(x_data[0])
                     component_s.append(y_data[0])
-                    # Use user name if entered, otherwise use the component label as fallback
                     name = comp.name_edit.text().strip()
                     if not name:
                         name = (
                             comp.label
-                        )  # This is the fallback for analysis purposes
+                        )
                     component_names.append(name)
-        # Otherwise use stored data
         elif harmonic in self.component_locations:
             stored_components = self.component_locations[harmonic]
             for comp_data in stored_components:
                 if comp_data is not None:
                     component_g.append(comp_data['g'])
                     component_s.append(comp_data['s'])
-                    # Use stored name if it exists, otherwise use default label
                     stored_name = comp_data.get('name', '')
+
                     if stored_name:
                         component_names.append(stored_name)
                     else:
-                        # Use default component label for analysis
                         component_names.append(
                             f"Component {comp_data['idx']+1}"
                         )
@@ -1175,10 +1135,8 @@ class ComponentsWidget(QWidget):
 
     def _update_component_visibility(self):
         """Update visibility of component controls."""
-        # All components should be visible up to the number we have
         for _, comp in enumerate(self.components):
             if comp is not None and hasattr(comp, 'ui_elements'):
-                # All existing components are visible - only check comp_layout since coord_layout no longer exists
                 comp_layout = comp.ui_elements['comp_layout']
                 for j in range(comp_layout.count()):
                     item = comp_layout.itemAt(j)
@@ -1186,6 +1144,7 @@ class ComponentsWidget(QWidget):
                         item.widget().setVisible(True)
 
     def _on_component_name_changed(self, idx: int):
+        """Update the label text for a component when its name is changed."""
         comp = self.components[idx]
         if comp.dot is None:
             return
@@ -1220,6 +1179,7 @@ class ComponentsWidget(QWidget):
         self.parent_widget.canvas_widget.canvas.draw_idle()
 
     def _select_component(self, idx: int):
+        """Activate selection mode for a component to pick its location from the plot."""
         if self.parent_widget is None:
             return
 
@@ -1259,7 +1219,6 @@ class ComponentsWidget(QWidget):
         if comp.lifetime_edit is not None:
             comp.lifetime_edit.clear()
 
-        # Remember if this component was previously without a location
         was_new_location = comp.dot is None
 
         if comp.dot is None:
@@ -1297,19 +1256,15 @@ class ComponentsWidget(QWidget):
         comp.select_button.setEnabled(True)
         self._redraw(force=True)
 
-        # Only auto-activate next component if this was a new location
         if was_new_location:
             self._activate_next_unselected_component()
 
     def _activate_next_unselected_component(self):
         """Automatically activate the next component that doesn't have a location set."""
-        # Only consider components that are actually visible/exist in the UI
         visible_components = [c for c in self.components if c is not None]
 
-        # Find the next visible component without a location
         for comp in visible_components:
             if comp.dot is None:
-                # This component doesn't have a location set, activate it
                 self._select_component(comp.idx)
                 return
 
@@ -1322,13 +1277,11 @@ class ComponentsWidget(QWidget):
 
     def _get_component_colors_for_count(self, num_components):
         """Get colors for a specific number of components (used for out-of-order selection)."""
-        # If colormap line is disabled, use default colors for all dots
         if not self.show_colormap_line:
             return [self.default_component_color] * max(
                 num_components, len(self.components)
             )
 
-        # For 2 components with line colormap enabled
         if num_components == 2:
             if (
                 hasattr(self, 'fractions_colormap')
@@ -1343,7 +1296,6 @@ class ComponentsWidget(QWidget):
                     vmin, vmax = 0, 1
 
                 if vmax > vmin:
-                    # Normalize the fraction values to colormap indices
                     component1_idx = int(
                         ((1.0 - vmin) / (vmax - vmin))
                         * (len(self.fractions_colormap) - 1)
@@ -1353,7 +1305,6 @@ class ComponentsWidget(QWidget):
                         * (len(self.fractions_colormap) - 1)
                     )
 
-                    # Clamp indices to valid range
                     component1_idx = max(
                         0,
                         min(len(self.fractions_colormap) - 1, component1_idx),
@@ -1366,50 +1317,41 @@ class ComponentsWidget(QWidget):
                     component1_color = self.fractions_colormap[component1_idx]
                     component2_color = self.fractions_colormap[component2_idx]
                 else:
-                    # Fallback if vmax <= vmin
                     component1_color = self.fractions_colormap[-1]
                     component2_color = self.fractions_colormap[0]
 
                 return [component1_color, component2_color]
             else:
-                # No colormap data available yet - use max values from default colormaps
                 return self._get_default_colormap_max_colors(2)
 
-        # For multi-component analysis with colormap enabled, get colors from fraction layers
         elif num_components > 2 and len(self.fraction_layers) > 0:
             colors = []
-            # Return colors for all possible component indices, not just active ones
+
             max_idx = max(len(self.components), num_components)
 
             for i in range(max_idx):
                 if i < len(self.fraction_layers):
                     layer = self.fraction_layers[i]
-                    # Get color from the layer's colormap at maximum value
                     try:
-                        # Get the matplotlib colormap from the layer
                         cmap = layer.colormap
                         colormap_name = str(cmap)
 
-                        # Check if it's a green colormap and use matplotlib's green directly
                         if 'green' in colormap_name.lower():
                             colors.append('green')
                         else:
                             if hasattr(cmap, '__call__'):
-                                # If it's a callable colormap, get color at value 1.0
+
                                 max_color = cmap(1.0)
                             elif (
                                 hasattr(cmap, 'colors')
                                 and cmap.colors is not None
                             ):
-                                # If it has colors array, get the last color
                                 max_color = cmap.colors[-1]
                             else:
-                                # Fallback: try to get matplotlib colormap by name
                                 mpl_cmap = plt.get_cmap(str(cmap))
                                 max_color = mpl_cmap(1.0)
                             colors.append(max_color)
                     except Exception:
-                        # Fallback to default colormap colors
                         default_colors = self._get_default_colormap_max_colors(
                             max_idx
                         )
@@ -1422,7 +1364,6 @@ class ComponentsWidget(QWidget):
                                 ]
                             )
                 else:
-                    # Fallback for components beyond available layers
                     default_colors = self._get_default_colormap_max_colors(
                         max_idx
                     )
@@ -1435,10 +1376,7 @@ class ComponentsWidget(QWidget):
                             ]
                         )
             return colors
-
-        # Fallback when colormap is enabled but no colormap data available yet
         else:
-            # Return colors for all possible component indices
             max_idx = max(len(self.components), num_components, 1)
             return self._get_default_colormap_max_colors(max_idx)
 
@@ -1451,13 +1389,11 @@ class ComponentsWidget(QWidget):
         if len(active_components) == 0:
             return
 
-        # Get colors based on the current number of active components
         colors = self._get_component_colors_for_count(len(active_components))
 
         if len(active_components) == 2:
-            # Use colors for 2 components - map by component index, not by order of creation
             comp_indices = [c.idx for c in active_components]
-            comp_indices.sort()  # Ensure we assign colors by index order
+            comp_indices.sort()
 
             for i, comp_idx in enumerate(comp_indices):
                 if (
@@ -1467,7 +1403,6 @@ class ComponentsWidget(QWidget):
                 ):
                     self.components[comp_idx].dot.set_color(colors[i])
         else:
-            # Use colors for other cases - assign by component index
             for comp in self.components:
                 if (
                     comp is not None
@@ -1488,7 +1423,6 @@ class ComponentsWidget(QWidget):
         if len(active_components) < 2:
             return
 
-        # Clear existing line/polygon
         if self.component_line is not None:
             try:
                 self.component_line.remove()
@@ -1504,7 +1438,6 @@ class ComponentsWidget(QWidget):
             self.component_polygon = None
 
         try:
-            # For 3+ components, draw polygon
             if len(active_components) >= 3:
                 self._update_polygon()
                 components_tab_is_active = (
@@ -1517,7 +1450,6 @@ class ComponentsWidget(QWidget):
                 self.set_artists_visible(components_tab_is_active)
                 return
 
-            # For exactly 2 components, draw line (existing logic)
             if not all(c.dot is not None for c in self.components[:2]):
                 return
 
@@ -1554,7 +1486,7 @@ class ComponentsWidget(QWidget):
                         self.component_line.set_capstyle('butt')
                     except Exception:
                         pass
-                # Set z-order for colormap line
+
                 if hasattr(self.component_line, 'set_zorder'):
                     try:
                         self.component_line.set_zorder(10)
@@ -1574,7 +1506,7 @@ class ComponentsWidget(QWidget):
                         self.component_line.set_solid_capstyle('butt')
                     except Exception:
                         pass
-                # Update component colors (will use appropriate logic for 2 vs 3+ components)
+
                 self._update_component_colors()
 
             self.parent_widget.canvas_widget.canvas.draw_idle()
@@ -1607,10 +1539,8 @@ class ComponentsWidget(QWidget):
             len(trajectory_real) * density_factor, len(trajectory_real) - 1
         )
 
-        # Build a continuous colormap
         if self.fractions_colormap is not None:
             if len(self.fractions_colormap) <= 32:
-                # Create a smooth interpolated cmap from sparse control points
                 colormap = LinearSegmentedColormap.from_list(
                     "fractions_interp", self.fractions_colormap, N=256
                 )
@@ -1619,7 +1549,6 @@ class ComponentsWidget(QWidget):
         else:
             colormap = plt.cm.PiYG
 
-        # Get the actual contrast limits from the fractions layer
         if (
             hasattr(self, 'colormap_contrast_limits')
             and self.colormap_contrast_limits is not None
@@ -1630,7 +1559,6 @@ class ComponentsWidget(QWidget):
         else:
             vmin, vmax = 0, 1
 
-        # Create line segment
         segments = []
         colors = []
 
@@ -1691,7 +1619,6 @@ class ComponentsWidget(QWidget):
 
         ax = self.parent_widget.canvas_widget.figure.gca()
 
-        # Get coordinates
         coords = []
         for comp in active_components:
             x_data, y_data = comp.dot.get_data()
@@ -1699,14 +1626,13 @@ class ComponentsWidget(QWidget):
 
         coords = np.array(coords)
 
-        # Create polygon with higher z-order to ensure it's drawn in front
         polygon = plt.Polygon(
             coords,
             fill=False,
             edgecolor=self.default_component_color,
             linewidth=self.line_width,
             alpha=self.line_alpha,
-            zorder=10,  # Higher z-order to draw in front of histogram
+            zorder=10,
         )
         self.component_polygon = ax.add_patch(polygon)
         self.parent_widget.canvas_widget.canvas.draw_idle()
@@ -1749,6 +1675,7 @@ class ComponentsWidget(QWidget):
         self.drag_events_connected = True
 
     def _on_press(self, event):
+        """Handle press events for dragging components and labels."""
         if event.inaxes is None:
             return
 
@@ -1807,6 +1734,7 @@ class ComponentsWidget(QWidget):
                 return
 
     def _on_motion(self, event):
+        """Handle dragging of components and labels."""
         if event.inaxes is None:
             return
         if self.dragging_label_idx is not None:
@@ -1837,6 +1765,7 @@ class ComponentsWidget(QWidget):
         self.draw_line_between_components()
 
     def _on_release(self, event):
+        """Handle release of components and labels."""
         self.dragging_component_idx = None
         self.dragging_label_idx = None
 
@@ -1854,7 +1783,6 @@ class ComponentsWidget(QWidget):
         """Get list of harmonics that have component data."""
         harmonics = set(self.component_locations.keys())
 
-        # Also check if current harmonic has active components
         current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
         active_components = [
             c for c in self.components if c is not None and c.dot is not None
@@ -1991,7 +1919,6 @@ class ComponentsWidget(QWidget):
 
     def _create_fraction_layers(self, fractions, component_names):
         """Create fraction layers for each component."""
-        # Clear existing fraction layers
         for layer in self.fraction_layers:
             try:
                 self.viewer.layers.remove(layer)
@@ -1999,7 +1926,6 @@ class ComponentsWidget(QWidget):
                 pass
         self.fraction_layers.clear()
 
-        # Create new fraction layers
         base_name = (
             self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
         )
@@ -2011,7 +1937,6 @@ class ComponentsWidget(QWidget):
 
             layer_name = f"{name} fraction: {base_name}"
 
-            # Use component-specific colormap, cycle through if we have more components than colormaps
             colormap = self.component_colormap_names[
                 i % len(self.component_colormap_names)
             ]
@@ -2025,28 +1950,23 @@ class ComponentsWidget(QWidget):
             )
 
             self.fraction_layers.append(layer)
-
-            # Connect colormap change events for this layer
             layer.events.colormap.connect(self._on_fraction_colormap_changed)
 
-        # Update component colors after creating layers
         self._update_component_colors()
 
     def _on_fraction_colormap_changed(self, event):
         """Handle changes to the colormap of any fraction layer."""
-        # Update component colors for both 2-component (if colormap enabled) and multi-component cases
         active_components = [
             c for c in self.components if c is not None and c.dot is not None
         ]
 
         if len(active_components) == 2 and self.show_colormap_line:
-            # For 2 components, only update if colormap line is enabled
             self._update_component_colors()
         elif len(active_components) > 2:
-            # For 3+ components, always update when fraction layer colormaps change
             self._update_component_colors()
 
     def _run_linear_projection(self):
+        """Run linear projection for 2-component analysis."""
         if self.parent_widget._labels_layer_with_phasor_features is None:
             return
         if not all(c.dot is not None for c in self.components[:2]):
@@ -2141,7 +2061,6 @@ class ComponentsWidget(QWidget):
         num_components = len(active_components)
         current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
 
-        # Check if we need multiple harmonics
         required_harmonics = self._get_required_harmonics(num_components)
 
         if required_harmonics > 1:
@@ -2152,16 +2071,15 @@ class ComponentsWidget(QWidget):
                 )
                 return
 
-            # Check if we have component locations for required number of harmonics
             harmonics_with_components = self._get_harmonics_with_components()
             if len(harmonics_with_components) < required_harmonics:
-                # Switch to next harmonic and show warning
+
                 next_harmonic = self._get_next_harmonic(
                     current_harmonic, available_harmonics
                 )
                 if next_harmonic is not None:
                     self.parent_widget.harmonic = next_harmonic
-                    # Update the harmonic spinbox if it exists
+
                     if hasattr(self.parent_widget, 'harmonic_spinbox'):
                         self.parent_widget.harmonic_spinbox.setValue(
                             next_harmonic
@@ -2176,15 +2094,12 @@ class ComponentsWidget(QWidget):
                     )
                     return
 
-            # Use only the required number of lowest harmonics with component locations
             if len(harmonics_with_components) > required_harmonics:
                 harmonics_with_components = harmonics_with_components[
                     :required_harmonics
                 ]
 
-        # Get component coordinates
         if required_harmonics == 1:
-            # Use only current harmonic
             component_g, component_s, component_names = (
                 self._get_component_coords_for_harmonic(current_harmonic)
             )
@@ -2194,7 +2109,6 @@ class ComponentsWidget(QWidget):
                 )
                 return
 
-            # Filter phasor data for current harmonic
             phasor_data = (
                 self.parent_widget._labels_layer_with_phasor_features.features
             )
@@ -2205,7 +2119,6 @@ class ComponentsWidget(QWidget):
             )
             mean = self.viewer.layers[layer_name].metadata['original_mean']
 
-            # Get filtered data for single harmonic
             real = np.reshape(
                 phasor_data.loc[harmonic_mask, "G"].values,
                 mean.shape,
@@ -2215,19 +2128,16 @@ class ComponentsWidget(QWidget):
                 mean.shape,
             )
 
-        else:  # Multiple harmonics required
-            # Use multiple harmonics - organize by harmonic, not by component
+        else:
             harmonics_with_components = sorted(
                 self._get_harmonics_with_components()
             )
 
-            # Use only the required number of lowest harmonics with component locations
             if len(harmonics_with_components) > required_harmonics:
                 harmonics_with_components = harmonics_with_components[
                     :required_harmonics
                 ]
 
-            # Verify we have the same number of components in each harmonic
             component_counts = []
             for harmonic in harmonics_with_components:
                 g_coords, s_coords, names = (
@@ -2241,23 +2151,21 @@ class ComponentsWidget(QWidget):
                 )
                 return
 
-            # Initialize component coordinates for each harmonic
-            component_g = []  # Will be [harmonic][component]
+            component_g = []
             component_s = []
             component_names = []
 
-            # Get coordinates for each harmonic - organize as [harmonic][component]
             for harmonic in harmonics_with_components:
                 g_coords, s_coords, names = (
                     self._get_component_coords_for_harmonic(harmonic)
                 )
                 component_g.append(
                     g_coords
-                )  # Each harmonic gets its list of component G coords
+                )
                 component_s.append(
                     s_coords
-                )  # Each harmonic gets its list of component S coords
-                if not component_names:  # Only set names once
+                )
+                if not component_names:
                     component_names = [
                         name.split('_H')[0] if '_H' in name else name
                         for name in names
@@ -2297,12 +2205,10 @@ class ComponentsWidget(QWidget):
             )  # Shape: [num_harmonics, height, width]
 
         try:
-            # Run phasor_component_fit
             fractions = phasor_component_fit(
                 mean, real, imag, component_g, component_s
             )
 
-            # Create fraction layers
             self._create_fraction_layers(fractions, component_names)
 
         except Exception as e:
