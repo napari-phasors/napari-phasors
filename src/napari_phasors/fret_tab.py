@@ -456,7 +456,7 @@ class FretWidget(QWidget):
 
         phasor_data = donor_phasor_layer.features
 
-        if 'harmonic' not in phasor_data.columns:
+        if "harmonic" not in phasor_data.columns:
             return
 
         current_harmonic = self.parent_widget.harmonic
