@@ -422,8 +422,6 @@ class FretWidget(QWidget):
 
         self.donor_lifetime_combobox.addItem("None")
 
-        from napari.layers import Image
-
         layer_names = [
             layer.name
             for layer in self.viewer.layers
