@@ -1112,9 +1112,7 @@ class ComponentsWidget(QWidget):
                     component_s.append(y_data[0])
                     name = comp.name_edit.text().strip()
                     if not name:
-                        name = (
-                            comp.label
-                        )
+                        name = comp.label
                     component_names.append(name)
         elif harmonic in self.component_locations:
             stored_components = self.component_locations[harmonic]
@@ -2159,12 +2157,8 @@ class ComponentsWidget(QWidget):
                 g_coords, s_coords, names = (
                     self._get_component_coords_for_harmonic(harmonic)
                 )
-                component_g.append(
-                    g_coords
-                )
-                component_s.append(
-                    s_coords
-                )
+                component_g.append(g_coords)
+                component_s.append(s_coords)
                 if not component_names:
                     component_names = [
                         name.split('_H')[0] if '_H' in name else name
