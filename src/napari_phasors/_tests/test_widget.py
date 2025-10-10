@@ -140,7 +140,7 @@ def test_phasor_transform_fbd_widget(make_napari_viewer):
     widget.btn.click()
     assert len(viewer.layers) == 1
     assert viewer.layers[0].name == "test_file$EI0S Intensity Image: Channel 0"
-    assert viewer.layers[0].data.shape == (1, 256, 256)
+    assert viewer.layers[0].data.shape == (256, 256)
     phasor_data = (
         viewer.layers[0].metadata["phasor_features_labels_layer"].features
     )
@@ -152,7 +152,7 @@ def test_phasor_transform_fbd_widget(make_napari_viewer):
     widget.btn.click()
     assert len(viewer.layers) == 3
     assert viewer.layers[2].name == "test_file$EI0S Intensity Image: Channel 1"
-    assert viewer.layers[2].data.shape == (1, 256, 256)
+    assert viewer.layers[2].data.shape == (256, 256)
     phasor_data = (
         viewer.layers[2].metadata["phasor_features_labels_layer"].features
     )
@@ -217,7 +217,7 @@ def test_phasor_transform_ptu_widget(make_napari_viewer):
     widget.btn.click()
     assert len(viewer.layers) == 1
     assert viewer.layers[0].name == "test_file Intensity Image: Channel 0"
-    assert viewer.layers[0].data.shape == (1, 256, 256)
+    assert viewer.layers[0].data.shape == (256, 256)
     phasor_data = (
         viewer.layers[0].metadata["phasor_features_labels_layer"].features
     )
@@ -229,7 +229,7 @@ def test_phasor_transform_ptu_widget(make_napari_viewer):
     widget.btn.click()
     assert len(viewer.layers) == 2
     assert viewer.layers[1].name == "test_file Intensity Image: Channel 0 [1]"
-    assert viewer.layers[1].data.shape == (1, 256, 256)
+    assert viewer.layers[1].data.shape == (256, 256)
     phasor_data = (
         viewer.layers[1].metadata["phasor_features_labels_layer"].features
     )
