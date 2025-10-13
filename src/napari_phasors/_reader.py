@@ -9,7 +9,6 @@ import itertools
 import json
 import os
 import sys
-import warnings
 from typing import Any, Callable, Optional, Sequence, Union
 
 import numpy as np
@@ -22,14 +21,12 @@ from napari.utils.colormaps.colormap_utils import CYMRGB, MAGENTA_GREEN
 from napari.utils.notifications import show_error
 from phasorpy.phasor import phasor_from_signal
 
-from ._utils import apply_filter_and_threshold
-
 extension_mapping = {
     "raw": {
         ".ptu": lambda path, reader_options: _parse_and_call_io_function(
             path,
             io.signal_from_ptu,
-            {"frame": (-1, False), "keepdims": (True, False)},
+            {"frame": (-1, False), "keepdims": (False, False)},
             reader_options,
         ),
         ".fbd": lambda path, reader_options: _parse_and_call_io_function(
@@ -37,7 +34,7 @@ extension_mapping = {
             io.signal_from_fbd,
             {
                 "frame": (-1, False),
-                "keepdims": (True, False),
+                "keepdims": (False, False),
                 "channel": (None, False),
             },
             reader_options,
@@ -206,18 +203,24 @@ def raw_file_reader(
         and 'frequency' in raw_data.attrs.keys()
     ):
         settings['frequency'] = raw_data.attrs['frequency']
+
     layers = []
     iter_axis = iter_index_mapping[file_extension]
-    if iter_axis is None:
+
+    if iter_axis is None or iter_axis not in raw_data.dims:
+        # Handle files without iteration axis or when keepdims=False squeezed it out
         if file_extension == ".tif":
-            mean_intensity_image, G_image, S_image = phasor_from_signal(
-                raw_data, axis=0, harmonic=harmonics
-            )
+            axis = 0
+        elif iter_axis is None:
+            # Hyperspectral files - find "C" dimension
+            axis = raw_data.dims.index("C")
         else:
-            # Calculate phasor over channels if file is of hyperspectral type
-            mean_intensity_image, G_image, S_image = phasor_from_signal(
-                raw_data, axis=raw_data.dims.index("C"), harmonic=harmonics
-            )
+            # FLIM files without "C" dimension (single channel)
+            axis = raw_data.dims.index("H")
+
+        mean_intensity_image, G_image, S_image = phasor_from_signal(
+            raw_data, axis=axis, harmonic=harmonics
+        )
         labels_layer = make_phasors_labels_layer(
             mean_intensity_image,
             G_image,
@@ -225,8 +228,13 @@ def raw_file_reader(
             name=filename,
             harmonics=harmonics,
         )
+        channel_suffix = (
+            " Intensity Image"
+            if iter_axis is None
+            else " Intensity Image: Channel 0"
+        )
         add_kwargs = {
-            "name": f"{filename} Intensity Image",
+            "name": f"{filename}{channel_suffix}",
             "metadata": {
                 "phasor_features_labels_layer": labels_layer,
                 "original_mean": mean_intensity_image,
@@ -235,9 +243,9 @@ def raw_file_reader(
         }
         layers.append((mean_intensity_image, add_kwargs))
     else:
+        # Handle multi-channel files with iteration axis
         iter_axis_index = raw_data.dims.index(iter_axis)
         for channel in range(raw_data.shape[iter_axis_index]):
-            # Calculate phasor over photon counts dimension if file is FLIM
             mean_intensity_image, G_image, S_image = phasor_from_signal(
                 raw_data.sel(C=channel),
                 axis=raw_data.sel(C=channel).dims.index("H"),
