@@ -1,6 +1,6 @@
 import numpy as np
 from matplotlib.colors import ListedColormap
-from phasorpy.phasor import (
+from phasorpy.filter import (
     phasor_filter_median,
     phasor_filter_pawflim,
     phasor_threshold,
