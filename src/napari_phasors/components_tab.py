@@ -9,7 +9,7 @@ from matplotlib.colors import LinearSegmentedColormap, ListedColormap
 from napari.experimental import link_layers
 from napari.layers import Image
 from napari.utils.colormaps import Colormap
-from napari.utils.notifications import show_error
+from napari.utils.notifications import show_error, show_info, show_warning
 from phasorpy.component import phasor_component_fit, phasor_component_fraction
 from phasorpy.lifetime import phasor_from_lifetime
 from qtpy.QtCore import Qt
@@ -69,26 +69,26 @@ class ComponentsWidget(QWidget):
         self.fractions_colormap = None
         self.colormap_contrast_limits = None
         self.component_colors = [
+            'magenta',
+            'cyan',
+            'yellow',
             'blue',
             'red',
             'green',
             'orange',
             'purple',
             'dodgerblue',
+        ]
+        self.component_colormap_names = [
             'magenta',
             'cyan',
             'yellow',
-        ]
-        self.component_colormap_names = [
             'blue',
             'red',
             'green',
             'bop orange',
             'bop purple',
             'bop blue',
-            'magenta',
-            'cyan',
-            'yellow',
         ]
 
         # Style state
@@ -114,6 +114,9 @@ class ComponentsWidget(QWidget):
 
         # Flag to prevent clearing lifetime when updating from lifetime
         self._updating_from_lifetime = False
+
+        # Flag to track if analysis was attempted
+        self._analysis_attempted = False
 
         # Dialog / event flags
         self.plot_dialog = None
@@ -161,11 +164,13 @@ class ComponentsWidget(QWidget):
         layout.addLayout(analysis_layout)
 
         # Components info label
-        components_info_label = QLabel("Components Info:")
-        components_info_label.setStyleSheet(
+        self.components_info_label = QLabel(
+            f"Components at: Harmonic {self.current_harmonic}"
+        )
+        self.components_info_label.setStyleSheet(
             "font-weight: bold; margin-top: 10px;"
         )
-        layout.addWidget(components_info_label)
+        layout.addWidget(self.components_info_label)
 
         # Components section
         self.components_layout = QVBoxLayout()
@@ -290,8 +295,14 @@ class ComponentsWidget(QWidget):
         g_edit.editingFinished.connect(
             lambda: self._on_component_coords_changed(idx)
         )
+        g_edit.textChanged.connect(
+            lambda: self._update_component_input_styling(idx)
+        )
         s_edit.editingFinished.connect(
             lambda: self._on_component_coords_changed(idx)
+        )
+        s_edit.textChanged.connect(
+            lambda: self._update_component_input_styling(idx)
         )
         lifetime_edit.editingFinished.connect(
             lambda: self._update_component_from_lifetime(idx)
@@ -347,6 +358,13 @@ class ComponentsWidget(QWidget):
 
         self.components.pop()
 
+        if len(self.components) == 2:
+            self._update_analysis_options()
+
+            index = self.analysis_type_combo.findText("Linear Projection")
+            if index >= 0:
+                self.analysis_type_combo.setCurrentIndex(index)
+
         if self.component_line is not None:
             try:
                 self.component_line.remove()
@@ -364,6 +382,10 @@ class ComponentsWidget(QWidget):
         self._update_component_visibility()
         self._update_analysis_options()
         self._update_button_states()
+
+        # Update styling after removing component (only if analysis was attempted)
+        if self._analysis_attempted:
+            self._update_all_component_styling()
 
         self.draw_line_between_components()
 
@@ -582,8 +604,18 @@ class ComponentsWidget(QWidget):
         self._store_current_components(old_harmonic)
         self._clear_components_display()
         self.current_harmonic = new_harmonic
+
+        # Update the label text with new harmonic value
+        self.components_info_label.setText(
+            f"Components at: Harmonic {new_harmonic}"
+        )
+
         self._restore_components_for_harmonic(new_harmonic)
         self._update_component_visibility()
+
+        # Update styling after harmonic change (only if analysis was attempted)
+        if self._analysis_attempted:
+            self._update_all_component_styling()
 
         if self.parent_widget is not None:
             self._update_lifetime_inputs_visibility()
@@ -702,6 +734,12 @@ class ComponentsWidget(QWidget):
 
     def _run_analysis(self):
         """Run the selected analysis."""
+        # Set flag that analysis was attempted
+        self._analysis_attempted = True
+
+        # Update styling to show any missing required fields
+        self._update_all_component_styling()
+
         if self.analysis_type == "Linear Projection":
             self._run_linear_projection()
         else:
@@ -967,6 +1005,66 @@ class ComponentsWidget(QWidget):
                     and comp.lifetime_edit.text().strip()
                 ):
                     self._update_component_from_lifetime(i)
+
+    def _update_component_input_styling(self, idx: int):
+        """Update the styling of component input fields based on their state."""
+        if idx >= len(self.components) or self.components[idx] is None:
+            return
+
+        # Only highlight if analysis was attempted
+        if not self._analysis_attempted:
+            return
+
+        comp = self.components[idx]
+
+        # Check if both G and S have values
+        has_g_value = comp.g_edit.text().strip() != ""
+        has_s_value = comp.s_edit.text().strip() != ""
+
+        if has_g_value and has_s_value:
+            # Reset to default styling
+            comp.g_edit.setStyleSheet("")
+            comp.s_edit.setStyleSheet("")
+        else:
+            # Check if we need to highlight (component locations required)
+            if self._should_highlight_missing_components():
+                comp.g_edit.setStyleSheet(
+                    "background-color: #330000; border: 2px solid #cc0000;"
+                )
+                comp.s_edit.setStyleSheet(
+                    "background-color: #330000; border: 2px solid #cc0000;"
+                )
+            else:
+                comp.g_edit.setStyleSheet("")
+                comp.s_edit.setStyleSheet("")
+
+    def _should_highlight_missing_components(self):
+        """Check if we should highlight missing component locations."""
+        # Count components that exist (not just have dots)
+        num_total_components = len(
+            [c for c in self.components if c is not None]
+        )
+
+        if num_total_components < 2:
+            return False
+
+        # Calculate required harmonics based on total number of component slots
+        required_harmonics = self._get_required_harmonics(num_total_components)
+
+        if required_harmonics <= 1:
+            return False
+
+        # Check how many harmonics have component data
+        harmonics_with_components = self._get_harmonics_with_components()
+
+        # Highlight if we need more harmonics with component data
+        return len(harmonics_with_components) < required_harmonics
+
+    def _update_all_component_styling(self):
+        """Update styling for all component input fields."""
+        for comp in self.components:
+            if comp is not None:
+                self._update_component_input_styling(comp.idx)
 
     def _compute_phasor_from_lifetime(self, lifetime_text):
         """Compute (G,S) from lifetime string; return tuple or (None,None)."""
@@ -1252,6 +1350,11 @@ class ComponentsWidget(QWidget):
         self.parent_widget.canvas_widget.canvas.mpl_disconnect(temp_cid)
         comp.select_button.setText(original_text)
         comp.select_button.setEnabled(True)
+
+        # Update styling after component selection (only if analysis was attempted)
+        if self._analysis_attempted:
+            self._update_all_component_styling()
+
         self._redraw(force=True)
 
         if was_new_location:
@@ -2064,7 +2167,7 @@ class ComponentsWidget(QWidget):
         if required_harmonics > 1:
             available_harmonics = self._get_available_harmonics()
             if len(available_harmonics) < required_harmonics:
-                show_error(
+                show_warning(
                     f"{num_components}-component analysis requires at least {required_harmonics} harmonics in the data"
                 )
                 return
@@ -2082,12 +2185,12 @@ class ComponentsWidget(QWidget):
                         self.parent_widget.harmonic_spinbox.setValue(
                             next_harmonic
                         )
-                    show_error(
+                    show_info(
                         f"For {num_components}-component analysis, please select component locations in harmonic {next_harmonic} as well"
                     )
                     return
                 else:
-                    show_error(
+                    show_info(
                         f"{num_components}-component analysis requires component locations in at least {required_harmonics} harmonics"
                     )
                     return
@@ -2102,7 +2205,7 @@ class ComponentsWidget(QWidget):
                 self._get_component_coords_for_harmonic(current_harmonic)
             )
             if not component_g:
-                show_error(
+                show_warning(
                     f"No components found for harmonic {current_harmonic}"
                 )
                 return
