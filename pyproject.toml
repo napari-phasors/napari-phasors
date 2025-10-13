@@ -3,7 +3,7 @@ name = "napari-phasors"
 dynamic = ["version"]
 description = "A simple plugin to use phasor analysis"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = { file = "LICENSE" }
 authors = [
     { name = "Bruno Pannunzio", email = "bpannunzio@pasteur.edu.uy" },
@@ -20,17 +20,17 @@ classifiers = [
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Image Processing",
     "Topic :: Scientific/Engineering :: Visualization"
 ]
 dependencies = [
-    "phasorpy==0.7",
+    "phasorpy==0.8",
     "qtpy",
     "scikit-image",
     "biaplotter>=0.4.2",
-    "lfdfiles",
     "fbdfile",
     "sdtfile",
     "ptufile",
@@ -54,9 +54,8 @@ testing = [
     "pandas",
     "black",
     "isort",
-    "phasorpy==0.7",
+    "phasorpy==0.8",
     "tifffile",
-    "lfdfiles",
     "fbdfile",
     "sdtfile",
     "ptufile",
@@ -92,7 +91,7 @@ fallback_version = "0.1"
 
 [tool.black]
 line-length = 79
-target-version = ["py310"]
+target-version = ["py312"]
 skip-string-normalization = true
 
 [tool.isort]
@@ -142,5 +141,5 @@ exclude = [
     "*_vendor*",
 ]
 
-target-version = "py311"
+target-version = "py312"
 fix = true
