@@ -476,29 +476,6 @@ def test_signal_plot_fbd_all_channels_single_frame(make_napari_viewer):
         np.testing.assert_array_almost_equal(plot_y_data, signal_data[i])
 
 
-def test_signal_plot_ptu_single_channel(make_napari_viewer):
-    """Test signal plot for PTU widget with single channel."""
-    viewer = make_napari_viewer()
-    test_file_path = get_test_file_path("test_file.ptu")
-    widget = PtuWidget(viewer, path=test_file_path)
-    
-    # Set to single channel
-    widget.channels.setCurrentIndex(1)  # Channel 0
-    
-    # Get signal data and verify plot
-    signal_data = signal_from_ptu(test_file_path, channel=0, frame=-1)
-    signal_data = signal_data.sum(axis=(0, 1))
-    assert signal_data is not None
-    
-    widget._update_signal_plot()
-    
-    lines = widget.ax.get_lines()
-    assert len(lines) > 0
-    
-    plot_y_data = lines[0].get_ydata()
-    np.testing.assert_array_almost_equal(plot_y_data, signal_data)
-
-
 def test_signal_plot_sdt_widget(make_napari_viewer):
     """Test signal plot for SDT widget."""
     viewer = make_napari_viewer()

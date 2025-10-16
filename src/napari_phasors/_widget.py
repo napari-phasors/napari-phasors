@@ -385,6 +385,11 @@ class AdvancedOptionsWidget(QWidget):
         
     def _update_harmonic_slider(self):
         """Create, update, or hide the harmonic slider based on max_harmonic."""
+        # Store current values before recreating slider
+        current_start, current_end = 1, 2
+        if hasattr(self, 'harmonic_slider') and self.harmonic_slider is not None:
+            current_start, current_end = self.harmonic_slider.value()
+        
         if self.harmonic_slider is not None:
             self.harmonic_slider.setParent(None)
             self.harmonic_slider.deleteLater()
@@ -398,13 +403,11 @@ class AdvancedOptionsWidget(QWidget):
             self.harmonic_slider = QRangeSlider(Qt.Orientation.Horizontal)
             self.harmonic_slider.setRange(1, self.max_harmonic)
             
-            # Set default value to (1, 2) if max_harmonic >= 2, otherwise (1, max_harmonic)
-            if self.max_harmonic >= 2:
-                default_end = 2
-            else:
-                default_end = self.max_harmonic
+            # Preserve current selection, but clamp to valid range
+            preserved_start = max(1, min(current_start, self.max_harmonic))
+            preserved_end = max(preserved_start, min(current_end, self.max_harmonic))
             
-            self.harmonic_slider.setValue((1, default_end))
+            self.harmonic_slider.setValue((preserved_start, preserved_end))
             self.harmonic_slider.setBarMovesAllHandles(True)
             self.harmonic_slider.valueChanged.connect(self._on_harmonic_slider_changed)
             
@@ -422,12 +425,13 @@ class AdvancedOptionsWidget(QWidget):
                 # Fallback: add after harmonic layout
                 self.mainLayout.addWidget(self.harmonic_slider)
             
-            # Set harmonics based on slider value
-            start, end = self.harmonic_slider.value()
+            # Set harmonics based on preserved slider value
+            start, end = preserved_start, preserved_end
             self.harmonics = list(range(start, end + 1))
             
             # Update the end edit to reflect the actual slider value
             if self.harmonic_end_edit:
+                self.harmonic_start_edit.setText(str(start))
                 self.harmonic_end_edit.setText(str(end))
         else:
             # No slider needed, just set harmonics to [1] and ensure max_harmonic is at least 1
