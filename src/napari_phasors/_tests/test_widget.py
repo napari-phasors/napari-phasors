@@ -1,5 +1,6 @@
 import os
 from unittest.mock import patch
+import sys
 
 import numpy as np
 import pandas as pd
@@ -18,8 +19,11 @@ from napari_phasors._widget import (
     PhasorTransform,
     PtuWidget,
     SdtWidget,
+    OmeTifWidget,
     WriterWidget,
 )
+from phasorpy.io import signal_from_fbd, signal_from_ptu, signal_from_sdt, signal_from_lsm, phasor_from_ometiff
+import json
 
 TEST_FORMATS = [
     (".fbd", FbdWidget),
@@ -91,21 +95,16 @@ def test_phasor_transform_fbd_widget(make_napari_viewer):
     assert isinstance(widget, AdvancedOptionsWidget)
     assert widget.path == test_file_path
     assert widget.reader_options == {"frame": -1, "channel": None}
-    assert widget.harmonics == [1]
+    assert widget.harmonics == [1, 2]
     assert widget.all_frames == 9
     assert widget.all_channels == 2
-    assert widget.harmonic_start.value() == 1
-    assert widget.harmonic_end.value() == 1
+    assert widget.harmonic_slider.value() == (1, 2)
     # Modify harmonic values
-    widget.harmonic_start.setValue(2)
-    assert (
-        widget.harmonic_start.value() == 2 and widget.harmonic_end.value() == 2
-    )
+    widget.harmonic_slider.setValue((2, 2))
+    assert widget.harmonic_slider.value() == (2, 2)
     assert widget.harmonics == [2]
-    widget.harmonic_end.setValue(3)
-    assert (
-        widget.harmonic_start.value() == 2 and widget.harmonic_end.value() == 3
-    )
+    widget.harmonic_slider.setValue((2, 3))
+    assert widget.harmonic_slider.value() == (2, 3)
     assert widget.harmonics == [2, 3]
     # Init frames
     frames_combobox_values = [
@@ -148,7 +147,7 @@ def test_phasor_transform_fbd_widget(make_napari_viewer):
     assert phasor_data["harmonic"].unique().tolist() == [2, 3]
     # Modify channels and harmonics and phasor transform again
     widget.channels.setCurrentIndex(0)
-    widget.harmonic_end.setValue(2)
+    widget.harmonic_slider.setValue((2, 2))
     widget.btn.click()
     assert len(viewer.layers) == 3
     assert viewer.layers[2].name == "test_file$EI0S Intensity Image: Channel 1"
@@ -172,21 +171,16 @@ def test_phasor_transform_ptu_widget(make_napari_viewer):
     assert isinstance(widget, AdvancedOptionsWidget)
     assert widget.path == test_file_path
     assert widget.reader_options == {"frame": -1, "channel": None}
-    assert widget.harmonics == [1]
+    assert widget.harmonics == [1, 2]
     assert widget.all_frames == 5
     assert widget.all_channels == 1
-    assert widget.harmonic_start.value() == 1
-    assert widget.harmonic_end.value() == 1
+    assert widget.harmonic_slider.value() == (1, 2)
     # Modify harmonic values
-    widget.harmonic_start.setValue(2)
-    assert (
-        widget.harmonic_start.value() == 2 and widget.harmonic_end.value() == 2
-    )
+    widget.harmonic_slider.setValue((2, 2))
+    assert widget.harmonic_slider.value() == (2, 2)
     assert widget.harmonics == [2]
-    widget.harmonic_end.setValue(3)
-    assert (
-        widget.harmonic_start.value() == 2 and widget.harmonic_end.value() == 3
-    )
+    widget.harmonic_slider.setValue((2, 3))
+    assert widget.harmonic_slider.value() == (2, 3)
     assert widget.harmonics == [2, 3]
     # Init frames
     frames_combobox_values = [
@@ -205,14 +199,8 @@ def test_phasor_transform_ptu_widget(make_napari_viewer):
     widget.frames.setCurrentIndex(1)
     assert widget.reader_options == {"frame": 0, "channel": None}
     # Init channels
-    channels_combobox_values = [
-        widget.channels.itemText(i) for i in range(widget.channels.count())
-    ]
-    assert channels_combobox_values == ["All channels", "0"]
-    assert widget.channels.currentIndex() == 0
-    # Modify channels
-    widget.channels.setCurrentIndex(1)
-    assert widget.reader_options == {"frame": 0, "channel": 0}
+    assert widget.channels is None
+    assert widget.reader_options == {"frame": 0, "channel": None}
     # Click button of phasor transform and check layers
     widget.btn.click()
     assert len(viewer.layers) == 1
@@ -225,7 +213,7 @@ def test_phasor_transform_ptu_widget(make_napari_viewer):
     assert phasor_data["harmonic"].unique().tolist() == [2, 3]
     # Modify frames and harmonics and phasor transform again
     widget.frames.setCurrentIndex(0)
-    widget.harmonic_end.setValue(2)
+    widget.harmonic_slider.setValue((2, 2))
     widget.btn.click()
     assert len(viewer.layers) == 2
     assert viewer.layers[1].name == "test_file Intensity Image: Channel 0 [1]"
@@ -249,19 +237,14 @@ def test_phasor_transform_sdt_widget(make_napari_viewer):
     assert isinstance(widget, AdvancedOptionsWidget)
     assert widget.path == file_path
     assert widget.reader_options == {}
-    assert widget.harmonics == [1]
-    assert widget.harmonic_start.value() == 1
-    assert widget.harmonic_end.value() == 1
+    assert widget.harmonics == [1, 2]
+    assert widget.harmonic_slider.value() == (1, 2)
     # Modify harmonic values
-    widget.harmonic_start.setValue(2)
-    assert (
-        widget.harmonic_start.value() == 2 and widget.harmonic_end.value() == 2
-    )
+    widget.harmonic_slider.setValue((2, 2))
+    assert widget.harmonic_slider.value() == (2, 2)
     assert widget.harmonics == [2]
-    widget.harmonic_end.setValue(3)
-    assert (
-        widget.harmonic_start.value() == 2 and widget.harmonic_end.value() == 3
-    )
+    widget.harmonic_slider.setValue((2, 3))
+    assert widget.harmonic_slider.value() == (2, 3)
     assert widget.harmonics == [2, 3]
     # Init index parameter
     assert widget.index.text() == "0"
@@ -280,7 +263,7 @@ def test_phasor_transform_sdt_widget(make_napari_viewer):
     assert phasor_data.shape == (524288, 6)
     assert phasor_data["harmonic"].unique().tolist() == [2, 3]
     # Modify harmonics and phasor transform again
-    widget.harmonic_end.setValue(2)
+    widget.harmonic_slider.setValue((2, 2))
     widget.btn.click()
     assert len(viewer.layers) == 2
     assert (
@@ -307,19 +290,14 @@ def test_phasor_transform_lsm_widget(make_napari_viewer):
     assert isinstance(widget, AdvancedOptionsWidget)
     assert widget.path == test_file_path
     assert widget.reader_options == {}
-    assert widget.harmonics == [1]
-    assert widget.harmonic_start.value() == 1
-    assert widget.harmonic_end.value() == 1
+    assert widget.harmonics == [1, 2]
+    assert widget.harmonic_slider.value() == (1, 2)
     # Modify harmonic values
-    widget.harmonic_start.setValue(2)
-    assert (
-        widget.harmonic_start.value() == 2 and widget.harmonic_end.value() == 2
-    )
+    widget.harmonic_slider.setValue((2, 2))
+    assert widget.harmonic_slider.value() == (2, 2)
     assert widget.harmonics == [2]
-    widget.harmonic_end.setValue(3)
-    assert (
-        widget.harmonic_start.value() == 2 and widget.harmonic_end.value() == 3
-    )
+    widget.harmonic_slider.setValue((2, 3))
+    assert widget.harmonic_slider.value() == (2, 3)
     assert widget.harmonics == [2, 3]
     # Click button of phasor transform and check layers
     widget.btn.click()
@@ -332,7 +310,7 @@ def test_phasor_transform_lsm_widget(make_napari_viewer):
     assert phasor_data.shape == (524288, 6)
     assert phasor_data["harmonic"].unique().tolist() == [2, 3]
     # Modify harmonics and phasor transform again
-    widget.harmonic_end.setValue(2)
+    widget.harmonic_slider.setValue((2, 2))
     widget.btn.click()
     assert len(viewer.layers) == 2
     assert viewer.layers[1].name == "test_file Intensity Image [1]"
@@ -342,6 +320,347 @@ def test_phasor_transform_lsm_widget(make_napari_viewer):
     )
     assert phasor_data.shape == (262144, 6)
     assert phasor_data["harmonic"].unique().tolist() == [2]
+
+
+def test_phasor_transform_ome_tif_widget(make_napari_viewer):
+    """Test OmeTifWidget from PhasorTransform widget."""
+    viewer = make_napari_viewer()
+    PhasorTransform(viewer)
+    test_file_path = get_test_file_path("test_file.ome.tif")
+    widget = OmeTifWidget(viewer, path=test_file_path)
+    assert widget.viewer is viewer
+    
+    # Init values
+    assert isinstance(widget, AdvancedOptionsWidget)
+    assert widget.path == test_file_path
+    assert widget.reader_options == {}
+    assert widget.harmonics == [1, 2]
+    assert widget.harmonic_slider.value() == (1, 2)
+
+    # Test signal plot initialization
+    assert widget.canvas is not None
+    assert widget.ax is not None
+    
+    # Modify harmonic values
+    widget.harmonic_slider.setValue((2, 2))
+    assert widget.harmonic_slider.value() == (2, 2)
+    assert widget.harmonics == [2]
+    
+    # Click button of phasor transform and check layers
+    widget.btn.click()
+    assert len(viewer.layers) == 1
+    assert "Intensity Image" in viewer.layers[0].name
+    phasor_data = viewer.layers[0].metadata["phasor_features_labels_layer"].features
+    assert phasor_data["harmonic"].unique().tolist() == [2]
+
+
+def test_harmonic_range_slider_functionality(make_napari_viewer):
+    """Test QRangeSlider functionality for harmonics in all widget types."""
+    viewer = make_napari_viewer()
+    test_file_path = get_test_file_path("test_file$EI0S.fbd")
+    widget = FbdWidget(viewer, path=test_file_path)
+    
+    # Test initial slider values
+    assert widget.harmonic_slider.value() == (1, 2)
+    assert widget.harmonic_start_edit.text() == "1"
+    assert widget.harmonic_end_edit.text() == str(2)
+    
+    # Test slider value change
+    widget.harmonic_slider.setValue((2, 4))
+    assert widget.harmonics == [2, 3, 4]
+    assert widget.harmonic_start_edit.text() == "2"
+    assert widget.harmonic_end_edit.text() == "4"
+    
+    # Test line edit changes
+    widget.harmonic_start_edit.setText("3")
+    widget.harmonic_start_edit.editingFinished.emit()
+    assert widget.harmonic_slider.value()[0] == 3
+    assert widget.harmonics == [3, 4]
+    
+    widget.harmonic_end_edit.setText("5")
+    widget.harmonic_end_edit.editingFinished.emit()
+    assert widget.harmonic_slider.value()[1] == 5
+    assert widget.harmonics == [3, 4, 5]
+
+
+def test_signal_plot_fbd_single_channel_all_frames(make_napari_viewer):
+    """Test signal plot for FBD widget with single channel, all frames."""
+    viewer = make_napari_viewer()
+    test_file_path = get_test_file_path("test_file$EI0S.fbd")
+    widget = FbdWidget(viewer, path=test_file_path)
+    
+    # Set to single channel (channel 0), all frames
+    widget.channels.setCurrentIndex(1)  # Channel 0
+    widget.frames.setCurrentIndex(0)    # All frames
+    
+    # Get signal data for verification
+    signal_data = signal_from_fbd(test_file_path, frame=-1, channel=0)
+    # Summ over all axis except last one
+    signal_data = signal_data.sum(axis=(0, 1))
+    assert signal_data is not None
+    
+    # Update plot and verify it contains expected data
+    widget._update_signal_plot()
+    
+    # Check that plot has data
+    lines = widget.ax.get_lines()
+    assert len(lines) > 0
+    
+    # Verify plot data matches expected signal
+    plot_x_data = lines[0].get_xdata()
+    plot_y_data = lines[0].get_ydata()
+    
+    # Expected data should match what _get_signal_data returns
+    np.testing.assert_array_almost_equal(plot_y_data, signal_data)
+    assert len(plot_x_data) == len(signal_data)
+
+
+def test_signal_plot_fbd_single_channel_single_frame(make_napari_viewer):
+    """Test signal plot for FBD widget with single channel, single frame."""
+    viewer = make_napari_viewer()
+    test_file_path = get_test_file_path("test_file$EI0S.fbd")
+    widget = FbdWidget(viewer, path=test_file_path)
+    
+    # Set to single channel (channel 1), single frame (frame 2)
+    widget.channels.setCurrentIndex(2)  # Channel 1
+    widget.frames.setCurrentIndex(3)    # Frame 2
+    
+    # Get signal data for verification
+    signal_data = signal_from_fbd(test_file_path, frame=2, channel=1)
+    signal_data = signal_data.sum(axis=(0, 1))
+    assert signal_data is not None
+    
+    # Update plot and verify
+    widget._update_signal_plot()
+    
+    lines = widget.ax.get_lines()
+    assert len(lines) > 0
+    
+    plot_y_data = lines[0].get_ydata()
+    np.testing.assert_array_almost_equal(plot_y_data, signal_data)
+
+
+def test_signal_plot_fbd_all_channels_single_frame(make_napari_viewer):
+    """Test signal plot for FBD widget with all channels, single frame."""
+    viewer = make_napari_viewer()
+    test_file_path = get_test_file_path("test_file$EI0S.fbd")
+    widget = FbdWidget(viewer, path=test_file_path)
+    
+    # Set to all channels, single frame (frame 1)
+    widget.channels.setCurrentIndex(0)  # All channels
+    widget.frames.setCurrentIndex(2)    # Frame 1
+    
+    # Get signal data for verification
+    signal_data_channel_0 = signal_from_fbd(test_file_path, frame=1, channel=0)
+    signal_data_channel_1 = signal_from_fbd(test_file_path, frame=1, channel=1)
+
+    assert signal_data_channel_0 is not None
+    assert signal_data_channel_1 is not None
+    
+    signal_data = np.array([
+        signal_data_channel_0.sum(axis=(0, 1)),
+        signal_data_channel_1.sum(axis=(0, 1))
+    ])
+
+    # Update plot
+    widget._update_signal_plot()
+    
+    lines = widget.ax.get_lines()
+    # Should have multiple lines for multiple channels
+    assert len(lines) == widget.all_channels
+    
+    # Verify each line has correct data
+    for i, line in enumerate(lines):
+        plot_y_data = line.get_ydata()
+        # Signal data should be averaged across channels or individual channel data
+        np.testing.assert_array_almost_equal(plot_y_data, signal_data[i])
+
+
+def test_signal_plot_ptu_single_channel(make_napari_viewer):
+    """Test signal plot for PTU widget with single channel."""
+    viewer = make_napari_viewer()
+    test_file_path = get_test_file_path("test_file.ptu")
+    widget = PtuWidget(viewer, path=test_file_path)
+    
+    # Set to single channel
+    widget.channels.setCurrentIndex(1)  # Channel 0
+    
+    # Get signal data and verify plot
+    signal_data = signal_from_ptu(test_file_path, channel=0, frame=-1)
+    signal_data = signal_data.sum(axis=(0, 1))
+    assert signal_data is not None
+    
+    widget._update_signal_plot()
+    
+    lines = widget.ax.get_lines()
+    assert len(lines) > 0
+    
+    plot_y_data = lines[0].get_ydata()
+    np.testing.assert_array_almost_equal(plot_y_data, signal_data)
+
+
+def test_signal_plot_sdt_widget(make_napari_viewer):
+    """Test signal plot for SDT widget."""
+    viewer = make_napari_viewer()
+    file_path = get_test_file_path("seminal_receptacle_FLIM_single_image.sdt")
+    widget = SdtWidget(viewer, path=file_path)
+    
+    # Get signal data and verify plot
+    signal_data = signal_from_sdt(file_path)
+    signal_data = signal_data.sum(axis=(0, 1))
+    assert signal_data is not None
+    
+    widget._update_signal_plot()
+    
+    lines = widget.ax.get_lines()
+    assert len(lines) > 0
+    
+    plot_y_data = lines[0].get_ydata()
+    np.testing.assert_array_almost_equal(plot_y_data, signal_data)
+
+
+def test_signal_plot_ometif_widget(make_napari_viewer):
+    """Test signal plot for OME-TIF widget."""
+    viewer = make_napari_viewer()
+    test_file_path = get_test_file_path("test_file.ome.tif")
+    widget = OmeTifWidget(viewer, path=test_file_path)
+
+    signal_data = None
+    
+    # Use phasorpy to read the OME-TIFF metadata
+    _, _, _, attrs = phasor_from_ometiff(test_file_path, harmonic='all')
+    
+    # Get harmonics from attrs
+    if "harmonic" in attrs:
+        harmonics = attrs["harmonic"]
+    if "description" in attrs.keys():
+        description = json.loads(attrs["description"])
+        if sys.getsizeof(description) > 512 * 512:  # Threshold: 256 KB
+            raise ValueError("Description dictionary is too large.")
+        if "napari_phasors_settings" in description:
+            settings = json.loads(description["napari_phasors_settings"])
+            
+            # Check if we have summed_signal data
+            if 'summed_signal' in settings:
+                signal_data = np.array(settings['summed_signal']),
+
+    assert signal_data is not None
+    
+    widget._update_signal_plot()
+    
+    lines = widget.ax.get_lines()
+    assert len(lines) > 0
+    
+    plot_y_data = lines[0].get_ydata()
+    np.testing.assert_array_almost_equal(plot_y_data, signal_data[0])
+
+    # Assert max number of harmonics is correct
+    assert widget.harmonic_slider.maximum() == np.max(harmonics)
+
+def test_signal_plot_lsm_widget(make_napari_viewer):
+    """Test signal plot for LSM widget."""
+    viewer = make_napari_viewer()
+    test_file_path = get_test_file_path("test_file.lsm")
+    widget = LsmWidget(viewer, path=test_file_path)
+    
+    # Get signal data and verify plot
+    signal_data = signal_from_lsm(test_file_path)
+    signal_data = signal_data.sum(axis=(1, 2))
+    assert signal_data is not None
+    
+    widget._update_signal_plot()
+    
+    lines = widget.ax.get_lines()
+    assert len(lines) > 0
+    
+    plot_y_data = lines[0].get_ydata()
+    np.testing.assert_array_almost_equal(plot_y_data, signal_data)
+
+
+def test_signal_plot_error_handling(make_napari_viewer):
+    """Test signal plot error handling when data cannot be loaded."""
+    viewer = make_napari_viewer()
+    test_file_path = get_test_file_path("test_file$EI0S.fbd")
+    widget = FbdWidget(viewer, path=test_file_path)
+    
+    # Mock _get_signal_data to raise an exception
+    with patch.object(widget, '_get_signal_data', side_effect=Exception("Test error")):
+        # Should not raise exception, should handle gracefully
+        widget._update_signal_plot()
+        
+        # Plot should be cleared or show error state
+        lines = widget.ax.get_lines()
+        # Should either be empty or show error message
+
+
+def test_phasor_transform_with_ome_tif_reader_option(make_napari_viewer):
+    """Test PhasorTransform widget includes OmeTifWidget in reader options."""
+    viewer = make_napari_viewer()
+    widget = PhasorTransform(viewer)
+    
+    # Verify OME-TIF reader option is included
+    assert ".ome.tif" in widget.reader_options
+    
+    # Test with OME-TIF file
+    test_file_path = get_test_file_path("test_file.ome.tif")
+    
+    with (
+        patch("napari_phasors._widget.QFileDialog.exec_", return_value=True),
+        patch(
+            "napari_phasors._widget.QFileDialog.selectedFiles",
+            return_value=[test_file_path],
+        ),
+    ):
+        widget.search_button.click()
+        
+        # Verify OmeTifWidget was added
+        assert widget.dynamic_widget_layout.count() == 1
+        added_widget = widget.dynamic_widget_layout.itemAt(0).widget()
+        assert isinstance(added_widget, OmeTifWidget)
+
+
+def test_signal_plot_canvas_properties(make_napari_viewer):
+    """Test signal plot canvas has correct properties."""
+    viewer = make_napari_viewer()
+    test_file_path = get_test_file_path("test_file$EI0S.fbd")
+    widget = FbdWidget(viewer, path=test_file_path)
+    
+    # Test canvas properties
+    assert widget.canvas.height() == 300
+    assert widget.figure.patch.get_alpha() == 0.0
+    assert widget.ax.get_facecolor() == 'none'
+    
+    # Test spine colors are grey
+    for spine in widget.ax.spines.values():
+        assert spine.get_edgecolor() == 'grey'
+    
+    # Test tick and label colors
+    assert widget.ax.xaxis.label.get_color() == 'grey'
+    assert widget.ax.yaxis.label.get_color() == 'grey'
+    assert widget.ax.title.get_color() == 'grey'
+
+
+def test_signal_plot_data_consistency_across_widgets(make_napari_viewer):
+    """Test signal plot data consistency across different widget types."""
+    viewer = make_napari_viewer()
+    
+    # Test each widget type has consistent signal data format
+    test_files = [
+        ("test_file$EI0S.fbd", FbdWidget),
+        ("test_file.ptu", PtuWidget),
+        ("seminal_receptacle_FLIM_single_image.sdt", SdtWidget),
+        ("test_file.lsm", LsmWidget),
+    ]
+    
+    for filename, widget_class in test_files:
+        test_file_path = get_test_file_path(filename)
+        widget = widget_class(viewer, path=test_file_path)
+        
+        signal_data = widget._get_signal_data()
+        assert signal_data is not None
+        assert isinstance(signal_data, np.ndarray)
+        assert len(signal_data) > 0
+        assert not np.isnan(signal_data).all()
 
 
 def test_writer_widget(make_napari_viewer, tmp_path):

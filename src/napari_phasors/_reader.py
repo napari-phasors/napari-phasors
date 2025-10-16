@@ -185,17 +185,10 @@ def raw_file_reader(
             ), "Shapes from files in .sdt do not match!"
         raw_data = xr.concat(raw_data, dim="C")
     else:
-        # Try reading with default harmonics [1, 2], fall back to None if not available
-        try:
-            raw_data = extension_mapping["raw"][file_extension](
-                path, reader_options
-            )
-        except Exception:
-            # If harmonics [1, 2] are not available, set to None and retry
-            harmonics = None
-            raw_data = extension_mapping["raw"][file_extension](
-                path, reader_options
-            )
+        raw_data = extension_mapping["raw"][file_extension](
+            path, reader_options
+        )
+
     settings = {}
     if (
         file_extension != '.fbd'
@@ -217,6 +210,24 @@ def raw_file_reader(
         else:
             # FLIM files without "C" dimension (single channel)
             axis = raw_data.dims.index("H")
+
+        # Calculate summed signal over spatial dimensions
+        if file_extension in [".lsm", ".tif"]:
+            # For hyperspectral files, sum over spatial dimensions (axes 1 onwards)
+            axes_to_sum = tuple(range(1, len(raw_data.shape)))
+        else:
+            # For FLIM files, sum over all dimensions except the histogram axis
+            axes_to_sum = tuple(i for i in range(len(raw_data.shape)) if i != axis)
+        
+        summed_signal = np.sum(raw_data, axis=axes_to_sum)
+        # Convert xarray DataArray to numpy array before converting to list
+        if hasattr(summed_signal, 'values'):
+            summed_signal = summed_signal.values
+        settings['summed_signal'] = summed_signal.tolist() if hasattr(summed_signal, 'tolist') else summed_signal
+        
+        # Only set channel for files that actually have channels (FLIM files)
+        if file_extension not in [".lsm", ".tif"]:
+            settings['channel'] = 0
 
         mean_intensity_image, G_image, S_image = phasor_from_signal(
             raw_data, axis=axis, harmonic=harmonics
@@ -246,9 +257,25 @@ def raw_file_reader(
         # Handle multi-channel files with iteration axis
         iter_axis_index = raw_data.dims.index(iter_axis)
         for channel in range(raw_data.shape[iter_axis_index]):
+            channel_data = raw_data.sel(C=channel)
+            histogram_axis = channel_data.dims.index("H")
+            
+            # Calculate summed signal over spatial dimensions for this channel
+            axes_to_sum = tuple(i for i in range(len(channel_data.shape)) if i != histogram_axis)
+            summed_signal = np.sum(channel_data, axis=axes_to_sum)
+            
+            # Convert xarray DataArray to numpy array before converting to list
+            if hasattr(summed_signal, 'values'):
+                summed_signal = summed_signal.values
+            
+            # Create settings dict for this channel
+            channel_settings = settings.copy()
+            channel_settings['summed_signal'] = summed_signal.tolist() if hasattr(summed_signal, 'tolist') else summed_signal
+            channel_settings['channel'] = channel
+
             mean_intensity_image, G_image, S_image = phasor_from_signal(
-                raw_data.sel(C=channel),
-                axis=raw_data.sel(C=channel).dims.index("H"),
+                channel_data,
+                axis=histogram_axis,
                 harmonic=harmonics,
             )
             labels_layer = make_phasors_labels_layer(
@@ -263,7 +290,7 @@ def raw_file_reader(
                 "metadata": {
                     "phasor_features_labels_layer": labels_layer,
                     "original_mean": mean_intensity_image,
-                    "settings": settings,
+                    "settings": channel_settings,
                 },
             }
             layers.append((mean_intensity_image, add_kwargs))
