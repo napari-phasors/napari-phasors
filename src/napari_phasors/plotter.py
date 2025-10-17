@@ -1033,23 +1033,25 @@ class PlotterWidget(QWidget):
             self._labels_layer_with_phasor_features = layer_metadata[
                 "phasor_features_labels_layer"
             ]
-            
+
             # Get the available harmonics from the data
-            available_harmonics = self._labels_layer_with_phasor_features.features[
-                "harmonic"
-            ].unique()
+            available_harmonics = (
+                self._labels_layer_with_phasor_features.features[
+                    "harmonic"
+                ].unique()
+            )
             min_harmonic = int(available_harmonics.min())
             max_harmonic = int(available_harmonics.max())
-            
+
             # Update spinbox range
             self.harmonic_spinbox.setMinimum(min_harmonic)
             self.harmonic_spinbox.setMaximum(max_harmonic)
-            
+
             # Set the current value to the minimum available harmonic if current value is not available
             current_harmonic = self.harmonic_spinbox.value()
             if current_harmonic not in available_harmonics:
                 self.harmonic_spinbox.setValue(min_harmonic)
-            
+
             # Update filter widget when layer changes
             if hasattr(self, 'filter_tab'):
                 self.filter_tab.on_labels_layer_with_phasor_features_changed()

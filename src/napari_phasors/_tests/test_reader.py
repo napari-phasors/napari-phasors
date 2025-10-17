@@ -1,14 +1,19 @@
+import json
+import sys
+
 import numpy as np
 import pandas as pd
 from napari.layers import Labels
+from phasorpy.io import (
+    phasor_from_ometiff,
+    signal_from_fbd,
+    signal_from_lsm,
+    signal_from_ptu,
+    signal_from_sdt,
+)
 
 from napari_phasors import napari_get_reader
 from napari_phasors._tests.test_data_utils import get_test_file_path
-
-import sys
-import json
-
-from phasorpy.io import signal_from_fbd, signal_from_ptu, signal_from_sdt, signal_from_lsm, phasor_from_ometiff
 
 
 def test_reader_ptu():
@@ -37,9 +42,11 @@ def test_reader_ptu():
     )
     signal_data = signal_from_ptu(ptu_file, frame=-1)
     signal_data = np.sum(signal_data, axis=(0, 1))
-    signal_from_settings = np.array(layer_data_tuple[1]["metadata"]["settings"]["summed_signal"])
+    signal_from_settings = np.array(
+        layer_data_tuple[1]["metadata"]["settings"]["summed_signal"]
+    )
     np.testing.assert_array_almost_equal(signal_data, signal_from_settings)
-    
+
     assert layer_data_tuple[1]["metadata"]["settings"]["channel"] == 0
 
     phasor_features = layer_data_tuple[1]["metadata"][
@@ -91,8 +98,12 @@ def test_reader_fbd():
     signal_channel_0 = signal_from_fbd(fbd_file, frame=-1, channel=0)
     signal_channel_0 = np.sum(signal_channel_0, axis=(0, 1))
 
-    signal_from_settings = np.array(layer_data_tuple[1]["metadata"]["settings"]["summed_signal"])
-    np.testing.assert_array_almost_equal(signal_channel_0, signal_from_settings)
+    signal_from_settings = np.array(
+        layer_data_tuple[1]["metadata"]["settings"]["summed_signal"]
+    )
+    np.testing.assert_array_almost_equal(
+        signal_channel_0, signal_from_settings
+    )
 
     assert layer_data_tuple[1]["metadata"]["settings"]["channel"] == 0
 
@@ -135,11 +146,15 @@ def test_reader_fbd():
 
     signal_channel_1 = signal_from_fbd(fbd_file, frame=-1, channel=1)
     signal_channel_1 = np.sum(signal_channel_1, axis=(0, 1))
-    signal_from_settings = np.array(layer_data_tuple[1]["metadata"]["settings"]["summed_signal"])
-    np.testing.assert_array_almost_equal(signal_channel_1, signal_from_settings)
+    signal_from_settings = np.array(
+        layer_data_tuple[1]["metadata"]["settings"]["summed_signal"]
+    )
+    np.testing.assert_array_almost_equal(
+        signal_channel_1, signal_from_settings
+    )
 
     assert layer_data_tuple[1]["metadata"]["settings"]["channel"] == 1
-    
+
     phasor_features = layer_data_tuple[1]["metadata"][
         "phasor_features_labels_layer"
     ]
@@ -189,7 +204,9 @@ def test_reader_sdt():
     signal_data = signal_from_sdt(sdt_file)
     signal_data = np.sum(signal_data, axis=(0, 1))
 
-    signal_from_settings = np.array(layer_data_tuple[1]["metadata"]["settings"]["summed_signal"])
+    signal_from_settings = np.array(
+        layer_data_tuple[1]["metadata"]["settings"]["summed_signal"]
+    )
     np.testing.assert_array_almost_equal(signal_data, signal_from_settings)
 
     phasor_features = layer_data_tuple[1]["metadata"][
@@ -236,7 +253,9 @@ def test_reader_lsm():
 
     signal_data = signal_from_lsm(lsm_file)
     signal_data = np.sum(signal_data, axis=(1, 2))
-    signal_from_settings = np.array(layer_data_tuple[1]["metadata"]["settings"]["summed_signal"])
+    signal_from_settings = np.array(
+        layer_data_tuple[1]["metadata"]["settings"]["summed_signal"]
+    )
     np.testing.assert_array_almost_equal(signal_data, signal_from_settings)
 
     phasor_features = layer_data_tuple[1]["metadata"][
@@ -299,6 +318,7 @@ def test_reader_ometif():
     assert actual_columns == expected_columns
     assert np.unique(phasor_features.features["harmonic"]).tolist() == [1, 2]
 
+
 def test_reader_ometif_metadata():
     """Test reading OME-TIFF file and verify metadata settings"""
     ometif_file = get_test_file_path("test_file.ome.tif")
@@ -306,14 +326,14 @@ def test_reader_ometif_metadata():
     assert callable(reader)
     layer_data_list = reader(ometif_file)
     assert isinstance(layer_data_list, list) and len(layer_data_list) == 1
-    
+
     layer_data_tuple = layer_data_list[0]
     settings = layer_data_tuple[1]["metadata"]["settings"]
-    
+
     # Test that no channel information is present (OME-TIFF doesn't have channel info like FLIM files)
     assert "channel" not in settings
     assert "frequency" not in settings
-    
+
     # Test that summed_signal is present and is a list
     _, _, _, attrs = phasor_from_ometiff(ometif_file, harmonic='all')
     signal_data = None
@@ -323,25 +343,27 @@ def test_reader_ometif_metadata():
             raise ValueError("Description dictionary is too large.")
         if "napari_phasors_settings" in description:
             settings = json.loads(description["napari_phasors_settings"])
-            
+
             # Check if we have summed_signal data
             if 'summed_signal' in settings:
-                signal_data = np.array(settings['summed_signal']),
+                signal_data = (np.array(settings['summed_signal']),)
 
     assert "summed_signal" in settings
     assert isinstance(settings["summed_signal"], list)
-    np.testing.assert_array_almost_equal(signal_data[0], np.array(settings["summed_signal"]))
-    
+    np.testing.assert_array_almost_equal(
+        signal_data[0], np.array(settings["summed_signal"])
+    )
+
     # Test filter settings
     assert "filter" in settings
     filter_settings = settings["filter"]
     assert filter_settings["method"] == "median"
     assert filter_settings["size"] == 3
     assert filter_settings["repeat"] == 3
-    
+
     # Test threshold settings
     assert "threshold" in settings
     assert settings["threshold"] == 1.0
-    
+
 
 # TODO: Add tests for .tif files

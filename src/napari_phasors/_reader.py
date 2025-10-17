@@ -217,14 +217,20 @@ def raw_file_reader(
             axes_to_sum = tuple(range(1, len(raw_data.shape)))
         else:
             # For FLIM files, sum over all dimensions except the histogram axis
-            axes_to_sum = tuple(i for i in range(len(raw_data.shape)) if i != axis)
-        
+            axes_to_sum = tuple(
+                i for i in range(len(raw_data.shape)) if i != axis
+            )
+
         summed_signal = np.sum(raw_data, axis=axes_to_sum)
         # Convert xarray DataArray to numpy array before converting to list
         if hasattr(summed_signal, 'values'):
             summed_signal = summed_signal.values
-        settings['summed_signal'] = summed_signal.tolist() if hasattr(summed_signal, 'tolist') else summed_signal
-        
+        settings['summed_signal'] = (
+            summed_signal.tolist()
+            if hasattr(summed_signal, 'tolist')
+            else summed_signal
+        )
+
         # Only set channel for files that actually have channels (FLIM files)
         if file_extension not in [".lsm", ".tif"]:
             settings['channel'] = 0
@@ -259,18 +265,26 @@ def raw_file_reader(
         for channel in range(raw_data.shape[iter_axis_index]):
             channel_data = raw_data.sel(C=channel)
             histogram_axis = channel_data.dims.index("H")
-            
+
             # Calculate summed signal over spatial dimensions for this channel
-            axes_to_sum = tuple(i for i in range(len(channel_data.shape)) if i != histogram_axis)
+            axes_to_sum = tuple(
+                i
+                for i in range(len(channel_data.shape))
+                if i != histogram_axis
+            )
             summed_signal = np.sum(channel_data, axis=axes_to_sum)
-            
+
             # Convert xarray DataArray to numpy array before converting to list
             if hasattr(summed_signal, 'values'):
                 summed_signal = summed_signal.values
-            
+
             # Create settings dict for this channel
             channel_settings = settings.copy()
-            channel_settings['summed_signal'] = summed_signal.tolist() if hasattr(summed_signal, 'tolist') else summed_signal
+            channel_settings['summed_signal'] = (
+                summed_signal.tolist()
+                if hasattr(summed_signal, 'tolist')
+                else summed_signal
+            )
             channel_settings['channel'] = channel
 
             mean_intensity_image, G_image, S_image = phasor_from_signal(
