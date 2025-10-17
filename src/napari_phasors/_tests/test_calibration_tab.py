@@ -102,10 +102,6 @@ def test_calibration_click_missing_frequency(make_napari_viewer):
     """Test calibration click with missing frequency."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
-    parent.image_layer_with_phasor_features_combobox = Mock()
-    parent.image_layer_with_phasor_features_combobox.currentText.return_value = (
-        "sample_layer"
-    )
 
     widget = parent.calibration_tab
 
@@ -131,10 +127,6 @@ def test_calibration_click_missing_lifetime(make_napari_viewer):
     """Test calibration click with missing reference lifetime."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
-    parent.image_layer_with_phasor_features_combobox = Mock()
-    parent.image_layer_with_phasor_features_combobox.currentText.return_value = (
-        "sample_layer"
-    )
 
     widget = parent.calibration_tab
 
@@ -393,10 +385,6 @@ def test_harmonic_mismatch_error(make_napari_viewer):
     """Test error when sample and calibration harmonics don't match."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
-    parent.image_layer_with_phasor_features_combobox = Mock()
-    parent.image_layer_with_phasor_features_combobox.currentText.return_value = (
-        "sample_layer"
-    )
 
     widget = parent.calibration_tab
 
@@ -438,10 +426,6 @@ def test_on_image_layer_changed_with_frequency(make_napari_viewer):
     """Test that frequency is populated when image layer changes."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
-    parent.image_layer_with_phasor_features_combobox = Mock()
-    parent.image_layer_with_phasor_features_combobox.currentText.return_value = (
-        "test_layer"
-    )
 
     widget = parent.calibration_tab
 
@@ -452,4 +436,4 @@ def test_on_image_layer_changed_with_frequency(make_napari_viewer):
     viewer.add_layer(test_layer)
 
     parent._sync_frequency_inputs_from_metadata()
-    assert widget.calibration_widget.frequency_input.text() == "80"
+    assert widget.calibration_widget.frequency_input.text() == "80.0"

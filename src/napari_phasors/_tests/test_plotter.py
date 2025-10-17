@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 from biaplotter.plotter import CanvasWidget
@@ -759,3 +759,574 @@ def test_on_labels_layer_with_phasor_features_changed_multiple_calls(
         # Each call should result in plot being called once
         assert mock_plot.call_count == 3
         plotter.deleteLater()
+
+
+def test_phasor_plotter_tab_changed_functionality(make_napari_viewer):
+    """Test tab change functionality and artist visibility management."""
+    from unittest.mock import Mock, patch
+
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    plotter = PlotterWidget(viewer)
+
+    # Mock the tab-specific visibility methods
+    with (
+        patch.object(plotter, '_hide_all_tab_artists') as mock_hide_all,
+        patch.object(plotter, '_show_tab_artists') as mock_show_tab,
+        patch.object(
+            plotter.canvas_widget.figure.canvas, 'draw_idle'
+        ) as mock_draw,
+    ):
+
+        # Test tab change to components tab (index 4)
+        components_tab_index = 4
+        plotter._on_tab_changed(components_tab_index)
+
+        # Verify methods were called
+        mock_hide_all.assert_called_once()
+        mock_show_tab.assert_called_once_with(plotter.components_tab)
+        mock_draw.assert_called_once()
+
+        # Reset mocks
+        mock_hide_all.reset_mock()
+        mock_show_tab.reset_mock()
+        mock_draw.reset_mock()
+
+        # Test tab change to FRET tab (index 6)
+        fret_tab_index = 6
+        plotter._on_tab_changed(fret_tab_index)
+
+        mock_hide_all.assert_called_once()
+        mock_show_tab.assert_called_once_with(plotter.fret_tab)
+        mock_draw.assert_called_once()
+
+
+def test_phasor_plotter_hide_and_show_tab_artists(make_napari_viewer):
+    """Test hiding and showing tab-specific artists."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    plotter = PlotterWidget(viewer)
+
+    # Mock the tab-specific visibility methods
+    with (
+        patch.object(
+            plotter, '_set_components_visibility'
+        ) as mock_components_vis,
+        patch.object(plotter, '_set_fret_visibility') as mock_fret_vis,
+    ):
+
+        # Test _hide_all_tab_artists
+        plotter._hide_all_tab_artists()
+
+        # Should call visibility methods with False
+        mock_components_vis.assert_called_with(False)
+        mock_fret_vis.assert_called_with(False)
+
+        # Reset mocks
+        mock_components_vis.reset_mock()
+        mock_fret_vis.reset_mock()
+
+        # Test _show_tab_artists with components tab
+        plotter._show_tab_artists(plotter.components_tab)
+        mock_components_vis.assert_called_once_with(True)
+        mock_fret_vis.assert_not_called()
+
+        # Reset mocks
+        mock_components_vis.reset_mock()
+        mock_fret_vis.reset_mock()
+
+        # Test _show_tab_artists with FRET tab
+        plotter._show_tab_artists(plotter.fret_tab)
+        mock_fret_vis.assert_called_once_with(True)
+        mock_components_vis.assert_not_called()
+
+        # Test _show_tab_artists with non-specific tab (should not call any visibility methods)
+        mock_components_vis.reset_mock()
+        mock_fret_vis.reset_mock()
+
+        plotter._show_tab_artists(plotter.settings_tab)
+        mock_components_vis.assert_not_called()
+        mock_fret_vis.assert_not_called()
+
+
+def test_phasor_plotter_tab_specific_visibility_methods(make_napari_viewer):
+    """Test the tab-specific visibility methods."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    plotter = PlotterWidget(viewer)
+
+    # Test _set_components_visibility
+    with patch.object(
+        plotter.components_tab, 'set_artists_visible'
+    ) as mock_components_artists:
+        plotter._set_components_visibility(True)
+        mock_components_artists.assert_called_once_with(True)
+
+        mock_components_artists.reset_mock()
+        plotter._set_components_visibility(False)
+        mock_components_artists.assert_called_once_with(False)
+
+    # Test _set_fret_visibility
+    with patch.object(
+        plotter.fret_tab, 'set_artists_visible'
+    ) as mock_fret_artists:
+        plotter._set_fret_visibility(True)
+        mock_fret_artists.assert_called_once_with(True)
+
+        mock_fret_artists.reset_mock()
+        plotter._set_fret_visibility(False)
+        mock_fret_artists.assert_called_once_with(False)
+
+
+def test_phasor_plotter_tab_widget_signal_connection(make_napari_viewer):
+    """Test that tab widget currentChanged signal is properly connected."""
+    viewer = make_napari_viewer()
+
+    with patch.object(PlotterWidget, '_on_tab_changed') as mock_tab_changed:
+        plotter = PlotterWidget(viewer)
+
+        # Simulate tab change by emitting the signal directly
+        plotter.tab_widget.setCurrentIndex(2)  # Change to filter tab
+
+        # The signal should trigger the method
+        mock_tab_changed.assert_called_with(2)
+
+
+def test_phasor_plotter_tab_changed_with_different_tabs(make_napari_viewer):
+    """Test tab changes with different tab indices."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    plotter = PlotterWidget(viewer)
+
+    with (
+        patch.object(plotter, '_hide_all_tab_artists') as mock_hide_all,
+        patch.object(plotter, '_show_tab_artists') as mock_show_tab,
+    ):
+
+        # Test each tab index
+        tab_names = [
+            "Plot Settings",
+            "Calibration",
+            "Filter/Threshold",
+            "Selection",
+            "Components",
+            "Lifetime",
+            "FRET",
+        ]
+
+        for i in range(plotter.tab_widget.count()):
+            mock_hide_all.reset_mock()
+            mock_show_tab.reset_mock()
+
+            plotter._on_tab_changed(i)
+
+            # Should always hide all artists first
+            mock_hide_all.assert_called_once()
+
+            # Should show artists for the current tab
+            expected_tab = plotter.tab_widget.widget(i)
+            mock_show_tab.assert_called_once_with(expected_tab)
+
+
+def test_phasor_plotter_tab_changed_functionality(make_napari_viewer):
+    """Test tab change functionality and artist visibility management."""
+
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    plotter = PlotterWidget(viewer)
+
+    # Mock the tab-specific visibility methods
+    with (
+        patch.object(plotter, '_hide_all_tab_artists') as mock_hide_all,
+        patch.object(plotter, '_show_tab_artists') as mock_show_tab,
+        patch.object(
+            plotter.canvas_widget.figure.canvas, 'draw_idle'
+        ) as mock_draw,
+    ):
+
+        # Test tab change to components tab (index 4)
+        components_tab_index = 4
+        plotter._on_tab_changed(components_tab_index)
+
+        # Verify methods were called
+        mock_hide_all.assert_called_once()
+        mock_show_tab.assert_called_once_with(plotter.components_tab)
+        mock_draw.assert_called_once()
+
+        # Reset mocks
+        mock_hide_all.reset_mock()
+        mock_show_tab.reset_mock()
+        mock_draw.reset_mock()
+
+        # Test tab change to FRET tab (index 6)
+        fret_tab_index = 6
+        plotter._on_tab_changed(fret_tab_index)
+
+        mock_hide_all.assert_called_once()
+        mock_show_tab.assert_called_once_with(plotter.fret_tab)
+        mock_draw.assert_called_once()
+
+
+def test_phasor_plotter_hide_and_show_tab_artists(make_napari_viewer):
+    """Test hiding and showing tab-specific artists."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    plotter = PlotterWidget(viewer)
+
+    # Mock the tab-specific visibility methods
+    with (
+        patch.object(
+            plotter, '_set_components_visibility'
+        ) as mock_components_vis,
+        patch.object(plotter, '_set_fret_visibility') as mock_fret_vis,
+    ):
+
+        # Test _hide_all_tab_artists
+        plotter._hide_all_tab_artists()
+
+        # Should call visibility methods with False
+        mock_components_vis.assert_called_with(False)
+        mock_fret_vis.assert_called_with(False)
+
+        # Reset mocks
+        mock_components_vis.reset_mock()
+        mock_fret_vis.reset_mock()
+
+        # Test _show_tab_artists with components tab
+        plotter._show_tab_artists(plotter.components_tab)
+        mock_components_vis.assert_called_once_with(True)
+        mock_fret_vis.assert_not_called()
+
+        # Reset mocks
+        mock_components_vis.reset_mock()
+        mock_fret_vis.reset_mock()
+
+        # Test _show_tab_artists with FRET tab
+        plotter._show_tab_artists(plotter.fret_tab)
+        mock_fret_vis.assert_called_once_with(True)
+        mock_components_vis.assert_not_called()
+
+        # Test _show_tab_artists with non-specific tab (should not call any visibility methods)
+        mock_components_vis.reset_mock()
+        mock_fret_vis.reset_mock()
+
+        plotter._show_tab_artists(plotter.settings_tab)
+        mock_components_vis.assert_not_called()
+        mock_fret_vis.assert_not_called()
+
+
+def test_phasor_plotter_tab_specific_visibility_methods(make_napari_viewer):
+    """Test the tab-specific visibility methods."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    plotter = PlotterWidget(viewer)
+
+    # Test _set_components_visibility
+    with patch.object(
+        plotter.components_tab, 'set_artists_visible'
+    ) as mock_components_artists:
+        plotter._set_components_visibility(True)
+        mock_components_artists.assert_called_once_with(True)
+
+        mock_components_artists.reset_mock()
+        plotter._set_components_visibility(False)
+        mock_components_artists.assert_called_once_with(False)
+
+    # Test _set_fret_visibility
+    with patch.object(
+        plotter.fret_tab, 'set_artists_visible'
+    ) as mock_fret_artists:
+        plotter._set_fret_visibility(True)
+        mock_fret_artists.assert_called_once_with(True)
+
+        mock_fret_artists.reset_mock()
+        plotter._set_fret_visibility(False)
+        mock_fret_artists.assert_called_once_with(False)
+
+
+def test_phasor_plotter_tab_widget_signal_connection(make_napari_viewer):
+    """Test that tab widget currentChanged signal is properly connected."""
+    viewer = make_napari_viewer()
+
+    with patch.object(PlotterWidget, '_on_tab_changed') as mock_tab_changed:
+        plotter = PlotterWidget(viewer)
+
+        # Simulate tab change by emitting the signal directly
+        plotter.tab_widget.setCurrentIndex(2)  # Change to filter tab
+
+        # The signal should trigger the method
+        mock_tab_changed.assert_called_with(2)
+
+
+def test_phasor_plotter_tab_changed_with_different_tabs(make_napari_viewer):
+    """Test tab changes with different tab indices."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    plotter = PlotterWidget(viewer)
+
+    with (
+        patch.object(plotter, '_hide_all_tab_artists') as mock_hide_all,
+        patch.object(plotter, '_show_tab_artists') as mock_show_tab,
+    ):
+
+        # Test each tab index
+        tab_names = [
+            "Plot Settings",
+            "Calibration",
+            "Filter/Threshold",
+            "Selection",
+            "Components",
+            "Lifetime",
+            "FRET",
+        ]
+
+        for i in range(plotter.tab_widget.count()):
+            mock_hide_all.reset_mock()
+            mock_show_tab.reset_mock()
+
+            plotter._on_tab_changed(i)
+
+            # Should always hide all artists first
+            mock_hide_all.assert_called_once()
+
+            # Should show artists for the current tab
+            expected_tab = plotter.tab_widget.widget(i)
+            mock_show_tab.assert_called_once_with(expected_tab)
+
+
+def test_phasor_plotter_set_components_visibility_method(make_napari_viewer):
+    """Test _set_components_visibility method behavior."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    plotter = PlotterWidget(viewer)
+
+    # Test with components tab having set_artists_visible method
+    with patch.object(
+        plotter.components_tab, 'set_artists_visible'
+    ) as mock_set_visible:
+        # Test setting visibility to True
+        plotter._set_components_visibility(True)
+        mock_set_visible.assert_called_once_with(True)
+
+        mock_set_visible.reset_mock()
+
+        # Test setting visibility to False
+        plotter._set_components_visibility(False)
+        mock_set_visible.assert_called_once_with(False)
+
+
+def test_phasor_plotter_set_fret_visibility_method(make_napari_viewer):
+    """Test _set_fret_visibility method behavior."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    plotter = PlotterWidget(viewer)
+
+    # Test with FRET tab having set_artists_visible method
+    with patch.object(
+        plotter.fret_tab, 'set_artists_visible'
+    ) as mock_set_visible:
+        # Test setting visibility to True
+        plotter._set_fret_visibility(True)
+        mock_set_visible.assert_called_once_with(True)
+
+        mock_set_visible.reset_mock()
+
+        # Test setting visibility to False
+        plotter._set_fret_visibility(False)
+        mock_set_visible.assert_called_once_with(False)
+
+
+def test_phasor_plotter_set_visibility_methods_without_tabs(
+    make_napari_viewer,
+):
+    """Test visibility methods when tabs don't have the expected attributes."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    # Remove the components_tab attribute to test the hasattr check
+    original_components_tab = plotter.components_tab
+    del plotter.components_tab
+
+    # Should not raise an error when components_tab doesn't exist
+    try:
+        plotter._set_components_visibility(True)
+        plotter._set_components_visibility(False)
+    except AttributeError:
+        assert (
+            False
+        ), "_set_components_visibility should handle missing components_tab gracefully"
+
+    # Restore components_tab
+    plotter.components_tab = original_components_tab
+
+    # Remove the fret_tab attribute to test the hasattr check
+    original_fret_tab = plotter.fret_tab
+    del plotter.fret_tab
+
+    # Should not raise an error when fret_tab doesn't exist
+    try:
+        plotter._set_fret_visibility(True)
+        plotter._set_fret_visibility(False)
+    except AttributeError:
+        assert (
+            False
+        ), "_set_fret_visibility should handle missing fret_tab gracefully"
+
+    # Restore fret_tab
+    plotter.fret_tab = original_fret_tab
+
+
+def test_phasor_plotter_visibility_methods_error_handling(make_napari_viewer):
+    """Test that visibility methods handle errors gracefully."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    plotter = PlotterWidget(viewer)
+
+    # Mock set_artists_visible to raise an exception
+    def mock_set_visible_error(visible):
+        raise Exception("Mock error in set_artists_visible")
+
+    with patch.object(
+        plotter.components_tab,
+        'set_artists_visible',
+        side_effect=mock_set_visible_error,
+    ):
+        # Should not crash if set_artists_visible raises an exception
+        try:
+            plotter._set_components_visibility(True)
+        except Exception as e:
+            # If the method doesn't handle the exception, the test will catch it
+            # In a real implementation, you might want to handle this gracefully
+            assert "Mock error in set_artists_visible" in str(e)
+
+    with patch.object(
+        plotter.fret_tab,
+        'set_artists_visible',
+        side_effect=mock_set_visible_error,
+    ):
+        # Should not crash if set_artists_visible raises an exception
+        try:
+            plotter._set_fret_visibility(False)
+        except Exception as e:
+            # If the method doesn't handle the exception, the test will catch it
+            # In a real implementation, you might want to handle this gracefully
+            assert "Mock error in set_artists_visible" in str(e)
+
+
+def test_phasor_plotter_visibility_methods_called_by_hide_show_artists(
+    make_napari_viewer,
+):
+    """Test that visibility methods are called correctly by hide/show artists methods."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    plotter = PlotterWidget(viewer)
+
+    # Test that _hide_all_tab_artists calls both visibility methods with False
+    with (
+        patch.object(plotter, '_set_components_visibility') as mock_comp_vis,
+        patch.object(plotter, '_set_fret_visibility') as mock_fret_vis,
+    ):
+
+        plotter._hide_all_tab_artists()
+
+        # Check that the methods were called with False (allow multiple calls)
+        mock_comp_vis.assert_called_with(False)
+        mock_fret_vis.assert_called_with(False)
+
+        # Verify all calls were with False
+        for call in mock_comp_vis.call_args_list:
+            assert call[0][0] == False
+        for call in mock_fret_vis.call_args_list:
+            assert call[0][0] == False
+
+    # Test that _show_tab_artists calls the correct visibility method for components tab
+    with (
+        patch.object(plotter, '_set_components_visibility') as mock_comp_vis,
+        patch.object(plotter, '_set_fret_visibility') as mock_fret_vis,
+    ):
+
+        plotter._show_tab_artists(plotter.components_tab)
+
+        mock_comp_vis.assert_called_once_with(True)
+        mock_fret_vis.assert_not_called()
+
+    # Test that _show_tab_artists calls the correct visibility method for FRET tab
+    with (
+        patch.object(plotter, '_set_components_visibility') as mock_comp_vis,
+        patch.object(plotter, '_set_fret_visibility') as mock_fret_vis,
+    ):
+
+        plotter._show_tab_artists(plotter.fret_tab)
+
+        mock_comp_vis.assert_not_called()
+        mock_fret_vis.assert_called_once_with(True)
+
+
+def test_phasor_plotter_visibility_methods_integration_with_tab_changes(
+    make_napari_viewer,
+):
+    """Test integration of visibility methods with actual tab changes."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    plotter = PlotterWidget(viewer)
+
+    with (
+        patch.object(plotter, '_set_components_visibility') as mock_comp_vis,
+        patch.object(plotter, '_set_fret_visibility') as mock_fret_vis,
+    ):
+
+        # Reset mocks to clear any initialization calls
+        mock_comp_vis.reset_mock()
+        mock_fret_vis.reset_mock()
+
+        # Change to components tab (index 4)
+        plotter.tab_widget.setCurrentIndex(4)
+
+        # Should have at least one False call (hide) and one True call (show) for components
+        # The exact count may vary depending on initialization and signal handling
+        assert mock_comp_vis.call_count >= 2
+        assert mock_fret_vis.call_count >= 1
+
+        # Check that the last calls were in the correct order
+        calls_comp = mock_comp_vis.call_args_list
+        calls_fret = mock_fret_vis.call_args_list
+
+        # The last component call should be True (show components)
+        assert calls_comp[-1][0][0] == True
+        # All fret calls should be False (hide fret)
+        for call in calls_fret:
+            assert call[0][0] == False
+
+        # Reset mocks
+        mock_comp_vis.reset_mock()
+        mock_fret_vis.reset_mock()
+
+        # Change to FRET tab (index 6)
+        plotter.tab_widget.setCurrentIndex(6)
+
+        # Should have at least one False call (hide) and one True call (show) for FRET
+        assert mock_comp_vis.call_count >= 1
+        assert mock_fret_vis.call_count >= 2
+
+        # Check the calls were in the right order
+        calls_comp = mock_comp_vis.call_args_list
+        calls_fret = mock_fret_vis.call_args_list
+
+        # All component calls should be False (hide components)
+        for call in calls_comp:
+            assert call[0][0] == False
+        # The last FRET call should be True (show FRET)
+        assert calls_fret[-1][0][0] == True

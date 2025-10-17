@@ -19,7 +19,7 @@ def test_convallaria_FLIM_sample_data(make_napari_viewer):
     assert isinstance(layer_data_tuple[0], np.ndarray) and isinstance(
         layer_data_tuple[1], dict
     )
-    assert layer_data_tuple[0].shape == (1, 256, 256)
+    assert layer_data_tuple[0].shape == (256, 256)
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert (
         layer_data_tuple[1]["name"]
@@ -35,7 +35,7 @@ def test_convallaria_FLIM_sample_data(make_napari_viewer):
         "phasor_features_labels_layer"
     ]
     assert isinstance(phasor_features, Labels)
-    assert phasor_features.data.shape == (1, 256, 256)
+    assert phasor_features.data.shape == (256, 256)
     assert isinstance(phasor_features.features, pd.DataFrame)
     assert phasor_features.features.shape == (131072, 6)
     expected_columns = [
@@ -55,7 +55,7 @@ def test_convallaria_FLIM_sample_data(make_napari_viewer):
     assert isinstance(layer_data_tuple[0], np.ndarray) and isinstance(
         layer_data_tuple[1], dict
     )
-    assert layer_data_tuple[0].shape == (1, 256, 256)
+    assert layer_data_tuple[0].shape == (256, 256)
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert (
         layer_data_tuple[1]["name"]
@@ -71,7 +71,7 @@ def test_convallaria_FLIM_sample_data(make_napari_viewer):
         "phasor_features_labels_layer"
     ]
     assert isinstance(phasor_features, Labels)
-    assert phasor_features.data.shape == (1, 256, 256)
+    assert phasor_features.data.shape == (256, 256)
     assert isinstance(phasor_features.features, pd.DataFrame)
     assert phasor_features.features.shape == (131072, 6)
     expected_columns = [

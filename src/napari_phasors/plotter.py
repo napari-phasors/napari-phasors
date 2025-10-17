@@ -15,6 +15,7 @@ from qtpy import uic
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QComboBox,
+    QHBoxLayout,
     QLabel,
     QHBoxLayout,
     QSpinBox,
@@ -24,14 +25,13 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from ._utils import update_frequency_in_metadata
 from .calibration_tab import CalibrationWidget
+from .components_tab import ComponentsWidget
 from .filter_tab import FilterWidget
-
-# from .components_tab import ComponentsWidget
+from .fret_tab import FretWidget
+from .lifetime_tab import LifetimeWidget
 from .selection_tab import SelectionWidget
-
-# from .fret_tab import FretWidget
-# from .lifetime_tab import LifetimeWidget
 
 
 class PlotterWidget(QWidget):
@@ -114,22 +114,36 @@ class PlotterWidget(QWidget):
         controls_container.setLayout(QVBoxLayout())
 
         # Add select image combobox
-        controls_container.layout().addWidget(QLabel("Image Layer:"))
+        image_layer_layout = QHBoxLayout()
+        image_layer_layout.setContentsMargins(0, 0, 0, 0)  # Remove margins
+        image_layer_layout.setSpacing(5)  # Reduce spacing between widgets
+        image_layer_layout.addWidget(QLabel("Image Layer:"))
         self.image_layer_with_phasor_features_combobox = QComboBox()
-        controls_container.layout().addWidget(
-            self.image_layer_with_phasor_features_combobox
-        )
+        self.image_layer_with_phasor_features_combobox.setMaximumHeight(
+            25
+        )  # Set smaller height
+        image_layer_layout.addWidget(
+            self.image_layer_with_phasor_features_combobox, 1
+        )  # Add stretch factor of 1
+
+        image_layer_widget = QWidget()
+        image_layer_widget.setLayout(image_layer_layout)
+        controls_container.layout().addWidget(image_layer_widget)
 
         # Create a horizontal box for harmonic and mask controls
         harmonics_and_mask_container = QHBoxLayout()
-
+        harmonics_and_mask_container.setContentsMargins(0, 0, 0, 0)  # Remove margins
+        harmonics_and_mask_container.setSpacing(5)  # Reduce spacing between widgets
         # Harmonic label and spinbox (left side)
         self.harmonic_label = QLabel("Harmonic:")
         harmonics_and_mask_container.addWidget(self.harmonic_label)
         self.harmonic_spinbox = QSpinBox()
         self.harmonic_spinbox.setMinimum(1)
         self.harmonic_spinbox.setValue(1)
-        harmonics_and_mask_container.addWidget(self.harmonic_spinbox)
+        self.harmonic_spinbox.setMaximumHeight(25)  # Set smaller height
+        harmonics_and_mask_container.addWidget(
+            self.harmonic_spinbox, 1
+        )  # Add stretch factor of 1
 
         # Mask label and combobox (right side)
         self.mask_layer_label = QLabel("Mask Layer:")
@@ -140,7 +154,10 @@ class PlotterWidget(QWidget):
             "Selecting 'None' will disable masking."
         )
         self.mask_layer_combobox.addItem("None")
-        harmonics_and_mask_container.addWidget(self.mask_layer_combobox)
+        self.mask_layer_combobox.setMaximumHeight(25)  # Set smaller height
+        harmonics_and_mask_container.addWidget(
+            self.mask_layer_combobox, 1
+        )
 
         controls_container.layout().addLayout(harmonics_and_mask_container)
         self.mask = None
@@ -281,6 +298,56 @@ class PlotterWidget(QWidget):
         # Populate labels layer combobox
         self.reset_layer_choices()
 
+        # Connect tab change signal
+        self.tab_widget.currentChanged.connect(self._on_tab_changed)
+
+    def _on_tab_changed(self, index):
+        """Handle tab change events to show/hide tab-specific lines."""
+        # Get the current tab widget
+        current_tab = self.tab_widget.widget(index)
+
+        # Hide all tab-specific artists first
+        self._hide_all_tab_artists()
+
+        # Show artists for the current tab
+        self._show_tab_artists(current_tab)
+
+        # Refresh canvas
+        self.canvas_widget.figure.canvas.draw_idle()
+
+    def _hide_all_tab_artists(self):
+        """Hide all tab-specific artists."""
+        # Hide components tab artists
+        if hasattr(self, 'components_tab'):
+            self._set_components_visibility(False)
+
+        # Hide other tabs' artists (add similar methods for other tabs)
+        if hasattr(self, 'fret_tab'):
+            self._set_fret_visibility(False)
+        if hasattr(self, 'components_tab'):
+            self._set_components_visibility(False)
+
+        # Hide other tabs' artists (add similar methods for other tabs)
+        if hasattr(self, 'fret_tab'):
+            self._set_fret_visibility(False)
+
+    def _show_tab_artists(self, current_tab):
+        """Show artists for the specified tab."""
+        if current_tab == getattr(self, 'components_tab', None):
+            self._set_components_visibility(True)
+        elif current_tab == getattr(self, 'fret_tab', None):
+            self._set_fret_visibility(True)
+
+    def _set_components_visibility(self, visible):
+        """Set visibility of components tab artists."""
+        if hasattr(self, 'components_tab'):
+            self.components_tab.set_artists_visible(visible)
+
+    def _set_fret_visibility(self, visible):
+        """Set visibility of FRET tab artists."""
+        if hasattr(self, 'fret_tab'):
+            self.fret_tab.set_artists_visible(visible)
+
     def _on_plot_type_changed(self):
         """Callback for plot type change."""
         new_plot_type = (
@@ -342,9 +409,10 @@ class PlotterWidget(QWidget):
         """Create the Calibration tab."""
         self.calibration_tab = CalibrationWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.calibration_tab, "Calibration")
-        # Broadcast frequency changes from the calibration tab to all tabs
-        self.calibration_tab.calibration_widget.frequency_input.textEdited.connect(
-            self._broadcast_frequency_value_across_tabs
+        self.calibration_tab.calibration_widget.frequency_input.editingFinished.connect(
+            lambda: self._broadcast_frequency_value_across_tabs(
+                self.calibration_tab.calibration_widget.frequency_input.text()
+            )
         )
 
     def _create_filter_tab(self):
@@ -359,52 +427,37 @@ class PlotterWidget(QWidget):
 
     def _create_components_tab(self):
         """Create the Components tab."""
-        # self.components_tab = ComponentsWidget(self.viewer, parent=self)
-        # self.tab_widget.addTab(self.components_tab, "Components")
-
-        # Placeholder for future components tab implementation
-        self.components_tab = QWidget()
-        self.components_tab.setLayout(QVBoxLayout())
+        self.components_tab = ComponentsWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.components_tab, "Components")
-        self.components_tab.layout().addWidget(
-            QLabel("Components widget will be implemented here.")
-        )
 
     def _create_lifetime_tab(self):
         """Create the Lifetime tab."""
-        # self.lifetime_tab = LifetimeWidget(self.viewer, parent=self)
-        # self.tab_widget.addTab(self.lifetime_tab, "Lifetime")
-
-        # self.harmonic_spinbox.valueChanged.connect(
-        #     self.lifetime_tab._on_harmonic_changed
-        # )
-        # self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
-        #     self.lifetime_tab._on_image_layer_changed
-        # )
-
-        # Placeholder for future lifetime tab implementation
-        self.lifetime_tab = QWidget()
-        self.lifetime_tab.setLayout(QVBoxLayout())
+        self.lifetime_tab = LifetimeWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.lifetime_tab, "Lifetime")
-        self.lifetime_tab.layout().addWidget(
-            QLabel("Lifetime widget will be implemented here.")
+
+        self.harmonic_spinbox.valueChanged.connect(
+            self.lifetime_tab._on_harmonic_changed
+        )
+        self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
+            self.lifetime_tab._on_image_layer_changed
+        )
+        self.lifetime_tab.frequency_input.editingFinished.connect(
+            lambda: self._broadcast_frequency_value_across_tabs(
+                self.lifetime_tab.frequency_input.text()
+            )
         )
 
     def _create_fret_tab(self):
         """Create the FRET tab."""
-        # self.fret_tab = FretWidget(self.viewer, parent=self)
-        # self.tab_widget.addTab(self.fret_tab, "FRET")
-
-        # self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
-        #     self.lifetime_tab._on_image_layer_changed
-        # )
-
-        # Placeholder for future FRET tab implementation
-        self.fret_tab = QWidget()
-        self.fret_tab.setLayout(QVBoxLayout())
+        self.fret_tab = FretWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.fret_tab, "FRET")
-        self.fret_tab.layout().addWidget(
-            QLabel("FRET widget will be implemented here.")
+        self.fret_tab.frequency_input.editingFinished.connect(
+            lambda: self._broadcast_frequency_value_across_tabs(
+                self.fret_tab.frequency_input.text()
+            )
+        )
+        self.harmonic_spinbox.valueChanged.connect(
+            self.fret_tab._on_harmonic_changed
         )
 
     @property
@@ -575,6 +628,8 @@ class PlotterWidget(QWidget):
         if frequency is None:
             return
 
+        effective_frequency = frequency * self.harmonic
+
         tick_color = 'black' if self.white_background else 'darkgray'
 
         # Generate lifetime values using powers of 2
@@ -584,7 +639,9 @@ class PlotterWidget(QWidget):
         for t in range(-8, 32):
             lifetime_val = 2**t
             try:
-                g_pos, s_pos = phasor_from_lifetime(frequency, lifetime_val)
+                g_pos, s_pos = phasor_from_lifetime(
+                    effective_frequency, lifetime_val
+                )
                 if s_pos >= 0.18:
                     lifetimes.append(lifetime_val)
             except:
@@ -594,7 +651,9 @@ class PlotterWidget(QWidget):
             if lifetime == 0:
                 g_pos, s_pos = 1.0, 0.0
             else:
-                g_pos, s_pos = phasor_from_lifetime(frequency, lifetime)
+                g_pos, s_pos = phasor_from_lifetime(
+                    effective_frequency, lifetime
+                )
 
             center_x, center_y = 0.5, 0.0
             dx = g_pos - center_x
@@ -673,11 +732,27 @@ class PlotterWidget(QWidget):
 
     def _broadcast_frequency_value_across_tabs(self, value):
         """
-        Broadcast the frequency value to all relevant input fields.
+        Broadcast the frequency value to all relevant input fields and update semicircle.
         """
+        try:
+            freq_val = float(value)
+            layer_name = (
+                self.image_layer_with_phasor_features_combobox.currentText()
+            )
+            if layer_name:
+                layer = self.viewer.layers[layer_name]
+                update_frequency_in_metadata(layer, freq_val)
+        except Exception:
+            pass
+
         self.calibration_tab.calibration_widget.frequency_input.setText(value)
-        # widget.lifetime_tab.lifetime_widget.frequency_input.setText(value)
-        # widget.fret_tab.fret_widget.frequency_input.setText(value)
+        self.lifetime_tab.frequency_input.setText(value)
+        self.fret_tab.frequency_input.setText(value)
+        self.components_tab._update_lifetime_inputs_visibility()
+
+        if self.toggle_semi_circle:
+            self._update_semi_circle_plot(self.canvas_widget.axes)
+            self.canvas_widget.figure.canvas.draw_idle()
 
     def _redefine_axes_limits(self, ensure_full_circle_displayed=True):
         """
@@ -888,19 +963,34 @@ class PlotterWidget(QWidget):
             pass
 
     def reset_layer_choices(self):
-        """Reset the image layer with phasor features combobox choices.
+        """Reset the image layer with phasor features combobox choices."""
+        # Prevent recursive calls
+        if getattr(self, '_resetting_layer_choices', False):
+            return
 
-        This function is called when a new layer is added or removed.
-        It also updates `_labels_layer_with_phasor_features` attribute with the
-        Labels layer in the metadata of the selected image layer.
-        """
-        # Temporarily disconnect the signals to prevent double execution
+        self._resetting_layer_choices = True
+
         try:
-            self.image_layer_with_phasor_features_combobox.currentIndexChanged.disconnect(
-                self.on_labels_layer_with_phasor_features_changed
+            # Store current selection
+            current_text = (
+                self.image_layer_with_phasor_features_combobox.currentText()
             )
-            self.image_layer_with_phasor_features_combobox.currentIndexChanged.disconnect(
-                self._sync_frequency_inputs_from_metadata
+
+            # Temporarily disconnect signals to prevent cascading updates
+            self.image_layer_with_phasor_features_combobox.blockSignals(True)
+
+            # Clear and repopulate
+            self.image_layer_with_phasor_features_combobox.clear()
+
+            layer_names = [
+                layer.name
+                for layer in self.viewer.layers
+                if isinstance(layer, Image)
+                and "phasor_features_labels_layer" in layer.metadata.keys()
+            ]
+
+            self.image_layer_with_phasor_features_combobox.addItems(
+                layer_names
             )
             self.mask_layer_combobox.currentTextChanged.disconnect(
                 self.on_mask_layer_changed
@@ -991,6 +1081,13 @@ class PlotterWidget(QWidget):
                     "harmonic"
                 ].max()
             )
+            # Update filter widget when layer changes
+            if hasattr(self, 'filter_tab'):
+                self.filter_tab.on_labels_layer_with_phasor_features_changed()
+
+            # Update calibration button state when layer changes
+            if hasattr(self, 'calibration_tab'):
+                self.calibration_tab._update_button_state()
 
             self.plot()
 

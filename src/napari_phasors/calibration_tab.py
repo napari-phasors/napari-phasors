@@ -7,9 +7,9 @@ from napari.utils.notifications import show_error, show_info
 from phasorpy.lifetime import phasor_from_lifetime, polar_from_reference_phasor
 from phasorpy.phasor import phasor_center, phasor_transform
 from qtpy import uic
-from qtpy.QtWidgets import QVBoxLayout, QWidget
+from qtpy.QtWidgets import QScrollArea, QVBoxLayout, QWidget
 
-from ._utils import apply_filter_and_threshold, update_frequency_in_metadata
+from ._utils import apply_filter_and_threshold
 
 if TYPE_CHECKING:
     import napari
@@ -36,7 +36,7 @@ class CalibrationWidget(QWidget):
             self._on_click
         )
 
-        # Connect layer events to populate combobox
+        # Connect layer events to populate combobox and update button state
         self.viewer.layers.events.inserted.connect(self._populate_comboboxes)
         self.viewer.layers.events.removed.connect(self._populate_comboboxes)
 
@@ -51,8 +51,13 @@ class CalibrationWidget(QWidget):
         # Populate combobox
         self._populate_comboboxes()
 
+        # Create scroll area and add calibration widget to it
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setWidget(self.calibration_widget)
+
         mainLayout = QVBoxLayout()
-        mainLayout.addWidget(self.calibration_widget)
+        mainLayout.addWidget(scroll_area)
         self.setLayout(mainLayout)
 
     def _populate_comboboxes(self):
@@ -102,7 +107,6 @@ class CalibrationWidget(QWidget):
 
         sample_layer = self.viewer.layers[sample_name]
 
-        # Check if layer is already calibrated
         if self._is_layer_calibrated(sample_layer):
             self._uncalibrate_layer(sample_name)
         else:
@@ -122,9 +126,6 @@ class CalibrationWidget(QWidget):
         frequency, lifetime = self._get_and_validate_inputs()
         if frequency is None or lifetime is None:
             return
-
-        # Update frequency in metadata
-        update_frequency_in_metadata(sample_layer, frequency)
 
         # Get phasor data and validate harmonics
         sample_phasor_data, harmonics = self._get_phasor_data(sample_layer)
@@ -150,8 +151,8 @@ class CalibrationWidget(QWidget):
 
         # Store calibration parameters
         settings = sample_layer.metadata.setdefault("settings", {})
-        settings["calibration_phase"] = phi_zero
-        settings["calibration_modulation"] = mod_zero
+        settings["calibration_phase"] = phi_zero.tolist()
+        settings["calibration_modulation"] = mod_zero.tolist()
         settings["calibrated"] = True
 
         # Apply calibration transformation
@@ -180,22 +181,18 @@ class CalibrationWidget(QWidget):
             show_error("Layer is not calibrated")
             return
 
-        # Invert the calibration parameters for uncalibration
         phi_zero_inv, mod_zero_inv = self._invert_calibration_parameters(
             phi_zero, mod_zero
         )
 
-        # Apply inverse transformation
         self._apply_phasor_transformation(
             sample_name, phi_zero_inv, mod_zero_inv
         )
 
-        # Reset calibration status and remove parameters
         settings["calibrated"] = False
         settings.pop("calibration_phase", None)
         settings.pop("calibration_modulation", None)
 
-        # Apply existing filters and thresholds
         self._apply_existing_filters_and_thresholds(sample_layer)
 
         show_info(f"Uncalibrated {sample_name}")
@@ -245,7 +242,6 @@ class CalibrationWidget(QWidget):
             (len(calibration_harmonics),) + calibration_mean.shape,
         )
 
-        # Calculate the correction values
         _, measured_re, measured_im = phasor_center(
             calibration_mean, calibration_g, calibration_s
         )
@@ -261,6 +257,11 @@ class CalibrationWidget(QWidget):
 
     def _invert_calibration_parameters(self, phi_zero, mod_zero):
         """Invert calibration parameters for uncalibration."""
+        if isinstance(phi_zero, list):
+            phi_zero = np.array(phi_zero)
+        if isinstance(mod_zero, list):
+            mod_zero = np.array(mod_zero)
+
         if np.ndim(phi_zero) > 0:
             phi_zero_inv = -phi_zero.copy()
             mod_zero_inv = 1.0 / mod_zero.copy()
@@ -274,15 +275,12 @@ class CalibrationWidget(QWidget):
         """Apply existing filter and threshold settings if they exist."""
         settings = sample_layer.metadata.get("settings", {})
 
-        # Extract filter parameters
         filter_settings = settings.get("filter", {})
         filter_size = filter_settings.get("size")
         filter_repeat = filter_settings.get("repeat")
 
-        # Extract threshold parameter
         threshold = settings.get("threshold")
 
-        # Apply if any settings exist
         if (
             filter_size is not None
             or filter_repeat is not None

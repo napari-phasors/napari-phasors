@@ -316,6 +316,7 @@ class SelectionWidget(QWidget):
         for layer in self.viewer.layers:
             if layer.name.startswith("Selection: "):
                 layer.visible = layer.name == target_layer_name
+
         harmonic_mask = (
             self.parent_widget._labels_layer_with_phasor_features.features[
                 'harmonic'
