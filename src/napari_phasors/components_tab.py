@@ -159,7 +159,9 @@ class ComponentsWidget(QWidget):
         self.analysis_type_combo.currentTextChanged.connect(
             self._on_analysis_type_changed
         )
-        self.analysis_type_combo.setToolTip("Select the type of component analysis to perform.")
+        self.analysis_type_combo.setToolTip(
+            "Select the type of component analysis to perform."
+        )
         analysis_layout.addWidget(self.analysis_type_combo)
         analysis_layout.addStretch()
         layout.addLayout(analysis_layout)
@@ -170,7 +172,9 @@ class ComponentsWidget(QWidget):
         self.components_info_label.setStyleSheet(
             "font-weight: bold; margin-top: 10px;"
         )
-        self.components_info_label.setToolTip("Change the harmonic spinbox number above to view components at different harmonics.")
+        self.components_info_label.setToolTip(
+            "Change the harmonic spinbox number above to view components at different harmonics."
+        )
         self._refresh_components_info_label()
         layout.addWidget(self.components_info_label)
 
@@ -191,7 +195,9 @@ class ComponentsWidget(QWidget):
 
         self.remove_component_btn = QPushButton("Remove Component")
         self.remove_component_btn.clicked.connect(self._remove_component)
-        self.remove_component_btn.setToolTip("Remove the last component field.")
+        self.remove_component_btn.setToolTip(
+            "Remove the last component field."
+        )
         comp_management_layout.addWidget(self.remove_component_btn)
 
         self.clear_components_btn = QPushButton("Clear All")
@@ -210,13 +216,17 @@ class ComponentsWidget(QWidget):
         buttons_row = QHBoxLayout()
         self.plot_settings_btn = QPushButton("Edit Line Layout...")
         self.plot_settings_btn.clicked.connect(self._open_plot_settings_dialog)
-        self.plot_settings_btn.setToolTip("Edit the layout of the line(s) between components.")
+        self.plot_settings_btn.setToolTip(
+            "Edit the layout of the line(s) between components."
+        )
         buttons_row.addWidget(self.plot_settings_btn)
 
         # Label style button
         self.label_style_btn = QPushButton("Edit Component Name Layout...")
         self.label_style_btn.clicked.connect(self._open_label_style_dialog)
-        self.label_style_btn.setToolTip("Edit the layout of the component name labels in the plot.")
+        self.label_style_btn.setToolTip(
+            "Edit the layout of the component name labels in the plot."
+        )
         buttons_row.addWidget(self.label_style_btn)
 
         buttons_row.addStretch()
@@ -225,7 +235,9 @@ class ComponentsWidget(QWidget):
         # Calculate button
         self.calculate_button = QPushButton("Run Analysis")
         self.calculate_button.clicked.connect(self._run_analysis)
-        self.calculate_button.setToolTip("Run the selected analysis type on the defined components.")
+        self.calculate_button.setToolTip(
+            "Run the selected analysis type on the defined components."
+        )
         layout.addWidget(self.calculate_button)
 
         layout.addStretch()
@@ -250,7 +262,9 @@ class ComponentsWidget(QWidget):
         # Select button
         select_button = QPushButton("Select location")
         select_button.setMaximumWidth(100)
-        select_button.setToolTip("Click here and then click on the phasor plot to select the component location.")
+        select_button.setToolTip(
+            "Click here and then click on the phasor plot to select the component location."
+        )
         comp_layout.addWidget(select_button)
 
         # G coordinate
@@ -266,7 +280,9 @@ class ComponentsWidget(QWidget):
         s_edit = QLineEdit()
         s_edit.setPlaceholderText("Imaginary coordinate")
         s_edit.setMaximumWidth(100)
-        s_edit.setToolTip("Edit the S (imaginary) coordinate of the component.")
+        s_edit.setToolTip(
+            "Edit the S (imaginary) coordinate of the component."
+        )
         comp_layout.addWidget(s_edit)
 
         # Lifetime input
