@@ -485,7 +485,6 @@ class AdvancedOptionsWidget(QWidget):
 
     def _on_click(self, path, reader_options, harmonics):
         """Callback whenever the calculate phasor button is clicked."""
-        print('harmonics', harmonics)
         reader = napari_get_reader(
             path, reader_options=reader_options, harmonics=harmonics
         )
