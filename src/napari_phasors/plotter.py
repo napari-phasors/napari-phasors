@@ -17,7 +17,6 @@ from qtpy.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
-    QHBoxLayout,
     QSpinBox,
     QSplitter,
     QTabWidget,
@@ -132,8 +131,12 @@ class PlotterWidget(QWidget):
 
         # Create a horizontal box for harmonic and mask controls
         harmonics_and_mask_container = QHBoxLayout()
-        harmonics_and_mask_container.setContentsMargins(0, 0, 0, 0)  # Remove margins
-        harmonics_and_mask_container.setSpacing(5)  # Reduce spacing between widgets
+        harmonics_and_mask_container.setContentsMargins(
+            0, 0, 0, 0
+        )  # Remove margins
+        harmonics_and_mask_container.setSpacing(
+            5
+        )  # Reduce spacing between widgets
         # Harmonic label and spinbox (left side)
         self.harmonic_label = QLabel("Harmonic:")
         harmonics_and_mask_container.addWidget(self.harmonic_label)
@@ -155,9 +158,7 @@ class PlotterWidget(QWidget):
         )
         self.mask_layer_combobox.addItem("None")
         self.mask_layer_combobox.setMaximumHeight(25)  # Set smaller height
-        harmonics_and_mask_container.addWidget(
-            self.mask_layer_combobox, 1
-        )
+        harmonics_and_mask_container.addWidget(self.mask_layer_combobox, 1)
 
         controls_container.layout().addLayout(harmonics_and_mask_container)
         self.mask = None
