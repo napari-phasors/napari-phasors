@@ -114,6 +114,7 @@ class ComponentsWidget(QWidget):
 
         # Flag to prevent clearing lifetime when updating from lifetime
         self._updating_from_lifetime = False
+        self._updating_settings = False  # Flag to prevent recursive updates
 
         # Flag to track if analysis was attempted
         self._analysis_attempted = False
@@ -321,14 +322,11 @@ class ComponentsWidget(QWidget):
         name_edit.textChanged.connect(
             lambda: self._on_component_name_changed(idx)
         )
-        g_edit.editingFinished.connect(
-            lambda: self._on_component_coords_changed(idx)
+        comp2.name_edit.textChanged.connect(
+            lambda: self._on_component_name_changed(1)
         )
-        g_edit.textChanged.connect(
-            lambda: self._update_component_input_styling(idx)
-        )
-        s_edit.editingFinished.connect(
-            lambda: self._on_component_coords_changed(idx)
+        comp1.g_edit.editingFinished.connect(
+            lambda: self._on_component_coords_changed(0)
         )
         s_edit.textChanged.connect(
             lambda: self._update_component_input_styling(idx)
@@ -487,6 +485,195 @@ class ComponentsWidget(QWidget):
 
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def _get_default_components_settings(self):
+        """Get default settings dictionary for components parameters."""
+        return {
+            'component1': {
+                'name': None,
+                'lifetime': None,
+                'g': None,
+                's': None
+            },
+            'component2': {
+                'name': None,
+                'lifetime': None,
+                'g': None,
+                's': None
+            },
+            'analysis_performed': False,
+            'colormap_settings': {
+                'colormap_name': 'PiYG',
+                'colormap_colors': None,
+                'contrast_limits': (0, 1),
+                'colormap_changed': False
+            },
+            'two_component_line_settings': {
+                'show_colormap_line': True,
+                'show_component_dots': True,
+                'line_offset': 0.0,
+                'line_width': 3.0,
+                'line_alpha': 1.0
+            },
+            'two_components_label_settings': {
+                'fontsize': 10,
+                'bold': False,
+                'italic': False,
+                'color': 'black'
+            }
+        }
+
+    def _initialize_components_settings_in_metadata(self, layer):
+        """Initialize components settings in layer metadata if not present."""
+        if 'settings' not in layer.metadata:
+            layer.metadata['settings'] = {}
+        if 'components' not in layer.metadata['settings']:
+            layer.metadata['settings']['components'] = {}
+        
+        default_settings = self._get_default_components_settings()
+        for key, default_value in default_settings.items():
+            if key not in layer.metadata['settings']['components']:
+                layer.metadata['settings']['components'][key] = default_value
+
+    def _update_components_setting_in_metadata(self, key_path, value):
+        """Update a specific components setting in the current layer's metadata."""
+        if self._updating_settings:
+            return
+            
+        layer_name = self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        if layer_name:
+            layer = self.viewer.layers[layer_name]
+            if 'settings' not in layer.metadata:
+                layer.metadata['settings'] = {}
+            if 'components' not in layer.metadata['settings']:
+                layer.metadata['settings']['components'] = {}
+            
+            keys = key_path.split('.')
+            current_dict = layer.metadata['settings']['components']
+            
+            for key in keys[:-1]:
+                if key not in current_dict:
+                    current_dict[key] = {}
+                current_dict = current_dict[key]
+            
+            current_dict[keys[-1]] = value
+
+    def _restore_components_settings_from_metadata(self):
+        """Restore all components settings from the current layer's metadata."""
+        layer_name = self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        if not layer_name:
+            return
+            
+        layer = self.viewer.layers[layer_name]
+        if 'settings' not in layer.metadata or 'components' not in layer.metadata['settings']:
+            self._initialize_components_settings_in_metadata(layer)
+            return
+            
+        self._updating_settings = True
+        try:
+            settings = layer.metadata['settings']['components']
+            
+            # Clear all fields first
+            self.comp1_name_edit.clear()
+            self.comp2_name_edit.clear()
+            self.first_lifetime_edit.clear()
+            self.second_lifetime_edit.clear()
+            self.first_edit1.clear()
+            self.first_edit2.clear()
+            self.second_edit1.clear()
+            self.second_edit2.clear()
+            
+            # Restore component 1 settings
+            if 'component1' in settings:
+                comp1_settings = settings['component1']
+                if comp1_settings.get('name') is not None:
+                    self.comp1_name_edit.setText(comp1_settings['name'])
+                if comp1_settings.get('lifetime') is not None:
+                    self.first_lifetime_edit.setText(str(comp1_settings['lifetime']))
+                if comp1_settings.get('g') is not None:
+                    self.first_edit1.setText(str(comp1_settings['g']))
+                if comp1_settings.get('s') is not None:
+                    self.first_edit2.setText(str(comp1_settings['s']))
+            
+            # Restore component 2 settings
+            if 'component2' in settings:
+                comp2_settings = settings['component2']
+                if comp2_settings.get('name') is not None:
+                    self.comp2_name_edit.setText(comp2_settings['name'])
+                if comp2_settings.get('lifetime') is not None:
+                    self.second_lifetime_edit.setText(str(comp2_settings['lifetime']))
+                if comp2_settings.get('g') is not None:
+                    self.second_edit1.setText(str(comp2_settings['g']))
+                if comp2_settings.get('s') is not None:
+                    self.second_edit2.setText(str(comp2_settings['s']))
+            
+            # Restore colormap settings
+            if 'colormap_settings' in settings:
+                colormap_settings = settings['colormap_settings']
+                # Store for later use when fraction layers are created/reconnected
+                self._saved_colormap_name = colormap_settings.get('colormap_name', 'PiYG')
+                self._saved_colormap_colors = colormap_settings.get('colormap_colors', None)
+                self._saved_contrast_limits = colormap_settings.get('contrast_limits', (0, 1))
+                self._colormap_was_changed = colormap_settings.get('colormap_changed', False)
+            
+            # Restore line settings
+            if 'two_component_line_settings' in settings:
+                line_settings = settings['two_component_line_settings']
+                self.show_colormap_line = line_settings.get('show_colormap_line', True)
+                self.show_component_dots = line_settings.get('show_component_dots', True)
+                self.line_offset = line_settings.get('line_offset', 0.0)
+                self.line_width = line_settings.get('line_width', 3.0)
+                self.line_alpha = line_settings.get('line_alpha', 1.0)
+            
+            # Restore label settings
+            if 'two_components_label_settings' in settings:
+                label_settings = settings['two_components_label_settings']
+                self.label_fontsize = label_settings.get('fontsize', 10)
+                self.label_bold = label_settings.get('bold', False)
+                self.label_italic = label_settings.get('italic', False)
+                self.label_color = label_settings.get('color', 'black')
+                        
+        finally:
+            self._updating_settings = False
+
+    def _recreate_components_from_metadata(self):
+        """Recreate component artists from metadata if coordinates are valid."""
+        try:
+            g1 = float(self.first_edit1.text()) if self.first_edit1.text().strip() else None
+            s1 = float(self.first_edit2.text()) if self.first_edit2.text().strip() else None
+            g2 = float(self.second_edit1.text()) if self.second_edit1.text().strip() else None
+            s2 = float(self.second_edit2.text()) if self.second_edit2.text().strip() else None
+            
+            if g1 is not None and s1 is not None:
+                self._create_component_at_coordinates(0, g1, s1)
+            
+            if g2 is not None and s2 is not None:
+                self._create_component_at_coordinates(1, g2, s2)
+            
+            layer_name = self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+            if layer_name:
+                layer = self.viewer.layers[layer_name]
+                if ('settings' in layer.metadata and 
+                    'components' in layer.metadata['settings'] and
+                    layer.metadata['settings']['components'].get('analysis_performed', False)):
+                    
+                    if (g1 is not None and s1 is not None and 
+                        g2 is not None and s2 is not None):
+                        self._updating_settings = True
+                        try:
+                            self.on_calculate_button_clicked()
+                            if hasattr(self, '_saved_colormap_name'):
+                                self._apply_saved_colormap_settings()
+                        finally:
+                            self._updating_settings = False
+                else:
+                    if (g1 is not None and s1 is not None and 
+                        g2 is not None and s2 is not None):
+                        self.draw_line_between_components()
+                    
+        except ValueError:
+            pass
+
 
     def _open_plot_settings_dialog(self):
         """Open dialog to edit plot settings."""
@@ -864,6 +1051,72 @@ class ComponentsWidget(QWidget):
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
+    def _apply_saved_colormap_settings(self):
+        """Apply saved colormap settings to fraction layers if they exist."""
+        if (self.comp1_fractions_layer is not None and 
+            hasattr(self, '_saved_colormap_name')):
+            
+            try:
+                self.comp1_fractions_layer.events.colormap.disconnect(self._on_colormap_changed)
+                self.comp1_fractions_layer.events.colormap.disconnect(self._sync_colormaps)
+                self.comp1_fractions_layer.events.contrast_limits.disconnect(self._on_contrast_limits_changed)
+                
+                if self.comp2_fractions_layer is not None:
+                    self.comp2_fractions_layer.events.colormap.disconnect(self._sync_colormaps)
+                
+                if self._saved_colormap_colors is not None:
+                    from napari.utils.colormaps import Colormap
+                    
+                    if isinstance(self._saved_colormap_colors, list):
+                        saved_colors = np.array(self._saved_colormap_colors)
+                    else:
+                        saved_colors = self._saved_colormap_colors
+                    
+                    saved_colormap = Colormap(colors=saved_colors, name="saved_custom")
+                    self.comp1_fractions_layer.colormap = saved_colormap
+                    
+                    if self.comp2_fractions_layer is not None:
+                        inverted_colors = saved_colors[::-1]
+                        inverted_colormap = Colormap(colors=inverted_colors, name="saved_custom_inverted")
+                        self.comp2_fractions_layer.colormap = inverted_colormap
+                else:
+                    self.comp1_fractions_layer.colormap = self._saved_colormap_name
+                    if self.comp2_fractions_layer is not None:
+                        inverted_name = self._saved_colormap_name + '_r' if not self._saved_colormap_name.endswith('_r') else self._saved_colormap_name[:-2]
+                        self.comp2_fractions_layer.colormap = inverted_name
+                
+                if isinstance(self._saved_contrast_limits, list):
+                    saved_limits = tuple(self._saved_contrast_limits)
+                else:
+                    saved_limits = self._saved_contrast_limits
+                
+                self.comp1_fractions_layer.contrast_limits = saved_limits
+                if self.comp2_fractions_layer is not None:
+                    self.comp2_fractions_layer.contrast_limits = saved_limits
+                
+                self.fractions_colormap = self.comp1_fractions_layer.colormap.colors
+                self.colormap_contrast_limits = self.comp1_fractions_layer.contrast_limits
+                
+                self.comp1_fractions_layer.events.colormap.connect(self._on_colormap_changed)
+                self.comp1_fractions_layer.events.colormap.connect(self._sync_colormaps)
+                self.comp1_fractions_layer.events.contrast_limits.connect(self._on_contrast_limits_changed)
+                
+                if self.comp2_fractions_layer is not None:
+                    self.comp2_fractions_layer.events.colormap.connect(self._sync_colormaps)
+                
+                self.draw_line_between_components()
+                
+            except Exception as e:
+                print(f"Error applying saved colormap settings: {e}")
+                try:
+                    self.comp1_fractions_layer.events.colormap.connect(self._on_colormap_changed)
+                    self.comp1_fractions_layer.events.colormap.connect(self._sync_colormaps)
+                    self.comp1_fractions_layer.events.contrast_limits.connect(self._on_contrast_limits_changed)
+                    if self.comp2_fractions_layer is not None:
+                        self.comp2_fractions_layer.events.colormap.connect(self._sync_colormaps)
+                except Exception:
+                    pass
+
     def get_all_artists(self):
         """Get all matplotlib artists."""
         artists = []
@@ -898,8 +1151,14 @@ class ComponentsWidget(QWidget):
 
     def _on_plot_setting_changed(self):
         """Handle changes to plot settings from dialog."""
-        self.show_colormap_line = self.colormap_line_checkbox.isChecked()
-        self.show_component_dots = self.show_dots_checkbox.isChecked()
+        # Update settings in metadata
+        if hasattr(self, 'colormap_line_checkbox'):
+            self.show_colormap_line = self.colormap_line_checkbox.isChecked()
+            self._update_components_setting_in_metadata('two_component_line_settings.show_colormap_line', self.show_colormap_line)
+        
+        if hasattr(self, 'show_dots_checkbox'):
+            self.show_component_dots = self.show_dots_checkbox.isChecked()
+            self._update_components_setting_in_metadata('two_component_line_settings.show_component_dots', self.show_component_dots)
 
         active_components = [
             c for c in self.components if c is not None and c.dot is not None
@@ -933,7 +1192,10 @@ class ComponentsWidget(QWidget):
     def _on_line_offset_changed(self, value):
         """Handle changes to line offset from slider."""
         self.line_offset = value / 1000.0
-        self.line_offset_value_label.setText(f"{self.line_offset:.3f}")
+        self._update_components_setting_in_metadata('two_component_line_settings.line_offset', self.line_offset)
+        
+        if hasattr(self, 'line_offset_value_label'):
+            self.line_offset_value_label.setText(f"{self.line_offset:.3f}")
         self.draw_line_between_components()
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
@@ -941,6 +1203,7 @@ class ComponentsWidget(QWidget):
     def _on_line_width_changed(self, value):
         """Handle changes to line width from spinbox."""
         self.line_width = float(value)
+        self._update_components_setting_in_metadata('two_component_line_settings.line_width', self.line_width)
 
         if isinstance(self.component_line, LineCollection):
             try:
@@ -958,7 +1221,10 @@ class ComponentsWidget(QWidget):
     def _on_line_alpha_changed(self, value):
         """Handle changes to line alpha from slider."""
         self.line_alpha = value / 100.0
-        self.line_alpha_value_label.setText(f"{self.line_alpha:.2f}")
+        self._update_components_setting_in_metadata('two_component_line_settings.line_alpha', self.line_alpha)
+        
+        if hasattr(self, 'line_alpha_value_label'):
+            self.line_alpha_value_label.setText(f"{self.line_alpha:.2f}")
 
         if self.component_line is not None:
             if hasattr(self.component_line, 'set_alpha'):
@@ -981,6 +1247,7 @@ class ComponentsWidget(QWidget):
         color = QColorDialog.getColor()
         if color.isValid():
             self.label_color = color.name()
+            self._update_components_setting_in_metadata('two_components_label_settings.color', self.label_color)
             self._apply_styles_to_labels()
 
     def _on_label_style_changed(self):
@@ -1113,6 +1380,11 @@ class ComponentsWidget(QWidget):
         """Update component G/S coordinates based on lifetime input."""
         comp = self.components[idx]
         txt = comp.lifetime_edit.text().strip()
+        
+        if not self._updating_settings:
+            comp_key = f'component{idx + 1}.lifetime'
+            self._update_components_setting_in_metadata(comp_key, float(txt) if txt else None)
+        
         if not txt:
             return
         G, S = self._compute_phasor_from_lifetime(txt)
@@ -1134,8 +1406,17 @@ class ComponentsWidget(QWidget):
         except ValueError:
             return
 
+        if not self._updating_settings:
+            comp_key_g = f'component{idx + 1}.g'
+            comp_key_s = f'component{idx + 1}.s'
+            self._update_components_setting_in_metadata(comp_key_g, x)
+            self._update_components_setting_in_metadata(comp_key_s, y)
+
         if comp.lifetime_edit is not None and not self._updating_from_lifetime:
             comp.lifetime_edit.clear()
+            if not self._updating_settings:
+                comp_key_lifetime = f'component{idx + 1}.lifetime'
+                self._update_components_setting_in_metadata(comp_key_lifetime, None)
 
         if comp.dot is not None:
             comp.dot.set_data([x], [y])
@@ -1165,6 +1446,94 @@ class ComponentsWidget(QWidget):
                 )
 
         return colors
+
+    def _on_component_name_changed(self, idx: int):
+        """Handle changes to component name."""
+        comp = self.components[idx]
+        name = comp.name_edit.text().strip()
+        
+        old_name = None
+        if not self._updating_settings:
+            layer_name = self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+            if layer_name:
+                layer = self.viewer.layers[layer_name]
+                if ('settings' in layer.metadata and 
+                    'components' in layer.metadata['settings']):
+                    old_name = layer.metadata['settings']['components'].get(f'component{idx + 1}', {}).get('name')
+            
+            if old_name != name:
+                self._update_fraction_layer_names(idx, old_name, name)
+            
+            comp_key = f'component{idx + 1}.name'
+            self._update_components_setting_in_metadata(comp_key, name if name else None)
+        
+        if comp.dot is None:
+            return
+        
+        prev_pos = None
+        if comp.text is not None:
+            prev_pos = comp.text.get_position()
+            comp.text.remove()
+            comp.text = None
+        if name:
+            dx, dy = comp.dot.get_data()
+            if prev_pos is None:
+                ox, oy = comp.text_offset
+                base_x, base_y = dx[0] + ox, dy[0] + oy
+            else:
+                base_x, base_y = prev_pos
+                comp.text_offset = (base_x - dx[0], base_y - dy[0])
+            ax = self.parent_widget.canvas_widget.figure.gca()
+            comp.text = ax.text(
+                base_x,
+                base_y,
+                name,
+                fontsize=self.label_fontsize,
+                fontweight='bold' if self.label_bold else 'normal',
+                fontstyle='italic' if self.label_italic else 'normal',
+                color=self.label_color,
+                picker=True,
+            )
+        
+        self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def _update_fraction_layer_names(self, idx: int, old_name: str, new_name: str):
+        """Update the names of the fraction layers when component names change."""
+        layer_name = self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        if not layer_name:
+            return
+        
+        old_display_name = old_name if old_name else f"Component {idx + 1}"
+        new_display_name = new_name if new_name else f"Component {idx + 1}"
+        
+        old_layer_name = f"{old_display_name} fractions: {layer_name}"
+        new_layer_name = f"{new_display_name} fractions: {layer_name}"
+        
+        if old_layer_name in self.viewer.layers and old_layer_name != new_layer_name:
+            layer_obj = self.viewer.layers[old_layer_name]
+            layer_obj.name = new_layer_name
+            
+            if idx == 0:
+                self.comp1_fractions_layer = layer_obj
+            elif idx == 1:
+                self.comp2_fractions_layer = layer_obj
+        
+        elif new_layer_name not in self.viewer.layers:
+            possible_old_names = [
+                f"Component {idx + 1} fractions: {layer_name}",
+                f"{old_display_name} fractions: {layer_name}" if old_name else None
+            ]
+            
+            for possible_old_name in possible_old_names:
+                if possible_old_name and possible_old_name in self.viewer.layers:
+                    layer_obj = self.viewer.layers[possible_old_name]
+                    layer_obj.name = new_layer_name
+                    
+                    if idx == 0:
+                        self.comp1_fractions_layer = layer_obj
+                    elif idx == 1:
+                        self.comp2_fractions_layer = layer_obj
+                    break
 
     def _create_component_at_coordinates(self, idx: int, x: float, y: float):
         """Create a component dot and label at specified coordinates."""
@@ -1771,17 +2140,38 @@ class ComponentsWidget(QWidget):
             layer = event.source
             self.fractions_colormap = layer.colormap.colors
             self.colormap_contrast_limits = layer.contrast_limits
+            
+            colormap_name = getattr(layer.colormap, 'name', 'custom')
+            colormap_colors = getattr(layer.colormap, 'colors', None)
+            
+            if colormap_colors is not None:
+                if hasattr(colormap_colors, 'tolist'):
+                    colormap_colors = colormap_colors.tolist()
+                elif isinstance(colormap_colors, np.ndarray):
+                    colormap_colors = colormap_colors.tolist()
+            
+            self._update_components_setting_in_metadata('colormap_settings.colormap_name', colormap_name)
+            self._update_components_setting_in_metadata('colormap_settings.colormap_colors', colormap_colors)
+            self._update_components_setting_in_metadata('colormap_settings.colormap_changed', True)
 
             self.draw_line_between_components()
 
     def _on_contrast_limits_changed(self, event):
-        """Handle changes to the contrast limits of the fractions layer."""
+        """"Handle changes to the contrast limits of the fractions layer."""
         if (
             self.comp1_fractions_layer is not None
             and self.component_line is not None
         ):
             layer = event.source
             self.colormap_contrast_limits = layer.contrast_limits
+            
+            contrast_limits = layer.contrast_limits
+            if hasattr(contrast_limits, 'tolist'):
+                contrast_limits = contrast_limits.tolist()
+            elif isinstance(contrast_limits, np.ndarray):
+                contrast_limits = contrast_limits.tolist()
+            
+            self._update_components_setting_in_metadata('colormap_settings.contrast_limits', contrast_limits)
 
             self.draw_line_between_components()
 
@@ -2047,6 +2437,136 @@ class ComponentsWidget(QWidget):
 
             except Exception:
                 pass
+            
+    def _find_and_reconnect_layer(self, expected_name, component_name, layer_name, idx):
+        """Find and reconnect to an existing fraction layer by various naming conventions."""
+        if expected_name in self.viewer.layers:
+            if idx == 0:
+                self.comp1_fractions_layer = self.viewer.layers[expected_name]
+                self.comp1_fractions_layer.events.colormap.connect(self._on_colormap_changed)
+                self.comp1_fractions_layer.events.colormap.connect(self._sync_colormaps)
+                self.comp1_fractions_layer.events.contrast_limits.connect(self._on_contrast_limits_changed)
+            elif idx == 1:
+                self.comp2_fractions_layer = self.viewer.layers[expected_name]
+                self.comp2_fractions_layer.events.colormap.connect(self._sync_colormaps)
+        else:
+            possible_names = [
+                f"Component {idx + 1} fractions: {layer_name}",
+                f"{component_name} fractions: {layer_name}"
+            ]
+            
+            for possible_name in possible_names:
+                if possible_name in self.viewer.layers:
+                    layer_obj = self.viewer.layers[possible_name]
+                    layer_obj.name = expected_name
+                    
+                    if idx == 0:
+                        self.comp1_fractions_layer = layer_obj
+                        self.comp1_fractions_layer.events.colormap.connect(self._on_colormap_changed)
+                        self.comp1_fractions_layer.events.colormap.connect(self._sync_colormaps)
+                        self.comp1_fractions_layer.events.contrast_limits.connect(self._on_contrast_limits_changed)
+                    elif idx == 1:
+                        self.comp2_fractions_layer = layer_obj
+                        self.comp2_fractions_layer.events.colormap.connect(self._sync_colormaps)
+                    break
+        
+        if (self.comp1_fractions_layer is not None and 
+            self.comp2_fractions_layer is not None and
+            idx == 1):
+            try:
+                link_layers(
+                    [self.comp1_fractions_layer, self.comp2_fractions_layer],
+                    ('contrast_limits', 'gamma'),
+                )
+            except Exception:
+                pass
+
+    def _reconnect_existing_fraction_layers(self, layer_name):
+        """Reconnect to existing fraction layers if they exist."""
+        layer = self.viewer.layers[layer_name]
+        
+        if ('settings' in layer.metadata and 
+            'components' in layer.metadata['settings']):
+            
+            settings = layer.metadata['settings']['components']
+            comp1_name = settings.get('component1', {}).get('name') or "Component 1"
+            comp2_name = settings.get('component2', {}).get('name') or "Component 2"
+        else:
+            comp1_name = "Component 1"
+            comp2_name = "Component 2"
+        
+        comp1_fractions_layer_name = f"{comp1_name} fractions: {layer_name}"
+        comp2_fractions_layer_name = f"{comp2_name} fractions: {layer_name}"
+        
+        self._find_and_reconnect_layer(comp1_fractions_layer_name, comp1_name, layer_name, 0)
+        self._find_and_reconnect_layer(comp2_fractions_layer_name, comp2_name, layer_name, 1)
+        
+        if (self.comp1_fractions_layer is not None and hasattr(self, '_saved_colormap_name')):
+            self._apply_saved_colormap_settings()
+        elif self.comp1_fractions_layer is not None:
+            self.fractions_colormap = self.comp1_fractions_layer.colormap.colors
+            self.colormap_contrast_limits = self.comp1_fractions_layer.contrast_limits
+
+    def _on_image_layer_changed(self):
+        """Callback whenever the image layer with phasor features changes."""
+        for comp in self.components:
+            if comp.dot is not None:
+                comp.dot.remove()
+                comp.dot = None
+            if comp.text is not None:
+                comp.text.remove()
+                comp.text = None
+        
+        if self.component_line is not None:
+            try:
+                self.component_line.remove()
+            except (ValueError, AttributeError):
+                pass
+            self.component_line = None
+        
+        if self.comp1_fractions_layer is not None:
+            try:
+                self.comp1_fractions_layer.events.colormap.disconnect(self._on_colormap_changed)
+                self.comp1_fractions_layer.events.colormap.disconnect(self._sync_colormaps)
+                self.comp1_fractions_layer.events.contrast_limits.disconnect(self._on_contrast_limits_changed)
+            except Exception:
+                pass
+        
+        if self.comp2_fractions_layer is not None:
+            try:
+                self.comp2_fractions_layer.events.colormap.disconnect(self._sync_colormaps)
+            except Exception:
+                pass
+        
+        self.comp1_fractions_layer = None
+        self.comp2_fractions_layer = None
+        self.fractions_colormap = None
+        self.colormap_contrast_limits = None
+        
+        self._update_lifetime_inputs_visibility()
+        
+        layer_name = self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        if layer_name:
+            layer = self.viewer.layers[layer_name]
+            self._initialize_components_settings_in_metadata(layer)
+            
+            self._reconnect_existing_fraction_layers(layer_name)
+            
+            self._restore_components_settings_from_metadata()
+            self._recreate_components_from_metadata()
+        else:
+            self._updating_settings = True
+            try:
+                self.comp1_name_edit.clear()
+                self.comp2_name_edit.clear()
+                self.first_lifetime_edit.clear()
+                self.second_lifetime_edit.clear()
+                self.first_edit1.clear()
+                self.first_edit2.clear()
+                self.second_edit1.clear()
+                self.second_edit2.clear()
+            finally:
+                self._updating_settings = False
 
     def _create_fraction_layers(self, fractions, component_names):
         """Create fraction layers for each component."""
@@ -2102,6 +2622,33 @@ class ComponentsWidget(QWidget):
             return
         if not all(c.dot is not None for c in self.components[:2]):
             return
+        
+        for i, comp in enumerate(self.components[:2]):
+            comp_key_base = f'component{i + 1}'
+            
+            name = comp.name_edit.text().strip()
+            self._update_components_setting_in_metadata(f'{comp_key_base}.name', name if name else None)
+            
+            try:
+                g_val = float(comp.g_edit.text())
+                s_val = float(comp.s_edit.text())
+                self._update_components_setting_in_metadata(f'{comp_key_base}.g', g_val)
+                self._update_components_setting_in_metadata(f'{comp_key_base}.s', s_val)
+            except ValueError:
+                pass
+            
+            lifetime_text = comp.lifetime_edit.text().strip()
+            if lifetime_text:
+                try:
+                    lifetime_val = float(lifetime_text)
+                    self._update_components_setting_in_metadata(f'{comp_key_base}.lifetime', lifetime_val)
+                except ValueError:
+                    pass
+            else:
+                self._update_components_setting_in_metadata(f'{comp_key_base}.lifetime', None)
+        
+        self._update_components_setting_in_metadata('analysis_performed', True)
+        
         c1, c2 = self.components[:2]
         component_real = (c1.dot.get_data()[0][0], c2.dot.get_data()[0][0])
         component_imag = (c1.dot.get_data()[1][0], c2.dot.get_data()[1][0])
@@ -2125,19 +2672,46 @@ class ComponentsWidget(QWidget):
         comp2_name = c2.name_edit.text().strip() or "Component 2"
         comp2_fractions_layer_name = f"{comp2_name} fractions: {self.parent_widget.image_layer_with_phasor_features_combobox.currentText()}"
 
+        default_colormap = 'PiYG'
+        default_contrast_limits = (0, 1)
+        
+        if hasattr(self, '_saved_colormap_name') and not self._updating_settings:
+            if self._saved_colormap_colors is not None:
+                from napari.utils.colormaps import Colormap
+                if isinstance(self._saved_colormap_colors, list):
+                    saved_colors = np.array(self._saved_colormap_colors)
+                else:
+                    saved_colors = self._saved_colormap_colors
+                default_colormap = Colormap(colors=saved_colors, name="saved_custom")
+            else:
+                default_colormap = self._saved_colormap_name
+            
+            if isinstance(self._saved_contrast_limits, list):
+                default_contrast_limits = tuple(self._saved_contrast_limits)
+            else:
+                default_contrast_limits = self._saved_contrast_limits
+
         comp1_selected_fractions_layer = Image(
             fractions,
             name=comp1_fractions_layer_name,
             scale=self.parent_widget._labels_layer_with_phasor_features.scale,
-            colormap='PiYG',
-            contrast_limits=(0, 1),
+            colormap=default_colormap,
+            contrast_limits=default_contrast_limits,
         )
+        
+        if isinstance(default_colormap, str):
+            comp2_colormap = default_colormap + '_r' if not default_colormap.endswith('_r') else default_colormap[:-2]
+        else:
+            inverted_colors = default_colormap.colors[::-1]
+            from napari.utils.colormaps import Colormap
+            comp2_colormap = Colormap(colors=inverted_colors, name="saved_custom_inverted")
+        
         comp2_selected_fractions_layer = Image(
             1.0 - fractions,
             name=comp2_fractions_layer_name,
             scale=self.parent_widget._labels_layer_with_phasor_features.scale,
-            colormap='PiYG_r',  # Use inverted colormap
-            contrast_limits=(0, 1),
+            colormap=comp2_colormap,
+            contrast_limits=default_contrast_limits,
         )
 
         if comp1_fractions_layer_name in self.viewer.layers:
@@ -2160,6 +2734,12 @@ class ComponentsWidget(QWidget):
             self.comp1_fractions_layer.contrast_limits
         )
 
+        if not hasattr(self, '_saved_colormap_name') or self._updating_settings:
+            self._update_components_setting_in_metadata('colormap_settings.colormap_name', 'PiYG')
+            self._update_components_setting_in_metadata('colormap_settings.colormap_colors', None)
+            self._update_components_setting_in_metadata('colormap_settings.contrast_limits', [0, 1])
+            self._update_components_setting_in_metadata('colormap_settings.colormap_changed', False)
+
         self.comp1_fractions_layer.events.colormap.connect(
             self._on_colormap_changed
         )
@@ -2176,6 +2756,7 @@ class ComponentsWidget(QWidget):
             [self.comp1_fractions_layer, self.comp2_fractions_layer],
             ('contrast_limits', 'gamma'),
         )
+        
         self.draw_line_between_components()
 
     def _run_component_fit(self):
