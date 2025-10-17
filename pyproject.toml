@@ -26,11 +26,10 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Visualization"
 ]
 dependencies = [
-    "phasorpy==0.7",
+    "phasorpy==0.8",
     "qtpy",
     "scikit-image",
     "biaplotter>=0.4.2",
-    "lfdfiles",
     "fbdfile",
     "sdtfile",
     "ptufile",
@@ -54,9 +53,8 @@ testing = [
     "pandas",
     "black",
     "isort",
-    "phasorpy==0.7",
+    "phasorpy==0.8",
     "tifffile",
-    "lfdfiles",
     "fbdfile",
     "sdtfile",
     "ptufile",
