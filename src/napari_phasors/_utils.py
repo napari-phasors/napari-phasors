@@ -85,6 +85,7 @@ def _apply_filter_and_threshold_to_phasor_arrays(
     filter_method: str = "median",
     size: int = 3,
     repeat: int = 1,
+    mask: np.ndarray | None = None,
     sigma: float = 1.0,
     levels: int = 3,
 ):
@@ -108,6 +109,9 @@ def _apply_filter_and_threshold_to_phasor_arrays(
         Size of the median filter.
     repeat : int
         Number of times to apply the median filter.
+    mask : np.ndarray, optional
+        Mask to apply to the image. If provided, the filter will only be applied to the
+        pixels where the mask is True.
     sigma : float
         Sigma parameter for wavelet filter.
     levels : int
@@ -118,6 +122,20 @@ def _apply_filter_and_threshold_to_phasor_arrays(
     tuple
         (mean, real, imag) filtered and thresholded arrays
     """
+    mean = layer.metadata['original_mean'].copy()
+    phasor_features = layer.metadata['phasor_features_labels_layer'].features
+    harmonics = np.unique(phasor_features['harmonic'])
+    real, imag = (
+        phasor_features['G_original'].copy(),
+        phasor_features['S_original'].copy(),
+    )
+    if mask is not None:
+        mean[mask == 0] = np.nan
+        real[phasor_features['mask'] == 0] = np.nan
+        imag[phasor_features['mask'] == 0] = np.nan
+
+    real = np.reshape(real, (len(harmonics),) + mean.shape)
+    imag = np.reshape(imag, (len(harmonics),) + mean.shape)
     if filter_method == "median" and repeat > 0:
         mean, real, imag = phasor_filter_median(
             mean,
@@ -206,7 +224,10 @@ def apply_filter_and_threshold(
         'S'
     ] = imag.flatten()
     layer.data = mean
-
+    if mask is not None:
+        layer.data[mask == 0] = layer.metadata['original_mean'].copy()[
+            mask == 0
+        ]
     # Update the settings dictionary of the layer
     if "settings" not in layer.metadata:
         layer.metadata["settings"] = {}
@@ -218,6 +239,7 @@ def apply_filter_and_threshold(
         "levels": levels,
     }
     layer.metadata["settings"]["threshold"] = threshold
+    layer.metadata["settings"]["mask"] = mask
     layer.refresh()
     return
 
