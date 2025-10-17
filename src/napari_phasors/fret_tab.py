@@ -175,7 +175,19 @@ class FretWidget(QWidget):
         donor_layer_layout.addWidget(self.lifetime_type_combobox)
         self.donor_stack.addWidget(donor_layer_page)
 
-        form.addRow("Donor lifetime (ns):", self.donor_stack)
+        # Indent the stacked widget to reflect dependency on source selector
+        donor_stack_container = QWidget()
+        donor_stack_layout = QHBoxLayout(donor_stack_container)
+        donor_stack_layout.setContentsMargins(16, 0, 0, 0)  # left indent
+        donor_stack_layout.setSpacing(0)
+        donor_stack_layout.addWidget(self.donor_stack)
+        # Shift the label to the right as well (match field indent)
+        donor_label_container = QWidget()
+        donor_label_layout = QHBoxLayout(donor_label_container)
+        donor_label_layout.setContentsMargins(16, 0, 0, 0)
+        donor_label_layout.setSpacing(0)
+        donor_label_layout.addWidget(QLabel("Donor lifetime (ns):"))
+        form.addRow(donor_label_container, donor_stack_container)
 
         # Donor Background slider
         background_slider_layout = QHBoxLayout()
@@ -264,7 +276,19 @@ class FretWidget(QWidget):
         bg_image_layout.addWidget(self.background_image_combobox)
         self.bg_stack.addWidget(bg_image_page)
 
-        form.addRow("Background position:", self.bg_stack)
+        # Indent the stacked widget to reflect dependency on source selector
+        bg_stack_container = QWidget()
+        bg_stack_layout = QHBoxLayout(bg_stack_container)
+        bg_stack_layout.setContentsMargins(16, 0, 0, 0)  # left indent
+        bg_stack_layout.setSpacing(0)
+        bg_stack_layout.addWidget(self.bg_stack)
+        # Shift the label to the right as well (match field indent)
+        bg_label_container = QWidget()
+        bg_label_layout = QHBoxLayout(bg_label_container)
+        bg_label_layout.setContentsMargins(16, 0, 0, 0)
+        bg_label_layout.setSpacing(0)
+        bg_label_layout.addWidget(QLabel("Background position:"))
+        form.addRow(bg_label_container, bg_stack_container)
 
         # Proportion of Donors Fretting slider and label
         fretting_layout = QHBoxLayout()
