@@ -22,7 +22,7 @@ test_data_downloader = pooch.create(
         ),
         'test_file.ome.tif': (
             'sha256:'
-            '2db2bca351ff51d136a3db1613b7f826519a2f1752b566ce0060db0e7d6c9ef9'
+            '0b330f58dbc3ba26c821218a446db48a6b352640f3452859202bd1f66962f232'
         ),
     },
 )
