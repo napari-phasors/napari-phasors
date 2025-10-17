@@ -339,7 +339,7 @@ def test_reader_ometif_metadata():
     signal_data = None
     if "description" in attrs.keys():
         description = json.loads(attrs["description"])
-        if sys.getsizeof(description) > 512 * 512:  # Threshold: 256 KB
+        if len(json.dumps(description)) > 512 * 512:  # Threshold: 256 KB
             raise ValueError("Description dictionary is too large.")
         if "napari_phasors_settings" in description:
             settings = json.loads(description["napari_phasors_settings"])
