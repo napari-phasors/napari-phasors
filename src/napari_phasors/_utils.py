@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from napari.layers import Image
-from phasorpy.phasor import (
+from phasorpy.filter import (
     phasor_filter_median,
     phasor_filter_pawflim,
     phasor_threshold,

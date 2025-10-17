@@ -135,7 +135,7 @@ the `mamba` term whenever you see it below with `conda`.**
 
 Create a conda environment with napari by typing :
 
-    mamba create -y -n napari-phasors-env napari pyqt python=3.11
+    mamba create -y -n napari-phasors-env napari pyqt python=3.12
     
 Activate the environment :
 

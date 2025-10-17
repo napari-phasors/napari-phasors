@@ -9,7 +9,6 @@ import itertools
 import json
 import os
 import sys
-import warnings
 from typing import Any, Callable, Optional, Sequence, Union
 
 import numpy as np
@@ -21,8 +20,6 @@ from napari.layers import Labels
 from napari.utils.colormaps.colormap_utils import CYMRGB, MAGENTA_GREEN
 from napari.utils.notifications import show_error
 from phasorpy.phasor import phasor_from_signal
-
-from ._utils import apply_filter_and_threshold
 
 extension_mapping = {
     "raw": {
