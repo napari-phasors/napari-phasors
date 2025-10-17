@@ -48,30 +48,24 @@ class PhasorTransform(QWidget):
         super().__init__()
         self.viewer = viewer
 
-        # Set minimum width for the widget
         self.setMinimumWidth(400)
 
-        # Create main layout
         self.main_layout = QVBoxLayout(self)
 
-        # Create button to select file to be read
         self.search_button = QPushButton("Select file to be read")
         self.search_button.clicked.connect(self._open_file_dialog)
         self.main_layout.addWidget(self.search_button)
 
-        # Add QLabel for save path
         self.main_layout.addWidget(QLabel("Path to the selected file: "))
 
-        # Save path display
         self.save_path = QLineEdit()
         self.save_path.setReadOnly(True)
         self.main_layout.addWidget(self.save_path)
 
-        # Create layout for dynamic widgets
         self.dynamic_widget_layout = QVBoxLayout()
         self.main_layout.addLayout(self.dynamic_widget_layout)
 
-        # Define reader options (example)
+
         self.reader_options = {
             ".fbd": FbdWidget,
             ".ptu": PtuWidget,
@@ -82,11 +76,10 @@ class PhasorTransform(QWidget):
         }
 
     def _open_file_dialog(self):
-        """Open a `QFileDialog` to select a directory or file with specific extensions."""
+        """Open a `QFileDialog` to select a file with specific extensions."""
         options = QFileDialog.Options()
         dialog = QFileDialog(self, "Select Export Location", options=options)
         dialog.setFileMode(QFileDialog.AnyFile)
-        # Filter files by extension
         dialog.setNameFilter(
             "All files (*.tif *.ome.tif *.ptu *.fbd *.sdt *.lsm)"
         )
@@ -95,12 +88,10 @@ class PhasorTransform(QWidget):
             self.save_path.setText(selected_file)
             _, extension = _get_filename_extension(selected_file)
             if extension in self.reader_options:
-                # Clear existing widgets
                 for i in reversed(range(self.dynamic_widget_layout.count())):
                     widget = self.dynamic_widget_layout.takeAt(i).widget()
                     widget.deleteLater()
 
-                # Create new widgets based on extension
                 create_widget_class = self.reader_options[extension]
                 new_widget = create_widget_class(self.viewer, selected_file)
                 self.dynamic_widget_layout.addWidget(new_widget)
@@ -117,15 +108,13 @@ class AdvancedOptionsWidget(QWidget):
         self.reader_options = {}
         if not hasattr(self, 'harmonics'):
             self.harmonics = [1]
-        # Initialize has_phasor_settings only if not already set by subclass
         if not hasattr(self, 'has_phasor_settings'):
             self.has_phasor_settings = False
         if not hasattr(self, 'channels_data'):
             self.channels_data = {}
-        # Only set max_harmonic if it's not already set by subclass
         if not hasattr(self, 'max_harmonic'):
             self.max_harmonic = 2
-        # Initialize matplotlib figure and canvas
+
         self.figure = Figure(figsize=(6, 4))
         self.figure.patch.set_alpha(0.0)
         self.canvas = FigureCanvas(self.figure)
@@ -135,7 +124,7 @@ class AdvancedOptionsWidget(QWidget):
         )
         self.ax = self.figure.add_subplot(111)
         self.ax.set_facecolor('none')
-        # Set spine, tick, and label colors to grey
+
         for spine in self.ax.spines.values():
             spine.set_color('grey')
         self.ax.tick_params(colors='grey', which='both', labelsize=8)
@@ -149,21 +138,15 @@ class AdvancedOptionsWidget(QWidget):
 
     def initUI(self):
         """Initialize the user interface."""
-        # Initial layout
         self.mainLayout = QVBoxLayout()
         self.setLayout(self.mainLayout)
 
-        # Add plot canvas to layout
         self.mainLayout.addWidget(self.canvas)
 
     def _update_signal_plot(self):
         """Update the signal plot based on current parameters."""
         try:
-            # Clear and plot
             self.ax.clear()
-
-            # Check if plotting all channels or single channel
-            # Only check currentIndex if channels widget exists
             plot_all_channels = (
                 hasattr(self, 'channels')
                 and self.channels is not None
@@ -175,11 +158,9 @@ class AdvancedOptionsWidget(QWidget):
                 and hasattr(self, 'all_channels')
                 and self.all_channels > 1
             ):
-                # Plot all channels with different colors
                 colors = plt.cm.tab10(np.linspace(0, 1, self.all_channels))
 
                 for channel_idx in range(self.all_channels):
-                    # Get signal for this specific channel
                     original_channel = self.reader_options.get("channel")
                     self.reader_options["channel"] = channel_idx
                     signal = self._get_signal_data()
@@ -188,11 +169,9 @@ class AdvancedOptionsWidget(QWidget):
                     if signal is None:
                         continue
 
-                    # Update max_harmonic based on signal shape (only once)
                     if channel_idx == 0:
                         self.max_harmonic = signal.shape[-1] // 2
 
-                    # Sum over all spatial dimensions, keep time/histogram axis
                     if len(signal.shape) > 1:
                         axes_to_sum = tuple(range(len(signal.shape) - 1))
                         channel_signal = np.sum(signal, axis=axes_to_sum)
@@ -213,12 +192,10 @@ class AdvancedOptionsWidget(QWidget):
                 )
                 title = 'Signal Preview'
             else:
-                # Plot single channel in white
                 signal = self._get_signal_data()
                 if signal is None:
                     return
 
-                # Update max_harmonic based on signal shape
                 self.max_harmonic = signal.shape[-1] // 2
 
                 if len(signal.shape) > 1:
@@ -227,11 +204,9 @@ class AdvancedOptionsWidget(QWidget):
                 else:
                     summed_signal = signal
                 self.ax.plot(summed_signal, color='white')
-                # Remove legend if it exists
                 legend = self.ax.get_legend()
                 if legend:
                     legend.remove()
-                # Set title with channel number
                 if (
                     hasattr(self, 'channels')
                     and self.channels is not None
@@ -243,20 +218,17 @@ class AdvancedOptionsWidget(QWidget):
                     hasattr(self, 'channels_single_label')
                     and self.channels_single_label is not None
                 ):
-                    # Single channel case - get channel number from label
                     channel_num = self.channels_single_label.text()
                     title = f'Signal Preview of Channel {channel_num}'
                 else:
                     title = 'Signal Preview'
 
-            # Update or create harmonic slider based on new max_harmonic
             self._update_harmonic_slider()
 
             self.ax.set_xlabel('Time / Histogram Bin')
             self.ax.set_ylabel('Total Signal (sum over pixels)')
             self.ax.set_title(title)
 
-            # Reapply grey colors after clear
             for spine in self.ax.spines.values():
                 spine.set_color('grey')
             self.ax.tick_params(colors='grey', which='both', labelsize=8)
@@ -299,18 +271,15 @@ class AdvancedOptionsWidget(QWidget):
         self.channels_layout = QHBoxLayout()
         self.channels_layout.addWidget(QLabel("Channels: "))
 
-        # Initialize widgets as None - will be created in _update_channels_widget
         self.channels = None
         self.channels_single_label = None
 
         self.mainLayout.addLayout(self.channels_layout)
 
-        # Call update after initializing the attributes
         self._update_channels_widget()
 
     def _update_channels_widget(self):
-        """Create, update, or replace the channels widget based on all_channels."""
-        # Clear existing widgets
+        """Create, update, or replace the channels widget."""
         if self.channels is not None:
             self.channels.setParent(None)
             self.channels.deleteLater()
@@ -321,9 +290,7 @@ class AdvancedOptionsWidget(QWidget):
             self.channels_single_label.deleteLater()
             self.channels_single_label = None
 
-        # Create widgets based on all_channels
         if hasattr(self, 'all_channels') and self.all_channels > 1:
-            # Create combobox for multiple channels
             self.channels = QComboBox()
             self.channels.addItems(["All channels"])
             for channel in range(self.all_channels):
@@ -334,13 +301,10 @@ class AdvancedOptionsWidget(QWidget):
             )
             self.channels_layout.addWidget(self.channels)
         else:
-            # Only one channel available, show as label
             self.channels_single_label = QLabel("0")
             self.channels_layout.addWidget(self.channels_single_label)
-            # Set reader option for single channel
             self.reader_options["channel"] = 0
 
-        # Add stretch to push everything to the left
         self.channels_layout.addStretch()
 
     def _harmonic_widget(self):
@@ -348,7 +312,6 @@ class AdvancedOptionsWidget(QWidget):
         self.harmonic_layout = QHBoxLayout()
         self.harmonic_layout.addWidget(QLabel("Harmonics: "))
 
-        # Initialize widgets as None - will be created in _update_harmonic_edits
         self.harmonic_start_edit = None
         self.harmonic_end_edit = None
         self.harmonic_dash_label = None
@@ -357,12 +320,10 @@ class AdvancedOptionsWidget(QWidget):
 
         self.mainLayout.addLayout(self.harmonic_layout)
 
-        # Set initial harmonics
         self.harmonics = [1]
 
     def _update_harmonic_edits(self):
         """Create, update, or replace the harmonic input widgets based on max_harmonic."""
-        # Clear existing edit widgets
         if self.harmonic_start_edit is not None:
             self.harmonic_start_edit.setParent(None)
             self.harmonic_start_edit.deleteLater()
@@ -383,9 +344,7 @@ class AdvancedOptionsWidget(QWidget):
             self.harmonic_single_label.deleteLater()
             self.harmonic_single_label = None
 
-        # Create widgets based on max_harmonic
         if self.max_harmonic > 1:
-            # Create line edits for range selection
             self.harmonic_start_edit = QLineEdit()
             self.harmonic_start_edit.setText("1")
             self.harmonic_start_edit.setFixedWidth(50)
@@ -407,13 +366,11 @@ class AdvancedOptionsWidget(QWidget):
             )
             self.harmonic_layout.addWidget(self.harmonic_end_edit)
         else:
-            # Only one harmonic available, show as label
             self.harmonic_single_label = QLabel("1")
             self.harmonic_layout.addWidget(self.harmonic_single_label)
 
     def _update_harmonic_slider(self):
         """Create, update, or hide the harmonic slider based on max_harmonic."""
-        # Store current values before recreating slider
         current_start, current_end = 1, 2
         if (
             hasattr(self, 'harmonic_slider')
@@ -426,15 +383,12 @@ class AdvancedOptionsWidget(QWidget):
             self.harmonic_slider.deleteLater()
             self.harmonic_slider = None
 
-        # Update the edits/labels first
         self._update_harmonic_edits()
 
-        # Create slider only if we have more than 1 harmonic
         if self.max_harmonic > 1:
             self.harmonic_slider = QRangeSlider(Qt.Orientation.Horizontal)
             self.harmonic_slider.setRange(1, self.max_harmonic)
 
-            # Preserve current selection, but clamp to valid range
             preserved_start = max(1, min(current_start, self.max_harmonic))
             preserved_end = max(
                 preserved_start, min(current_end, self.max_harmonic)
@@ -446,7 +400,6 @@ class AdvancedOptionsWidget(QWidget):
                 self._on_harmonic_slider_changed
             )
 
-            # Find the harmonic layout and insert the slider right after it
             harmonic_layout_index = None
             for i in range(self.mainLayout.count()):
                 item = self.mainLayout.itemAt(i)
@@ -459,19 +412,15 @@ class AdvancedOptionsWidget(QWidget):
                     harmonic_layout_index + 1, self.harmonic_slider
                 )
             else:
-                # Fallback: add after harmonic layout
                 self.mainLayout.addWidget(self.harmonic_slider)
 
-            # Set harmonics based on preserved slider value
             start, end = preserved_start, preserved_end
             self.harmonics = list(range(start, end + 1))
 
-            # Update the end edit to reflect the actual slider value
             if self.harmonic_end_edit:
                 self.harmonic_start_edit.setText(str(start))
                 self.harmonic_end_edit.setText(str(end))
         else:
-            # No slider needed, just set harmonics to [1] and ensure max_harmonic is at least 1
             self.harmonics = [1] if self.max_harmonic >= 1 else []
 
     def _on_harmonic_edit_changed(self):
@@ -483,7 +432,6 @@ class AdvancedOptionsWidget(QWidget):
             start = int(float(self.harmonic_start_edit.text()))
             end = int(float(self.harmonic_end_edit.text()))
 
-            # Validate range
             if start < 1:
                 start = 1
                 self.harmonic_start_edit.setText(str(start))
@@ -494,14 +442,12 @@ class AdvancedOptionsWidget(QWidget):
                 start = end
                 self.harmonic_start_edit.setText(str(start))
 
-            # Update slider only if it exists
             if self.harmonic_slider:
                 self.harmonic_slider.setValue((start, end))
 
             self.harmonics = list(range(start, end + 1))
 
         except ValueError:
-            # If invalid input, reset to current values
             if self.harmonic_slider:
                 start, end = self.harmonic_slider.value()
             else:
@@ -518,7 +464,6 @@ class AdvancedOptionsWidget(QWidget):
         start, end = value
         self.harmonics = list(range(start, end + 1))
 
-        # Update line edits
         if self.harmonic_start_edit:
             self.harmonic_start_edit.setText(str(start))
         if self.harmonic_end_edit:
@@ -567,18 +512,15 @@ class FbdWidget(AdvancedOptionsWidget):
 
     def initUI(self):
         """Initialize the user interface."""
-        # Initial layout
         self.mainLayout = QVBoxLayout()
         self.setLayout(self.mainLayout)
 
-        # Add plot canvas to layout
         self.mainLayout.addWidget(self.canvas)
 
         self._harmonic_widget()
         self._frame_widget()
         self._channels_widget()
 
-        # Laser factor
         laser_layout = QHBoxLayout()
         laser_layout.addWidget(QLabel("Laser Factor (optional): "))
         self.laser_factor = QLineEdit()
@@ -597,7 +539,6 @@ class FbdWidget(AdvancedOptionsWidget):
         laser_layout.addStretch()
         self.mainLayout.addLayout(laser_layout)
 
-        # Calculate phasor button
         self.btn = QPushButton("Phasor Transform")
         self.btn.clicked.connect(
             lambda: self._on_click(
@@ -606,7 +547,6 @@ class FbdWidget(AdvancedOptionsWidget):
         )
         self.mainLayout.addWidget(self.btn)
 
-        # Initial plot update
         self._update_signal_plot()
 
     def _get_signal_data(self):
@@ -658,18 +598,15 @@ class PtuWidget(AdvancedOptionsWidget):
 
     def initUI(self):
         """Initialize the user interface."""
-        # Initial layout
         self.mainLayout = QVBoxLayout()
         self.setLayout(self.mainLayout)
 
-        # Add plot canvas to layout
         self.mainLayout.addWidget(self.canvas)
 
         self._harmonic_widget()
         self._frame_widget()
         self._channels_widget()
 
-        # dtime widget
         dtime_layout = QHBoxLayout()
         dtime_layout.addWidget(QLabel("dtime (optional): "))
         self.dtime = QLineEdit()
@@ -685,7 +622,6 @@ class PtuWidget(AdvancedOptionsWidget):
         dtime_layout.addStretch()
         self.mainLayout.addLayout(dtime_layout)
 
-        # Calculate phasor button
         self.btn = QPushButton("Phasor Transform")
         self.btn.clicked.connect(
             lambda: self._on_click(
@@ -694,7 +630,6 @@ class PtuWidget(AdvancedOptionsWidget):
         )
         self.mainLayout.addWidget(self.btn)
 
-        # Initial plot update
         self._update_signal_plot()
 
     def _get_signal_data(self):
@@ -744,29 +679,21 @@ class LsmWidget(AdvancedOptionsWidget):
             import tifffile
 
             with tifffile.TiffFile(path) as tif:
-                # LSM files have specific tags or metadata
-                # Check for LSM-specific metadata
                 return tif.is_lsm
         except Exception:
-            # If we can't determine, assume it's a regular TIFF
             return False
 
     def initUI(self):
         """Initialize the user interface."""
-        # Initial layout
         self.mainLayout = QVBoxLayout()
         self.setLayout(self.mainLayout)
 
-        # Add plot canvas to layout
         self.mainLayout.addWidget(self.canvas)
 
-        # Don't add total signal label for LSM files
-        # But initialize channel_signal_labels list
         self.channel_signal_labels = []
 
         self._harmonic_widget()
 
-        # Calculate phasor button
         self.btn = QPushButton("Phasor Transform")
         self.btn.clicked.connect(
             lambda: self._on_click(
@@ -775,7 +702,6 @@ class LsmWidget(AdvancedOptionsWidget):
         )
         self.mainLayout.addWidget(self.btn)
 
-        # Initial plot update
         self._update_signal_plot()
 
     def _get_signal_data(self):
@@ -788,7 +714,6 @@ class LsmWidget(AdvancedOptionsWidget):
             else:
                 import tifffile
 
-                # Read TIFF file
                 signal = tifffile.imread(self.path)
                 return signal
         except Exception as e:
@@ -804,14 +729,11 @@ class LsmWidget(AdvancedOptionsWidget):
             if signal is None:
                 return
 
-            # Update max_harmonic based on signal shape
             if signal.shape[0] > 0:
                 self.max_harmonic = signal.shape[0] // 2
 
-            # Update or create harmonic slider based on new max_harmonic
             self._update_harmonic_slider()
 
-            # Clear and plot
             self.ax.clear()
 
             if len(signal.shape) > 1:
@@ -831,7 +753,6 @@ class LsmWidget(AdvancedOptionsWidget):
             self.ax.set_ylabel('Total Signal (sum over pixels)')
             self.ax.set_title('Signal Preview')
 
-            # Reapply grey colors after clear
             for spine in self.ax.spines.values():
                 spine.set_color('grey')
             self.ax.tick_params(colors='grey', which='both', labelsize=8)
@@ -858,16 +779,13 @@ class SdtWidget(AdvancedOptionsWidget):
 
     def initUI(self):
         """Initialize the user interface."""
-        # Initial layout
         self.mainLayout = QVBoxLayout()
         self.setLayout(self.mainLayout)
 
-        # Add plot canvas to layout
         self.mainLayout.addWidget(self.canvas)
 
         self._harmonic_widget()
 
-        # Index selector
         index_layout = QHBoxLayout()
         index_layout.addWidget(QLabel("Index (optional): "))
         self.index = QLineEdit()
@@ -881,7 +799,6 @@ class SdtWidget(AdvancedOptionsWidget):
         index_layout.addStretch()
         self.mainLayout.addLayout(index_layout)
 
-        # Calculate phasor button
         self.btn = QPushButton("Phasor Transform")
         self.btn.clicked.connect(
             lambda: self._on_click(
@@ -890,7 +807,6 @@ class SdtWidget(AdvancedOptionsWidget):
         )
         self.mainLayout.addWidget(self.btn)
 
-        # Initial plot update
         self._update_signal_plot()
 
     def _get_signal_data(self):
@@ -932,10 +848,8 @@ class OmeTifWidget(AdvancedOptionsWidget):
 
             from phasorpy.io import phasor_from_ometiff
 
-            # Use phasorpy to read the OME-TIFF metadata
             _, _, _, attrs = phasor_from_ometiff(path, harmonic='all')
 
-            # Get harmonics from attrs
             if "harmonic" in attrs:
                 harmonics = attrs["harmonic"]
                 if isinstance(harmonics, (list, np.ndarray)):
@@ -952,7 +866,6 @@ class OmeTifWidget(AdvancedOptionsWidget):
                         description["napari_phasors_settings"]
                     )
 
-                    # Check if we have summed_signal data
                     if 'summed_signal' in settings:
                         self.has_phasor_settings = True
                         channel = settings.get('channel', 0)
@@ -963,7 +876,6 @@ class OmeTifWidget(AdvancedOptionsWidget):
                             'settings': settings,
                         }
 
-                        # Store frequency if available
                         if 'frequency' in settings:
                             self.frequency = settings['frequency']
                         elif 'frequency' in attrs:
@@ -974,19 +886,15 @@ class OmeTifWidget(AdvancedOptionsWidget):
 
     def initUI(self):
         """Initialize the user interface."""
-        # Initial layout
         self.mainLayout = QVBoxLayout()
         self.setLayout(self.mainLayout)
 
-        # Always add plot canvas to layout (even if no phasor settings)
         self.mainLayout.addWidget(self.canvas)
 
         self._harmonic_widget()
 
-        # Update harmonic slider now that max_harmonic is properly set from OME-TIFF metadata
         self._update_harmonic_slider()
 
-        # Add channel selector only if we have phasor settings AND channel information
         if (
             self.has_phasor_settings
             and len(self.channels_data) > 0
@@ -994,7 +902,6 @@ class OmeTifWidget(AdvancedOptionsWidget):
         ):
             self._channels_widget_from_settings()
 
-        # Calculate phasor button
         self.btn = QPushButton("Phasor Transform")
         self.btn.clicked.connect(
             lambda: self._on_click(
@@ -1003,7 +910,6 @@ class OmeTifWidget(AdvancedOptionsWidget):
         )
         self.mainLayout.addWidget(self.btn)
 
-        # Always try to update signal plot (will show appropriate message if no data)
         self._update_signal_plot()
 
     def _has_channel_info(self):
@@ -1019,16 +925,12 @@ class OmeTifWidget(AdvancedOptionsWidget):
         self.channels_layout = QHBoxLayout()
         self.channels_layout.addWidget(QLabel("Channels: "))
 
-        # Initialize widgets as None
         self.channels = None
         self.channels_single_label = None
 
-        # Create widgets based on number of channels in stored data
         if len(self.channels_data) > 1:
-            # Create combobox for multiple channels
             self.channels = QComboBox()
 
-            # Add channels from stored data
             for channel_idx in sorted(self.channels_data.keys()):
                 self.channels.addItem(str(channel_idx))
 
@@ -1038,7 +940,6 @@ class OmeTifWidget(AdvancedOptionsWidget):
             )
             self.channels_layout.addWidget(self.channels)
         else:
-            # Only one channel available, show as label
             if self.channels_data:
                 channel_idx = list(self.channels_data.keys())[0]
                 self.channels_single_label = QLabel(str(channel_idx))
@@ -1065,10 +966,8 @@ class OmeTifWidget(AdvancedOptionsWidget):
             and self.channels is not None
             and self.channels.count() > 0
         ):
-            # Multiple channels - use combobox selection
             channel_idx = int(self.channels.currentText())
         else:
-            # Single channel or no channel widget - use the only available channel
             if not self.channels_data:
                 return None
             channel_idx = list(self.channels_data.keys())[0]
@@ -1085,24 +984,18 @@ class OmeTifWidget(AdvancedOptionsWidget):
 
             if signal is None:
                 return
-            # For OME-TIFF, max_harmonic is already set from attrs in _load_settings
-            # Update or create harmonic slider based on max_harmonic
             self._update_harmonic_slider()
 
-            # Clear and plot
             self.ax.clear()
             self.ax.plot(signal, color='white')
 
-            # Set labels based on file type and available widgets
             if hasattr(self, 'channels') and self.channels is not None:
-                # Multiple channels - show selected channel
                 channel_num = int(self.channels.currentText())
                 title = f'Signal Preview of Channel {channel_num}'
             elif (
                 hasattr(self, 'channels_single_label')
                 and self.channels_single_label is not None
             ):
-                # Single channel - show the channel number from label
                 channel_num = self.channels_single_label.text()
                 title = f'Signal Preview of Channel {channel_num}'
             else:
@@ -1112,7 +1005,6 @@ class OmeTifWidget(AdvancedOptionsWidget):
             self.ax.set_ylabel('Total Signal (sum over pixels)')
             self.ax.set_title(title)
 
-            # Reapply grey colors after clear
             for spine in self.ax.spines.values():
                 spine.set_color('grey')
             self.ax.tick_params(colors='grey', which='both', labelsize=8)
@@ -1152,26 +1044,21 @@ class WriterWidget(QWidget):
         super().__init__()
         self.viewer = viewer
 
-        # Create main layout
         self.main_layout = QVBoxLayout(self)
 
-        # Combobox to select image layer with phasor data for export
         self.main_layout.addWidget(
             QLabel("Select Image Layer to be Exported: ")
         )
         self.export_layer_combobox = QComboBox()
         self.main_layout.addWidget(self.export_layer_combobox)
 
-        # Button to open save dialog to select export location and name
         self.search_button = QPushButton("Select Export Location and Name")
         self.search_button.clicked.connect(self._open_file_dialog)
         self.main_layout.addWidget(self.search_button)
 
-        # Connect layer events to populate combobox
         self.viewer.layers.events.inserted.connect(self._populate_combobox)
         self.viewer.layers.events.removed.connect(self._populate_combobox)
 
-        # Populate combobox
         self._populate_combobox()
 
     def _open_file_dialog(self):
@@ -1185,17 +1072,14 @@ class WriterWidget(QWidget):
         file_dialog.setAcceptMode(QFileDialog.AcceptSave)
         file_dialog.setOptions(options)
 
-        # Define multiple file types for the dropdown
         file_dialog.setNameFilters(
             ["Phasor as OME-TIFF (*.ome.tif)", "Phasor table as CSV (*.csv)"]
         )
 
-        # Execute the dialog and retrieve the selected file path
         if file_dialog.exec_():
             selected_filter = file_dialog.selectedNameFilter()
             file_path = file_dialog.selectedFiles()[0]
 
-            # Append appropriate file extension if not present
             if (
                 selected_filter == "Phasor as OME-TIFF (*.ome.tif)"
                 and not file_path.endswith(".ome.tif")
@@ -1234,16 +1118,16 @@ class WriterWidget(QWidget):
                 "phasor_features_labels_layer"
             ].features
             harmonics = np.unique(phasor_table["harmonic"])
-            # Get coordinates of each pixel
+
             coords = np.unravel_index(
                 np.arange(export_layer.data.size), export_layer.data.shape
             )
-            # Tile coordinates for each harmonic
+
             coords = [np.tile(coord, len(harmonics)) for coord in coords]
-            # Add coordinates to phasor table
+
             for dim, coord in enumerate(coords):
                 phasor_table[f'dim_{dim}'] = coord
-            # Drop rows with NaNs
+
             phasor_table = phasor_table.dropna()
             phasor_table.to_csv(
                 file_path,
