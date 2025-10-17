@@ -634,13 +634,11 @@ class ComponentsWidget(QWidget):
         self._clear_components_display()
         self.current_harmonic = new_harmonic
 
-        # Update the label text with new harmonic value (underlined, no color)
         self._refresh_components_info_label()
 
         self._restore_components_for_harmonic(new_harmonic)
         self._update_component_visibility()
 
-        # Update styling after harmonic change (only if analysis was attempted)
         if self._analysis_attempted:
             self._update_all_component_styling()
 
@@ -767,10 +765,8 @@ class ComponentsWidget(QWidget):
 
     def _run_analysis(self):
         """Run the selected analysis."""
-        # Set flag that analysis was attempted
         self._analysis_attempted = True
 
-        # Update styling to show any missing required fields
         self._update_all_component_styling()
 
         if self.analysis_type == "Linear Projection":
@@ -1073,7 +1069,6 @@ class ComponentsWidget(QWidget):
 
     def _should_highlight_missing_components(self):
         """Check if we should highlight missing component locations."""
-        # Count components that exist (not just have dots)
         num_total_components = len(
             [c for c in self.components if c is not None]
         )
@@ -1081,16 +1076,13 @@ class ComponentsWidget(QWidget):
         if num_total_components < 2:
             return False
 
-        # Calculate required harmonics based on total number of component slots
         required_harmonics = self._get_required_harmonics(num_total_components)
 
         if required_harmonics <= 1:
             return False
 
-        # Check how many harmonics have component data
         harmonics_with_components = self._get_harmonics_with_components()
 
-        # Highlight if we need more harmonics with component data
         return len(harmonics_with_components) < required_harmonics
 
     def _update_all_component_styling(self):
@@ -1155,7 +1147,7 @@ class ComponentsWidget(QWidget):
             self._create_component_at_coordinates(idx, x, y)
 
     def _get_default_colormap_max_colors(self, num_components):
-        """Get the maximum value colors from the default colormaps that will be used for components."""
+        """Get the maximum value colors from the colormaps for components."""
         colors = []
         for i in range(num_components):
             colormap_name = self.component_colormap_names[
@@ -1308,7 +1300,7 @@ class ComponentsWidget(QWidget):
         self.parent_widget.canvas_widget.canvas.draw_idle()
 
     def _select_component(self, idx: int):
-        """Activate selection mode for a component to pick its location from the plot."""
+        """Activate selection mode for a component to pick its location."""
         if self.parent_widget is None:
             return
 
@@ -1384,7 +1376,6 @@ class ComponentsWidget(QWidget):
         comp.select_button.setText(original_text)
         comp.select_button.setEnabled(True)
 
-        # Update styling after component selection (only if analysis was attempted)
         if self._analysis_attempted:
             self._update_all_component_styling()
 
@@ -1549,7 +1540,7 @@ class ComponentsWidget(QWidget):
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
     def draw_line_between_components(self):
-        """Draw a line between the first two components if both exist, or polygon for 3+ components."""
+        """Draw a line between for two components, or polygon for 3+ components."""
         active_components = [
             c for c in self.components if c is not None and c.dot is not None
         ]
@@ -1915,7 +1906,13 @@ class ComponentsWidget(QWidget):
 
     def _get_harmonics_with_components(self):
         """Get list of harmonics that have component data."""
-        harmonics = set(self.component_locations.keys())
+        harmonics = set()
+
+        for harmonic, stored_components in self.component_locations.items():
+            if stored_components and any(
+                comp is not None for comp in stored_components
+            ):
+                harmonics.add(harmonic)
 
         current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
         active_components = [
@@ -2201,7 +2198,8 @@ class ComponentsWidget(QWidget):
             available_harmonics = self._get_available_harmonics()
             if len(available_harmonics) < required_harmonics:
                 show_warning(
-                    f"{num_components}-component analysis requires at least {required_harmonics} harmonics in the data"
+                    f"{num_components}-component analysis requires at least "
+                    f"{required_harmonics} harmonics in the data"
                 )
                 return
 
@@ -2219,12 +2217,16 @@ class ComponentsWidget(QWidget):
                             next_harmonic
                         )
                     show_info(
-                        f"For {num_components}-component analysis, please select component locations in harmonic {next_harmonic} as well"
+                        f"For {num_components}-component analysis, please "
+                        "select component locations in harmonic "
+                        f"{next_harmonic} as well"
                     )
                     return
                 else:
                     show_info(
-                        f"{num_components}-component analysis requires component locations in at least {required_harmonics} harmonics"
+                        f"{num_components}-component analysis requires"
+                        " component locations in at least "
+                        f"{required_harmonics} harmonics"
                     )
                     return
 
@@ -2281,7 +2283,9 @@ class ComponentsWidget(QWidget):
 
             if not all(count == num_components for count in component_counts):
                 show_error(
-                    f"All harmonics must have exactly {num_components} component locations. Found: {component_counts} components in harmonics {harmonics_with_components}."
+                    f"All harmonics must have exactly {num_components} "
+                    f"component locations. Found: {component_counts} "
+                    f"components in harmonics {harmonics_with_components}."
                 )
                 return
 
