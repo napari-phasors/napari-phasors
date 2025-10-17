@@ -7,7 +7,6 @@ This module contains widgets to:
 
 """
 
-import sys
 from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt

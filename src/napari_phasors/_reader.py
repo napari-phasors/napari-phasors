@@ -8,7 +8,6 @@ import inspect
 import itertools
 import json
 import os
-import sys
 from typing import Any, Callable, Optional, Sequence, Union
 
 import numpy as np
@@ -363,7 +362,7 @@ def processed_file_reader(
     ][file_extension](path, reader_options)
     if "description" in attrs.keys():
         description = json.loads(attrs["description"])
-        if sys.getsizeof(description) > 512 * 512:  # Threshold: 256 KB
+        if len(json.dumps(description)) > 512 * 512:  # Threshold: 256 KB
             raise ValueError("Description dictionary is too large.")
         if "napari_phasors_settings" in description:
             settings = json.loads(description["napari_phasors_settings"])
