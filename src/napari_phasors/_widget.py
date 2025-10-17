@@ -484,7 +484,6 @@ class AdvancedOptionsWidget(QWidget):
 
     def _on_click(self, path, reader_options, harmonics):
         """Callback whenever the calculate phasor button is clicked."""
-        print('harmonics', harmonics)
         reader = napari_get_reader(
             path, reader_options=reader_options, harmonics=harmonics
         )
@@ -858,7 +857,7 @@ class OmeTifWidget(AdvancedOptionsWidget):
 
             if "description" in attrs.keys():
                 description = json.loads(attrs["description"])
-                if sys.getsizeof(description) > 512 * 512:  # Threshold: 256 KB
+                if len(json.dumps(description)) > 512 * 512:  # Threshold: 256 KB
                     raise ValueError("Description dictionary is too large.")
                 if "napari_phasors_settings" in description:
                     settings = json.loads(
