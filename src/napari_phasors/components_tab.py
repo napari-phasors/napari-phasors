@@ -2248,7 +2248,7 @@ class ComponentsWidget(QWidget):
 
             if not all(count == num_components for count in component_counts):
                 show_error(
-                    f"All harmonics must have exactly {num_components} component locations. Found: {component_counts}"
+                    f"All harmonics must have exactly {num_components} component locations. Found: {component_counts} components in harmonics {harmonics_with_components}."
                 )
                 return
 
