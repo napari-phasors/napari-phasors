@@ -4,19 +4,26 @@ from matplotlib.collections import LineCollection
 from matplotlib.colors import LinearSegmentedColormap
 from napari.layers import Image
 from napari.utils.notifications import show_error, show_warning
-from phasorpy.lifetime import phasor_from_fret_donor
+from phasorpy.lifetime import (
+    phasor_from_fret_donor,
+    phasor_to_apparent_lifetime,
+    phasor_to_normal_lifetime,
+)
 from phasorpy.phasor import phasor_center, phasor_nearest_neighbor
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QDoubleValidator
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QFormLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSlider,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -67,103 +74,237 @@ class FretWidget(QWidget):
 
     def setup_ui(self):
         """Set up the user interface for the FRET widget with a scroll area."""
-
         # Create the scroll area and the content widget
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         content_widget = QWidget()
         layout = QVBoxLayout(content_widget)
 
-        # Donor lifetime and frequency
-        self.donor_line_edit = QLineEdit()
-        self.donor_line_edit.setPlaceholderText("Donor Lifetime (ns)")
-        self.donor_line_edit.setValidator(QDoubleValidator())
-        self.donor_line_edit.textChanged.connect(self._on_parameters_changed)
-        layout.addWidget(QLabel("Donor Lifetime (ns):"))
-        layout.addWidget(self.donor_line_edit)
+        # Use a compact form layout for essentials
+        form = QFormLayout()
+        # Let fields grow by default but still shrink when needed
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
+        # Frequency
+        freq_row = QHBoxLayout()
         self.frequency_input = QLineEdit()
         self.frequency_input.setPlaceholderText("Frequency (MHz)")
         self.frequency_input.setValidator(QDoubleValidator())
+        self.frequency_input.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed
+        )
         self.frequency_input.textChanged.connect(self._on_parameters_changed)
-        layout.addWidget(QLabel("Frequency (MHz):"))
-        layout.addWidget(self.frequency_input)
+        self.frequency_input.setToolTip(
+            "Enter the laser pulse or modulation frequency in MHz"
+        )
+        freq_row.addWidget(self.frequency_input)
+        form.addRow("Frequency (MHz):", freq_row)
 
-        # Background slider (0 to 1)
-        layout.addWidget(QLabel("Donor Background:"))
+        # Donor lifetime source selector
+        donor_source_row = QHBoxLayout()
+        self.donor_source_selector = QComboBox()
+        self.donor_source_selector.addItems(["Manual", "From layer"])
+        self.donor_source_selector.setMinimumContentsLength(8)
+        self.donor_source_selector.setSizeAdjustPolicy(
+            QComboBox.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.donor_source_selector.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed
+        )
+        self.donor_source_selector.currentIndexChanged.connect(
+            self._on_donor_source_changed
+        )
+        self.donor_source_selector.setToolTip(
+            "Select whether to input donor lifetime manually or derive it from a layer"
+        )
+        donor_source_row.addWidget(self.donor_source_selector)
+        form.addRow("Donor lifetime source:", donor_source_row)
+
+        # Donor lifetime stacked input
+        self.donor_stack = QStackedWidget()
+
+        # Page 0: Manual lifetime
+        donor_manual_page = QWidget()
+        donor_manual_layout = QHBoxLayout(donor_manual_page)
+        donor_manual_layout.setContentsMargins(0, 0, 0, 0)
+        self.donor_line_edit = QLineEdit()
+        self.donor_line_edit.setPlaceholderText("Donor Lifetime (ns)")
+        self.donor_line_edit.setValidator(QDoubleValidator())
+        self.donor_line_edit.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed
+        )
+        self.donor_line_edit.textChanged.connect(self._on_parameters_changed)
+        self.donor_line_edit.setToolTip(
+            "Enter the donor lifetime in nanoseconds"
+        )
+        donor_manual_layout.addWidget(self.donor_line_edit)
+        self.donor_stack.addWidget(donor_manual_page)
+
+        # Page 1: From layer (combobox + mode)
+        donor_layer_page = QWidget()
+        donor_layer_layout = QHBoxLayout(donor_layer_page)
+        donor_layer_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.donor_lifetime_combobox = QComboBox()
+        self.donor_lifetime_combobox.setMinimumContentsLength(8)
+        self.donor_lifetime_combobox.setSizeAdjustPolicy(
+            QComboBox.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.donor_lifetime_combobox.currentIndexChanged.connect(
+            self._calculate_donor_lifetime
+        )
+        self.donor_lifetime_combobox.setToolTip(
+            "Select the layer from which to derive the donor lifetime"
+        )
+        self.lifetime_type_combobox = QComboBox()
+        self.lifetime_type_combobox.setMinimumContentsLength(8)
+        self.lifetime_type_combobox.setSizeAdjustPolicy(
+            QComboBox.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.lifetime_type_combobox.addItems(
+            [
+                "Apparent Phase Lifetime",
+                "Apparent Modulation Lifetime",
+                "Normal Lifetime",
+            ]
+        )
+        self.lifetime_type_combobox.currentIndexChanged.connect(
+            self._calculate_donor_lifetime
+        )
+        self.lifetime_type_combobox.setToolTip(
+            "Select the method to calculate donor lifetime from phasor coordinates"
+        )
+        donor_layer_layout.addWidget(self.donor_lifetime_combobox)
+        donor_layer_layout.addWidget(self.lifetime_type_combobox)
+        self.donor_stack.addWidget(donor_layer_page)
+
+        # Dynamic donor label that changes based on mode
+        self.donor_label = QLabel("Donor lifetime (ns):")
+        form.addRow(self.donor_label, self.donor_stack)
+
+        # Donor Background slider
+        background_slider_layout = QHBoxLayout()
         self.background_slider = QSlider(Qt.Horizontal)
         self.background_slider.setMinimum(0)
         self.background_slider.setMaximum(100)
         self.background_slider.setValue(10)  # 0.1 default
+        self.background_slider.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed
+        )
         self.background_slider.valueChanged.connect(
             self._on_background_slider_changed
         )
-
+        self.background_slider.setToolTip(
+            "Weight of background fluorescence in donor channel relative to fluorescence of donor without FRET. A weight of 1 means the fluorescence of background and donor without FRET are equal."
+        )
+        background_slider_layout.addWidget(self.background_slider)
         self.background_label = QLabel("0.10")
-        background_layout = QHBoxLayout()
-        background_layout.addWidget(self.background_slider)
-        background_layout.addWidget(self.background_label)
-        layout.addLayout(background_layout)
+        self.background_label.setAlignment(Qt.AlignCenter)
+        background_slider_layout.addWidget(self.background_label)
+        form.addRow("Donor Background:", background_slider_layout)
 
-        # Background position line edits
-        layout.addWidget(QLabel("Background Position:"))
-        bg_pos_layout = QHBoxLayout()
+        # Background position source selector
+        bg_source_row = QHBoxLayout()
+        self.bg_source_selector = QComboBox()
+        self.bg_source_selector.addItems(["Manual", "From layer"])
+        self.bg_source_selector.setMinimumContentsLength(8)
+        self.bg_source_selector.setSizeAdjustPolicy(
+            QComboBox.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.bg_source_selector.currentIndexChanged.connect(
+            self._on_bg_source_changed
+        )
+        self.bg_source_selector.setToolTip(
+            "Select whether to input background position manually or derive it from a layer"
+        )
+        bg_source_row.addWidget(self.bg_source_selector)
+        form.addRow("Background source:", bg_source_row)
 
-        bg_pos_layout.addWidget(QLabel("G:"))
+        # Background stacked input
+        self.bg_stack = QStackedWidget()
+
+        # Page 0: Manual G,S
+        bg_manual_page = QWidget()
+        bg_manual_layout = QHBoxLayout(bg_manual_page)
+        bg_manual_layout.setContentsMargins(0, 0, 0, 0)
+        bg_manual_layout.addWidget(QLabel("G:"))
         self.background_real_edit = QLineEdit()
         self.background_real_edit.setPlaceholderText("Real coordinate")
         self.background_real_edit.setValidator(QDoubleValidator())
-        self.background_real_edit.setText("0.1")
+        self.background_real_edit.setText("0.0")
         self.background_real_edit.textChanged.connect(
             self._on_background_position_changed
         )
-        bg_pos_layout.addWidget(self.background_real_edit)
-
-        bg_pos_layout.addWidget(QLabel("S:"))
+        self.background_real_edit.setToolTip(
+            "Real component of background fluorescence phasor coordinate at frequency"
+        )
+        bg_manual_layout.addWidget(self.background_real_edit)
+        bg_manual_layout.addWidget(QLabel("S:"))
         self.background_imag_edit = QLineEdit()
         self.background_imag_edit.setPlaceholderText("Imaginary coordinate")
         self.background_imag_edit.setValidator(QDoubleValidator())
-        self.background_imag_edit.setText("0.1")
+        self.background_imag_edit.setText("0.0")
         self.background_imag_edit.textChanged.connect(
             self._on_background_position_changed
         )
-        bg_pos_layout.addWidget(self.background_imag_edit)
-
-        layout.addLayout(bg_pos_layout)
-
-        # Background image selection
-        bg_image_layout = QHBoxLayout()
-        bg_image_layout.addWidget(
-            QLabel("Calculate background position from image:")
+        self.background_imag_edit.setToolTip(
+            "Imaginary component of background fluorescence phasor coordinate at frequency"
         )
+        bg_manual_layout.addWidget(self.background_imag_edit)
+        self.bg_stack.addWidget(bg_manual_page)
+
+        # Page 1: From layer
+        bg_image_page = QWidget()
+        bg_image_layout = QHBoxLayout(bg_image_page)
+        bg_image_layout.setContentsMargins(0, 0, 0, 0)
+
         self.background_image_combobox = QComboBox()
+        self.background_image_combobox.setMinimumContentsLength(8)
+        self.background_image_combobox.setSizeAdjustPolicy(
+            QComboBox.AdjustToMinimumContentsLengthWithIcon
+        )
         self.background_image_combobox.currentIndexChanged.connect(
             self._calculate_background_position
         )
+        self.background_image_combobox.setToolTip(
+            "Select the layer from which to derive the background position"
+        )
         bg_image_layout.addWidget(self.background_image_combobox)
-        layout.addLayout(bg_image_layout)
+        self.bg_stack.addWidget(bg_image_page)
 
-        # Donor fretting proportion slider (0 to 1)
-        layout.addWidget(QLabel("Proportion of Donors Fretting:"))
+        # Dynamic background label that changes based on mode
+        self.background_position_label = QLabel("Background position:")
+        form.addRow(self.background_position_label, self.bg_stack)
+
+        # Proportion of Donors Fretting slider and label
+        fretting_layout = QHBoxLayout()
         self.fretting_slider = QSlider(Qt.Horizontal)
         self.fretting_slider.setMinimum(0)
         self.fretting_slider.setMaximum(100)
         self.fretting_slider.setValue(100)  # 1.0 default
+        self.fretting_slider.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed
+        )
         self.fretting_slider.valueChanged.connect(
             self._on_fretting_slider_changed
         )
-
-        self.fretting_label = QLabel("1.00")
-        fretting_layout = QHBoxLayout()
+        self.fretting_slider.setToolTip(
+            "Fraction of donors participating in FRET"
+        )
         fretting_layout.addWidget(self.fretting_slider)
+        self.fretting_label = QLabel("1.00")
+        self.fretting_label.setAlignment(Qt.AlignCenter)
         fretting_layout.addWidget(self.fretting_label)
-        layout.addLayout(fretting_layout)
+        form.addRow("Proportion fretting:", fretting_layout)
 
-        # Colormap checkbox
+        # Add form to root layout
+        layout.addLayout(form)
+
+        # Colormap over trajectory checkbox
         self.colormap_checkbox = QCheckBox(
             "Overlay colormap on donor trajectory"
         )
-        self.colormap_checkbox.setChecked(True)  # Default checked
+        self.colormap_checkbox.setChecked(True)
         self.colormap_checkbox.stateChanged.connect(
             self._on_colormap_checkbox_changed
         )
@@ -187,8 +328,41 @@ class FretWidget(QWidget):
         main_layout = QVBoxLayout(self)
         main_layout.addWidget(scroll_area)
 
-        # Initialize background combobox
+        # Initialize selectors and comboboxes
+        self.donor_stack.setCurrentIndex(0)
+        self.bg_stack.setCurrentIndex(0)
         self._update_background_combobox()
+        self._update_donor_lifetime_combobox()
+
+    def _on_donor_source_changed(self, index: int):
+        """Switch donor lifetime input mode (Manual | From layer)."""
+        if hasattr(self, 'donor_stack'):
+            self.donor_stack.setCurrentIndex(index)
+
+        # Update the label text based on the mode
+        if index == 0:  # Manual
+            self.donor_label.setText("Donor lifetime (ns):")
+        else:  # From layer
+            self.donor_label.setText("Donor lifetime (ns):")
+
+        # When switching to layer-based mode, try computing from selection
+        if index == 1:
+            self._calculate_donor_lifetime()
+
+    def _on_bg_source_changed(self, index: int):
+        """Switch background position input mode (Manual | From image)."""
+        if hasattr(self, 'bg_stack'):
+            self.bg_stack.setCurrentIndex(index)
+
+        # Update the label text based on the mode
+        if index == 0:  # Manual
+            self.background_position_label.setText("Background position:")
+        else:  # From layer
+            self.background_position_label.setText("Background position:")
+
+        # When switching to image-based mode, try computing from selection
+        if index == 1:
+            self._calculate_background_position()
 
     def get_all_artists(self):
         """Return a list of all matplotlib artists created by this widget."""
@@ -300,7 +474,7 @@ class FretWidget(QWidget):
         self.background_image_combobox.blockSignals(True)
         self.background_image_combobox.clear()
 
-        self.background_image_combobox.addItem("None")
+        self.background_image_combobox.addItem("Select layer...")
 
         from napari.layers import Image
 
@@ -317,19 +491,25 @@ class FretWidget(QWidget):
             index = self.background_image_combobox.findText(current_text)
             if index >= 0:
                 self.background_image_combobox.setCurrentIndex(index)
-        elif current_text == "None" or current_text == "":
+        elif current_text == "Select layer..." or current_text == "":
             self.background_image_combobox.setCurrentIndex(0)
 
         self.background_image_combobox.blockSignals(False)
 
     def _on_layer_changed(self):
-        """Handle when layers are added/removed to update background combobox."""
+        """Handle when layers are added or removed in the viewer."""
         self._update_background_combobox()
+        self._update_donor_lifetime_combobox()
 
     def _calculate_background_position(self):
         """Calculate the background position from selected background image layer for all harmonics."""
         background_layer_name = self.background_image_combobox.currentText()
-        if not background_layer_name or background_layer_name == "None":
+        if (
+            not background_layer_name
+            or background_layer_name == "Select layer..."
+        ):
+            if self.bg_source_selector.currentIndex() == 1:
+                self.background_position_label.setText("Background position:")
             return
 
         try:
@@ -338,11 +518,15 @@ class FretWidget(QWidget):
                 "phasor_features_labels_layer"
             ]
         except (KeyError, AttributeError):
+            if self.bg_source_selector.currentIndex() == 1:
+                self.background_position_label.setText("Background position:")
             return
 
         phasor_data = background_phasor_layer.features
 
         if 'harmonic' not in phasor_data.columns:
+            if self.bg_source_selector.currentIndex() == 1:
+                self.background_position_label.setText("Background position:")
             return
 
         unique_harmonics = phasor_data['harmonic'].unique()
@@ -374,13 +558,135 @@ class FretWidget(QWidget):
             self.background_imag_edit.setText(f"{stored['imag']:.3f}")
             self.background_real = stored['real']
             self.background_imag = stored['imag']
+
+            # Update the label to show calculated values
+            if self.bg_source_selector.currentIndex() == 1:
+                self.background_position_label.setText(
+                    f"Background position: G={stored['real']:.2f}, S={stored['imag']:.2f}"
+                )
         else:
-            self.background_real_edit.setText("0.0")
-            self.background_imag_edit.setText("0.0")
+            self.background_real_edit.setText("0.00")
+            self.background_imag_edit.setText("0.00")
             self.background_real = 0.0
             self.background_imag = 0.0
 
+            if self.bg_source_selector.currentIndex() == 1:
+                self.background_position_label.setText(
+                    "Background position: G=0.00, S=0.00"
+                )
+
         self.plot_donor_trajectory()
+
+    def _update_donor_lifetime_combobox(self):
+        """Update the donor lifetime combobox with available layers."""
+        current_text = self.donor_lifetime_combobox.currentText()
+        self.donor_lifetime_combobox.blockSignals(True)
+        self.donor_lifetime_combobox.clear()
+
+        self.donor_lifetime_combobox.addItem("Select layer...")
+
+        layer_names = [
+            layer.name
+            for layer in self.viewer.layers
+            if isinstance(layer, Image)
+            and "phasor_features_labels_layer" in layer.metadata.keys()
+        ]
+
+        self.donor_lifetime_combobox.addItems(layer_names)
+
+        if current_text in layer_names:
+            index = self.donor_lifetime_combobox.findText(current_text)
+            if index >= 0:
+                self.donor_lifetime_combobox.setCurrentIndex(index)
+        elif current_text == "Select layer..." or current_text == "":
+            self.donor_lifetime_combobox.setCurrentIndex(0)
+
+        self.donor_lifetime_combobox.blockSignals(False)
+
+    def _calculate_donor_lifetime(self):
+        """Calculate the donor lifetime from selected layer for current harmonic."""
+        donor_layer_name = self.donor_lifetime_combobox.currentText()
+        if not donor_layer_name or donor_layer_name == "Select layer...":
+            if self.donor_source_selector.currentIndex() == 1:
+                self.donor_label.setText("Donor lifetime (ns):")
+            return
+
+        try:
+            donor_layer = self.viewer.layers[donor_layer_name]
+            donor_phasor_layer = donor_layer.metadata[
+                "phasor_features_labels_layer"
+            ]
+        except (KeyError, AttributeError):
+            if self.donor_source_selector.currentIndex() == 1:
+                self.donor_label.setText("Donor lifetime (ns):")
+            return
+
+        phasor_data = donor_phasor_layer.features
+
+        if "harmonic" not in phasor_data.columns:
+            if self.donor_source_selector.currentIndex() == 1:
+                self.donor_label.setText("Donor lifetime (ns):")
+            return
+
+        current_harmonic = self.parent_widget.harmonic
+        harmonic_mask = phasor_data['harmonic'] == current_harmonic
+        real = phasor_data.loc[harmonic_mask, 'G']
+        imag = phasor_data.loc[harmonic_mask, 'S']
+
+        if len(real) == 0 or len(imag) == 0:
+            if self.donor_source_selector.currentIndex() == 1:
+                self.donor_label.setText("Donor lifetime (ns):")
+            return
+
+        try:
+            _, center_real, center_imag = phasor_center(
+                donor_layer.data.flatten(), real, imag
+            )
+
+            if not self.frequency_input.text():
+                if self.donor_source_selector.currentIndex() == 1:
+                    self.donor_label.setText("Donor lifetime (ns):")
+                return
+
+            frequency = float(self.frequency_input.text().strip())
+
+            lifetime_type = self.lifetime_type_combobox.currentText()
+
+            if lifetime_type in (
+                "Apparent Phase Lifetime",
+                "Apparent Modulation Lifetime",
+            ):
+                phase_lifetime, mod_lifetime = phasor_to_apparent_lifetime(
+                    center_real, center_imag, frequency=frequency
+                )
+                lifetime = {
+                    "Apparent Phase Lifetime": phase_lifetime,
+                    "Apparent Modulation Lifetime": mod_lifetime,
+                }[lifetime_type]
+            elif lifetime_type == "Normal Lifetime":
+                lifetime = phasor_to_normal_lifetime(
+                    center_real, center_imag, frequency=frequency
+                )
+            else:
+                if self.donor_source_selector.currentIndex() == 1:
+                    self.donor_label.setText("Donor lifetime (ns):")
+                return
+
+            self.donor_line_edit.setText(f"{lifetime:.2f}")
+            self.donor_lifetime = lifetime
+
+            # Update the label to show calculated value
+            if self.donor_source_selector.currentIndex() == 1:
+                self.donor_label.setText(
+                    f"Donor lifetime (from layer): {lifetime:.2f} ns"
+                )
+
+            self.plot_donor_trajectory()
+
+        except Exception as e:
+            show_error(f"Error calculating donor lifetime: {str(e)}")
+            if self.donor_source_selector.currentIndex() == 1:
+                self.donor_label.setText("Donor lifetime (ns): Error")
 
     def plot_donor_trajectory(self):
         """Plot the donor trajectory with current parameters."""

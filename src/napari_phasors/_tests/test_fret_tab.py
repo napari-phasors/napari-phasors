@@ -24,17 +24,52 @@ def test_fret_widget_initialization(make_napari_viewer):
     # Test initial UI state
     assert widget.donor_line_edit.text() == ""
     assert widget.frequency_input.text() == ""
-    assert widget.background_real_edit.text() == "0.1"
-    assert widget.background_imag_edit.text() == "0.1"
+    assert widget.background_real_edit.text() == "0.0"
+    assert widget.background_imag_edit.text() == "0.0"
     assert (
         widget.calculate_fret_efficiency_button.text()
         == "Calculate FRET efficiency"
     )
 
+    # Test source selectors are set to Manual by default
+    assert widget.donor_source_selector.currentText() == "Manual"
+    assert widget.bg_source_selector.currentText() == "Manual"
+
+    # Test stacked widgets show manual inputs by default
+    assert widget.donor_stack.currentIndex() == 0  # Manual page
+    assert widget.bg_stack.currentIndex() == 0  # Manual page
+
+    # Test donor lifetime combobox
+    assert widget.donor_lifetime_combobox.currentText() in [
+        "Select layer...",
+        "",
+    ]
+    assert (
+        widget.lifetime_type_combobox.currentText()
+        == "Apparent Phase Lifetime"
+    )
+    assert widget.lifetime_type_combobox.count() == 3
+
+    # Verify all lifetime modes are present
+    lifetime_modes = [
+        widget.lifetime_type_combobox.itemText(i)
+        for i in range(widget.lifetime_type_combobox.count())
+    ]
+    expected_modes = [
+        "Apparent Phase Lifetime",
+        "Apparent Modulation Lifetime",
+        "Normal Lifetime",
+    ]
+    assert lifetime_modes == expected_modes
+
     # Test slider initial values
     assert widget.background_slider.value() == 10  # 0.1 * 100
     assert widget.fretting_slider.value() == 100  # 1.0 * 100
     assert widget.colormap_checkbox.isChecked() is True
+
+    # Test dynamic labels show default text
+    assert widget.donor_label.text() == "Donor lifetime (ns):"
+    assert widget.background_position_label.text() == "Background position:"
 
 
 def test_fret_widget_parameter_updates(make_napari_viewer):
@@ -53,7 +88,7 @@ def test_fret_widget_parameter_updates(make_napari_viewer):
     widget._on_parameters_changed()
 
     assert widget.donor_lifetime == 2.5
-    assert widget.frequency == 80 * parent.harmonic  # frequency * harmonic
+    assert widget.frequency == 80 * parent.harmonic
     assert widget.background_real == 0.2
     assert widget.background_imag == 0.3
 
@@ -118,8 +153,8 @@ def test_calculate_background_position_no_layer(make_napari_viewer):
     widget._calculate_background_position()
 
     # Values should remain at defaults
-    assert widget.background_real_edit.text() == "0.1"
-    assert widget.background_imag_edit.text() == "0.1"
+    assert widget.background_real_edit.text() == "0.0"
+    assert widget.background_imag_edit.text() == "0.0"
 
 
 def test_calculate_background_position_with_layer(make_napari_viewer):
@@ -141,10 +176,11 @@ def test_calculate_background_position_with_layer(make_napari_viewer):
         widget.background_image_combobox.itemText(i)
         for i in range(widget.background_image_combobox.count())
     ]
-    assert "None" in combobox_items
+    assert "Select layer..." in combobox_items
     assert "test_layer" in combobox_items
 
-    # Select the test layer in the background combobox
+    # Switch to "From layer" mode and select the test layer
+    widget.bg_source_selector.setCurrentText("From layer")
     widget.background_image_combobox.setCurrentText("test_layer")
 
     # Set up the parent widget properly
@@ -162,7 +198,7 @@ def test_calculate_background_position_with_layer(make_napari_viewer):
 
     # Values should be numeric strings
     assert (
-        real_text != "0.1" or imag_text != "0.1"
+        real_text != "0.0" or imag_text != "0.0"
     )  # At least one should change
     assert float(real_text) >= 0
     assert float(imag_text) >= 0
@@ -176,20 +212,16 @@ def test_calculate_background_position_with_layer(make_napari_viewer):
     assert abs(stored_position['real'] - float(real_text)) < 0.001
     assert abs(stored_position['imag'] - float(imag_text)) < 0.001
 
-    # Alternative: Check that the formatted stored values match the display
-    assert f"{stored_position['real']:.3f}" == real_text
-    assert f"{stored_position['imag']:.3f}" == imag_text
+    # Check that the label shows the calculated values in "From layer" mode
+    expected_label = f"Background position: G={stored_position['real']:.2f}, S={stored_position['imag']:.2f}"
+    assert widget.background_position_label.text() == expected_label
 
-    # Test with "None" selected - should not crash
-    widget.background_image_combobox.setCurrentText("None")
-    initial_real = widget.background_real_edit.text()
-    initial_imag = widget.background_imag_edit.text()
-
+    # Test with "Select layer..." selected - should not crash
+    widget.background_image_combobox.setCurrentText("Select layer...")
     widget._calculate_background_position()
 
-    # Values should remain unchanged when "None" is selected
-    assert widget.background_real_edit.text() == initial_real
-    assert widget.background_imag_edit.text() == initial_imag
+    # Label should revert to default when no valid layer is selected
+    assert widget.background_position_label.text() == "Background position:"
 
 
 def test_plot_donor_trajectory_no_parameters(make_napari_viewer):
@@ -826,3 +858,582 @@ def test_calculate_fret_efficiency_invalid_inputs(
     assert fret_layer_name not in [layer.name for layer in viewer.layers]
 
     assert widget.fret_layer is None
+
+
+def test_donor_lifetime_combobox_initialization(make_napari_viewer):
+    """Test that donor lifetime combobox is properly initialized."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Initially should have "Select layer..." option
+    assert widget.donor_lifetime_combobox.count() >= 1
+    assert widget.donor_lifetime_combobox.itemText(0) == "Select layer..."
+
+
+def test_donor_lifetime_combobox_updates_with_layers(make_napari_viewer):
+    """Test that donor lifetime combobox updates when layers are added/removed."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Initial state
+    initial_count = widget.donor_lifetime_combobox.count()
+
+    # Add layer with phasor data
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+
+    # Combobox should be updated
+    new_count = widget.donor_lifetime_combobox.count()
+    assert new_count == initial_count + 1
+
+    # Check that the new layer is in the combobox
+    combobox_items = [
+        widget.donor_lifetime_combobox.itemText(i)
+        for i in range(widget.donor_lifetime_combobox.count())
+    ]
+    assert "test_layer" in combobox_items
+
+    # Remove layer
+    viewer.layers.remove(test_layer)
+
+    # Combobox should be updated back to original count
+    assert widget.donor_lifetime_combobox.count() == initial_count
+
+
+def test_lifetime_type_combobox_modes(make_napari_viewer):
+    """Test the lifetime type combobox modes."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Test changing modes
+    widget.lifetime_type_combobox.setCurrentText(
+        "Apparent Modulation Lifetime"
+    )
+    assert (
+        widget.lifetime_type_combobox.currentText()
+        == "Apparent Modulation Lifetime"
+    )
+
+    widget.lifetime_type_combobox.setCurrentText("Normal Lifetime")
+    assert widget.lifetime_type_combobox.currentText() == "Normal Lifetime"
+
+    widget.lifetime_type_combobox.setCurrentText("Apparent Phase Lifetime")
+    assert (
+        widget.lifetime_type_combobox.currentText()
+        == "Apparent Phase Lifetime"
+    )
+
+
+def test_calculate_donor_lifetime_no_layer_selected(make_napari_viewer):
+    """Test donor lifetime calculation with no layer selected."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Set frequency for calculations
+    widget.frequency_input.setText("80")
+
+    # Should return without error when "None" is selected
+    widget.donor_lifetime_combobox.setCurrentText("None")
+    initial_lifetime = widget.donor_line_edit.text()
+
+    widget._calculate_donor_lifetime()
+
+    # Lifetime should remain unchanged
+    assert widget.donor_line_edit.text() == initial_lifetime
+
+
+def test_calculate_donor_lifetime_no_frequency(make_napari_viewer):
+    """Test donor lifetime calculation with no frequency set."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Add layer with phasor data
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+
+    # Select the layer but don't set frequency
+    widget.donor_lifetime_combobox.setCurrentText("test_layer")
+    widget.frequency_input.setText("")  # No frequency
+
+    initial_lifetime = widget.donor_line_edit.text()
+
+    # Should return without error
+    widget._calculate_donor_lifetime()
+
+    # Lifetime should remain unchanged
+    assert widget.donor_line_edit.text() == initial_lifetime
+
+
+def test_calculate_donor_lifetime_apparent_phase(make_napari_viewer):
+    """Test donor lifetime calculation using apparent phase lifetime."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Add layer with phasor data
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+
+    # Set up parameters
+    widget.frequency_input.setText("80")
+    widget.lifetime_type_combobox.setCurrentText("Apparent Phase Lifetime")
+    widget.donor_lifetime_combobox.setCurrentText("test_layer")
+
+    # Set up parent widget properly
+    parent.harmonic = 1
+
+    # Calculate donor lifetime
+    widget._calculate_donor_lifetime()
+
+    # Should have updated the donor lifetime
+    assert widget.donor_line_edit.text() != ""
+    lifetime_value = float(widget.donor_line_edit.text())
+    assert lifetime_value > 0
+    assert widget.donor_lifetime == lifetime_value
+
+
+def test_calculate_donor_lifetime_apparent_modulation(make_napari_viewer):
+    """Test donor lifetime calculation using apparent modulation lifetime."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Add layer with phasor data
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+
+    # Set up parameters
+    widget.frequency_input.setText("80")
+    widget.lifetime_type_combobox.setCurrentText(
+        "Apparent Modulation Lifetime"
+    )
+    widget.donor_lifetime_combobox.setCurrentText("test_layer")
+
+    # Set up parent widget properly
+    parent.harmonic = 1
+
+    # Calculate donor lifetime
+    widget._calculate_donor_lifetime()
+
+    # Should have updated the donor lifetime
+    assert widget.donor_line_edit.text() != ""
+    lifetime_value = float(widget.donor_line_edit.text())
+    assert lifetime_value > 0
+    assert widget.donor_lifetime == lifetime_value
+
+
+def test_calculate_donor_lifetime_normal_lifetime(make_napari_viewer):
+    """Test donor lifetime calculation using normal lifetime."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Add layer with phasor data
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+
+    # Set up parameters
+    widget.frequency_input.setText("80")
+    widget.lifetime_type_combobox.setCurrentText("Normal Lifetime")
+    widget.donor_lifetime_combobox.setCurrentText("test_layer")
+
+    # Set up parent widget properly
+    parent.harmonic = 1
+
+    # Calculate donor lifetime
+    widget._calculate_donor_lifetime()
+
+    # Should have updated the donor lifetime
+    assert widget.donor_line_edit.text() != ""
+    lifetime_value = float(widget.donor_line_edit.text())
+    assert lifetime_value > 0
+    assert widget.donor_lifetime == lifetime_value
+
+
+def test_calculate_donor_lifetime_different_harmonics(make_napari_viewer):
+    """Test donor lifetime calculation with different harmonics."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Add layer with phasor data
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+
+    # Set up parameters
+    widget.frequency_input.setText("80")
+    widget.lifetime_type_combobox.setCurrentText("Apparent Phase Lifetime")
+    widget.donor_lifetime_combobox.setCurrentText("test_layer")
+
+    # Test with harmonic 1
+    parent.harmonic = 1
+    widget._calculate_donor_lifetime()
+    lifetime_h1 = widget.donor_line_edit.text()
+
+    # Test with harmonic 2
+    parent.harmonic = 2
+    widget._calculate_donor_lifetime()
+    lifetime_h2 = widget.donor_line_edit.text()
+
+    # Test with harmonic 3
+    parent.harmonic = 3
+    widget._calculate_donor_lifetime()
+    lifetime_h3 = widget.donor_line_edit.text()
+
+    # Lifetimes should be different for different harmonics
+    assert lifetime_h1 != lifetime_h2
+    assert lifetime_h1 != lifetime_h3
+    assert lifetime_h2 != lifetime_h3
+
+
+def test_calculate_donor_lifetime_mode_differences(make_napari_viewer):
+    """Test that different lifetime modes give different results."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Add layer with phasor data
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+
+    # Set up parameters
+    widget.frequency_input.setText("80")
+    widget.donor_lifetime_combobox.setCurrentText("test_layer")
+    parent.harmonic = 1
+
+    # Test apparent phase lifetime
+    widget.lifetime_type_combobox.setCurrentText("Apparent Phase Lifetime")
+    widget._calculate_donor_lifetime()
+    phase_lifetime = widget.donor_line_edit.text()
+
+    # Test apparent modulation lifetime
+    widget.lifetime_type_combobox.setCurrentText(
+        "Apparent Modulation Lifetime"
+    )
+    widget._calculate_donor_lifetime()
+    mod_lifetime = widget.donor_line_edit.text()
+
+    # Test normal lifetime
+    widget.lifetime_type_combobox.setCurrentText("Normal Lifetime")
+    widget._calculate_donor_lifetime()
+    normal_lifetime = widget.donor_line_edit.text()
+
+    # All should be valid numbers
+    assert phase_lifetime != ""
+    assert mod_lifetime != ""
+    assert normal_lifetime != ""
+
+    phase_val = float(phase_lifetime)
+    mod_val = float(mod_lifetime)
+    normal_val = float(normal_lifetime)
+
+    assert phase_val > 0
+    assert mod_val > 0
+    assert normal_val > 0
+
+    # They should generally be different (though could be close)
+    # At least one should be different from the others
+    assert not (phase_val == mod_val == normal_val)
+
+
+def test_donor_lifetime_combobox_layer_selection_persistence(
+    make_napari_viewer,
+):
+    """Test that donor lifetime combobox selection persists when layers change."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Add first layer
+    test_layer1 = create_image_layer_with_phasors()
+    test_layer1.name = "test_layer1"
+    viewer.add_layer(test_layer1)
+
+    # Select first layer
+    widget.donor_lifetime_combobox.setCurrentText("test_layer1")
+    assert widget.donor_lifetime_combobox.currentText() == "test_layer1"
+
+    # Add second layer
+    test_layer2 = create_image_layer_with_phasors()
+    test_layer2.name = "test_layer2"
+    viewer.add_layer(test_layer2)
+
+    # Selection should persist
+    assert widget.donor_lifetime_combobox.currentText() == "test_layer1"
+
+    # Change to second layer
+    widget.donor_lifetime_combobox.setCurrentText("test_layer2")
+    assert widget.donor_lifetime_combobox.currentText() == "test_layer2"
+
+    # Remove first layer
+    viewer.layers.remove(test_layer1)
+
+    # Selection should still be test_layer2
+    assert widget.donor_lifetime_combobox.currentText() == "test_layer2"
+
+    # Remove second layer
+    viewer.layers.remove(test_layer2)
+
+    # Should revert to "Select layer..."
+    assert widget.donor_lifetime_combobox.currentText() == "Select layer..."
+
+
+def test_calculate_donor_lifetime_error_handling(make_napari_viewer):
+    """Test error handling in donor lifetime calculation."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Create a layer without proper phasor data
+    import numpy as np
+    from napari.layers import Image
+
+    bad_layer = Image(np.random.random((10, 10)), name="bad_layer")
+    viewer.add_layer(bad_layer)
+
+    # Try to calculate with bad layer
+    widget.frequency_input.setText("80")
+    widget.donor_lifetime_combobox.setCurrentText("bad_layer")
+    parent.harmonic = 1
+
+    initial_lifetime = widget.donor_line_edit.text()
+
+    # Should handle error gracefully
+    widget._calculate_donor_lifetime()
+
+    # Should not crash and lifetime should remain unchanged
+    assert widget.donor_line_edit.text() == initial_lifetime
+
+
+def test_donor_source_selector_functionality(make_napari_viewer):
+    """Test the donor source selector switches between Manual and From layer modes."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Initially should be in Manual mode
+    assert widget.donor_source_selector.currentText() == "Manual"
+    assert widget.donor_stack.currentIndex() == 0  # Manual page
+    assert widget.donor_label.text() == "Donor lifetime (ns):"
+
+    # Switch to "From layer" mode
+    widget.donor_source_selector.setCurrentText("From layer")
+    widget._on_donor_source_changed(1)
+
+    assert widget.donor_stack.currentIndex() == 1  # From layer page
+    assert widget.donor_label.text() == "Donor lifetime (ns):"
+
+    # Switch back to Manual mode
+    widget.donor_source_selector.setCurrentText("Manual")
+    widget._on_donor_source_changed(0)
+
+    assert widget.donor_stack.currentIndex() == 0  # Manual page
+    assert widget.donor_label.text() == "Donor lifetime (ns):"
+
+
+def test_background_source_selector_functionality(make_napari_viewer):
+    """Test the background source selector switches between Manual and From layer modes."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Initially should be in Manual mode
+    assert widget.bg_source_selector.currentText() == "Manual"
+    assert widget.bg_stack.currentIndex() == 0  # Manual page
+    assert widget.background_position_label.text() == "Background position:"
+
+    # Switch to "From layer" mode
+    widget.bg_source_selector.setCurrentText("From layer")
+    widget._on_bg_source_changed(1)
+
+    assert widget.bg_stack.currentIndex() == 1  # From layer page
+    assert widget.background_position_label.text() == "Background position:"
+
+    # Switch back to Manual mode
+    widget.bg_source_selector.setCurrentText("Manual")
+    widget._on_bg_source_changed(0)
+
+    assert widget.bg_stack.currentIndex() == 0  # Manual page
+    assert widget.background_position_label.text() == "Background position:"
+
+
+def test_donor_lifetime_label_updates_with_layer_calculation(
+    make_napari_viewer,
+):
+    """Test that donor lifetime label updates when calculated from layer."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Add layer with phasor data
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+
+    # Set up parameters
+    widget.frequency_input.setText("80")
+    parent.harmonic = 1
+
+    # Switch to "From layer" mode
+    widget.donor_source_selector.setCurrentText("From layer")
+    widget._on_donor_source_changed(1)
+
+    # Select the test layer
+    widget.donor_lifetime_combobox.setCurrentText("test_layer")
+
+    # Calculate donor lifetime
+    widget._calculate_donor_lifetime()
+
+    # Label should now show the calculated lifetime value
+    label_text = widget.donor_label.text()
+    assert "Donor lifetime (from layer):" in label_text
+    assert "ns" in label_text
+
+    # Switch back to Manual mode
+    widget.donor_source_selector.setCurrentText("Manual")
+    widget._on_donor_source_changed(0)
+
+    # Label should revert to default
+    assert widget.donor_label.text() == "Donor lifetime (ns):"
+
+
+def test_background_position_label_updates_with_layer_calculation(
+    make_napari_viewer,
+):
+    """Test that background position label updates when calculated from layer."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Add layer with phasor data
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+
+    # Set up parameters
+    parent.harmonic = 1
+
+    # Switch to "From layer" mode
+    widget.bg_source_selector.setCurrentText("From layer")
+    widget._on_bg_source_changed(1)
+
+    # Select the test layer
+    widget.background_image_combobox.setCurrentText("test_layer")
+
+    # Calculate background position
+    widget._calculate_background_position()
+
+    # Label should now show the calculated G and S values
+    label_text = widget.background_position_label.text()
+    assert "Background position: G=" in label_text
+    assert "S=" in label_text
+
+    # Switch back to Manual mode
+    widget.bg_source_selector.setCurrentText("Manual")
+    widget._on_bg_source_changed(0)
+
+    # Label should revert to default
+    assert widget.background_position_label.text() == "Background position:"
+
+
+def test_layer_selection_with_no_valid_layers(make_napari_viewer):
+    """Test behavior when no valid layers are available for selection."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Add a layer without phasor data
+    import numpy as np
+    from napari.layers import Image
+
+    invalid_layer = Image(np.random.random((10, 10)), name="invalid_layer")
+    viewer.add_layer(invalid_layer)
+
+    # Update comboboxes
+    widget._update_donor_lifetime_combobox()
+    widget._update_background_combobox()
+
+    # Should only have "Select layer..." option
+    assert widget.donor_lifetime_combobox.count() == 1
+    assert widget.donor_lifetime_combobox.itemText(0) == "Select layer..."
+    assert widget.background_image_combobox.count() == 1
+    assert widget.background_image_combobox.itemText(0) == "Select layer..."
+
+
+def test_calculate_values_with_select_layer_option(make_napari_viewer):
+    """Test calculation behavior when 'Select layer...' is selected."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Set frequency for donor calculation
+    widget.frequency_input.setText("80")
+    parent.harmonic = 1
+
+    # Switch to From layer modes
+    widget.donor_source_selector.setCurrentText("From layer")
+    widget._on_donor_source_changed(1)
+    widget.bg_source_selector.setCurrentText("From layer")
+    widget._on_bg_source_changed(1)
+
+    # Ensure "Select layer..." is selected
+    widget.donor_lifetime_combobox.setCurrentText("Select layer...")
+    widget.background_image_combobox.setCurrentText("Select layer...")
+
+    # Store initial values
+    initial_donor_text = widget.donor_line_edit.text()
+    initial_donor_label = widget.donor_label.text()
+    initial_bg_real = widget.background_real_edit.text()
+    initial_bg_imag = widget.background_imag_edit.text()
+    initial_bg_label = widget.background_position_label.text()
+
+    # Try to calculate - should not crash and should not change values
+    widget._calculate_donor_lifetime()
+    widget._calculate_background_position()
+
+    # Values should remain unchanged
+    assert widget.donor_line_edit.text() == initial_donor_text
+    assert widget.donor_label.text() == initial_donor_label
+    assert widget.background_real_edit.text() == initial_bg_real
+    assert widget.background_imag_edit.text() == initial_bg_imag
+    assert widget.background_position_label.text() == initial_bg_label
+
+
+def test_ui_mode_switching_preserves_manual_values(make_napari_viewer):
+    """Test that switching between modes preserves manually entered values."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Set manual values
+    widget.donor_line_edit.setText("2.5")
+    widget.background_real_edit.setText("0.3")
+    widget.background_imag_edit.setText("0.4")
+
+    # Switch to From layer mode and back
+    widget.donor_source_selector.setCurrentText("From layer")
+    widget._on_donor_source_changed(1)
+    widget.donor_source_selector.setCurrentText("Manual")
+    widget._on_donor_source_changed(0)
+
+    widget.bg_source_selector.setCurrentText("From layer")
+    widget._on_bg_source_changed(1)
+    widget.bg_source_selector.setCurrentText("Manual")
+    widget._on_bg_source_changed(0)
+
+    # Manual values should be preserved
+    assert widget.donor_line_edit.text() == "2.5"
+    assert widget.background_real_edit.text() == "0.3"
+    assert widget.background_imag_edit.text() == "0.4"
