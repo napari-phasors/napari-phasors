@@ -65,7 +65,6 @@ class PhasorTransform(QWidget):
         self.dynamic_widget_layout = QVBoxLayout()
         self.main_layout.addLayout(self.dynamic_widget_layout)
 
-
         self.reader_options = {
             ".fbd": FbdWidget,
             ".ptu": PtuWidget,
