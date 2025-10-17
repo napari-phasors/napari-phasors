@@ -90,9 +90,13 @@ class FretWidget(QWidget):
         self.frequency_input = QLineEdit()
         self.frequency_input.setPlaceholderText("Frequency (MHz)")
         self.frequency_input.setValidator(QDoubleValidator())
-        self.frequency_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.frequency_input.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed
+        )
         self.frequency_input.textChanged.connect(self._on_parameters_changed)
-        self.frequency_input.setToolTip("Enter the laser pulse or modulation frequency in MHz")
+        self.frequency_input.setToolTip(
+            "Enter the laser pulse or modulation frequency in MHz"
+        )
         freq_row.addWidget(self.frequency_input)
         form.addRow("Frequency (MHz):", freq_row)
 
@@ -110,7 +114,9 @@ class FretWidget(QWidget):
         self.donor_source_selector.currentIndexChanged.connect(
             self._on_donor_source_changed
         )
-        self.donor_source_selector.setToolTip("Select whether to input donor lifetime manually or derive it from a layer")
+        self.donor_source_selector.setToolTip(
+            "Select whether to input donor lifetime manually or derive it from a layer"
+        )
         donor_source_row.addWidget(self.donor_source_selector)
         form.addRow("Donor lifetime source:", donor_source_row)
 
@@ -123,9 +129,13 @@ class FretWidget(QWidget):
         self.donor_line_edit = QLineEdit()
         self.donor_line_edit.setPlaceholderText("Donor Lifetime (ns)")
         self.donor_line_edit.setValidator(QDoubleValidator())
-        self.donor_line_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.donor_line_edit.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed
+        )
         self.donor_line_edit.textChanged.connect(self._on_parameters_changed)
-        self.donor_line_edit.setToolTip("Enter the donor lifetime in nanoseconds")
+        self.donor_line_edit.setToolTip(
+            "Enter the donor lifetime in nanoseconds"
+        )
         donor_manual_layout.addWidget(self.donor_line_edit)
         self.donor_stack.addWidget(donor_manual_page)
 
@@ -140,7 +150,9 @@ class FretWidget(QWidget):
         self.donor_lifetime_combobox.currentIndexChanged.connect(
             self._calculate_donor_lifetime
         )
-        self.donor_lifetime_combobox.setToolTip("Select the layer from which to derive the donor lifetime")
+        self.donor_lifetime_combobox.setToolTip(
+            "Select the layer from which to derive the donor lifetime"
+        )
         self.lifetime_type_combobox = QComboBox()
         self.lifetime_type_combobox.setMinimumContentsLength(8)
         self.lifetime_type_combobox.setSizeAdjustPolicy(
@@ -156,7 +168,9 @@ class FretWidget(QWidget):
         self.lifetime_type_combobox.currentIndexChanged.connect(
             self._calculate_donor_lifetime
         )
-        self.lifetime_type_combobox.setToolTip("Select the method to calculate donor lifetime from phasor coordinates")
+        self.lifetime_type_combobox.setToolTip(
+            "Select the method to calculate donor lifetime from phasor coordinates"
+        )
         donor_layer_layout.addWidget(self.donor_lifetime_combobox)
         donor_layer_layout.addWidget(self.lifetime_type_combobox)
         self.donor_stack.addWidget(donor_layer_page)
@@ -169,11 +183,15 @@ class FretWidget(QWidget):
         self.background_slider.setMinimum(0)
         self.background_slider.setMaximum(100)
         self.background_slider.setValue(10)  # 0.1 default
-        self.background_slider.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.background_slider.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed
+        )
         self.background_slider.valueChanged.connect(
             self._on_background_slider_changed
         )
-        self.background_slider.setToolTip("Weight of background fluorescence in donor channel relative to fluorescence of donor without FRET. A weight of 1 means the fluorescence of background and donor without FRET are equal.")
+        self.background_slider.setToolTip(
+            "Weight of background fluorescence in donor channel relative to fluorescence of donor without FRET. A weight of 1 means the fluorescence of background and donor without FRET are equal."
+        )
         background_slider_layout.addWidget(self.background_slider)
         self.background_label = QLabel("0.10")
         self.background_label.setAlignment(Qt.AlignCenter)
@@ -191,7 +209,9 @@ class FretWidget(QWidget):
         self.bg_source_selector.currentIndexChanged.connect(
             self._on_bg_source_changed
         )
-        self.bg_source_selector.setToolTip("Select whether to input background position manually or derive it from a layer")
+        self.bg_source_selector.setToolTip(
+            "Select whether to input background position manually or derive it from a layer"
+        )
         bg_source_row.addWidget(self.bg_source_selector)
         form.addRow("Background source:", bg_source_row)
 
@@ -209,7 +229,9 @@ class FretWidget(QWidget):
         self.background_real_edit.textChanged.connect(
             self._on_background_position_changed
         )
-        self.background_real_edit.setToolTip("Real component of background fluorescence phasor coordinate at frequency")
+        self.background_real_edit.setToolTip(
+            "Real component of background fluorescence phasor coordinate at frequency"
+        )
         bg_manual_layout.addWidget(self.background_real_edit)
         bg_manual_layout.addWidget(QLabel("S:"))
         self.background_imag_edit = QLineEdit()
@@ -219,7 +241,9 @@ class FretWidget(QWidget):
         self.background_imag_edit.textChanged.connect(
             self._on_background_position_changed
         )
-        self.background_imag_edit.setToolTip("Imaginary component of background fluorescence phasor coordinate at frequency")
+        self.background_imag_edit.setToolTip(
+            "Imaginary component of background fluorescence phasor coordinate at frequency"
+        )
         bg_manual_layout.addWidget(self.background_imag_edit)
         self.bg_stack.addWidget(bg_manual_page)
 
@@ -234,7 +258,9 @@ class FretWidget(QWidget):
         self.background_image_combobox.currentIndexChanged.connect(
             self._calculate_background_position
         )
-        self.background_image_combobox.setToolTip("Select the layer from which to derive the background position")
+        self.background_image_combobox.setToolTip(
+            "Select the layer from which to derive the background position"
+        )
         bg_image_layout.addWidget(self.background_image_combobox)
         self.bg_stack.addWidget(bg_image_page)
 
@@ -246,11 +272,15 @@ class FretWidget(QWidget):
         self.fretting_slider.setMinimum(0)
         self.fretting_slider.setMaximum(100)
         self.fretting_slider.setValue(100)  # 1.0 default
-        self.fretting_slider.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.fretting_slider.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed
+        )
         self.fretting_slider.valueChanged.connect(
             self._on_fretting_slider_changed
         )
-        self.fretting_slider.setToolTip("Fraction of donors participating in FRET")
+        self.fretting_slider.setToolTip(
+            "Fraction of donors participating in FRET"
+        )
         fretting_layout.addWidget(self.fretting_slider)
         self.fretting_label = QLabel("1.00")
         self.fretting_label.setAlignment(Qt.AlignCenter)
