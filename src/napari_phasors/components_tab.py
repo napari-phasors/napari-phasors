@@ -164,12 +164,12 @@ class ComponentsWidget(QWidget):
         layout.addLayout(analysis_layout)
 
         # Components info label
-        self.components_info_label = QLabel(
-            f"Components at: Harmonic {self.current_harmonic}"
-        )
+        self.components_info_label = QLabel()
+        self.components_info_label.setTextFormat(Qt.RichText)
         self.components_info_label.setStyleSheet(
             "font-weight: bold; margin-top: 10px;"
         )
+        self._refresh_components_info_label()
         layout.addWidget(self.components_info_label)
 
         # Components section
@@ -605,10 +605,8 @@ class ComponentsWidget(QWidget):
         self._clear_components_display()
         self.current_harmonic = new_harmonic
 
-        # Update the label text with new harmonic value
-        self.components_info_label.setText(
-            f"Components at: Harmonic {new_harmonic}"
-        )
+        # Update the label text with new harmonic value (underlined, no color)
+        self._refresh_components_info_label()
 
         self._restore_components_for_harmonic(new_harmonic)
         self._update_component_visibility()
@@ -619,6 +617,12 @@ class ComponentsWidget(QWidget):
 
         if self.parent_widget is not None:
             self._update_lifetime_inputs_visibility()
+
+    def _refresh_components_info_label(self):
+        """Update the components info label with colored harmonic text."""
+        self.components_info_label.setText(
+            f"Components at <span style='color: #00FFFF;'>harmonic {self.current_harmonic}</span>"
+        )
 
     def _get_required_harmonics(self, num_components):
         """Calculate minimum number of harmonics required for given number of components."""
