@@ -10,7 +10,15 @@ from skimage.util import map_array
 from ._utils import colormap_to_dict
 
 #: The columns in the phasor features table that should not be used as selection id.
-DATA_COLUMNS = ["label", "G_original", "S_original", "G", "S", "harmonic"]
+DATA_COLUMNS = [
+    "label",
+    "G_original",
+    "S_original",
+    "G",
+    "S",
+    "harmonic",
+    "mask",
+]
 
 
 class SelectionWidget(QWidget):
@@ -334,7 +342,9 @@ class SelectionWidget(QWidget):
 
         # Update the color indices only for the active artist
         active_plot_type = self.parent_widget.plot_type
-        if active_plot_type in self.parent_widget.canvas_widget.artists:
+        if (
+            active_plot_type in self.parent_widget.canvas_widget.artists
+        ):  # TODO: check error of size here again
             self.parent_widget.canvas_widget.artists[
                 active_plot_type
             ].color_indices = selection_data
@@ -393,22 +403,40 @@ class SelectionWidget(QWidget):
 
         self.add_selection_id_to_features(self.selection_id)
         column = self.selection_id
-
-        self.parent_widget._labels_layer_with_phasor_features.features[
-            column
-        ] = 0
-
-        # Filter rows where 'G' and 'S' is not NaN
-        valid_rows = (
-            ~self.parent_widget._labels_layer_with_phasor_features.features[
-                "G"
-            ].isna()
-            & ~self.parent_widget._labels_layer_with_phasor_features.features[
-                "S"
-            ].isna()
+        # Apply layer mask to features if available
+        spatial_mask = (
+            self.parent_widget._labels_layer_with_phasor_features.features[
+                "mask"
+            ]
+            > 0
         )
-        num_valid_rows = valid_rows.sum()
+        G_masked = (
+            self.parent_widget._labels_layer_with_phasor_features.features[
+                "G"
+            ][spatial_mask]
+        )
+        S_masked = (
+            self.parent_widget._labels_layer_with_phasor_features.features[
+                "S"
+            ][spatial_mask]
+        )
 
+        n_harmonics = (
+            self.parent_widget._labels_layer_with_phasor_features.features[
+                'harmonic'
+            ].max()
+        )
+        image_layer_combobox_current_text = (
+            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        )
+        image_layer_current_data_flattened = self.viewer.layers[
+            image_layer_combobox_current_text
+        ].data.flatten()
+        mean_column = np.tile(image_layer_current_data_flattened, n_harmonics)
+        mean_filtered_mask = ~np.isnan(mean_column[spatial_mask])
+        # Filter rows where 'G' and 'S' is not NaN and mean masked is not NaN
+        not_nan_mask = ~G_masked.isna() & ~S_masked.isna() & mean_filtered_mask
+        not_nan_indices = not_nan_mask[not_nan_mask].index
         selection_to_use = manual_selection
         if (
             hasattr(self, '_processing_initial_selection')
@@ -422,15 +450,16 @@ class SelectionWidget(QWidget):
         if selection_to_use is None:
             # Set all values to 0 (no selection)
             self.parent_widget._labels_layer_with_phasor_features.features.loc[
-                valid_rows, column
+                not_nan_indices, column
             ] = 0
         else:
             tiled_manual_selection = np.tile(
-                selection_to_use, (num_valid_rows // len(selection_to_use)) + 1
-            )[:num_valid_rows]
+                selection_to_use,
+                n_harmonics,
+            )
 
             self.parent_widget._labels_layer_with_phasor_features.features.loc[
-                valid_rows, column
+                not_nan_indices, column
             ] = tiled_manual_selection
 
         self.update_phasors_layer()
@@ -527,8 +556,12 @@ class SelectionWidget(QWidget):
             ].isna()
         )
         phasors_layer_data[~valid_rows] = 0
+
         mapped_data = map_array(
             input_array, input_array_values, phasors_layer_data
         )
+        spatial_mask = self.parent_widget.mask
+        if spatial_mask is not None:
+            mapped_data[spatial_mask == 0] = 0
         existing_phasors_selected_layer.data = mapped_data
         self._phasors_selected_layer = existing_phasors_selected_layer
