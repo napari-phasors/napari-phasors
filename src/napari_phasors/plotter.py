@@ -981,91 +981,85 @@ class PlotterWidget(QWidget):
 
         try:
             # Store current selection
-            current_text = (
+            image_layer_combobox_current_text = (
                 self.image_layer_with_phasor_features_combobox.currentText()
+            )
+            mask_layer_combobox_current_text = (
+                self.mask_layer_combobox.currentText()
             )
 
             # Temporarily disconnect signals to prevent cascading updates
             self.image_layer_with_phasor_features_combobox.blockSignals(True)
+            self.mask_layer_combobox.blockSignals(True)
 
             # Clear and repopulate
             self.image_layer_with_phasor_features_combobox.clear()
+            self.mask_layer_combobox.clear()
 
-            layer_names = [
+            valid_image_layer_names = [
                 layer.name
                 for layer in self.viewer.layers
                 if isinstance(layer, Image)
                 and "phasor_features_labels_layer" in layer.metadata.keys()
             ]
+            allowed_mask_layers = [
+                layer.name
+                for layer in self.viewer.layers
+                if isinstance(layer, Labels) or isinstance(layer, Shapes)
+            ]
 
             self.image_layer_with_phasor_features_combobox.addItems(
-                layer_names
+                valid_image_layer_names
             )
-            self.mask_layer_combobox.currentTextChanged.disconnect(
-                self.on_mask_layer_changed
-            )
-        except TypeError:
-            # Signal wasn't connected, ignore
-            pass
+            self.mask_layer_combobox.addItems(["None"] + allowed_mask_layers)
 
-        image_layer_combobox_current_text = (
-            self.image_layer_with_phasor_features_combobox.currentText()
-        )
-        self.image_layer_with_phasor_features_combobox.clear()
+            # Restore combobox selection if it still exists
+            if image_layer_combobox_current_text in valid_image_layer_names:
+                self.image_layer_with_phasor_features_combobox.setCurrentText(
+                    image_layer_combobox_current_text
+                )
+            if mask_layer_combobox_current_text in allowed_mask_layers:
+                self.mask_layer_combobox.setCurrentText(
+                    mask_layer_combobox_current_text
+                )
 
-        valid_image_layer_names = [
-            layer.name
-            for layer in self.viewer.layers
-            if isinstance(layer, Image)
-            and "phasor_features_labels_layer" in layer.metadata.keys()
-        ]
-        self.image_layer_with_phasor_features_combobox.addItems(
-            valid_image_layer_names
-        )
+            
+            # Re-enable signals
+            self.image_layer_with_phasor_features_combobox.blockSignals(False)
+            self.mask_layer_combobox.blockSignals(False)
+            # Reconnect the signals
+            # Ensure this function is called if layers are renamed
+            for layer_name in valid_image_layer_names + allowed_mask_layers:
+                layer = self.viewer.layers[layer_name]
+                try:
+                    layer.events.name.disconnect(self.reset_layer_choices)
+                except (TypeError, ValueError):
+                    pass # Not connected, ignore
+                layer.events.name.connect(self.reset_layer_choices)
+                if isinstance(layer, Shapes):
+                    try:
+                        layer.events.data.disconnect(self.on_mask_data_changed)
+                    except (TypeError, ValueError):
+                        pass # Not connected, ignore
+                    layer.events.data.connect(self.on_mask_data_changed)
+                if isinstance(layer, Labels):
+                    try:
+                        layer.events.paint.disconnect(self.on_mask_data_changed)
+                        layer.events.set_data.disconnect(self.on_mask_data_changed)
+                    except (TypeError, ValueError):
+                        pass # Not connected, ignore
+                    layer.events.paint.connect(self.on_mask_data_changed)
+                    layer.events.set_data.connect(self.on_mask_data_changed)
 
-        mask_layer_combobox_current_text = (
-            self.mask_layer_combobox.currentText()
-        )
-        self.mask_layer_combobox.clear()
-
-        allowed_mask_layers = [
-            layer.name
-            for layer in self.viewer.layers
-            if isinstance(layer, Labels) or isinstance(layer, Shapes)
-        ]
-        self.mask_layer_combobox.addItems(["None"] + allowed_mask_layers)
-        if mask_layer_combobox_current_text in allowed_mask_layers:
-            self.mask_layer_combobox.setCurrentText(
-                mask_layer_combobox_current_text
-            )
-
-        # Ensure this function is called if layers are renamed
-        for layer_name in valid_image_layer_names + allowed_mask_layers:
-            layer = self.viewer.layers[layer_name]
-            layer.events.name.connect(self.reset_layer_choices)
-            if isinstance(layer, Shapes):
-                layer.events.data.connect(self.on_mask_data_changed)
-            if isinstance(layer, Labels):
-                layer.events.paint.connect(self.on_mask_data_changed)
-                layer.events.set_data.connect(self.on_mask_data_changed)
-
-        # Reconnect the signals
-        self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
-            self.on_labels_layer_with_phasor_features_changed
-        )
-        self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
-            self._sync_frequency_inputs_from_metadata
-        )
-        self.mask_layer_combobox.currentTextChanged.connect(
-            self.on_mask_layer_changed
-        )
-
-        # Only call the method if the selection actually changed or if it's the first item
-        new_text = self.image_layer_with_phasor_features_combobox.currentText()
-        if new_text != image_layer_combobox_current_text or (
-            image_layer_combobox_current_text == "" and new_text != ""
-        ):
-            self.on_labels_layer_with_phasor_features_changed()
+            # Only call the method if the selection actually changed or if it's the first item
+            new_text = self.image_layer_with_phasor_features_combobox.currentText()
+            if new_text != image_layer_combobox_current_text or (
+                image_layer_combobox_current_text == "" and new_text != ""
+            ):
+                self.on_labels_layer_with_phasor_features_changed()
+                # self._sync_frequency_inputs_from_metadata() TODO: check if needed
+        finally:
+            self._resetting_layer_choices = False
 
     def on_labels_layer_with_phasor_features_changed(self):
         """Handle changes to the labels layer with phasor features."""
