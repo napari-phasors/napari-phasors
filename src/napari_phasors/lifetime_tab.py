@@ -192,7 +192,7 @@ class LifetimeWidget(QWidget):
     def _on_slider_released(self):
         """Called when slider is released."""
         self._slider_being_dragged = False
-        # Update histogram only when released
+
         value = self.lifetime_range_slider.value()
         self._on_lifetime_range_changed(value)
 
@@ -214,24 +214,20 @@ class LifetimeWidget(QWidget):
         min_lifetime = min_val / self.lifetime_range_factor
         max_lifetime = max_val / self.lifetime_range_factor
 
-        # Apply clipping to the lifetime data
         if self.lifetime_data_original is not None:
             self.lifetime_data = np.clip(
                 self.lifetime_data_original, min_lifetime, max_lifetime
             )
 
-            # Update the lifetime layer if it exists
             if self.lifetime_layer is not None:
                 self.lifetime_layer.data = self.lifetime_data
 
-                # Set flag to prevent recursive updates from colormap change event
                 self._updating_contrast_limits = True
                 try:
                     self.lifetime_layer.contrast_limits = [
                         min_lifetime,
                         max_lifetime,
                     ]
-                    # Update our stored contrast limits to match
                     self.colormap_contrast_limits = [
                         min_lifetime,
                         max_lifetime,
@@ -239,7 +235,6 @@ class LifetimeWidget(QWidget):
                 finally:
                     self._updating_contrast_limits = False
 
-            # Update histogram with clipped data
             self.plot_lifetime_histogram()
 
     def calculate_lifetimes(self):
@@ -252,35 +247,37 @@ class LifetimeWidget(QWidget):
             show_error("Enter frequency")
             return
 
-        self.frequency = float(frequency_text)
+        base_frequency = float(frequency_text)
+        effective_frequency = base_frequency * self.parent_widget.harmonic
+
         phasor_data = (
             self.parent_widget._labels_layer_with_phasor_features.features
         )
-        frequency = self.frequency * self.parent_widget.harmonic
         harmonic_mask = phasor_data['harmonic'] == self.parent_widget.harmonic
 
-        # Get the current layer data to check for filtered pixels
         layer_data = self.parent_widget._labels_layer_with_phasor_features.data
-
-        # Create a mask for valid (non-NaN, non-zero) pixels in the layer
         valid_pixel_mask = ~np.isnan(layer_data) & (layer_data != 0)
         valid_pixel_indices = np.where(valid_pixel_mask.flatten())[0]
 
-        # Filter phasor data to only include valid pixels
-        filtered_harmonic_mask = harmonic_mask & phasor_data.index.isin(
-            valid_pixel_indices
-        )
+        filtered_harmonic_data = phasor_data[harmonic_mask]
 
-        real = phasor_data.loc[filtered_harmonic_mask, 'G']
-        imag = phasor_data.loc[filtered_harmonic_mask, 'S']
+        real = filtered_harmonic_data['G']
+        imag = filtered_harmonic_data['S']
+
+        if len(real) == 0:
+            self.lifetime_data_original = np.full(layer_data.shape, np.nan)
+            self.lifetime_data = self.lifetime_data_original.copy()
+            self.frequency = base_frequency
+            self._update_lifetime_range_slider()
+            return
 
         if self.lifetime_type_combobox.currentText() == "Normal Lifetime":
             lifetime_values = phasor_to_normal_lifetime(
-                real, imag, frequency=frequency
+                real, imag, frequency=effective_frequency
             )
         else:
             phase_lifetime, modulation_lifetime = phasor_to_apparent_lifetime(
-                real, imag, frequency=frequency
+                real, imag, frequency=effective_frequency
             )
 
             if (
@@ -293,20 +290,18 @@ class LifetimeWidget(QWidget):
                     modulation_lifetime, a_min=0, a_max=None
                 )
 
-        # Create output array with same shape as layer, filled with NaN
         self.lifetime_data_original = np.full(layer_data.shape, np.nan)
-
-        # Only fill in lifetime values for valid pixels
-        valid_flat_indices = np.where(valid_pixel_mask.flatten())[0]
         lifetime_flat = np.full(layer_data.size, np.nan)
-        lifetime_flat[valid_flat_indices[: len(lifetime_values)]] = (
-            lifetime_values
-        )
+
+        for i, pixel_idx in enumerate(valid_pixel_indices):
+            lifetime_flat[pixel_idx] = lifetime_values.iloc[i]
 
         self.lifetime_data_original = lifetime_flat.reshape(layer_data.shape)
 
         # Initialize clipped data as copy of original
         self.lifetime_data = self.lifetime_data_original.copy()
+
+        self.frequency = base_frequency
 
         self._update_lifetime_range_slider()
 
@@ -316,7 +311,9 @@ class LifetimeWidget(QWidget):
             return
         if self.frequency is None:
             return
-        # Get the range of lifetime values (excluding NaNs, zeros, and infinite values)
+
+        effective_frequency = self.frequency * self.parent_widget.harmonic
+
         flattened_data = self.lifetime_data_original.flatten()
         valid_data = flattened_data[
             ~np.isnan(flattened_data)
@@ -324,7 +321,6 @@ class LifetimeWidget(QWidget):
             & np.isfinite(flattened_data)
         ]
         if len(valid_data) == 0:
-            # If no valid data, set default values
             self.min_lifetime = 0.0
             self.max_lifetime = 10.0
             min_slider_val = 0
@@ -333,21 +329,21 @@ class LifetimeWidget(QWidget):
             self.min_lifetime = np.min(valid_data)
             self.max_lifetime = np.max(valid_data)
 
-            # Additional safety check for infinite or unrealistic very large values
             if (
                 not np.isfinite(self.min_lifetime)
                 or not np.isfinite(self.max_lifetime)
-                or self.max_lifetime > (2e3 / self.frequency)
+                or self.max_lifetime > (2e3 / effective_frequency)
                 or self.min_lifetime < 0
             ):
                 self.min_lifetime = 0.0
-                self.max_lifetime = 2e3 / self.frequency  # 2 periods in ns
+                self.max_lifetime = (
+                    2e3 / effective_frequency
+                )  # 2 periods in ns
                 min_slider_val = 0
                 max_slider_val = int(
                     self.max_lifetime * self.lifetime_range_factor
                 )
             else:
-                # Set slider range
                 min_slider_val = int(
                     self.min_lifetime * self.lifetime_range_factor
                 )
@@ -356,11 +352,11 @@ class LifetimeWidget(QWidget):
                 )
         self.lifetime_range_slider.setRange(0, max_slider_val)
         self.lifetime_range_slider.setValue((min_slider_val, max_slider_val))
-        # Update label
+
         self.lifetime_range_label.setText(
             f"Lifetime range (ns): {self.min_lifetime:.2f} - {self.max_lifetime:.2f}"
         )
-        # Update line edits
+
         self.lifetime_min_edit.setText(f"{self.min_lifetime:.2f}")
         self.lifetime_max_edit.setText(f"{self.max_lifetime:.2f}")
 
@@ -385,7 +381,6 @@ class LifetimeWidget(QWidget):
         min_val = float(self.lifetime_min_edit.text())
         max_val = float(self.lifetime_max_edit.text())
 
-        # Clamp to valid range
         min_val = max(0.0, min(min_val, self.max_lifetime or 0))
         max_val = max(0.0, min(max_val, self.max_lifetime or 0))
 
@@ -463,12 +458,10 @@ class LifetimeWidget(QWidget):
         self.hist_ax.clear()
         self.hist_ax.plot(self.bin_centers, self.counts, color='none', alpha=0)
 
-        # Check if colormap is available, if not use a default one
         if (
             self.lifetime_colormap is None
             or self.colormap_contrast_limits is None
         ):
-            # Use a default colormap if napari colormap is not available yet
             cmap = plt.cm.plasma
             norm = plt.Normalize(
                 vmin=(
@@ -501,14 +494,23 @@ class LifetimeWidget(QWidget):
                 [bin_start, bin_end], 0, count, color=color, alpha=0.7
             )
 
-        # Apply styling after clearing/plotting
         self.style_histogram_axes()
 
-        # Refresh the canvas to show the updated histogram
         self.hist_fig.canvas.draw_idle()
 
     def _on_harmonic_changed(self):
         """Callback whenever the harmonic selector changes."""
+        # If a lifetime type is already selected, recalculate with new harmonic
+        if self.lifetime_type_combobox.currentText() != "None":
+            if self.lifetime_data_original is not None:
+                self.calculate_lifetimes()
+                self._update_lifetime_range_slider()
+                if self.lifetime_layer is not None:
+                    self.lifetime_layer.data = self.lifetime_data
+                self._on_lifetime_range_changed(
+                    self.lifetime_range_slider.value()
+                )
+
         self.plot_lifetime_histogram()
 
     def _on_colormap_changed(self, event):
@@ -520,30 +522,24 @@ class LifetimeWidget(QWidget):
         self.lifetime_colormap = layer.colormap.colors
         self.colormap_contrast_limits = layer.contrast_limits
 
-        # Only update the histogram visualization, don't change slider or data
         self._update_lifetime_histogram()
 
     def _on_image_layer_changed(self):
         """Callback whenever the image layer with phasor features changes."""
-        # Hide histogram and clears previous data
         self.lifetime_type_combobox.setCurrentText("None")
 
         frequency_text = self.frequency_input.text().strip()
-        if frequency_text:  # Only calculate if not empty
-            self.frequency = (
-                float(frequency_text) * self.parent_widget.harmonic
-            )
+        if frequency_text:
+            self.frequency = float(frequency_text)
         else:
             self.frequency = None
 
-        # Clear histogram plot
         self.hist_ax.clear()
         self.hist_fig.canvas.draw_idle()
 
     def _on_lifetime_type_changed(self, text):
         """Callback when lifetime type combobox selection changes."""
         if text == "None":
-            # Hide histogram and clear any existing lifetime layer
             self.histogram_widget.hide()
             if self.lifetime_layer is not None:
                 self.lifetime_layer = None
@@ -556,15 +552,11 @@ class LifetimeWidget(QWidget):
             if sample_name == "":
                 self.histogram_widget.hide()
                 return
-            frequency = self.frequency_input.text().strip()
-            if frequency == "":
-                show_error("Enter frequency")
-                return
 
             self.calculate_lifetimes()
             self._update_lifetime_range_slider()
             self.create_lifetime_layer()
             self._on_lifetime_range_changed(self.lifetime_range_slider.value())
             update_frequency_in_metadata(
-                self.viewer.layers[sample_name], frequency
+                self.viewer.layers[sample_name], self.frequency
             )

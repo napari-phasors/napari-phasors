@@ -1,4 +1,5 @@
 import math
+import warnings
 from pathlib import Path
 
 import matplotlib.ticker as ticker
@@ -375,7 +376,14 @@ class PlotterWidget(QWidget):
     def _on_log_scale_changed(self):
         """Callback for log scale change."""
         if self.plot_type == 'HISTOGRAM2D':
-            self.refresh_current_plot()
+            # Suppress the specific biaplotter warning about log normalization
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message="Log normalization applied to color indices*",
+                    category=UserWarning,
+                )
+                self.refresh_current_plot()
 
     def on_white_background_changed(self):
         """Callback function when the white background checkbox is toggled."""
