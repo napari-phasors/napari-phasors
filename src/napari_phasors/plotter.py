@@ -1127,6 +1127,7 @@ class PlotterWidget(QWidget):
         layer = self.viewer.layers[image_layer_name]
 
         if self.mask is None:
+            # Restore original G and S and image data
             phasor_features = self._labels_layer_with_phasor_features.features
             self._labels_layer_with_phasor_features.features['G'] = (
                 phasor_features['G_original'].copy()
@@ -1172,10 +1173,10 @@ class PlotterWidget(QWidget):
             return None
 
         table = self._labels_layer_with_phasor_features.features
-        layer_mask = table['mask'] > 0
+        spatial_mask = table['mask'] > 0
         harmonic_filter = table['harmonic'] == self.harmonic
-        x_data = table['G'][harmonic_filter & layer_mask].values
-        y_data = table['S'][harmonic_filter & layer_mask].values
+        x_data = table['G'][harmonic_filter & spatial_mask].values
+        y_data = table['S'][harmonic_filter & spatial_mask].values
         nan_mask = np.isnan(x_data) & np.isnan(y_data)
         x_data = x_data[~nan_mask]
         y_data = y_data[~nan_mask]
@@ -1188,7 +1189,7 @@ class PlotterWidget(QWidget):
             return x_data, y_data, None
         else:
             selection_data = table[self.selection_tab.selection_id][
-                harmonic_filter & layer_mask
+                harmonic_filter & spatial_mask
             ].values
             selection_data = selection_data[~nan_mask]
             return x_data, y_data, selection_data
