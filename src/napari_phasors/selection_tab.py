@@ -404,7 +404,7 @@ class SelectionWidget(QWidget):
         self.add_selection_id_to_features(self.selection_id)
         column = self.selection_id
         # Apply layer mask to features if available
-        layer_mask = (
+        spatial_mask = (
             self.parent_widget._labels_layer_with_phasor_features.features[
                 "mask"
             ]
@@ -413,12 +413,12 @@ class SelectionWidget(QWidget):
         G_masked = (
             self.parent_widget._labels_layer_with_phasor_features.features[
                 "G"
-            ][layer_mask]
+            ][spatial_mask]
         )
         S_masked = (
             self.parent_widget._labels_layer_with_phasor_features.features[
                 "S"
-            ][layer_mask]
+            ][spatial_mask]
         )
 
         n_harmonics = (
@@ -433,7 +433,7 @@ class SelectionWidget(QWidget):
             image_layer_combobox_current_text
         ].data.flatten()
         mean_column = np.tile(image_layer_current_data_flattened, n_harmonics)
-        mean_filtered_mask = ~np.isnan(mean_column[layer_mask])
+        mean_filtered_mask = ~np.isnan(mean_column[spatial_mask])
         # Filter rows where 'G' and 'S' is not NaN and mean masked is not NaN
         not_nan_mask = ~G_masked.isna() & ~S_masked.isna() & mean_filtered_mask
         not_nan_indices = not_nan_mask[not_nan_mask].index
@@ -560,8 +560,8 @@ class SelectionWidget(QWidget):
         mapped_data = map_array(
             input_array, input_array_values, phasors_layer_data
         )
-        layer_mask = self.parent_widget.mask
-        if layer_mask is not None:
-            mapped_data[layer_mask == 0] = 0
+        spatial_mask = self.parent_widget.mask
+        if spatial_mask is not None:
+            mapped_data[spatial_mask == 0] = 0
         existing_phasors_selected_layer.data = mapped_data
         self._phasors_selected_layer = existing_phasors_selected_layer
