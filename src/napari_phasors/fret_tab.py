@@ -340,28 +340,32 @@ class FretWidget(QWidget):
         if hasattr(self, 'donor_stack'):
             self.donor_stack.setCurrentIndex(index)
 
-        # Update the label text based on the mode
-        if index == 0:  # Manual
+        if index == 0:
             self.donor_label.setText("Donor lifetime (ns):")
-        else:  # From layer
+        else:
             self.donor_label.setText("Donor lifetime (ns):")
 
-        # When switching to layer-based mode, try computing from selection
+        if not hasattr(self, '_updating_settings') or not self._updating_settings:
+            source_text = 'Manual' if index == 0 else 'From layer'
+            self._update_fret_setting_in_metadata('donor_source', source_text)
+
         if index == 1:
             self._calculate_donor_lifetime()
 
     def _on_bg_source_changed(self, index: int):
-        """Switch background position input mode (Manual | From image)."""
+        """Switch background position input mode (Manual - From image)."""
         if hasattr(self, 'bg_stack'):
             self.bg_stack.setCurrentIndex(index)
 
-        # Update the label text based on the mode
-        if index == 0:  # Manual
+        if index == 0:
             self.background_position_label.setText("Background position:")
-        else:  # From layer
+        else:
             self.background_position_label.setText("Background position:")
 
-        # When switching to image-based mode, try computing from selection
+        if not hasattr(self, '_updating_settings') or not self._updating_settings:
+            source_text = 'Manual' if index == 0 else 'From layer'
+            self._update_fret_setting_in_metadata('background_source', source_text)
+
         if index == 1:
             self._calculate_background_position()
 
@@ -510,7 +514,6 @@ class FretWidget(QWidget):
 
     def _on_parameters_changed(self):
         """Update plot when any parameter changes."""
-        # Only store values if we have a valid layer selected
         layer_name = self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
         if not layer_name:
             return
@@ -549,31 +552,89 @@ class FretWidget(QWidget):
 
     def _update_background_combobox(self):
         """Update the background image combobox with available layers."""
-        current_text = self.background_image_combobox.currentText()
-        self.background_image_combobox.blockSignals(True)
-        self.background_image_combobox.clear()
+        if getattr(self, '_updating_background_combobox', False):
+            return
+            
+        self._updating_background_combobox = True
+        
+        try:
+            current_text = self.background_image_combobox.currentText()
+            self.background_image_combobox.blockSignals(True)
+            self.background_image_combobox.clear()
 
-        self.background_image_combobox.addItem("Select layer...")
+            self.background_image_combobox.addItem("Select layer...")
 
-        from napari.layers import Image
+            layer_names = [
+                layer.name
+                for layer in self.viewer.layers
+                if isinstance(layer, Image)
+                and "phasor_features_labels_layer" in layer.metadata.keys()
+            ]
 
-        layer_names = [
-            layer.name
-            for layer in self.viewer.layers
-            if isinstance(layer, Image)
-            and "phasor_features_labels_layer" in layer.metadata.keys()
-        ]
+            self.background_image_combobox.addItems(layer_names)
 
-        self.background_image_combobox.addItems(layer_names)
+            if current_text in layer_names:
+                index = self.background_image_combobox.findText(current_text)
+                if index >= 0:
+                    self.background_image_combobox.setCurrentIndex(index)
+            elif current_text == "Select layer..." or current_text == "":
+                self.background_image_combobox.setCurrentIndex(0)
 
-        if current_text in layer_names:
-            index = self.background_image_combobox.findText(current_text)
-            if index >= 0:
-                self.background_image_combobox.setCurrentIndex(index)
-        elif current_text == "Select layer..." or current_text == "":
-            self.background_image_combobox.setCurrentIndex(0)
+            self.background_image_combobox.blockSignals(False)
+            
+            for layer in self.viewer.layers:
+                if isinstance(layer, Image):
+                    try:
+                        layer.events.name.disconnect(self._update_background_combobox)
+                    except (TypeError, ValueError):
+                        pass
+                    layer.events.name.connect(self._update_background_combobox)
+                    
+        finally:
+            self._updating_background_combobox = False
 
-        self.background_image_combobox.blockSignals(False)
+    def _update_donor_lifetime_combobox(self):
+        """Update the donor lifetime combobox with available layers."""
+        if getattr(self, '_updating_donor_combobox', False):
+            return
+            
+        self._updating_donor_combobox = True
+        
+        try:
+            current_text = self.donor_lifetime_combobox.currentText()
+            self.donor_lifetime_combobox.blockSignals(True)
+            self.donor_lifetime_combobox.clear()
+
+            self.donor_lifetime_combobox.addItem("Select layer...")
+
+            layer_names = [
+                layer.name
+                for layer in self.viewer.layers
+                if isinstance(layer, Image)
+                and "phasor_features_labels_layer" in layer.metadata.keys()
+            ]
+
+            self.donor_lifetime_combobox.addItems(layer_names)
+
+            if current_text in layer_names:
+                index = self.donor_lifetime_combobox.findText(current_text)
+                if index >= 0:
+                    self.donor_lifetime_combobox.setCurrentIndex(index)
+            elif current_text == "Select layer..." or current_text == "":
+                self.donor_lifetime_combobox.setCurrentIndex(0)
+
+            self.donor_lifetime_combobox.blockSignals(False)
+            
+            for layer in self.viewer.layers:
+                if isinstance(layer, Image):
+                    try:
+                        layer.events.name.disconnect(self._update_donor_lifetime_combobox)
+                    except (TypeError, ValueError):
+                        pass
+                    layer.events.name.connect(self._update_donor_lifetime_combobox)
+                    
+        finally:
+            self._updating_donor_combobox = False
 
     def _on_layer_changed(self):
         """Handle when layers are added or removed in the viewer."""
@@ -590,6 +651,9 @@ class FretWidget(QWidget):
             if self.bg_source_selector.currentIndex() == 1:
                 self.background_position_label.setText("Background position:")
             return
+
+        if not hasattr(self, '_updating_settings') or not self._updating_settings:
+            self._update_fret_setting_in_metadata('background_layer_name', background_layer_name)
 
         try:
             background_layer = self.viewer.layers[background_layer_name]
@@ -630,6 +694,9 @@ class FretWidget(QWidget):
             except Exception:
                 continue
 
+        if not hasattr(self, '_updating_settings') or not self._updating_settings:
+            self._update_fret_setting_in_metadata('background_positions_by_harmonic', self.background_positions_by_harmonic)
+
         current_harmonic = self.parent_widget.harmonic
         if current_harmonic in self.background_positions_by_harmonic:
             stored = self.background_positions_by_harmonic[current_harmonic]
@@ -638,7 +705,6 @@ class FretWidget(QWidget):
             self.background_real = stored['real']
             self.background_imag = stored['imag']
 
-            # Update the label to show calculated values
             if self.bg_source_selector.currentIndex() == 1:
                 self.background_position_label.setText(
                     f"Background position: G={stored['real']:.2f}, S={stored['imag']:.2f}"
@@ -656,32 +722,6 @@ class FretWidget(QWidget):
 
         self.plot_donor_trajectory()
 
-    def _update_donor_lifetime_combobox(self):
-        """Update the donor lifetime combobox with available layers."""
-        current_text = self.donor_lifetime_combobox.currentText()
-        self.donor_lifetime_combobox.blockSignals(True)
-        self.donor_lifetime_combobox.clear()
-
-        self.donor_lifetime_combobox.addItem("Select layer...")
-
-        layer_names = [
-            layer.name
-            for layer in self.viewer.layers
-            if isinstance(layer, Image)
-            and "phasor_features_labels_layer" in layer.metadata.keys()
-        ]
-
-        self.donor_lifetime_combobox.addItems(layer_names)
-
-        if current_text in layer_names:
-            index = self.donor_lifetime_combobox.findText(current_text)
-            if index >= 0:
-                self.donor_lifetime_combobox.setCurrentIndex(index)
-        elif current_text == "Select layer..." or current_text == "":
-            self.donor_lifetime_combobox.setCurrentIndex(0)
-
-        self.donor_lifetime_combobox.blockSignals(False)
-
     def _calculate_donor_lifetime(self):
         """Calculate the donor lifetime from selected layer for current harmonic."""
         donor_layer_name = self.donor_lifetime_combobox.currentText()
@@ -689,6 +729,9 @@ class FretWidget(QWidget):
             if self.donor_source_selector.currentIndex() == 1:
                 self.donor_label.setText("Donor lifetime (ns):")
             return
+
+        if not hasattr(self, '_updating_settings') or not self._updating_settings:
+            self._update_fret_setting_in_metadata('donor_layer_name', donor_layer_name)
 
         try:
             donor_layer = self.viewer.layers[donor_layer_name]
@@ -731,6 +774,9 @@ class FretWidget(QWidget):
 
             lifetime_type = self.lifetime_type_combobox.currentText()
 
+            if not hasattr(self, '_updating_settings') or not self._updating_settings:
+                self._update_fret_setting_in_metadata('donor_lifetime_type', lifetime_type)
+
             if lifetime_type in (
                 "Apparent Phase Lifetime",
                 "Apparent Modulation Lifetime",
@@ -754,7 +800,9 @@ class FretWidget(QWidget):
             self.donor_line_edit.setText(f"{lifetime:.2f}")
             self.donor_lifetime = lifetime
 
-            # Update the label to show calculated value
+            if not hasattr(self, '_updating_settings') or not self._updating_settings:
+                self._update_fret_setting_in_metadata('donor_lifetime', lifetime)
+
             if self.donor_source_selector.currentIndex() == 1:
                 self.donor_label.setText(
                     f"Donor lifetime (from layer): {lifetime:.2f} ns"
@@ -994,7 +1042,12 @@ class FretWidget(QWidget):
                 'colormap_colors': None,
                 'contrast_limits': (0, 1),
                 'colormap_changed': False
-            }
+            },
+            'donor_source': 'Manual',
+            'donor_layer_name': None,
+            'donor_lifetime_type': 'Apparent Phase Lifetime',
+            'background_source': 'Manual',
+            'background_layer_name': None,
         }
 
     def _initialize_fret_settings_in_metadata(self, layer):
@@ -1079,6 +1132,50 @@ class FretWidget(QWidget):
             if settings.get('use_colormap') is not None:
                 self.use_colormap = settings['use_colormap']
                 self.colormap_checkbox.setChecked(self.use_colormap)
+            
+            donor_source = settings.get('donor_source', 'Manual')
+            donor_layer_name = settings.get('donor_layer_name', None)
+            donor_lifetime_type = settings.get('donor_lifetime_type', 'Apparent Phase Lifetime')
+            
+            donor_layer_exists = (
+                donor_layer_name is not None 
+                and donor_layer_name in self.viewer.layers
+                and donor_layer_name != "Select layer..."
+            )
+            
+            if donor_source == 'From layer' and donor_layer_exists:
+                self.donor_source_selector.setCurrentIndex(1)
+                index = self.donor_lifetime_combobox.findText(donor_layer_name)
+                if index >= 0:
+                    self.donor_lifetime_combobox.setCurrentIndex(index)
+
+                type_index = self.lifetime_type_combobox.findText(donor_lifetime_type)
+                if type_index >= 0:
+                    self.lifetime_type_combobox.setCurrentIndex(type_index)
+            else:
+                self.donor_source_selector.setCurrentIndex(0)
+                if settings.get('donor_lifetime') is not None:
+                    self.donor_line_edit.setText(str(settings['donor_lifetime']))
+            
+            background_source = settings.get('background_source', 'Manual')
+            background_layer_name = settings.get('background_layer_name', None)
+            
+            background_layer_exists = (
+                background_layer_name is not None 
+                and background_layer_name in self.viewer.layers
+                and background_layer_name != "Select layer..."
+            )
+            
+            if background_source == 'From layer' and background_layer_exists:
+                self.bg_source_selector.setCurrentIndex(1)
+                index = self.background_image_combobox.findText(background_layer_name)
+                if index >= 0:
+                    self.background_image_combobox.setCurrentIndex(index)
+            else:
+                self.bg_source_selector.setCurrentIndex(0)
+                if settings.get('background_positions_by_harmonic'):
+                    self.background_positions_by_harmonic = settings['background_positions_by_harmonic'].copy()
+                    self._load_background_position_for_harmonic(self.current_harmonic)
             
             if 'colormap_settings' in settings:
                 colormap_settings = settings['colormap_settings']

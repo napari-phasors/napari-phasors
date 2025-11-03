@@ -218,11 +218,6 @@ class LifetimeWidget(QWidget):
         try:
             settings = layer.metadata['settings']['lifetime']
             
-            if 'frequency' in settings and settings['frequency'] is not None:
-                self.frequency_input.setText(str(settings['frequency']))
-            else:
-                self.frequency_input.setText("")
-            
             if 'lifetime_type' in settings:
                 self.lifetime_type_combobox.setCurrentText(settings['lifetime_type'])
             
