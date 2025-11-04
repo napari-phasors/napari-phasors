@@ -23,7 +23,7 @@ from qtpy.QtWidgets import (
     QTabWidget,
     QVBoxLayout,
     QWidget,
-    QPushButton,
+    QFrame
 )
 
 from ._utils import update_frequency_in_metadata
@@ -393,6 +393,15 @@ class PlotterWidget(QWidget):
         layout = QVBoxLayout(dialog)
         layout.addWidget(QLabel("Select which analyses to import and apply:"))
 
+        frequency_cb = QCheckBox("Frequency")
+        frequency_cb.setChecked(default_checked is None or "frequency" in (default_checked if isinstance(default_checked, list) else []))
+        layout.addWidget(frequency_cb)
+        
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setFrameShadow(QFrame.Sunken)
+        layout.addWidget(line)
+
         tab_names = [
             ("Plot Settings", "settings_tab"),
             ("Calibration", "calibration_tab"),
@@ -404,7 +413,7 @@ class PlotterWidget(QWidget):
         checkboxes = {}
         for label, attr in tab_names:
             cb = QCheckBox(label)
-            cb.setChecked(default_checked is None or attr in default_checked)
+            cb.setChecked(default_checked is None or attr in (default_checked if isinstance(default_checked, list) else []))
             layout.addWidget(cb)
             checkboxes[attr] = cb
 
@@ -416,6 +425,8 @@ class PlotterWidget(QWidget):
         dialog.setLayout(layout)
         if dialog.exec_() == QDialog.Accepted:
             selected = [attr for attr, cb in checkboxes.items() if cb.isChecked()]
+            if frequency_cb.isChecked():
+                selected.insert(0, "frequency")
             return selected
         return []
 
@@ -539,6 +550,14 @@ class PlotterWidget(QWidget):
                 return
             current_layer = self.viewer.layers[current_layer_name]
             import copy
+            
+            if "frequency" in selected_tabs:
+                if 'settings' in source_layer.metadata and 'frequency' in source_layer.metadata['settings']:
+                    freq_val = source_layer.metadata['settings']['frequency']
+                    update_frequency_in_metadata(current_layer, freq_val)
+                    self._broadcast_frequency_value_across_tabs(str(freq_val))
+                selected_tabs = [tab for tab in selected_tabs if tab != "frequency"]
+            
             if 'settings' in source_layer.metadata:
                 current_layer.metadata['settings'] = copy.deepcopy(source_layer.metadata['settings'])
             self._restore_plot_settings_from_metadata()
@@ -559,17 +578,12 @@ class PlotterWidget(QWidget):
         import copy
         current_layer.metadata['settings'] = copy.deepcopy(settings)
         
-        # Broadcast frequency FIRST, before restoring any other settings
-        if 'frequency' in settings:
-            # Update frequency in metadata first
+        if 'frequency' in selected_tabs and 'frequency' in settings:
             update_frequency_in_metadata(current_layer, settings['frequency'])
-            # Then broadcast to all input fields
             self._broadcast_frequency_value_across_tabs(str(settings['frequency']))
+            selected_tabs = [tab for tab in selected_tabs if tab != "frequency"]
         
-        # Now restore plot settings
         self._restore_plot_settings_from_metadata()
-        
-        # Finally restore tab analyses (they can now use the frequency)
         self._restore_all_tab_analyses(selected_tabs)
         self.plot()
 
