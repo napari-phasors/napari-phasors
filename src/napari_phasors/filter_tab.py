@@ -369,8 +369,14 @@ class FilterWidget(QWidget):
         self.parent_widget._labels_layer_with_phasor_features = layer_metadata[
             "phasor_features_labels_layer"
         ]
-
-        max_mean_value = np.nanmax(layer_metadata["original_mean"])
+        # Determine maximum mean value considering mask if available
+        spatial_mask = self.parent_widget.mask
+        if spatial_mask is not None:
+            max_mean_value = np.nanmax(
+                layer_metadata["original_mean"][spatial_mask > 0]
+            )
+        else:
+            max_mean_value = np.nanmax(layer_metadata["original_mean"])
         # Calculate threshold factor based on maximum mean value
         if max_mean_value > 0:
             magnitude = int(log10(max_mean_value))
@@ -528,6 +534,11 @@ class FilterWidget(QWidget):
             .metadata['original_mean']
             .copy()
         )
+        # Apply mask before plotting histogram, if available
+        spatial_mask = self.parent_widget.mask
+        if spatial_mask is not None:
+            mean_data = mean_data[spatial_mask > 0]
+
         self.hist_ax.clear()
         self.threshold_line = None  # Reset line reference when clearing
         self.hist_ax.hist(
@@ -586,6 +597,7 @@ class FilterWidget(QWidget):
         labels_layer_name = (
             self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
         )
+        spatial_mask = self.parent_widget.mask
 
         layer = self.viewer.layers[labels_layer_name]
         if "settings" not in layer.metadata:
@@ -612,6 +624,7 @@ class FilterWidget(QWidget):
             filter_method=filter_method,
             size=self.median_filter_spinbox.value(),
             repeat=self.median_filter_repetition_spinbox.value(),
+            mask=spatial_mask,
             sigma=self.wavelet_sigma_spinbox.value(),
             levels=self.wavelet_levels_spinbox.value(),
             harmonics=harmonics,

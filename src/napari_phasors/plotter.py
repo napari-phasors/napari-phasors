@@ -9,7 +9,7 @@ from matplotlib.colorbar import Colorbar
 from matplotlib.colors import LinearSegmentedColormap, LogNorm
 from matplotlib.lines import Line2D
 from matplotlib.patches import Circle
-from napari.layers import Image
+from napari.layers import Image, Labels, Shapes
 from napari.utils import colormaps, notifications
 from phasorpy.lifetime import phasor_from_lifetime
 from qtpy import uic
@@ -130,22 +130,39 @@ class PlotterWidget(QWidget):
         image_layer_widget.setLayout(image_layer_layout)
         controls_container.layout().addWidget(image_layer_widget)
 
-        # Add harmonic spinbox below image layer combobox
-        harmonic_layout = QHBoxLayout()
-        harmonic_layout.setContentsMargins(0, 0, 0, 0)  # Remove margins
-        harmonic_layout.setSpacing(5)  # Reduce spacing between widgets
-        harmonic_layout.addWidget(QLabel("Harmonic:"))
+        # Create a horizontal box for harmonic and mask controls
+        harmonics_and_mask_container = QHBoxLayout()
+        harmonics_and_mask_container.setContentsMargins(
+            0, 0, 0, 0
+        )  # Remove margins
+        harmonics_and_mask_container.setSpacing(
+            5
+        )  # Reduce spacing between widgets
+        # Harmonic label and spinbox (left side)
+        self.harmonic_label = QLabel("Harmonic:")
+        harmonics_and_mask_container.addWidget(self.harmonic_label)
         self.harmonic_spinbox = QSpinBox()
         self.harmonic_spinbox.setMinimum(1)
         self.harmonic_spinbox.setValue(1)
         self.harmonic_spinbox.setMaximumHeight(25)  # Set smaller height
-        harmonic_layout.addWidget(
+        harmonics_and_mask_container.addWidget(
             self.harmonic_spinbox, 1
         )  # Add stretch factor of 1
 
-        harmonic_widget = QWidget()
-        harmonic_widget.setLayout(harmonic_layout)
-        controls_container.layout().addWidget(harmonic_widget)
+        # Mask label and combobox (right side)
+        self.mask_layer_label = QLabel("Mask Layer:")
+        harmonics_and_mask_container.addWidget(self.mask_layer_label)
+        self.mask_layer_combobox = QComboBox()
+        self.mask_layer_combobox.setToolTip(
+            "Create or select a Labels or Shapes layer with a mask to restrict analysis to specific regions. "
+            "Selecting 'None' will disable masking."
+        )
+        self.mask_layer_combobox.addItem("None")
+        self.mask_layer_combobox.setMaximumHeight(25)  # Set smaller height
+        harmonics_and_mask_container.addWidget(self.mask_layer_combobox, 1)
+
+        controls_container.layout().addLayout(harmonics_and_mask_container)
+        self.mask = None
 
         # Create tab widget
         self.tab_widget = QTabWidget()
@@ -215,6 +232,11 @@ class PlotterWidget(QWidget):
         self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
             self._sync_frequency_inputs_from_metadata
         )
+        # Update mask when mask layer selection changes
+        self.mask_layer_combobox.currentTextChanged.connect(
+            self.on_mask_layer_changed
+        )
+
         self.plotter_inputs_widget.semi_circle_checkbox.stateChanged.connect(
             self.on_toggle_semi_circle
         )
@@ -959,59 +981,83 @@ class PlotterWidget(QWidget):
 
         try:
             # Store current selection
-            current_text = (
+            image_layer_combobox_current_text = (
                 self.image_layer_with_phasor_features_combobox.currentText()
+            )
+            mask_layer_combobox_current_text = (
+                self.mask_layer_combobox.currentText()
             )
 
             # Temporarily disconnect signals to prevent cascading updates
             self.image_layer_with_phasor_features_combobox.blockSignals(True)
+            self.mask_layer_combobox.blockSignals(True)
 
             # Clear and repopulate
             self.image_layer_with_phasor_features_combobox.clear()
+            self.mask_layer_combobox.clear()
 
-            layer_names = [
+            valid_image_layer_names = [
                 layer.name
                 for layer in self.viewer.layers
                 if isinstance(layer, Image)
                 and "phasor_features_labels_layer" in layer.metadata.keys()
             ]
+            allowed_mask_layers = [
+                layer.name
+                for layer in self.viewer.layers
+                if isinstance(layer, Labels) or isinstance(layer, Shapes)
+            ]
 
             self.image_layer_with_phasor_features_combobox.addItems(
-                layer_names
+                valid_image_layer_names
             )
+            self.mask_layer_combobox.addItems(["None"] + allowed_mask_layers)
 
-            # Restore selection if it still exists
-            if current_text in layer_names:
-                index = (
-                    self.image_layer_with_phasor_features_combobox.findText(
-                        current_text
-                    )
+            # Restore combobox selection if it still exists
+            if image_layer_combobox_current_text in valid_image_layer_names:
+                self.image_layer_with_phasor_features_combobox.setCurrentText(
+                    image_layer_combobox_current_text
                 )
-                if index >= 0:
-                    self.image_layer_with_phasor_features_combobox.setCurrentIndex(
-                        index
-                    )
+            if mask_layer_combobox_current_text in allowed_mask_layers:
+                self.mask_layer_combobox.setCurrentText(
+                    mask_layer_combobox_current_text
+                )
 
+            
             # Re-enable signals
             self.image_layer_with_phasor_features_combobox.blockSignals(False)
-
-            # Connect layer name change events (disconnect first to avoid duplicates)
-            for layer_name in layer_names:
+            self.mask_layer_combobox.blockSignals(False)
+            # Reconnect the signals
+            # Ensure this function is called if layers are renamed
+            for layer_name in valid_image_layer_names + allowed_mask_layers:
                 layer = self.viewer.layers[layer_name]
                 try:
                     layer.events.name.disconnect(self.reset_layer_choices)
                 except (TypeError, ValueError):
-                    pass  # Not connected, ignore
+                    pass # Not connected, ignore
                 layer.events.name.connect(self.reset_layer_choices)
+                if isinstance(layer, Shapes):
+                    try:
+                        layer.events.data.disconnect(self.on_mask_data_changed)
+                    except (TypeError, ValueError):
+                        pass # Not connected, ignore
+                    layer.events.data.connect(self.on_mask_data_changed)
+                if isinstance(layer, Labels):
+                    try:
+                        layer.events.paint.disconnect(self.on_mask_data_changed)
+                        layer.events.set_data.disconnect(self.on_mask_data_changed)
+                    except (TypeError, ValueError):
+                        pass # Not connected, ignore
+                    layer.events.paint.connect(self.on_mask_data_changed)
+                    layer.events.set_data.connect(self.on_mask_data_changed)
 
-            # Trigger updates only if selection changed
-            new_text = (
-                self.image_layer_with_phasor_features_combobox.currentText()
-            )
-            if new_text != current_text:
+            # Only call the method if the selection actually changed or if it's the first item
+            new_text = self.image_layer_with_phasor_features_combobox.currentText()
+            if new_text != image_layer_combobox_current_text or (
+                image_layer_combobox_current_text == "" and new_text != ""
+            ):
                 self.on_labels_layer_with_phasor_features_changed()
-                self._sync_frequency_inputs_from_metadata()
-
+                # self._sync_frequency_inputs_from_metadata() TODO: check if needed
         finally:
             self._resetting_layer_choices = False
 
@@ -1065,6 +1111,64 @@ class PlotterWidget(QWidget):
         finally:
             self._in_on_labels_layer_with_phasor_features_changed = False
 
+    def on_mask_layer_changed(self, text):
+        """Handle changes to the mask layer combo box."""
+        if text == "None":
+            self.update_mask_column_and_plot(None)
+        else:
+            mask_layer = self.viewer.layers[text]
+            self.update_mask_column_and_plot(mask_layer)
+
+    def on_mask_data_changed(self, event):
+        """Handle changes to the mask layer data."""
+        if self.mask_layer_combobox.currentText() != event.source.name:
+            return
+        mask_layer = event.source
+        self.update_mask_column_and_plot(mask_layer)
+
+    def update_mask_column_and_plot(self, mask_layer):
+        """Update the mask column in the labels layer with phasor features."""
+        self.mask = None
+        if isinstance(mask_layer, Shapes) and len(mask_layer.data) > 0:
+            self.mask = mask_layer.to_labels(
+                labels_shape=self._labels_layer_with_phasor_features.data.shape
+            )
+        elif isinstance(mask_layer, Labels) and mask_layer.data.any():
+            self.mask = mask_layer.data
+        image_layer_name = (
+            self.image_layer_with_phasor_features_combobox.currentText()
+        )
+        layer = self.viewer.layers[image_layer_name]
+
+        if self.mask is None:
+            # Restore original G and S and image data
+            phasor_features = self._labels_layer_with_phasor_features.features
+            self._labels_layer_with_phasor_features.features['G'] = (
+                phasor_features['G_original'].copy()
+            )
+            self._labels_layer_with_phasor_features.features['S'] = (
+                phasor_features['S_original'].copy()
+            )
+            # empty mask layer
+            self._labels_layer_with_phasor_features.features['mask'] = 1
+            # Restore layer data from original data
+            layer.data = layer.metadata["original_mean"].copy()
+        else:
+            # Update the mask feature in the labels layer with phasor features
+            self._labels_layer_with_phasor_features.features['mask'] = np.tile(
+                self.mask.flatten(),
+                self._labels_layer_with_phasor_features.features[
+                    "harmonic"
+                ].max(),
+            )
+        # Save mask to metadata
+        if "settings" not in layer.metadata:
+            layer.metadata["settings"] = {}
+        layer.metadata["settings"]["mask"] = self.mask
+        self.selection_tab.update_phasors_layer()
+        self.filter_tab.on_labels_layer_with_phasor_features_changed()
+        self.plot()
+
     def get_features(self):
         """Get the G and S features for the selected harmonic and selection id.
 
@@ -1083,11 +1187,13 @@ class PlotterWidget(QWidget):
             return None
 
         table = self._labels_layer_with_phasor_features.features
-        x_data = table['G'][table['harmonic'] == self.harmonic].values
-        y_data = table['S'][table['harmonic'] == self.harmonic].values
-        mask = np.isnan(x_data) & np.isnan(y_data)
-        x_data = x_data[~mask]
-        y_data = y_data[~mask]
+        spatial_mask = table['mask'] > 0
+        harmonic_filter = table['harmonic'] == self.harmonic
+        x_data = table['G'][harmonic_filter & spatial_mask].values
+        y_data = table['S'][harmonic_filter & spatial_mask].values
+        nan_mask = np.isnan(x_data) & np.isnan(y_data)
+        x_data = x_data[~nan_mask]
+        y_data = y_data[~nan_mask]
 
         if (
             self.selection_tab.selection_id is None
@@ -1097,9 +1203,9 @@ class PlotterWidget(QWidget):
             return x_data, y_data, None
         else:
             selection_data = table[self.selection_tab.selection_id][
-                table['harmonic'] == self.harmonic
+                harmonic_filter & spatial_mask
             ].values
-            selection_data = selection_data[~mask]
+            selection_data = selection_data[~nan_mask]
             return x_data, y_data, selection_data
 
     def set_axes_labels(self):
