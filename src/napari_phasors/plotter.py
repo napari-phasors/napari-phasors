@@ -15,7 +15,12 @@ from phasorpy.lifetime import phasor_from_lifetime
 from qtpy import uic
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
+    QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QSpinBox,
@@ -23,7 +28,6 @@ from qtpy.QtWidgets import (
     QTabWidget,
     QVBoxLayout,
     QWidget,
-    QFrame
 )
 
 from ._utils import update_frequency_in_metadata
@@ -217,7 +221,7 @@ class PlotterWidget(QWidget):
         self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
             self._sync_frequency_inputs_from_metadata
         )
-        
+
         # Connect settings callbacks
         self.plotter_inputs_widget.semi_circle_checkbox.stateChanged.connect(
             self._on_semi_circle_changed
@@ -238,8 +242,12 @@ class PlotterWidget(QWidget):
         self.plotter_inputs_widget.white_background_checkbox.stateChanged.connect(
             self._on_white_background_changed
         )
-        self.plotter_inputs_widget.import_from_layer_button.clicked.connect(self._import_settings_from_layer)
-        self.plotter_inputs_widget.import_from_file_button.clicked.connect(self._import_settings_from_file)
+        self.plotter_inputs_widget.import_from_layer_button.clicked.connect(
+            self._import_settings_from_layer
+        )
+        self.plotter_inputs_widget.import_from_file_button.clicked.connect(
+            self._import_settings_from_file
+        )
 
         # Populate plot type combobox
         self.plotter_inputs_widget.plot_type_combobox.addItems(
@@ -291,17 +299,26 @@ class PlotterWidget(QWidget):
         """Get default settings dictionary for plot parameters."""
 
         default_harmonic = 1  # fallback default
-        layer_name = self.image_layer_with_phasor_features_combobox.currentText()
+        layer_name = (
+            self.image_layer_with_phasor_features_combobox.currentText()
+        )
         if layer_name:
             try:
                 layer_metadata = self.viewer.layers[layer_name].metadata
                 if "phasor_features_labels_layer" in layer_metadata:
-                    phasor_features = layer_metadata["phasor_features_labels_layer"]
-                    if phasor_features.features is not None and "harmonic" in phasor_features.features.columns:
-                        default_harmonic = int(phasor_features.features["harmonic"].min())
+                    phasor_features = layer_metadata[
+                        "phasor_features_labels_layer"
+                    ]
+                    if (
+                        phasor_features.features is not None
+                        and "harmonic" in phasor_features.features.columns
+                    ):
+                        default_harmonic = int(
+                            phasor_features.features["harmonic"].min()
+                        )
             except (KeyError, AttributeError, ValueError):
                 pass
-        
+
         return {
             'harmonic': default_harmonic,
             'semi_circle': True,
@@ -309,14 +326,14 @@ class PlotterWidget(QWidget):
             'plot_type': 'HISTOGRAM2D',
             'colormap': 'turbo',
             'number_of_bins': 150,
-            'log_scale': False
+            'log_scale': False,
         }
 
     def _initialize_plot_settings_in_metadata(self, layer):
         """Initialize settings in layer metadata if not present."""
         if 'settings' not in layer.metadata:
             layer.metadata['settings'] = {}
-        
+
         default_settings = self._get_default_plot_settings()
         for key, default_value in default_settings.items():
             if key not in layer.metadata['settings']:
@@ -326,8 +343,10 @@ class PlotterWidget(QWidget):
         """Update a specific setting in the current layer's metadata."""
         if self._updating_settings:
             return
-            
-        layer_name = self.image_layer_with_phasor_features_combobox.currentText()
+
+        layer_name = (
+            self.image_layer_with_phasor_features_combobox.currentText()
+        )
         if layer_name:
             layer = self.viewer.layers[layer_name]
             if 'settings' not in layer.metadata:
@@ -336,96 +355,161 @@ class PlotterWidget(QWidget):
 
     def _restore_plot_settings_from_metadata(self):
         """Restore all settings from the current layer's metadata."""
-        layer_name = self.image_layer_with_phasor_features_combobox.currentText()
+        layer_name = (
+            self.image_layer_with_phasor_features_combobox.currentText()
+        )
         if not layer_name:
             return
-            
+
         layer = self.viewer.layers[layer_name]
         if 'settings' not in layer.metadata:
             self._initialize_plot_settings_in_metadata(layer)
             return
-            
+
         self._updating_settings = True
         try:
             settings = layer.metadata['settings']
-            
+
             # Restore harmonic
             if 'harmonic' in settings:
                 self.harmonic_spinbox.setValue(settings['harmonic'])
-            
+
             # Restore white background first (this affects circle colors)
             if 'white_background' in settings:
-                self.plotter_inputs_widget.white_background_checkbox.setChecked(settings['white_background'])
+                self.plotter_inputs_widget.white_background_checkbox.setChecked(
+                    settings['white_background']
+                )
                 # Update axes labels and plot background immediately
                 self.set_axes_labels()
                 self._update_plot_bg_color()
-            
+
             # Restore semi circle (this will update the circle/semicircle with correct colors)
             if 'semi_circle' in settings:
                 # Use the setter to properly update the display
                 self.toggle_semi_circle = settings['semi_circle']
-            
+
             # Restore plot type
             if 'plot_type' in settings:
-                self.plotter_inputs_widget.plot_type_combobox.setCurrentText(settings['plot_type'])
-            
+                self.plotter_inputs_widget.plot_type_combobox.setCurrentText(
+                    settings['plot_type']
+                )
+
             # Restore colormap
             if 'colormap' in settings:
-                self.plotter_inputs_widget.colormap_combobox.setCurrentText(settings['colormap'])
-            
+                self.plotter_inputs_widget.colormap_combobox.setCurrentText(
+                    settings['colormap']
+                )
+
             # Restore number of bins
             if 'number_of_bins' in settings:
-                self.plotter_inputs_widget.number_of_bins_spinbox.setValue(settings['number_of_bins'])
-            
+                self.plotter_inputs_widget.number_of_bins_spinbox.setValue(
+                    settings['number_of_bins']
+                )
+
             # Restore log scale
             if 'log_scale' in settings:
-                self.plotter_inputs_widget.log_scale_checkbox.setChecked(settings['log_scale'])
-                
+                self.plotter_inputs_widget.log_scale_checkbox.setChecked(
+                    settings['log_scale']
+                )
+
         finally:
             self._updating_settings = False
 
-    def _show_import_dialog(self, default_checked=None):
-        """Show a dialog to select which analyses to import/apply."""
-        from qtpy.QtWidgets import QDialog, QVBoxLayout, QCheckBox, QDialogButtonBox, QLabel
+    def _show_import_dialog(self, default_checked=None, source_settings=None):
+        """Show a dialog to select which analyses to import/apply.
 
+        Parameters
+        ----------
+        default_checked : list, optional
+            List of tab keys that should be checked by default
+        source_settings : dict, optional
+            Settings dictionary from source layer/file to determine which tabs to show
+        """
         dialog = QDialog(self)
         dialog.setWindowTitle("Select Analyses to Import")
         layout = QVBoxLayout(dialog)
         layout.addWidget(QLabel("Select which analyses to import and apply:"))
 
-        frequency_cb = QCheckBox("Frequency")
-        frequency_cb.setChecked(default_checked is None or "frequency" in (default_checked if isinstance(default_checked, list) else []))
-        layout.addWidget(frequency_cb)
-        
-        line = QFrame()
-        line.setFrameShape(QFrame.HLine)
-        line.setFrameShadow(QFrame.Sunken)
-        layout.addWidget(line)
+        # Frequency checkbox (always show if frequency exists in settings)
+        frequency_cb = None
+        if source_settings is not None and "frequency" in source_settings:
+            frequency_cb = QCheckBox("Frequency")
+            frequency_cb.setChecked(
+                default_checked is None
+                or "frequency"
+                in (
+                    default_checked
+                    if isinstance(default_checked, list)
+                    else []
+                )
+            )
+            layout.addWidget(frequency_cb)
 
-        tab_names = [
-            ("Plot Settings", "settings_tab"),
-            ("Calibration", "calibration_tab"),
-            ("Filter/Threshold", "filter_tab"),
-            ("Lifetime", "lifetime_tab"),
-            ("FRET", "fret_tab"),
-            ("Components", "components_tab"),
+            line = QFrame()
+            line.setFrameShape(QFrame.HLine)
+            line.setFrameShadow(QFrame.Sunken)
+            layout.addWidget(line)
+
+        # Map tab display names to their metadata keys
+        tab_mapping = [
+            ("Plot Settings", "settings_tab", None),  # Always has settings
+            ("Calibration", "calibration_tab", "calibrated"),
+            (
+                "Filter/Threshold",
+                "filter_tab",
+                ["threshold", "filter"],
+            ),  # Either threshold or filter
+            ("Lifetime", "lifetime_tab", "lifetime"),
+            ("FRET", "fret_tab", "fret"),
+            ("Components", "components_tab", "component_analysis"),
         ]
-        checkboxes = {}
-        for label, attr in tab_names:
-            cb = QCheckBox(label)
-            cb.setChecked(default_checked is None or attr in (default_checked if isinstance(default_checked, list) else []))
-            layout.addWidget(cb)
-            checkboxes[attr] = cb
 
-        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        checkboxes = {}
+
+        for label, attr, settings_key in tab_mapping:
+            # Determine if this tab should be shown
+            show_tab = False
+
+            if source_settings is None:
+                # No settings provided, show all tabs
+                show_tab = True
+            elif settings_key is None:
+                # Always show (e.g., Plot Settings)
+                show_tab = True
+            elif isinstance(settings_key, list):
+                # Show if any of the keys exist (e.g., Filter/Threshold)
+                show_tab = any(key in source_settings for key in settings_key)
+            else:
+                # Show if the specific key exists
+                show_tab = settings_key in source_settings
+
+            if show_tab:
+                cb = QCheckBox(label)
+                cb.setChecked(
+                    default_checked is None
+                    or attr
+                    in (
+                        default_checked
+                        if isinstance(default_checked, list)
+                        else []
+                    )
+                )
+                layout.addWidget(cb)
+                checkboxes[attr] = cb
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
         layout.addWidget(button_box)
         button_box.accepted.connect(dialog.accept)
         button_box.rejected.connect(dialog.reject)
 
         dialog.setLayout(layout)
         if dialog.exec_() == QDialog.Accepted:
-            selected = [attr for attr, cb in checkboxes.items() if cb.isChecked()]
-            if frequency_cb.isChecked():
+            selected = [
+                attr for attr, cb in checkboxes.items() if cb.isChecked()
+            ]
+            if frequency_cb is not None and frequency_cb.isChecked():
                 selected.insert(0, "frequency")
             return selected
         return []
@@ -433,29 +517,41 @@ class PlotterWidget(QWidget):
     def _restore_all_tab_analyses(self, selected_tabs=None):
         """Restore only selected tab analyses."""
         if selected_tabs is None:
-            selected_tabs = ["settings_tab", "calibration_tab", "filter_tab", "lifetime_tab", "fret_tab", "components_tab"]
-        
+            selected_tabs = [
+                "settings_tab",
+                "calibration_tab",
+                "filter_tab",
+                "lifetime_tab",
+                "fret_tab",
+                "components_tab",
+            ]
+
         # Restore plot settings first if selected
         if "settings_tab" in selected_tabs:
             self._restore_plot_settings_from_metadata()
-        
-        if "calibration_tab" in selected_tabs and hasattr(self, 'calibration_tab'):
+
+        if "calibration_tab" in selected_tabs and hasattr(
+            self, 'calibration_tab'
+        ):
             self.calibration_tab._on_image_layer_changed()
             self._apply_calibration_if_needed()
         if "filter_tab" in selected_tabs and hasattr(self, 'filter_tab'):
             self.filter_tab._on_image_layer_changed()
             self.filter_tab.apply_button_clicked()
-        if "components_tab" in selected_tabs and hasattr(self, 'components_tab'):
+        if "components_tab" in selected_tabs and hasattr(
+            self, 'components_tab'
+        ):
             self.components_tab._on_image_layer_changed()
         if "lifetime_tab" in selected_tabs and hasattr(self, 'lifetime_tab'):
             self.lifetime_tab._on_image_layer_changed()
         if "fret_tab" in selected_tabs and hasattr(self, 'fret_tab'):
             self.fret_tab._on_image_layer_changed()
 
-
     def _apply_calibration_if_needed(self):
         """Apply calibration transformation if needed."""
-        layer_name = self.image_layer_with_phasor_features_combobox.currentText()
+        layer_name = (
+            self.image_layer_with_phasor_features_combobox.currentText()
+        )
         if not layer_name or layer_name not in self.viewer.layers:
             return
         layer = self.viewer.layers[layer_name]
@@ -468,22 +564,25 @@ class PlotterWidget(QWidget):
         ):
             phi_zero = settings["calibration_phase"]
             mod_zero = settings["calibration_modulation"]
-            self.calibration_tab._apply_phasor_transformation(layer_name, phi_zero, mod_zero)
+            self.calibration_tab._apply_phasor_transformation(
+                layer_name, phi_zero, mod_zero
+            )
             layer.metadata["calibration_applied"] = True
 
     def _import_settings_from_layer(self):
         """Import all settings and analyses from another layer, with selection dialog."""
-        from qtpy.QtWidgets import QDialog, QVBoxLayout, QComboBox, QLabel, QDialogButtonBox
-
         dialog = QDialog(self)
         dialog.setWindowTitle("Import Settings from Layer")
         layout = QVBoxLayout(dialog)
         layout.addWidget(QLabel("Select layer to import settings from:"))
 
         layer_combo = QComboBox()
-        current_layer = self.image_layer_with_phasor_features_combobox.currentText()
+        current_layer = (
+            self.image_layer_with_phasor_features_combobox.currentText()
+        )
         available_layers = [
-            layer.name for layer in self.viewer.layers
+            layer.name
+            for layer in self.viewer.layers
             if isinstance(layer, Image)
             and "phasor_features_labels_layer" in layer.metadata
             and layer.name != current_layer
@@ -491,32 +590,43 @@ class PlotterWidget(QWidget):
         layer_combo.addItems(available_layers)
         layout.addWidget(layer_combo)
 
-        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
         layout.addWidget(button_box)
         button_box.accepted.connect(dialog.accept)
         button_box.rejected.connect(dialog.reject)
         dialog.setLayout(layout)
 
         if dialog.exec_() == QDialog.Accepted and layer_combo.currentText():
-            selected_tabs = self._show_import_dialog()
+            source_layer_name = layer_combo.currentText()
+            source_layer = self.viewer.layers[source_layer_name]
+
+            source_settings = source_layer.metadata.get('settings', {})
+
+            selected_tabs = self._show_import_dialog(
+                source_settings=source_settings
+            )
             if selected_tabs:
-                source_layer_name = layer_combo.currentText()
-                self._copy_metadata_from_layer(source_layer_name, selected_tabs)
+                self._copy_metadata_from_layer(
+                    source_layer_name, selected_tabs
+                )
 
     def _import_settings_from_file(self):
         """Import settings from an OME-TIFF file, with selection dialog."""
-        from qtpy.QtWidgets import QFileDialog
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Select OME-TIFF file",
             "",
-            "OME-TIFF Files (*.ome.tif *.ome.tiff);;All Files (*)"
+            "OME-TIFF Files (*.ome.tif *.ome.tiff);;All Files (*)",
         )
         if not file_path:
             return
         try:
             import json
+
             from phasorpy import io
+
             _, _, _, attrs = io.phasor_from_ometiff(file_path, harmonic='all')
             settings = {}
             if "frequency" in attrs:
@@ -525,50 +635,75 @@ class PlotterWidget(QWidget):
                 try:
                     description = json.loads(attrs["description"])
                     if "napari_phasors_settings" in description:
-                        napari_phasors_settings = json.loads(description["napari_phasors_settings"])
+                        napari_phasors_settings = json.loads(
+                            description["napari_phasors_settings"]
+                        )
                         for key, value in napari_phasors_settings.items():
                             settings[key] = value
                 except (json.JSONDecodeError, KeyError):
                     pass
             if settings:
-                selected_tabs = self._show_import_dialog()
+                selected_tabs = self._show_import_dialog(
+                    source_settings=settings
+                )
                 if selected_tabs:
                     self._apply_imported_settings(settings, selected_tabs)
-                    notifications.show_info(f"Settings imported from {Path(file_path).name}")
+                    notifications.show_info(
+                        f"Settings imported from {Path(file_path).name}"
+                    )
             else:
-                notifications.WarningNotification("No valid napari-phasors settings found in file")
+                notifications.WarningNotification(
+                    "No valid napari-phasors settings found in file"
+                )
         except Exception as e:
-            notifications.WarningNotification(f"Failed to import from file: {str(e)}")
+            notifications.WarningNotification(
+                f"Failed to import from file: {str(e)}"
+            )
 
     def _copy_metadata_from_layer(self, source_layer_name, selected_tabs):
         """Copy metadata from source layer to current layer and apply selected analyses."""
         try:
             source_layer = self.viewer.layers[source_layer_name]
-            current_layer_name = self.image_layer_with_phasor_features_combobox.currentText()
+            current_layer_name = (
+                self.image_layer_with_phasor_features_combobox.currentText()
+            )
             if not current_layer_name:
                 notifications.WarningNotification("No layer selected")
                 return
             current_layer = self.viewer.layers[current_layer_name]
             import copy
-            
+
             if "frequency" in selected_tabs:
-                if 'settings' in source_layer.metadata and 'frequency' in source_layer.metadata['settings']:
+                if (
+                    'settings' in source_layer.metadata
+                    and 'frequency' in source_layer.metadata['settings']
+                ):
                     freq_val = source_layer.metadata['settings']['frequency']
                     update_frequency_in_metadata(current_layer, freq_val)
                     self._broadcast_frequency_value_across_tabs(str(freq_val))
-                selected_tabs = [tab for tab in selected_tabs if tab != "frequency"]
-            
+                selected_tabs = [
+                    tab for tab in selected_tabs if tab != "frequency"
+                ]
+
             if 'settings' in source_layer.metadata:
-                current_layer.metadata['settings'] = copy.deepcopy(source_layer.metadata['settings'])
+                current_layer.metadata['settings'] = copy.deepcopy(
+                    source_layer.metadata['settings']
+                )
             self._restore_plot_settings_from_metadata()
             self._restore_all_tab_analyses(selected_tabs)
             self.plot()
-            notifications.show_info(f"Settings and analyses imported from {source_layer_name}")
+            notifications.show_info(
+                f"Settings and analyses imported from {source_layer_name}"
+            )
         except Exception as e:
-            notifications.WarningNotification(f"Failed to import settings: {str(e)}")
+            notifications.WarningNotification(
+                f"Failed to import settings: {str(e)}"
+            )
 
     def _apply_imported_settings(self, settings, selected_tabs):
-        current_layer_name = self.image_layer_with_phasor_features_combobox.currentText()
+        current_layer_name = (
+            self.image_layer_with_phasor_features_combobox.currentText()
+        )
         if not current_layer_name:
             notifications.WarningNotification("No layer selected")
             return
@@ -576,17 +711,21 @@ class PlotterWidget(QWidget):
         if 'settings' not in current_layer.metadata:
             current_layer.metadata['settings'] = {}
         import copy
+
         current_layer.metadata['settings'] = copy.deepcopy(settings)
-        
+
         if 'frequency' in selected_tabs and 'frequency' in settings:
             update_frequency_in_metadata(current_layer, settings['frequency'])
-            self._broadcast_frequency_value_across_tabs(str(settings['frequency']))
-            selected_tabs = [tab for tab in selected_tabs if tab != "frequency"]
-        
+            self._broadcast_frequency_value_across_tabs(
+                str(settings['frequency'])
+            )
+            selected_tabs = [
+                tab for tab in selected_tabs if tab != "frequency"
+            ]
+
         self._restore_plot_settings_from_metadata()
         self._restore_all_tab_analyses(selected_tabs)
         self.plot()
-
 
     def _on_tab_changed(self, index):
         """Handle tab change events to show/hide tab-specific lines."""
@@ -605,7 +744,6 @@ class PlotterWidget(QWidget):
 
         if hasattr(self, 'fret_tab'):
             self._set_fret_visibility(False)
-
 
     def _show_tab_artists(self, current_tab):
         """Show artists for the specified tab."""
@@ -639,9 +777,11 @@ class PlotterWidget(QWidget):
 
     def _on_plot_type_changed(self):
         """Callback for plot type change."""
-        new_plot_type = self.plotter_inputs_widget.plot_type_combobox.currentText()
+        new_plot_type = (
+            self.plotter_inputs_widget.plot_type_combobox.currentText()
+        )
         self._update_setting_in_metadata('plot_type', new_plot_type)
-        
+
         if not self._updating_settings:
             old_plot_type = getattr(self, '_current_plot_type', None)
             if new_plot_type != old_plot_type:
@@ -666,7 +806,6 @@ class PlotterWidget(QWidget):
         """Callback for log scale change."""
         self._update_setting_in_metadata('log_scale', bool(state))
         if not self._updating_settings and self.plot_type == 'HISTOGRAM2D':
-            # Suppress the specific biaplotter warning about log normalization
             with warnings.catch_warnings():
                 warnings.filterwarnings(
                     "ignore",
@@ -681,12 +820,12 @@ class PlotterWidget(QWidget):
         if not self._updating_settings:
             self.set_axes_labels()
             self._update_plot_bg_color()
-            
+
             if self.toggle_semi_circle:
                 self._update_semi_circle_plot(self.canvas_widget.axes)
             else:
                 self._update_polar_plot(self.canvas_widget.axes, visible=True)
-            
+
             self.canvas_widget.figure.canvas.draw_idle()
             self.plot()
 
@@ -915,7 +1054,6 @@ class PlotterWidget(QWidget):
                 )[0]
             )
 
-            # Add lifetime ticks if frequency is available
             self._add_lifetime_ticks_to_semicircle(ax, visible, alpha, zorder)
 
         return ax
@@ -932,10 +1070,9 @@ class PlotterWidget(QWidget):
 
         tick_color = 'black' if self.white_background else 'darkgray'
 
-        # Generate lifetime values using powers of 2
         lifetimes = [0.0]
 
-        # Add powers of 2 that result in S coordinates >= 0.18 (visible on semicircle)
+        # Add powers of 2 that result in S coordinates >= 0.18
         for t in range(-8, 32):
             lifetime_val = 2**t
             try:
@@ -1025,29 +1162,54 @@ class PlotterWidget(QWidget):
 
     def _sync_frequency_inputs_from_metadata(self):
         """Sync the frequency widget input fields with metadata."""
-        frequency = self._get_frequency_from_layer()
-        if frequency is None:
+        layer_name = (
+            self.image_layer_with_phasor_features_combobox.currentText()
+        )
+        if not layer_name:
+            self._broadcast_frequency_value_across_tabs("")
             return
-        self._broadcast_frequency_value_across_tabs(str(frequency))
+
+        layer = self.viewer.layers[layer_name]
+        settings = layer.metadata.get('settings', {})
+        frequency = settings.get('frequency', None)
+
+        if frequency is not None:
+            self._broadcast_frequency_value_across_tabs(str(frequency))
+        else:
+            self._broadcast_frequency_value_across_tabs("")
 
     def _broadcast_frequency_value_across_tabs(self, value):
         """
         Broadcast the frequency value to all relevant input fields and update semicircle.
         """
+        self.calibration_tab.calibration_widget.frequency_input.blockSignals(
+            True
+        )
+        self.lifetime_tab.frequency_input.blockSignals(True)
+        self.fret_tab.frequency_input.blockSignals(True)
+
         try:
-            freq_val = float(value)
-            layer_name = (
-                self.image_layer_with_phasor_features_combobox.currentText()
-            )
-            if layer_name:
-                layer = self.viewer.layers[layer_name]
-                update_frequency_in_metadata(layer, freq_val)
-        except Exception:
+            if value and value.strip():
+                freq_val = float(value)
+                layer_name = (
+                    self.image_layer_with_phasor_features_combobox.currentText()
+                )
+                if layer_name:
+                    layer = self.viewer.layers[layer_name]
+                    update_frequency_in_metadata(layer, freq_val)
+        except (ValueError, TypeError):
             pass
 
         self.calibration_tab.calibration_widget.frequency_input.setText(value)
         self.lifetime_tab.frequency_input.setText(value)
         self.fret_tab.frequency_input.setText(value)
+
+        self.calibration_tab.calibration_widget.frequency_input.blockSignals(
+            False
+        )
+        self.lifetime_tab.frequency_input.blockSignals(False)
+        self.fret_tab.frequency_input.blockSignals(False)
+
         self.components_tab._update_lifetime_inputs_visibility()
 
         if self.toggle_semi_circle:
@@ -1225,7 +1387,6 @@ class PlotterWidget(QWidget):
         """Connect signals for the currently active artist only."""
         self._disconnect_all_artist_signals()
 
-        # Connect only the active artist
         if self.plot_type == 'HISTOGRAM2D':
             self.canvas_widget.artists[
                 'HISTOGRAM2D'
@@ -1335,19 +1496,23 @@ class PlotterWidget(QWidget):
             self._labels_layer_with_phasor_features = layer_metadata[
                 "phasor_features_labels_layer"
             ]
-            
-            available_harmonics = self._labels_layer_with_phasor_features.features["harmonic"].unique()
+
+            available_harmonics = (
+                self._labels_layer_with_phasor_features.features[
+                    "harmonic"
+                ].unique()
+            )
             min_harmonic = int(available_harmonics.min())
             max_harmonic = int(available_harmonics.max())
-            
+
             self.harmonic_spinbox.setMinimum(min_harmonic)
             self.harmonic_spinbox.setMaximum(max_harmonic)
-            
+
             layer = self.viewer.layers[labels_layer_name]
             self._initialize_plot_settings_in_metadata(layer)
-            
+
             self._restore_plot_settings_from_metadata()
-            
+
             # Update filter widget when layer changes
             if hasattr(self, 'filter_tab'):
                 self.filter_tab._on_image_layer_changed()

@@ -65,34 +65,48 @@ class CalibrationWidget(QWidget):
         # Prevent recursive calls
         if getattr(self, '_populating_comboboxes', False):
             return
-            
+
         self._populating_comboboxes = True
-        
+
         try:
             # Store current selection
-            current_text = self.calibration_widget.calibration_layer_combobox.currentText()
-            
+            current_text = (
+                self.calibration_widget.calibration_layer_combobox.currentText()
+            )
+
             # Temporarily block signals
-            self.calibration_widget.calibration_layer_combobox.blockSignals(True)
-            
+            self.calibration_widget.calibration_layer_combobox.blockSignals(
+                True
+            )
+
             # Clear and repopulate
             self.calibration_widget.calibration_layer_combobox.clear()
             image_layers = [
-                layer for layer in self.viewer.layers if isinstance(layer, Image)
+                layer
+                for layer in self.viewer.layers
+                if isinstance(layer, Image)
             ]
-            
+
             layer_names = [layer.name for layer in image_layers]
-            self.calibration_widget.calibration_layer_combobox.addItems(layer_names)
-            
+            self.calibration_widget.calibration_layer_combobox.addItems(
+                layer_names
+            )
+
             # Restore selection if the layer still exists
             if current_text in layer_names:
-                index = self.calibration_widget.calibration_layer_combobox.findText(current_text)
+                index = self.calibration_widget.calibration_layer_combobox.findText(
+                    current_text
+                )
                 if index >= 0:
-                    self.calibration_widget.calibration_layer_combobox.setCurrentIndex(index)
-            
+                    self.calibration_widget.calibration_layer_combobox.setCurrentIndex(
+                        index
+                    )
+
             # Re-enable signals
-            self.calibration_widget.calibration_layer_combobox.blockSignals(False)
-            
+            self.calibration_widget.calibration_layer_combobox.blockSignals(
+                False
+            )
+
             # Connect layer name change events (disconnect first to avoid duplicates)
             for layer in image_layers:
                 try:
@@ -100,7 +114,7 @@ class CalibrationWidget(QWidget):
                 except (TypeError, ValueError):
                     pass  # Not connected, ignore
                 layer.events.name.connect(self._populate_comboboxes)
-                
+
         finally:
             self._populating_comboboxes = False
 

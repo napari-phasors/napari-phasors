@@ -345,7 +345,10 @@ class FretWidget(QWidget):
         else:
             self.donor_label.setText("Donor lifetime (ns):")
 
-        if not hasattr(self, '_updating_settings') or not self._updating_settings:
+        if (
+            not hasattr(self, '_updating_settings')
+            or not self._updating_settings
+        ):
             source_text = 'Manual' if index == 0 else 'From layer'
             self._update_fret_setting_in_metadata('donor_source', source_text)
 
@@ -362,9 +365,14 @@ class FretWidget(QWidget):
         else:
             self.background_position_label.setText("Background position:")
 
-        if not hasattr(self, '_updating_settings') or not self._updating_settings:
+        if (
+            not hasattr(self, '_updating_settings')
+            or not self._updating_settings
+        ):
             source_text = 'Manual' if index == 0 else 'From layer'
-            self._update_fret_setting_in_metadata('background_source', source_text)
+            self._update_fret_setting_in_metadata(
+                'background_source', source_text
+            )
 
         if index == 1:
             self._calculate_background_position()
@@ -423,16 +431,25 @@ class FretWidget(QWidget):
                 self.background_positions_by_harmonic[
                     self.current_harmonic
                 ] = {'real': real, 'imag': imag}
-                
-                layer_name = self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-                if layer_name and (not hasattr(self, '_updating_settings') or not self._updating_settings):
+
+                layer_name = (
+                    self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+                )
+                if layer_name and (
+                    not hasattr(self, '_updating_settings')
+                    or not self._updating_settings
+                ):
                     current_layer = self.viewer.layers[layer_name]
                     if 'settings' not in current_layer.metadata:
                         current_layer.metadata['settings'] = {}
                     if 'fret' not in current_layer.metadata['settings']:
-                        current_layer.metadata['settings']['fret'] = self._get_default_fret_settings()
-                    
-                    current_layer.metadata['settings']['fret']['background_positions_by_harmonic'] = self.background_positions_by_harmonic.copy()
+                        current_layer.metadata['settings'][
+                            'fret'
+                        ] = self._get_default_fret_settings()
+
+                    current_layer.metadata['settings']['fret'][
+                        'background_positions_by_harmonic'
+                    ] = self.background_positions_by_harmonic.copy()
             except ValueError:
                 pass
 
@@ -440,7 +457,7 @@ class FretWidget(QWidget):
         """Load background position for the specified harmonic."""
         self.background_real_edit.blockSignals(True)
         self.background_imag_edit.blockSignals(True)
-        
+
         try:
             if harmonic in self.background_positions_by_harmonic:
                 stored = self.background_positions_by_harmonic[harmonic]
@@ -464,21 +481,33 @@ class FretWidget(QWidget):
             imag = float(self.background_imag_edit.text().strip())
             self.background_real = real
             self.background_imag = imag
-            
+
             self.background_positions_by_harmonic[self.current_harmonic] = {
                 'real': real,
-                'imag': imag
+                'imag': imag,
             }
-            
-            if (not hasattr(self, '_updating_settings') or not self._updating_settings):
-                layer_name = self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+
+            if (
+                not hasattr(self, '_updating_settings')
+                or not self._updating_settings
+            ):
+                layer_name = (
+                    self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+                )
                 if layer_name:
-                    self._update_fret_setting_in_metadata('background_real', real)
-                    self._update_fret_setting_in_metadata('background_imag', imag)
-                    self._update_fret_setting_in_metadata('background_positions_by_harmonic', self.background_positions_by_harmonic)
+                    self._update_fret_setting_in_metadata(
+                        'background_real', real
+                    )
+                    self._update_fret_setting_in_metadata(
+                        'background_imag', imag
+                    )
+                    self._update_fret_setting_in_metadata(
+                        'background_positions_by_harmonic',
+                        self.background_positions_by_harmonic,
+                    )
         except ValueError:
             pass
-        
+
         self._on_parameters_changed()
 
     def _on_background_slider_changed(self):
@@ -486,10 +515,13 @@ class FretWidget(QWidget):
         value = self.background_slider.value() / 100.0
         self.donor_background = value
         self.background_label.setText(f"{value:.2f}")
-        
-        if not hasattr(self, '_updating_settings') or not self._updating_settings:
+
+        if (
+            not hasattr(self, '_updating_settings')
+            or not self._updating_settings
+        ):
             self._update_fret_setting_in_metadata('donor_background', value)
-        
+
         self._on_parameters_changed()
 
     def _on_fretting_slider_changed(self):
@@ -497,43 +529,51 @@ class FretWidget(QWidget):
         value = self.fretting_slider.value() / 100.0
         self.donor_fretting_proportion = value
         self.fretting_label.setText(f"{value:.2f}")
-        
-        if not hasattr(self, '_updating_settings') or not self._updating_settings:
-            self._update_fret_setting_in_metadata('donor_fretting_proportion', value)
-        
+
+        if (
+            not hasattr(self, '_updating_settings')
+            or not self._updating_settings
+        ):
+            self._update_fret_setting_in_metadata(
+                'donor_fretting_proportion', value
+            )
+
         self._on_parameters_changed()
 
     def _on_colormap_checkbox_changed(self):
         """Handle colormap checkbox state change."""
         self.use_colormap = self.colormap_checkbox.isChecked()
-        
-        if not hasattr(self, '_updating_settings') or not self._updating_settings:
-            self._update_fret_setting_in_metadata('use_colormap', self.use_colormap)
-        
+
+        if (
+            not hasattr(self, '_updating_settings')
+            or not self._updating_settings
+        ):
+            self._update_fret_setting_in_metadata(
+                'use_colormap', self.use_colormap
+            )
+
         self.plot_donor_trajectory()
 
     def _on_parameters_changed(self):
         """Update plot when any parameter changes."""
-        layer_name = self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        if self._updating_settings:
+            return
+
+        layer_name = (
+            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        )
         if not layer_name:
             return
-            
+
         if self.donor_line_edit.text():
             try:
                 self.donor_lifetime = float(self.donor_line_edit.text())
-                if not hasattr(self, '_updating_settings') or not self._updating_settings:
-                    self._update_fret_setting_in_metadata('donor_lifetime', self.donor_lifetime)
+                self._update_fret_setting_in_metadata(
+                    'donor_lifetime', self.donor_lifetime
+                )
             except ValueError:
                 pass
-        
-        if self.frequency_input.text():
-            try:
-                base_frequency = float(self.frequency_input.text().strip())
-                if not hasattr(self, '_updating_settings') or not self._updating_settings:
-                    self._update_fret_setting_in_metadata('frequency', base_frequency)
-            except ValueError:
-                pass
-        
+
         if (
             self.donor_line_edit.text()
             and self.frequency_input.text()
@@ -554,9 +594,9 @@ class FretWidget(QWidget):
         """Update the background image combobox with available layers."""
         if getattr(self, '_updating_background_combobox', False):
             return
-            
+
         self._updating_background_combobox = True
-        
+
         try:
             current_text = self.background_image_combobox.currentText()
             self.background_image_combobox.blockSignals(True)
@@ -581,15 +621,17 @@ class FretWidget(QWidget):
                 self.background_image_combobox.setCurrentIndex(0)
 
             self.background_image_combobox.blockSignals(False)
-            
+
             for layer in self.viewer.layers:
                 if isinstance(layer, Image):
                     try:
-                        layer.events.name.disconnect(self._update_background_combobox)
+                        layer.events.name.disconnect(
+                            self._update_background_combobox
+                        )
                     except (TypeError, ValueError):
                         pass
                     layer.events.name.connect(self._update_background_combobox)
-                    
+
         finally:
             self._updating_background_combobox = False
 
@@ -597,9 +639,9 @@ class FretWidget(QWidget):
         """Update the donor lifetime combobox with available layers."""
         if getattr(self, '_updating_donor_combobox', False):
             return
-            
+
         self._updating_donor_combobox = True
-        
+
         try:
             current_text = self.donor_lifetime_combobox.currentText()
             self.donor_lifetime_combobox.blockSignals(True)
@@ -624,15 +666,19 @@ class FretWidget(QWidget):
                 self.donor_lifetime_combobox.setCurrentIndex(0)
 
             self.donor_lifetime_combobox.blockSignals(False)
-            
+
             for layer in self.viewer.layers:
                 if isinstance(layer, Image):
                     try:
-                        layer.events.name.disconnect(self._update_donor_lifetime_combobox)
+                        layer.events.name.disconnect(
+                            self._update_donor_lifetime_combobox
+                        )
                     except (TypeError, ValueError):
                         pass
-                    layer.events.name.connect(self._update_donor_lifetime_combobox)
-                    
+                    layer.events.name.connect(
+                        self._update_donor_lifetime_combobox
+                    )
+
         finally:
             self._updating_donor_combobox = False
 
@@ -652,8 +698,13 @@ class FretWidget(QWidget):
                 self.background_position_label.setText("Background position:")
             return
 
-        if not hasattr(self, '_updating_settings') or not self._updating_settings:
-            self._update_fret_setting_in_metadata('background_layer_name', background_layer_name)
+        if (
+            not hasattr(self, '_updating_settings')
+            or not self._updating_settings
+        ):
+            self._update_fret_setting_in_metadata(
+                'background_layer_name', background_layer_name
+            )
 
         try:
             background_layer = self.viewer.layers[background_layer_name]
@@ -694,8 +745,14 @@ class FretWidget(QWidget):
             except Exception:
                 continue
 
-        if not hasattr(self, '_updating_settings') or not self._updating_settings:
-            self._update_fret_setting_in_metadata('background_positions_by_harmonic', self.background_positions_by_harmonic)
+        if (
+            not hasattr(self, '_updating_settings')
+            or not self._updating_settings
+        ):
+            self._update_fret_setting_in_metadata(
+                'background_positions_by_harmonic',
+                self.background_positions_by_harmonic,
+            )
 
         current_harmonic = self.parent_widget.harmonic
         if current_harmonic in self.background_positions_by_harmonic:
@@ -730,8 +787,13 @@ class FretWidget(QWidget):
                 self.donor_label.setText("Donor lifetime (ns):")
             return
 
-        if not hasattr(self, '_updating_settings') or not self._updating_settings:
-            self._update_fret_setting_in_metadata('donor_layer_name', donor_layer_name)
+        if (
+            not hasattr(self, '_updating_settings')
+            or not self._updating_settings
+        ):
+            self._update_fret_setting_in_metadata(
+                'donor_layer_name', donor_layer_name
+            )
 
         try:
             donor_layer = self.viewer.layers[donor_layer_name]
@@ -774,8 +836,13 @@ class FretWidget(QWidget):
 
             lifetime_type = self.lifetime_type_combobox.currentText()
 
-            if not hasattr(self, '_updating_settings') or not self._updating_settings:
-                self._update_fret_setting_in_metadata('donor_lifetime_type', lifetime_type)
+            if (
+                not hasattr(self, '_updating_settings')
+                or not self._updating_settings
+            ):
+                self._update_fret_setting_in_metadata(
+                    'donor_lifetime_type', lifetime_type
+                )
 
             if lifetime_type in (
                 "Apparent Phase Lifetime",
@@ -800,8 +867,13 @@ class FretWidget(QWidget):
             self.donor_line_edit.setText(f"{lifetime:.2f}")
             self.donor_lifetime = lifetime
 
-            if not hasattr(self, '_updating_settings') or not self._updating_settings:
-                self._update_fret_setting_in_metadata('donor_lifetime', lifetime)
+            if (
+                not hasattr(self, '_updating_settings')
+                or not self._updating_settings
+            ):
+                self._update_fret_setting_in_metadata(
+                    'donor_lifetime', lifetime
+                )
 
             if self.donor_source_selector.currentIndex() == 1:
                 self.donor_label.setText(
@@ -993,19 +1065,25 @@ class FretWidget(QWidget):
             layer = event.source
             self.fret_colormap = layer.colormap.colors
             self.colormap_contrast_limits = layer.contrast_limits
-            
+
             colormap_name = getattr(layer.colormap, 'name', 'custom')
             colormap_colors = getattr(layer.colormap, 'colors', None)
-            
+
             if colormap_colors is not None:
                 if hasattr(colormap_colors, 'tolist'):
                     colormap_colors = colormap_colors.tolist()
                 elif isinstance(colormap_colors, np.ndarray):
                     colormap_colors = colormap_colors.tolist()
-            
-            self._update_fret_setting_in_metadata('colormap_settings.colormap_name', colormap_name)
-            self._update_fret_setting_in_metadata('colormap_settings.colormap_colors', colormap_colors)
-            self._update_fret_setting_in_metadata('colormap_settings.colormap_changed', True)
+
+            self._update_fret_setting_in_metadata(
+                'colormap_settings.colormap_name', colormap_name
+            )
+            self._update_fret_setting_in_metadata(
+                'colormap_settings.colormap_colors', colormap_colors
+            )
+            self._update_fret_setting_in_metadata(
+                'colormap_settings.colormap_changed', True
+            )
 
             self.plot_donor_trajectory()
 
@@ -1014,14 +1092,16 @@ class FretWidget(QWidget):
         if self.fret_layer is not None:
             layer = event.source
             self.colormap_contrast_limits = layer.contrast_limits
-            
+
             contrast_limits = layer.contrast_limits
             if hasattr(contrast_limits, 'tolist'):
                 contrast_limits = contrast_limits.tolist()
             elif isinstance(contrast_limits, np.ndarray):
                 contrast_limits = contrast_limits.tolist()
-            
-            self._update_fret_setting_in_metadata('colormap_settings.contrast_limits', contrast_limits)
+
+            self._update_fret_setting_in_metadata(
+                'colormap_settings.contrast_limits', contrast_limits
+            )
 
             self.plot_donor_trajectory()
 
@@ -1029,19 +1109,17 @@ class FretWidget(QWidget):
         """Get default settings dictionary for FRET parameters."""
         return {
             'donor_lifetime': None,
-            'frequency': None,
             'donor_background': 0.1,
             'background_real': 0.0,
             'background_imag': 0.0,
             'donor_fretting_proportion': 1.0,
             'use_colormap': True,
-            'analysis_performed': False,
             'background_positions_by_harmonic': {},
             'colormap_settings': {
                 'colormap_name': 'viridis',
                 'colormap_colors': None,
                 'contrast_limits': (0, 1),
-                'colormap_changed': False
+                'colormap_changed': False,
             },
             'donor_source': 'Manual',
             'donor_layer_name': None,
@@ -1050,153 +1128,182 @@ class FretWidget(QWidget):
             'background_layer_name': None,
         }
 
-    def _initialize_fret_settings_in_metadata(self, layer):
-        """Initialize FRET settings in layer metadata if not present."""
-        if 'settings' not in layer.metadata:
-            layer.metadata['settings'] = {}
-        
-        if 'fret' not in layer.metadata['settings']:
-            layer.metadata['settings']['fret'] = self._get_default_fret_settings()
-
     def _update_fret_setting_in_metadata(self, key_path, value):
         """Update a specific FRET setting in the current layer's metadata."""
-        if hasattr(self, '_updating_settings') and self._updating_settings:
+        if self._updating_settings:
             return
-            
-        layer_name = self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+
+        layer_name = (
+            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        )
         if not layer_name:
             return
-            
-        try:
-            layer = self.viewer.layers[layer_name]
-            
-            if 'settings' not in layer.metadata:
-                layer.metadata['settings'] = {}
-            if 'fret' not in layer.metadata['settings']:
-                layer.metadata['settings']['fret'] = self._get_default_fret_settings()
-            
-            keys = key_path.split('.')
-            current_dict = layer.metadata['settings']['fret']
-            
-            for key in keys[:-1]:
-                if key not in current_dict:
-                    current_dict[key] = {}
-                current_dict = current_dict[key]
-            
-            current_dict[keys[-1]] = value
-        except (KeyError, AttributeError):
-            pass
+
+        layer = self.viewer.layers[layer_name]
+
+        if 'settings' not in layer.metadata:
+            layer.metadata['settings'] = {}
+        if 'fret' not in layer.metadata['settings']:
+            layer.metadata['settings']['fret'] = {}
+
+        keys = key_path.split('.')
+        settings = layer.metadata['settings']['fret']
+        for key in keys[:-1]:
+            if key not in settings:
+                settings[key] = {}
+            settings = settings[key]
+        settings[keys[-1]] = value
 
     def _restore_fret_settings_from_metadata(self):
         """Restore all FRET settings from the current layer's metadata."""
-        layer_name = self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        layer_name = (
+            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        )
         if not layer_name:
             return
-            
+
         layer = self.viewer.layers[layer_name]
-        if 'settings' not in layer.metadata or 'fret' not in layer.metadata['settings']:
-            self._initialize_fret_settings_in_metadata(layer)
+        if (
+            'settings' not in layer.metadata
+            or 'fret' not in layer.metadata['settings']
+        ):
             return
-            
+
         self._updating_settings = True
         try:
             settings = layer.metadata['settings']['fret']
-            
+
             self.donor_line_edit.clear()
             self.frequency_input.clear()
-            
+
             if settings.get('donor_lifetime') is not None:
                 self.donor_lifetime = settings['donor_lifetime']
                 self.donor_line_edit.setText(str(self.donor_lifetime))
-            
-            if settings.get('frequency') is not None:
-                base_frequency = settings['frequency']
-                self.frequency_input.setText(str(base_frequency))
-                self.frequency = base_frequency * self.parent_widget.harmonic
-            
+
+            frequency = layer.metadata['settings'].get('frequency', None)
+            if frequency is not None:
+                self.frequency_input.setText(str(frequency))
+                self.frequency = frequency * self.parent_widget.harmonic
+            else:
+                self.frequency_input.setText("")
+                self.frequency = None
+
             if settings.get('donor_background') is not None:
                 self.donor_background = settings['donor_background']
-                self.background_slider.setValue(int(self.donor_background * 100))
+                self.background_slider.setValue(
+                    int(self.donor_background * 100)
+                )
                 self.background_label.setText(f"{self.donor_background:.2f}")
-            
+
             if settings.get('background_positions_by_harmonic'):
-                self.background_positions_by_harmonic = settings['background_positions_by_harmonic'].copy()
-            
+                self.background_positions_by_harmonic = settings[
+                    'background_positions_by_harmonic'
+                ].copy()
+
             self._load_background_position_for_harmonic(self.current_harmonic)
-            
+
             if settings.get('donor_fretting_proportion') is not None:
-                self.donor_fretting_proportion = settings['donor_fretting_proportion']
-                self.fretting_slider.setValue(int(self.donor_fretting_proportion * 100))
-                self.fretting_label.setText(f"{self.donor_fretting_proportion:.2f}")
-            
+                self.donor_fretting_proportion = settings[
+                    'donor_fretting_proportion'
+                ]
+                self.fretting_slider.setValue(
+                    int(self.donor_fretting_proportion * 100)
+                )
+                self.fretting_label.setText(
+                    f"{self.donor_fretting_proportion:.2f}"
+                )
+
             if settings.get('use_colormap') is not None:
                 self.use_colormap = settings['use_colormap']
                 self.colormap_checkbox.setChecked(self.use_colormap)
-            
+
             donor_source = settings.get('donor_source', 'Manual')
             donor_layer_name = settings.get('donor_layer_name', None)
-            donor_lifetime_type = settings.get('donor_lifetime_type', 'Apparent Phase Lifetime')
-            
+            donor_lifetime_type = settings.get(
+                'donor_lifetime_type', 'Apparent Phase Lifetime'
+            )
+
             donor_layer_exists = (
-                donor_layer_name is not None 
+                donor_layer_name is not None
                 and donor_layer_name in self.viewer.layers
                 and donor_layer_name != "Select layer..."
             )
-            
+
             if donor_source == 'From layer' and donor_layer_exists:
                 self.donor_source_selector.setCurrentIndex(1)
                 index = self.donor_lifetime_combobox.findText(donor_layer_name)
                 if index >= 0:
                     self.donor_lifetime_combobox.setCurrentIndex(index)
 
-                type_index = self.lifetime_type_combobox.findText(donor_lifetime_type)
+                type_index = self.lifetime_type_combobox.findText(
+                    donor_lifetime_type
+                )
                 if type_index >= 0:
                     self.lifetime_type_combobox.setCurrentIndex(type_index)
             else:
                 self.donor_source_selector.setCurrentIndex(0)
                 if settings.get('donor_lifetime') is not None:
-                    self.donor_line_edit.setText(str(settings['donor_lifetime']))
-            
+                    self.donor_line_edit.setText(
+                        str(settings['donor_lifetime'])
+                    )
+
             background_source = settings.get('background_source', 'Manual')
             background_layer_name = settings.get('background_layer_name', None)
-            
+
             background_layer_exists = (
-                background_layer_name is not None 
+                background_layer_name is not None
                 and background_layer_name in self.viewer.layers
                 and background_layer_name != "Select layer..."
             )
-            
+
             if background_source == 'From layer' and background_layer_exists:
                 self.bg_source_selector.setCurrentIndex(1)
-                index = self.background_image_combobox.findText(background_layer_name)
+                index = self.background_image_combobox.findText(
+                    background_layer_name
+                )
                 if index >= 0:
                     self.background_image_combobox.setCurrentIndex(index)
             else:
                 self.bg_source_selector.setCurrentIndex(0)
                 if settings.get('background_positions_by_harmonic'):
-                    self.background_positions_by_harmonic = settings['background_positions_by_harmonic'].copy()
-                    self._load_background_position_for_harmonic(self.current_harmonic)
-            
+                    self.background_positions_by_harmonic = settings[
+                        'background_positions_by_harmonic'
+                    ].copy()
+                    self._load_background_position_for_harmonic(
+                        self.current_harmonic
+                    )
+
             if 'colormap_settings' in settings:
                 colormap_settings = settings['colormap_settings']
-                self._saved_colormap_name = colormap_settings.get('colormap_name', 'viridis')
-                self._saved_colormap_colors = colormap_settings.get('colormap_colors', None)
-                self._saved_contrast_limits = colormap_settings.get('contrast_limits', (0, 1))
-                self._colormap_was_changed = colormap_settings.get('colormap_changed', False)
-                        
+                self._saved_colormap_name = colormap_settings.get(
+                    'colormap_name', 'viridis'
+                )
+                self._saved_colormap_colors = colormap_settings.get(
+                    'colormap_colors', None
+                )
+                self._saved_contrast_limits = colormap_settings.get(
+                    'contrast_limits', (0, 1)
+                )
+                self._colormap_was_changed = colormap_settings.get(
+                    'colormap_changed', False
+                )
+
         finally:
             self._updating_settings = False
 
     def _recreate_fret_from_metadata(self):
         """Recreate FRET analysis from metadata if it was previously performed."""
-        layer_name = self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        layer_name = (
+            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        )
         if layer_name:
             layer = self.viewer.layers[layer_name]
-            if ('settings' in layer.metadata and 
-                'fret' in layer.metadata['settings'] and
-                layer.metadata['settings']['fret'].get('analysis_performed', False)):
-                
-                if (self.donor_line_edit.text() and self.frequency_input.text()):
+            if (
+                'settings' in layer.metadata
+                and 'fret' in layer.metadata['settings']
+            ):
+
+                if self.donor_line_edit.text() and self.frequency_input.text():
                     self._updating_settings = True
                     try:
                         self.calculate_fret_efficiency()
@@ -1205,64 +1312,81 @@ class FretWidget(QWidget):
                     finally:
                         self._updating_settings = False
             else:
-                if (self.donor_line_edit.text() and self.frequency_input.text()):
+                if self.donor_line_edit.text() and self.frequency_input.text():
                     self.plot_donor_trajectory()
 
     def _apply_saved_fret_colormap_settings(self):
         """Apply saved colormap settings to FRET layer if it exists."""
-        if (self.fret_layer is not None and 
-            hasattr(self, '_saved_colormap_name')):
-            
+        if self.fret_layer is not None and hasattr(
+            self, '_saved_colormap_name'
+        ):
+
             try:
-                self.fret_layer.events.colormap.disconnect(self._on_colormap_changed)
-                self.fret_layer.events.contrast_limits.disconnect(self._on_contrast_limits_changed)
-                
+                self.fret_layer.events.colormap.disconnect(
+                    self._on_colormap_changed
+                )
+                self.fret_layer.events.contrast_limits.disconnect(
+                    self._on_contrast_limits_changed
+                )
+
                 if self._saved_colormap_colors is not None:
                     from napari.utils.colormaps import Colormap
-                    
+
                     if isinstance(self._saved_colormap_colors, list):
                         saved_colors = np.array(self._saved_colormap_colors)
                     else:
                         saved_colors = self._saved_colormap_colors
-                    
-                    saved_colormap = Colormap(colors=saved_colors, name="saved_custom")
+
+                    saved_colormap = Colormap(
+                        colors=saved_colors, name="saved_custom"
+                    )
                     self.fret_layer.colormap = saved_colormap
                 else:
                     self.fret_layer.colormap = self._saved_colormap_name
-                
+
                 if isinstance(self._saved_contrast_limits, list):
                     saved_limits = tuple(self._saved_contrast_limits)
                 else:
                     saved_limits = self._saved_contrast_limits
-                
+
                 self.fret_layer.contrast_limits = saved_limits
-                
+
                 self.fret_colormap = self.fret_layer.colormap.colors
                 self.colormap_contrast_limits = self.fret_layer.contrast_limits
-                
-                self.fret_layer.events.colormap.connect(self._on_colormap_changed)
-                self.fret_layer.events.contrast_limits.connect(self._on_contrast_limits_changed)
-                
+
+                self.fret_layer.events.colormap.connect(
+                    self._on_colormap_changed
+                )
+                self.fret_layer.events.contrast_limits.connect(
+                    self._on_contrast_limits_changed
+                )
+
                 self.plot_donor_trajectory()
-                
+
             except Exception as e:
                 print(f"Error applying saved colormap settings: {e}")
                 try:
-                    self.fret_layer.events.colormap.connect(self._on_colormap_changed)
-                    self.fret_layer.events.contrast_limits.connect(self._on_contrast_limits_changed)
+                    self.fret_layer.events.colormap.connect(
+                        self._on_colormap_changed
+                    )
+                    self.fret_layer.events.contrast_limits.connect(
+                        self._on_contrast_limits_changed
+                    )
                 except Exception:
                     pass
 
     def _reconnect_existing_fret_layer(self, layer_name):
         """Reconnect to existing FRET layer if it exists for this layer."""
         fret_layer_name = f"FRET efficiency: {layer_name}"
-        
+
         if fret_layer_name in self.viewer.layers:
             self.fret_layer = self.viewer.layers[fret_layer_name]
-            
+
             self.fret_layer.events.colormap.connect(self._on_colormap_changed)
-            self.fret_layer.events.contrast_limits.connect(self._on_contrast_limits_changed)
-            
+            self.fret_layer.events.contrast_limits.connect(
+                self._on_contrast_limits_changed
+            )
+
             if hasattr(self, '_saved_colormap_name'):
                 self._apply_saved_fret_colormap_settings()
             else:
@@ -1294,32 +1418,36 @@ class FretWidget(QWidget):
 
         if self.fret_layer is not None:
             try:
-                self.fret_layer.events.colormap.disconnect(self._on_colormap_changed)
-                self.fret_layer.events.contrast_limits.disconnect(self._on_contrast_limits_changed)
+                self.fret_layer.events.colormap.disconnect(
+                    self._on_colormap_changed
+                )
+                self.fret_layer.events.contrast_limits.disconnect(
+                    self._on_contrast_limits_changed
+                )
             except Exception:
                 pass
-        
+
         self.fret_layer = None
         self.fret_colormap = None
         self.colormap_contrast_limits = None
-        
-        layer_name = self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-        
+
+        layer_name = (
+            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        )
+
         if layer_name:
             layer = self.viewer.layers[layer_name]
-            self._initialize_fret_settings_in_metadata(layer)
-            
+
             self._reconnect_existing_fret_layer(layer_name)
-            
+
             self._updating_settings = True
             try:
-                # Reset background positions before restoring from metadata
                 self.background_positions_by_harmonic = {}
                 self._restore_fret_settings_from_metadata()
                 self._recreate_fret_from_metadata()
             finally:
                 self._updating_settings = False
-                
+
             self._previous_layer_name = layer_name
         else:
             self._updating_settings = True
@@ -1333,13 +1461,12 @@ class FretWidget(QWidget):
                 self.fretting_slider.setValue(100)
                 self.fretting_label.setText("1.00")
                 self.colormap_checkbox.setChecked(True)
-                
+
                 self.background_positions_by_harmonic = {}
             finally:
                 self._updating_settings = False
-                
-            self._previous_layer_name = None
 
+            self._previous_layer_name = None
 
     def calculate_fret_efficiency(self):
         """Calculate FRET efficiency based on donor intensities."""
@@ -1366,29 +1493,47 @@ class FretWidget(QWidget):
         if not labels_layer_name:
             return
 
-        if not hasattr(self, '_updating_settings') or not self._updating_settings:
+        if (
+            not hasattr(self, '_updating_settings')
+            or not self._updating_settings
+        ):
             try:
                 if self.donor_line_edit.text():
                     donor_lifetime = float(self.donor_line_edit.text())
                     self.donor_lifetime = donor_lifetime
-                    self._update_fret_setting_in_metadata('donor_lifetime', donor_lifetime)
+                    self._update_fret_setting_in_metadata(
+                        'donor_lifetime', donor_lifetime
+                    )
             except ValueError:
                 pass
-            
-            try:
-                if self.frequency_input.text():
-                    frequency = float(self.frequency_input.text().strip())
-                    self._update_fret_setting_in_metadata('frequency', frequency)
-            except ValueError:
-                pass
-            
-            self._update_fret_setting_in_metadata('donor_background', self.donor_background)
-            self._update_fret_setting_in_metadata('background_real', self.background_real)
-            self._update_fret_setting_in_metadata('background_imag', self.background_imag)
-            self._update_fret_setting_in_metadata('donor_fretting_proportion', self.donor_fretting_proportion)
-            self._update_fret_setting_in_metadata('use_colormap', self.use_colormap)
-            self._update_fret_setting_in_metadata('background_positions_by_harmonic', self.background_positions_by_harmonic)
-            self._update_fret_setting_in_metadata('analysis_performed', True)
+
+            layer = self.viewer.layers[labels_layer_name]
+            if 'settings' not in layer.metadata:
+                layer.metadata['settings'] = {}
+            if 'fret' not in layer.metadata['settings']:
+                layer.metadata['settings'][
+                    'fret'
+                ] = self._get_default_fret_settings()
+
+            self._update_fret_setting_in_metadata(
+                'donor_background', self.donor_background
+            )
+            self._update_fret_setting_in_metadata(
+                'background_real', self.background_real
+            )
+            self._update_fret_setting_in_metadata(
+                'background_imag', self.background_imag
+            )
+            self._update_fret_setting_in_metadata(
+                'donor_fretting_proportion', self.donor_fretting_proportion
+            )
+            self._update_fret_setting_in_metadata(
+                'use_colormap', self.use_colormap
+            )
+            self._update_fret_setting_in_metadata(
+                'background_positions_by_harmonic',
+                self.background_positions_by_harmonic,
+            )
 
         sample_layer = self.viewer.layers[labels_layer_name]
         phasor_data = (
@@ -1441,26 +1586,32 @@ class FretWidget(QWidget):
         )
 
         fret_layer_name = f"FRET efficiency: {labels_layer_name}"
-        
+
         default_colormap = 'viridis'
         default_contrast_limits = (0, 1)
-        
-        if hasattr(self, '_saved_colormap_name') and not self._updating_settings:
+
+        if (
+            hasattr(self, '_saved_colormap_name')
+            and not self._updating_settings
+        ):
             if self._saved_colormap_colors is not None:
                 from napari.utils.colormaps import Colormap
+
                 if isinstance(self._saved_colormap_colors, list):
                     saved_colors = np.array(self._saved_colormap_colors)
                 else:
                     saved_colors = self._saved_colormap_colors
-                default_colormap = Colormap(colors=saved_colors, name="saved_custom")
+                default_colormap = Colormap(
+                    colors=saved_colors, name="saved_custom"
+                )
             else:
                 default_colormap = self._saved_colormap_name
-            
+
             if isinstance(self._saved_contrast_limits, list):
                 default_contrast_limits = tuple(self._saved_contrast_limits)
             else:
                 default_contrast_limits = self._saved_contrast_limits
-        
+
         selected_fret_layer = Image(
             fret_efficiency,
             name=fret_layer_name,
@@ -1480,11 +1631,22 @@ class FretWidget(QWidget):
             self._on_contrast_limits_changed
         )
 
-        if not hasattr(self, '_saved_colormap_name') or self._updating_settings:
-            self._update_fret_setting_in_metadata('colormap_settings.colormap_name', 'viridis')
-            self._update_fret_setting_in_metadata('colormap_settings.colormap_colors', None)
-            self._update_fret_setting_in_metadata('colormap_settings.contrast_limits', [0, 1])
-            self._update_fret_setting_in_metadata('colormap_settings.colormap_changed', False)
+        if (
+            not hasattr(self, '_saved_colormap_name')
+            or self._updating_settings
+        ):
+            self._update_fret_setting_in_metadata(
+                'colormap_settings.colormap_name', 'viridis'
+            )
+            self._update_fret_setting_in_metadata(
+                'colormap_settings.colormap_colors', None
+            )
+            self._update_fret_setting_in_metadata(
+                'colormap_settings.contrast_limits', [0, 1]
+            )
+            self._update_fret_setting_in_metadata(
+                'colormap_settings.colormap_changed', False
+            )
 
         self.plot_donor_trajectory()
 
