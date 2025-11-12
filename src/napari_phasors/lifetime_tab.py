@@ -310,6 +310,31 @@ class LifetimeWidget(QWidget):
         min_lifetime = min_val / self.lifetime_range_factor
         max_lifetime = max_val / self.lifetime_range_factor
 
+        # Apply clipping to the lifetime data
+        if self.lifetime_data_original is not None:
+            self.lifetime_data = np.clip(
+                self.lifetime_data_original, min_lifetime, max_lifetime
+            )
+
+            # Update the lifetime layer if it exists
+            if self.lifetime_layer is not None:
+                self.lifetime_layer.data = self.lifetime_data
+
+                # Set flag to prevent recursive updates from colormap change event
+                self._updating_contrast_limits = True
+                try:
+                    self.lifetime_layer.contrast_limits = [
+                        min_lifetime,
+                        max_lifetime,
+                    ]
+                    # Update our stored contrast limits to match
+                    self.colormap_contrast_limits = [
+                        min_lifetime,
+                        max_lifetime,
+                    ]
+                finally:
+                    self._updating_contrast_limits = False
+
         if not self._updating_settings:
             self._update_lifetime_setting_in_metadata(
                 'lifetime_range_min', min_lifetime
@@ -393,7 +418,9 @@ class LifetimeWidget(QWidget):
             return
         if self.frequency is None:
             return
-        # Get the range of lifetime values (excluding NaNs, zeros, and infinite values)
+
+        effective_frequency = self.frequency * self.parent_widget.harmonic
+
         flattened_data = self.lifetime_data_original.flatten()
         valid_data = flattened_data[
             ~np.isnan(flattened_data)

@@ -117,6 +117,9 @@ class ComponentsWidget(QWidget):
         self._updating_from_lifetime = False
         self._updating_settings = False  # Flag to prevent recursive updates
 
+        # Flag to track if analysis was attempted
+        self._analysis_attempted = False
+
         # Dialog / event flags
         self.plot_dialog = None
         self.style_dialog = None
@@ -1309,7 +1312,7 @@ class ComponentsWidget(QWidget):
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
     def _on_line_offset_changed(self, value):
-        """Handle changes to the line offset slider."""
+        """Handle changes to line offset from slider."""
         self.line_offset = value / 1000.0
         self._update_components_setting_in_metadata(
             'two_component_line_settings.line_offset', self.line_offset
@@ -1322,7 +1325,7 @@ class ComponentsWidget(QWidget):
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
     def _on_line_width_changed(self, value):
-        """Handle changes to the line width spin box."""
+        """Handle changes to line width from spinbox."""
         self.line_width = float(value)
         self._update_components_setting_in_metadata(
             'two_component_line_settings.line_width', self.line_width
@@ -1342,7 +1345,7 @@ class ComponentsWidget(QWidget):
                 self.parent_widget.canvas_widget.canvas.draw_idle()
 
     def _on_line_alpha_changed(self, value):
-        """Handle changes to the line alpha slider."""
+        """Handle changes to line alpha from slider."""
         self.line_alpha = value / 100.0
         self._update_components_setting_in_metadata(
             'two_component_line_settings.line_alpha', self.line_alpha
@@ -1364,11 +1367,11 @@ class ComponentsWidget(QWidget):
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
     def _toggle_style_section(self, checked):
-        """Show/hide label style settings section."""
+        """Toggle visibility of the style section."""
         self.style_section.setVisible(checked)
 
     def _pick_label_color(self):
-        """Open color picker dialog to select label color."""
+        """Open color dialog to pick label color."""
         color = QColorDialog.getColor()
         if color.isValid():
             self.label_color = color.name()
@@ -1379,18 +1382,9 @@ class ComponentsWidget(QWidget):
 
     def _on_label_style_changed(self):
         """Handle changes to label style settings."""
-        if hasattr(self, 'fontsize_spin'):
-            self.label_fontsize = self.fontsize_spin.value()
-            self._update_components_setting_in_metadata('two_components_label_settings.fontsize', self.label_fontsize)
-        
-        if hasattr(self, 'bold_checkbox'):
-            self.label_bold = self.bold_checkbox.isChecked()
-            self._update_components_setting_in_metadata('two_components_label_settings.bold', self.label_bold)
-        
-        if hasattr(self, 'italic_checkbox'):
-            self.label_italic = self.italic_checkbox.isChecked()
-            self._update_components_setting_in_metadata('two_components_label_settings.italic', self.label_italic)
-        
+        self.label_fontsize = self.fontsize_spin.value()
+        self.label_bold = self.bold_checkbox.isChecked()
+        self.label_italic = self.italic_checkbox.isChecked()
         self._apply_styles_to_labels()
 
     def _apply_styles_to_labels(self):
@@ -1566,7 +1560,7 @@ class ComponentsWidget(QWidget):
         self._updating_from_lifetime = False
 
     def _on_component_coords_changed(self, idx: int):
-        """Handle changes to component (G,S) coordinates."""
+        """Handle changes to component G/S coordinates from text inputs."""
         comp = self.components[idx]
         try:
             x = float(comp.g_edit.text())
@@ -1697,7 +1691,6 @@ class ComponentsWidget(QWidget):
                     break
 
     def _create_component_at_coordinates(self, idx: int, x: float, y: float):
-        """Create component dot and label at specified (G,S) coordinates."""
         """Create a component dot and label at specified coordinates."""
         if self.parent_widget is None:
             return
@@ -1817,7 +1810,6 @@ class ComponentsWidget(QWidget):
                         item.widget().setVisible(True)
 
     def _select_component(self, idx: int):
-        """"Enable selection of component by clicking on the plot."""
         """Activate selection mode for a component to pick its location."""
         if self.parent_widget is None:
             return
@@ -1981,15 +1973,71 @@ class ComponentsWidget(QWidget):
                         min(len(self.fractions_colormap) - 1, component2_idx),
                     )
 
-                component1_color = self.fractions_colormap[component1_idx]
-                component2_color = self.fractions_colormap[component2_idx]
-            else:
-                component1_color = self.fractions_colormap[-1]
-                component2_color = self.fractions_colormap[0]
+                    component1_color = self.fractions_colormap[component1_idx]
+                    component2_color = self.fractions_colormap[component2_idx]
+                else:
+                    component1_color = self.fractions_colormap[-1]
+                    component2_color = self.fractions_colormap[0]
 
-            return component1_color, component2_color
+                return [component1_color, component2_color]
+            else:
+                return self._get_default_colormap_max_colors(2)
+
+        elif num_components > 2 and len(self.fraction_layers) > 0:
+            colors = []
+
+            max_idx = max(len(self.components), num_components)
+
+            for i in range(max_idx):
+                if i < len(self.fraction_layers):
+                    layer = self.fraction_layers[i]
+                    try:
+                        cmap = layer.colormap
+                        colormap_name = str(cmap)
+
+                        if 'green' in colormap_name.lower():
+                            colors.append('green')
+                        else:
+                            if hasattr(cmap, '__call__'):
+
+                                max_color = cmap(1.0)
+                            elif (
+                                hasattr(cmap, 'colors')
+                                and cmap.colors is not None
+                            ):
+                                max_color = cmap.colors[-1]
+                            else:
+                                mpl_cmap = plt.get_cmap(str(cmap))
+                                max_color = mpl_cmap(1.0)
+                            colors.append(max_color)
+                    except Exception:
+                        default_colors = self._get_default_colormap_max_colors(
+                            max_idx
+                        )
+                        if i < len(default_colors):
+                            colors.append(default_colors[i])
+                        else:
+                            colors.append(
+                                self.component_colors[
+                                    i % len(self.component_colors)
+                                ]
+                            )
+                else:
+                    default_colors = self._get_default_colormap_max_colors(
+                        max_idx
+                    )
+                    if i < len(default_colors):
+                        colors.append(default_colors[i])
+                    else:
+                        colors.append(
+                            self.component_colors[
+                                i % len(self.component_colors)
+                            ]
+                        )
+            return colors
         else:
-            return 'red', 'blue'
+            max_idx = max(len(self.components), num_components, 1)
+            return self._get_default_colormap_max_colors(max_idx)
 
     def _update_component_colors(self):
         """Update the colors of the component dots to match colormap ends."""
@@ -2406,7 +2454,7 @@ class ComponentsWidget(QWidget):
         self.drag_events_connected = True
 
     def _on_press(self, event):
-        """Handle mouse press events to initiate dragging of components or labels."""
+        """Handle press events for dragging components and labels."""
         if event.inaxes is None:
             return
 
@@ -2465,7 +2513,7 @@ class ComponentsWidget(QWidget):
                 return
 
     def _on_motion(self, event):
-        """Handle mouse motion events to drag components or labels."""
+        """Handle dragging of components and labels."""
         if event.inaxes is None:
             return
         if self.dragging_label_idx is not None:
@@ -2504,7 +2552,7 @@ class ComponentsWidget(QWidget):
         self.draw_line_between_components()
 
     def _on_release(self, event):
-        """Handle mouse release events to stop dragging."""
+        """Handle release of components and labels."""
         self.dragging_component_idx = None
         self.dragging_label_idx = None
 
