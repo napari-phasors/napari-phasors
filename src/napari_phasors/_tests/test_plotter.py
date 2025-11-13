@@ -3,18 +3,24 @@ from unittest.mock import patch
 import numpy as np
 from biaplotter.plotter import CanvasWidget
 from napari.layers import Image
-from qtpy.QtWidgets import QComboBox, QSpinBox, QTabWidget, QVBoxLayout, QPushButton
+from qtpy.QtWidgets import (
+    QComboBox,
+    QPushButton,
+    QSpinBox,
+    QTabWidget,
+    QVBoxLayout,
+)
 
 from napari_phasors._synthetic_generator import (
     make_intensity_layer_with_phasors,
     make_raw_flim_data,
 )
-from napari_phasors.filter_tab import FilterWidget
-from napari_phasors.plotter import PlotterWidget
-from napari_phasors.selection_tab import SelectionWidget
 from napari_phasors.calibration_tab import CalibrationWidget
 from napari_phasors.components_tab import ComponentsWidget
+from napari_phasors.filter_tab import FilterWidget
 from napari_phasors.fret_tab import FretWidget
+from napari_phasors.plotter import PlotterWidget
+from napari_phasors.selection_tab import SelectionWidget
 
 
 def create_image_layer_with_phasors():
@@ -58,7 +64,7 @@ def test_phasor_plotter_initialization_values(make_napari_viewer):
     assert hasattr(plotter, 'import_from_layer_button')
     assert isinstance(plotter.import_from_layer_button, QPushButton)
     assert plotter.import_from_layer_button.text() == "From Layer"
-    
+
     assert hasattr(plotter, 'import_from_file_button')
     assert isinstance(plotter.import_from_file_button, QPushButton)
     assert plotter.import_from_file_button.text() == "From OME-TIFF"
