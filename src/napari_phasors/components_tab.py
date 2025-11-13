@@ -448,9 +448,7 @@ class ComponentsWidget(QWidget):
         settings = layer.metadata['settings']['component_analysis']
 
         if 'components' in settings and len(settings['components']) > 0:
-            max_idx_str = max(
-                settings['components'].keys(), key=lambda k: int(k)
-            )
+            max_idx_str = max(settings['components'].keys(), key=int)
             del settings['components'][max_idx_str]
 
     def _get_max_components(self):
@@ -2887,8 +2885,6 @@ class ComponentsWidget(QWidget):
             self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
         )
         if layer_name:
-            layer = self.viewer.layers[layer_name]
-
             self._reconnect_existing_fraction_layers(layer_name)
 
             self._restore_and_recreate_components_from_metadata()
@@ -3201,6 +3197,7 @@ class ComponentsWidget(QWidget):
         harmonic_key = str(current_harmonic)
 
         comp1_colormap = 'PiYG'
+        contrast_limits = (0, 1)
 
         if '0' in settings.get('components', {}):
             comp_data = settings['components']['0']
@@ -3230,13 +3227,6 @@ class ComponentsWidget(QWidget):
                 if harmonic_data.get('contrast_limits'):
                     contrast_limits = tuple(harmonic_data['contrast_limits'])
 
-        comp1_selected_fractions_layer = Image(
-            fractions,
-            name=comp1_fractions_layer_name,
-            scale=self.parent_widget._labels_layer_with_phasor_features.scale,
-            colormap=comp1_colormap,
-        )
-
         if comp1_fractions_layer_name in self.viewer.layers:
             self.viewer.layers.remove(
                 self.viewer.layers[comp1_fractions_layer_name]
@@ -3251,6 +3241,7 @@ class ComponentsWidget(QWidget):
             name=comp1_fractions_layer_name,
             scale=self.parent_widget._labels_layer_with_phasor_features.scale,
             colormap=comp1_colormap,
+            contrast_limits=contrast_limits,
         )
 
         self.comp1_fractions_layer = self.viewer.add_layer(
@@ -3266,6 +3257,7 @@ class ComponentsWidget(QWidget):
             name=comp2_fractions_layer_name,
             scale=self.parent_widget._labels_layer_with_phasor_features.scale,
             colormap=comp2_colormap,
+            contrast_limits=contrast_limits,
         )
 
         self.comp2_fractions_layer = self.viewer.add_layer(

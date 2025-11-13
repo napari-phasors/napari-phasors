@@ -23,6 +23,7 @@ from qtpy.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QSpinBox,
     QSplitter,
     QTabWidget,
@@ -152,6 +153,29 @@ class PlotterWidget(QWidget):
         harmonic_widget.setLayout(harmonic_layout)
         controls_container.layout().addWidget(harmonic_widget)
 
+        # Add import buttons below harmonic spinbox
+        import_buttons_layout = QHBoxLayout()
+        import_buttons_layout.setContentsMargins(0, 0, 0, 0)
+        import_buttons_layout.setSpacing(5)
+
+        import_label = QLabel("Copy Workspace Settings:")
+        import_buttons_layout.addWidget(import_label)
+
+        self.import_from_layer_button = QPushButton("From Layer")
+        self.import_from_layer_button.setMaximumHeight(25)
+        import_buttons_layout.addWidget(self.import_from_layer_button)
+
+        self.import_from_file_button = QPushButton("From OME-TIFF")
+        self.import_from_file_button.setMaximumHeight(25)
+        import_buttons_layout.addWidget(self.import_from_file_button)
+
+        import_buttons_widget = QWidget()
+        import_buttons_widget.setLayout(import_buttons_layout)
+        controls_container.layout().addWidget(import_buttons_widget)
+
+        # Create tab widget
+        self.tab_widget = QTabWidget()
+
         # Create tab widget
         self.tab_widget = QTabWidget()
         controls_container.layout().addWidget(self.tab_widget)
@@ -242,10 +266,10 @@ class PlotterWidget(QWidget):
         self.plotter_inputs_widget.white_background_checkbox.stateChanged.connect(
             self._on_white_background_changed
         )
-        self.plotter_inputs_widget.import_from_layer_button.clicked.connect(
+        self.import_from_layer_button.clicked.connect(
             self._import_settings_from_layer
         )
-        self.plotter_inputs_widget.import_from_file_button.clicked.connect(
+        self.import_from_file_button.clicked.connect(
             self._import_settings_from_file
         )
 
@@ -641,7 +665,9 @@ class PlotterWidget(QWidget):
                         for key, value in napari_phasors_settings.items():
                             settings[key] = value
                 except (json.JSONDecodeError, KeyError):
-                    pass
+                    notifications.WarningNotification(
+                        "Failed to parse napari-phasors settings from file"
+                    )
             if settings:
                 selected_tabs = self._show_import_dialog(
                     source_settings=settings
@@ -1512,6 +1538,8 @@ class PlotterWidget(QWidget):
             self._initialize_plot_settings_in_metadata(layer)
 
             self._restore_plot_settings_from_metadata()
+
+            self._sync_frequency_inputs_from_metadata()
 
             # Update filter widget when layer changes
             if hasattr(self, 'filter_tab'):

@@ -3,7 +3,7 @@ from unittest.mock import patch
 import numpy as np
 from biaplotter.plotter import CanvasWidget
 from napari.layers import Image
-from qtpy.QtWidgets import QComboBox, QSpinBox, QTabWidget, QVBoxLayout
+from qtpy.QtWidgets import QComboBox, QSpinBox, QTabWidget, QVBoxLayout, QPushButton
 
 from napari_phasors._synthetic_generator import (
     make_intensity_layer_with_phasors,
@@ -12,6 +12,9 @@ from napari_phasors._synthetic_generator import (
 from napari_phasors.filter_tab import FilterWidget
 from napari_phasors.plotter import PlotterWidget
 from napari_phasors.selection_tab import SelectionWidget
+from napari_phasors.calibration_tab import CalibrationWidget
+from napari_phasors.components_tab import ComponentsWidget
+from napari_phasors.fret_tab import FretWidget
 
 
 def create_image_layer_with_phasors():
@@ -51,6 +54,15 @@ def test_phasor_plotter_initialization_values(make_napari_viewer):
     assert plotter.harmonic_spinbox.minimum() == 1
     assert plotter.harmonic_spinbox.value() == 1
 
+    # Import buttons tests
+    assert hasattr(plotter, 'import_from_layer_button')
+    assert isinstance(plotter.import_from_layer_button, QPushButton)
+    assert plotter.import_from_layer_button.text() == "From Layer"
+    
+    assert hasattr(plotter, 'import_from_file_button')
+    assert isinstance(plotter.import_from_file_button, QPushButton)
+    assert plotter.import_from_file_button.text() == "From OME-TIFF"
+
     # Tab widget tests
     assert hasattr(plotter, 'tab_widget')
     assert isinstance(plotter.tab_widget, QTabWidget)
@@ -83,7 +95,9 @@ def test_phasor_plotter_initialization_values(make_napari_viewer):
     # Test filter_tab and selection_tab are proper widgets
     assert isinstance(plotter.filter_tab, FilterWidget)
     assert isinstance(plotter.selection_tab, SelectionWidget)
-    # TODO: Add other tests when those tabs are implemented
+    assert isinstance(plotter.calibration_tab, CalibrationWidget)
+    assert isinstance(plotter.components_tab, ComponentsWidget)
+    assert isinstance(plotter.fret_tab, FretWidget)
 
     # Test settings tab inputs widget
     assert hasattr(plotter, 'plotter_inputs_widget')
@@ -93,8 +107,6 @@ def test_phasor_plotter_initialization_values(make_napari_viewer):
     assert hasattr(plotter.plotter_inputs_widget, 'semi_circle_checkbox')
     assert hasattr(plotter.plotter_inputs_widget, 'white_background_checkbox')
     assert hasattr(plotter.plotter_inputs_widget, 'log_scale_checkbox')
-    assert hasattr(plotter.plotter_inputs_widget, 'import_from_layer_button')
-    assert hasattr(plotter.plotter_inputs_widget, 'import_from_file_button')
 
     # Test default property values
     assert plotter.harmonic == 1

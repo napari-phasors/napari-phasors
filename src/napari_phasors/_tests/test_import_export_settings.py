@@ -256,9 +256,6 @@ def test_import_frequency_only(make_napari_viewer):
 
     plotter = PlotterWidget(viewer)
 
-    # Store initial harmonic value
-    initial_harmonic = layer1.metadata.get('settings', {}).get('harmonic', 1)
-
     # Import only frequency
     plotter._copy_metadata_from_layer("layer2", ['frequency'])
 
@@ -287,16 +284,15 @@ def test_import_with_calibration(make_napari_viewer):
     assert layer1.metadata['settings'].get('calibration_modulation') == 0.9
 
 
-# Import from File tests
 def test_import_from_file_button_exists(make_napari_viewer):
     """Test that import from file button exists."""
     viewer = make_napari_viewer()
     plotter = PlotterWidget(viewer)
 
-    assert hasattr(plotter.plotter_inputs_widget, 'import_from_file_button')
+    assert hasattr(plotter, 'import_from_file_button')
     assert (
-        plotter.plotter_inputs_widget.import_from_file_button.text()
-        == "Import from OME-TIFF"
+        plotter.import_from_file_button.text()
+        == "From OME-TIFF"
     )
 
 
@@ -314,7 +310,7 @@ def test_import_from_file_dialog_opens(make_napari_viewer):
     ) as mock_dialog:
         mock_dialog.return_value = ("", "")  # No file selected
 
-        plotter.plotter_inputs_widget.import_from_file_button.click()
+        plotter.import_from_file_button.click()
 
         # Verify dialog was opened
         mock_dialog.assert_called_once()
@@ -542,7 +538,7 @@ def test_show_import_dialog_default_all_checked(make_napari_viewer):
         mock_cb_instance.isChecked = Mock(return_value=True)
         mock_checkbox.return_value = mock_cb_instance
 
-        result = plotter._show_import_dialog()
+        plotter._show_import_dialog()
 
         # Verify checkboxes were created
         assert mock_checkbox.call_count > 0

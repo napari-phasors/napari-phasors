@@ -7,7 +7,7 @@ from matplotlib.backends.backend_qt5agg import (
 )
 from matplotlib.colors import LinearSegmentedColormap
 from napari.layers import Image
-from napari.utils.notifications import show_warning
+from napari.utils.notifications import show_error, show_warning
 from phasorpy.lifetime import (
     phasor_to_apparent_lifetime,
     phasor_to_normal_lifetime,
@@ -233,9 +233,6 @@ class LifetimeWidget(QWidget):
         finally:
             self._updating_settings = False
 
-        if 'lifetime_type' in settings and settings['lifetime_type'] != 'None':
-            self._on_lifetime_type_changed(settings['lifetime_type'])
-
     def _on_frequency_changed(self):
         """Handle frequency input changes."""
         frequency_text = self.frequency_input.text().strip()
@@ -254,7 +251,9 @@ class LifetimeWidget(QWidget):
                     )
                     self.plot_lifetime_histogram()
                 except ValueError:
-                    pass
+                    show_error(
+                        "Invalid frequency value. Please enter a valid number."
+                    )
             elif frequency_text == "":
                 self.frequency = None
                 self.histogram_widget.hide()

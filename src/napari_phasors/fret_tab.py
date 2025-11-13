@@ -506,7 +506,9 @@ class FretWidget(QWidget):
                         self.background_positions_by_harmonic,
                     )
         except ValueError:
-            pass
+            show_error(
+                "Invalid background position: please enter numeric values."
+            )
 
         self._on_parameters_changed()
 
@@ -572,7 +574,9 @@ class FretWidget(QWidget):
                     'donor_lifetime', self.donor_lifetime
                 )
             except ValueError:
-                pass
+                show_error(
+                    "Invalid donor lifetime: please enter a numeric value."
+                )
 
         if (
             self.donor_line_edit.text()
@@ -1436,8 +1440,6 @@ class FretWidget(QWidget):
         )
 
         if layer_name:
-            layer = self.viewer.layers[layer_name]
-
             self._reconnect_existing_fret_layer(layer_name)
 
             self._updating_settings = True

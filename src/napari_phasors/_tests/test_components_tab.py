@@ -808,7 +808,6 @@ def test_components_widget_harmonic_signal_connection(make_napari_viewer):
     comp_widget = parent.components_tab
 
     # Change harmonic and verify method is called
-    initial_harmonic = comp_widget.current_harmonic
     parent.harmonic_spinbox.setValue(2)
     assert comp_widget.current_harmonic == 2
 
