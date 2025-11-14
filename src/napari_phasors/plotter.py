@@ -1585,7 +1585,7 @@ class PlotterWidget(QWidget):
             self.harmonic_spinbox.setMinimum(min_harmonic)
             self.harmonic_spinbox.setMaximum(max_harmonic)
 
-            layer = self.viewer.layers[labels_layer_name]
+            layer = self.viewer.layers[image_layer_name]
             self._initialize_plot_settings_in_metadata(layer)
 
             self._restore_plot_settings_from_metadata()
