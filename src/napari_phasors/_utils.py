@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from napari.layers import Image
-from phasorpy.phasor import (
+from phasorpy.filter import (
     phasor_filter_median,
     phasor_filter_pawflim,
     phasor_threshold,
@@ -215,12 +215,12 @@ def apply_filter_and_threshold(
 
     if "settings" not in layer.metadata:
         layer.metadata["settings"] = {}
-    
+
     # Only save filter settings if a filter was actually applied
     if filter_method is not None:
         layer.metadata["settings"]["filter"] = {}
         layer.metadata["settings"]["filter"]["method"] = filter_method
-        
+
         if filter_method == "median":
             if size is not None:
                 layer.metadata["settings"]["filter"]["size"] = size
@@ -231,13 +231,13 @@ def apply_filter_and_threshold(
                 layer.metadata["settings"]["filter"]["sigma"] = sigma
             if levels is not None:
                 layer.metadata["settings"]["filter"]["levels"] = levels
-    
+
     # Only save threshold settings if a threshold was actually applied
     if threshold is not None and threshold > 0:
         layer.metadata["settings"]["threshold"] = threshold
     if threshold_method is not None and threshold_method != "None":
         layer.metadata["settings"]["threshold_method"] = threshold_method
-    
+
     layer.refresh()
     return
 

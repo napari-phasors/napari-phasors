@@ -1,15 +1,24 @@
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import numpy as np
 from biaplotter.plotter import CanvasWidget
 from napari.layers import Image
-from qtpy.QtWidgets import QComboBox, QSpinBox, QTabWidget, QVBoxLayout
+from qtpy.QtWidgets import (
+    QComboBox,
+    QPushButton,
+    QSpinBox,
+    QTabWidget,
+    QVBoxLayout,
+)
 
 from napari_phasors._synthetic_generator import (
     make_intensity_layer_with_phasors,
     make_raw_flim_data,
 )
+from napari_phasors.calibration_tab import CalibrationWidget
+from napari_phasors.components_tab import ComponentsWidget
 from napari_phasors.filter_tab import FilterWidget
+from napari_phasors.fret_tab import FretWidget
 from napari_phasors.plotter import PlotterWidget
 from napari_phasors.selection_tab import SelectionWidget
 
@@ -51,6 +60,15 @@ def test_phasor_plotter_initialization_values(make_napari_viewer):
     assert plotter.harmonic_spinbox.minimum() == 1
     assert plotter.harmonic_spinbox.value() == 1
 
+    # Import buttons tests
+    assert hasattr(plotter, 'import_from_layer_button')
+    assert isinstance(plotter.import_from_layer_button, QPushButton)
+    assert plotter.import_from_layer_button.text() == "From Layer"
+
+    assert hasattr(plotter, 'import_from_file_button')
+    assert isinstance(plotter.import_from_file_button, QPushButton)
+    assert plotter.import_from_file_button.text() == "From OME-TIFF"
+
     # Tab widget tests
     assert hasattr(plotter, 'tab_widget')
     assert isinstance(plotter.tab_widget, QTabWidget)
@@ -83,7 +101,9 @@ def test_phasor_plotter_initialization_values(make_napari_viewer):
     # Test filter_tab and selection_tab are proper widgets
     assert isinstance(plotter.filter_tab, FilterWidget)
     assert isinstance(plotter.selection_tab, SelectionWidget)
-    # TODO: Add other tests when those tabs are implemented
+    assert isinstance(plotter.calibration_tab, CalibrationWidget)
+    assert isinstance(plotter.components_tab, ComponentsWidget)
+    assert isinstance(plotter.fret_tab, FretWidget)
 
     # Test settings tab inputs widget
     assert hasattr(plotter, 'plotter_inputs_widget')
@@ -278,18 +298,18 @@ def test_adding_removing_layers_updates_plot(make_napari_viewer):
         viewer.add_layer(intensity_image_layer)
         mock_plot.assert_not_called()
 
-        # Check values changed before are kept
-        assert plotter.plot_type == 'SCATTER'
-        assert plotter.histogram_colormap == 'viridis'
-        assert plotter.toggle_semi_circle == False
-        assert plotter.white_background == False
+        # Check values were reset to defaults when new layer was added
+        assert plotter.plot_type == 'HISTOGRAM2D'
+        assert plotter.histogram_colormap == 'turbo'
+        assert plotter.toggle_semi_circle == True
+        assert plotter.white_background == True
         assert (
             plotter.plotter_inputs_widget.semi_circle_checkbox.isChecked()
-            == False
+            == True
         )
         assert (
             plotter.plotter_inputs_widget.white_background_checkbox.isChecked()
-            == False
+            == True
         )
 
         # Check that the combobox has both layers with phasor features
@@ -300,6 +320,164 @@ def test_adding_removing_layers_updates_plot(make_napari_viewer):
             == intensity_image_layer_2.name
         )
         plotter.deleteLater()
+
+
+def test_layer_settings_persistence_across_layer_switches(make_napari_viewer):
+    """Test that settings persist when switching between layers."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    # Create two layers
+    layer_1 = create_image_layer_with_phasors()
+    layer_2 = create_image_layer_with_phasors()
+    viewer.add_layer(layer_1)
+    viewer.add_layer(layer_2)
+
+    # Set layer_1 as active
+    plotter.image_layer_with_phasor_features_combobox.setCurrentText(
+        layer_1.name
+    )
+
+    # Modify settings for layer_1
+    plotter.plot_type = 'SCATTER'
+    plotter.histogram_colormap = 'viridis'
+    plotter.toggle_semi_circle = False
+    plotter.white_background = False
+
+    # Switch to layer_2 (should have defaults)
+    plotter.image_layer_with_phasor_features_combobox.setCurrentText(
+        layer_2.name
+    )
+    assert plotter.plot_type == 'HISTOGRAM2D'
+    assert plotter.histogram_colormap == 'turbo'
+    assert plotter.toggle_semi_circle == True
+    assert plotter.white_background == True
+
+    # Switch back to layer_1 (should restore settings)
+    plotter.image_layer_with_phasor_features_combobox.setCurrentText(
+        layer_1.name
+    )
+    assert plotter.plot_type == 'SCATTER'
+    assert plotter.histogram_colormap == 'viridis'
+    assert plotter.toggle_semi_circle == False
+    assert plotter.white_background == False
+
+    plotter.deleteLater()
+
+
+def test_layer_settings_initialization_in_metadata(make_napari_viewer):
+    """Test that settings are properly initialized in layer metadata."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    plotter = PlotterWidget(viewer)
+
+    # Check that settings were initialized
+    assert 'settings' in layer.metadata
+    assert 'harmonic' in layer.metadata['settings']
+    assert 'semi_circle' in layer.metadata['settings']
+    assert 'white_background' in layer.metadata['settings']
+    assert 'plot_type' in layer.metadata['settings']
+    assert 'colormap' in layer.metadata['settings']
+    assert 'number_of_bins' in layer.metadata['settings']
+    assert 'log_scale' in layer.metadata['settings']
+
+    # Check default values
+    assert layer.metadata['settings']['harmonic'] == 1
+    assert layer.metadata['settings']['semi_circle'] == True
+    assert layer.metadata['settings']['white_background'] == True
+    assert layer.metadata['settings']['plot_type'] == 'HISTOGRAM2D'
+    assert layer.metadata['settings']['colormap'] == 'turbo'
+    assert layer.metadata['settings']['number_of_bins'] == 150
+    assert layer.metadata['settings']['log_scale'] == False
+
+    plotter.deleteLater()
+
+
+def test_layer_settings_update_in_metadata(make_napari_viewer):
+    """Test that changing settings updates layer metadata."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    plotter = PlotterWidget(viewer)
+
+    # Change settings
+    plotter.harmonic = 2
+    plotter.plot_type = 'SCATTER'
+    plotter.histogram_colormap = 'viridis'
+    plotter.toggle_semi_circle = False
+    plotter.white_background = False
+
+    # Verify metadata was updated
+    assert layer.metadata['settings']['harmonic'] == 2
+    assert layer.metadata['settings']['plot_type'] == 'SCATTER'
+    assert layer.metadata['settings']['colormap'] == 'viridis'
+    assert layer.metadata['settings']['semi_circle'] == False
+    assert layer.metadata['settings']['white_background'] == False
+
+    plotter.deleteLater()
+
+
+def test_adding_layer_without_settings_initializes_defaults(
+    make_napari_viewer,
+):
+    """Test that adding a layer without settings metadata initializes defaults."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    # Create a layer and remove settings if they exist
+    layer = create_image_layer_with_phasors()
+    if 'settings' in layer.metadata:
+        del layer.metadata['settings']
+
+    viewer.add_layer(layer)
+
+    # Verify settings were initialized with defaults
+    assert 'settings' in layer.metadata
+    assert layer.metadata['settings']['harmonic'] == 1
+    assert layer.metadata['settings']['semi_circle'] == True
+    assert layer.metadata['settings']['white_background'] == True
+    assert layer.metadata['settings']['plot_type'] == 'HISTOGRAM2D'
+
+    plotter.deleteLater()
+
+
+def test_modifying_settings_updates_metadata_correctly(make_napari_viewer):
+    """Test that each setting change correctly updates metadata."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    plotter = PlotterWidget(viewer)
+
+    # Test harmonic update
+    plotter.harmonic = 3
+    assert layer.metadata['settings']['harmonic'] == 3
+
+    # Test plot type update
+    plotter.plotter_inputs_widget.plot_type_combobox.setCurrentText('SCATTER')
+    assert layer.metadata['settings']['plot_type'] == 'SCATTER'
+
+    # Test colormap update
+    plotter.plotter_inputs_widget.colormap_combobox.setCurrentText('viridis')
+    assert layer.metadata['settings']['colormap'] == 'viridis'
+
+    # Test bins update
+    plotter.plotter_inputs_widget.number_of_bins_spinbox.setValue(200)
+    assert layer.metadata['settings']['number_of_bins'] == 200
+
+    # Test log scale update
+    plotter.plotter_inputs_widget.log_scale_checkbox.setChecked(True)
+    assert layer.metadata['settings']['log_scale'] == True
+
+    # Test semi circle update
+    plotter.plotter_inputs_widget.semi_circle_checkbox.setChecked(False)
+    assert layer.metadata['settings']['semi_circle'] == False
+
+    # Test white background update
+    plotter.plotter_inputs_widget.white_background_checkbox.setChecked(False)
+    assert layer.metadata['settings']['white_background'] == False
+
+    plotter.deleteLater()
 
 
 def test_add_layer_without_phasor_features_does_not_trigger_plot_or_combobox(

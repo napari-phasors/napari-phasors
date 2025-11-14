@@ -60,16 +60,63 @@ class CalibrationWidget(QWidget):
         mainLayout.addWidget(scroll_area)
         self.setLayout(mainLayout)
 
-    def _populate_comboboxes(self):
+    def _populate_comboboxes(self, event=None):
         """Populate calibration layer combobox with image layers."""
-        self.calibration_widget.calibration_layer_combobox.clear()
-        image_layers = [
-            layer for layer in self.viewer.layers if isinstance(layer, Image)
-        ]
-        for layer in image_layers:
-            self.calibration_widget.calibration_layer_combobox.addItem(
-                layer.name
+        # Prevent recursive calls
+        if getattr(self, '_populating_comboboxes', False):
+            return
+
+        self._populating_comboboxes = True
+
+        try:
+            # Store current selection
+            current_text = (
+                self.calibration_widget.calibration_layer_combobox.currentText()
             )
+
+            # Temporarily block signals
+            self.calibration_widget.calibration_layer_combobox.blockSignals(
+                True
+            )
+
+            # Clear and repopulate
+            self.calibration_widget.calibration_layer_combobox.clear()
+            image_layers = [
+                layer
+                for layer in self.viewer.layers
+                if isinstance(layer, Image)
+            ]
+
+            layer_names = [layer.name for layer in image_layers]
+            self.calibration_widget.calibration_layer_combobox.addItems(
+                layer_names
+            )
+
+            # Restore selection if the layer still exists
+            if current_text in layer_names:
+                index = self.calibration_widget.calibration_layer_combobox.findText(
+                    current_text
+                )
+                if index >= 0:
+                    self.calibration_widget.calibration_layer_combobox.setCurrentIndex(
+                        index
+                    )
+
+            # Re-enable signals
+            self.calibration_widget.calibration_layer_combobox.blockSignals(
+                False
+            )
+
+            # Connect layer name change events (disconnect first to avoid duplicates)
+            for layer in image_layers:
+                try:
+                    layer.events.name.disconnect(self._populate_comboboxes)
+                except (TypeError, ValueError):
+                    pass  # Not connected, ignore
+                layer.events.name.connect(self._populate_comboboxes)
+
+        finally:
+            self._populating_comboboxes = False
 
     def _on_image_layer_changed(self):
         """Update button state when the selected image layer changes."""
