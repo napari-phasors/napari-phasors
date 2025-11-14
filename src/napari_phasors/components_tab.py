@@ -57,7 +57,7 @@ class ComponentsWidget(QWidget):
         self.viewer = viewer
         self.parent_widget = parent
 
-        self.layer_name = None
+        self.current_image_layer_name = None
 
         # Replace individual attributes with list
         self.components: list[ComponentState] = []
@@ -435,10 +435,10 @@ class ComponentsWidget(QWidget):
         if self._updating_settings:
             return
 
-        if not self.layer_name:
+        if not self.current_image_layer_name:
             return
 
-        layer = self.viewer.layers[self.layer_name]
+        layer = self.viewer.layers[self.current_image_layer_name]
         if (
             'settings' not in layer.metadata
             or 'component_analysis' not in layer.metadata['settings']
@@ -793,8 +793,8 @@ class ComponentsWidget(QWidget):
             comp_name = comp_data.get('name') or f"Component {idx + 1}"
 
             possible_layer_names = [
-                f"{comp_name} fractions: {self.layer_name}",  # Linear projection
-                f"{comp_name} fraction: {self.layer_name}",  # Component fit
+                f"{comp_name} fractions: {self.current_image_layer_name}",  # Linear projection
+                f"{comp_name} fraction: {self.current_image_layer_name}",  # Component fit
             ]
 
             fraction_layer = None
@@ -1060,10 +1060,10 @@ class ComponentsWidget(QWidget):
 
     def _restore_components_for_harmonic(self, harmonic):
         """Restore component locations for the given harmonic from metadata."""
-        if not self.layer_name:
+        if not self.current_image_layer_name:
             return
 
-        layer = self.viewer.layers[self.layer_name]
+        layer = self.viewer.layers[self.current_image_layer_name]
         if (
             'settings' not in layer.metadata
             or 'component_analysis' not in layer.metadata['settings']
@@ -1654,8 +1654,8 @@ class ComponentsWidget(QWidget):
         name = comp.name_edit.text().strip()
 
         old_name = None
-        if not self._updating_settings and self.layer_name:
-            layer = self.viewer.layers[self.layer_name]
+        if not self._updating_settings and self.current_image_layer_name:
+            layer = self.viewer.layers[self.current_image_layer_name]
             if (
                 'settings' in layer.metadata
                 and 'component_analysis' in layer.metadata['settings']
@@ -1709,14 +1709,14 @@ class ComponentsWidget(QWidget):
         self, idx: int, old_name: str, new_name: str
     ):
         """Update the names of the fraction layers when component names change."""
-        if not self.layer_name:
+        if not self.current_image_layer_name:
             return
 
         old_display_name = old_name if old_name else f"Component {idx + 1}"
         new_display_name = new_name if new_name else f"Component {idx + 1}"
 
-        old_layer_name = f"{old_display_name} fractions: {self.layer_name}"
-        new_layer_name = f"{new_display_name} fractions: {self.layer_name}"
+        old_layer_name = f"{old_display_name} fractions: {self.current_image_layer_name}"
+        new_layer_name = f"{new_display_name} fractions: {self.current_image_layer_name}"
 
         if (
             old_layer_name in self.viewer.layers
@@ -1732,9 +1732,9 @@ class ComponentsWidget(QWidget):
 
         elif new_layer_name not in self.viewer.layers:
             possible_old_names = [
-                f"Component {idx + 1} fractions: {self.layer_name}",
+                f"Component {idx + 1} fractions: {self.current_image_layer_name}",
                 (
-                    f"{old_display_name} fractions: {self.layer_name}"
+                    f"{old_display_name} fractions: {self.current_image_layer_name}"
                     if old_name
                     else None
                 ),
@@ -1826,10 +1826,10 @@ class ComponentsWidget(QWidget):
                         name = comp.label
                     component_names.append(name)
         else:
-            if not self.layer_name:
+            if not self.current_image_layer_name:
                 return component_g, component_s, component_names
 
-            layer = self.viewer.layers[self.layer_name]
+            layer = self.viewer.layers[self.current_image_layer_name]
             if (
                 'settings' not in layer.metadata
                 or 'component_analysis' not in layer.metadata['settings']
@@ -2424,8 +2424,8 @@ class ComponentsWidget(QWidget):
 
         current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
 
-        if not self._updating_settings and self.layer_name:
-            layer_obj = self.viewer.layers[self.layer_name]
+        if not self._updating_settings and self.current_image_layer_name:
+            layer_obj = self.viewer.layers[self.current_image_layer_name]
             settings = layer_obj.metadata.get('settings', {}).get(
                 'component_analysis', {}
             )
@@ -2456,7 +2456,7 @@ class ComponentsWidget(QWidget):
 
     def _find_component_index_for_layer(self, layer):
         """Find which component index a layer belongs to based on its name."""
-        if not self.layer_name:
+        if not self.current_image_layer_name:
             return None
 
         layer_name = layer.name
@@ -2466,8 +2466,8 @@ class ComponentsWidget(QWidget):
                 name = comp.name_edit.text().strip() or f"Component {i + 1}"
 
                 expected_names = [
-                    f"{name} fractions: {self.layer_name}",  # Linear projection
-                    f"{name} fraction: {self.layer_name}",  # Component fit
+                    f"{name} fractions: {self.current_image_layer_name}",  # Linear projection
+                    f"{name} fraction: {self.current_image_layer_name}",  # Component fit
                 ]
 
                 if layer_name in expected_names:
@@ -2641,8 +2641,8 @@ class ComponentsWidget(QWidget):
         if len(active_components) > 0:
             harmonics.add(current_harmonic)
 
-        if self.layer_name:
-            layer = self.viewer.layers[self.layer_name]
+        if self.current_image_layer_name:
+            layer = self.viewer.layers[self.current_image_layer_name]
             if (
                 'settings' in layer.metadata
                 and 'component_analysis' in layer.metadata['settings']
@@ -2891,7 +2891,7 @@ class ComponentsWidget(QWidget):
 
     def _on_image_layer_changed(self):
         """Callback whenever the image layer with phasor features changes."""
-        self.layer_name = (
+        self.current_image_layer_name = (
             self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
         )
 
@@ -2981,8 +2981,8 @@ class ComponentsWidget(QWidget):
             self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
         )
 
-        if not self._updating_settings and self.layer_name:
-            layer = self.viewer.layers[self.layer_name]
+        if not self._updating_settings and self.current_image_layer_name:
+            layer = self.viewer.layers[self.current_image_layer_name]
             settings = layer.metadata.get('settings', {}).get(
                 'component_analysis', {}
             )
@@ -3002,7 +3002,7 @@ class ComponentsWidget(QWidget):
 
             if (
                 not self._updating_settings
-                and self.layer_name
+                and self.current_image_layer_name
                 and idx_str in settings.get('components', {})
                 and harmonic_key
                 in settings['components'][idx_str].get('gs_harmonics', {})
@@ -3046,10 +3046,10 @@ class ComponentsWidget(QWidget):
 
     def _ensure_component_metadata(self, idx: int, harmonic: int = None):
         """Ensure component metadata structure exists and return component data dict."""
-        if self._updating_settings or not self.layer_name:
+        if self._updating_settings or not self.current_image_layer_name:
             return None
 
-        layer = self.viewer.layers[self.layer_name]
+        layer = self.viewer.layers[self.current_image_layer_name]
         if 'settings' not in layer.metadata:
             layer.metadata['settings'] = {}
         if 'component_analysis' not in layer.metadata['settings']:
@@ -3140,8 +3140,8 @@ class ComponentsWidget(QWidget):
         self._analysis_attempted = True
         self._update_all_component_styling()
 
-        if not self._updating_settings and self.layer_name:
-            layer = self.viewer.layers[self.layer_name]
+        if not self._updating_settings and self.current_image_layer_name:
+            layer = self.viewer.layers[self.current_image_layer_name]
             if 'settings' not in layer.metadata:
                 layer.metadata['settings'] = {}
             if 'component_analysis' not in layer.metadata['settings']:
@@ -3248,14 +3248,14 @@ class ComponentsWidget(QWidget):
 
         comp1_name = c1.name_edit.text().strip() or "Component 1"
         comp1_fractions_layer_name = (
-            f"{comp1_name} fractions: {self.layer_name}"
+            f"{comp1_name} fractions: {self.current_image_layer_name}"
         )
         comp2_name = c2.name_edit.text().strip() or "Component 2"
         comp2_fractions_layer_name = (
-            f"{comp2_name} fractions: {self.layer_name}"
+            f"{comp2_name} fractions: {self.current_image_layer_name}"
         )
 
-        layer = self.viewer.layers[self.layer_name]
+        layer = self.viewer.layers[self.current_image_layer_name]
         settings = layer.metadata.get('settings', {}).get(
             'component_analysis', {}
         )
@@ -3335,7 +3335,7 @@ class ComponentsWidget(QWidget):
             self.comp1_fractions_layer.contrast_limits
         )
 
-        if not self._updating_settings and self.layer_name:
+        if not self._updating_settings and self.current_image_layer_name:
             colormap_name = getattr(
                 self.comp1_fractions_layer.colormap, 'name', 'custom'
             )
@@ -3469,7 +3469,7 @@ class ComponentsWidget(QWidget):
             )
             harmonic_mask = phasor_data['harmonic'] == current_harmonic
 
-            mean = self.viewer.layers[self.layer_name].metadata[
+            mean = self.viewer.layers[self.current_image_layer_name].metadata[
                 'original_mean'
             ]
 
@@ -3527,7 +3527,7 @@ class ComponentsWidget(QWidget):
                 self.parent_widget._labels_layer_with_phasor_features.features
             )
 
-            mean = self.viewer.layers[self.layer_name].metadata[
+            mean = self.viewer.layers[self.current_image_layer_name].metadata[
                 'original_mean'
             ]
 
@@ -3555,15 +3555,10 @@ class ComponentsWidget(QWidget):
                 mean, real, imag, component_g, component_s
             )
 
-            layer = self.viewer.layers[self.layer_name]
+            layer = self.viewer.layers[self.current_image_layer_name]
             settings = layer.metadata['settings']['component_analysis']
             harmonic_key = str(current_harmonic)
 
-            for fraction_layer in self.fraction_layers:
-                try:
-                    self.viewer.layers.remove(fraction_layer)
-                except ValueError:
-                    pass
             self.fraction_layers.clear()
 
             for i, (fraction, name) in enumerate(
@@ -3573,7 +3568,7 @@ class ComponentsWidget(QWidget):
                     self.parent_widget._labels_layer_with_phasor_features.data.shape
                 )
 
-                layer_name = f"{name} fraction: {self.layer_name}"
+                fraction_layer_name = f"{name} fraction: {self.current_image_layer_name}"
 
                 colormap = None
                 contrast_limits = (0, 1)
@@ -3605,8 +3600,8 @@ class ComponentsWidget(QWidget):
                             harmonic_data['contrast_limits']
                         )
 
-                if colormap is None and layer_name in self.viewer.layers:
-                    existing_layer = self.viewer.layers[layer_name]
+                if colormap is None and fraction_layer_name in self.viewer.layers:
+                    existing_layer = self.viewer.layers[fraction_layer_name]
                     colormap = existing_layer.colormap
                     contrast_limits = existing_layer.contrast_limits
 
@@ -3616,9 +3611,16 @@ class ComponentsWidget(QWidget):
                     else:
                         colormap = 'viridis'
 
+                # Remove previous layer if it exists (avoids duplication)
+                try:
+                    self.viewer.layers.remove(
+                        self.viewer.layers[fraction_layer_name]
+                    )
+                except KeyError:
+                    pass
                 new_layer = self.viewer.add_image(
                     fraction_reshaped,
-                    name=layer_name,
+                    name=fraction_layer_name,
                     scale=self.parent_widget._labels_layer_with_phasor_features.scale,
                     colormap=colormap,
                 )
