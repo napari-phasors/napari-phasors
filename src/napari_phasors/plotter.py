@@ -571,6 +571,9 @@ class PlotterWidget(QWidget):
         if "fret_tab" in selected_tabs and hasattr(self, 'fret_tab'):
             self.fret_tab._on_image_layer_changed()
 
+        current_tab_index = self.tab_widget.currentIndex()
+        self._on_tab_changed(current_tab_index)
+
     def _apply_calibration_if_needed(self):
         """Apply calibration transformation if needed."""
         layer_name = (
