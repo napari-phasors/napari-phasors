@@ -365,7 +365,10 @@ def test_create_phasors_selected_layer_with_data(
 
     # Check if layer was added to viewer
     layer_names = [layer.name for layer in viewer.layers]
-    assert f"Selection custom_selection: {intensity_image_layer.name}" in layer_names
+    assert (
+        f"Selection custom_selection: {intensity_image_layer.name}"
+        in layer_names
+    )
 
 
 def test_no_selection_processing_during_plot_update(make_napari_viewer):
@@ -400,14 +403,19 @@ def test_delete_labels_layer_and_recreate(make_napari_viewer):
     ]
 
     # Store the original layer data for comparison
-    selection_layer = viewer.layers[f"Selection MANUAL SELECTION #1: {intensity_image_layer.name}"]
+    selection_layer = viewer.layers[
+        f"Selection MANUAL SELECTION #1: {intensity_image_layer.name}"
+    ]
     original_data = selection_layer.data.copy()
 
     # Delete the layer from the viewer
-    viewer.layers.remove(f"Selection MANUAL SELECTION #1: {intensity_image_layer.name}")
-    assert f"Selection MANUAL SELECTION #1: {intensity_image_layer.name}" not in [
-        layer.name for layer in viewer.layers
-    ]
+    viewer.layers.remove(
+        f"Selection MANUAL SELECTION #1: {intensity_image_layer.name}"
+    )
+    assert (
+        f"Selection MANUAL SELECTION #1: {intensity_image_layer.name}"
+        not in [layer.name for layer in viewer.layers]
+    )
 
     # Mock the plot update methods to prevent the error
     with patch.object(
@@ -431,7 +439,9 @@ def test_delete_labels_layer_and_recreate(make_napari_viewer):
     ]
 
     # Check that the recreated layer has the same values as before
-    recreated_layer = viewer.layers[f"Selection MANUAL SELECTION #1: {intensity_image_layer.name}"]
+    recreated_layer = viewer.layers[
+        f"Selection MANUAL SELECTION #1: {intensity_image_layer.name}"
+    ]
     np.testing.assert_array_equal(recreated_layer.data, original_data)
 
 
