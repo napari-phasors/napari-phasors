@@ -1617,18 +1617,14 @@ class PlotterWidget(QWidget):
         finally:
             self._in_on_labels_layer_with_phasor_features_changed = False
 
-    def _on_mask_layer_changed(self, text):
-        """Handle changes to the mask layer combo box."""
-        print(f"Mask layer changed to: {text}")
-        layer_name = (
-            self.image_layer_with_phasor_features_combobox.currentText()
-        )
-        if not layer_name:
-            return
-
-        layer = self.viewer.layers[layer_name]
-
-        # Restore original G and S and image data (this also clears previously applied filters)
+    def _restore_original_phasor_data(self, image_layer):
+        """Restore original G, S, and image data from backups.
+        
+        Parameters
+        ----------
+        image_layer : napari.layers.Image
+            The image layer to restore data for.
+        """
         phasor_features = self._labels_layer_with_phasor_features.features
         self._labels_layer_with_phasor_features.features['G'] = (
             phasor_features['G_original'].copy()
@@ -1636,50 +1632,80 @@ class PlotterWidget(QWidget):
         self._labels_layer_with_phasor_features.features['S'] = (
             phasor_features['S_original'].copy()
         )
-        layer.data = layer.metadata["original_mean"].copy()
+        image_layer.data = image_layer.metadata["original_mean"].copy()
+
+    def _apply_mask_to_phasor_data(self, mask_layer, image_layer):
+        """Apply mask to phasor data by setting G and S values outside mask to NaN.
+        
+        Parameters
+        ----------
+        mask_layer : napari.layers.Labels or napari.layers.Shapes
+            The mask layer to apply.
+        image_layer : napari.layers.Image
+            The image layer to store mask metadata.
+        """
+        if isinstance(mask_layer, Shapes) and len(mask_layer.data) > 0:
+            mask_data = mask_layer.to_labels(
+                labels_shape=self._labels_layer_with_phasor_features.data.shape
+            )
+        elif isinstance(mask_layer, Labels) and mask_layer.data.any():
+            mask_data = mask_layer.data
+        else:
+            return
+            
+        image_layer.metadata['mask'] = mask_data.copy()
+
+        # Apply mask data to G and S columns (linearize and tile mask and turn to NaNs values outside mask)
+
+        # Update the mask feature in the labels layer with phasor features
+        mask_data_flattened_and_tiled = np.tile(
+            mask_data.flatten(),
+            self._labels_layer_with_phasor_features.features[
+                "harmonic"
+            ].max(),
+        )
+        # Turn G and S values outside mask to NaN
+        mask_indices = mask_data_flattened_and_tiled == 0
+        # TODO: In the future, labels not selected could be filtered out like this as well
+        self._labels_layer_with_phasor_features.features.loc[mask_indices, ['G', 'S']] = np.nan
+
+    def _on_mask_layer_changed(self, text):
+        """Handle changes to the mask layer combo box."""
+        print(f"Mask layer changed to: {text}")
+        current_image_layer_name = (
+            self.image_layer_with_phasor_features_combobox.currentText()
+        )
+        if not current_image_layer_name:
+            return
+
+        current_image_layer = self.viewer.layers[current_image_layer_name]
+
+        # Restore original G and S and image data (this also clears previously applied filters)
+        self._restore_original_phasor_data(current_image_layer)
 
         if text == "None":
-            if 'mask' in layer.metadata:
-                del layer.metadata['mask']
+            if 'mask' in current_image_layer.metadata:
+                del current_image_layer.metadata['mask']
         else:
             mask_layer = self.viewer.layers[text]
-            if isinstance(mask_layer, Shapes) and len(mask_layer.data) > 0:
-                mask_data = mask_layer.to_labels(
-                    labels_shape=self._labels_layer_with_phasor_features.data.shape
-                )
-            elif isinstance(mask_layer, Labels) and mask_layer.data.any():
-                mask_data = mask_layer.data
-            layer.metadata['mask'] = mask_data.copy()
-
-            # Apply mask data to G and S columns (linearize and tile mask and turn to NaNs values outside mask)
-    
-            # Update the mask feature in the labels layer with phasor features
-            mask_data_flattened_and_tiled = np.tile(
-                mask_data.flatten(),
-                phasor_features[
-                    "harmonic"
-                ].max(),
-            )
-            # Turn G and S values outside mask to NaN
-            mask_indices = mask_data_flattened_and_tiled == 0
-            # TODO: In the future, labels not selected could be filtered out like this as well
-            self._labels_layer_with_phasor_features.features.loc[mask_indices, ['G', 'S']] = np.nan
+            self._apply_mask_to_phasor_data(mask_layer, current_image_layer)
         self.refresh_current_plot()
         
-
-        # if text == "None":
-        #     self.update_mask_column_and_plot(None)
-        # else:
-        #     mask_layer = self.viewer.layers[text]
-        #     self.update_mask_column_and_plot(mask_layer)
 
     def _on_mask_data_changed(self, event):
         """Handle changes to the mask layer data."""
         print(f"Mask layer data changed: {event}")
-        # if self.mask_layer_combobox.currentText() != event.source.name:
-        #     return
-        # mask_layer = event.source
-        # self.update_mask_column_and_plot(mask_layer)
+        if self.mask_layer_combobox.currentText() != event.source.name:
+            return
+        current_image_layer_name = (
+            self.image_layer_with_phasor_features_combobox.currentText()
+        )
+        current_image_layer = self.viewer.layers[current_image_layer_name]
+        # Restore original G and S and image data (this also clears previously applied filters)
+        self._restore_original_phasor_data(current_image_layer)
+        mask_layer = event.source
+        self._apply_mask_to_phasor_data(mask_layer, current_image_layer)
+        self.refresh_current_plot()
 
     def get_features(self):
         """Get the G and S features for the selected harmonic and selection id.
