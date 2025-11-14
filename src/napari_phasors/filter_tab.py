@@ -369,7 +369,7 @@ class FilterWidget(QWidget):
         self.parent_widget._labels_layer_with_phasor_features = layer_metadata[
             "phasor_features_labels_layer"
         ]
-        
+
         if 'mask' in layer_metadata.keys():
             max_mean_value = np.nanmax(
                 layer_metadata["original_mean"][layer_metadata['mask'] > 0]

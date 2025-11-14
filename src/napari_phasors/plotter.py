@@ -431,10 +431,14 @@ class PlotterWidget(QWidget):
                 # Create mask layer if no match found
                 if matching_mask_layer_name is None:
                     matching_mask_layer_name = f"Restored Mask: {layer_name}"
-                    self.viewer.add_labels(image_layer.metadata['mask'],
-                                            name=matching_mask_layer_name,
-                                            scale=self._labels_layer_with_phasor_features.scale)
-                self.mask_layer_combobox.setCurrentText(matching_mask_layer_name)
+                    self.viewer.add_labels(
+                        image_layer.metadata['mask'],
+                        name=matching_mask_layer_name,
+                        scale=self._labels_layer_with_phasor_features.scale,
+                    )
+                self.mask_layer_combobox.setCurrentText(
+                    matching_mask_layer_name
+                )
 
             settings = image_layer.metadata['settings']
 
@@ -1548,31 +1552,40 @@ class PlotterWidget(QWidget):
             # Connect layer name change events (disconnect first to avoid duplicates)
             for layer_name in layer_names + mask_layer_names:
                 layer = self.viewer.layers[layer_name]
-                if isinstance(layer, Image) and "phasor_features_labels_layer" in layer.metadata.keys():
+                if (
+                    isinstance(layer, Image)
+                    and "phasor_features_labels_layer" in layer.metadata.keys()
+                ):
                     try:
                         layer.events.name.disconnect(self.reset_layer_choices)
                     except (TypeError, ValueError):
-                        pass # Not connected, ignore
+                        pass  # Not connected, ignore
                     layer.events.name.connect(self.reset_layer_choices)
                 if isinstance(layer, Shapes):
                     try:
-                        layer.events.data.disconnect(self._on_mask_data_changed)
+                        layer.events.data.disconnect(
+                            self._on_mask_data_changed
+                        )
                     except (TypeError, ValueError):
-                        pass # Not connected, ignore
+                        pass  # Not connected, ignore
                     layer.events.data.connect(self._on_mask_data_changed)
                 if isinstance(layer, Labels):
                     try:
-                        layer.events.paint.disconnect(self._on_mask_data_changed)
-                        layer.events.set_data.disconnect(self._on_mask_data_changed)
+                        layer.events.paint.disconnect(
+                            self._on_mask_data_changed
+                        )
+                        layer.events.set_data.disconnect(
+                            self._on_mask_data_changed
+                        )
                     except (TypeError, ValueError):
-                        pass # Not connected, ignore
+                        pass  # Not connected, ignore
                     layer.events.paint.connect(self._on_mask_data_changed)
                     layer.events.set_data.connect(self._on_mask_data_changed)
 
             new_text = (
                 self.image_layer_with_phasor_features_combobox.currentText()
             )
-            if new_text != image_layer_combobox_current_text  or (
+            if new_text != image_layer_combobox_current_text or (
                 image_layer_combobox_current_text == "" and new_text != ""
             ):
                 self.on_labels_layer_with_phasor_features_changed()
@@ -1650,7 +1663,7 @@ class PlotterWidget(QWidget):
 
     def _restore_original_phasor_data(self, image_layer):
         """Restore original G, S, and image data from backups.
-        
+
         Parameters
         ----------
         image_layer : napari.layers.Image
@@ -1667,7 +1680,7 @@ class PlotterWidget(QWidget):
 
     def _apply_mask_to_phasor_data(self, mask_layer, image_layer):
         """Apply mask to phasor data by setting G and S values outside mask to NaN.
-        
+
         Parameters
         ----------
         mask_layer : napari.layers.Labels or napari.layers.Shapes
@@ -1683,7 +1696,7 @@ class PlotterWidget(QWidget):
             mask_data = mask_layer.data
         else:
             return
-            
+
         image_layer.metadata['mask'] = mask_data.copy()
 
         # Apply mask data to G and S columns (linearize and tile mask and turn to NaNs values outside mask)
@@ -1691,14 +1704,14 @@ class PlotterWidget(QWidget):
         # Update the mask feature in the labels layer with phasor features
         mask_data_flattened_and_tiled = np.tile(
             mask_data.flatten(),
-            self._labels_layer_with_phasor_features.features[
-                "harmonic"
-            ].max(),
+            self._labels_layer_with_phasor_features.features["harmonic"].max(),
         )
         # Turn G and S values outside mask to NaN
         mask_indices = mask_data_flattened_and_tiled == 0
         # TODO: In the future, labels not selected could be filtered out like this as well
-        self._labels_layer_with_phasor_features.features.loc[mask_indices, ['G', 'S']] = np.nan
+        self._labels_layer_with_phasor_features.features.loc[
+            mask_indices, ['G', 'S']
+        ] = np.nan
 
     def _on_mask_layer_changed(self, text):
         """Handle changes to the mask layer combo box."""
@@ -1741,7 +1754,6 @@ class PlotterWidget(QWidget):
             self.fret_tab._on_image_layer_changed()
 
         self.plot()
-        
 
     def _on_mask_data_changed(self, event):
         """Handle changes to the mask layer data."""
