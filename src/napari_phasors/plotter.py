@@ -158,7 +158,7 @@ class PlotterWidget(QWidget):
         import_buttons_layout.setContentsMargins(0, 0, 0, 0)
         import_buttons_layout.setSpacing(5)
 
-        import_label = QLabel("Import and Apply Settings from:")
+        import_label = QLabel("Load and Apply Settings from:")
         import_buttons_layout.addWidget(import_label)
 
         self.import_from_layer_button = QPushButton("Layer")
