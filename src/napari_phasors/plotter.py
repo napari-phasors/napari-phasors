@@ -1702,7 +1702,6 @@ class PlotterWidget(QWidget):
 
     def _on_mask_layer_changed(self, text):
         """Handle changes to the mask layer combo box."""
-        print(f"Mask layer changed to: {text}")
         current_image_layer_name = (
             self.image_layer_with_phasor_features_combobox.currentText()
         )
@@ -1720,12 +1719,32 @@ class PlotterWidget(QWidget):
         else:
             mask_layer = self.viewer.layers[text]
             self._apply_mask_to_phasor_data(mask_layer, current_image_layer)
-        self.refresh_current_plot()
+
+        # Update filter widget when layer changes
+        if hasattr(self, 'filter_tab'):
+            self.filter_tab._on_image_layer_changed()
+
+        # Update calibration button state when layer changes
+        if hasattr(self, 'calibration_tab'):
+            self.calibration_tab._on_image_layer_changed()
+
+        # Update lifetime tab when layer changes
+        if hasattr(self, 'lifetime_tab'):
+            self.lifetime_tab._on_image_layer_changed()
+
+        # Update components tab when layer changes
+        if hasattr(self, 'components_tab'):
+            self.components_tab._on_image_layer_changed()
+
+        # Update FRET tab when layer changes
+        if hasattr(self, 'fret_tab'):
+            self.fret_tab._on_image_layer_changed()
+
+        self.plot()
         
 
     def _on_mask_data_changed(self, event):
         """Handle changes to the mask layer data."""
-        print(f"Mask layer data changed: {event}")
         if self.mask_layer_combobox.currentText() != event.source.name:
             return
         current_image_layer_name = (
