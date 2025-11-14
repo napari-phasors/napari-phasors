@@ -8,7 +8,7 @@ from matplotlib.collections import LineCollection
 from matplotlib.colors import LinearSegmentedColormap, ListedColormap
 from napari.experimental import link_layers
 from napari.layers import Image
-from napari.utils.colormaps import Colormap
+from napari.utils.colormaps import AVAILABLE_COLORMAPS, Colormap
 from napari.utils.notifications import show_error, show_info, show_warning
 from phasorpy.component import phasor_component_fit, phasor_component_fraction
 from phasorpy.lifetime import phasor_from_lifetime
@@ -57,6 +57,8 @@ class ComponentsWidget(QWidget):
         self.viewer = viewer
         self.parent_widget = parent
 
+        self.current_image_layer_name = None
+
         # Replace individual attributes with list
         self.components: list[ComponentState] = []
 
@@ -100,8 +102,7 @@ class ComponentsWidget(QWidget):
         # Analysis type
         self.analysis_type = "Linear Projection"
 
-        # Harmonic-specific component storage for multi-component analysis
-        self.component_locations = {}  # {harmonic: [comp_data, ...]}
+        # Current harmonic
         self.current_harmonic = 1
 
         # Line settings
@@ -114,6 +115,7 @@ class ComponentsWidget(QWidget):
 
         # Flag to prevent clearing lifetime when updating from lifetime
         self._updating_from_lifetime = False
+        self._updating_settings = False  # Flag to prevent recursive updates
 
         # Flag to track if analysis was attempted
         self._analysis_attempted = False
@@ -185,6 +187,9 @@ class ComponentsWidget(QWidget):
         # Initialize with 2 components
         for i in range(2):
             self._add_component_ui(i)
+
+        # Move the visibility update to AFTER components are created
+        self._update_lifetime_inputs_visibility()
 
         # Component management section
         comp_management_layout = QHBoxLayout()
@@ -338,7 +343,6 @@ class ComponentsWidget(QWidget):
         )
         select_button.clicked.connect(lambda: self._select_component(idx))
 
-        # Store UI elements for visibility control
         comp.ui_elements = {
             'comp_layout': comp_layout,
             'lifetime_label': lifetime_label,
@@ -347,7 +351,6 @@ class ComponentsWidget(QWidget):
     def _add_component(self):
         """Add a new component (up to maximum allowed based on harmonics)."""
         total_count = len([c for c in self.components if c is not None])
-
         max_components = self._get_max_components()
 
         if total_count >= max_components:
@@ -412,7 +415,6 @@ class ComponentsWidget(QWidget):
         self._update_analysis_options()
         self._update_button_states()
 
-        # Update styling after removing component (only if analysis was attempted)
         if self._analysis_attempted:
             self._update_all_component_styling()
 
@@ -425,6 +427,29 @@ class ComponentsWidget(QWidget):
 
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
+
+        self._remove_last_component_from_settings()
+
+    def _remove_last_component_from_settings(self):
+        """Remove the last component from the settings in metadata."""
+        if self._updating_settings:
+            return
+
+        if not self.current_image_layer_name:
+            return
+
+        layer = self.viewer.layers[self.current_image_layer_name]
+        if (
+            'settings' not in layer.metadata
+            or 'component_analysis' not in layer.metadata['settings']
+        ):
+            return
+
+        settings = layer.metadata['settings']['component_analysis']
+
+        if 'components' in settings and len(settings['components']) > 0:
+            max_idx_str = max(settings['components'].keys(), key=int)
+            del settings['components'][max_idx_str]
 
     def _get_max_components(self):
         """Get maximum number of components based on available harmonics."""
@@ -446,25 +471,32 @@ class ComponentsWidget(QWidget):
         total_count = len([c for c in self.components if c is not None])
         max_components = self._get_max_components()
 
-        # Add button: enabled if less than max components
         self.add_component_btn.setEnabled(total_count < max_components)
 
-        # Remove button: enabled if more than 2 components
         self.remove_component_btn.setEnabled(total_count > 2)
 
     def _clear_components(self):
-        """Clear all components."""
+        """Clear all component visualizations and input fields."""
         for comp in self.components:
-            if comp is not None:
-                if comp.dot is not None:
+            if comp.dot is not None:
+                try:
                     comp.dot.remove()
-                if comp.text is not None:
+                except (ValueError, AttributeError):
+                    pass
+                comp.dot = None
+
+            if comp.text is not None:
+                try:
                     comp.text.remove()
-                comp.g_edit.clear()
-                comp.s_edit.clear()
-                comp.name_edit.clear()
-                if comp.lifetime_edit is not None:
-                    comp.lifetime_edit.clear()
+                except (ValueError, AttributeError):
+                    pass
+                comp.text = None
+
+            comp.g_edit.clear()
+            comp.s_edit.clear()
+            comp.name_edit.clear()
+            if comp.lifetime_edit is not None:
+                comp.lifetime_edit.clear()
 
         if self.component_line is not None:
             try:
@@ -480,10 +512,333 @@ class ComponentsWidget(QWidget):
                 pass
             self.component_polygon = None
 
-        for comp in self.components:
-            if comp is not None:
-                comp.dot = None
-                comp.text = None
+        self._update_components_setting_in_metadata('components', {})
+
+        if self.parent_widget is not None:
+            self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def _get_default_components_settings(self):
+        """Get default settings dictionary for components parameters."""
+        return {
+            'analysis_type': 'Linear Projection',
+            'components': {},
+            'line_settings': {
+                'show_colormap_line': True,
+                'show_component_dots': True,
+                'line_offset': 0.0,
+                'line_width': 3.0,
+                'line_alpha': 1.0,
+            },
+            'label_settings': {
+                'fontsize': 10,
+                'bold': False,
+                'italic': False,
+                'color': 'black',
+            },
+        }
+
+    def _update_components_setting_in_metadata(self, key_path, value):
+        """Update a specific component setting in the current layer's metadata."""
+        layer_name = (
+            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        )
+        if not layer_name:
+            return
+
+        layer = self.viewer.layers[layer_name]
+
+        if 'settings' not in layer.metadata:
+            layer.metadata['settings'] = {}
+        if 'component_analysis' not in layer.metadata['settings']:
+            layer.metadata['settings']['component_analysis'] = {}
+
+        keys = key_path.split('.')
+        settings = layer.metadata['settings']['component_analysis']
+        for key in keys[:-1]:
+            if key not in settings:
+                settings[key] = {}
+            settings = settings[key]
+        settings[keys[-1]] = value
+
+    def _restore_and_recreate_components_from_metadata(self):
+        """Restore all components settings and recreate visual elements from metadata."""
+
+        layer_name = (
+            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        )
+
+        if not layer_name:
+            return
+
+        layer = self.viewer.layers[layer_name]
+
+        if 'settings' not in layer.metadata:
+            return
+
+        if 'component_analysis' not in layer.metadata['settings']:
+            return
+
+        self._updating_settings = True
+        try:
+            settings = layer.metadata['settings']['component_analysis']
+
+            self._clear_components_display()
+
+            if 'analysis_type' in settings:
+                self.analysis_type = settings['analysis_type']
+                if hasattr(self, 'analysis_type_combo'):
+                    index = self.analysis_type_combo.findText(
+                        self.analysis_type
+                    )
+                    if index >= 0:
+                        self.analysis_type_combo.setCurrentIndex(index)
+
+            if 'last_analysis_harmonic' in settings:
+                last_harmonic = settings['last_analysis_harmonic']
+                if hasattr(self.parent_widget, 'harmonic_spinbox'):
+                    self.parent_widget.harmonic_spinbox.setValue(last_harmonic)
+                current_harmonic = last_harmonic
+            else:
+                current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
+
+            current_harmonic_key = str(current_harmonic)
+
+            if 'components' in settings and isinstance(
+                settings['components'], dict
+            ):
+                if settings['components']:
+                    max_idx = max(
+                        int(k) for k in settings['components'].keys()
+                    )
+                else:
+                    max_idx = -1
+
+                while len(self.components) < max_idx + 1:
+                    self._add_component_ui(len(self.components))
+
+                while (
+                    len(self.components) > max_idx + 1
+                    and len(self.components) > 2
+                ):
+                    last_idx = len(self.components) - 1
+                    comp = self.components[last_idx]
+
+                    if comp is not None:
+                        if comp.dot is not None:
+                            comp.dot.remove()
+                            comp.dot = None
+                        if comp.text is not None:
+                            comp.text.remove()
+                            comp.text = None
+
+                        if hasattr(comp, 'ui_elements'):
+                            comp_layout = comp.ui_elements['comp_layout']
+                            while comp_layout.count():
+                                item = comp_layout.takeAt(0)
+                                if item.widget():
+                                    item.widget().deleteLater()
+                            self.components_layout.removeItem(comp_layout)
+
+                    self.components.pop()
+
+                for idx_str, comp_data in settings['components'].items():
+                    idx = int(idx_str)
+
+                    if (
+                        idx >= len(self.components)
+                        or self.components[idx] is None
+                    ):
+                        continue
+
+                    comp = self.components[idx]
+                    name = comp_data.get('name', '')
+
+                    if name:
+                        comp.name_edit.setText(name)
+
+                    gs_harmonics = comp_data.get('gs_harmonics', {})
+
+                    if current_harmonic_key in gs_harmonics:
+                        harmonic_data = gs_harmonics[current_harmonic_key]
+
+                        g = harmonic_data.get('g')
+                        s = harmonic_data.get('s')
+                        lifetime = harmonic_data.get('lifetime')
+
+                        if g is not None:
+                            comp.g_edit.setText(f"{g:.3f}")
+                        if s is not None:
+                            comp.s_edit.setText(f"{s:.3f}")
+                        if (
+                            lifetime is not None
+                            and comp.lifetime_edit is not None
+                        ):
+                            comp.lifetime_edit.setText(str(lifetime))
+
+                        if g is not None and s is not None:
+                            self._create_component_at_coordinates(idx, g, s)
+
+            if 'line_settings' in settings:
+                line_settings = settings['line_settings']
+                self.show_colormap_line = line_settings.get(
+                    'show_colormap_line', True
+                )
+                self.show_component_dots = line_settings.get(
+                    'show_component_dots', True
+                )
+                self.line_offset = line_settings.get('line_offset', 0.0)
+                self.line_width = line_settings.get('line_width', 3.0)
+                self.line_alpha = line_settings.get('line_alpha', 1.0)
+
+            if 'label_settings' in settings:
+                label_settings = settings['label_settings']
+                self.label_fontsize = label_settings.get('fontsize', 10)
+                self.label_bold = label_settings.get('bold', False)
+                self.label_italic = label_settings.get('italic', False)
+                self.label_color = label_settings.get('color', 'black')
+
+            components_created = [
+                c
+                for c in self.components
+                if c is not None and c.dot is not None
+            ]
+
+            if len(components_created) >= 2:
+                analysis_type = settings.get(
+                    'analysis_type', 'Linear Projection'
+                )
+
+                if (
+                    analysis_type == 'Linear Projection'
+                    and len(components_created) == 2
+                ) or (
+                    analysis_type == 'Component Fit'
+                    and len(components_created) >= 2
+                ):
+
+                    if (
+                        analysis_type == 'Component Fit'
+                        and len(components_created) > 2
+                    ):
+                        required_harmonics = self._get_required_harmonics(
+                            len(components_created)
+                        )
+
+                        harmonics_in_metadata = set()
+                        for comp_data in settings['components'].values():
+                            gs_harmonics = comp_data.get('gs_harmonics', {})
+                            for harmonic_key in gs_harmonics.keys():
+                                harmonics_in_metadata.add(int(harmonic_key))
+
+                        if len(harmonics_in_metadata) >= required_harmonics:
+                            self._run_analysis()
+                            self._restore_fraction_layer_colormaps(
+                                settings, current_harmonic_key
+                            )
+
+                    else:
+                        self._run_analysis()
+                        self._restore_fraction_layer_colormaps(
+                            settings, current_harmonic_key
+                        )
+
+            else:
+                if len(components_created) >= 2:
+                    self.draw_line_between_components()
+
+            self._update_button_states()
+
+            self._update_component_visibility()
+
+        except Exception as e:
+            show_error(
+                f"Error restoring component settings from metadata: {str(e)}"
+            )
+        finally:
+            self._updating_settings = False
+
+    def _restore_fraction_layer_colormaps(self, settings, harmonic_key):
+        """Restore colormap settings for fraction layers after analysis."""
+        if not settings.get('components'):
+            return
+
+        for idx_str, comp_data in settings['components'].items():
+            idx = int(idx_str)
+
+            gs_harmonics = comp_data.get('gs_harmonics', {})
+            if harmonic_key not in gs_harmonics:
+                continue
+
+            harmonic_data = gs_harmonics[harmonic_key]
+
+            colormap_name = harmonic_data.get('colormap_name')
+            colormap_colors = harmonic_data.get('colormap_colors')
+            contrast_limits = harmonic_data.get('contrast_limits')
+
+            if not (colormap_name or colormap_colors):
+                continue
+
+            comp_name = comp_data.get('name') or f"Component {idx + 1}"
+
+            possible_layer_names = [
+                f"{comp_name} fractions: {self.current_image_layer_name}",  # Linear projection
+                f"{comp_name} fraction: {self.current_image_layer_name}",  # Component fit
+            ]
+
+            fraction_layer = None
+            for layer_name in possible_layer_names:
+                if layer_name in self.viewer.layers:
+                    fraction_layer = self.viewer.layers[layer_name]
+                    break
+
+            if fraction_layer is None:
+                continue
+
+            try:
+                fraction_layer.events.colormap.disconnect(
+                    self._on_colormap_changed
+                )
+            except Exception:
+                pass
+
+            try:
+                if colormap_colors is not None:
+                    colors = (
+                        np.array(colormap_colors)
+                        if isinstance(colormap_colors, list)
+                        else colormap_colors
+                    )
+                    from napari.utils.colormaps import Colormap
+
+                    custom_colormap = Colormap(
+                        colors=colors, name=colormap_name or "custom"
+                    )
+                    fraction_layer.colormap = custom_colormap
+                elif colormap_name:
+                    fraction_layer.colormap = colormap_name
+
+                if contrast_limits:
+                    fraction_layer.contrast_limits = tuple(contrast_limits)
+
+            finally:
+                fraction_layer.events.colormap.connect(
+                    self._on_colormap_changed
+                )
+
+        if (
+            len(settings.get('components', {})) == 2
+            and self.analysis_type == "Linear Projection"
+        ):
+            if self.comp1_fractions_layer is not None:
+                self.fractions_colormap = (
+                    self.comp1_fractions_layer.colormap.colors
+                )
+                self.colormap_contrast_limits = (
+                    self.comp1_fractions_layer.contrast_limits
+                )
+
+        self._update_component_colors()
+        self.draw_line_between_components()
 
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
@@ -629,13 +984,10 @@ class ComponentsWidget(QWidget):
 
     def _on_harmonic_changed(self, new_harmonic):
         """Handle harmonic changes - store current components and restore for new harmonic."""
-        old_harmonic = self.current_harmonic
-        self._store_current_components(old_harmonic)
         self._clear_components_display()
         self.current_harmonic = new_harmonic
 
         self._refresh_components_info_label()
-
         self._restore_components_for_harmonic(new_harmonic)
         self._update_component_visibility()
 
@@ -659,40 +1011,6 @@ class ComponentsWidget(QWidget):
             # For more than 3 components: num_components <= 2 * num_harmonics + 1
             # Solving for num_harmonics: num_harmonics >= (num_components - 1) / 2
             return max(2, int(np.ceil((num_components - 1) / 2)))
-
-    def _store_current_components(self, harmonic):
-        """Store current component locations for the given harmonic."""
-        if harmonic not in self.component_locations:
-            self.component_locations[harmonic] = []
-
-        self.component_locations[harmonic] = []
-
-        for comp in self.components:
-            if comp is not None and comp.dot is not None:
-                x_data, y_data = comp.dot.get_data()
-                name = comp.name_edit.text().strip()
-
-                if not name or name.startswith("Component "):
-                    name = ""
-
-                comp_data = {
-                    'g': x_data[0],
-                    's': y_data[0],
-                    'name': name,
-                    'idx': comp.idx,
-                }
-
-                while len(self.component_locations[harmonic]) <= comp.idx:
-                    self.component_locations[harmonic].append(None)
-
-                self.component_locations[harmonic][comp.idx] = comp_data
-            else:
-                while (
-                    len(self.component_locations[harmonic]) <= comp.idx
-                    if comp is not None
-                    else 0
-                ):
-                    self.component_locations[harmonic].append(None)
 
     def _clear_components_display(self):
         """Clear component display without removing from storage."""
@@ -729,50 +1047,88 @@ class ComponentsWidget(QWidget):
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
     def _restore_components_for_harmonic(self, harmonic):
-        """Restore component locations for the given harmonic."""
-        if harmonic not in self.component_locations:
+        """Restore component locations for the given harmonic from metadata."""
+        if not self.current_image_layer_name:
             return
 
-        stored_components = self.component_locations[harmonic]
+        layer = self.viewer.layers[self.current_image_layer_name]
+        if (
+            'settings' not in layer.metadata
+            or 'component_analysis' not in layer.metadata['settings']
+        ):
+            return
 
-        for i, comp_data in enumerate(stored_components):
-            if (
-                comp_data is not None
-                and i < len(self.components)
-                and self.components[i] is not None
+        settings = layer.metadata['settings']['component_analysis']
+        components_data = settings.get('components', {})
+        harmonic_key = str(harmonic)
+
+        components_with_data = set()
+
+        for idx_str, comp_data in components_data.items():
+            idx = int(idx_str)
+
+            if idx >= len(self.components) or self.components[idx] is None:
+                continue
+
+            comp = self.components[idx]
+            gs_harmonics = comp_data.get('gs_harmonics', {})
+
+            if harmonic_key not in gs_harmonics:
+                comp.g_edit.clear()
+                comp.s_edit.clear()
+                if comp.lifetime_edit is not None:
+                    comp.lifetime_edit.clear()
+                continue
+
+            harmonic_data = gs_harmonics[harmonic_key]
+            g = harmonic_data.get('g')
+            s = harmonic_data.get('s')
+
+            if g is None or s is None:
+                comp.g_edit.clear()
+                comp.s_edit.clear()
+                if comp.lifetime_edit is not None:
+                    comp.lifetime_edit.clear()
+                continue
+
+            components_with_data.add(idx)
+
+            comp.g_edit.setText(f"{g:.3f}")
+            comp.s_edit.setText(f"{s:.3f}")
+
+            stored_name = comp_data.get('name', '')
+            current_name = comp.name_edit.text().strip()
+            if stored_name and (
+                not current_name or current_name.startswith("Component ")
             ):
-                comp = self.components[i]
+                comp.name_edit.setText(stored_name)
 
-                comp.g_edit.setText(f"{comp_data['g']:.6f}")
-                comp.s_edit.setText(f"{comp_data['s']:.6f}")
+            lifetime = harmonic_data.get('lifetime')
+            if lifetime is not None and comp.lifetime_edit is not None:
+                comp.lifetime_edit.setText(str(lifetime))
+            elif comp.lifetime_edit is not None:
+                comp.lifetime_edit.clear()
 
-                stored_name = comp_data.get('name', '')
-                current_name = comp.name_edit.text().strip()
+            self._create_component_at_coordinates(idx, g, s)
 
-                if stored_name and (
-                    not current_name or current_name.startswith("Component ")
-                ):
-                    comp.name_edit.setText(stored_name)
+        for comp in self.components:
+            if comp is not None and comp.idx not in components_with_data:
+                comp.g_edit.clear()
+                comp.s_edit.clear()
+                if comp.lifetime_edit is not None:
+                    comp.lifetime_edit.clear()
 
-                self._create_component_at_coordinates(
-                    i, comp_data['g'], comp_data['s']
-                )
+                if comp.dot is not None:
+                    comp.dot.remove()
+                    comp.dot = None
+                if comp.text is not None:
+                    comp.text.remove()
+                    comp.text = None
 
         self.draw_line_between_components()
         self._update_component_colors()
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
-
-    def _run_analysis(self):
-        """Run the selected analysis."""
-        self._analysis_attempted = True
-
-        self._update_all_component_styling()
-
-        if self.analysis_type == "Linear Projection":
-            self._run_linear_projection()
-        else:
-            self._run_component_fit()
 
     def _open_label_style_dialog(self):
         """Open dialog to edit label style settings."""
@@ -864,6 +1220,112 @@ class ComponentsWidget(QWidget):
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
+    def _apply_saved_colormap_settings(self):
+        """Apply saved colormap settings to fraction layers if they exist."""
+        if self.comp1_fractions_layer is not None and hasattr(
+            self, '_saved_colormap_name'
+        ):
+
+            try:
+                self.comp1_fractions_layer.events.colormap.disconnect(
+                    self._on_colormap_changed
+                )
+                self.comp1_fractions_layer.events.colormap.disconnect(
+                    self._sync_colormaps
+                )
+                self.comp1_fractions_layer.events.contrast_limits.disconnect(
+                    self._on_contrast_limits_changed
+                )
+
+                if self.comp2_fractions_layer is not None:
+                    self.comp2_fractions_layer.events.colormap.disconnect(
+                        self._sync_colormaps
+                    )
+
+                if self._saved_colormap_colors is not None:
+                    from napari.utils.colormaps import Colormap
+
+                    if isinstance(self._saved_colormap_colors, list):
+                        saved_colors = np.array(self._saved_colormap_colors)
+                    else:
+                        saved_colors = self._saved_colormap_colors
+
+                    saved_colormap = Colormap(
+                        colors=saved_colors, name="saved_custom"
+                    )
+                    self.comp1_fractions_layer.colormap = saved_colormap
+
+                    if self.comp2_fractions_layer is not None:
+                        inverted_colors = saved_colors[::-1]
+                        inverted_colormap = Colormap(
+                            colors=inverted_colors,
+                            name="saved_custom_inverted",
+                        )
+                        self.comp2_fractions_layer.colormap = inverted_colormap
+                else:
+                    self.comp1_fractions_layer.colormap = (
+                        self._saved_colormap_name
+                    )
+                    if self.comp2_fractions_layer is not None:
+                        inverted_name = (
+                            self._saved_colormap_name + '_r'
+                            if not self._saved_colormap_name.endswith('_r')
+                            else self._saved_colormap_name[:-2]
+                        )
+                        self.comp2_fractions_layer.colormap = inverted_name
+
+                if isinstance(self._saved_contrast_limits, list):
+                    saved_limits = tuple(self._saved_contrast_limits)
+                else:
+                    saved_limits = self._saved_contrast_limits
+
+                self.comp1_fractions_layer.contrast_limits = saved_limits
+                if self.comp2_fractions_layer is not None:
+                    self.comp2_fractions_layer.contrast_limits = saved_limits
+
+                self.fractions_colormap = (
+                    self.comp1_fractions_layer.colormap.colors
+                )
+                self.colormap_contrast_limits = (
+                    self.comp1_fractions_layer.contrast_limits
+                )
+
+                self.comp1_fractions_layer.events.colormap.connect(
+                    self._on_colormap_changed
+                )
+                self.comp1_fractions_layer.events.colormap.connect(
+                    self._sync_colormaps
+                )
+                self.comp1_fractions_layer.events.contrast_limits.connect(
+                    self._on_contrast_limits_changed
+                )
+
+                if self.comp2_fractions_layer is not None:
+                    self.comp2_fractions_layer.events.colormap.connect(
+                        self._sync_colormaps
+                    )
+
+                self.draw_line_between_components()
+
+            except Exception as e:
+                print(f"Error applying saved colormap settings: {e}")
+                try:
+                    self.comp1_fractions_layer.events.colormap.connect(
+                        self._on_colormap_changed
+                    )
+                    self.comp1_fractions_layer.events.colormap.connect(
+                        self._sync_colormaps
+                    )
+                    self.comp1_fractions_layer.events.contrast_limits.connect(
+                        self._on_contrast_limits_changed
+                    )
+                    if self.comp2_fractions_layer is not None:
+                        self.comp2_fractions_layer.events.colormap.connect(
+                            self._sync_colormaps
+                        )
+                except Exception:
+                    pass
+
     def get_all_artists(self):
         """Get all matplotlib artists."""
         artists = []
@@ -898,8 +1360,19 @@ class ComponentsWidget(QWidget):
 
     def _on_plot_setting_changed(self):
         """Handle changes to plot settings from dialog."""
-        self.show_colormap_line = self.colormap_line_checkbox.isChecked()
-        self.show_component_dots = self.show_dots_checkbox.isChecked()
+        if hasattr(self, 'colormap_line_checkbox'):
+            self.show_colormap_line = self.colormap_line_checkbox.isChecked()
+            self._update_components_setting_in_metadata(
+                'two_component_line_settings.show_colormap_line',
+                self.show_colormap_line,
+            )
+
+        if hasattr(self, 'show_dots_checkbox'):
+            self.show_component_dots = self.show_dots_checkbox.isChecked()
+            self._update_components_setting_in_metadata(
+                'two_component_line_settings.show_component_dots',
+                self.show_component_dots,
+            )
 
         active_components = [
             c for c in self.components if c is not None and c.dot is not None
@@ -933,7 +1406,12 @@ class ComponentsWidget(QWidget):
     def _on_line_offset_changed(self, value):
         """Handle changes to line offset from slider."""
         self.line_offset = value / 1000.0
-        self.line_offset_value_label.setText(f"{self.line_offset:.3f}")
+        self._update_components_setting_in_metadata(
+            'two_component_line_settings.line_offset', self.line_offset
+        )
+
+        if hasattr(self, 'line_offset_value_label'):
+            self.line_offset_value_label.setText(f"{self.line_offset:.3f}")
         self.draw_line_between_components()
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
@@ -941,6 +1419,9 @@ class ComponentsWidget(QWidget):
     def _on_line_width_changed(self, value):
         """Handle changes to line width from spinbox."""
         self.line_width = float(value)
+        self._update_components_setting_in_metadata(
+            'two_component_line_settings.line_width', self.line_width
+        )
 
         if isinstance(self.component_line, LineCollection):
             try:
@@ -958,7 +1439,12 @@ class ComponentsWidget(QWidget):
     def _on_line_alpha_changed(self, value):
         """Handle changes to line alpha from slider."""
         self.line_alpha = value / 100.0
-        self.line_alpha_value_label.setText(f"{self.line_alpha:.2f}")
+        self._update_components_setting_in_metadata(
+            'two_component_line_settings.line_alpha', self.line_alpha
+        )
+
+        if hasattr(self, 'line_alpha_value_label'):
+            self.line_alpha_value_label.setText(f"{self.line_alpha:.2f}")
 
         if self.component_line is not None:
             if hasattr(self.component_line, 'set_alpha'):
@@ -981,6 +1467,9 @@ class ComponentsWidget(QWidget):
         color = QColorDialog.getColor()
         if color.isValid():
             self.label_color = color.name()
+            self._update_components_setting_in_metadata(
+                'two_components_label_settings.color', self.label_color
+            )
             self._apply_styles_to_labels()
 
     def _on_label_style_changed(self):
@@ -1016,15 +1505,33 @@ class ComponentsWidget(QWidget):
         except (AttributeError, TypeError):
             has_freq = False
 
-        for comp in self.components:
-            if (
-                comp is not None
-                and hasattr(comp, 'ui_elements')
-                and 'lifetime_label' in comp.ui_elements
-            ):
-                comp.ui_elements['lifetime_label'].setVisible(has_freq)
-                if comp.lifetime_edit is not None:
-                    comp.lifetime_edit.setVisible(has_freq)
+        for i, comp in enumerate(self.components):
+            if comp is not None:
+                if (
+                    hasattr(comp, 'ui_elements')
+                    and 'lifetime_label' in comp.ui_elements
+                ):
+                    comp.ui_elements['lifetime_label'].setVisible(has_freq)
+
+                    if comp.lifetime_edit is not None:
+                        comp.lifetime_edit.setVisible(has_freq)
+
+                        from qtpy.QtWidgets import QSizePolicy
+
+                        if has_freq:
+                            comp.lifetime_edit.setSizePolicy(
+                                QSizePolicy.Expanding, QSizePolicy.Fixed
+                            )
+                            comp.ui_elements['lifetime_label'].setSizePolicy(
+                                QSizePolicy.Fixed, QSizePolicy.Fixed
+                            )
+                        else:
+                            comp.lifetime_edit.setSizePolicy(
+                                QSizePolicy.Ignored, QSizePolicy.Ignored
+                            )
+                            comp.ui_elements['lifetime_label'].setSizePolicy(
+                                QSizePolicy.Ignored, QSizePolicy.Ignored
+                            )
 
         if has_freq:
             for i, comp in enumerate(self.components):
@@ -1040,22 +1547,18 @@ class ComponentsWidget(QWidget):
         if idx >= len(self.components) or self.components[idx] is None:
             return
 
-        # Only highlight if analysis was attempted
         if not self._analysis_attempted:
             return
 
         comp = self.components[idx]
 
-        # Check if both G and S have values
         has_g_value = comp.g_edit.text().strip() != ""
         has_s_value = comp.s_edit.text().strip() != ""
 
         if has_g_value and has_s_value:
-            # Reset to default styling
             comp.g_edit.setStyleSheet("")
             comp.s_edit.setStyleSheet("")
         else:
-            # Check if we need to highlight (component locations required)
             if self._should_highlight_missing_components():
                 comp.g_edit.setStyleSheet(
                     "background-color: #330000; border: 2px solid #cc0000;"
@@ -1091,7 +1594,7 @@ class ComponentsWidget(QWidget):
             if comp is not None:
                 self._update_component_input_styling(comp.idx)
 
-    def _compute_phasor_from_lifetime(self, lifetime_text):
+    def _compute_phasor_from_lifetime(self, lifetime_text, harmonic: int = 1):
         """Compute (G,S) from lifetime string; return tuple or (None,None)."""
         try:
             lifetime = float(lifetime_text)
@@ -1101,7 +1604,6 @@ class ComponentsWidget(QWidget):
         if freq is None:
             return None, None
 
-        harmonic = getattr(self.parent_widget, "harmonic", 1)
         re, im = phasor_from_lifetime(freq * harmonic, lifetime)
         if np.ndim(re) > 0:
             re = float(np.array(re).ravel()[0])
@@ -1110,19 +1612,43 @@ class ComponentsWidget(QWidget):
         return re, im
 
     def _update_component_from_lifetime(self, idx: int):
-        """Update component G/S coordinates based on lifetime input."""
+        """Update component G/S coordinates based on lifetime input for all available harmonics."""
         comp = self.components[idx]
         txt = comp.lifetime_edit.text().strip()
+
         if not txt:
             return
-        G, S = self._compute_phasor_from_lifetime(txt)
-        if G is None:
+
+        try:
+            lifetime = float(txt)
+        except ValueError:
+            return
+
+        freq = self.parent_widget._get_frequency_from_layer()
+        if freq is None:
+            return
+
+        available_harmonics = self._get_available_harmonics()
+        if not available_harmonics:
             return
 
         self._updating_from_lifetime = True
-        comp.g_edit.setText(f"{G:.6f}")
-        comp.s_edit.setText(f"{S:.6f}")
-        self._on_component_coords_changed(idx)
+
+        for harmonic in available_harmonics:
+            re, im = phasor_from_lifetime(freq * harmonic, lifetime)
+            if np.ndim(re) > 0:
+                re = float(np.array(re).ravel()[0])
+            if np.ndim(im) > 0:
+                im = float(np.array(im).ravel()[0])
+
+            self._update_component_gs_coords(idx, harmonic, re, im)
+            self._update_component_lifetime(idx, harmonic, lifetime)
+
+            if harmonic == getattr(self.parent_widget, 'harmonic', 1):
+                comp.g_edit.setText(f"{re:.3f}")
+                comp.s_edit.setText(f"{im:.3f}")
+                self._on_component_coords_changed(idx)
+
         self._updating_from_lifetime = False
 
     def _on_component_coords_changed(self, idx: int):
@@ -1134,8 +1660,12 @@ class ComponentsWidget(QWidget):
         except ValueError:
             return
 
+        current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
+        self._update_component_gs_coords(idx, current_harmonic, x, y)
+
         if comp.lifetime_edit is not None and not self._updating_from_lifetime:
             comp.lifetime_edit.clear()
+            self._update_component_lifetime(idx, current_harmonic, None)
 
         if comp.dot is not None:
             comp.dot.set_data([x], [y])
@@ -1146,25 +1676,115 @@ class ComponentsWidget(QWidget):
         else:
             self._create_component_at_coordinates(idx, x, y)
 
-    def _get_default_colormap_max_colors(self, num_components):
-        """Get the maximum value colors from the colormaps for components."""
-        colors = []
-        for i in range(num_components):
-            colormap_name = self.component_colormap_names[
-                i % len(self.component_colormap_names)
+    def _on_component_name_changed(self, idx: int):
+        """Handle changes to component name."""
+        comp = self.components[idx]
+        name = comp.name_edit.text().strip()
+
+        old_name = None
+        if not self._updating_settings and self.current_image_layer_name:
+            layer = self.viewer.layers[self.current_image_layer_name]
+            if (
+                'settings' in layer.metadata
+                and 'component_analysis' in layer.metadata['settings']
+            ):
+
+                idx_str = str(idx)
+                if idx_str in layer.metadata['settings'][
+                    'component_analysis'
+                ].get('components', {}):
+                    old_name = layer.metadata['settings'][
+                        'component_analysis'
+                    ]['components'][idx_str].get('name')
+
+            if old_name != name:
+                self._update_fraction_layer_names(idx, old_name, name)
+
+            self._update_component_name(idx, name)
+
+        if comp.dot is None:
+            return
+
+        prev_pos = None
+        if comp.text is not None:
+            prev_pos = comp.text.get_position()
+            comp.text.remove()
+            comp.text = None
+
+        if name:
+            dx, dy = comp.dot.get_data()
+            if prev_pos is None:
+                ox, oy = comp.text_offset
+                base_x, base_y = dx[0] + ox, dy[0] + oy
+            else:
+                base_x, base_y = prev_pos
+                comp.text_offset = (base_x - dx[0], base_y - dy[0])
+            ax = self.parent_widget.canvas_widget.figure.gca()
+            comp.text = ax.text(
+                base_x,
+                base_y,
+                name,
+                fontsize=self.label_fontsize,
+                fontweight='bold' if self.label_bold else 'normal',
+                fontstyle='italic' if self.label_italic else 'normal',
+                color=self.label_color,
+                picker=True,
+            )
+
+        self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def _update_fraction_layer_names(
+        self, idx: int, old_name: str, new_name: str
+    ):
+        """Update the names of the fraction layers when component names change."""
+        if not self.current_image_layer_name:
+            return
+
+        old_display_name = old_name if old_name else f"Component {idx + 1}"
+        new_display_name = new_name if new_name else f"Component {idx + 1}"
+
+        old_layer_name = (
+            f"{old_display_name} fractions: {self.current_image_layer_name}"
+        )
+        new_layer_name = (
+            f"{new_display_name} fractions: {self.current_image_layer_name}"
+        )
+
+        if (
+            old_layer_name in self.viewer.layers
+            and old_layer_name != new_layer_name
+        ):
+            layer_obj = self.viewer.layers[old_layer_name]
+            layer_obj.name = new_layer_name
+
+            if idx == 0:
+                self.comp1_fractions_layer = layer_obj
+            elif idx == 1:
+                self.comp2_fractions_layer = layer_obj
+
+        elif new_layer_name not in self.viewer.layers:
+            possible_old_names = [
+                f"Component {idx + 1} fractions: {self.current_image_layer_name}",
+                (
+                    f"{old_display_name} fractions: {self.current_image_layer_name}"
+                    if old_name
+                    else None
+                ),
             ]
 
-            try:
-                cmap = plt.get_cmap(colormap_name)
-                max_color_rgba = cmap(1.0)
-                max_color_hex = mcolors.to_hex(max_color_rgba)
-                colors.append(max_color_hex)
-            except Exception:
-                colors.append(
-                    self.component_colors[i % len(self.component_colors)]
-                )
+            for possible_old_name in possible_old_names:
+                if (
+                    possible_old_name
+                    and possible_old_name in self.viewer.layers
+                ):
+                    layer_obj = self.viewer.layers[possible_old_name]
+                    layer_obj.name = new_layer_name
 
-        return colors
+                    if idx == 0:
+                        self.comp1_fractions_layer = layer_obj
+                    elif idx == 1:
+                        self.comp2_fractions_layer = layer_obj
+                    break
 
     def _create_component_at_coordinates(self, idx: int, x: float, y: float):
         """Create a component dot and label at specified coordinates."""
@@ -1220,7 +1840,7 @@ class ComponentsWidget(QWidget):
         self.draw_line_between_components()
 
     def _get_component_coords_for_harmonic(self, harmonic):
-        """Get component coordinates for a specific harmonic."""
+        """Get component coordinates for a specific harmonic from metadata."""
         component_g = []
         component_s = []
         component_names = []
@@ -1237,20 +1857,41 @@ class ComponentsWidget(QWidget):
                     if not name:
                         name = comp.label
                     component_names.append(name)
-        elif harmonic in self.component_locations:
-            stored_components = self.component_locations[harmonic]
-            for comp_data in stored_components:
-                if comp_data is not None:
-                    component_g.append(comp_data['g'])
-                    component_s.append(comp_data['s'])
-                    stored_name = comp_data.get('name', '')
+        else:
+            if not self.current_image_layer_name:
+                return component_g, component_s, component_names
 
-                    if stored_name:
-                        component_names.append(stored_name)
-                    else:
-                        component_names.append(
-                            f"Component {comp_data['idx']+1}"
-                        )
+            layer = self.viewer.layers[self.current_image_layer_name]
+            if (
+                'settings' not in layer.metadata
+                or 'component_analysis' not in layer.metadata['settings']
+            ):
+                return component_g, component_s, component_names
+
+            settings = layer.metadata['settings']['component_analysis']
+            components_data = settings.get('components', {})
+            harmonic_key = str(harmonic)
+
+            sorted_indices = sorted([int(k) for k in components_data.keys()])
+
+            for idx in sorted_indices:
+                idx_str = str(idx)
+                comp_data = components_data[idx_str]
+                gs_harmonics = comp_data.get('gs_harmonics', {})
+
+                if harmonic_key in gs_harmonics:
+                    harmonic_data = gs_harmonics[harmonic_key]
+                    g = harmonic_data.get('g')
+                    s = harmonic_data.get('s')
+
+                    if g is not None and s is not None:
+                        component_g.append(g)
+                        component_s.append(s)
+
+                        name = comp_data.get('name', '')
+                        if not name:
+                            name = f"Component {idx + 1}"
+                        component_names.append(name)
 
         return component_g, component_s, component_names
 
@@ -1263,41 +1904,6 @@ class ComponentsWidget(QWidget):
                     item = comp_layout.itemAt(j)
                     if item.widget():
                         item.widget().setVisible(True)
-
-    def _on_component_name_changed(self, idx: int):
-        """Update the label text for a component when its name is changed."""
-        comp = self.components[idx]
-        if comp.dot is None:
-            return
-        name = comp.name_edit.text().strip()
-        prev_pos = None
-        if comp.text is not None:
-            prev_pos = comp.text.get_position()
-            try:
-                comp.text.remove()
-            except (ValueError, AttributeError):
-                pass
-            comp.text = None
-        if name:
-            dx, dy = comp.dot.get_data()
-            if prev_pos is None:
-                ox, oy = comp.text_offset
-                base_x, base_y = dx[0] + ox, dy[0] + oy
-            else:
-                base_x, base_y = prev_pos
-                comp.text_offset = (base_x - dx[0], base_y - dy[0])
-            ax = self.parent_widget.canvas_widget.figure.gca()
-            comp.text = ax.text(
-                base_x,
-                base_y,
-                name,
-                fontsize=self.label_fontsize,
-                fontweight='bold' if self.label_bold else 'normal',
-                fontstyle='italic' if self.label_italic else 'normal',
-                color=self.label_color,
-                picker=True,
-            )
-        self.parent_widget.canvas_widget.canvas.draw_idle()
 
     def _select_component(self, idx: int):
         """Activate selection mode for a component to pick its location."""
@@ -1334,11 +1940,15 @@ class ComponentsWidget(QWidget):
 
         comp = self.components[idx]
         x, y = event.xdata, event.ydata
-        comp.g_edit.setText(f"{x:.6f}")
-        comp.s_edit.setText(f"{y:.6f}")
+        comp.g_edit.setText(f"{x:.3f}")
+        comp.s_edit.setText(f"{y:.3f}")
 
         if comp.lifetime_edit is not None:
             comp.lifetime_edit.clear()
+
+        current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
+        self._update_component_gs_coords(idx, current_harmonic, x, y)
+        self._update_component_lifetime(idx, current_harmonic, None)
 
         was_new_location = comp.dot is None
 
@@ -1392,6 +2002,26 @@ class ComponentsWidget(QWidget):
             if comp.dot is None:
                 self._select_component(comp.idx)
                 return
+
+    def _get_default_colormap_max_colors(self, num_components):
+        """Get the maximum value colors from the colormaps for components."""
+        colors = []
+        for i in range(num_components):
+            colormap_name = self.component_colormap_names[
+                i % len(self.component_colormap_names)
+            ]
+
+            try:
+                cmap = plt.get_cmap(colormap_name)
+                max_color_rgba = cmap(1.0)
+                max_color_hex = mcolors.to_hex(max_color_rgba)
+                colors.append(max_color_hex)
+            except Exception:
+                colors.append(
+                    self.component_colors[i % len(self.component_colors)]
+                )
+
+        return colors
 
     def _get_component_colors(self):
         """Get colors for components based on the colormap ends or default colors."""
@@ -1763,27 +2393,147 @@ class ComponentsWidget(QWidget):
         self.parent_widget.canvas_widget.canvas.draw_idle()
 
     def _on_colormap_changed(self, event):
-        """Handle changes to the colormap of the fractions layer."""
+        """Handle changes to colormap of any fraction layer (linear projection or component fit)."""
+        layer = event.source
+
         if (
             self.comp1_fractions_layer is not None
-            and self.component_line is not None
+            and layer == self.comp1_fractions_layer
         ):
-            layer = event.source
             self.fractions_colormap = layer.colormap.colors
             self.colormap_contrast_limits = layer.contrast_limits
 
-            self.draw_line_between_components()
+        comp_idx = self._find_component_index_for_layer(layer)
+        if comp_idx is None:
+            return
+
+        colormap_name = getattr(layer.colormap, 'name', 'custom')
+        is_standard_colormap = self._is_standard_colormap(colormap_name)
+
+        if is_standard_colormap:
+            colormap_colors = None
+        else:
+            colormap_colors = layer.colormap.colors
+            if colormap_colors is not None:
+                if hasattr(colormap_colors, 'tolist'):
+                    colormap_colors = colormap_colors.tolist()
+                elif isinstance(colormap_colors, np.ndarray):
+                    colormap_colors = colormap_colors.tolist()
+
+        current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
+        self._update_component_colormap(
+            comp_idx,
+            current_harmonic,
+            colormap_name if is_standard_colormap else None,
+            colormap_colors,
+            tuple(layer.contrast_limits),
+        )
+
+        self._update_component_colors()
+        self.draw_line_between_components()
 
     def _on_contrast_limits_changed(self, event):
-        """Handle changes to the contrast limits of the fractions layer."""
+        """Handle changes to contrast limits of any fraction layer."""
+        layer = event.source
+
         if (
             self.comp1_fractions_layer is not None
-            and self.component_line is not None
+            and layer == self.comp1_fractions_layer
         ):
-            layer = event.source
             self.colormap_contrast_limits = layer.contrast_limits
 
-            self.draw_line_between_components()
+        comp_idx = self._find_component_index_for_layer(layer)
+        if comp_idx is None:
+            return
+
+        contrast_limits = layer.contrast_limits
+        if hasattr(contrast_limits, 'tolist'):
+            contrast_limits = contrast_limits.tolist()
+        elif isinstance(contrast_limits, np.ndarray):
+            contrast_limits = contrast_limits.tolist()
+        else:
+            contrast_limits = list(contrast_limits)
+
+        current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
+
+        if not self._updating_settings and self.current_image_layer_name:
+            layer_obj = self.viewer.layers[self.current_image_layer_name]
+            settings = layer_obj.metadata.get('settings', {}).get(
+                'component_analysis', {}
+            )
+            idx_str = str(comp_idx)
+            harmonic_key = str(current_harmonic)
+
+            if idx_str in settings.get(
+                'components', {}
+            ) and harmonic_key in settings['components'][idx_str].get(
+                'gs_harmonics', {}
+            ):
+
+                harmonic_data = settings['components'][idx_str][
+                    'gs_harmonics'
+                ][harmonic_key]
+                existing_colormap_name = harmonic_data.get('colormap_name')
+                existing_colormap_colors = harmonic_data.get('colormap_colors')
+
+                self._update_component_colormap(
+                    comp_idx,
+                    current_harmonic,
+                    existing_colormap_name,
+                    existing_colormap_colors,
+                    tuple(contrast_limits),
+                )
+
+        self.draw_line_between_components()
+
+    def _find_component_index_for_layer(self, layer):
+        """Find which component index a layer belongs to based on its name."""
+        if not self.current_image_layer_name:
+            return None
+
+        layer_name = layer.name
+
+        for i, comp in enumerate(self.components):
+            if comp is not None:
+                name = comp.name_edit.text().strip() or f"Component {i + 1}"
+
+                expected_names = [
+                    f"{name} fractions: {self.current_image_layer_name}",  # Linear projection
+                    f"{name} fraction: {self.current_image_layer_name}",  # Component fit
+                ]
+
+                if layer_name in expected_names:
+                    return i
+
+        return None
+
+    def _is_standard_colormap(self, colormap_name):
+        """Check if a colormap name refers to a standard matplotlib/vispy/napari colormap."""
+        try:
+            import matplotlib.pyplot as plt
+
+            plt.get_cmap(colormap_name)
+            return True
+        except Exception:
+            pass
+
+        try:
+            import vispy.color
+
+            vispy.color.get_colormap(colormap_name)
+            return True
+        except Exception:
+            pass
+
+        try:
+            from napari.utils.colormaps import AVAILABLE_COLORMAPS
+
+            if colormap_name in AVAILABLE_COLORMAPS:
+                return True
+        except Exception:
+            pass
+
+        return False
 
     def _make_components_draggable(self):
         """Enable dragging of components and labels."""
@@ -1878,11 +2628,19 @@ class ComponentsWidget(QWidget):
             return
         x, y = event.xdata, event.ydata
         comp.dot.set_data([x], [y])
-        comp.g_edit.setText(f"{x:.6f}")
-        comp.s_edit.setText(f"{y:.6f}")
+        comp.g_edit.setText(f"{x:.3f}")
+        comp.s_edit.setText(f"{y:.3f}")
 
         if comp.lifetime_edit is not None:
             comp.lifetime_edit.clear()
+
+        current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
+        self._update_component_gs_coords(
+            self.dragging_component_idx, current_harmonic, x, y
+        )
+        self._update_component_lifetime(
+            self.dragging_component_idx, current_harmonic, None
+        )
 
         if comp.text is not None:
             ox, oy = comp.text_offset
@@ -1905,22 +2663,30 @@ class ComponentsWidget(QWidget):
             canvas.draw_idle()
 
     def _get_harmonics_with_components(self):
-        """Get list of harmonics that have component data."""
+        """Get list of harmonics that have component data from metadata."""
         harmonics = set()
-
-        for harmonic, stored_components in self.component_locations.items():
-            if stored_components and any(
-                comp is not None for comp in stored_components
-            ):
-                harmonics.add(harmonic)
 
         current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
         active_components = [
             c for c in self.components if c is not None and c.dot is not None
         ]
-
         if len(active_components) > 0:
             harmonics.add(current_harmonic)
+
+        if self.current_image_layer_name:
+            layer = self.viewer.layers[self.current_image_layer_name]
+            if (
+                'settings' in layer.metadata
+                and 'component_analysis' in layer.metadata['settings']
+            ):
+
+                settings = layer.metadata['settings']['component_analysis']
+                components_data = settings.get('components', {})
+
+                for comp_data in components_data.values():
+                    gs_harmonics = comp_data.get('gs_harmonics', {})
+                    for harmonic_str in gs_harmonics.keys():
+                        harmonics.add(int(harmonic_str))
 
         return sorted(list(harmonics))
 
@@ -1941,6 +2707,66 @@ class ComponentsWidget(QWidget):
                 return harmonic
         return None
 
+    def _get_inverted_colormap(self, colormap_or_name):
+        """Get the inverted version of a colormap, creating it if necessary.
+
+        Args:
+            colormap_or_name: Either a colormap name (str) or a Colormap object
+        """
+        if isinstance(colormap_or_name, str):
+            colormap_name = colormap_or_name
+            colormap_colors = None
+        elif isinstance(colormap_or_name, Colormap):
+            colormap_name = getattr(colormap_or_name, 'name', 'custom')
+            colormap_colors = getattr(colormap_or_name, 'colors', None)
+        else:
+            colormap_name = getattr(colormap_or_name, 'name', 'custom')
+            colormap_colors = getattr(colormap_or_name, 'colors', None)
+
+        if colormap_name.endswith('_r'):
+            inverted_name = colormap_name[:-2]
+        else:
+            inverted_name = colormap_name + '_r'
+
+        if self._is_standard_colormap(colormap_name):
+            if self._is_standard_colormap(inverted_name):
+                try:
+                    import matplotlib.pyplot as plt
+
+                    mpl_cmap = plt.get_cmap(inverted_name)
+                    colors = mpl_cmap(np.linspace(0, 1, 256))
+                    return Colormap(colors=colors, name=inverted_name)
+                except Exception:
+                    if inverted_name in AVAILABLE_COLORMAPS:
+                        return inverted_name
+
+            try:
+                import matplotlib.pyplot as plt
+
+                base_name = (
+                    colormap_name
+                    if not colormap_name.endswith('_r')
+                    else colormap_name[:-2]
+                )
+                mpl_cmap = plt.get_cmap(base_name)
+                colors = mpl_cmap(np.linspace(0, 1, 256))
+                inverted_colors = colors[::-1]
+                return Colormap(
+                    colors=inverted_colors, name=f"inverted_{base_name}"
+                )
+            except Exception:
+                pass
+
+        if colormap_colors is not None:
+            if isinstance(colormap_colors, list):
+                colormap_colors = np.array(colormap_colors)
+            inverted_colors = colormap_colors[::-1]
+            return Colormap(
+                colors=inverted_colors, name=f"inverted_{colormap_name}"
+            )
+
+        return 'PiYG_r' if not colormap_name.endswith('_r') else 'PiYG'
+
     def _sync_colormaps(self, event):
         """Synchronize colormaps between comp1 and comp2 layers with inversion."""
         if (
@@ -1953,62 +2779,30 @@ class ComponentsWidget(QWidget):
             if event.source == self.comp1_fractions_layer:
                 current_colormap = self.comp1_fractions_layer.colormap
 
-                if (
-                    hasattr(current_colormap, 'colors')
-                    and current_colormap.colors is not None
-                ):
-                    inverted_colors = current_colormap.colors[::-1]
-
-                    self.comp2_fractions_layer.events.colormap.disconnect(
-                        self._sync_colormaps
-                    )
-
-                    inverted_cmap = Colormap(
-                        colors=inverted_colors, name="inverted_custom"
-                    )
-                    self.comp2_fractions_layer.colormap = inverted_cmap
-
-                    self.comp2_fractions_layer.events.colormap.connect(
-                        self._sync_colormaps
-                    )
-                else:
-                    self.comp2_fractions_layer.events.colormap.disconnect(
-                        self._sync_colormaps
-                    )
-                    self.comp2_fractions_layer.colormap = 'PiYG_r'
-                    self.comp2_fractions_layer.events.colormap.connect(
-                        self._sync_colormaps
-                    )
+                self.comp2_fractions_layer.events.colormap.disconnect(
+                    self._sync_colormaps
+                )
+                inverted_colormap = self._get_inverted_colormap(
+                    current_colormap
+                )
+                self.comp2_fractions_layer.colormap = inverted_colormap
+                self.comp2_fractions_layer.events.colormap.connect(
+                    self._sync_colormaps
+                )
 
             elif event.source == self.comp2_fractions_layer:
                 current_colormap = self.comp2_fractions_layer.colormap
 
-                if (
-                    hasattr(current_colormap, 'colors')
-                    and current_colormap.colors is not None
-                ):
-                    inverted_colors = current_colormap.colors[::-1]
-
-                    self.comp1_fractions_layer.events.colormap.disconnect(
-                        self._sync_colormaps
-                    )
-
-                    inverted_cmap = Colormap(
-                        colors=inverted_colors, name="inverted_custom"
-                    )
-                    self.comp1_fractions_layer.colormap = inverted_cmap
-
-                    self.comp1_fractions_layer.events.colormap.connect(
-                        self._sync_colormaps
-                    )
-                else:
-                    self.comp1_fractions_layer.events.colormap.disconnect(
-                        self._sync_colormaps
-                    )
-                    self.comp1_fractions_layer.colormap = 'PiYG'
-                    self.comp1_fractions_layer.events.colormap.connect(
-                        self._sync_colormaps
-                    )
+                self.comp1_fractions_layer.events.colormap.disconnect(
+                    self._sync_colormaps
+                )
+                inverted_colormap = self._get_inverted_colormap(
+                    current_colormap
+                )
+                self.comp1_fractions_layer.colormap = inverted_colormap
+                self.comp1_fractions_layer.events.colormap.connect(
+                    self._sync_colormaps
+                )
 
             if hasattr(self.comp1_fractions_layer.colormap, 'colors'):
                 self.fractions_colormap = (
@@ -2018,83 +2812,370 @@ class ComponentsWidget(QWidget):
             self.draw_line_between_components()
 
         except Exception as e:
+            print(f"Error in _sync_colormaps: {e}")
+
+    def _find_and_reconnect_layer(
+        self, expected_name, component_name, layer_name, idx
+    ):
+        """Find and reconnect to an existing fraction layer by various naming conventions."""
+        if expected_name in self.viewer.layers:
+            if idx == 0:
+                self.comp1_fractions_layer = self.viewer.layers[expected_name]
+                self.comp1_fractions_layer.events.colormap.connect(
+                    self._on_colormap_changed
+                )
+                self.comp1_fractions_layer.events.colormap.connect(
+                    self._sync_colormaps
+                )
+                self.comp1_fractions_layer.events.contrast_limits.connect(
+                    self._on_contrast_limits_changed
+                )
+            elif idx == 1:
+                self.comp2_fractions_layer = self.viewer.layers[expected_name]
+                self.comp2_fractions_layer.events.colormap.connect(
+                    self._sync_colormaps
+                )
+        else:
+            possible_names = [
+                f"Component {idx + 1} fractions: {layer_name}",
+                f"{component_name} fractions: {layer_name}",
+            ]
+
+            for possible_name in possible_names:
+                if possible_name in self.viewer.layers:
+                    layer_obj = self.viewer.layers[possible_name]
+                    layer_obj.name = expected_name
+
+                    if idx == 0:
+                        self.comp1_fractions_layer = layer_obj
+                        self.comp1_fractions_layer.events.colormap.connect(
+                            self._on_colormap_changed
+                        )
+                        self.comp1_fractions_layer.events.colormap.connect(
+                            self._sync_colormaps
+                        )
+                        self.comp1_fractions_layer.events.contrast_limits.connect(
+                            self._on_contrast_limits_changed
+                        )
+                    elif idx == 1:
+                        self.comp2_fractions_layer = layer_obj
+                        self.comp2_fractions_layer.events.colormap.connect(
+                            self._sync_colormaps
+                        )
+                    break
+
+        if (
+            self.comp1_fractions_layer is not None
+            and self.comp2_fractions_layer is not None
+            and idx == 1
+        ):
             try:
-                if self.comp2_fractions_layer is not None:
-                    self.comp2_fractions_layer.events.colormap.disconnect(
-                        self._sync_colormaps
-                    )
-                if self.comp1_fractions_layer is not None:
-                    self.comp1_fractions_layer.events.colormap.disconnect(
-                        self._sync_colormaps
-                    )
-
-                if hasattr(event, 'source'):
-                    if event.source == self.comp1_fractions_layer:
-                        if self.comp2_fractions_layer is not None:
-                            self.comp2_fractions_layer.colormap = 'PiYG_r'
-                    else:
-                        if self.comp1_fractions_layer is not None:
-                            self.comp1_fractions_layer.colormap = 'PiYG'
-
-                if self.comp2_fractions_layer is not None:
-                    self.comp2_fractions_layer.events.colormap.connect(
-                        self._sync_colormaps
-                    )
-                if self.comp1_fractions_layer is not None:
-                    self.comp1_fractions_layer.events.colormap.connect(
-                        self._sync_colormaps
-                    )
-
+                link_layers(
+                    [self.comp1_fractions_layer, self.comp2_fractions_layer],
+                    ('contrast_limits', 'gamma'),
+                )
             except Exception:
                 pass
 
-    def _create_fraction_layers(self, fractions, component_names):
-        """Create fraction layers for each component."""
-        for layer in self.fraction_layers:
-            try:
-                self.viewer.layers.remove(layer)
-            except ValueError:
-                pass
-        self.fraction_layers.clear()
+    def _reconnect_existing_fraction_layers(self, layer_name):
+        """Reconnect to existing fraction layers if they exist."""
+        layer = self.viewer.layers[layer_name]
 
-        base_name = (
+        comp1_name = "Component 1"
+        comp2_name = "Component 2"
+
+        if (
+            'settings' in layer.metadata
+            and 'component_analysis' in layer.metadata['settings']
+        ):
+
+            settings = layer.metadata['settings']['component_analysis']
+
+            if 'components' in settings and len(settings['components']) > 0:
+                if '0' in settings['components']:
+                    comp1_name = (
+                        settings['components']['0'].get('name')
+                        or "Component 1"
+                    )
+                if '1' in settings['components']:
+                    comp2_name = (
+                        settings['components']['1'].get('name')
+                        or "Component 2"
+                    )
+
+        comp1_fractions_layer_name = f"{comp1_name} fractions: {layer_name}"
+        comp2_fractions_layer_name = f"{comp2_name} fractions: {layer_name}"
+
+        self._find_and_reconnect_layer(
+            comp1_fractions_layer_name, comp1_name, layer_name, 0
+        )
+        self._find_and_reconnect_layer(
+            comp2_fractions_layer_name, comp2_name, layer_name, 1
+        )
+
+        if self.comp1_fractions_layer is not None:
+            self.fractions_colormap = (
+                self.comp1_fractions_layer.colormap.colors
+            )
+            self.colormap_contrast_limits = (
+                self.comp1_fractions_layer.contrast_limits
+            )
+
+    def _on_image_layer_changed(self):
+        """Callback whenever the image layer with phasor features changes."""
+        self.current_image_layer_name = (
             self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
         )
 
-        for i, (fraction, name) in enumerate(zip(fractions, component_names)):
-            fraction_reshaped = fraction.reshape(
-                self.parent_widget._labels_layer_with_phasor_features.data.shape
-            )
+        for comp in self.components:
+            if comp is not None:
+                if comp.dot is not None:
+                    comp.dot.remove()
+                    comp.dot = None
+                if comp.text is not None:
+                    comp.text.remove()
+                    comp.text = None
 
-            layer_name = f"{name} fraction: {base_name}"
+        if self.component_line is not None:
+            try:
+                self.component_line.remove()
+            except (ValueError, AttributeError):
+                pass
+            self.component_line = None
 
-            colormap = self.component_colormap_names[
-                i % len(self.component_colormap_names)
+        if self.component_polygon is not None:
+            try:
+                self.component_polygon.remove()
+            except (ValueError, AttributeError):
+                pass
+            self.component_polygon = None
+
+        if self.comp1_fractions_layer is not None:
+            try:
+                self.comp1_fractions_layer.events.colormap.disconnect(
+                    self._on_colormap_changed
+                )
+                self.comp1_fractions_layer.events.colormap.disconnect(
+                    self._sync_colormaps
+                )
+                self.comp1_fractions_layer.events.contrast_limits.disconnect(
+                    self._on_contrast_limits_changed
+                )
+            except Exception:
+                pass
+
+        if self.comp2_fractions_layer is not None:
+            try:
+                self.comp2_fractions_layer.events.colormap.disconnect(
+                    self._sync_colormaps
+                )
+            except Exception:
+                pass
+
+        self.comp1_fractions_layer = None
+        self.comp2_fractions_layer = None
+        self.fractions_colormap = None
+        self.colormap_contrast_limits = None
+
+        self._update_lifetime_inputs_visibility()
+
+        layer_name = (
+            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        )
+        if layer_name:
+            self._reconnect_existing_fraction_layers(layer_name)
+
+            self._restore_and_recreate_components_from_metadata()
+
+        else:
+            self._updating_settings = True
+            try:
+                for comp in self.components:
+                    if comp is not None:
+                        comp.g_edit.clear()
+                        comp.s_edit.clear()
+                        comp.name_edit.clear()
+                        if comp.lifetime_edit is not None:
+                            comp.lifetime_edit.clear()
+            finally:
+                self._updating_settings = False
+
+    def _ensure_component_metadata(self, idx: int, harmonic: int = None):
+        """Ensure component metadata structure exists and return component data dict."""
+        if self._updating_settings or not self.current_image_layer_name:
+            return None
+
+        layer = self.viewer.layers[self.current_image_layer_name]
+        if 'settings' not in layer.metadata:
+            layer.metadata['settings'] = {}
+        if 'component_analysis' not in layer.metadata['settings']:
+            layer.metadata['settings'][
+                'component_analysis'
+            ] = self._get_default_components_settings()
+
+        settings = layer.metadata['settings']['component_analysis']
+        idx_str = str(idx)
+
+        if idx_str not in settings['components']:
+            comp = self.components[idx]
+            settings['components'][idx_str] = {
+                'idx': idx,
+                'name': comp.name_edit.text().strip() or None,
+                'gs_harmonics': {},
+            }
+
+        if harmonic is not None:
+            harmonic_key = str(harmonic)
+            if (
+                harmonic_key
+                not in settings['components'][idx_str]['gs_harmonics']
+            ):
+                settings['components'][idx_str]['gs_harmonics'][
+                    harmonic_key
+                ] = {}
+
+        return settings['components'][idx_str]
+
+    def _update_component_gs_coords(
+        self, idx: int, harmonic: int, g: float, s: float
+    ):
+        """Update component G/S coordinates for a specific harmonic."""
+        comp_data = self._ensure_component_metadata(idx, harmonic)
+        if comp_data is None:
+            return
+
+        harmonic_key = str(harmonic)
+        comp_data['gs_harmonics'][harmonic_key]['g'] = g
+        comp_data['gs_harmonics'][harmonic_key]['s'] = s
+
+    def _update_component_lifetime(
+        self, idx: int, harmonic: int, lifetime: float
+    ):
+        """Update component lifetime for a specific harmonic."""
+        comp_data = self._ensure_component_metadata(idx, harmonic)
+        if comp_data is None:
+            return
+
+        harmonic_key = str(harmonic)
+        comp_data['gs_harmonics'][harmonic_key]['lifetime'] = lifetime
+
+    def _update_component_name(self, idx: int, name: str):
+        """Update component name."""
+        comp_data = self._ensure_component_metadata(idx)
+        if comp_data is None:
+            return
+
+        comp_data['name'] = name if name else None
+
+    def _update_component_colormap(
+        self,
+        idx: int,
+        harmonic: int,
+        colormap_name: str,
+        colormap_colors: list,
+        contrast_limits: tuple,
+    ):
+        """Update component colormap settings for a specific harmonic."""
+        comp_data = self._ensure_component_metadata(idx, harmonic)
+        if comp_data is None:
+            return
+
+        harmonic_key = str(harmonic)
+        comp_data['gs_harmonics'][harmonic_key].update(
+            {
+                'colormap_name': colormap_name,
+                'colormap_colors': colormap_colors,
+                'contrast_limits': (
+                    list(contrast_limits) if contrast_limits else None
+                ),
+            }
+        )
+
+    def _run_analysis(self):
+        """Run the selected analysis and store component locations in metadata."""
+        self._analysis_attempted = True
+        self._update_all_component_styling()
+
+        if not self._updating_settings and self.current_image_layer_name:
+            layer = self.viewer.layers[self.current_image_layer_name]
+            if 'settings' not in layer.metadata:
+                layer.metadata['settings'] = {}
+            if 'component_analysis' not in layer.metadata['settings']:
+                layer.metadata['settings'][
+                    'component_analysis'
+                ] = self._get_default_components_settings()
+
+            settings = layer.metadata['settings']['component_analysis']
+
+            if 'components' not in settings:
+                settings['components'] = {}
+
+            current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
+            settings['last_analysis_harmonic'] = current_harmonic
+
+            active_components = [
+                c
+                for c in self.components
+                if c is not None and c.dot is not None
             ]
 
-            layer = self.viewer.add_image(
-                fraction_reshaped,
-                name=layer_name,
-                scale=self.parent_widget._labels_layer_with_phasor_features.scale,
-                colormap=colormap,
-                contrast_limits=(0, 1),
-            )
+            for comp in active_components:
+                idx = comp.idx
+                idx_str = str(idx)
+                name = comp.name_edit.text().strip()
 
-            self.fraction_layers.append(layer)
-            layer.events.colormap.connect(self._on_fraction_colormap_changed)
+                if idx_str not in settings['components']:
+                    settings['components'][idx_str] = {
+                        'idx': idx,
+                        'name': name if name else None,
+                        'gs_harmonics': {},
+                    }
+                else:
+                    if name:
+                        settings['components'][idx_str]['name'] = name
 
-        self._update_component_colors()
+                comp_data = settings['components'][idx_str]
 
-    def _on_fraction_colormap_changed(self, event):
-        """Handle changes to the colormap of any fraction layer."""
-        active_components = [
-            c for c in self.components if c is not None and c.dot is not None
-        ]
+                if 'gs_harmonics' not in comp_data:
+                    comp_data['gs_harmonics'] = {}
 
-        if len(active_components) == 2 and self.show_colormap_line:
-            self._update_component_colors()
-        elif len(active_components) > 2:
-            self._update_component_colors()
+                try:
+                    x_data, y_data = comp.dot.get_data()
+                    g_val = x_data[0]
+                    s_val = y_data[0]
+                except (ValueError, IndexError):
+                    continue
+
+                harmonic_key = str(current_harmonic)
+                if harmonic_key not in comp_data['gs_harmonics']:
+                    comp_data['gs_harmonics'][harmonic_key] = {}
+
+                comp_data['gs_harmonics'][harmonic_key]['g'] = g_val
+                comp_data['gs_harmonics'][harmonic_key]['s'] = s_val
+
+                if comp.lifetime_edit is not None:
+                    lifetime_text = comp.lifetime_edit.text().strip()
+                    if lifetime_text:
+                        try:
+                            lifetime_val = float(lifetime_text)
+                            comp_data['gs_harmonics'][harmonic_key][
+                                'lifetime'
+                            ] = lifetime_val
+                        except ValueError:
+                            comp_data['gs_harmonics'][harmonic_key][
+                                'lifetime'
+                            ] = None
+                    else:
+                        comp_data['gs_harmonics'][harmonic_key][
+                            'lifetime'
+                        ] = None
+
+            settings['analysis_type'] = self.analysis_type
+
+        if self.analysis_type == "Linear Projection":
+            self._run_linear_projection()
+        else:
+            self._run_component_fit()
 
     def _run_linear_projection(self):
         """Run linear projection for 2-component analysis."""
@@ -2102,6 +3183,7 @@ class ComponentsWidget(QWidget):
             return
         if not all(c.dot is not None for c in self.components[:2]):
             return
+
         c1, c2 = self.components[:2]
         component_real = (c1.dot.get_data()[0][0], c2.dot.get_data()[0][0])
         component_imag = (c1.dot.get_data()[1][0], c2.dot.get_data()[1][0])
@@ -2121,24 +3203,51 @@ class ComponentsWidget(QWidget):
         )
 
         comp1_name = c1.name_edit.text().strip() or "Component 1"
-        comp1_fractions_layer_name = f"{comp1_name} fractions: {self.parent_widget.image_layer_with_phasor_features_combobox.currentText()}"
+        comp1_fractions_layer_name = (
+            f"{comp1_name} fractions: {self.current_image_layer_name}"
+        )
         comp2_name = c2.name_edit.text().strip() or "Component 2"
-        comp2_fractions_layer_name = f"{comp2_name} fractions: {self.parent_widget.image_layer_with_phasor_features_combobox.currentText()}"
+        comp2_fractions_layer_name = (
+            f"{comp2_name} fractions: {self.current_image_layer_name}"
+        )
 
-        comp1_selected_fractions_layer = Image(
-            fractions,
-            name=comp1_fractions_layer_name,
-            scale=self.parent_widget._labels_layer_with_phasor_features.scale,
-            colormap='PiYG',
-            contrast_limits=(0, 1),
+        layer = self.viewer.layers[self.current_image_layer_name]
+        settings = layer.metadata.get('settings', {}).get(
+            'component_analysis', {}
         )
-        comp2_selected_fractions_layer = Image(
-            1.0 - fractions,
-            name=comp2_fractions_layer_name,
-            scale=self.parent_widget._labels_layer_with_phasor_features.scale,
-            colormap='PiYG_r',  # Use inverted colormap
-            contrast_limits=(0, 1),
-        )
+        current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
+        harmonic_key = str(current_harmonic)
+
+        comp1_colormap = 'PiYG'
+        contrast_limits = (0, 1)
+
+        if '0' in settings.get('components', {}):
+            comp_data = settings['components']['0']
+            if harmonic_key in comp_data.get('gs_harmonics', {}):
+                harmonic_data = comp_data['gs_harmonics'][harmonic_key]
+
+                if harmonic_data.get('colormap_colors') is not None:
+                    colors = harmonic_data['colormap_colors']
+                    if isinstance(colors, list):
+                        colors = np.array(colors)
+
+                    stored_colormap_name = harmonic_data.get(
+                        'colormap_name', 'custom'
+                    )
+                    comp1_colormap = Colormap(
+                        colors=colors,
+                        name=(
+                            stored_colormap_name
+                            if stored_colormap_name
+                            else 'custom'
+                        ),
+                    )
+
+                elif harmonic_data.get('colormap_name'):
+                    comp1_colormap = harmonic_data['colormap_name']
+
+                if harmonic_data.get('contrast_limits'):
+                    contrast_limits = tuple(harmonic_data['contrast_limits'])
 
         if comp1_fractions_layer_name in self.viewer.layers:
             self.viewer.layers.remove(
@@ -2149,16 +3258,79 @@ class ComponentsWidget(QWidget):
                 self.viewer.layers[comp2_fractions_layer_name]
             )
 
+        comp1_selected_fractions_layer = Image(
+            fractions,
+            name=comp1_fractions_layer_name,
+            scale=self.parent_widget._labels_layer_with_phasor_features.scale,
+            colormap=comp1_colormap,
+            contrast_limits=contrast_limits,
+        )
+
         self.comp1_fractions_layer = self.viewer.add_layer(
             comp1_selected_fractions_layer
         )
+
+        comp2_colormap = self._get_inverted_colormap(
+            self.comp1_fractions_layer.colormap
+        )
+
+        comp2_selected_fractions_layer = Image(
+            1.0 - fractions,
+            name=comp2_fractions_layer_name,
+            scale=self.parent_widget._labels_layer_with_phasor_features.scale,
+            colormap=comp2_colormap,
+            contrast_limits=contrast_limits,
+        )
+
         self.comp2_fractions_layer = self.viewer.add_layer(
             comp2_selected_fractions_layer
         )
+
         self.fractions_colormap = self.comp1_fractions_layer.colormap.colors
         self.colormap_contrast_limits = (
             self.comp1_fractions_layer.contrast_limits
         )
+
+        if not self._updating_settings and self.current_image_layer_name:
+            colormap_name = getattr(
+                self.comp1_fractions_layer.colormap, 'name', 'custom'
+            )
+            is_standard = self._is_standard_colormap(colormap_name)
+
+            if colormap_name.startswith('inverted_'):
+                is_standard = False
+
+            if '0' in settings['components']:
+                comp_data = settings['components']['0']
+                if harmonic_key not in comp_data['gs_harmonics']:
+                    comp_data['gs_harmonics'][harmonic_key] = {}
+
+                if is_standard:
+                    comp_data['gs_harmonics'][harmonic_key][
+                        'colormap_name'
+                    ] = colormap_name
+                    comp_data['gs_harmonics'][harmonic_key][
+                        'colormap_colors'
+                    ] = None
+                else:
+                    colormap_colors = (
+                        self.comp1_fractions_layer.colormap.colors
+                    )
+                    if colormap_colors is not None:
+                        if hasattr(colormap_colors, 'tolist'):
+                            colormap_colors = colormap_colors.tolist()
+                        elif isinstance(colormap_colors, np.ndarray):
+                            colormap_colors = colormap_colors.tolist()
+                    comp_data['gs_harmonics'][harmonic_key][
+                        'colormap_name'
+                    ] = colormap_name
+                    comp_data['gs_harmonics'][harmonic_key][
+                        'colormap_colors'
+                    ] = colormap_colors
+
+                comp_data['gs_harmonics'][harmonic_key]['contrast_limits'] = (
+                    list(self.comp1_fractions_layer.contrast_limits)
+                )
 
         self.comp1_fractions_layer.events.colormap.connect(
             self._on_colormap_changed
@@ -2169,13 +3341,16 @@ class ComponentsWidget(QWidget):
         self.comp2_fractions_layer.events.colormap.connect(
             self._sync_colormaps
         )
-        self.comp2_fractions_layer.events.contrast_limits.connect(
+        self.comp1_fractions_layer.events.contrast_limits.connect(
             self._on_contrast_limits_changed
         )
+
         link_layers(
             [self.comp1_fractions_layer, self.comp2_fractions_layer],
             ('contrast_limits', 'gamma'),
         )
+
+        self._update_component_colors()
         self.draw_line_between_components()
 
     def _run_component_fit(self):
@@ -2250,10 +3425,9 @@ class ComponentsWidget(QWidget):
             )
             harmonic_mask = phasor_data['harmonic'] == current_harmonic
 
-            layer_name = (
-                self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-            )
-            mean = self.viewer.layers[layer_name].metadata['original_mean']
+            mean = self.viewer.layers[self.current_image_layer_name].metadata[
+                'original_mean'
+            ]
 
             real = np.reshape(
                 phasor_data.loc[harmonic_mask, "G"].values,
@@ -2305,15 +3479,13 @@ class ComponentsWidget(QWidget):
                         for name in names
                     ]
 
-            # Get phasor data for all harmonics
             phasor_data = (
                 self.parent_widget._labels_layer_with_phasor_features.features
             )
 
-            layer_name = (
-                self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-            )
-            mean = self.viewer.layers[layer_name].metadata['original_mean']
+            mean = self.viewer.layers[self.current_image_layer_name].metadata[
+                'original_mean'
+            ]
 
             real_list = []
             imag_list = []
@@ -2331,19 +3503,144 @@ class ComponentsWidget(QWidget):
                 real_list.append(real_h)
                 imag_list.append(imag_h)
 
-            real = np.stack(
-                real_list, axis=0
-            )  # Shape: [num_harmonics, height, width]
-            imag = np.stack(
-                imag_list, axis=0
-            )  # Shape: [num_harmonics, height, width]
+            real = np.stack(real_list, axis=0)
+            imag = np.stack(imag_list, axis=0)
 
         try:
             fractions = phasor_component_fit(
                 mean, real, imag, component_g, component_s
             )
 
-            self._create_fraction_layers(fractions, component_names)
+            layer = self.viewer.layers[self.current_image_layer_name]
+            settings = layer.metadata['settings']['component_analysis']
+            harmonic_key = str(current_harmonic)
+
+            self.fraction_layers.clear()
+
+            for i, (fraction, name) in enumerate(
+                zip(fractions, component_names)
+            ):
+                fraction_reshaped = fraction.reshape(
+                    self.parent_widget._labels_layer_with_phasor_features.data.shape
+                )
+
+                fraction_layer_name = (
+                    f"{name} fraction: {self.current_image_layer_name}"
+                )
+
+                colormap = None
+                contrast_limits = (0, 1)
+                idx_str = str(i)
+
+                if (
+                    not self._updating_settings
+                    and idx_str in settings.get('components', {})
+                    and harmonic_key
+                    in settings['components'][idx_str].get('gs_harmonics', {})
+                ):
+
+                    harmonic_data = settings['components'][idx_str][
+                        'gs_harmonics'
+                    ][harmonic_key]
+
+                    if harmonic_data.get('colormap_name'):
+                        colormap = harmonic_data['colormap_name']
+                    elif harmonic_data.get('colormap_colors'):
+                        from napari.utils.colormaps import Colormap
+
+                        colors = harmonic_data['colormap_colors']
+                        if isinstance(colors, list):
+                            colors = np.array(colors)
+                        colormap = Colormap(colors=colors, name="saved_custom")
+
+                    if harmonic_data.get('contrast_limits'):
+                        contrast_limits = tuple(
+                            harmonic_data['contrast_limits']
+                        )
+
+                if (
+                    colormap is None
+                    and fraction_layer_name in self.viewer.layers
+                ):
+                    existing_layer = self.viewer.layers[fraction_layer_name]
+                    colormap = existing_layer.colormap
+                    contrast_limits = existing_layer.contrast_limits
+
+                if colormap is None:
+                    if i < len(self.component_colormap_names):
+                        colormap = self.component_colormap_names[i]
+                    else:
+                        colormap = 'viridis'
+
+                # Remove previous layer if it exists (avoids duplication)
+                try:
+                    self.viewer.layers.remove(
+                        self.viewer.layers[fraction_layer_name]
+                    )
+                except KeyError:
+                    pass
+                new_layer = self.viewer.add_image(
+                    fraction_reshaped,
+                    name=fraction_layer_name,
+                    scale=self.parent_widget._labels_layer_with_phasor_features.scale,
+                    colormap=colormap,
+                )
+
+                new_layer.contrast_limits = contrast_limits
+
+                self.fraction_layers.append(new_layer)
+                new_layer.events.colormap.connect(self._on_colormap_changed)
+
+                if not self._updating_settings:
+                    if idx_str in settings['components']:
+                        comp_data = settings['components'][idx_str]
+                        if harmonic_key not in comp_data['gs_harmonics']:
+                            comp_data['gs_harmonics'][harmonic_key] = {}
+
+                        colormap_name = getattr(
+                            new_layer.colormap, 'name', 'custom'
+                        )
+                        is_standard_colormap = False
+                        try:
+                            import matplotlib.pyplot as plt
+
+                            plt.get_cmap(colormap_name)
+                            is_standard_colormap = True
+                        except Exception:
+                            try:
+                                import vispy.color
+
+                                vispy.color.get_colormap(colormap_name)
+                                is_standard_colormap = True
+                            except Exception:
+                                is_standard_colormap = False
+
+                        if is_standard_colormap:
+                            comp_data['gs_harmonics'][harmonic_key][
+                                'colormap_name'
+                            ] = colormap_name
+                            comp_data['gs_harmonics'][harmonic_key][
+                                'colormap_colors'
+                            ] = None
+                        else:
+                            colormap_colors = new_layer.colormap.colors
+                            if colormap_colors is not None:
+                                if hasattr(colormap_colors, 'tolist'):
+                                    colormap_colors = colormap_colors.tolist()
+                                elif isinstance(colormap_colors, np.ndarray):
+                                    colormap_colors = colormap_colors.tolist()
+                            comp_data['gs_harmonics'][harmonic_key][
+                                'colormap_name'
+                            ] = None
+                            comp_data['gs_harmonics'][harmonic_key][
+                                'colormap_colors'
+                            ] = colormap_colors
+
+                        comp_data['gs_harmonics'][harmonic_key][
+                            'contrast_limits'
+                        ] = list(new_layer.contrast_limits)
+
+            self._update_component_colors()
 
         except Exception as e:
             show_error(f"Analysis failed: {str(e)}")
