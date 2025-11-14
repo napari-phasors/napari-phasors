@@ -236,8 +236,10 @@ class SelectionWidget(QWidget):
                 and self.parent_widget._labels_layer_with_phasor_features
                 is not None
             ):
-
-                layer_name = f"Selection: {new_selection_id_for_comparison}"
+                current_image_layer_name = (
+                    self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+                )
+                layer_name = f"Selection {new_selection_id_for_comparison}: {current_image_layer_name}"
                 existing_layer = self._find_phasors_layer_by_name(layer_name)
 
                 # If layer doesn't exist but column exists in features, recreate it
@@ -279,11 +281,20 @@ class SelectionWidget(QWidget):
         if getattr(self.parent_widget, '_updating_plot', False):
             return
 
+        current_image_layer_name = (
+                self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+            )
         # If selection_id is None, hide all selection layers and clear color indices
         if selection_id is None or selection_id == "":
-            for layer in self.viewer.layers:
-                if layer.name.startswith("Selection: "):
-                    layer.visible = False
+            # Iterate over all choices in selection_input_widget
+            for i in range(self.selection_input_widget.phasor_selection_id_combobox.count()):
+                sel_id = self.selection_input_widget.phasor_selection_id_combobox.itemText(i)
+                if sel_id != "None":
+                    selection_layer_name = f"Selection {sel_id}: {current_image_layer_name}"
+                    existing_layer = self._find_phasors_layer_by_name(selection_layer_name)
+                    if existing_layer is not None:
+                        existing_layer.visible = False
+            
 
             # Clear color indices only for the active artist
             active_plot_type = self.parent_widget.plot_type
@@ -304,10 +315,13 @@ class SelectionWidget(QWidget):
             # Don't create the column or update anything until there's actual selection data
             return
 
-        target_layer_name = f"Selection: {selection_id}"
-        for layer in self.viewer.layers:
-            if layer.name.startswith("Selection: "):
-                layer.visible = layer.name == target_layer_name
+        selection_layer_name = f"Selection {selection_id}: {current_image_layer_name}"
+        selection_layer = self._find_phasors_layer_by_name(selection_layer_name)
+        if selection_layer is None:
+            self.create_phasors_selected_layer()
+            selection_layer = self._phasors_selected_layer
+        selection_layer.visible = True
+
 
         harmonic_mask = (
             self.parent_widget._labels_layer_with_phasor_features.features[
@@ -465,8 +479,10 @@ class SelectionWidget(QWidget):
             self.parent_widget._colormap.N,
             exclude_first=True,
         )
-
-        layer_name = f"Selection: {self.selection_id}"
+        current_image_layer_name = (
+            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        )
+        layer_name = f"Selection {self.selection_id}: {current_image_layer_name}"
         phasors_selected_layer = Labels(
             mapped_data,
             name=layer_name,
@@ -487,10 +503,12 @@ class SelectionWidget(QWidget):
         """Update the existing phasors layer data without recreating it."""
         if self.parent_widget._labels_layer_with_phasor_features is None:
             return
-
-        layer_name = f"Selection: {self.selection_id}"
+        current_image_layer_name = (
+            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        )
+        selection_layer_name = f"Selection {self.selection_id}: {current_image_layer_name}"
         existing_phasors_selected_layer = self._find_phasors_layer_by_name(
-            layer_name
+            selection_layer_name
         )
 
         if existing_phasors_selected_layer is None:
