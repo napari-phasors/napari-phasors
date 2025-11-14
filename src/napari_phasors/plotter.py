@@ -158,14 +158,14 @@ class PlotterWidget(QWidget):
         import_buttons_layout.setContentsMargins(0, 0, 0, 0)
         import_buttons_layout.setSpacing(5)
 
-        import_label = QLabel("Copy Workspace Settings:")
+        import_label = QLabel("Import and Apply Settings from:")
         import_buttons_layout.addWidget(import_label)
 
-        self.import_from_layer_button = QPushButton("From Layer")
+        self.import_from_layer_button = QPushButton("Layer")
         self.import_from_layer_button.setMaximumHeight(25)
         import_buttons_layout.addWidget(self.import_from_layer_button)
 
-        self.import_from_file_button = QPushButton("From OME-TIFF")
+        self.import_from_file_button = QPushButton("OME-TIFF File")
         self.import_from_file_button.setMaximumHeight(25)
         import_buttons_layout.addWidget(self.import_from_file_button)
 
