@@ -417,7 +417,9 @@ class FilterWidget(QWidget):
                 )
                 self.label_3.setText(
                     'Intensity threshold: '
-                    + str(self.threshold_slider.value() / self.threshold_factor)
+                    + str(
+                        self.threshold_slider.value() / self.threshold_factor
+                    )
                 )
 
             if "filter" in settings.keys():

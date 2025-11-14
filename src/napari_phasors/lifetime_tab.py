@@ -534,7 +534,7 @@ class LifetimeWidget(QWidget):
         self.bin_centers = (self.bin_edges[:-1] + self.bin_edges[1:]) / 2
 
         self._update_lifetime_histogram()
-        self.histogram_widget.show() 
+        self.histogram_widget.show()
 
     def create_lifetime_layer(self):
         """Create or update the lifetime layer for all harmonics."""
@@ -789,32 +789,44 @@ class LifetimeWidget(QWidget):
 
     def _restore_lifetime_range_from_metadata(self):
         """Restore lifetime range from metadata after calculation."""
-        layer_name = self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        layer_name = (
+            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        )
         if not layer_name:
             return
-            
+
         layer = self.viewer.layers[layer_name]
-        if ('settings' in layer.metadata and 
-            'lifetime' in layer.metadata['settings']):
+        if (
+            'settings' in layer.metadata
+            and 'lifetime' in layer.metadata['settings']
+        ):
             settings = layer.metadata['settings']['lifetime']
-            
-            if ('lifetime_range_min' in settings and 
-                'lifetime_range_max' in settings and
-                settings['lifetime_range_min'] is not None and
-                settings['lifetime_range_max'] is not None):
-                
+
+            if (
+                'lifetime_range_min' in settings
+                and 'lifetime_range_max' in settings
+                and settings['lifetime_range_min'] is not None
+                and settings['lifetime_range_max'] is not None
+            ):
+
                 min_val = settings['lifetime_range_min']
                 max_val = settings['lifetime_range_max']
-                
-                if (self.min_lifetime is not None and self.max_lifetime is not None and
-                    min_val >= self.min_lifetime and max_val <= self.max_lifetime):
-                    
+
+                if (
+                    self.min_lifetime is not None
+                    and self.max_lifetime is not None
+                    and min_val >= self.min_lifetime
+                    and max_val <= self.max_lifetime
+                ):
+
                     min_slider = int(min_val * self.lifetime_range_factor)
                     max_slider = int(max_val * self.lifetime_range_factor)
-                    
+
                     self._updating_settings = True
                     try:
-                        self.lifetime_range_slider.setValue((min_slider, max_slider))
+                        self.lifetime_range_slider.setValue(
+                            (min_slider, max_slider)
+                        )
                         self.lifetime_min_edit.setText(f"{min_val:.2f}")
                         self.lifetime_max_edit.setText(f"{max_val:.2f}")
                         self.lifetime_range_label.setText(
@@ -822,9 +834,8 @@ class LifetimeWidget(QWidget):
                         )
                     finally:
                         self._updating_settings = False
-                    
-                    self._apply_lifetime_range_change(min_slider, max_slider)
 
+                    self._apply_lifetime_range_change(min_slider, max_slider)
 
     def _apply_lifetime_range_change(self, min_slider, max_slider):
         """Apply lifetime range change without updating metadata."""

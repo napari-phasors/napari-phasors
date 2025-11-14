@@ -1234,67 +1234,107 @@ class ComponentsWidget(QWidget):
 
     def _apply_saved_colormap_settings(self):
         """Apply saved colormap settings to fraction layers if they exist."""
-        if (self.comp1_fractions_layer is not None and 
-            hasattr(self, '_saved_colormap_name')):
-            
+        if self.comp1_fractions_layer is not None and hasattr(
+            self, '_saved_colormap_name'
+        ):
+
             try:
-                self.comp1_fractions_layer.events.colormap.disconnect(self._on_colormap_changed)
-                self.comp1_fractions_layer.events.colormap.disconnect(self._sync_colormaps)
-                self.comp1_fractions_layer.events.contrast_limits.disconnect(self._on_contrast_limits_changed)
-                
+                self.comp1_fractions_layer.events.colormap.disconnect(
+                    self._on_colormap_changed
+                )
+                self.comp1_fractions_layer.events.colormap.disconnect(
+                    self._sync_colormaps
+                )
+                self.comp1_fractions_layer.events.contrast_limits.disconnect(
+                    self._on_contrast_limits_changed
+                )
+
                 if self.comp2_fractions_layer is not None:
-                    self.comp2_fractions_layer.events.colormap.disconnect(self._sync_colormaps)
-                
+                    self.comp2_fractions_layer.events.colormap.disconnect(
+                        self._sync_colormaps
+                    )
+
                 if self._saved_colormap_colors is not None:
                     from napari.utils.colormaps import Colormap
-                    
+
                     if isinstance(self._saved_colormap_colors, list):
                         saved_colors = np.array(self._saved_colormap_colors)
                     else:
                         saved_colors = self._saved_colormap_colors
-                    
-                    saved_colormap = Colormap(colors=saved_colors, name="saved_custom")
+
+                    saved_colormap = Colormap(
+                        colors=saved_colors, name="saved_custom"
+                    )
                     self.comp1_fractions_layer.colormap = saved_colormap
-                    
+
                     if self.comp2_fractions_layer is not None:
                         inverted_colors = saved_colors[::-1]
-                        inverted_colormap = Colormap(colors=inverted_colors, name="saved_custom_inverted")
+                        inverted_colormap = Colormap(
+                            colors=inverted_colors,
+                            name="saved_custom_inverted",
+                        )
                         self.comp2_fractions_layer.colormap = inverted_colormap
                 else:
-                    self.comp1_fractions_layer.colormap = self._saved_colormap_name
+                    self.comp1_fractions_layer.colormap = (
+                        self._saved_colormap_name
+                    )
                     if self.comp2_fractions_layer is not None:
-                        inverted_name = self._saved_colormap_name + '_r' if not self._saved_colormap_name.endswith('_r') else self._saved_colormap_name[:-2]
+                        inverted_name = (
+                            self._saved_colormap_name + '_r'
+                            if not self._saved_colormap_name.endswith('_r')
+                            else self._saved_colormap_name[:-2]
+                        )
                         self.comp2_fractions_layer.colormap = inverted_name
-                
+
                 if isinstance(self._saved_contrast_limits, list):
                     saved_limits = tuple(self._saved_contrast_limits)
                 else:
                     saved_limits = self._saved_contrast_limits
-                
+
                 self.comp1_fractions_layer.contrast_limits = saved_limits
                 if self.comp2_fractions_layer is not None:
                     self.comp2_fractions_layer.contrast_limits = saved_limits
-                
-                self.fractions_colormap = self.comp1_fractions_layer.colormap.colors
-                self.colormap_contrast_limits = self.comp1_fractions_layer.contrast_limits
-                
-                self.comp1_fractions_layer.events.colormap.connect(self._on_colormap_changed)
-                self.comp1_fractions_layer.events.colormap.connect(self._sync_colormaps)
-                self.comp1_fractions_layer.events.contrast_limits.connect(self._on_contrast_limits_changed)
-                
+
+                self.fractions_colormap = (
+                    self.comp1_fractions_layer.colormap.colors
+                )
+                self.colormap_contrast_limits = (
+                    self.comp1_fractions_layer.contrast_limits
+                )
+
+                self.comp1_fractions_layer.events.colormap.connect(
+                    self._on_colormap_changed
+                )
+                self.comp1_fractions_layer.events.colormap.connect(
+                    self._sync_colormaps
+                )
+                self.comp1_fractions_layer.events.contrast_limits.connect(
+                    self._on_contrast_limits_changed
+                )
+
                 if self.comp2_fractions_layer is not None:
-                    self.comp2_fractions_layer.events.colormap.connect(self._sync_colormaps)
-                
+                    self.comp2_fractions_layer.events.colormap.connect(
+                        self._sync_colormaps
+                    )
+
                 self.draw_line_between_components()
-                
+
             except Exception as e:
                 print(f"Error applying saved colormap settings: {e}")
                 try:
-                    self.comp1_fractions_layer.events.colormap.connect(self._on_colormap_changed)
-                    self.comp1_fractions_layer.events.colormap.connect(self._sync_colormaps)
-                    self.comp1_fractions_layer.events.contrast_limits.connect(self._on_contrast_limits_changed)
+                    self.comp1_fractions_layer.events.colormap.connect(
+                        self._on_colormap_changed
+                    )
+                    self.comp1_fractions_layer.events.colormap.connect(
+                        self._sync_colormaps
+                    )
+                    self.comp1_fractions_layer.events.contrast_limits.connect(
+                        self._on_contrast_limits_changed
+                    )
                     if self.comp2_fractions_layer is not None:
-                        self.comp2_fractions_layer.events.colormap.connect(self._sync_colormaps)
+                        self.comp2_fractions_layer.events.colormap.connect(
+                            self._sync_colormaps
+                        )
                 except Exception:
                     pass
 
@@ -1715,8 +1755,12 @@ class ComponentsWidget(QWidget):
         old_display_name = old_name if old_name else f"Component {idx + 1}"
         new_display_name = new_name if new_name else f"Component {idx + 1}"
 
-        old_layer_name = f"{old_display_name} fractions: {self.current_image_layer_name}"
-        new_layer_name = f"{new_display_name} fractions: {self.current_image_layer_name}"
+        old_layer_name = (
+            f"{old_display_name} fractions: {self.current_image_layer_name}"
+        )
+        new_layer_name = (
+            f"{new_display_name} fractions: {self.current_image_layer_name}"
+        )
 
         if (
             old_layer_name in self.viewer.layers
@@ -3568,7 +3612,9 @@ class ComponentsWidget(QWidget):
                     self.parent_widget._labels_layer_with_phasor_features.data.shape
                 )
 
-                fraction_layer_name = f"{name} fraction: {self.current_image_layer_name}"
+                fraction_layer_name = (
+                    f"{name} fraction: {self.current_image_layer_name}"
+                )
 
                 colormap = None
                 contrast_limits = (0, 1)
@@ -3600,7 +3646,10 @@ class ComponentsWidget(QWidget):
                             harmonic_data['contrast_limits']
                         )
 
-                if colormap is None and fraction_layer_name in self.viewer.layers:
+                if (
+                    colormap is None
+                    and fraction_layer_name in self.viewer.layers
+                ):
                     existing_layer = self.viewer.layers[fraction_layer_name]
                     colormap = existing_layer.colormap
                     contrast_limits = existing_layer.contrast_limits

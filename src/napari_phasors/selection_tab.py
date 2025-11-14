@@ -282,19 +282,26 @@ class SelectionWidget(QWidget):
             return
 
         current_image_layer_name = (
-                self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-            )
+            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        )
         # If selection_id is None, hide all selection layers and clear color indices
         if selection_id is None or selection_id == "":
             # Iterate over all choices in selection_input_widget
-            for i in range(self.selection_input_widget.phasor_selection_id_combobox.count()):
-                sel_id = self.selection_input_widget.phasor_selection_id_combobox.itemText(i)
+            for i in range(
+                self.selection_input_widget.phasor_selection_id_combobox.count()
+            ):
+                sel_id = self.selection_input_widget.phasor_selection_id_combobox.itemText(
+                    i
+                )
                 if sel_id != "None":
-                    selection_layer_name = f"Selection {sel_id}: {current_image_layer_name}"
-                    existing_layer = self._find_phasors_layer_by_name(selection_layer_name)
+                    selection_layer_name = (
+                        f"Selection {sel_id}: {current_image_layer_name}"
+                    )
+                    existing_layer = self._find_phasors_layer_by_name(
+                        selection_layer_name
+                    )
                     if existing_layer is not None:
                         existing_layer.visible = False
-            
 
             # Clear color indices only for the active artist
             active_plot_type = self.parent_widget.plot_type
@@ -315,13 +322,16 @@ class SelectionWidget(QWidget):
             # Don't create the column or update anything until there's actual selection data
             return
 
-        selection_layer_name = f"Selection {selection_id}: {current_image_layer_name}"
-        selection_layer = self._find_phasors_layer_by_name(selection_layer_name)
+        selection_layer_name = (
+            f"Selection {selection_id}: {current_image_layer_name}"
+        )
+        selection_layer = self._find_phasors_layer_by_name(
+            selection_layer_name
+        )
         if selection_layer is None:
             self.create_phasors_selected_layer()
             selection_layer = self._phasors_selected_layer
         selection_layer.visible = True
-
 
         harmonic_mask = (
             self.parent_widget._labels_layer_with_phasor_features.features[
@@ -482,7 +492,9 @@ class SelectionWidget(QWidget):
         current_image_layer_name = (
             self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
         )
-        layer_name = f"Selection {self.selection_id}: {current_image_layer_name}"
+        layer_name = (
+            f"Selection {self.selection_id}: {current_image_layer_name}"
+        )
         phasors_selected_layer = Labels(
             mapped_data,
             name=layer_name,
@@ -506,7 +518,9 @@ class SelectionWidget(QWidget):
         current_image_layer_name = (
             self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
         )
-        selection_layer_name = f"Selection {self.selection_id}: {current_image_layer_name}"
+        selection_layer_name = (
+            f"Selection {self.selection_id}: {current_image_layer_name}"
+        )
         existing_phasors_selected_layer = self._find_phasors_layer_by_name(
             selection_layer_name
         )
