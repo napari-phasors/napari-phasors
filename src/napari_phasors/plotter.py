@@ -403,14 +403,40 @@ class PlotterWidget(QWidget):
         if not layer_name:
             return
 
-        layer = self.viewer.layers[layer_name]
-        if 'settings' not in layer.metadata:
-            self._initialize_plot_settings_in_metadata(layer)
+        image_layer = self.viewer.layers[layer_name]
+        if 'settings' not in image_layer.metadata:
+            self._initialize_plot_settings_in_metadata(image_layer)
             return
 
         self._updating_settings = True
         try:
-            settings = layer.metadata['settings']
+            if 'mask' in image_layer.metadata:
+                # check if mask combobox has a mask layer selected and if it matches
+                current_mask_name = self.mask_layer_combobox.currentText()
+                matching_mask_layer_name = None
+                valid_mask_layers = [
+                    mask_l
+                    for mask_l in self.viewer.layers
+                    if isinstance(mask_l, Labels) or isinstance(mask_l, Shapes)
+                ]
+                for mask_l in valid_mask_layers:
+                    if isinstance(mask_l, Shapes):
+                        mask_data = mask_l.to_labels(
+                            labels_shape=self._labels_layer_with_phasor_features.data.shape
+                        )
+                    else:
+                        mask_data = mask_l.data
+                    if np.array_equal(mask_data, image_layer.metadata['mask']):
+                        matching_mask_layer_name = mask_l.name
+                # Create mask layer if no match found
+                if matching_mask_layer_name is None:
+                    matching_mask_layer_name = f"Restored Mask: {layer_name}"
+                    self.viewer.add_labels(image_layer.metadata['mask'],
+                                            name=matching_mask_layer_name,
+                                            scale=self._labels_layer_with_phasor_features.scale)
+                self.mask_layer_combobox.setCurrentText(matching_mask_layer_name)
+
+            settings = image_layer.metadata['settings']
 
             # Restore harmonic
             if 'harmonic' in settings:
@@ -1584,6 +1610,11 @@ class PlotterWidget(QWidget):
 
             self.harmonic_spinbox.setMinimum(min_harmonic)
             self.harmonic_spinbox.setMaximum(max_harmonic)
+
+            # Reset mask layer combobox to "None" when image layer changes
+            self.mask_layer_combobox.blockSignals(True)
+            self.mask_layer_combobox.setCurrentText("None")
+            self.mask_layer_combobox.blockSignals(False)
 
             layer = self.viewer.layers[image_layer_name]
             self._initialize_plot_settings_in_metadata(layer)
