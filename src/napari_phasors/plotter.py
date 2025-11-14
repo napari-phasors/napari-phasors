@@ -280,6 +280,7 @@ class PlotterWidget(QWidget):
 
         # Connect tab change signal
         self.tab_widget.currentChanged.connect(self._on_tab_changed)
+        self._set_selection_visibility(False)
 
     def _on_tab_changed(self, index):
         """Handle tab change events to show/hide tab-specific lines."""
@@ -297,6 +298,9 @@ class PlotterWidget(QWidget):
 
     def _hide_all_tab_artists(self):
         """Hide all tab-specific artists."""
+        if hasattr(self, 'selection_tab'):
+            self._set_selection_visibility(False)
+
         # Hide components tab artists
         if hasattr(self, 'components_tab'):
             self._set_components_visibility(False)
@@ -313,10 +317,22 @@ class PlotterWidget(QWidget):
 
     def _show_tab_artists(self, current_tab):
         """Show artists for the specified tab."""
+        if current_tab == getattr(self, 'selection_tab', None):
+            self._set_selection_visibility(True)
         if current_tab == getattr(self, 'components_tab', None):
             self._set_components_visibility(True)
         elif current_tab == getattr(self, 'fret_tab', None):
             self._set_fret_visibility(True)
+
+    def _set_selection_visibility(self, visible):
+        """Set visibility of selection toolbar."""
+        if hasattr(self, 'selection_tab'):
+            layout = self.canvas_widget.selection_tools_layout
+            for i in range(layout.count()):
+                item = layout.itemAt(i)
+                widget = item.widget()
+                if widget is not None:
+                    widget.setVisible(visible)
 
     def _set_components_visibility(self, visible):
         """Set visibility of components tab artists."""
