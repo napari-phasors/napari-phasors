@@ -276,9 +276,399 @@ def test_lifetime_widget_type_changed_no_frequency(make_napari_viewer):
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.lifetime_tab
 
-    with patch('napari_phasors.lifetime_tab.show_error') as mock_error:
+    with patch('napari_phasors.lifetime_tab.show_warning') as mock_warning:
         lifetime_widget._on_lifetime_type_changed("Apparent Phase Lifetime")
-        mock_error.assert_called_once_with("Enter frequency")
+        mock_warning.assert_called_once_with("Enter frequency")
+
+
+def test_lifetime_widget_settings_initialization_in_metadata(
+    make_napari_viewer,
+):
+    """Test that lifetime settings are only initialized when analysis is performed."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    lifetime_widget = parent.lifetime_tab
+
+    # Select the layer
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    lifetime_widget._on_image_layer_changed()
+
+    # Check that lifetime settings were NOT initialized
+    if 'settings' in layer.metadata:
+        assert 'lifetime' not in layer.metadata['settings']
+
+    # Now perform lifetime analysis
+    lifetime_widget.frequency_input.setText("80.0")
+    lifetime_widget._on_frequency_changed()
+
+    # Select a lifetime type - this should trigger analysis and initialize metadata
+    lifetime_widget.lifetime_type_combobox.setCurrentText(
+        "Apparent Phase Lifetime"
+    )
+
+    # Now check that settings were initialized
+    assert 'settings' in layer.metadata
+    assert 'lifetime' in layer.metadata['settings']
+    assert 'frequency' in layer.metadata['settings']
+
+    # Check values
+    assert layer.metadata['settings']['frequency'] == '80.0'
+    assert (
+        layer.metadata['settings']['lifetime']['lifetime_type']
+        == 'Apparent Phase Lifetime'
+    )
+    # Range values should be set after calculation
+    assert 'lifetime_range_min' in layer.metadata['settings']['lifetime']
+    assert 'lifetime_range_max' in layer.metadata['settings']['lifetime']
+
+    parent.deleteLater()
+
+
+def test_lifetime_widget_settings_update_in_metadata(make_napari_viewer):
+    """Test that changing settings updates layer metadata."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    lifetime_widget = parent.lifetime_tab
+
+    # Set frequency
+    lifetime_widget.frequency_input.setText("80.0")
+    lifetime_widget._on_frequency_changed()
+    parent._broadcast_frequency_value_across_tabs("80.0")
+    assert layer.metadata['settings']['frequency'] == 80.0
+
+    # Set lifetime type
+    lifetime_widget.lifetime_type_combobox.setCurrentText(
+        "Apparent Phase Lifetime"
+    )
+    assert (
+        layer.metadata['settings']['lifetime']['lifetime_type']
+        == 'Apparent Phase Lifetime'
+    )
+
+    # Set lifetime range
+    lifetime_widget.lifetime_range_slider.setValue((1000, 5000))
+    lifetime_widget._on_lifetime_range_changed((1000, 5000))
+    assert layer.metadata['settings']['lifetime']['lifetime_range_min'] == 1.0
+    assert layer.metadata['settings']['lifetime']['lifetime_range_max'] == 5.0
+
+    parent.deleteLater()
+
+
+def test_lifetime_widget_settings_persistence_across_layer_switches(
+    make_napari_viewer,
+):
+    """Test that settings persist when switching between layers."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    lifetime_widget = parent.lifetime_tab
+
+    # Create two layers
+    layer_1 = create_image_layer_with_phasors()
+    layer_2 = create_image_layer_with_phasors()
+    viewer.add_layer(layer_1)
+    viewer.add_layer(layer_2)
+
+    # Ensure layer_2 is currently active (it's the last one added)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(
+        layer_2.name
+    )
+    lifetime_widget._on_image_layer_changed()
+
+    # Layer 2 should start with defaults
+    assert lifetime_widget.frequency_input.text() == ""
+    assert lifetime_widget.lifetime_type_combobox.currentText() == 'None'
+
+    # Now switch to layer_1
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(
+        layer_1.name
+    )
+    lifetime_widget._on_image_layer_changed()
+
+    # Modify settings for layer_1
+    lifetime_widget.frequency_input.setText("80.0")
+    # Manually trigger the broadcast since we're setting it programmatically
+    parent._broadcast_frequency_value_across_tabs("80.0")
+
+    lifetime_widget.lifetime_type_combobox.setCurrentText(
+        "Apparent Phase Lifetime"
+    )
+
+    # Verify settings are saved in layer_1 metadata
+    assert layer_1.metadata['settings']['frequency'] == '80.0'
+    assert (
+        layer_1.metadata['settings']['lifetime']['lifetime_type']
+        == 'Apparent Phase Lifetime'
+    )
+
+    # Switch to layer_2 (should have defaults)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(
+        layer_2.name
+    )
+    lifetime_widget._on_image_layer_changed()
+
+    assert lifetime_widget.frequency_input.text() == ""
+    assert lifetime_widget.lifetime_type_combobox.currentText() == 'None'
+
+    # Switch back to layer_1 (should restore settings)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(
+        layer_1.name
+    )
+    lifetime_widget._on_image_layer_changed()
+
+    assert lifetime_widget.frequency_input.text() == "80.0"
+    assert (
+        lifetime_widget.lifetime_type_combobox.currentText()
+        == 'Apparent Phase Lifetime'
+    )
+
+    parent.deleteLater()
+
+
+def test_lifetime_widget_adding_layer_without_settings_initializes_defaults(
+    make_napari_viewer,
+):
+    """Test that adding a layer without lifetime settings doesn't auto-initialize metadata."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    lifetime_widget = parent.lifetime_tab
+
+    # Create a layer and remove lifetime settings if they exist
+    layer = create_image_layer_with_phasors()
+    if (
+        'settings' in layer.metadata
+        and 'lifetime' in layer.metadata['settings']
+    ):
+        del layer.metadata['settings']['lifetime']
+
+    viewer.add_layer(layer)
+
+    # Trigger layer change - should NOT initialize lifetime metadata
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    lifetime_widget._on_image_layer_changed()
+
+    # Verify settings were NOT auto-initialized
+    if 'settings' in layer.metadata:
+        assert 'lifetime' not in layer.metadata['settings']
+
+    # Now perform actual lifetime analysis
+    lifetime_widget.frequency_input.setText("80.0")
+    lifetime_widget._on_frequency_changed()
+
+    # Select a lifetime type - this should trigger analysis and initialize metadata
+    lifetime_widget.lifetime_type_combobox.setCurrentText(
+        "Apparent Phase Lifetime"
+    )
+
+    # Now verify settings were initialized with actual values
+    assert 'settings' in layer.metadata
+    assert 'lifetime' in layer.metadata['settings']
+    assert layer.metadata['settings']['frequency'] == '80.0'
+    assert (
+        layer.metadata['settings']['lifetime']['lifetime_type']
+        == 'Apparent Phase Lifetime'
+    )
+    # Range values should be set after calculation
+    assert 'lifetime_range_min' in layer.metadata['settings']['lifetime']
+    assert 'lifetime_range_max' in layer.metadata['settings']['lifetime']
+
+    parent.deleteLater()
+
+
+def test_lifetime_widget_settings_restored_after_recalculation(
+    make_napari_viewer,
+):
+    """Test that lifetime range settings are restored after recalculating lifetimes."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    lifetime_widget = parent.lifetime_tab
+
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    # Set frequency and lifetime type
+    lifetime_widget.frequency_input.setText("80.0")
+    lifetime_widget._on_frequency_changed()
+    lifetime_widget.lifetime_type_combobox.setCurrentText(
+        "Apparent Phase Lifetime"
+    )
+
+    # Wait for calculation to complete
+    assert lifetime_widget.lifetime_data is not None
+
+    # Set custom range
+    custom_min = 2.0
+    custom_max = 4.0
+    min_slider = int(custom_min * lifetime_widget.lifetime_range_factor)
+    max_slider = int(custom_max * lifetime_widget.lifetime_range_factor)
+
+    lifetime_widget.lifetime_range_slider.setValue((min_slider, max_slider))
+    lifetime_widget._on_lifetime_range_changed((min_slider, max_slider))
+
+    # Verify range is saved in metadata
+    assert (
+        abs(
+            layer.metadata['settings']['lifetime']['lifetime_range_min']
+            - custom_min
+        )
+        < 0.01
+    )
+    assert (
+        abs(
+            layer.metadata['settings']['lifetime']['lifetime_range_max']
+            - custom_max
+        )
+        < 0.01
+    )
+
+    # Change to different lifetime type and back (triggers recalculation)
+    lifetime_widget.lifetime_type_combobox.setCurrentText(
+        "Apparent Modulation Lifetime"
+    )
+    lifetime_widget.lifetime_type_combobox.setCurrentText(
+        "Apparent Phase Lifetime"
+    )
+
+    # Range should be restored from metadata
+    assert (
+        abs(float(lifetime_widget.lifetime_min_edit.text()) - custom_min)
+        < 0.01
+    )
+    assert (
+        abs(float(lifetime_widget.lifetime_max_edit.text()) - custom_max)
+        < 0.01
+    )
+
+    parent.deleteLater()
+
+
+def test_lifetime_widget_adding_removing_layers_updates_settings(
+    make_napari_viewer,
+):
+    """Test that adding/removing layers properly manages settings."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    lifetime_widget = parent.lifetime_tab
+
+    # Add first layer with settings
+    layer_1 = create_image_layer_with_phasors()
+    viewer.add_layer(layer_1)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(
+        layer_1.name
+    )
+
+    lifetime_widget.frequency_input.setText("80.0")
+    parent._broadcast_frequency_value_across_tabs("80.0")
+    lifetime_widget._on_frequency_changed()
+    lifetime_widget.lifetime_type_combobox.setCurrentText(
+        "Apparent Phase Lifetime"
+    )
+
+    # Check settings were saved
+    assert layer_1.metadata['settings']['frequency'] == '80.0'
+    assert (
+        layer_1.metadata['settings']['lifetime']['lifetime_type']
+        == 'Apparent Phase Lifetime'
+    )
+
+    # Add second layer
+    layer_2 = create_image_layer_with_phasors()
+    viewer.add_layer(layer_2)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(
+        layer_2.name
+    )
+    lifetime_widget._on_image_layer_changed()
+
+    # Layer 2 should have defaults
+    assert lifetime_widget.lifetime_type_combobox.currentText() == 'None'
+
+    # Remove layer 1
+    viewer.layers.remove(layer_1)
+
+    # Layer 2 should still be selectable and have defaults
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(
+        layer_2.name
+    )
+    lifetime_widget._on_image_layer_changed()
+    assert lifetime_widget.lifetime_type_combobox.currentText() == 'None'
+
+    parent.deleteLater()
+
+
+def test_lifetime_widget_frequency_saved_on_lifetime_type_change(
+    make_napari_viewer,
+):
+    """Test that frequency is saved to metadata when lifetime type is changed."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    lifetime_widget = parent.lifetime_tab
+
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    # Set frequency
+    lifetime_widget.frequency_input.setText("80.0")
+    lifetime_widget._on_frequency_changed()
+
+    # Change lifetime type (this should trigger frequency save to general settings too)
+    lifetime_widget.lifetime_type_combobox.setCurrentText(
+        "Apparent Phase Lifetime"
+    )
+
+    # Check frequency is in both lifetime settings and general settings
+    assert layer.metadata['settings']['frequency'] == '80.0'
+
+    parent.deleteLater()
+
+
+def test_lifetime_widget_no_recursive_updates_when_restoring_settings(
+    make_napari_viewer,
+):
+    """Test that restoring settings doesn't trigger recursive updates."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    lifetime_widget = parent.lifetime_tab
+
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    # Set up initial state
+    lifetime_widget.frequency_input.setText("80.0")
+    lifetime_widget._on_frequency_changed()
+    lifetime_widget.lifetime_type_combobox.setCurrentText(
+        "Apparent Phase Lifetime"
+    )
+
+    # Mock the update method to check it's not called during restoration
+    with patch.object(
+        lifetime_widget, '_update_lifetime_setting_in_metadata'
+    ) as mock_update:
+        # Switch to another layer and back (triggers restoration)
+        layer_2 = create_image_layer_with_phasors()
+        viewer.add_layer(layer_2)
+        parent.image_layer_with_phasor_features_combobox.setCurrentText(
+            layer_2.name
+        )
+        lifetime_widget._on_image_layer_changed()
+
+        parent.image_layer_with_phasor_features_combobox.setCurrentText(
+            layer.name
+        )
+        lifetime_widget._on_image_layer_changed()
+
+        # _update_lifetime_setting_in_metadata should not be called during restoration
+        # because _updating_settings flag should prevent it
+        # We can't easily test this without checking the flag behavior, but we can verify
+        # that the settings were restored correctly
+        assert (
+            lifetime_widget.lifetime_type_combobox.currentText()
+            == 'Apparent Phase Lifetime'
+        )
+
+    parent.deleteLater()
 
 
 def test_lifetime_widget_slider_range_update(make_napari_viewer):

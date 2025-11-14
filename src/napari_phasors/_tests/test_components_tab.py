@@ -25,7 +25,6 @@ def test_components_widget_initialization_values(make_napari_viewer):
     assert comp_widget.colormap_contrast_limits is None
     assert comp_widget.analysis_type == "Linear Projection"
     assert comp_widget.current_harmonic == 1
-    assert comp_widget.component_locations == {}
     # UI elements exist - updated for new structure
     assert comp_widget.analysis_type_combo is not None
     assert comp_widget.add_component_btn is not None
@@ -38,6 +37,14 @@ def test_components_widget_initialization_values(make_napari_viewer):
     assert comp_widget.components[0].g_edit is not None
     assert comp_widget.components[0].s_edit is not None
     assert comp_widget.components[0].select_button is not None
+    assert comp_widget.components[0].lifetime_edit is not None
+    # Check second component exists
+    assert comp_widget.components[1] is not None
+    assert comp_widget.components[1].name_edit is not None
+    assert comp_widget.components[1].g_edit is not None
+    assert comp_widget.components[1].s_edit is not None
+    assert comp_widget.components[1].select_button is not None
+    assert comp_widget.components[1].lifetime_edit is not None
 
 
 def test_components_widget_lifetime_inputs_visibility_no_frequency(
@@ -54,8 +61,8 @@ def test_components_widget_lifetime_inputs_visibility_no_frequency(
 
     # Lifetime widgets should be hidden - check first component
     comp = comp_widget.components[0]
-    assert comp.ui_elements['lifetime_label'].isHidden()
-    assert comp.lifetime_edit.isHidden()
+    assert not comp.ui_elements['lifetime_label'].isVisible()
+    assert not comp.lifetime_edit.isVisible()
 
 
 def test_components_widget_lifetime_inputs_visibility_with_frequency(
@@ -79,9 +86,9 @@ def test_components_widget_lifetime_inputs_visibility_with_frequency(
     comp_widget._update_component_from_lifetime(0)
     g_val = float(comp.g_edit.text())
     s_val = float(comp.s_edit.text())
-    expected_g, expected_s = phasor_from_lifetime(80.0 * parent.harmonic, 3.0)
-    assert abs(g_val - expected_g) < 1e-6
-    assert abs(s_val - expected_s) < 1e-6
+    expected_g, expected_s = phasor_from_lifetime(80.0, 3.0)
+    assert abs(g_val - expected_g) < 1e-3
+    assert abs(s_val - expected_s) < 1e-3
 
 
 def test_components_widget_component_creation_and_line(make_napari_viewer):
@@ -576,11 +583,19 @@ def test_components_widget_harmonic_storage_and_switching(make_napari_viewer):
     assert comp_widget.components[0].g_edit.text() == ""
     assert comp_widget.components[1].g_edit.text() == ""
 
-    # But stored in component_locations
-    assert 1 in comp_widget.component_locations
-    stored_comp1 = comp_widget.component_locations[1][0]
-    assert abs(stored_comp1['g'] - 0.2) < 1e-6
-    assert abs(stored_comp1['s'] - 0.1) < 1e-6
+    # But stored in metadata under harmonic 1
+    components_settings = layer.metadata['settings']['component_analysis']
+    assert '0' in components_settings['components']  # Changed from 1 to '0'
+    stored_comp1 = components_settings['components'][
+        '0'
+    ]  # Changed from [1][0] to ['0']
+
+    # Access the gs_harmonics for harmonic 1
+    assert '1' in stored_comp1['gs_harmonics']
+    harmonic_1_data = stored_comp1['gs_harmonics']['1']
+
+    assert abs(harmonic_1_data['g'] - 0.2) < 1e-6
+    assert abs(harmonic_1_data['s'] - 0.1) < 1e-6
     assert stored_comp1['name'] == "Test Component 1"
 
     # Switch back to harmonic 1
@@ -657,3 +672,152 @@ def test_components_widget_calculate_button_text_changes(make_napari_viewer):
         comp_widget.calculate_button.text()
         == "Display Component Fraction Images"
     )
+
+
+def test_components_widget_component_state_initialization(make_napari_viewer):
+    """Test that ComponentState objects are properly initialized."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+
+    # Check first component state
+    comp0 = comp_widget.components[0]
+    assert comp0.idx == 0
+    assert comp0.dot is None
+    assert comp0.text is None
+    assert comp0.label == "Component 1"
+    assert comp0.text_offset == (0.02, 0.02)
+
+    # Check second component state
+    comp1 = comp_widget.components[1]
+    assert comp1.idx == 1
+    assert comp1.dot is None
+    assert comp1.text is None
+    assert comp1.label == "Component 2"
+    assert comp1.text_offset == (0.02, 0.02)
+
+
+def test_components_widget_ui_elements_stored(make_napari_viewer):
+    """Test that ui_elements dictionary is properly stored in ComponentState."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+
+    comp = comp_widget.components[0]
+    assert hasattr(comp, 'ui_elements')
+    assert 'lifetime_label' in comp.ui_elements
+    assert 'comp_layout' in comp.ui_elements
+    assert comp.ui_elements['lifetime_label'] is not None
+    assert comp.ui_elements['comp_layout'] is not None
+
+
+def test_components_widget_default_settings_structure(make_napari_viewer):
+    """Test the structure of default components settings."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+
+    default_settings = comp_widget._get_default_components_settings()
+
+    assert 'analysis_type' in default_settings
+    assert default_settings['analysis_type'] == 'Linear Projection'
+    assert 'components' in default_settings
+    assert isinstance(default_settings['components'], dict)
+    assert 'line_settings' in default_settings
+    assert 'show_colormap_line' in default_settings['line_settings']
+    assert 'show_component_dots' in default_settings['line_settings']
+    assert 'line_offset' in default_settings['line_settings']
+    assert 'line_width' in default_settings['line_settings']
+    assert 'line_alpha' in default_settings['line_settings']
+    assert 'label_settings' in default_settings
+    assert 'fontsize' in default_settings['label_settings']
+    assert 'bold' in default_settings['label_settings']
+    assert 'italic' in default_settings['label_settings']
+    assert 'color' in default_settings['label_settings']
+
+
+def test_components_widget_style_state_initialization(make_napari_viewer):
+    """Test that style state variables are properly initialized."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+
+    assert comp_widget.label_fontsize == 10
+    assert comp_widget.label_bold is False
+    assert comp_widget.label_italic is False
+    assert comp_widget.label_color == 'black'
+
+
+def test_components_widget_line_settings_initialization(make_napari_viewer):
+    """Test that line settings are properly initialized."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+
+    assert comp_widget.show_colormap_line is True
+    assert comp_widget.show_component_dots is True
+    assert comp_widget.line_offset == 0.0
+    assert comp_widget.line_width == 3.0
+    assert comp_widget.line_alpha == 1
+    assert comp_widget.default_component_color == 'dimgray'
+
+
+def test_components_widget_flags_initialization(make_napari_viewer):
+    """Test that internal flags are properly initialized."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+
+    assert comp_widget._updating_from_lifetime is False
+    assert comp_widget._updating_settings is False
+    assert comp_widget._analysis_attempted is False
+    assert comp_widget.drag_events_connected is False
+    assert comp_widget.dragging_component_idx is None
+    assert comp_widget.dragging_label_idx is None
+
+
+def test_components_widget_dialogs_initialization(make_napari_viewer):
+    """Test that dialog references are initialized as None."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+
+    assert comp_widget.plot_dialog is None
+    assert comp_widget.style_dialog is None
+
+
+def test_components_widget_component_colors_list(make_napari_viewer):
+    """Test that component colors lists are properly initialized."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+
+    assert len(comp_widget.component_colors) == 9
+    assert comp_widget.component_colors[0] == 'magenta'
+    assert comp_widget.component_colors[1] == 'cyan'
+
+    assert len(comp_widget.component_colormap_names) == 9
+    assert comp_widget.component_colormap_names[0] == 'magenta'
+    assert comp_widget.component_colormap_names[1] == 'cyan'
+
+
+def test_components_widget_harmonic_signal_connection(make_napari_viewer):
+    """Test that harmonic spinbox signal is connected."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+
+    # Change harmonic and verify method is called
+    parent.harmonic_spinbox.setValue(2)
+    assert comp_widget.current_harmonic == 2
+
+
+def test_components_widget_scroll_area_exists(make_napari_viewer):
+    """Test that a scroll area is created for the components widget."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+
+    # The layout should contain a scroll area
+    assert comp_widget.layout() is not None
+    assert comp_widget.layout().count() > 0

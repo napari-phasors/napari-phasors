@@ -7,7 +7,7 @@ from matplotlib.backends.backend_qt5agg import (
 )
 from matplotlib.colors import LinearSegmentedColormap
 from napari.layers import Image
-from napari.utils.notifications import show_error
+from napari.utils.notifications import show_error, show_warning
 from phasorpy.lifetime import (
     phasor_to_apparent_lifetime,
     phasor_to_normal_lifetime,
@@ -60,6 +60,7 @@ class LifetimeWidget(QWidget):
         self._updating_contrast_limits = (
             False  # Flag to track contrast limits updates
         )
+        self._updating_settings = False  # Flag to prevent recursive updates
 
         # Style the histogram axes and figure initially
         self.style_histogram_axes()
@@ -102,8 +103,12 @@ class LifetimeWidget(QWidget):
         self.lifetime_type_combobox.setCurrentText("None")
         self.main_layout.addWidget(self.lifetime_type_combobox)
 
+        # Connect signals
         self.lifetime_type_combobox.currentTextChanged.connect(
             self._on_lifetime_type_changed
+        )
+        self.frequency_input.editingFinished.connect(
+            self._on_frequency_changed
         )
 
         # Add lifetime range slider
@@ -163,6 +168,96 @@ class LifetimeWidget(QWidget):
         self.main_layout.addWidget(self.histogram_widget)
         self.histogram_widget.hide()
 
+    def _get_default_lifetime_settings(self):
+        """Get default settings dictionary for lifetime parameters."""
+        return {
+            'lifetime_type': 'None',
+            'lifetime_range_min': None,
+            'lifetime_range_max': None,
+        }
+
+    def _update_lifetime_setting_in_metadata(self, key, value):
+        """Update a specific lifetime setting in the current layer's metadata."""
+        if self._updating_settings:
+            return
+
+        layer_name = (
+            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        )
+        if layer_name:
+            layer = self.viewer.layers[layer_name]
+            if 'settings' not in layer.metadata:
+                layer.metadata['settings'] = {}
+            if 'lifetime' not in layer.metadata['settings']:
+                layer.metadata['settings'][
+                    'lifetime'
+                ] = self._get_default_lifetime_settings()
+            layer.metadata['settings']['lifetime'][key] = value
+
+    def _restore_lifetime_settings_from_metadata(self):
+        """Restore all lifetime settings from the current layer's metadata."""
+        layer_name = (
+            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        )
+        if not layer_name:
+            return
+
+        layer = self.viewer.layers[layer_name]
+        if (
+            'settings' not in layer.metadata
+            or 'lifetime' not in layer.metadata['settings']
+        ):
+            self._updating_settings = True
+            try:
+                self.lifetime_type_combobox.setCurrentText('None')
+                self.lifetime_range_slider.setValue((0, 100))
+                self.lifetime_min_edit.setText('0.0')
+                self.lifetime_max_edit.setText('100.0')
+                self.lifetime_range_label.setText(
+                    'Lifetime range (ns): 0.0 - 100.0'
+                )
+                self.histogram_widget.hide()
+            finally:
+                self._updating_settings = False
+            return
+
+        self._updating_settings = True
+        try:
+            settings = layer.metadata['settings']['lifetime']
+
+            if 'lifetime_type' in settings:
+                self.lifetime_type_combobox.setCurrentText(
+                    settings['lifetime_type']
+                )
+
+        finally:
+            self._updating_settings = False
+
+    def _on_frequency_changed(self):
+        """Handle frequency input changes."""
+        frequency_text = self.frequency_input.text().strip()
+
+        if not self._updating_settings:
+            current_lifetime_type = self.lifetime_type_combobox.currentText()
+            if current_lifetime_type != "None" and frequency_text:
+                try:
+                    self.frequency = float(frequency_text)
+                    self.calculate_lifetimes()
+                    self._update_lifetime_range_slider()
+                    self.create_lifetime_layer()
+                    self._restore_lifetime_range_from_metadata()
+                    self._on_lifetime_range_changed(
+                        self.lifetime_range_slider.value()
+                    )
+                    self.plot_lifetime_histogram()
+                except ValueError:
+                    show_error(
+                        "Invalid frequency value. Please enter a valid number."
+                    )
+            elif frequency_text == "":
+                self.frequency = None
+                self.histogram_widget.hide()
+
     def style_histogram_axes(self):
         """Apply consistent styling to the histogram axes and figure."""
         self.hist_ax.patch.set_alpha(0)
@@ -214,20 +309,24 @@ class LifetimeWidget(QWidget):
         min_lifetime = min_val / self.lifetime_range_factor
         max_lifetime = max_val / self.lifetime_range_factor
 
+        # Apply clipping to the lifetime data
         if self.lifetime_data_original is not None:
             self.lifetime_data = np.clip(
                 self.lifetime_data_original, min_lifetime, max_lifetime
             )
 
+            # Update the lifetime layer if it exists
             if self.lifetime_layer is not None:
                 self.lifetime_layer.data = self.lifetime_data
 
+                # Set flag to prevent recursive updates from colormap change event
                 self._updating_contrast_limits = True
                 try:
                     self.lifetime_layer.contrast_limits = [
                         min_lifetime,
                         max_lifetime,
                     ]
+                    # Update our stored contrast limits to match
                     self.colormap_contrast_limits = [
                         min_lifetime,
                         max_lifetime,
@@ -235,7 +334,15 @@ class LifetimeWidget(QWidget):
                 finally:
                     self._updating_contrast_limits = False
 
-            self.plot_lifetime_histogram()
+        if not self._updating_settings:
+            self._update_lifetime_setting_in_metadata(
+                'lifetime_range_min', min_lifetime
+            )
+            self._update_lifetime_setting_in_metadata(
+                'lifetime_range_max', max_lifetime
+            )
+
+        self._apply_lifetime_range_change(min_val, max_val)
 
     def calculate_lifetimes(self):
         """Calculate the lifetimes for all harmonics."""
@@ -244,7 +351,7 @@ class LifetimeWidget(QWidget):
 
         frequency_text = self.frequency_input.text().strip()
         if not frequency_text:
-            show_error("Enter frequency")
+            show_warning("Enter frequency")
             return
 
         base_frequency = float(frequency_text)
@@ -298,7 +405,6 @@ class LifetimeWidget(QWidget):
 
         self.lifetime_data_original = lifetime_flat.reshape(layer_data.shape)
 
-        # Initialize clipped data as copy of original
         self.lifetime_data = self.lifetime_data_original.copy()
 
         self.frequency = base_frequency
@@ -364,7 +470,6 @@ class LifetimeWidget(QWidget):
         min_val = float(self.lifetime_min_edit.text())
         max_val = float(self.lifetime_max_edit.text())
 
-        # Clamp to valid range
         min_val = max(0.0, min(min_val, self.max_lifetime or 0))
         max_val = max(0.0, min(max_val, self.max_lifetime or 0))
 
@@ -375,7 +480,8 @@ class LifetimeWidget(QWidget):
         min_slider = int(min_val * self.lifetime_range_factor)
         max_slider = int(max_val * self.lifetime_range_factor)
         self.lifetime_range_slider.setValue((min_slider, max_slider))
-        self._on_lifetime_range_changed((min_slider, max_slider))
+        if not self._updating_settings:
+            self._on_lifetime_range_changed((min_slider, max_slider))
 
     def _on_lifetime_max_edit(self):
         min_val = float(self.lifetime_min_edit.text())
@@ -391,7 +497,8 @@ class LifetimeWidget(QWidget):
         min_slider = int(min_val * self.lifetime_range_factor)
         max_slider = int(max_val * self.lifetime_range_factor)
         self.lifetime_range_slider.setValue((min_slider, max_slider))
-        self._on_lifetime_range_changed((min_slider, max_slider))
+        if not self._updating_settings:
+            self._on_lifetime_range_changed((min_slider, max_slider))
 
     def plot_lifetime_histogram(self):
         """Plot the histogram of the lifetime data as a line plot."""
@@ -441,7 +548,6 @@ class LifetimeWidget(QWidget):
             colormap='plasma',
         )
 
-        # Check if the layer is in the viewer before attempting to remove it
         if lifetime_layer_name in self.viewer.layers:
             self.viewer.layers.remove(self.viewer.layers[lifetime_layer_name])
 
@@ -500,18 +606,22 @@ class LifetimeWidget(QWidget):
 
     def _on_harmonic_changed(self):
         """Callback whenever the harmonic selector changes."""
-        # If a lifetime type is already selected, recalculate with new harmonic
-        if self.lifetime_type_combobox.currentText() != "None":
-            if self.lifetime_data_original is not None:
+        current_lifetime_type = self.lifetime_type_combobox.currentText()
+        if current_lifetime_type != "None":
+            frequency = self.frequency_input.text().strip()
+            if frequency:
                 self.calculate_lifetimes()
                 self._update_lifetime_range_slider()
-                if self.lifetime_layer is not None:
-                    self.lifetime_layer.data = self.lifetime_data
+                self.create_lifetime_layer()
+
+                self._restore_lifetime_range_from_metadata()
                 self._on_lifetime_range_changed(
                     self.lifetime_range_slider.value()
                 )
 
-        self.plot_lifetime_histogram()
+                self.plot_lifetime_histogram()
+        else:
+            self.plot_lifetime_histogram()
 
     def _on_colormap_changed(self, event):
         """Callback whenever the colormap changes."""
@@ -526,19 +636,44 @@ class LifetimeWidget(QWidget):
 
     def _on_image_layer_changed(self):
         """Callback whenever the image layer with phasor features changes."""
-        self.lifetime_type_combobox.setCurrentText("None")
+        layer_name = (
+            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        )
+        if layer_name:
+            self._restore_lifetime_settings_from_metadata()
 
-        frequency_text = self.frequency_input.text().strip()
-        if frequency_text:
-            self.frequency = float(frequency_text)
+            current_lifetime_type = self.lifetime_type_combobox.currentText()
+            if current_lifetime_type != "None":
+                frequency_text = self.frequency_input.text().strip()
+                if frequency_text:
+                    try:
+                        self._updating_settings = True
+                        try:
+                            self._on_lifetime_type_changed(
+                                current_lifetime_type
+                            )
+                        finally:
+                            self._updating_settings = False
+                    except ValueError:
+                        self.histogram_widget.hide()
+                else:
+                    self.histogram_widget.hide()
+            else:
+                self.histogram_widget.hide()
         else:
-            self.frequency = None
+            self.lifetime_data = None
+            self.lifetime_data_original = None
+            self.lifetime_layer = None
 
-        self.hist_ax.clear()
-        self.hist_fig.canvas.draw_idle()
+            self.hist_ax.clear()
+            self.hist_fig.canvas.draw_idle()
+            self.histogram_widget.hide()
 
     def _on_lifetime_type_changed(self, text):
         """Callback when lifetime type combobox selection changes."""
+        if not self._updating_settings:
+            self._update_lifetime_setting_in_metadata('lifetime_type', text)
+
         if text == "None":
             self.histogram_widget.hide()
             if self.lifetime_layer is not None:
@@ -552,11 +687,180 @@ class LifetimeWidget(QWidget):
             if sample_name == "":
                 self.histogram_widget.hide()
                 return
+            frequency = self.frequency_input.text().strip()
+            if frequency == "":
+                show_warning("Enter frequency")
+                self.histogram_widget.hide()
+                return
 
             self.calculate_lifetimes()
             self._update_lifetime_range_slider()
             self.create_lifetime_layer()
+
+            self._restore_lifetime_range_from_metadata()
+
             self._on_lifetime_range_changed(self.lifetime_range_slider.value())
-            update_frequency_in_metadata(
-                self.viewer.layers[sample_name], self.frequency
+
+            if self.lifetime_data is not None:
+                self.plot_lifetime_histogram()
+
+            if not self._updating_settings:
+                update_frequency_in_metadata(
+                    self.viewer.layers[sample_name], frequency
+                )
+
+    def _restore_lifetime_range_from_metadata(self):
+        """Restore lifetime range from metadata after calculation."""
+        layer_name = (
+            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        )
+        if not layer_name:
+            return
+
+        layer = self.viewer.layers[layer_name]
+        if (
+            'settings' in layer.metadata
+            and 'lifetime' in layer.metadata['settings']
+        ):
+            settings = layer.metadata['settings']['lifetime']
+
+            if (
+                'lifetime_range_min' in settings
+                and 'lifetime_range_max' in settings
+                and settings['lifetime_range_min'] is not None
+                and settings['lifetime_range_max'] is not None
+            ):
+
+                min_val = settings['lifetime_range_min']
+                max_val = settings['lifetime_range_max']
+
+                if (
+                    self.min_lifetime is not None
+                    and self.max_lifetime is not None
+                    and min_val >= self.min_lifetime
+                    and max_val <= self.max_lifetime
+                ):
+
+                    min_slider = int(min_val * self.lifetime_range_factor)
+                    max_slider = int(max_val * self.lifetime_range_factor)
+
+                    self._updating_settings = True
+                    try:
+                        self.lifetime_range_slider.setValue(
+                            (min_slider, max_slider)
+                        )
+                        self.lifetime_min_edit.setText(f"{min_val:.2f}")
+                        self.lifetime_max_edit.setText(f"{max_val:.2f}")
+                        self.lifetime_range_label.setText(
+                            f"Lifetime range (ns): {min_val:.2f} - {max_val:.2f}"
+                        )
+                    finally:
+                        self._updating_settings = False
+
+                    self._apply_lifetime_range_change(min_slider, max_slider)
+
+    def _apply_lifetime_range_change(self, min_slider, max_slider):
+        """Apply lifetime range change without updating metadata."""
+        min_lifetime = min_slider / self.lifetime_range_factor
+        max_lifetime = max_slider / self.lifetime_range_factor
+
+        if self.lifetime_data_original is not None:
+            self.lifetime_data = np.clip(
+                self.lifetime_data_original, min_lifetime, max_lifetime
             )
+
+            if self.lifetime_layer is not None:
+                self.lifetime_layer.data = self.lifetime_data
+
+                self._updating_contrast_limits = True
+                try:
+                    self.lifetime_layer.contrast_limits = [
+                        min_lifetime,
+                        max_lifetime,
+                    ]
+                    self.colormap_contrast_limits = [
+                        min_lifetime,
+                        max_lifetime,
+                    ]
+                finally:
+                    self._updating_contrast_limits = False
+
+            self.plot_lifetime_histogram()
+
+    def _restore_lifetime_range_from_metadata(self):
+        """Restore lifetime range from metadata after calculation."""
+        layer_name = (
+            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        )
+        if not layer_name:
+            return
+
+        layer = self.viewer.layers[layer_name]
+        if (
+            'settings' in layer.metadata
+            and 'lifetime' in layer.metadata['settings']
+        ):
+            settings = layer.metadata['settings']['lifetime']
+
+            if (
+                'lifetime_range_min' in settings
+                and 'lifetime_range_max' in settings
+                and settings['lifetime_range_min'] is not None
+                and settings['lifetime_range_max'] is not None
+            ):
+
+                min_val = settings['lifetime_range_min']
+                max_val = settings['lifetime_range_max']
+
+                if (
+                    self.min_lifetime is not None
+                    and self.max_lifetime is not None
+                    and min_val >= self.min_lifetime
+                    and max_val <= self.max_lifetime
+                ):
+
+                    min_slider = int(min_val * self.lifetime_range_factor)
+                    max_slider = int(max_val * self.lifetime_range_factor)
+
+                    self._updating_settings = True
+                    try:
+                        self.lifetime_range_slider.setValue(
+                            (min_slider, max_slider)
+                        )
+                        self.lifetime_min_edit.setText(f"{min_val:.2f}")
+                        self.lifetime_max_edit.setText(f"{max_val:.2f}")
+                        self.lifetime_range_label.setText(
+                            f"Lifetime range (ns): {min_val:.2f} - {max_val:.2f}"
+                        )
+                    finally:
+                        self._updating_settings = False
+
+                    self._apply_lifetime_range_change(min_slider, max_slider)
+
+    def _apply_lifetime_range_change(self, min_slider, max_slider):
+        """Apply lifetime range change without updating metadata."""
+        min_lifetime = min_slider / self.lifetime_range_factor
+        max_lifetime = max_slider / self.lifetime_range_factor
+
+        if self.lifetime_data_original is not None:
+            self.lifetime_data = np.clip(
+                self.lifetime_data_original, min_lifetime, max_lifetime
+            )
+
+            if self.lifetime_layer is not None:
+                self.lifetime_layer.data = self.lifetime_data
+
+                self._updating_contrast_limits = True
+                try:
+                    self.lifetime_layer.contrast_limits = [
+                        min_lifetime,
+                        max_lifetime,
+                    ]
+                    self.colormap_contrast_limits = [
+                        min_lifetime,
+                        max_lifetime,
+                    ]
+                finally:
+                    self._updating_contrast_limits = False
+
+            self.plot_lifetime_histogram()

@@ -78,6 +78,10 @@ def test_fret_widget_parameter_updates(make_napari_viewer):
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
+    # Create and add layer
+    test_layer = create_image_layer_with_phasors()
+    viewer.add_layer(test_layer)
+
     # Test donor lifetime input
     widget.donor_line_edit.setText("2.5")
     widget.frequency_input.setText("80")
@@ -1437,3 +1441,507 @@ def test_ui_mode_switching_preserves_manual_values(make_napari_viewer):
     assert widget.donor_line_edit.text() == "2.5"
     assert widget.background_real_edit.text() == "0.3"
     assert widget.background_imag_edit.text() == "0.4"
+
+
+def test_metadata_initialization(make_napari_viewer):
+    """Test that FRET settings are only initialized when analysis is performed."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Add layer with phasor data
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+
+    # Select the layer
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(
+        "test_layer"
+    )
+
+    # Trigger layer change - should NOT initialize FRET metadata
+    widget._on_image_layer_changed()
+
+    # Check that FRET settings were NOT initialized
+    if 'settings' in test_layer.metadata:
+        assert 'fret' not in test_layer.metadata['settings']
+
+    # Now perform FRET analysis
+    widget.donor_line_edit.setText("2.0")
+    widget.frequency_input.setText("80")
+    widget.background_real_edit.setText("0.1")
+    widget.background_imag_edit.setText("0.1")
+
+    # Calculate FRET efficiency - this should initialize metadata
+    widget.calculate_fret_efficiency_button.click()
+
+    # Now check that settings were initialized
+    assert 'settings' in test_layer.metadata
+    assert 'fret' in test_layer.metadata['settings']
+
+    # Verify default values
+    fret_settings = test_layer.metadata['settings']['fret']
+    assert fret_settings['donor_lifetime'] == 2.0
+    assert test_layer.metadata['settings']['frequency'] == '80'
+    assert fret_settings['donor_background'] == 0.1
+    assert fret_settings['background_real'] == 0.1
+    assert fret_settings['background_imag'] == 0.1
+    assert fret_settings['donor_fretting_proportion'] == 1.0
+    assert fret_settings['use_colormap'] is True
+    assert fret_settings['background_positions_by_harmonic'] == {
+        1: {'imag': 0.1, 'real': 0.1}
+    }
+
+    # Check colormap settings
+    assert 'colormap_settings' in fret_settings
+    assert fret_settings['colormap_settings']['colormap_name'] == 'viridis'
+    assert fret_settings['colormap_settings']['colormap_colors'] is None
+    assert fret_settings['colormap_settings']['contrast_limits'] == [0, 1]
+    assert fret_settings['colormap_settings']['colormap_changed'] is False
+
+
+def test_metadata_storage_manual_values(make_napari_viewer):
+    """Test that manual values are correctly stored in metadata."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Add layer
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(
+        "test_layer"
+    )
+    widget._on_image_layer_changed()
+
+    # Set manual values
+    widget.donor_line_edit.setText("2.5")
+    widget.frequency_input.setText("85")
+    widget.background_real_edit.setText("0.15")
+    widget.background_imag_edit.setText("0.25")
+    widget.background_slider.setValue(30)  # 0.3
+    widget.fretting_slider.setValue(75)  # 0.75
+    widget.colormap_checkbox.setChecked(False)
+
+    # Trigger updates
+    parent._broadcast_frequency_value_across_tabs('85')
+    widget._on_parameters_changed()
+    widget._on_background_slider_changed()
+    widget._on_fretting_slider_changed()
+    widget._on_colormap_checkbox_changed()
+
+    # Check metadata
+    fret_settings = test_layer.metadata['settings']['fret']
+    assert fret_settings['donor_lifetime'] == 2.5
+    assert test_layer.metadata['settings']['frequency'] == 85.0
+    assert fret_settings['background_real'] == 0.15
+    assert fret_settings['background_imag'] == 0.25
+    assert fret_settings['donor_background'] == 0.3
+    assert fret_settings['donor_fretting_proportion'] == 0.75
+    assert fret_settings['use_colormap'] is False
+
+
+def test_metadata_storage_background_positions_by_harmonic(make_napari_viewer):
+    """Test that background positions by harmonic are correctly stored."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Add layer
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(
+        "test_layer"
+    )
+    widget._on_image_layer_changed()
+
+    # Set background for harmonic 1
+    parent.harmonic = 1
+    widget._on_harmonic_changed()
+    widget.background_real_edit.setText("0.2")
+    widget.background_imag_edit.setText("0.3")
+    widget._on_background_position_changed()
+
+    # Set background for harmonic 2
+    parent.harmonic = 2
+    widget._on_harmonic_changed()
+    widget.background_real_edit.setText("0.5")
+    widget.background_imag_edit.setText("0.6")
+    widget._on_background_position_changed()
+
+    # Check metadata
+    fret_settings = test_layer.metadata['settings']['fret']
+    bg_positions = fret_settings['background_positions_by_harmonic']
+
+    assert 1 in bg_positions
+    assert bg_positions[1]['real'] == 0.2
+    assert bg_positions[1]['imag'] == 0.3
+
+    assert 2 in bg_positions
+    assert bg_positions[2]['real'] == 0.5
+    assert bg_positions[2]['imag'] == 0.6
+
+
+def test_metadata_storage_from_layer_mode(make_napari_viewer):
+    """Test that 'From layer' mode settings are stored in metadata."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Add layers
+    donor_layer = create_image_layer_with_phasors()
+    donor_layer.name = "donor_layer"
+    viewer.add_layer(donor_layer)
+
+    bg_layer = create_image_layer_with_phasors()
+    bg_layer.name = "bg_layer"
+    viewer.add_layer(bg_layer)
+
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(
+        "donor_layer"
+    )
+    widget._on_image_layer_changed()
+    widget.frequency_input.setText("80")
+
+    # Switch to From layer mode for donor
+    widget.donor_source_selector.setCurrentText("From layer")
+    widget._on_donor_source_changed(1)
+    widget.donor_lifetime_combobox.setCurrentText("donor_layer")
+    widget.lifetime_type_combobox.setCurrentText("Normal Lifetime")
+
+    # Switch to From layer mode for background
+    widget.bg_source_selector.setCurrentText("From layer")
+    widget._on_bg_source_changed(1)
+    widget.background_image_combobox.setCurrentText("bg_layer")
+
+    # Check metadata
+    fret_settings = donor_layer.metadata['settings']['fret']
+    assert fret_settings['donor_source'] == 'From layer'
+    assert fret_settings['donor_layer_name'] == 'donor_layer'
+    assert fret_settings['donor_lifetime_type'] == 'Normal Lifetime'
+    assert fret_settings['background_source'] == 'From layer'
+    assert fret_settings['background_layer_name'] == 'bg_layer'
+
+
+def test_metadata_restoration_manual_values(make_napari_viewer):
+    """Test that manual values are correctly restored from metadata."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Add layer
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(
+        "test_layer"
+    )
+    widget._on_image_layer_changed()
+
+    # Set and store values
+    widget.donor_line_edit.setText("3.5")
+    widget.frequency_input.setText("90")
+    widget.background_slider.setValue(40)  # 0.4
+    widget.fretting_slider.setValue(85)  # 0.85
+    widget.colormap_checkbox.setChecked(False)
+
+    parent._broadcast_frequency_value_across_tabs('90')
+    widget._on_parameters_changed()
+    widget._on_background_slider_changed()
+    widget._on_fretting_slider_changed()
+    widget._on_colormap_checkbox_changed()
+
+    parent.harmonic = 1
+    widget._on_harmonic_changed()
+    widget.background_real_edit.setText("0.35")
+    widget.background_imag_edit.setText("0.45")
+    widget._on_background_position_changed()
+
+    # Switch to another layer and back
+    parent.image_layer_with_phasor_features_combobox.setCurrentText("")
+    widget._on_image_layer_changed()
+
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(
+        "test_layer"
+    )
+    widget._on_image_layer_changed()
+
+    # Verify restoration (comparing float values, not exact string format)
+    assert float(widget.donor_line_edit.text()) == 3.5
+    assert float(widget.frequency_input.text()) == 90.0
+    assert widget.background_slider.value() == 40
+    assert widget.background_label.text() == "0.40"
+    assert widget.fretting_slider.value() == 85
+    assert widget.fretting_label.text() == "0.85"
+    assert widget.colormap_checkbox.isChecked() is False
+    assert float(widget.background_real_edit.text()) == 0.35
+    assert float(widget.background_imag_edit.text()) == 0.45
+
+
+def test_metadata_restoration_background_positions_by_harmonic(
+    make_napari_viewer,
+):
+    """Test that background positions by harmonic are correctly restored."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Add layer
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(
+        "test_layer"
+    )
+    widget._on_image_layer_changed()
+
+    # Set positions for different harmonics
+    parent.harmonic = 1
+    widget._on_harmonic_changed()
+    widget.background_real_edit.setText("0.1")
+    widget.background_imag_edit.setText("0.2")
+    widget._on_background_position_changed()
+
+    parent.harmonic = 2
+    widget._on_harmonic_changed()
+    widget.background_real_edit.setText("0.3")
+    widget.background_imag_edit.setText("0.4")
+    widget._on_background_position_changed()
+
+    parent.harmonic = 3
+    widget._on_harmonic_changed()
+    widget.background_real_edit.setText("0.5")
+    widget.background_imag_edit.setText("0.6")
+    widget._on_background_position_changed()
+
+    # Switch to another layer and back
+    parent.image_layer_with_phasor_features_combobox.setCurrentText("")
+    widget._on_image_layer_changed()
+
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(
+        "test_layer"
+    )
+    widget._on_image_layer_changed()
+
+    # Verify restoration for each harmonic
+    parent.harmonic = 1
+    widget._on_harmonic_changed()
+    assert float(widget.background_real_edit.text()) == 0.1
+    assert float(widget.background_imag_edit.text()) == 0.2
+
+    parent.harmonic = 2
+    widget._on_harmonic_changed()
+    assert float(widget.background_real_edit.text()) == 0.3
+    assert float(widget.background_imag_edit.text()) == 0.4
+
+    parent.harmonic = 3
+    widget._on_harmonic_changed()
+    assert float(widget.background_real_edit.text()) == 0.5
+    assert float(widget.background_imag_edit.text()) == 0.6
+
+
+def test_metadata_restoration_from_layer_mode(make_napari_viewer):
+    """Test that 'From layer' mode settings are correctly restored."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Add layers
+    donor_layer = create_image_layer_with_phasors()
+    donor_layer.name = "donor_layer"
+    viewer.add_layer(donor_layer)
+
+    bg_layer = create_image_layer_with_phasors()
+    bg_layer.name = "bg_layer"
+    viewer.add_layer(bg_layer)
+
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(
+        "donor_layer"
+    )
+    widget._on_image_layer_changed()
+    widget.frequency_input.setText("80")
+
+    # Configure From layer mode
+    widget.donor_source_selector.setCurrentText("From layer")
+    widget._on_donor_source_changed(1)
+    widget.donor_lifetime_combobox.setCurrentText("donor_layer")
+    widget.lifetime_type_combobox.setCurrentText(
+        "Apparent Modulation Lifetime"
+    )
+
+    widget.bg_source_selector.setCurrentText("From layer")
+    widget._on_bg_source_changed(1)
+    widget.background_image_combobox.setCurrentText("bg_layer")
+
+    # Switch away and back
+    parent.image_layer_with_phasor_features_combobox.setCurrentText("")
+    widget._on_image_layer_changed()
+
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(
+        "donor_layer"
+    )
+    widget._on_image_layer_changed()
+
+    # Verify restoration
+    assert widget.donor_source_selector.currentText() == "From layer"
+    assert widget.donor_lifetime_combobox.currentText() == "donor_layer"
+    assert (
+        widget.lifetime_type_combobox.currentText()
+        == "Apparent Modulation Lifetime"
+    )
+    assert widget.bg_source_selector.currentText() == "From layer"
+    assert widget.background_image_combobox.currentText() == "bg_layer"
+
+
+def test_metadata_restoration_reverts_to_manual_when_layer_missing(
+    make_napari_viewer,
+):
+    """Test that settings revert to manual mode when selected layers are missing."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Add layers
+    donor_layer = create_image_layer_with_phasors()
+    donor_layer.name = "donor_layer"
+    viewer.add_layer(donor_layer)
+
+    bg_layer = create_image_layer_with_phasors()
+    bg_layer.name = "bg_layer"
+    viewer.add_layer(bg_layer)
+
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(
+        "donor_layer"
+    )
+    widget._on_image_layer_changed()
+
+    # Configure From layer mode
+    widget.frequency_input.setText("80")
+    widget.donor_line_edit.setText("2.5")
+    widget.donor_source_selector.setCurrentText("From layer")
+    widget._on_donor_source_changed(1)
+    widget.donor_lifetime_combobox.setCurrentText("donor_layer")
+
+    widget.bg_source_selector.setCurrentText("From layer")
+    widget._on_bg_source_changed(1)
+    widget.background_image_combobox.setCurrentText("bg_layer")
+
+    # Remove the referenced layer
+    viewer.layers.remove(bg_layer)
+
+    # Switch away and back
+    parent.image_layer_with_phasor_features_combobox.setCurrentText("")
+    widget._on_image_layer_changed()
+
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(
+        "donor_layer"
+    )
+    widget._on_image_layer_changed()
+
+    # Background should revert to Manual since bg_layer is missing
+    assert widget.bg_source_selector.currentText() == "Manual"
+
+    # Donor should still be From layer since donor_layer exists
+    assert widget.donor_source_selector.currentText() == "From layer"
+
+
+def test_metadata_colormap_settings_storage(make_napari_viewer):
+    """Test that colormap settings are correctly stored in metadata."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Add layer
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(
+        "test_layer"
+    )
+    widget._on_image_layer_changed()
+
+    # Calculate FRET to create FRET layer
+    widget.donor_line_edit.setText("2.0")
+    widget.frequency_input.setText("80")
+    widget.background_real_edit.setText("0.1")
+    widget.background_imag_edit.setText("0.1")
+    widget.calculate_fret_efficiency()
+
+    # Change colormap settings
+    widget.fret_layer.colormap = 'plasma'
+    widget.fret_layer.contrast_limits = (0.2, 0.8)
+
+    # Trigger colormap change events
+    mock_event = Mock()
+    mock_event.source = widget.fret_layer
+    widget._on_colormap_changed(mock_event)
+    widget._on_contrast_limits_changed(mock_event)
+
+    # Check metadata
+    colormap_settings = test_layer.metadata['settings']['fret'][
+        'colormap_settings'
+    ]
+    assert colormap_settings['colormap_name'] == 'plasma'
+    assert colormap_settings['contrast_limits'] == [0.2, 0.8]
+    assert colormap_settings['colormap_changed'] is True
+
+
+def test_metadata_persistence_across_layer_switches(make_napari_viewer):
+    """Test that metadata persists correctly when switching between layers."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    # Add two layers
+    layer1 = create_image_layer_with_phasors()
+    layer1.name = "layer1"
+    viewer.add_layer(layer1)
+
+    layer2 = create_image_layer_with_phasors()
+    layer2.name = "layer2"
+    viewer.add_layer(layer2)
+
+    # Configure layer 1
+    parent.image_layer_with_phasor_features_combobox.setCurrentText("layer1")
+    widget._on_image_layer_changed()
+    widget.donor_line_edit.setText("2.5")
+    widget.frequency_input.setText("80.0")
+    widget.background_slider.setValue(30)
+    parent._broadcast_frequency_value_across_tabs('80.0')
+    widget._on_parameters_changed()
+    widget._on_background_slider_changed()
+
+    # Configure layer 2 with different values
+    parent.image_layer_with_phasor_features_combobox.setCurrentText("layer2")
+    widget._on_image_layer_changed()
+    widget.donor_line_edit.setText("3.5")
+    widget.frequency_input.setText("90.0")
+    widget.background_slider.setValue(50)
+    parent._broadcast_frequency_value_across_tabs('90.0')
+    widget._on_parameters_changed()
+    widget._on_background_slider_changed()
+
+    # Switch back to layer 1
+    parent.image_layer_with_phasor_features_combobox.setCurrentText("layer1")
+    widget._on_image_layer_changed()
+
+    # Verify layer 1 settings were restored
+    assert widget.donor_line_edit.text() == "2.5"
+    assert widget.frequency_input.text() == "80.0"
+    assert widget.background_slider.value() == 30
+
+    # Switch to layer 2
+    parent.image_layer_with_phasor_features_combobox.setCurrentText("layer2")
+    widget._on_image_layer_changed()
+
+    # Verify layer 2 settings were restored
+    assert widget.donor_line_edit.text() == "3.5"
+    assert widget.frequency_input.text() == "90.0"
+    assert widget.background_slider.value() == 50

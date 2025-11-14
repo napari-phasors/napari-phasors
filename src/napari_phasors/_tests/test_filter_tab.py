@@ -379,13 +379,17 @@ def test_threshold_method_storage_in_metadata(make_napari_viewer):
 
     filter_widget.threshold_method_combobox.setCurrentText("Li")
 
-    with patch('napari_phasors.filter_tab.apply_filter_and_threshold'):
+    with patch(
+        'napari_phasors.filter_tab.apply_filter_and_threshold'
+    ) as mock_apply:
         filter_widget.apply_button_clicked()
 
-    assert "settings" in intensity_image_layer.metadata
-    assert (
-        intensity_image_layer.metadata["settings"]["threshold_method"] == "Li"
-    )
+        # Check that apply_filter_and_threshold was called with correct parameters
+        mock_apply.assert_called_once()
+        call_args = mock_apply.call_args
+
+        # Verify threshold_method was passed to the function
+        assert call_args[1]['threshold_method'] == "Li"
 
 
 def test_calculate_automatic_threshold(make_napari_viewer):
@@ -600,7 +604,7 @@ def test_slider_value_modifies_threshold_line(make_napari_viewer):
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
-    filter_widget.on_labels_layer_with_phasor_features_changed()
+    filter_widget._on_image_layer_changed()
     filter_widget.plot_mean_histogram()
 
     filter_widget.threshold_slider.setValue(77)
@@ -677,7 +681,7 @@ def test_layer_with_no_phasor_features_does_nothing(make_napari_viewer):
 
     with (
         patch.object(
-            FilterWidget, 'on_labels_layer_with_phasor_features_changed'
+            FilterWidget, '_on_image_layer_changed'
         ) as mock_on_labels,
         patch.object(FilterWidget, 'plot_mean_histogram') as mock_plot_hist,
         patch.object(

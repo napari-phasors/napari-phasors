@@ -81,12 +81,12 @@ def _apply_filter_and_threshold_to_phasor_arrays(
     imag: np.ndarray,
     harmonics: np.ndarray,
     *,
-    threshold: float = 0,
-    filter_method: str = "median",
-    size: int = 3,
-    repeat: int = 1,
-    sigma: float = 1.0,
-    levels: int = 3,
+    threshold: float = None,
+    filter_method: str = None,
+    size: int = None,
+    repeat: int = None,
+    sigma: float = None,
+    levels: int = None,
 ):
     """Apply filter and threshold to phasor arrays.
 
@@ -100,31 +100,34 @@ def _apply_filter_and_threshold_to_phasor_arrays(
         Imaginary part of phasor (S).
     harmonics : np.ndarray
         Harmonic values.
-    threshold : float
+    threshold : float, optional
         Threshold value for the mean value to be applied to G and S.
-    filter_method : str
+        If None, no threshold is applied.
+    filter_method : str, optional
         Filter method. Options are 'median' or 'wavelet'.
-    size : int
-        Size of the median filter.
-    repeat : int
-        Number of times to apply the median filter.
-    sigma : float
-        Sigma parameter for wavelet filter.
-    levels : int
-        Number of levels for wavelet filter.
+        If None, no filter is applied.
+    size : int, optional
+        Size of the median filter. Only used if filter_method is 'median'.
+    repeat : int, optional
+        Number of times to apply the median filter. Only used if filter_method is 'median'.
+    sigma : float, optional
+        Sigma parameter for wavelet filter. Only used if filter_method is 'wavelet'.
+    levels : int, optional
+        Number of levels for wavelet filter. Only used if filter_method is 'wavelet'.
 
     Returns
     -------
     tuple
         (mean, real, imag) filtered and thresholded arrays
     """
-    if filter_method == "median" and repeat > 0:
+    # Apply filter only if filter_method is specified
+    if filter_method == "median" and repeat is not None and repeat > 0:
         mean, real, imag = phasor_filter_median(
             mean,
             real,
             imag,
             repeat=repeat,
-            size=size,
+            size=size if size is not None else 3,
         )
     elif filter_method == "wavelet" and validate_harmonics_for_wavelet(
         harmonics
@@ -133,14 +136,15 @@ def _apply_filter_and_threshold_to_phasor_arrays(
             mean,
             real,
             imag,
-            sigma=sigma,
-            levels=levels,
+            sigma=sigma if sigma is not None else 1.0,
+            levels=levels if levels is not None else 3,
             harmonic=harmonics,
         )
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", category=RuntimeWarning)
-        mean, real, imag = phasor_threshold(mean, real, imag, threshold)
+    if threshold is not None and threshold > 0:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            mean, real, imag = phasor_threshold(mean, real, imag, threshold)
 
     return mean, real, imag
 
@@ -149,12 +153,13 @@ def apply_filter_and_threshold(
     layer: Image,
     /,
     *,
-    threshold: float = 0,
-    filter_method: str = "median",
-    size: int = 3,
-    repeat: int = 1,
-    sigma: float = 1.0,
-    levels: int = 3,
+    threshold: float = None,
+    threshold_method: str = None,
+    filter_method: str = None,
+    size: int = None,
+    repeat: int = None,
+    sigma: float = None,
+    levels: int = None,
     harmonics: np.ndarray = None,
 ):
     """Apply filter to an image layer.
@@ -163,28 +168,30 @@ def apply_filter_and_threshold(
     ----------
     layer : napari.layers.Image
         Napari image layer with phasor features.
-    threshold : float
+    threshold : float, optional
         Threshold value for the mean value to be applied to G and S.
-    filter_method : str
+        If None, no threshold is applied.
+    threshold_method : str, optional
+        Threshold method used. If None, no threshold method is saved.
+    filter_method : str, optional
         Filter method. Options are 'median' or 'wavelet'.
-    size : int
-        Size of the median filter.
-    repeat : int
-        Number of times to apply the median filter.
-    sigma : float
-        Sigma parameter for wavelet filter.
-    levels : int
-        Number of levels for wavelet filter.
+        If None, no filter is applied.
+    size : int, optional
+        Size of the median filter. Only used if filter_method is 'median'.
+    repeat : int, optional
+        Number of times to apply the median filter. Only used if filter_method is 'median'.
+    sigma : float, optional
+        Sigma parameter for wavelet filter. Only used if filter_method is 'wavelet'.
+    levels : int, optional
+        Number of levels for wavelet filter. Only used if filter_method is 'wavelet'.
     harmonics : np.ndarray, optional
         Harmonic values for wavelet filter. If None, will be extracted from layer.
 
     """
-    # Extract phasor arrays from layer
     mean, real, imag, harmonics = _extract_phasor_arrays_from_layer(
         layer, harmonics
     )
 
-    # Apply filter and threshold to phasor arrays
     mean, real, imag = _apply_filter_and_threshold_to_phasor_arrays(
         mean,
         real,
@@ -198,7 +205,6 @@ def apply_filter_and_threshold(
         levels=levels,
     )
 
-    # Update layer data and metadata
     layer.metadata['phasor_features_labels_layer'].features[
         'G'
     ] = real.flatten()
@@ -207,17 +213,31 @@ def apply_filter_and_threshold(
     ] = imag.flatten()
     layer.data = mean
 
-    # Update the settings dictionary of the layer
     if "settings" not in layer.metadata:
         layer.metadata["settings"] = {}
-    layer.metadata["settings"]["filter"] = {
-        "method": filter_method,
-        "size": size,
-        "repeat": repeat,
-        "sigma": sigma,
-        "levels": levels,
-    }
-    layer.metadata["settings"]["threshold"] = threshold
+
+    # Only save filter settings if a filter was actually applied
+    if filter_method is not None:
+        layer.metadata["settings"]["filter"] = {}
+        layer.metadata["settings"]["filter"]["method"] = filter_method
+
+        if filter_method == "median":
+            if size is not None:
+                layer.metadata["settings"]["filter"]["size"] = size
+            if repeat is not None:
+                layer.metadata["settings"]["filter"]["repeat"] = repeat
+        elif filter_method == "wavelet":
+            if sigma is not None:
+                layer.metadata["settings"]["filter"]["sigma"] = sigma
+            if levels is not None:
+                layer.metadata["settings"]["filter"]["levels"] = levels
+
+    # Only save threshold settings if a threshold was actually applied
+    if threshold is not None and threshold > 0:
+        layer.metadata["settings"]["threshold"] = threshold
+    if threshold_method is not None and threshold_method != "None":
+        layer.metadata["settings"]["threshold_method"] = threshold_method
+
     layer.refresh()
     return
 

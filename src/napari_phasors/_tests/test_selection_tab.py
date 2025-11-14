@@ -365,7 +365,10 @@ def test_create_phasors_selected_layer_with_data(
 
     # Check if layer was added to viewer
     layer_names = [layer.name for layer in viewer.layers]
-    assert "Selection: custom_selection" in layer_names
+    assert (
+        f"Selection custom_selection: {intensity_image_layer.name}"
+        in layer_names
+    )
 
 
 def test_no_selection_processing_during_plot_update(make_napari_viewer):
@@ -395,19 +398,24 @@ def test_delete_labels_layer_and_recreate(make_napari_viewer):
     widget.manual_selection_changed(manual_selection)
 
     # Check that a layer with the specific name exists
-    assert "Selection: MANUAL SELECTION #1" in [
+    assert f"Selection MANUAL SELECTION #1: {intensity_image_layer.name}" in [
         layer.name for layer in viewer.layers
     ]
 
     # Store the original layer data for comparison
-    selection_layer = viewer.layers["Selection: MANUAL SELECTION #1"]
+    selection_layer = viewer.layers[
+        f"Selection MANUAL SELECTION #1: {intensity_image_layer.name}"
+    ]
     original_data = selection_layer.data.copy()
 
     # Delete the layer from the viewer
-    viewer.layers.remove("Selection: MANUAL SELECTION #1")
-    assert "Selection: MANUAL SELECTION #1" not in [
-        layer.name for layer in viewer.layers
-    ]
+    viewer.layers.remove(
+        f"Selection MANUAL SELECTION #1: {intensity_image_layer.name}"
+    )
+    assert (
+        f"Selection MANUAL SELECTION #1: {intensity_image_layer.name}"
+        not in [layer.name for layer in viewer.layers]
+    )
 
     # Mock the plot update methods to prevent the error
     with patch.object(
@@ -426,12 +434,14 @@ def test_delete_labels_layer_and_recreate(make_napari_viewer):
         widget.on_selection_id_changed()  # Explicitly trigger the event
 
     # Check that the layer is recreated
-    assert "Selection: MANUAL SELECTION #1" in [
+    assert f"Selection MANUAL SELECTION #1: {intensity_image_layer.name}" in [
         layer.name for layer in viewer.layers
     ]
 
     # Check that the recreated layer has the same values as before
-    recreated_layer = viewer.layers["Selection: MANUAL SELECTION #1"]
+    recreated_layer = viewer.layers[
+        f"Selection MANUAL SELECTION #1: {intensity_image_layer.name}"
+    ]
     np.testing.assert_array_equal(recreated_layer.data, original_data)
 
 
