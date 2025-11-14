@@ -290,7 +290,7 @@ def test_import_from_file_button_exists(make_napari_viewer):
     plotter = PlotterWidget(viewer)
 
     assert hasattr(plotter, 'import_from_file_button')
-    assert plotter.import_from_file_button.text() == "From OME-TIFF"
+    assert plotter.import_from_file_button.text() == "OME-TIFF File"
 
 
 def test_import_from_file_dialog_opens(make_napari_viewer):

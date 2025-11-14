@@ -63,11 +63,11 @@ def test_phasor_plotter_initialization_values(make_napari_viewer):
     # Import buttons tests
     assert hasattr(plotter, 'import_from_layer_button')
     assert isinstance(plotter.import_from_layer_button, QPushButton)
-    assert plotter.import_from_layer_button.text() == "From Layer"
+    assert plotter.import_from_layer_button.text() == "Layer"
 
     assert hasattr(plotter, 'import_from_file_button')
     assert isinstance(plotter.import_from_file_button, QPushButton)
-    assert plotter.import_from_file_button.text() == "From OME-TIFF"
+    assert plotter.import_from_file_button.text() == "OME-TIFF File"
 
     # Tab widget tests
     assert hasattr(plotter, 'tab_widget')
