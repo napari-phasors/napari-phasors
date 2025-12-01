@@ -1536,6 +1536,12 @@ class PlotterWidget(QWidget):
             )
             self.mask_layer_combobox.addItems(["None"] + mask_layer_names)
 
+            # Check if previously selected mask layer was deleted
+            mask_layer_was_deleted = (
+                mask_layer_combobox_current_text != "None"
+                and mask_layer_combobox_current_text not in mask_layer_names
+            )
+
             # Restore combobox selection if it still exists
             if image_layer_combobox_current_text in layer_names:
                 self.image_layer_with_phasor_features_combobox.setCurrentText(
@@ -1548,6 +1554,10 @@ class PlotterWidget(QWidget):
 
             self.image_layer_with_phasor_features_combobox.blockSignals(False)
             self.mask_layer_combobox.blockSignals(False)
+
+            # If mask layer was deleted, trigger the cleanup
+            if mask_layer_was_deleted:
+                self._on_mask_layer_changed("None")
 
             # Connect layer name change events (disconnect first to avoid duplicates)
             for layer_name in layer_names + mask_layer_names:
@@ -1699,6 +1709,10 @@ class PlotterWidget(QWidget):
 
         image_layer.metadata['mask'] = mask_data.copy()
 
+        # Apply mask to image data (set values outside mask to NaN)
+        mask_invalid = mask_data <= 0
+        image_layer.data = np.where(mask_invalid, np.nan, image_layer.data)
+
         # Apply mask data to G and S columns (linearize and tile mask and turn to NaNs values outside mask)
 
         # Update the mask feature in the labels layer with phasor features
@@ -1723,7 +1737,7 @@ class PlotterWidget(QWidget):
 
         current_image_layer = self.viewer.layers[current_image_layer_name]
 
-        # Restore original G and S and image data (this also clears previously applied filters)
+        # Restore original G and S and image data
         self._restore_original_phasor_data(current_image_layer)
 
         if text == "None":
@@ -1736,22 +1750,20 @@ class PlotterWidget(QWidget):
         # Update filter widget when layer changes
         if hasattr(self, 'filter_tab'):
             self.filter_tab._on_image_layer_changed()
-
-        # Update calibration button state when layer changes
-        if hasattr(self, 'calibration_tab'):
-            self.calibration_tab._on_image_layer_changed()
+            # Re-apply filter if previously applied
+            if (
+                current_image_layer.metadata['settings'].get('filter', None)
+                is not None
+                and current_image_layer.metadata['settings'].get(
+                    'threshold', None
+                )
+                is not None
+            ):
+                self.filter_tab.apply_button_clicked()
 
         # Update lifetime tab when layer changes
         if hasattr(self, 'lifetime_tab'):
             self.lifetime_tab._on_image_layer_changed()
-
-        # Update components tab when layer changes
-        if hasattr(self, 'components_tab'):
-            self.components_tab._on_image_layer_changed()
-
-        # Update FRET tab when layer changes
-        if hasattr(self, 'fret_tab'):
-            self.fret_tab._on_image_layer_changed()
 
         self.plot()
 
@@ -1767,6 +1779,25 @@ class PlotterWidget(QWidget):
         self._restore_original_phasor_data(current_image_layer)
         mask_layer = event.source
         self._apply_mask_to_phasor_data(mask_layer, current_image_layer)
+
+        # Apply changes to the filter tab
+        if hasattr(self, 'filter_tab'):
+            self.filter_tab._on_image_layer_changed()
+            # Re-apply filter if previously applied
+            if (
+                current_image_layer.metadata['settings'].get('filter', None)
+                is not None
+                and current_image_layer.metadata['settings'].get(
+                    'threshold', None
+                )
+                is not None
+            ):
+                self.filter_tab.apply_button_clicked()
+
+        # Apply changes to the lifetime tab
+        if hasattr(self, 'lifetime_tab'):
+            self.lifetime_tab._on_image_layer_changed()
+
         self.refresh_current_plot()
 
     def get_features(self):

@@ -72,6 +72,16 @@ def _extract_phasor_arrays_from_layer(
     real = np.reshape(real, (len(harmonics),) + mean.shape)
     imag = np.reshape(imag, (len(harmonics),) + mean.shape)
 
+    # Apply mask if present in metadata
+    if 'mask' in layer.metadata:
+        mask = layer.metadata['mask']
+        # Apply mask: set values to NaN where mask <= 0
+        mask_invalid = mask <= 0
+        mean = np.where(mask_invalid, np.nan, mean)
+        for h in range(len(harmonics)):
+            real[h] = np.where(mask_invalid, np.nan, real[h])
+            imag[h] = np.where(mask_invalid, np.nan, imag[h])
+
     return mean, real, imag, harmonics
 
 

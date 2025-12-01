@@ -538,11 +538,7 @@ class FilterWidget(QWidget):
         labels_layer_name = (
             self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
         )
-        mean_data = (
-            self.viewer.layers[labels_layer_name]
-            .metadata['original_mean']
-            .copy()
-        )
+        mean_data = self.viewer.layers[labels_layer_name].data.copy()
         if 'mask' in self.viewer.layers[labels_layer_name].metadata:
             mean_data = mean_data[
                 self.viewer.layers[labels_layer_name].metadata['mask'] > 0
