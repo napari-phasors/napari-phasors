@@ -582,19 +582,7 @@ class ComponentsWidget(QWidget):
         try:
             settings = layer.metadata['settings']['component_analysis']
 
-            for comp in self.components:
-                if comp is not None:
-                    if comp.dot is not None:
-                        comp.dot.remove()
-                        comp.dot = None
-                    if comp.text is not None:
-                        comp.text.remove()
-                        comp.text = None
-                    comp.name_edit.clear()
-                    if comp.lifetime_edit is not None:
-                        comp.lifetime_edit.clear()
-                    comp.g_edit.clear()
-                    comp.s_edit.clear()
+            self._clear_components_display()
 
             if 'analysis_type' in settings:
                 self.analysis_type = settings['analysis_type']
@@ -3011,82 +2999,6 @@ class ComponentsWidget(QWidget):
                             comp.lifetime_edit.clear()
             finally:
                 self._updating_settings = False
-
-    def _create_fraction_layers(self, fractions, component_names):
-        """Create fraction layers for each component."""
-        for layer in self.fraction_layers:
-            try:
-                self.viewer.layers.remove(layer)
-            except ValueError:
-                pass
-        self.fraction_layers.clear()
-
-        base_name = (
-            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-        )
-
-        if not self._updating_settings and self.current_image_layer_name:
-            layer = self.viewer.layers[self.current_image_layer_name]
-            settings = layer.metadata.get('settings', {}).get(
-                'component_analysis', {}
-            )
-            current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
-            harmonic_key = str(current_harmonic)
-
-        for i, (fraction, name) in enumerate(zip(fractions, component_names)):
-            fraction_reshaped = fraction.reshape(
-                self.parent_widget._labels_layer_with_phasor_features.data.shape
-            )
-
-            layer_name = f"{name} fraction: {base_name}"
-
-            colormap = None
-            contrast_limits = (0, 1)
-            idx_str = str(i)
-
-            if (
-                not self._updating_settings
-                and self.current_image_layer_name
-                and idx_str in settings.get('components', {})
-                and harmonic_key
-                in settings['components'][idx_str].get('gs_harmonics', {})
-            ):
-
-                harmonic_data = settings['components'][idx_str][
-                    'gs_harmonics'
-                ][harmonic_key]
-
-                if harmonic_data.get('colormap_name'):
-                    colormap = harmonic_data['colormap_name']
-                elif harmonic_data.get('colormap_colors'):
-                    from napari.utils.colormaps import Colormap
-
-                    colors = harmonic_data['colormap_colors']
-                    if isinstance(colors, list):
-                        colors = np.array(colors)
-                    colormap = Colormap(colors=colors, name="saved_custom")
-
-                if harmonic_data.get('contrast_limits'):
-                    contrast_limits = tuple(harmonic_data['contrast_limits'])
-
-            if colormap is None:
-                if i < len(self.component_colormap_names):
-                    colormap = self.component_colormap_names[i]
-                else:
-                    colormap = 'viridis'
-
-            layer = self.viewer.add_image(
-                fraction_reshaped,
-                name=layer_name,
-                scale=self.parent_widget._labels_layer_with_phasor_features.scale,
-                colormap=colormap,
-                contrast_limits=contrast_limits,
-            )
-
-            self.fraction_layers.append(layer)
-            layer.events.colormap.connect(self._on_colormap_changed)
-
-        self._update_component_colors()
 
     def _ensure_component_metadata(self, idx: int, harmonic: int = None):
         """Ensure component metadata structure exists and return component data dict."""

@@ -6,6 +6,7 @@
 [![tests](https://github.com/napari-phasors/napari-phasors/workflows/tests/badge.svg)](https://github.com/napari-phasors/napari-phasors/actions)
 [![codecov](https://codecov.io/gh/napari-phasors/napari-phasors/branch/main/graph/badge.svg)](https://codecov.io/gh/napari-phasors/napari-phasors)
 [![napari hub](https://img.shields.io/endpoint?url=https://api.napari-hub.org/shields/napari-phasors)](https://napari-hub.org/plugins/napari-phasors)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17600615.svg)](https://doi.org/10.5281/zenodo.17600615)
 
 A comprehensive plugin for phasor analysis in napari. Based on the 
 [phasorpy](https://www.phasorpy.org/) library.

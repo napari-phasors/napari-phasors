@@ -192,6 +192,29 @@ class PlotterWidget(QWidget):
         # Create tab widget
         self.tab_widget = QTabWidget()
 
+        # Add import buttons below harmonic spinbox
+        import_buttons_layout = QHBoxLayout()
+        import_buttons_layout.setContentsMargins(0, 0, 0, 0)
+        import_buttons_layout.setSpacing(5)
+
+        import_label = QLabel("Load and Apply Settings from:")
+        import_buttons_layout.addWidget(import_label)
+
+        self.import_from_layer_button = QPushButton("Layer")
+        self.import_from_layer_button.setMaximumHeight(25)
+        import_buttons_layout.addWidget(self.import_from_layer_button)
+
+        self.import_from_file_button = QPushButton("OME-TIFF File")
+        self.import_from_file_button.setMaximumHeight(25)
+        import_buttons_layout.addWidget(self.import_from_file_button)
+
+        import_buttons_widget = QWidget()
+        import_buttons_widget.setLayout(import_buttons_layout)
+        controls_container.layout().addWidget(import_buttons_widget)
+
+        # Create tab widget
+        self.tab_widget = QTabWidget()
+
         # Create tab widget
         self.tab_widget = QTabWidget()
         controls_container.layout().addWidget(self.tab_widget)
