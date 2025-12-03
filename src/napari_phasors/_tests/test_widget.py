@@ -9,7 +9,6 @@ from phasorpy.io import (
     phasor_from_ometiff,
     signal_from_fbd,
     signal_from_lsm,
-    signal_from_ptu,
     signal_from_sdt,
 )
 from qtpy.QtWidgets import QWidget
@@ -981,3 +980,99 @@ def test_writer_widget_colorbar_checkbox_state(make_napari_viewer):
 
     main_widget.colorbar_checkbox.setChecked(True)
     assert main_widget.colorbar_checkbox.isChecked() is True
+
+
+def test_writer_widget_csv_export_2d_no_phasor(make_napari_viewer, tmp_path):
+    """Test CSV export for 2D image without phasor metadata."""
+    viewer = make_napari_viewer()
+    widget = WriterWidget(viewer)
+
+    # Create a simple 2D image layer without phasor metadata
+    data = np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+    layer = viewer.add_image(data, name="test_2d_image")
+
+    # Export as CSV
+    csv_path = tmp_path / "test_2d.csv"
+    widget._save_file(str(csv_path), "Layer data as CSV (*.csv)", False)
+
+    # Verify CSV content
+    df = pd.read_csv(csv_path)
+
+    # Check columns
+    assert list(df.columns) == ['y', 'x', 'value']
+
+    # Check shape
+    assert len(df) == 9  # 3x3 = 9 pixels
+
+    # Check coordinates and values
+    expected_y = [0, 0, 0, 1, 1, 1, 2, 2, 2]
+    expected_x = [0, 1, 2, 0, 1, 2, 0, 1, 2]
+    expected_values = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+    np.testing.assert_array_equal(df['y'].values, expected_y)
+    np.testing.assert_array_equal(df['x'].values, expected_x)
+    np.testing.assert_array_equal(df['value'].values, expected_values)
+
+
+def test_writer_widget_csv_export_4d_no_phasor(make_napari_viewer, tmp_path):
+    """Test CSV export for 4D image without phasor metadata."""
+    viewer = make_napari_viewer()
+    widget = WriterWidget(viewer)
+
+    # Create a 4D image layer
+    data = np.arange(48).reshape(2, 2, 3, 4)
+    layer = viewer.add_image(data, name="test_4d_image")
+
+    # Export as CSV
+    csv_path = tmp_path / "test_4d.csv"
+    widget._save_file(str(csv_path), "Layer data as CSV (*.csv)", False)
+
+    # Verify CSV content
+    df = pd.read_csv(csv_path)
+
+    # Check columns
+    assert list(df.columns) == ['dim_0', 'dim_1', 'dim_2', 'dim_3', 'value']
+
+    # Check shape
+    assert len(df) == 48
+
+    # Verify coordinate ranges
+    assert df['dim_0'].min() == 0 and df['dim_0'].max() == 1
+    assert df['dim_1'].min() == 0 and df['dim_1'].max() == 1
+    assert df['dim_2'].min() == 0 and df['dim_2'].max() == 2
+    assert df['dim_3'].min() == 0 and df['dim_3'].max() == 3
+
+
+def test_writer_widget_csv_coordinates_consistency_2d(
+    make_napari_viewer, tmp_path
+):
+    """Test that CSV export maintains coordinate consistency for 2D images."""
+    viewer = make_napari_viewer()
+    widget = WriterWidget(viewer)
+
+    # Create 2D image with known pattern
+    data = np.array([[10, 20], [30, 40]])
+    layer = viewer.add_image(data, name="test_pattern")
+
+    # Export as CSV
+    csv_path = tmp_path / "test_pattern.csv"
+    widget._save_file(str(csv_path), "Layer data as CSV (*.csv)", False)
+
+    # Verify specific coordinate-value mappings
+    df = pd.read_csv(csv_path)
+
+    # Check (0,0) -> 10
+    val_00 = df[(df['y'] == 0) & (df['x'] == 0)]['value'].values[0]
+    assert val_00 == 10
+
+    # Check (0,1) -> 20
+    val_01 = df[(df['y'] == 0) & (df['x'] == 1)]['value'].values[0]
+    assert val_01 == 20
+
+    # Check (1,0) -> 30
+    val_10 = df[(df['y'] == 1) & (df['x'] == 0)]['value'].values[0]
+    assert val_10 == 30
+
+    # Check (1,1) -> 40
+    val_11 = df[(df['y'] == 1) & (df['x'] == 1)]['value'].values[0]
+    assert val_11 == 40

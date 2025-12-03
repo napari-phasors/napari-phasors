@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 from matplotlib.backends.backend_qt5agg import (
     FigureCanvasQTAgg as FigureCanvas,
 )
@@ -1121,7 +1122,6 @@ class WriterWidget(QWidget):
                     file_path = file_path[:-8]
                 file_path += ".tif"
 
-            # Get colorbar preference before saving
             include_colorbar = self.colorbar_checkbox.isChecked()
             self._save_file(file_path, selected_filter, include_colorbar)
 
@@ -1140,10 +1140,8 @@ class WriterWidget(QWidget):
         """Export layer as an image with proper colormap and contrast limits."""
         from matplotlib.colors import LinearSegmentedColormap
 
-        # Get the current displayed slice (2D view)
         data = export_layer.data
         if data.ndim > 2:
-            # Get the currently displayed slice from the viewer
             current_step = list(self.viewer.dims.current_step)
             slice_indices = tuple(
                 current_step[i] if i < len(current_step) else slice(None)
@@ -1153,7 +1151,6 @@ class WriterWidget(QWidget):
         else:
             data_2d = data
 
-        # Get colormap from napari layer
         napari_cmap = export_layer.colormap
         if hasattr(napari_cmap, 'colors'):
             cmap = LinearSegmentedColormap.from_list(
@@ -1165,10 +1162,8 @@ class WriterWidget(QWidget):
             except (AttributeError, ValueError):
                 cmap = plt.get_cmap('gray')
 
-        # Get contrast limits
         clim = export_layer.contrast_limits
 
-        # Create figure with dark background to match napari
         if include_colorbar:
             fig, (ax, cax) = plt.subplots(
                 1,
@@ -1180,7 +1175,6 @@ class WriterWidget(QWidget):
         else:
             fig, ax = plt.subplots(figsize=(8, 8), facecolor='black')
 
-        # Display image with colormap and contrast limits
         im = ax.imshow(
             data_2d,
             cmap=cmap,
@@ -1191,14 +1185,12 @@ class WriterWidget(QWidget):
         )
         ax.axis('off')
 
-        # Add colorbar if requested
         if include_colorbar:
             cbar = plt.colorbar(im, cax=cax)
             cbar.ax.tick_params(colors='white')
 
         plt.tight_layout(pad=0)
 
-        # Save with appropriate DPI and transparent background
         dpi = 300
 
         # For JPEG, we need to set facecolor to white since it doesn't support transparency
@@ -1229,7 +1221,6 @@ class WriterWidget(QWidget):
             write_ome_tiff(file_path, export_layer)
 
         elif selected_filter == "Layer data as CSV (*.csv)":
-            # Check if layer has phasor table
             has_phasor_table = (
                 "phasor_features_labels_layer" in export_layer.metadata
                 and export_layer.metadata["phasor_features_labels_layer"]
@@ -1237,7 +1228,6 @@ class WriterWidget(QWidget):
             )
 
             if has_phasor_table:
-                # Export phasor table
                 phasor_table = export_layer.metadata[
                     "phasor_features_labels_layer"
                 ].features
@@ -1255,12 +1245,8 @@ class WriterWidget(QWidget):
                 phasor_table = phasor_table.dropna()
                 phasor_table.to_csv(file_path, index=False)
             else:
-                # Export raw layer data
-                import pandas as pd
-
                 data = export_layer.data
                 if data.ndim == 2:
-                    # For 2D data, create a simple x, y, value table
                     rows, cols = data.shape
                     y_coords, x_coords = np.meshgrid(
                         range(rows), range(cols), indexing='ij'
@@ -1273,7 +1259,6 @@ class WriterWidget(QWidget):
                         }
                     )
                 else:
-                    # For nD data, flatten and create coordinate columns
                     coords = np.unravel_index(np.arange(data.size), data.shape)
                     df_dict = {
                         f'dim_{i}': coord for i, coord in enumerate(coords)
