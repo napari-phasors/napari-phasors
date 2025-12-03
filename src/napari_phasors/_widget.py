@@ -1138,7 +1138,6 @@ class WriterWidget(QWidget):
         self, file_path, export_layer, include_colorbar=True
     ):
         """Export layer as an image with proper colormap and contrast limits."""
-        import matplotlib.pyplot as plt
         from matplotlib.colors import LinearSegmentedColormap
 
         # Get the current displayed slice (2D view)
