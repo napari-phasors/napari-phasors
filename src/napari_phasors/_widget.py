@@ -1200,7 +1200,7 @@ class WriterWidget(QWidget):
         plt.tight_layout(pad=0)
 
         # Save with appropriate DPI and transparent background
-        dpi = 300 if file_path.endswith(('.png', '.jpg', '.jpeg')) else 100
+        dpi = 300
 
         # For JPEG, we need to set facecolor to white since it doesn't support transparency
         if file_path.endswith(('.jpg', '.jpeg')):
