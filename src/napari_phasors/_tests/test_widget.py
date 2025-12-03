@@ -677,7 +677,7 @@ def test_writer_widget(make_napari_viewer, tmp_path):
     with patch("napari_phasors._widget.show_error") as mock_show_error:
         main_widget.search_button.click()
         mock_show_error.assert_called_once_with(
-            "No layer with phasor data selected"
+            "No layer selected"
         )
     # Create a synthetic FLIM data and an intensity image layer with phasors
     raw_flim_data = make_raw_flim_data()
