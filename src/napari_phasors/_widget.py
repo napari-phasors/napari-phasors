@@ -1070,7 +1070,7 @@ class WriterWidget(QWidget):
     def _open_file_dialog(self):
         """Open a native file dialog to select export location."""
         if self.export_layer_combobox.currentText() == "":
-            show_error("No layer with phasor data selected")
+            show_error("No layer selected")
             return
 
         # Define filters for the native dialog
