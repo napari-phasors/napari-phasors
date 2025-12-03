@@ -20,6 +20,7 @@ from napari.utils.notifications import show_error, show_info
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QDoubleValidator
 from qtpy.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QCompleter,
     QFileDialog,
@@ -1051,6 +1052,12 @@ class WriterWidget(QWidget):
         self.export_layer_combobox = QComboBox()
         self.main_layout.addWidget(self.export_layer_combobox)
 
+        self.colorbar_checkbox = QCheckBox(
+            "Include colorbar (for image exports)"
+        )
+        self.colorbar_checkbox.setChecked(True)
+        self.main_layout.addWidget(self.colorbar_checkbox)
+
         self.search_button = QPushButton("Select Export Location and Name")
         self.search_button.clicked.connect(self._open_file_dialog)
         self.main_layout.addWidget(self.search_button)
@@ -1061,38 +1068,62 @@ class WriterWidget(QWidget):
         self._populate_combobox()
 
     def _open_file_dialog(self):
-        """Open a `QFileDialog` to select a directory or specify a filename."""
+        """Open a native file dialog to select export location."""
         if self.export_layer_combobox.currentText() == "":
             show_error("No layer with phasor data selected")
             return
-        options = QFileDialog.Options()
-        file_dialog = QFileDialog()
-        file_dialog.setFileMode(QFileDialog.AnyFile)
-        file_dialog.setAcceptMode(QFileDialog.AcceptSave)
-        file_dialog.setOptions(options)
 
-        file_dialog.setNameFilters(
-            ["Phasor as OME-TIFF (*.ome.tif)", "Phasor table as CSV (*.csv)"]
+        # Define filters for the native dialog
+        filters = [
+            "Phasor as OME-TIFF (*.ome.tif)",
+            "Layer data as CSV (*.csv)",
+            "Layer as PNG image (*.png)",
+            "Layer as JPEG image (*.jpg)",
+            "Layer as TIFF image (*.tif)",
+        ]
+        # Join filters with ';;' for the native dialog format
+        filter_str = ";;".join(filters)
+
+        # Use static method to invoke the native OS dialog
+        file_path, selected_filter = QFileDialog.getSaveFileName(
+            self, "Select Export Location", "", filter_str
         )
 
-        if file_dialog.exec_():
-            selected_filter = file_dialog.selectedNameFilter()
-            file_path = file_dialog.selectedFiles()[0]
-
+        if file_path:
+            # Handle file extensions based on the selected filter
             if (
                 selected_filter == "Phasor as OME-TIFF (*.ome.tif)"
                 and not file_path.endswith(".ome.tif")
             ):
                 if file_path.endswith(".tif"):
-                    file_path = file_path[:-4]  # Remove the .tif extension
+                    file_path = file_path[:-4]
                 file_path += ".ome.tif"
             elif (
-                selected_filter == "Phasor table as CSV (*.csv)"
+                selected_filter == "Layer data as CSV (*.csv)"
                 and not file_path.endswith(".csv")
             ):
                 file_path += ".csv"
+            elif (
+                selected_filter == "Layer as PNG image (*.png)"
+                and not file_path.endswith(".png")
+            ):
+                file_path += ".png"
+            elif (
+                selected_filter == "Layer as JPEG image (*.jpg)"
+                and not file_path.endswith((".jpg", ".jpeg"))
+            ):
+                file_path += ".jpg"
+            elif (
+                selected_filter == "Layer as TIFF image (*.tif)"
+                and not file_path.endswith(".tif")
+            ):
+                if file_path.endswith(".ome.tif"):
+                    file_path = file_path[:-8]
+                file_path += ".tif"
 
-            self._save_file(file_path, selected_filter)
+            # Get colorbar preference before saving
+            include_colorbar = self.colorbar_checkbox.isChecked()
+            self._save_file(file_path, selected_filter, include_colorbar)
 
     def _populate_combobox(self):
         """Populate combobox with image layers."""
@@ -1103,33 +1134,163 @@ class WriterWidget(QWidget):
         for layer in image_layers:
             self.export_layer_combobox.addItem(layer.name)
 
-    def _save_file(self, file_path, selected_filter):
+    def _export_layer_as_image(
+        self, file_path, export_layer, include_colorbar=True
+    ):
+        """Export layer as an image with proper colormap and contrast limits."""
+        import matplotlib.pyplot as plt
+        from matplotlib.colors import LinearSegmentedColormap
+
+        # Get the current displayed slice (2D view)
+        data = export_layer.data
+        if data.ndim > 2:
+            # Get the currently displayed slice from the viewer
+            current_step = list(self.viewer.dims.current_step)
+            slice_indices = tuple(
+                current_step[i] if i < len(current_step) else slice(None)
+                for i in range(data.ndim - 2)
+            ) + (slice(None), slice(None))
+            data_2d = data[slice_indices]
+        else:
+            data_2d = data
+
+        # Get colormap from napari layer
+        napari_cmap = export_layer.colormap
+        if hasattr(napari_cmap, 'colors'):
+            cmap = LinearSegmentedColormap.from_list(
+                napari_cmap.name, napari_cmap.colors
+            )
+        else:
+            try:
+                cmap = plt.get_cmap(napari_cmap.name)
+            except (AttributeError, ValueError):
+                cmap = plt.get_cmap('gray')
+
+        # Get contrast limits
+        clim = export_layer.contrast_limits
+
+        # Create figure with dark background to match napari
+        if include_colorbar:
+            fig, (ax, cax) = plt.subplots(
+                1,
+                2,
+                figsize=(10, 8),
+                gridspec_kw={'width_ratios': [20, 1]},
+                facecolor='black',
+            )
+        else:
+            fig, ax = plt.subplots(figsize=(8, 8), facecolor='black')
+
+        # Display image with colormap and contrast limits
+        im = ax.imshow(
+            data_2d,
+            cmap=cmap,
+            vmin=clim[0],
+            vmax=clim[1],
+            interpolation='nearest',
+            aspect='auto',
+        )
+        ax.axis('off')
+
+        # Add colorbar if requested
+        if include_colorbar:
+            cbar = plt.colorbar(im, cax=cax)
+            cbar.ax.tick_params(colors='white')
+
+        plt.tight_layout(pad=0)
+
+        # Save with appropriate DPI and transparent background
+        dpi = 300 if file_path.endswith(('.png', '.jpg', '.jpeg')) else 100
+
+        # For JPEG, we need to set facecolor to white since it doesn't support transparency
+        if file_path.endswith(('.jpg', '.jpeg')):
+            fig.patch.set_facecolor('white')
+            if include_colorbar:
+                cax.set_ylabel(
+                    'Intensity', rotation=270, labelpad=15, color='black'
+                )
+                cbar.ax.tick_params(colors='black')
+
+        plt.savefig(
+            file_path,
+            dpi=dpi,
+            bbox_inches='tight',
+            pad_inches=0.1,
+            facecolor=fig.get_facecolor(),
+        )
+        plt.close(fig)
+
+    def _save_file(self, file_path, selected_filter, include_colorbar=False):
         """Callback whenever the export location and name are specified."""
         export_layer = self.viewer.layers[
             self.export_layer_combobox.currentText()
         ]
+
         if selected_filter == "Phasor as OME-TIFF (*.ome.tif)":
             write_ome_tiff(file_path, export_layer)
-        elif selected_filter == "Phasor table as CSV (*.csv)":
-            if not file_path.endswith(".csv"):
-                file_path += ".csv"
-            phasor_table = export_layer.metadata[
-                "phasor_features_labels_layer"
-            ].features
-            harmonics = np.unique(phasor_table["harmonic"])
 
-            coords = np.unravel_index(
-                np.arange(export_layer.data.size), export_layer.data.shape
+        elif selected_filter == "Layer data as CSV (*.csv)":
+            # Check if layer has phasor table
+            has_phasor_table = (
+                "phasor_features_labels_layer" in export_layer.metadata
+                and export_layer.metadata["phasor_features_labels_layer"]
+                is not None
             )
 
-            coords = [np.tile(coord, len(harmonics)) for coord in coords]
+            if has_phasor_table:
+                # Export phasor table
+                phasor_table = export_layer.metadata[
+                    "phasor_features_labels_layer"
+                ].features
+                harmonics = np.unique(phasor_table["harmonic"])
 
-            for dim, coord in enumerate(coords):
-                phasor_table[f'dim_{dim}'] = coord
+                coords = np.unravel_index(
+                    np.arange(export_layer.data.size), export_layer.data.shape
+                )
 
-            phasor_table = phasor_table.dropna()
-            phasor_table.to_csv(
-                file_path,
-                index=False,
+                coords = [np.tile(coord, len(harmonics)) for coord in coords]
+
+                for dim, coord in enumerate(coords):
+                    phasor_table[f'dim_{dim}'] = coord
+
+                phasor_table = phasor_table.dropna()
+                phasor_table.to_csv(file_path, index=False)
+            else:
+                # Export raw layer data
+                import pandas as pd
+
+                data = export_layer.data
+                if data.ndim == 2:
+                    # For 2D data, create a simple x, y, value table
+                    rows, cols = data.shape
+                    y_coords, x_coords = np.meshgrid(
+                        range(rows), range(cols), indexing='ij'
+                    )
+                    df = pd.DataFrame(
+                        {
+                            'y': y_coords.ravel(),
+                            'x': x_coords.ravel(),
+                            'value': data.ravel(),
+                        }
+                    )
+                else:
+                    # For nD data, flatten and create coordinate columns
+                    coords = np.unravel_index(np.arange(data.size), data.shape)
+                    df_dict = {
+                        f'dim_{i}': coord for i, coord in enumerate(coords)
+                    }
+                    df_dict['value'] = data.ravel()
+                    df = pd.DataFrame(df_dict)
+
+                df.to_csv(file_path, index=False)
+
+        elif selected_filter in [
+            "Layer as PNG image (*.png)",
+            "Layer as JPEG image (*.jpg)",
+            "Layer as TIFF image (*.tif)",
+        ]:
+            self._export_layer_as_image(
+                file_path, export_layer, include_colorbar
             )
+
         show_info(f"Exported {export_layer.name} to {file_path}")

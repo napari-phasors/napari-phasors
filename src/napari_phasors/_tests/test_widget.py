@@ -699,14 +699,12 @@ def test_writer_widget(make_napari_viewer, tmp_path):
 
     # Simulate saving as OME-TIFF
     with (
-        patch("napari_phasors._widget.QFileDialog.exec_", return_value=True),
         patch(
-            "napari_phasors._widget.QFileDialog.selectedFiles",
-            return_value=[str(tmp_path / "test.ome.tif")],
-        ),
-        patch(
-            "napari_phasors._widget.QFileDialog.selectedNameFilter",
-            return_value="Phasor as OME-TIFF (*.ome.tif)",
+            "napari_phasors._widget.QFileDialog.getSaveFileName",
+            return_value=(
+                str(tmp_path / "test.ome.tif"),
+                "Phasor as OME-TIFF (*.ome.tif)",
+            ),
         ),
         patch("napari_phasors._widget.show_info") as mock_show_info,
     ):
@@ -755,14 +753,12 @@ def test_writer_widget(make_napari_viewer, tmp_path):
 
     # Simulate saving as CSV
     with (
-        patch("napari_phasors._widget.QFileDialog.exec_", return_value=True),
         patch(
-            "napari_phasors._widget.QFileDialog.selectedFiles",
-            return_value=[str(tmp_path / "test.csv")],
-        ),
-        patch(
-            "napari_phasors._widget.QFileDialog.selectedNameFilter",
-            return_value="Phasor table as CSV (*.csv)",
+            "napari_phasors._widget.QFileDialog.getSaveFileName",
+            return_value=(
+                str(tmp_path / "test.csv"),
+                "Layer data as CSV (*.csv)",
+            ),
         ),
         patch("napari_phasors._widget.show_info") as mock_show_info,
     ):
@@ -789,3 +785,199 @@ def test_writer_widget(make_napari_viewer, tmp_path):
         for dim, coord in enumerate(coords):
             phasor_features.features[f'dim_{dim}'] = coord
         pd.testing.assert_frame_equal(exported_table, phasor_features.features)
+
+
+def test_writer_widget_image_exports(make_napari_viewer, tmp_path):
+    """Test image export functionality in WriterWidget."""
+    viewer = make_napari_viewer()
+    main_widget = WriterWidget(viewer)
+
+    # Create synthetic data
+    raw_flim_data = make_raw_flim_data()
+    harmonic = [1]
+    sample_image_layer = make_intensity_layer_with_phasors(
+        raw_flim_data, harmonic=harmonic
+    )
+    viewer.add_layer(sample_image_layer)
+
+    # Test PNG export with colorbar
+    with (
+        patch(
+            "napari_phasors._widget.QFileDialog.getSaveFileName",
+            return_value=(
+                str(tmp_path / "test_with_colorbar.png"),
+                "Layer as PNG image (*.png)",
+            ),
+        ),
+        patch("napari_phasors._widget.show_info") as mock_show_info,
+    ):
+        main_widget.colorbar_checkbox.setChecked(True)
+        main_widget.search_button.click()
+
+        export_path = str(tmp_path / "test_with_colorbar.png")
+        assert os.path.exists(export_path)
+        mock_show_info.assert_called_with(
+            f"Exported {sample_image_layer.name} to {export_path}"
+        )
+
+    # Test PNG export without colorbar
+    with (
+        patch(
+            "napari_phasors._widget.QFileDialog.getSaveFileName",
+            return_value=(
+                str(tmp_path / "test_no_colorbar.png"),
+                "Layer as PNG image (*.png)",
+            ),
+        ),
+        patch("napari_phasors._widget.show_info") as mock_show_info,
+    ):
+        main_widget.colorbar_checkbox.setChecked(False)
+        main_widget.search_button.click()
+
+        export_path = str(tmp_path / "test_no_colorbar.png")
+        assert os.path.exists(export_path)
+        mock_show_info.assert_called_with(
+            f"Exported {sample_image_layer.name} to {export_path}"
+        )
+
+    # Test JPG export
+    with (
+        patch(
+            "napari_phasors._widget.QFileDialog.getSaveFileName",
+            return_value=(
+                str(tmp_path / "test.jpg"),
+                "Layer as JPEG image (*.jpg)",
+            ),
+        ),
+        patch("napari_phasors._widget.show_info") as mock_show_info,
+    ):
+        main_widget.colorbar_checkbox.setChecked(True)
+        main_widget.search_button.click()
+
+        export_path = str(tmp_path / "test.jpg")
+        assert os.path.exists(export_path)
+        mock_show_info.assert_called_with(
+            f"Exported {sample_image_layer.name} to {export_path}"
+        )
+
+    # Test TIFF image export (not OME-TIFF)
+    with (
+        patch(
+            "napari_phasors._widget.QFileDialog.getSaveFileName",
+            return_value=(
+                str(tmp_path / "test_image.tif"),
+                "Layer as TIFF image (*.tif)",
+            ),
+        ),
+        patch("napari_phasors._widget.show_info") as mock_show_info,
+    ):
+        main_widget.colorbar_checkbox.setChecked(False)
+        main_widget.search_button.click()
+
+        export_path = str(tmp_path / "test_image.tif")
+        assert os.path.exists(export_path)
+        mock_show_info.assert_called_with(
+            f"Exported {sample_image_layer.name} to {export_path}"
+        )
+
+
+def test_writer_widget_colormap_applied(make_napari_viewer, tmp_path):
+    """Test that the napari layer's colormap is correctly applied to exported images."""
+    import matplotlib.pyplot as plt
+    from PIL import Image
+
+    viewer = make_napari_viewer()
+    main_widget = WriterWidget(viewer)
+
+    # Create synthetic data
+    raw_flim_data = make_raw_flim_data()
+    harmonic = [1]
+    sample_image_layer = make_intensity_layer_with_phasors(
+        raw_flim_data, harmonic=harmonic
+    )
+
+    # Set a specific colormap
+    sample_image_layer.colormap = 'viridis'
+    viewer.add_layer(sample_image_layer)
+
+    # Export as PNG
+    with patch(
+        "napari_phasors._widget.QFileDialog.getSaveFileName",
+        return_value=(
+            str(tmp_path / "test_colormap.png"),
+            "Layer as PNG image (*.png)",
+        ),
+    ):
+        main_widget.colorbar_checkbox.setChecked(False)
+        main_widget.search_button.click()
+
+        export_path = str(tmp_path / "test_colormap.png")
+        assert os.path.exists(export_path)
+
+        # Verify the image was created and is not empty
+        img = Image.open(export_path)
+        assert img.size[0] > 0
+        assert img.size[1] > 0
+
+
+def test_writer_widget_file_extension_handling(make_napari_viewer, tmp_path):
+    """Test that file extensions are correctly handled for all export formats."""
+    viewer = make_napari_viewer()
+    main_widget = WriterWidget(viewer)
+
+    # Create synthetic data
+    raw_flim_data = make_raw_flim_data()
+    harmonic = [1]
+    sample_image_layer = make_intensity_layer_with_phasors(
+        raw_flim_data, harmonic=harmonic
+    )
+    viewer.add_layer(sample_image_layer)
+
+    # Test cases: (input_name, selected_filter, expected_output_name)
+    test_cases = [
+        ("test", "Phasor as OME-TIFF (*.ome.tif)", "test.ome.tif"),
+        ("test.tif", "Phasor as OME-TIFF (*.ome.tif)", "test.ome.tif"),
+        ("test", "Layer data as CSV (*.csv)", "test.csv"),
+        ("test.csv", "Layer data as CSV (*.csv)", "test.csv"),
+        ("test", "Layer as PNG image (*.png)", "test.png"),
+        ("test.png", "Layer as PNG image (*.png)", "test.png"),
+        ("test", "Layer as JPEG image (*.jpg)", "test.jpg"),
+        ("test.jpg", "Layer as JPEG image (*.jpg)", "test.jpg"),
+        ("test", "Layer as TIFF image (*.tif)", "test.tif"),
+        ("test.ome.tif", "Layer as TIFF image (*.tif)", "test.tif"),
+    ]
+
+    for input_name, selected_filter, expected_output in test_cases:
+        with patch(
+            "napari_phasors._widget.QFileDialog.getSaveFileName",
+            return_value=(
+                str(tmp_path / input_name),
+                selected_filter,
+            ),
+        ):
+            main_widget.search_button.click()
+
+            export_path = str(tmp_path / expected_output)
+            assert os.path.exists(
+                export_path
+            ), f"Failed for {input_name} -> {expected_output}"
+
+
+def test_writer_widget_colorbar_checkbox_state(make_napari_viewer):
+    """Test that the colorbar checkbox is properly initialized and responsive."""
+    viewer = make_napari_viewer()
+    main_widget = WriterWidget(viewer)
+
+    # Check initial state
+    assert main_widget.colorbar_checkbox.isChecked() is True
+    assert (
+        main_widget.colorbar_checkbox.text()
+        == "Include colorbar (for image exports)"
+    )
+
+    # Test checkbox state changes
+    main_widget.colorbar_checkbox.setChecked(False)
+    assert main_widget.colorbar_checkbox.isChecked() is False
+
+    main_widget.colorbar_checkbox.setChecked(True)
+    assert main_widget.colorbar_checkbox.isChecked() is True
