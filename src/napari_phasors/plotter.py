@@ -1773,10 +1773,6 @@ class PlotterWidget(QWidget):
             ):
                 self.filter_tab.apply_button_clicked()
 
-        # Update lifetime tab when layer changes
-        if hasattr(self, 'lifetime_tab'):
-            self.lifetime_tab._on_image_layer_changed()
-
         self.plot()
 
     def _on_mask_data_changed(self, event):
@@ -1805,10 +1801,6 @@ class PlotterWidget(QWidget):
                 is not None
             ):
                 self.filter_tab.apply_button_clicked()
-
-        # Apply changes to the lifetime tab
-        if hasattr(self, 'lifetime_tab'):
-            self.lifetime_tab._on_image_layer_changed()
 
         self.refresh_current_plot()
 
