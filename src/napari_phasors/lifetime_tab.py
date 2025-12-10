@@ -19,6 +19,7 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -91,6 +92,7 @@ class LifetimeWidget(QWidget):
 
         # Add combobox to select lifetime type
         self.main_layout.addWidget(QLabel("Select lifetime to display: "))
+        lifetime_type_layout = QHBoxLayout()
         self.lifetime_type_combobox = QComboBox()
         self.lifetime_type_combobox.addItems(
             [
@@ -101,7 +103,23 @@ class LifetimeWidget(QWidget):
             ]
         )
         self.lifetime_type_combobox.setCurrentText("None")
-        self.main_layout.addWidget(self.lifetime_type_combobox)
+        lifetime_type_layout.addWidget(self.lifetime_type_combobox)
+        
+        # Add refresh button
+        self.refresh_lifetime_button = QPushButton()
+        self.refresh_lifetime_button.setIcon(
+            self.refresh_lifetime_button.style().standardIcon(
+                self.refresh_lifetime_button.style().SP_BrowserReload
+            )
+        )
+        self.refresh_lifetime_button.setMaximumWidth(35)
+        self.refresh_lifetime_button.clicked.connect(
+            self._on_refresh_lifetime_clicked
+        )
+        lifetime_type_layout.addWidget(self.refresh_lifetime_button)
+        # lifetime_type_layout.addStretch()
+        
+        self.main_layout.addLayout(lifetime_type_layout)
 
         # Connect signals
         self.lifetime_type_combobox.currentTextChanged.connect(
@@ -668,6 +686,11 @@ class LifetimeWidget(QWidget):
             self.hist_ax.clear()
             self.hist_fig.canvas.draw_idle()
             self.histogram_widget.hide()
+
+    def _on_refresh_lifetime_clicked(self):
+        """Callback when refresh button is clicked."""
+        current_text = self.lifetime_type_combobox.currentText()
+        self._on_lifetime_type_changed(current_text)
 
     def _on_lifetime_type_changed(self, text):
         """Callback when lifetime type combobox selection changes."""
