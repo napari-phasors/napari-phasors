@@ -74,7 +74,7 @@ class FilterWidget(QWidget):
 
         # Connect callbacks
         self.parent_widget.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
-            self.on_labels_layer_with_phasor_features_changed
+            self._on_image_layer_changed
         )
         self.threshold_slider.valueChanged.connect(
             self.on_threshold_slider_change
@@ -357,7 +357,7 @@ class FilterWidget(QWidget):
             self.update_threshold_line()
             self._updating_threshold = False
 
-    def on_labels_layer_with_phasor_features_changed(self):
+    def _on_image_layer_changed(self):
         """Callback function when the image layer combobox is changed."""
         labels_layer_name = (
             self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
@@ -384,11 +384,11 @@ class FilterWidget(QWidget):
             ceil(max_mean_value * self.threshold_factor)
         )
 
-        # Block threshold method updates while setting initial values
         self._updating_threshold = True
 
         if "settings" in layer_metadata.keys():
             settings = layer_metadata["settings"]
+
             if "threshold_method" in settings.keys():
                 self.threshold_method_combobox.setCurrentText(
                     settings["threshold_method"]
@@ -407,8 +407,13 @@ class FilterWidget(QWidget):
                     )
                 )
             else:
+                # Calculate Otsu threshold as default
+                mean_data = layer_metadata["original_mean"].copy()
+                threshold_value = self.calculate_automatic_threshold(
+                    "Otsu", mean_data
+                )
                 self.threshold_slider.setValue(
-                    int(max_mean_value * 0.1 * self.threshold_factor)
+                    int(threshold_value * self.threshold_factor)
                 )
                 self.label_3.setText(
                     'Intensity threshold: '
@@ -416,6 +421,7 @@ class FilterWidget(QWidget):
                         self.threshold_slider.value() / self.threshold_factor
                     )
                 )
+
             if "filter" in settings.keys():
                 filter_settings = settings["filter"]
                 if "method" in filter_settings:
@@ -436,7 +442,6 @@ class FilterWidget(QWidget):
                                 "Median"
                             )
 
-                # Restore filter parameters
                 if "size" in filter_settings:
                     self.median_filter_spinbox.setValue(
                         int(filter_settings["size"])
@@ -455,8 +460,13 @@ class FilterWidget(QWidget):
                     )
         else:
             self.threshold_method_combobox.setCurrentText("Otsu")
+            # Calculate Otsu threshold as default
+            mean_data = layer_metadata["original_mean"].copy()
+            threshold_value = self.calculate_automatic_threshold(
+                "Otsu", mean_data
+            )
             self.threshold_slider.setValue(
-                int(max_mean_value * 0.1 * self.threshold_factor)
+                int(threshold_value * self.threshold_factor)
             )
             self.label_3.setText(
                 'Intensity threshold: '
@@ -469,7 +479,7 @@ class FilterWidget(QWidget):
         self.check_harmonics_compatibility()
 
         current_method = self.threshold_method_combobox.currentText()
-        if current_method != "Manual":
+        if current_method not in ["Manual", "None"]:
             self.on_threshold_method_changed()
 
     def on_threshold_slider_change(self):
@@ -588,34 +598,57 @@ class FilterWidget(QWidget):
         )
 
         layer = self.viewer.layers[labels_layer_name]
-        if "settings" not in layer.metadata:
-            layer.metadata["settings"] = {}
-        layer.metadata["settings"][
-            "threshold_method"
-        ] = self.threshold_method_combobox.currentText()
+
+        # Determine threshold value and method
+        threshold_method = self.threshold_method_combobox.currentText()
+        threshold_value = None
+        if threshold_method != "None":
+            threshold_value = (
+                self.threshold_slider.value() / self.threshold_factor
+            )
 
         # Determine filter method and parameters
-        filter_method = self.filter_method_combobox.currentText().lower()
-
-        # Get harmonics for wavelet filter
+        filter_method = None
+        size = None
+        repeat = None
+        sigma = None
+        levels = None
         harmonics = None
-        if filter_method == "wavelet":
-            harmonics = np.unique(
-                layer.metadata['phasor_features_labels_layer'].features[
-                    'harmonic'
-                ]
-            )
+
+        # Only set filter parameters if median filter has repetitions > 0 or wavelet is selected
+        current_filter_method = (
+            self.filter_method_combobox.currentText().lower()
+        )
+        if (
+            current_filter_method == "median"
+            and self.median_filter_repetition_spinbox.value() > 0
+        ):
+            filter_method = "median"
+            size = self.median_filter_spinbox.value()
+            repeat = self.median_filter_repetition_spinbox.value()
+        elif current_filter_method == "wavelet":
+            # Check if harmonics are compatible
+            phasor_features = layer.metadata[
+                'phasor_features_labels_layer'
+            ].features
+            harmonics = np.unique(phasor_features['harmonic'])
+            if validate_harmonics_for_wavelet(harmonics):
+                filter_method = "wavelet"
+                sigma = self.wavelet_sigma_spinbox.value()
+                levels = self.wavelet_levels_spinbox.value()
 
         apply_filter_and_threshold(
             layer,
-            threshold=self.threshold_slider.value() / self.threshold_factor,
+            threshold=threshold_value,
+            threshold_method=threshold_method,
             filter_method=filter_method,
-            size=self.median_filter_spinbox.value(),
-            repeat=self.median_filter_repetition_spinbox.value(),
-            sigma=self.wavelet_sigma_spinbox.value(),
-            levels=self.wavelet_levels_spinbox.value(),
+            size=size,
+            repeat=repeat,
+            sigma=sigma,
+            levels=levels,
             harmonics=harmonics,
         )
+
         if self.parent_widget is not None:
             self.parent_widget.plot()
 
