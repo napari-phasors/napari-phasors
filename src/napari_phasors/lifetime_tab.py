@@ -104,7 +104,7 @@ class LifetimeWidget(QWidget):
         )
         self.lifetime_type_combobox.setCurrentText("None")
         lifetime_type_layout.addWidget(self.lifetime_type_combobox)
-        
+
         # Add refresh button
         self.refresh_lifetime_button = QPushButton()
         self.refresh_lifetime_button.setIcon(
@@ -118,7 +118,7 @@ class LifetimeWidget(QWidget):
         )
         lifetime_type_layout.addWidget(self.refresh_lifetime_button)
         # lifetime_type_layout.addStretch()
-        
+
         self.main_layout.addLayout(lifetime_type_layout)
 
         # Connect signals

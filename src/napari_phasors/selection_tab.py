@@ -77,9 +77,11 @@ class SelectionWidget(QWidget):
         self.refresh_selection_button.clicked.connect(
             self._on_refresh_selection_clicked
         )
-        
+
         # Find the grid layout and add the button to row 4, column 3
-        scroll_area_layout = self.selection_input_widget.findChild(QWidget, "scrollAreaWidgetContents").layout()
+        scroll_area_layout = self.selection_input_widget.findChild(
+            QWidget, "scrollAreaWidgetContents"
+        ).layout()
         if scroll_area_layout is not None:
             scroll_area_layout.addWidget(self.refresh_selection_button, 4, 3)
 
