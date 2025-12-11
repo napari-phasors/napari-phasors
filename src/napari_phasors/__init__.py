@@ -1,4 +1,7 @@
-__version__ = "0.0.4.dev"
+try:
+    from ._version import version as __version__
+except ImportError:
+    __version__ = "unknown"
 
 from ._reader import napari_get_reader
 from ._sample_data import (
@@ -6,12 +9,7 @@ from ._sample_data import (
     embryo_FLIM_sample_data,
     paramecium_HSI_sample_data,
 )
-from ._widget import (
-    CalibrationWidget,
-    LifetimeWidget,
-    PhasorTransform,
-    WriterWidget,
-)
+from ._widget import PhasorTransform, WriterWidget
 from ._writer import write_ome_tiff
 from .plotter import PlotterWidget
 
@@ -23,7 +21,5 @@ __all__ = (
     "paramecium_HSI_sample_data",
     "PhasorTransform",
     "PlotterWidget",
-    "CalibrationWidget",
     "WriterWidget",
-    "LifetimeWidget",
 )

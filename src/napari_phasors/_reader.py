@@ -21,24 +21,24 @@ import xarray as xr
 from napari.layers import Labels
 from napari.utils.colormaps.colormap_utils import CYMRGB, MAGENTA_GREEN
 from napari.utils.notifications import show_error
-from phasorpy.phasor import (
-    phasor_filter_median,
-    phasor_from_signal,
-    phasor_threshold,
-)
+from phasorpy.phasor import phasor_from_signal
 
 extension_mapping = {
     "raw": {
         ".ptu": lambda path, reader_options: _parse_and_call_io_function(
             path,
             io.signal_from_ptu,
-            {"frame": (-1, False), "keepdims": (True, False)},
+            {"frame": (-1, False), "keepdims": (False, False)},
             reader_options,
         ),
         ".fbd": lambda path, reader_options: _parse_and_call_io_function(
             path,
             io.signal_from_fbd,
-            {"frame": (-1, False), "keepdims": (True, False)},
+            {
+                "frame": (-1, False),
+                "keepdims": (False, False),
+                "channel": (None, False),
+            },
             reader_options,
         ),
         ".sdt": lambda path, reader_options: _parse_and_call_io_function(
@@ -190,7 +190,8 @@ def raw_file_reader(
         Dictionary containing the arguments to pass to the function.
     harmonics : Union[int, Sequence[int], None], optional
         Harmonic(s) to be processed. Can be a single integer, a sequence of
-        integers, or None. Default is None.
+        integers, or None. Default is None, which sets the first two harmonics
+        to be processed.
 
     Returns
     -------
@@ -204,6 +205,9 @@ def raw_file_reader(
         in 'metadata' contain phasor coordinates as columns 'G' and 'S'.
 
     """
+    # Set default harmonics if None is passed
+    if harmonics is None:
+        harmonics = [1, 2]
     filename, file_extension = _get_filename_extension(path)
     if file_extension == ".sdt":
         raw_data = _stack_sdt_channels(path)
@@ -211,6 +215,7 @@ def raw_file_reader(
         raw_data = extension_mapping["raw"][file_extension](
             path, reader_options
         )
+
     settings = {}
     if (
         file_extension != '.fbd'
@@ -218,18 +223,48 @@ def raw_file_reader(
         and 'frequency' in raw_data.attrs.keys()
     ):
         settings['frequency'] = raw_data.attrs['frequency']
+
     layers = []
     iter_axis = iter_index_mapping[file_extension]
-    if iter_axis is None:
+
+    if iter_axis is None or iter_axis not in raw_data.dims:
+        # Handle files without iteration axis or when keepdims=False squeezed it out
         if file_extension == ".tif":
-            mean_intensity_image, G_image, S_image = phasor_from_signal(
-                raw_data, axis=0, harmonic=harmonics
-            )
+            axis = 0
+        elif iter_axis is None:
+            # Hyperspectral files - find "C" dimension
+            axis = raw_data.dims.index("C")
         else:
-            # Calculate phasor over channels if file is of hyperspectral type
-            mean_intensity_image, G_image, S_image = phasor_from_signal(
-                raw_data, axis=raw_data.dims.index("C"), harmonic=harmonics
+            # FLIM files without "C" dimension (single channel)
+            axis = raw_data.dims.index("H")
+
+        # Calculate summed signal over spatial dimensions
+        if file_extension in [".lsm", ".tif"]:
+            # For hyperspectral files, sum over spatial dimensions (axes 1 onwards)
+            axes_to_sum = tuple(range(1, len(raw_data.shape)))
+        else:
+            # For FLIM files, sum over all dimensions except the histogram axis
+            axes_to_sum = tuple(
+                i for i in range(len(raw_data.shape)) if i != axis
             )
+
+        summed_signal = np.sum(raw_data, axis=axes_to_sum)
+        # Convert xarray DataArray to numpy array before converting to list
+        if hasattr(summed_signal, 'values'):
+            summed_signal = summed_signal.values
+        settings['summed_signal'] = (
+            summed_signal.tolist()
+            if hasattr(summed_signal, 'tolist')
+            else summed_signal
+        )
+
+        # Only set channel for files that actually have channels (FLIM files)
+        if file_extension not in [".lsm", ".tif"]:
+            settings['channel'] = 0
+
+        mean_intensity_image, G_image, S_image = phasor_from_signal(
+            raw_data, axis=axis, harmonic=harmonics
+        )
         labels_layer = make_phasors_labels_layer(
             mean_intensity_image,
             G_image,
@@ -237,8 +272,13 @@ def raw_file_reader(
             name=filename,
             harmonics=harmonics,
         )
+        channel_suffix = (
+            " Intensity Image"
+            if iter_axis is None
+            else " Intensity Image: Channel 0"
+        )
         add_kwargs = {
-            "name": f"{filename} Intensity Image",
+            "name": f"{filename}{channel_suffix}",
             "metadata": {
                 "phasor_features_labels_layer": labels_layer,
                 "original_mean": mean_intensity_image,
@@ -247,12 +287,36 @@ def raw_file_reader(
         }
         layers.append((mean_intensity_image, add_kwargs))
     else:
+        # Handle multi-channel files with iteration axis
         iter_axis_index = raw_data.dims.index(iter_axis)
         for channel in range(raw_data.shape[iter_axis_index]):
-            # Calculate phasor over photon counts dimension if file is FLIM
+            channel_data = raw_data.sel(C=channel)
+            histogram_axis = channel_data.dims.index("H")
+
+            # Calculate summed signal over spatial dimensions for this channel
+            axes_to_sum = tuple(
+                i
+                for i in range(len(channel_data.shape))
+                if i != histogram_axis
+            )
+            summed_signal = np.sum(channel_data, axis=axes_to_sum)
+
+            # Convert xarray DataArray to numpy array before converting to list
+            if hasattr(summed_signal, 'values'):
+                summed_signal = summed_signal.values
+
+            # Create settings dict for this channel
+            channel_settings = settings.copy()
+            channel_settings['summed_signal'] = (
+                summed_signal.tolist()
+                if hasattr(summed_signal, 'tolist')
+                else summed_signal
+            )
+            channel_settings['channel'] = channel
+
             mean_intensity_image, G_image, S_image = phasor_from_signal(
-                raw_data.sel(C=channel),
-                axis=raw_data.sel(C=channel).dims.index("H"),
+                channel_data,
+                axis=histogram_axis,
                 harmonic=harmonics,
             )
             labels_layer = make_phasors_labels_layer(
@@ -267,7 +331,7 @@ def raw_file_reader(
                 "metadata": {
                     "phasor_features_labels_layer": labels_layer,
                     "original_mean": mean_intensity_image,
-                    "settings": settings,
+                    "settings": channel_settings,
                 },
             }
             layers.append((mean_intensity_image, add_kwargs))
@@ -292,7 +356,8 @@ def processed_file_reader(
         Dictionary containing the arguments to pass to the function.
     harmonics : Union[int, Sequence[int], None], optional
         Harmonic(s) to be processed. Can be a single integer, a sequence of
-        integers, or None. Default is None.
+        integers, or None. Default is None, which sets all harmonics present
+        in the file to be processed.
 
     Returns
     -------
@@ -306,6 +371,8 @@ def processed_file_reader(
         in 'metadata' contain phasor coordinates as columns 'G' and 'S'.
 
     """
+    if harmonics is None:
+        harmonics = 'all'
     filename, file_extension = _get_filename_extension(path)
     reader_options = reader_options or {"harmonic": harmonics}
     mean_intensity_image, G_image, S_image, attrs = extension_mapping[
@@ -313,7 +380,7 @@ def processed_file_reader(
     ][file_extension](path, reader_options)
     if "description" in attrs.keys():
         description = json.loads(attrs["description"])
-        if sys.getsizeof(description) > 512 * 512:  # Threshold: 256 KB
+        if len(json.dumps(description)) > 512 * 512:  # Threshold: 256 KB
             raise ValueError("Description dictionary is too large.")
         if "napari_phasors_settings" in description:
             settings = json.loads(description["napari_phasors_settings"])
@@ -323,60 +390,82 @@ def processed_file_reader(
         settings = {}
     if "frequency" in attrs.keys():
         settings["frequency"] = attrs["frequency"]
+    harmonics_read = attrs.get("harmonic", None)
+
     labels_layer = make_phasors_labels_layer(
         mean_intensity_image,
         G_image,
         S_image,
         name=filename,
-        harmonics=harmonics,
+        harmonics=harmonics_read,
     )
 
-    filter_size = None
-    filter_repeat = None
-    if "filter" in settings.keys():
-        filter_size = settings["filter"]["size"]
-        filter_repeat = settings["filter"]["repeat"]
-    threshold = None
-    if "threshold" in settings.keys():
-        threshold = settings["threshold"]
+    original_mean_intensity_image = mean_intensity_image.copy()
 
-    if threshold is not None or filter_repeat is not None:
-        harmonics = np.unique(labels_layer.features['harmonic'])
-        real, imag = (
-            labels_layer.features['G_original'].copy(),
-            labels_layer.features['S_original'].copy(),
-        )
-        mean = mean_intensity_image
-        real = np.reshape(real, (len(harmonics),) + mean.shape)
-        imag = np.reshape(imag, (len(harmonics),) + mean.shape)
-        if filter_repeat is not None and filter_repeat > 0:
-            if filter_size is None:
-                filter_size = 3
-            mean, real, imag = phasor_filter_median(
-                mean,
+    harmonics_array = np.unique(labels_layer.features['harmonic'])
+    real = labels_layer.features['G_original'].copy()
+    imag = labels_layer.features['S_original'].copy()
+    real = np.reshape(
+        real, (len(harmonics_array),) + mean_intensity_image.shape
+    )
+    imag = np.reshape(
+        imag, (len(harmonics_array),) + mean_intensity_image.shape
+    )
+
+    should_apply_processing = False
+    filter_params = {}
+    threshold_value = 0
+
+    if "filter" in settings.keys():
+        filter_settings = settings["filter"]
+        if filter_settings.get("repeat", 0) > 0:
+            should_apply_processing = True
+            filter_params = {
+                "filter_method": filter_settings.get("method", "median"),
+                "size": filter_settings.get("size", 3),
+                "repeat": filter_settings.get("repeat", 1),
+                "sigma": filter_settings.get("sigma", 1.0),
+                "levels": filter_settings.get("levels", 3),
+            }
+
+    if "threshold" in settings.keys() and settings["threshold"] is not None:
+        should_apply_processing = True
+        threshold_value = settings["threshold"]
+
+    if should_apply_processing:
+        from ._utils import _apply_filter_and_threshold_to_phasor_arrays
+
+        mean_intensity_image, real, imag = (
+            _apply_filter_and_threshold_to_phasor_arrays(
+                mean_intensity_image,
                 real,
                 imag,
-                repeat=filter_repeat,
-                size=filter_size,
+                harmonics_array,
+                threshold=threshold_value,
+                **filter_params,
             )
-        if threshold is not None:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", category=RuntimeWarning)
-                mean, real, imag = phasor_threshold(
-                    mean, real, imag, threshold
-                )
-                (
-                    labels_layer.features['G'],
-                    labels_layer.features['S'],
-                ) = (real.flatten(), imag.flatten())
-            mean_intensity_image = mean
+        )
+
+        labels_layer.features['G'] = real.flatten()
+        labels_layer.features['S'] = imag.flatten()
+
+        if "settings" not in settings:
+            settings["settings"] = {}
+        settings["filter"] = {
+            "method": filter_params.get("filter_method", "median"),
+            "size": filter_params.get("size", 3),
+            "repeat": filter_params.get("repeat", 1),
+            "sigma": filter_params.get("sigma", 1.0),
+            "levels": filter_params.get("levels", 3),
+        }
+        settings["threshold"] = threshold_value
 
     layers = []
     add_kwargs = {
         "name": filename + " Intensity Image",
         "metadata": {
             "phasor_features_labels_layer": labels_layer,
-            "original_mean": mean_intensity_image,
+            "original_mean": original_mean_intensity_image,
             "settings": settings,
         },
     }

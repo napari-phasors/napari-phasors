@@ -1,46 +1,50 @@
 import math
-from math import ceil, log10
+import warnings
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import matplotlib.ticker as ticker
 import numpy as np
 from biaplotter.plotter import CanvasWidget
 from matplotlib.colorbar import Colorbar
-from matplotlib.colors import LinearSegmentedColormap, LogNorm, Normalize
+from matplotlib.colors import LinearSegmentedColormap, LogNorm
 from matplotlib.lines import Line2D
 from matplotlib.patches import Circle
-from napari.layers import Image, Labels
-from napari.utils import DirectLabelColormap, colormaps, notifications
+from napari.layers import Image
+from napari.utils import colormaps, notifications
+from phasorpy.lifetime import phasor_from_lifetime
 from qtpy import uic
+from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
     QPushButton,
-    QSizePolicy,
-    QSpacerItem,
+    QSpinBox,
+    QSplitter,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
-from skimage.util import map_array
-from superqt import QCollapsible
 
-from ._synthetic_generator import (
-    make_intensity_layer_with_phasors,
-    make_raw_flim_data,
-)
-from ._utils import apply_filter_and_threshold, colormap_to_dict
-
-if TYPE_CHECKING:
-    import napari
-
-#: The columns in the phasor features table that should not be used as selection id.
-DATA_COLUMNS = ["label", "G_original", "S_original", "G", "S", "harmonic"]
+from ._utils import update_frequency_in_metadata
+from .calibration_tab import CalibrationWidget
+from .components_tab import ComponentsWidget
+from .filter_tab import FilterWidget
+from .fret_tab import FretWidget
+from .lifetime_tab import LifetimeWidget
+from .selection_tab import SelectionWidget
 
 
 class PlotterWidget(QWidget):
     """A widget for plotting phasor features.
 
-    This widget contains a canvas widget and input widgets for plotting phasor features.
-    It also creates a phasors selected layer based on the manual selection in the canvas widget.
+    This widget contains a fixed canvas widget at the top for plotting phasor features
+    and a tabbed interface below with different analysis tools.
 
     Parameters
     ----------
@@ -52,23 +56,29 @@ class PlotterWidget(QWidget):
     viewer : napari.Viewer
         The napari viewer object.
     canvas_widget : biaplotter.plotter.CanvasWidget
-        The canvas widget for plotting phasor features.
+        The canvas widget for plotting phasor features (fixed at the top).
+    image_layer_with_phasor_features_combobox : QComboBox
+        The combobox for selecting the image layer with phasor features.
+    harmonic_spinbox : QSpinBox
+        The spinbox for selecting the harmonic.
+    tab_widget : QTabWidget
+        The tab widget containing different analysis tools.
+    settings_tab : QWidget
+        The Settings tab containing the main plotting controls.
+    selection_tab : QWidget
+        The selection tab for cursor-based analysis.
+    components_tab : QWidget
+        The Components tab for component analysis.
+    lifetime_tab : QWidget
+        The Lifetime tab for lifetime analysis.
+    fret_tab : QWidget
+        The FRET tab for FRET analysis.
     plotter_inputs_widget : QWidget
-        The main plotter inputs widget. The widget contains:
-        - image_layer_with_phasor_features_combobox : QComboBox
-            The combobox for selecting the image layer with phasor features.
-        - phasor_selection_id_combobox : QComboBox
-            The combobox for selecting the phasor selection id.
-        - harmonic_spinbox : QSpinBox
-            The spinbox for selecting the harmonic.
-        - threshold_slider : QSlider
-            The slider for selecting the threshold.
-        - median_filter_spinbox : QSpinBox
-            The spinbox for selecting the median filter kernel size (in pixels).
+        The main plotter inputs widget (in Settings tab). The widget contains:
         - semi_circle_checkbox : QCheckBox
-            The checkbox for displaying the universal semi-circle (if True) or the full polar plot (if False).
-    extra_inputs_widget : QWidget
-        The extra plotter inputs widget. It is collapsible. The widget contains:
+            The checkbox for toggling the display of the semi-circle plot.
+        - white_background_checkbox : QCheckBox
+            The checkbox for toggling the white background in the plot.
         - plot_type_combobox : QComboBox
             The combobox for selecting the plot type.
         - colormap_combobox : QComboBox
@@ -77,105 +87,206 @@ class PlotterWidget(QWidget):
             The spinbox for selecting the number of bins in the histogram.
         - log_scale_checkbox : QCheckBox
             The checkbox for selecting the log scale in the histogram.
-    plot_button : QPushButton
-        The plot button.
-    _labels_layer_with_phasor_features : Labels
-        The labels layer with phasor features.
-    _phasors_selected_layer : Labels
-        The phasors selected layer.
-    _colormap : matplotlib.colors.Colormap
-        The colormap for the canvas widget.
-    _histogram_colormap : matplotlib.colors.Colormap
-        The histogram colormap for the canvas widget.
 
     """
 
     def __init__(self, napari_viewer):
+        """Initialize the PlotterWidget."""
         super().__init__()
         self.viewer = napari_viewer
 
         self.setLayout(QVBoxLayout())
+        self._labels_layer_with_phasor_features = None
 
-        # Load canvas widget
-        self.canvas_widget = CanvasWidget(napari_viewer)
+        # Create a splitter to separate canvas from controls
+        splitter = QSplitter(Qt.Vertical)
+        self.layout().addWidget(splitter)
+
+        # Create top widget for canvas
+        canvas_container = QWidget()
+        canvas_container.setLayout(QVBoxLayout())
+
+        # Load canvas widget (fixed at the top)
+        self.canvas_widget = CanvasWidget(
+            napari_viewer, highlight_enabled=False
+        )
         self.canvas_widget.axes.set_aspect(1, adjustable='box')
         self.canvas_widget.setMinimumSize(300, 300)
-        self.canvas_widget.class_spinbox.setValue(1)
         self.set_axes_labels()
-        self.layout().addWidget(self.canvas_widget)
+        canvas_container.layout().addWidget(self.canvas_widget)
 
-        # Load plotter inputs widget from ui file
+        # Create bottom widget for controls
+        controls_container = QWidget()
+        controls_container.setLayout(QVBoxLayout())
+
+        # Add select image combobox
+        image_layer_layout = QHBoxLayout()
+        image_layer_layout.setContentsMargins(0, 0, 0, 0)  # Remove margins
+        image_layer_layout.setSpacing(5)  # Reduce spacing between widgets
+        image_layer_layout.addWidget(QLabel("Image Layer:"))
+        self.image_layer_with_phasor_features_combobox = QComboBox()
+        self.image_layer_with_phasor_features_combobox.setMaximumHeight(
+            25
+        )  # Set smaller height
+        image_layer_layout.addWidget(
+            self.image_layer_with_phasor_features_combobox, 1
+        )  # Add stretch factor of 1
+
+        image_layer_widget = QWidget()
+        image_layer_widget.setLayout(image_layer_layout)
+        controls_container.layout().addWidget(image_layer_widget)
+
+        # Add harmonic spinbox below image layer combobox
+        harmonic_layout = QHBoxLayout()
+        harmonic_layout.setContentsMargins(0, 0, 0, 0)  # Remove margins
+        harmonic_layout.setSpacing(5)  # Reduce spacing between widgets
+        harmonic_layout.addWidget(QLabel("Harmonic:"))
+        self.harmonic_spinbox = QSpinBox()
+        self.harmonic_spinbox.setMinimum(1)
+        self.harmonic_spinbox.setValue(1)
+        self.harmonic_spinbox.setMaximumHeight(25)  # Set smaller height
+        harmonic_layout.addWidget(
+            self.harmonic_spinbox, 1
+        )  # Add stretch factor of 1
+
+        harmonic_widget = QWidget()
+        harmonic_widget.setLayout(harmonic_layout)
+        controls_container.layout().addWidget(harmonic_widget)
+
+        # Add import buttons below harmonic spinbox
+        import_buttons_layout = QHBoxLayout()
+        import_buttons_layout.setContentsMargins(0, 0, 0, 0)
+        import_buttons_layout.setSpacing(5)
+
+        import_label = QLabel("Load and Apply Settings from:")
+        import_buttons_layout.addWidget(import_label)
+
+        self.import_from_layer_button = QPushButton("Layer")
+        self.import_from_layer_button.setMaximumHeight(25)
+        import_buttons_layout.addWidget(self.import_from_layer_button)
+
+        self.import_from_file_button = QPushButton("OME-TIFF File")
+        self.import_from_file_button.setMaximumHeight(25)
+        import_buttons_layout.addWidget(self.import_from_file_button)
+
+        import_buttons_widget = QWidget()
+        import_buttons_widget.setLayout(import_buttons_layout)
+        controls_container.layout().addWidget(import_buttons_widget)
+
+        # Create tab widget
+        self.tab_widget = QTabWidget()
+
+        # Create tab widget
+        self.tab_widget = QTabWidget()
+        controls_container.layout().addWidget(self.tab_widget)
+
+        # Add widgets to splitter
+        splitter.addWidget(canvas_container)
+        splitter.addWidget(controls_container)
+
+        # Configure splitter to prevent overlap
+        splitter.setStretchFactor(0, 1)  # Canvas gets priority
+        splitter.setStretchFactor(1, 0)  # Controls maintain minimum size
+        splitter.setCollapsible(0, False)  # Canvas cannot be collapsed
+        splitter.setCollapsible(1, True)  # Controls can be collapsed if needed
+        splitter.setStyleSheet(
+            """
+            QSplitter::handle {
+                background: #414851;         /* default state */
+            }
+            QSplitter::handle:hover {
+                background: #414851;         /* on hover */
+            }
+            QSplitter::handle:pressed {
+                background: #7b8d8e;         /* while dragging */
+            }
+        """
+        )
+
+        canvas_container.setMinimumHeight(300)
+        controls_container.setMinimumHeight(300)
+        splitter.setSizes([800, 400])
+
+        # Add a flag to prevent recursive calls
+        self._updating_plot = False
+        self._updating_settings = False
+
+        # Create Settings tab
+        self.settings_tab = QWidget()
+        self.settings_tab.setLayout(QVBoxLayout())
+        self.tab_widget.addTab(self.settings_tab, "Plot Settings")
+
+        # Load plotter inputs widget from ui file (moved to Settings tab)
         self.plotter_inputs_widget = QWidget()
         uic.loadUi(
             Path(__file__).parent / "ui/plotter_inputs_widget.ui",
             self.plotter_inputs_widget,
         )
-        self.layout().addWidget(self.plotter_inputs_widget)
+        self.settings_tab.layout().addWidget(self.plotter_inputs_widget)
+        self.setMinimumSize(300, 400)
 
-        # Add collapsible widget
-        collapsible_widget = QCollapsible("Extra Options")
-        self.layout().addWidget(collapsible_widget)
-
-        # Load extra inputs widget from ui file
-        self.extra_inputs_widget = QWidget()
-        uic.loadUi(
-            Path(__file__).parent / "ui/plotter_inputs_widget_extra.ui",
-            self.extra_inputs_widget,
-        )
-        collapsible_widget.addWidget(self.extra_inputs_widget)
-        # Add plot button
-        self.plot_button = QPushButton("Plot")
-        self.layout().addWidget(self.plot_button)
-
-        # Add a vertical spacer at the bottom
-        spacer = QSpacerItem(
-            20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding
-        )
-        self.layout().addItem(spacer)
-
-        # Set minimum size
-        self.setMinimumSize(600, 300)
+        # Create other tabs
+        self._create_calibration_tab()
+        self._create_filter_tab()
+        self._create_selection_tab()
+        self._create_components_tab()
+        self._create_lifetime_tab()
+        self._create_fret_tab()
 
         # Connect napari signals when new layer is inseted or removed
         self.viewer.layers.events.inserted.connect(self.reset_layer_choices)
         self.viewer.layers.events.removed.connect(self.reset_layer_choices)
 
         # Connect callbacks
-        self.plotter_inputs_widget.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
+        self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
             self.on_labels_layer_with_phasor_features_changed
         )
-        self.plotter_inputs_widget.phasor_selection_id_combobox.currentIndexChanged.connect(
-            self.on_selection_id_changed
+        # Update all frequency widgets from layer metadata if layer changes
+        self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
+            self._sync_frequency_inputs_from_metadata
         )
+
+        # Connect settings callbacks
         self.plotter_inputs_widget.semi_circle_checkbox.stateChanged.connect(
-            self.on_toggle_semi_circle
+            self._on_semi_circle_changed
         )
-        self.plot_button.clicked.connect(self.plot)
+        self.harmonic_spinbox.valueChanged.connect(self._on_harmonic_changed)
+        self.plotter_inputs_widget.plot_type_combobox.currentIndexChanged.connect(
+            self._on_plot_type_changed
+        )
+        self.plotter_inputs_widget.colormap_combobox.currentIndexChanged.connect(
+            self._on_colormap_changed
+        )
+        self.plotter_inputs_widget.number_of_bins_spinbox.valueChanged.connect(
+            self._on_bins_changed
+        )
+        self.plotter_inputs_widget.log_scale_checkbox.stateChanged.connect(
+            self._on_log_scale_changed
+        )
+        self.plotter_inputs_widget.white_background_checkbox.stateChanged.connect(
+            self._on_white_background_changed
+        )
+        self.import_from_layer_button.clicked.connect(
+            self._import_settings_from_layer
+        )
+        self.import_from_file_button.clicked.connect(
+            self._import_settings_from_file
+        )
 
         # Populate plot type combobox
-        self.extra_inputs_widget.plot_type_combobox.addItems(
-            ['SCATTER', 'HISTOGRAM2D']
+        self.plotter_inputs_widget.plot_type_combobox.addItems(
+            ['HISTOGRAM2D', 'SCATTER']
         )
+
         # Populate colormap combobox
-        self.extra_inputs_widget.colormap_combobox.addItems(
+        self.plotter_inputs_widget.colormap_combobox.addItems(
             list(colormaps.ALL_COLORMAPS.keys())
         )
         self.histogram_colormap = (
             "turbo"  # Set default colormap (same as in biaplotter)
         )
 
-        # Connect canvas signals
-        self.canvas_widget.artists[
-            'SCATTER'
-        ].color_indices_changed_signal.connect(self.manual_selection_changed)
-        self.canvas_widget.artists[
-            'HISTOGRAM2D'
-        ].color_indices_changed_signal.connect(self.manual_selection_changed)
-
         # Initialize attributes
-        self._labels_layer_with_phasor_features = None
-        self.selection_id = "MANUAL SELECTION #1"
-        self._phasors_selected_layer = None
         self.polar_plot_artist_list = []
         self.semi_circle_plot_artist_list = []
         self.toggle_semi_circle = True
@@ -186,107 +297,661 @@ class PlotterWidget(QWidget):
         self._histogram_colormap = self.canvas_widget.artists[
             'HISTOGRAM2D'
         ].histogram_colormap
+
         # Start with the histogram2d plot type
         self.plot_type = 'HISTOGRAM2D'
+        self._current_plot_type = 'HISTOGRAM2D'
 
-        # Set intial axes limits
+        # Connect only the initial active artist
+        self._connect_active_artist_signals()
+        self._connect_selector_signals()
+        self.canvas_widget.show_color_overlay_signal.connect(
+            self._enforce_axes_aspect
+        )
+
+        # Set the initial plot
         self._redefine_axes_limits()
-        # Set initial background color
-        self._update_plot_bg_color(color="white")
+        self._update_plot_bg_color()
+
         # Populate labels layer combobox
         self.reset_layer_choices()
 
-        # Connect threshold slider
-        self.plotter_inputs_widget.threshold_slider.valueChanged.connect(
-            self.on_threshold_slider_change
+        # Connect tab change signal
+        self.tab_widget.currentChanged.connect(self._on_tab_changed)
+        self._set_selection_visibility(False)
+
+    def _get_default_plot_settings(self):
+        """Get default settings dictionary for plot parameters."""
+
+        default_harmonic = 1  # fallback default
+        layer_name = (
+            self.image_layer_with_phasor_features_combobox.currentText()
         )
+        if layer_name:
+            try:
+                layer_metadata = self.viewer.layers[layer_name].metadata
+                if "phasor_features_labels_layer" in layer_metadata:
+                    phasor_features = layer_metadata[
+                        "phasor_features_labels_layer"
+                    ]
+                    if (
+                        phasor_features.features is not None
+                        and "harmonic" in phasor_features.features.columns
+                    ):
+                        default_harmonic = int(
+                            phasor_features.features["harmonic"].min()
+                        )
+            except (KeyError, AttributeError, ValueError):
+                pass
 
-        # Connect kernel size spinbox
-        self.plotter_inputs_widget.median_filter_spinbox.valueChanged.connect(
-            self.on_kernel_size_change
-        )
+        return {
+            'harmonic': default_harmonic,
+            'semi_circle': True,
+            'white_background': True,
+            'plot_type': 'HISTOGRAM2D',
+            'colormap': 'turbo',
+            'number_of_bins': 150,
+            'log_scale': False,
+        }
 
-    @property
-    def selection_id(self):
-        """Gets or sets the selection id from the phasor selection id combobox.
+    def _initialize_plot_settings_in_metadata(self, layer):
+        """Initialize settings in layer metadata if not present."""
+        if 'settings' not in layer.metadata:
+            layer.metadata['settings'] = {}
 
-        Value should not be one of these: ['label', 'Average Image', 'G', 'S', 'harmonic'].
+        default_settings = self._get_default_plot_settings()
+        for key, default_value in default_settings.items():
+            if key not in layer.metadata['settings']:
+                layer.metadata['settings'][key] = default_value
 
-        Returns
-        -------
-        str
-            The selection id. Returns `None` if no selection id is available.
-        """
-        if (
-            self.plotter_inputs_widget.phasor_selection_id_combobox.count()
-            == 0
-        ):
-            return None
-        else:
-            return (
-                self.plotter_inputs_widget.phasor_selection_id_combobox.currentText()
-            )
-
-    @selection_id.setter
-    def selection_id(self, new_selection_id: str):
-        """Sets the selection id from the phasor selection id combobox."""
-        if new_selection_id in DATA_COLUMNS:
-            notifications.WarningNotification(
-                f"{new_selection_id} is not a valid selection column. It must not be one of {DATA_COLUMNS}."
-            )
+    def _update_setting_in_metadata(self, key, value):
+        """Update a specific setting in the current layer's metadata."""
+        if self._updating_settings:
             return
-        else:
-            if new_selection_id not in [
-                self.plotter_inputs_widget.phasor_selection_id_combobox.itemText(
-                    i
-                )
-                for i in range(
-                    self.plotter_inputs_widget.phasor_selection_id_combobox.count()
-                )
-            ]:
-                self.plotter_inputs_widget.phasor_selection_id_combobox.addItem(
-                    new_selection_id
-                )
-            self.plotter_inputs_widget.phasor_selection_id_combobox.setCurrentText(
-                new_selection_id
-            )
-            self.add_selection_id_to_features(new_selection_id)
 
-    def add_selection_id_to_features(self, new_selection_id: str):
-        """Add a new selection id to the features table in the labels layer with phasor features.
+        layer_name = (
+            self.image_layer_with_phasor_features_combobox.currentText()
+        )
+        if layer_name:
+            layer = self.viewer.layers[layer_name]
+            if 'settings' not in layer.metadata:
+                layer.metadata['settings'] = {}
+            layer.metadata['settings'][key] = value
+
+    def _restore_plot_settings_from_metadata(self):
+        """Restore all settings from the current layer's metadata."""
+        layer_name = (
+            self.image_layer_with_phasor_features_combobox.currentText()
+        )
+        if not layer_name:
+            return
+
+        layer = self.viewer.layers[layer_name]
+        if 'settings' not in layer.metadata:
+            self._initialize_plot_settings_in_metadata(layer)
+            return
+
+        self._updating_settings = True
+        try:
+            settings = layer.metadata['settings']
+
+            # Restore harmonic
+            if 'harmonic' in settings:
+                self.harmonic_spinbox.setValue(settings['harmonic'])
+
+            # Restore white background first (this affects circle colors)
+            if 'white_background' in settings:
+                self.plotter_inputs_widget.white_background_checkbox.setChecked(
+                    settings['white_background']
+                )
+                # Update axes labels and plot background immediately
+                self.set_axes_labels()
+                self._update_plot_bg_color()
+
+            # Restore semi circle (this will update the circle/semicircle with correct colors)
+            if 'semi_circle' in settings:
+                # Use the setter to properly update the display
+                self.toggle_semi_circle = settings['semi_circle']
+
+            # Restore plot type
+            if 'plot_type' in settings:
+                self.plotter_inputs_widget.plot_type_combobox.setCurrentText(
+                    settings['plot_type']
+                )
+
+            # Restore colormap
+            if 'colormap' in settings:
+                self.plotter_inputs_widget.colormap_combobox.setCurrentText(
+                    settings['colormap']
+                )
+
+            # Restore number of bins
+            if 'number_of_bins' in settings:
+                self.plotter_inputs_widget.number_of_bins_spinbox.setValue(
+                    settings['number_of_bins']
+                )
+
+            # Restore log scale
+            if 'log_scale' in settings:
+                self.plotter_inputs_widget.log_scale_checkbox.setChecked(
+                    settings['log_scale']
+                )
+
+        finally:
+            self._updating_settings = False
+
+    def _show_import_dialog(self, default_checked=None, source_settings=None):
+        """Show a dialog to select which analyses to import/apply.
 
         Parameters
         ----------
-        new_selection_id : str
-            The new selection id to add to the features table.
+        default_checked : list, optional
+            List of tab keys that should be checked by default
+        source_settings : dict, optional
+            Settings dictionary from source layer/file to determine which tabs to show
         """
-        if self._labels_layer_with_phasor_features is None:
-            return
-        if new_selection_id in DATA_COLUMNS:
-            notifications.WarningNotification(
-                f"{new_selection_id} is not a valid selection column. It must not be one of {DATA_COLUMNS}."
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Select Analyses to Import")
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("Select which analyses to import and apply:"))
+
+        # Frequency checkbox (always show if frequency exists in settings)
+        frequency_cb = None
+        if source_settings is not None and "frequency" in source_settings:
+            frequency_cb = QCheckBox("Frequency")
+            frequency_cb.setChecked(
+                default_checked is None
+                or "frequency"
+                in (
+                    default_checked
+                    if isinstance(default_checked, list)
+                    else []
+                )
             )
-            return
-        # If column_name is not in features, add it with zeros
-        if (
-            new_selection_id
-            not in self._labels_layer_with_phasor_features.features.columns
+            layout.addWidget(frequency_cb)
+
+            line = QFrame()
+            line.setFrameShape(QFrame.HLine)
+            line.setFrameShadow(QFrame.Sunken)
+            layout.addWidget(line)
+
+        # Map tab display names to their metadata keys
+        tab_mapping = [
+            ("Plot Settings", "settings_tab", None),  # Always has settings
+            ("Calibration", "calibration_tab", "calibrated"),
+            (
+                "Filter/Threshold",
+                "filter_tab",
+                ["threshold", "filter"],
+            ),  # Either threshold or filter
+            ("Lifetime", "lifetime_tab", "lifetime"),
+            ("FRET", "fret_tab", "fret"),
+            ("Components", "components_tab", "component_analysis"),
+        ]
+
+        checkboxes = {}
+
+        for label, attr, settings_key in tab_mapping:
+            # Determine if this tab should be shown
+            show_tab = False
+
+            if source_settings is None:
+                # No settings provided, show all tabs
+                show_tab = True
+            elif settings_key is None:
+                # Always show (e.g., Plot Settings)
+                show_tab = True
+            elif isinstance(settings_key, list):
+                # Show if any of the keys exist (e.g., Filter/Threshold)
+                show_tab = any(key in source_settings for key in settings_key)
+            else:
+                # Show if the specific key exists
+                show_tab = settings_key in source_settings
+
+            if show_tab:
+                cb = QCheckBox(label)
+                cb.setChecked(
+                    default_checked is None
+                    or attr
+                    in (
+                        default_checked
+                        if isinstance(default_checked, list)
+                        else []
+                    )
+                )
+                layout.addWidget(cb)
+                checkboxes[attr] = cb
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        layout.addWidget(button_box)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+
+        dialog.setLayout(layout)
+        if dialog.exec_() == QDialog.Accepted:
+            selected = [
+                attr for attr, cb in checkboxes.items() if cb.isChecked()
+            ]
+            if frequency_cb is not None and frequency_cb.isChecked():
+                selected.insert(0, "frequency")
+            return selected
+        return []
+
+    def _restore_all_tab_analyses(self, selected_tabs=None):
+        """Restore only selected tab analyses."""
+        if selected_tabs is None:
+            selected_tabs = [
+                "settings_tab",
+                "calibration_tab",
+                "filter_tab",
+                "lifetime_tab",
+                "fret_tab",
+                "components_tab",
+            ]
+
+        # Restore plot settings first if selected
+        if "settings_tab" in selected_tabs:
+            self._restore_plot_settings_from_metadata()
+
+        if "calibration_tab" in selected_tabs and hasattr(
+            self, 'calibration_tab'
         ):
-            self._labels_layer_with_phasor_features.features[
-                new_selection_id
-            ] = np.zeros_like(
-                self._labels_layer_with_phasor_features.features[
-                    "label"
-                ].values
+            self.calibration_tab._on_image_layer_changed()
+            self._apply_calibration_if_needed()
+        if "filter_tab" in selected_tabs and hasattr(self, 'filter_tab'):
+            self.filter_tab._on_image_layer_changed()
+            self.filter_tab.apply_button_clicked()
+        if "components_tab" in selected_tabs and hasattr(
+            self, 'components_tab'
+        ):
+            self.components_tab._on_image_layer_changed()
+        if "lifetime_tab" in selected_tabs and hasattr(self, 'lifetime_tab'):
+            self.lifetime_tab._on_image_layer_changed()
+        if "fret_tab" in selected_tabs and hasattr(self, 'fret_tab'):
+            self.fret_tab._on_image_layer_changed()
+
+        current_tab_index = self.tab_widget.currentIndex()
+        self._on_tab_changed(current_tab_index)
+
+    def _apply_calibration_if_needed(self):
+        """Apply calibration transformation if needed."""
+        layer_name = (
+            self.image_layer_with_phasor_features_combobox.currentText()
+        )
+        if not layer_name or layer_name not in self.viewer.layers:
+            return
+        layer = self.viewer.layers[layer_name]
+        settings = layer.metadata.get("settings", {})
+        if (
+            settings.get("calibrated", False)
+            and "calibration_phase" in settings
+            and "calibration_modulation" in settings
+            and not layer.metadata.get("calibration_applied", False)
+        ):
+            phi_zero = settings["calibration_phase"]
+            mod_zero = settings["calibration_modulation"]
+            self.calibration_tab._apply_phasor_transformation(
+                layer_name, phi_zero, mod_zero
+            )
+            layer.metadata["calibration_applied"] = True
+
+    def _import_settings_from_layer(self):
+        """Import all settings and analyses from another layer, with selection dialog."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Import Settings from Layer")
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("Select layer to import settings from:"))
+
+        layer_combo = QComboBox()
+        current_layer = (
+            self.image_layer_with_phasor_features_combobox.currentText()
+        )
+        available_layers = [
+            layer.name
+            for layer in self.viewer.layers
+            if isinstance(layer, Image)
+            and "phasor_features_labels_layer" in layer.metadata
+            and layer.name != current_layer
+        ]
+        layer_combo.addItems(available_layers)
+        layout.addWidget(layer_combo)
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        layout.addWidget(button_box)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        dialog.setLayout(layout)
+
+        if dialog.exec_() == QDialog.Accepted and layer_combo.currentText():
+            source_layer_name = layer_combo.currentText()
+            source_layer = self.viewer.layers[source_layer_name]
+
+            source_settings = source_layer.metadata.get('settings', {})
+
+            selected_tabs = self._show_import_dialog(
+                source_settings=source_settings
+            )
+            if selected_tabs:
+                self._copy_metadata_from_layer(
+                    source_layer_name, selected_tabs
+                )
+
+    def _import_settings_from_file(self):
+        """Import settings from an OME-TIFF file, with selection dialog."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select OME-TIFF file",
+            "",
+            "OME-TIFF Files (*.ome.tif *.ome.tiff);;All Files (*)",
+        )
+        if not file_path:
+            return
+        try:
+            import json
+
+            from phasorpy import io
+
+            _, _, _, attrs = io.phasor_from_ometiff(file_path, harmonic='all')
+            settings = {}
+            if "frequency" in attrs:
+                settings["frequency"] = attrs["frequency"]
+            if "description" in attrs:
+                try:
+                    description = json.loads(attrs["description"])
+                    if "napari_phasors_settings" in description:
+                        napari_phasors_settings = json.loads(
+                            description["napari_phasors_settings"]
+                        )
+                        for key, value in napari_phasors_settings.items():
+                            settings[key] = value
+                except (json.JSONDecodeError, KeyError):
+                    notifications.WarningNotification(
+                        "Failed to parse napari-phasors settings from file"
+                    )
+            if settings:
+                selected_tabs = self._show_import_dialog(
+                    source_settings=settings
+                )
+                if selected_tabs:
+                    self._apply_imported_settings(settings, selected_tabs)
+                    notifications.show_info(
+                        f"Settings imported from {Path(file_path).name}"
+                    )
+            else:
+                notifications.WarningNotification(
+                    "No valid napari-phasors settings found in file"
+                )
+        except Exception as e:
+            notifications.WarningNotification(
+                f"Failed to import from file: {str(e)}"
             )
 
-    def on_selection_id_changed(self):
-        """Callback function when the phasor selection id combobox is changed.
+    def _copy_metadata_from_layer(self, source_layer_name, selected_tabs):
+        """Copy metadata from source layer to current layer and apply selected analyses."""
+        try:
+            source_layer = self.viewer.layers[source_layer_name]
+            current_layer_name = (
+                self.image_layer_with_phasor_features_combobox.currentText()
+            )
+            if not current_layer_name:
+                notifications.WarningNotification("No layer selected")
+                return
+            current_layer = self.viewer.layers[current_layer_name]
+            import copy
 
-        This function updates the `selection_id` attribute with the selected text from the combobox.
+            if "frequency" in selected_tabs:
+                if (
+                    'settings' in source_layer.metadata
+                    and 'frequency' in source_layer.metadata['settings']
+                ):
+                    freq_val = source_layer.metadata['settings']['frequency']
+                    update_frequency_in_metadata(current_layer, freq_val)
+                    self._broadcast_frequency_value_across_tabs(str(freq_val))
+                selected_tabs = [
+                    tab for tab in selected_tabs if tab != "frequency"
+                ]
+
+            if 'settings' in source_layer.metadata:
+                current_layer.metadata['settings'] = copy.deepcopy(
+                    source_layer.metadata['settings']
+                )
+            self._restore_plot_settings_from_metadata()
+            self._restore_all_tab_analyses(selected_tabs)
+            self.plot()
+            notifications.show_info(
+                f"Settings and analyses imported from {source_layer_name}"
+            )
+        except Exception as e:
+            notifications.WarningNotification(
+                f"Failed to import settings: {str(e)}"
+            )
+
+    def _apply_imported_settings(self, settings, selected_tabs):
+        current_layer_name = (
+            self.image_layer_with_phasor_features_combobox.currentText()
+        )
+        if not current_layer_name:
+            notifications.WarningNotification("No layer selected")
+            return
+        current_layer = self.viewer.layers[current_layer_name]
+        if 'settings' not in current_layer.metadata:
+            current_layer.metadata['settings'] = {}
+        import copy
+
+        current_layer.metadata['settings'] = copy.deepcopy(settings)
+
+        if 'frequency' in selected_tabs and 'frequency' in settings:
+            update_frequency_in_metadata(current_layer, settings['frequency'])
+            self._broadcast_frequency_value_across_tabs(
+                str(settings['frequency'])
+            )
+            selected_tabs = [
+                tab for tab in selected_tabs if tab != "frequency"
+            ]
+
+        self._restore_plot_settings_from_metadata()
+        self._restore_all_tab_analyses(selected_tabs)
+        self.plot()
+
+    def _on_tab_changed(self, index):
+        """Handle tab change events to show/hide tab-specific lines."""
+        current_tab = self.tab_widget.widget(index)
+
+        self._hide_all_tab_artists()
+
+        self._show_tab_artists(current_tab)
+
+        self.canvas_widget.figure.canvas.draw_idle()
+
+    def _hide_all_tab_artists(self):
+        """Hide all tab-specific artists."""
+        if hasattr(self, 'selection_tab'):
+            self._set_selection_visibility(False)
+        # Hide components tab artists
+        if hasattr(self, 'components_tab'):
+            self._set_components_visibility(False)
+        # Hide other tabs' artists (add similar methods for other tabs)
+        if hasattr(self, 'fret_tab'):
+            self._set_fret_visibility(False)
+
+    def _show_tab_artists(self, current_tab):
+        """Show artists for the specified tab."""
+        if current_tab == getattr(self, 'selection_tab', None):
+            self._set_selection_visibility(True)
+        elif current_tab == getattr(self, 'components_tab', None):
+            self._set_components_visibility(True)
+        elif current_tab == getattr(self, 'fret_tab', None):
+            self._set_fret_visibility(True)
+
+    def _set_selection_visibility(self, visible):
+        """Set visibility of selection toolbar."""
+        if hasattr(self, 'selection_tab'):
+            layout = self.canvas_widget.selection_tools_layout
+            for i in range(layout.count()):
+                item = layout.itemAt(i)
+                widget = item.widget()
+                if widget is not None:
+                    widget.setVisible(visible)
+
+    def _set_components_visibility(self, visible):
+        """Set visibility of components tab artists."""
+        if hasattr(self, 'components_tab'):
+            self.components_tab.set_artists_visible(visible)
+
+    def _set_fret_visibility(self, visible):
+        """Set visibility of FRET tab artists."""
+        if hasattr(self, 'fret_tab'):
+            self.fret_tab.set_artists_visible(visible)
+
+    def _on_semi_circle_changed(self, state):
+        """Callback for semi circle checkbox change."""
+        self._update_setting_in_metadata('semi_circle', bool(state))
+        if not self._updating_settings:
+            self.toggle_semi_circle = bool(state)
+
+    def _on_harmonic_changed(self, value):
+        """Callback for harmonic spinbox change."""
+        self._update_setting_in_metadata('harmonic', value)
+        if not self._updating_settings:
+            self.refresh_current_plot()
+
+    def _on_plot_type_changed(self):
+        """Callback for plot type change."""
+        new_plot_type = (
+            self.plotter_inputs_widget.plot_type_combobox.currentText()
+        )
+        self._update_setting_in_metadata('plot_type', new_plot_type)
+
+        if not self._updating_settings:
+            old_plot_type = getattr(self, '_current_plot_type', None)
+            if new_plot_type != old_plot_type:
+                self._current_plot_type = new_plot_type
+                self._connect_active_artist_signals()
+                self.switch_plot_type(new_plot_type)
+
+    def _on_colormap_changed(self):
+        """Callback for colormap change."""
+        colormap = self.plotter_inputs_widget.colormap_combobox.currentText()
+        self._update_setting_in_metadata('colormap', colormap)
+        if not self._updating_settings and self.plot_type == 'HISTOGRAM2D':
+            self.refresh_current_plot()
+
+    def _on_bins_changed(self, value):
+        """Callback for bins change."""
+        self._update_setting_in_metadata('number_of_bins', value)
+        if not self._updating_settings:
+            self.refresh_current_plot()
+
+    def _on_log_scale_changed(self, state):
+        """Callback for log scale change."""
+        self._update_setting_in_metadata('log_scale', bool(state))
+        if not self._updating_settings and self.plot_type == 'HISTOGRAM2D':
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message="Log normalization applied to color indices*",
+                    category=UserWarning,
+                )
+                self.refresh_current_plot()
+
+    def _on_white_background_changed(self, state):
+        """Callback for white background checkbox change."""
+        self._update_setting_in_metadata('white_background', bool(state))
+        if not self._updating_settings:
+            self.set_axes_labels()
+            self._update_plot_bg_color()
+
+            if self.toggle_semi_circle:
+                self._update_semi_circle_plot(self.canvas_widget.axes)
+            else:
+                self._update_polar_plot(self.canvas_widget.axes, visible=True)
+
+            self.canvas_widget.figure.canvas.draw_idle()
+            self.plot()
+
+    def on_white_background_changed(self):
+        """Callback function when the white background checkbox is toggled."""
+        self.set_axes_labels()
+        if self.toggle_semi_circle:
+            self._update_semi_circle_plot(self.canvas_widget.axes)
+        else:
+            self._update_polar_plot(self.canvas_widget.axes, visible=True)
+        self.canvas_widget.figure.canvas.draw_idle()
+
+        self.plot()
+
+    @property
+    def white_background(self):
+        """Gets the white background value from the white background checkbox.
+
+        Returns
+        -------
+        bool
+            The white background value.
         """
-        self.selection_id = (
-            self.plotter_inputs_widget.phasor_selection_id_combobox.currentText()
+        return self.plotter_inputs_widget.white_background_checkbox.isChecked()
+
+    @white_background.setter
+    def white_background(self, value: bool):
+        """Sets the white background value from the white background checkbox."""
+        self.plotter_inputs_widget.white_background_checkbox.setChecked(value)
+        self.set_axes_labels()
+        self.plot()
+
+    def _create_calibration_tab(self):
+        """Create the Calibration tab."""
+        self.calibration_tab = CalibrationWidget(self.viewer, parent=self)
+        self.tab_widget.addTab(self.calibration_tab, "Calibration")
+        self.calibration_tab.calibration_widget.frequency_input.editingFinished.connect(
+            lambda: self._broadcast_frequency_value_across_tabs(
+                self.calibration_tab.calibration_widget.frequency_input.text()
+            )
+        )
+
+    def _create_filter_tab(self):
+        """Create the Filtering and Thresholding tab."""
+        self.filter_tab = FilterWidget(self.viewer, parent=self)
+        self.tab_widget.addTab(self.filter_tab, "Filter/Threshold")
+
+    def _create_selection_tab(self):
+        """Create the Cursor selection tab."""
+        self.selection_tab = SelectionWidget(self.viewer, parent=self)
+        self.tab_widget.addTab(self.selection_tab, "Selection")
+
+    def _create_components_tab(self):
+        """Create the Components tab."""
+        self.components_tab = ComponentsWidget(self.viewer, parent=self)
+        self.tab_widget.addTab(self.components_tab, "Components")
+
+    def _create_lifetime_tab(self):
+        """Create the Lifetime tab."""
+        self.lifetime_tab = LifetimeWidget(self.viewer, parent=self)
+        self.tab_widget.addTab(self.lifetime_tab, "Lifetime")
+
+        self.harmonic_spinbox.valueChanged.connect(
+            self.lifetime_tab._on_harmonic_changed
+        )
+        self.lifetime_tab.frequency_input.editingFinished.connect(
+            lambda: self._broadcast_frequency_value_across_tabs(
+                self.lifetime_tab.frequency_input.text()
+            )
+        )
+
+    def _create_fret_tab(self):
+        """Create the FRET tab."""
+        self.fret_tab = FretWidget(self.viewer, parent=self)
+        self.tab_widget.addTab(self.fret_tab, "FRET")
+        self.fret_tab.frequency_input.editingFinished.connect(
+            lambda: self._broadcast_frequency_value_across_tabs(
+                self.fret_tab.frequency_input.text()
+            )
+        )
+        self.harmonic_spinbox.valueChanged.connect(
+            self.fret_tab._on_harmonic_changed
         )
 
     @property
@@ -298,17 +963,17 @@ class PlotterWidget(QWidget):
         int
             The harmonic value.
         """
-        return self.plotter_inputs_widget.harmonic_spinbox.value()
+        return self.harmonic_spinbox.value()
 
     @harmonic.setter
     def harmonic(self, value: int):
         """Sets the harmonic value from the harmonic spinbox."""
         if value < 1:
             notifications.WarningNotification(
-                f"Harmonic value should be greater than 0. Setting to 1."
+                "Harmonic value should be greater than 0. Setting to 1."
             )
             value = 1
-        self.plotter_inputs_widget.harmonic_spinbox.setValue(value)
+        self.harmonic_spinbox.setValue(value)
 
     @property
     def toggle_semi_circle(self):
@@ -333,27 +998,27 @@ class PlotterWidget(QWidget):
                 self.canvas_widget.axes, visible=False
             )
             self._update_polar_plot(self.canvas_widget.axes)
-        self.canvas_widget.axes.set_aspect(1, adjustable='box')
-        self._redefine_axes_limits()
+        self._enforce_axes_aspect()
 
     def on_toggle_semi_circle(self, state):
         """Callback function when the semi circle checkbox is toggled.
 
-        This function updates the `toggle_semi_circle` attribute with the checked status of the checkbox.
-        And it displays either the universal semi-circle or the full polar plot in the canvas widget.
+        This function updates the `toggle_semi_circle` attribute with the
+        checked status of the checkbox. And it displays either the universal
+        semi-circle or the full polar plot in the canvas widget.
+
         """
         self.toggle_semi_circle = state
 
-    def _update_polar_plot(self, ax, visible=True, alpha=0.3, zorder=3):
-        """
-        Generate the polar plot in the canvas widget.
+    def _update_polar_plot(self, ax, visible=True, alpha=0.5):
+        """Generate the polar plot in the canvas widget."""
+        line_color = 'black' if self.white_background else 'white'
 
-        Build the inner and outer circle and the 45 degrees lines in the plot.
-        """
         if len(self.polar_plot_artist_list) > 0:
             for artist in self.polar_plot_artist_list:
                 artist.set_visible(visible)
                 artist.set_alpha(alpha)
+                artist.set_color(line_color)
         else:
             self.polar_plot_artist_list.append(
                 ax.add_line(
@@ -362,7 +1027,7 @@ class PlotterWidget(QWidget):
                         [0, 0],
                         linestyle='-',
                         linewidth=1,
-                        color='black',
+                        color=line_color,
                     )
                 )
             )
@@ -373,17 +1038,15 @@ class PlotterWidget(QWidget):
                         [-1, 1],
                         linestyle='-',
                         linewidth=1,
-                        color='black',
+                        color=line_color,
                     )
                 )
             )
-            self.polar_plot_artist_list.append(
-                ax.add_patch(Circle((0, 0), 1, fill=False))
-            )
+            circle = Circle((0, 0), 1, fill=False, color=line_color)
+            self.polar_plot_artist_list.append(ax.add_patch(circle))
             for r in (1 / 3, 2 / 3):
-                self.polar_plot_artist_list.append(
-                    ax.add_patch(Circle((0, 0), r, fill=False))
-                )
+                circle = Circle((0, 0), r, fill=False, color=line_color)
+                self.polar_plot_artist_list.append(ax.add_patch(circle))
             for a in (3, 6):
                 x = math.cos(math.pi / a)
                 y = math.sin(math.pi / a)
@@ -394,7 +1057,7 @@ class PlotterWidget(QWidget):
                             [-y, y],
                             linestyle=':',
                             linewidth=0.5,
-                            color='black',
+                            color=line_color,
                         )
                     )
                 )
@@ -405,21 +1068,22 @@ class PlotterWidget(QWidget):
                             [y, -y],
                             linestyle=':',
                             linewidth=0.5,
-                            color='black',
+                            color=line_color,
                         )
                     )
                 )
         return ax
 
-    def _update_semi_circle_plot(self, ax, visible=True, alpha=0.3, zorder=3):
-        '''
-        Generate FLIM universal semi-circle plot
-        '''
+    def _update_semi_circle_plot(self, ax, visible=True, alpha=0.5, zorder=3):
+        """Generate FLIM universal semi-circle plot."""
+        line_color = 'black' if self.white_background else 'white'
+
         if len(self.semi_circle_plot_artist_list) > 0:
             for artist in self.semi_circle_plot_artist_list:
-                artist.set_visible(visible)
-                artist.set_alpha(alpha)
-        else:
+                artist.remove()
+            self.semi_circle_plot_artist_list.clear()
+
+        if visible:
             angles = np.linspace(0, np.pi, 180)
             x = (np.cos(angles) + 1) / 2
             y = np.sin(angles) / 2
@@ -427,23 +1091,174 @@ class PlotterWidget(QWidget):
                 ax.plot(
                     x,
                     y,
-                    'black',
+                    color=line_color,
                     alpha=alpha,
                     visible=visible,
                     zorder=zorder,
                 )[0]
             )
-            self.semi_circle_plot_artist_list.append(
-                ax.plot(
-                    [0, 1],
-                    [0, 0],
-                    color='black',
-                    alpha=alpha,
-                    visible=visible,
-                    zorder=zorder,
-                )[0]
-            )
+
+            self._add_lifetime_ticks_to_semicircle(ax, visible, alpha, zorder)
+
         return ax
+
+    def _add_lifetime_ticks_to_semicircle(
+        self, ax, visible=True, alpha=0.5, zorder=3
+    ):
+        """Add lifetime ticks to the semicircle plot based on frequency."""
+        frequency = self._get_frequency_from_layer()
+        if frequency is None:
+            return
+
+        effective_frequency = frequency * self.harmonic
+
+        tick_color = 'black' if self.white_background else 'darkgray'
+
+        lifetimes = [0.0]
+
+        # Add powers of 2 that result in S coordinates >= 0.18
+        for t in range(-8, 32):
+            lifetime_val = 2**t
+            try:
+                g_pos, s_pos = phasor_from_lifetime(
+                    effective_frequency, lifetime_val
+                )
+                if s_pos >= 0.18:
+                    lifetimes.append(lifetime_val)
+            except:
+                continue
+
+        for i, lifetime in enumerate(lifetimes):
+            if lifetime == 0:
+                g_pos, s_pos = 1.0, 0.0
+            else:
+                g_pos, s_pos = phasor_from_lifetime(
+                    effective_frequency, lifetime
+                )
+
+            center_x, center_y = 0.5, 0.0
+            dx = g_pos - center_x
+            dy = s_pos - center_y
+            length = np.sqrt(dx**2 + dy**2)
+            if length > 0:
+                dx_norm = dx / length
+                dy_norm = dy / length
+            else:
+                dx_norm = 1.0
+                dy_norm = 0.0
+
+            tick_length = 0.03
+            tick_start_x = g_pos
+            tick_start_y = s_pos
+            tick_end_x = g_pos + tick_length * dx_norm
+            tick_end_y = s_pos + tick_length * dy_norm
+
+            tick_line = ax.plot(
+                [tick_start_x, tick_end_x],
+                [tick_start_y, tick_end_y],
+                color=tick_color,
+                linewidth=1.5,
+                alpha=alpha,
+                visible=visible,
+                zorder=zorder + 1,
+            )[0]
+            self.semi_circle_plot_artist_list.append(tick_line)
+
+            if lifetime == 0:
+                label_text = "0"
+            else:
+                label_text = f"{lifetime:g}"
+
+            label_offset = 0.08
+            label_x = g_pos + label_offset * dx_norm
+            label_y = s_pos + label_offset * dy_norm
+
+            text_color = tick_color
+
+            label = ax.text(
+                label_x,
+                label_y,
+                label_text,
+                fontsize=8,
+                ha='center',
+                va='center',
+                color=text_color,
+                alpha=alpha,
+                visible=visible,
+                zorder=zorder + 1,
+            )
+            self.semi_circle_plot_artist_list.append(label)
+
+    def _get_frequency_from_layer(self):
+        """Get frequency from the current layer's metadata."""
+        layer_name = (
+            self.image_layer_with_phasor_features_combobox.currentText()
+        )
+        if layer_name == "":
+            return None
+        layer = self.viewer.layers[layer_name]
+        if "settings" in layer.metadata:
+            settings = layer.metadata["settings"]
+            if "frequency" in settings:
+                return settings["frequency"]
+
+        return None
+
+    def _sync_frequency_inputs_from_metadata(self):
+        """Sync the frequency widget input fields with metadata."""
+        layer_name = (
+            self.image_layer_with_phasor_features_combobox.currentText()
+        )
+        if not layer_name:
+            self._broadcast_frequency_value_across_tabs("")
+            return
+
+        layer = self.viewer.layers[layer_name]
+        settings = layer.metadata.get('settings', {})
+        frequency = settings.get('frequency', None)
+
+        if frequency is not None:
+            self._broadcast_frequency_value_across_tabs(str(frequency))
+        else:
+            self._broadcast_frequency_value_across_tabs("")
+
+    def _broadcast_frequency_value_across_tabs(self, value):
+        """
+        Broadcast the frequency value to all relevant input fields and update semicircle.
+        """
+        self.calibration_tab.calibration_widget.frequency_input.blockSignals(
+            True
+        )
+        self.lifetime_tab.frequency_input.blockSignals(True)
+        self.fret_tab.frequency_input.blockSignals(True)
+
+        try:
+            if value and value.strip():
+                freq_val = float(value)
+                layer_name = (
+                    self.image_layer_with_phasor_features_combobox.currentText()
+                )
+                if layer_name:
+                    layer = self.viewer.layers[layer_name]
+                    update_frequency_in_metadata(layer, freq_val)
+        except (ValueError, TypeError):
+            pass
+
+        self.calibration_tab.calibration_widget.frequency_input.setText(value)
+        self.lifetime_tab.frequency_input.setText(value)
+        self.fret_tab.frequency_input.setText(value)
+
+        self.calibration_tab.calibration_widget.frequency_input.blockSignals(
+            False
+        )
+        self.lifetime_tab.frequency_input.blockSignals(False)
+        self.fret_tab.frequency_input.blockSignals(False)
+
+        self.components_tab._update_lifetime_inputs_visibility()
+
+        if self.toggle_semi_circle:
+            self._update_semi_circle_plot(self.canvas_widget.axes)
+            self.canvas_widget.figure.canvas.draw_idle()
 
     def _redefine_axes_limits(self, ensure_full_circle_displayed=True):
         """
@@ -452,18 +1267,14 @@ class PlotterWidget(QWidget):
         Parameters
         ----------
         ensure_full_circle_displayed : bool, optional
-            Whether to ensure the full circle is displayed in the canvas widget, by default True.
+            Whether to ensure the full circle is displayed in the canvas widget.
+            By default True.
         """
-        # Redefine axes limits
         if self.toggle_semi_circle:
-            # Get semi circle plot limits
-            circle_plot_limits = [0, 1, 0, 0.5]  # xmin, xmax, ymin, ymax
+            circle_plot_limits = [0, 1, 0, 0.6]  # xmin, xmax, ymin, ymax
         else:
-            # Get polar plot limits
             circle_plot_limits = [-1, 1, -1, 1]  # xmin, xmax, ymin, ymax
-        # Check if histogram is plotted
         if self.canvas_widget.artists['HISTOGRAM2D'].histogram is not None:
-            # Get histogram data limits
             x_edges = self.canvas_widget.artists['HISTOGRAM2D'].histogram[1]
             y_edges = self.canvas_widget.artists['HISTOGRAM2D'].histogram[2]
             plotted_data_limits = [
@@ -474,9 +1285,7 @@ class PlotterWidget(QWidget):
             ]
         else:
             plotted_data_limits = circle_plot_limits
-        # Check if full circle should be displayed
         if not ensure_full_circle_displayed:
-            # If not, only the data limits are used
             circle_plot_limits = plotted_data_limits
 
         x_range = np.amax(
@@ -485,7 +1294,6 @@ class PlotterWidget(QWidget):
         y_range = np.amax(
             [plotted_data_limits[3], circle_plot_limits[3]]
         ) - np.amin([plotted_data_limits[2], circle_plot_limits[2]])
-        # 10% of the range as a frame
         xlim_0 = (
             np.amin([plotted_data_limits[0], circle_plot_limits[0]])
             - 0.1 * x_range
@@ -513,14 +1321,23 @@ class PlotterWidget(QWidget):
         Parameters
         ----------
         color : str, optional
-            The color to set the background, by default None. If None, the first color of the histogram colormap is used.
+            The color to set the background, by default None.
+            If None, the background will be set based on the white_background
+            checkbox state.
         """
         if color is None:
-            self.canvas_widget.axes.set_facecolor(
-                self.canvas_widget.artists['HISTOGRAM2D'].histogram_colormap(0)
-            )
+            if self.white_background:
+                color = "white"
+            else:
+                color = "none"  # Transparent background
+
+        if color == "none":
+            self.canvas_widget.axes.set_facecolor('none')
+            self.canvas_widget.figure.patch.set_facecolor('none')
         else:
             self.canvas_widget.axes.set_facecolor(color)
+            self.canvas_widget.figure.patch.set_facecolor('none')
+
         self.canvas_widget.figure.canvas.draw_idle()
 
     @property
@@ -532,12 +1349,12 @@ class PlotterWidget(QWidget):
         str
             The plot type.
         """
-        return self.extra_inputs_widget.plot_type_combobox.currentText()
+        return self.plotter_inputs_widget.plot_type_combobox.currentText()
 
     @plot_type.setter
     def plot_type(self, type):
         """Sets the plot type from the plot type combobox."""
-        self.extra_inputs_widget.plot_type_combobox.setCurrentText(type)
+        self.plotter_inputs_widget.plot_type_combobox.setCurrentText(type)
 
     @property
     def histogram_colormap(self):
@@ -548,7 +1365,7 @@ class PlotterWidget(QWidget):
         str
             The colormap name.
         """
-        return self.extra_inputs_widget.colormap_combobox.currentText()
+        return self.plotter_inputs_widget.colormap_combobox.currentText()
 
     @histogram_colormap.setter
     def histogram_colormap(self, colormap: str):
@@ -558,7 +1375,7 @@ class PlotterWidget(QWidget):
                 f"{colormap} is not a valid colormap. Setting to default colormap."
             )
             colormap = self._histogram_colormap.name
-        self.extra_inputs_widget.colormap_combobox.setCurrentText(colormap)
+        self.plotter_inputs_widget.colormap_combobox.setCurrentText(colormap)
 
     @property
     def histogram_bins(self):
@@ -569,17 +1386,17 @@ class PlotterWidget(QWidget):
         int
             The histogram bins value.
         """
-        return self.extra_inputs_widget.number_of_bins_spinbox.value()
+        return self.plotter_inputs_widget.number_of_bins_spinbox.value()
 
     @histogram_bins.setter
     def histogram_bins(self, value: int):
         """Sets the histogram bins from the histogram bins spinbox."""
         if value < 2:
             notifications.WarningNotification(
-                f"Number of bins should be greater than 1. Setting to 10."
+                "Number of bins should be greater than 1. Setting to 10."
             )
             value = 10
-        self.extra_inputs_widget.number_of_bins_spinbox.setValue(value)
+        self.plotter_inputs_widget.number_of_bins_spinbox.setValue(value)
 
     @property
     def histogram_log_scale(self):
@@ -590,127 +1407,182 @@ class PlotterWidget(QWidget):
         bool
             The histogram log scale value.
         """
-        return self.extra_inputs_widget.log_scale_checkbox.isChecked()
+        return self.plotter_inputs_widget.log_scale_checkbox.isChecked()
 
     @histogram_log_scale.setter
     def histogram_log_scale(self, value: bool):
         """Sets the histogram log scale from the histogram log scale checkbox."""
-        self.extra_inputs_widget.log_scale_checkbox.setChecked(value)
+        self.plotter_inputs_widget.log_scale_checkbox.setChecked(value)
 
-    def manual_selection_changed(self, manual_selection):
-        """Update the manual selection in the labels layer with phasor features.
+    def _enforce_axes_aspect(self):
+        """Ensure the axes aspect is set to 'box' after artist redraws."""
+        self._redefine_axes_limits()
+        self.canvas_widget.active_artist.ax.set_aspect(1, adjustable='box')
+        self.canvas_widget.figure.canvas.draw_idle()
 
-        This method serves as a Slot for the `color_indices_changed_signal` emitted by the canvas widget.
-        It should receive the `color_indices` array from the active artist in the canvas widget.
-        It also updates/creates the phasors selected layer by calling the `create_phasors_selected_layer` method.
+    def _connect_selector_signals(self):
+        """Connect selection applied signal from all selectors to enforce axes aspect."""
+        for selector in self.canvas_widget.selectors.values():
+            selector.selection_applied_signal.connect(
+                self._enforce_axes_aspect
+            )
 
-        Parameters
-        ----------
-        manual_selection : np.ndarray
-            The manual selection array.
-        """
-        if self._labels_layer_with_phasor_features is None:
-            return
-        if self.selection_id is None or self.selection_id == "":
-            return
-        column = self.selection_id
-        # Update the manual selection in the labels layer with phasor features for each harmonic
-        self._labels_layer_with_phasor_features.features[column] = 0
-        # Filter rows where 'G' is not NaN
-        valid_rows = (
-            ~self._labels_layer_with_phasor_features.features["G"].isna()
-            & ~self._labels_layer_with_phasor_features.features["S"].isna()
-        )
-        num_valid_rows = valid_rows.sum()
-        # Tile the manual_selection array to match the number of valid rows
-        tiled_manual_selection = np.tile(
-            manual_selection, (num_valid_rows // len(manual_selection)) + 1
-        )[:num_valid_rows]
-        self._labels_layer_with_phasor_features.features.loc[
-            valid_rows, column
-        ] = tiled_manual_selection
-        self.create_phasors_selected_layer()
+    def _connect_active_artist_signals(self):
+        """Connect signals for the currently active artist only."""
+        self._disconnect_all_artist_signals()
+
+        if self.plot_type == 'HISTOGRAM2D':
+            self.canvas_widget.artists[
+                'HISTOGRAM2D'
+            ].color_indices_changed_signal.connect(
+                self.selection_tab.manual_selection_changed
+            )
+        elif self.plot_type == 'SCATTER':
+            self.canvas_widget.artists[
+                'SCATTER'
+            ].color_indices_changed_signal.connect(
+                self.selection_tab.manual_selection_changed
+            )
+
+    def _disconnect_all_artist_signals(self):
+        """Disconnect all artist signals to prevent conflicts."""
+        try:
+            self.canvas_widget.artists[
+                'SCATTER'
+            ].color_indices_changed_signal.disconnect(
+                self.selection_tab.manual_selection_changed
+            )
+        except (TypeError, AttributeError):
+            pass
+
+        try:
+            self.canvas_widget.artists[
+                'HISTOGRAM2D'
+            ].color_indices_changed_signal.disconnect(
+                self.selection_tab.manual_selection_changed
+            )
+        except (TypeError, AttributeError):
+            pass
 
     def reset_layer_choices(self):
-        """Reset the image layer with phasor features combobox choices.
+        """Reset the image layer with phasor features combobox choices."""
+        if getattr(self, '_resetting_layer_choices', False):
+            return
 
-        This function is called when a new layer is added or removed.
-        It also updates `_labels_layer_with_phasor_features` attribute with the Labels layer in the metadata of the selected image layer.
-        """
-        self.plotter_inputs_widget.image_layer_with_phasor_features_combobox.clear()
-        layer_names = [
-            layer.name
-            for layer in self.viewer.layers
-            if isinstance(layer, Image)
-            and "phasor_features_labels_layer" in layer.metadata.keys()
-        ]
-        self.plotter_inputs_widget.image_layer_with_phasor_features_combobox.addItems(
-            layer_names
-        )
-        # Update layer names in the phasor selection id combobox when layer name changes
-        for layer_name in layer_names:
-            layer = self.viewer.layers[layer_name]
-            layer.events.name.connect(self.reset_layer_choices)
-        self.on_labels_layer_with_phasor_features_changed()
+        self._resetting_layer_choices = True
+
+        try:
+            current_text = (
+                self.image_layer_with_phasor_features_combobox.currentText()
+            )
+
+            self.image_layer_with_phasor_features_combobox.blockSignals(True)
+
+            self.image_layer_with_phasor_features_combobox.clear()
+
+            layer_names = [
+                layer.name
+                for layer in self.viewer.layers
+                if isinstance(layer, Image)
+                and "phasor_features_labels_layer" in layer.metadata.keys()
+            ]
+
+            self.image_layer_with_phasor_features_combobox.addItems(
+                layer_names
+            )
+
+            if current_text in layer_names:
+                index = (
+                    self.image_layer_with_phasor_features_combobox.findText(
+                        current_text
+                    )
+                )
+                if index >= 0:
+                    self.image_layer_with_phasor_features_combobox.setCurrentIndex(
+                        index
+                    )
+
+            self.image_layer_with_phasor_features_combobox.blockSignals(False)
+
+            for layer_name in layer_names:
+                layer = self.viewer.layers[layer_name]
+                try:
+                    layer.events.name.disconnect(self.reset_layer_choices)
+                except (TypeError, ValueError):
+                    pass
+                layer.events.name.connect(self.reset_layer_choices)
+
+            new_text = (
+                self.image_layer_with_phasor_features_combobox.currentText()
+            )
+            if new_text != current_text:
+                self.on_labels_layer_with_phasor_features_changed()
+                self._sync_frequency_inputs_from_metadata()
+
+        finally:
+            self._resetting_layer_choices = False
 
     def on_labels_layer_with_phasor_features_changed(self):
-        """Callback function when the image layer with phasor features combobox is changed.
-
-        This function updates the `_labels_layer_with_phasor_features` attribute with the Labels layer in the metadata of the selected image layer.
-        """
-        labels_layer_name = (
-            self.plotter_inputs_widget.image_layer_with_phasor_features_combobox.currentText()
-        )
-        if labels_layer_name == "":
-            self._labels_layer_with_phasor_features = None
+        """Handle changes to the labels layer with phasor features."""
+        if getattr(
+            self, "_in_on_labels_layer_with_phasor_features_changed", False
+        ):
             return
-        layer_metadata = self.viewer.layers[labels_layer_name].metadata
-        self._labels_layer_with_phasor_features = layer_metadata[
-            "phasor_features_labels_layer"
-        ]
-        # Set harmonic spinbox maximum value based on maximum harmonic in the table
-        self.plotter_inputs_widget.harmonic_spinbox.setMaximum(
-            self._labels_layer_with_phasor_features.features["harmonic"].max()
-        )
-        max_mean_value = np.nanmax(layer_metadata["original_mean"])
-        # Determine the threshold factor based on max_mean_value using logarithmic scaling
-        if max_mean_value > 0:
-            magnitude = int(log10(max_mean_value))
-            self.threshold_factor = (
-                10 ** (2 - magnitude) if magnitude <= 2 else 1
+        self._in_on_labels_layer_with_phasor_features_changed = True
+        try:
+            labels_layer_name = (
+                self.image_layer_with_phasor_features_combobox.currentText()
             )
-        else:
-            self.threshold_factor = 1  # Default case for values less than 1
-        # Set threshold slider maximum value based on maximum mean
-        self.plotter_inputs_widget.threshold_slider.setMaximum(
-            ceil(max_mean_value * self.threshold_factor)
-        )
-        if "settings" in layer_metadata.keys():
-            settings = layer_metadata["settings"]
-            if "threshold" in settings.keys():
-                self.plotter_inputs_widget.threshold_slider.setValue(
-                    int(settings["threshold"] * self.threshold_factor)
-                )
-                self.on_threshold_slider_change()
-            else:
-                self.plotter_inputs_widget.threshold_slider.setValue(
-                    int(max_mean_value * 0.1 * self.threshold_factor)
-                )
-                self.on_threshold_slider_change()
-            if "filter" in settings.keys():
-                self.plotter_inputs_widget.median_filter_spinbox.setValue(
-                    int(settings["filter"]["size"])
-                )
-                self.plotter_inputs_widget.median_filter_repetition_spinbox.setValue(
-                    int(settings["filter"]["repeat"])
-                )
-        else:
-            self.plotter_inputs_widget.threshold_slider.setValue(
-                int(max_mean_value * 0.1 * self.threshold_factor)
+            if labels_layer_name == "":
+                self._labels_layer_with_phasor_features = None
+                return
+            layer_metadata = self.viewer.layers[labels_layer_name].metadata
+            self._labels_layer_with_phasor_features = layer_metadata[
+                "phasor_features_labels_layer"
+            ]
+
+            available_harmonics = (
+                self._labels_layer_with_phasor_features.features[
+                    "harmonic"
+                ].unique()
             )
-            self.on_threshold_slider_change()
-        # Add default selection id to table if not present
-        self.add_selection_id_to_features("MANUAL SELECTION #1")
+            min_harmonic = int(available_harmonics.min())
+            max_harmonic = int(available_harmonics.max())
+
+            self.harmonic_spinbox.setMinimum(min_harmonic)
+            self.harmonic_spinbox.setMaximum(max_harmonic)
+
+            layer = self.viewer.layers[labels_layer_name]
+            self._initialize_plot_settings_in_metadata(layer)
+
+            self._restore_plot_settings_from_metadata()
+
+            self._sync_frequency_inputs_from_metadata()
+
+            # Update filter widget when layer changes
+            if hasattr(self, 'filter_tab'):
+                self.filter_tab._on_image_layer_changed()
+
+            # Update calibration button state when layer changes
+            if hasattr(self, 'calibration_tab'):
+                self.calibration_tab._on_image_layer_changed()
+
+            # Update lifetime tab when layer changes
+            if hasattr(self, 'lifetime_tab'):
+                self.lifetime_tab._on_image_layer_changed()
+
+            # Update components tab when layer changes
+            if hasattr(self, 'components_tab'):
+                self.components_tab._on_image_layer_changed()
+
+            # Update FRET tab when layer changes
+            if hasattr(self, 'fret_tab'):
+                self.fret_tab._on_image_layer_changed()
+
+            self.plot()
+
+        finally:
+            self._in_on_labels_layer_with_phasor_features_changed = False
 
     def get_features(self):
         """Get the G and S features for the selected harmonic and selection id.
@@ -726,80 +1598,95 @@ class PlotterWidget(QWidget):
         """
         if self._labels_layer_with_phasor_features is None:
             return None
-        # Check if layer contains features
         if self._labels_layer_with_phasor_features.features is None:
             return None
+
         table = self._labels_layer_with_phasor_features.features
         x_data = table['G'][table['harmonic'] == self.harmonic].values
         y_data = table['S'][table['harmonic'] == self.harmonic].values
         mask = np.isnan(x_data) & np.isnan(y_data)
         x_data = x_data[~mask]
         y_data = y_data[~mask]
-        if self.selection_id is None or self.selection_id == "":
-            return x_data, y_data, np.zeros_like(x_data)
+
+        if (
+            self.selection_tab.selection_id is None
+            or self.selection_tab.selection_id == ""
+            or self.selection_tab.selection_id not in table.columns
+        ):
+            return x_data, y_data, None
         else:
-            selection_data = table[self.selection_id][
+            selection_data = table[self.selection_tab.selection_id][
                 table['harmonic'] == self.harmonic
             ].values
             selection_data = selection_data[~mask]
-
-        return x_data, y_data, selection_data
+            return x_data, y_data, selection_data
 
     def set_axes_labels(self):
         """Set the axes labels in the canvas widget."""
-        self.canvas_widget.artists['SCATTER'].ax.set_xlabel("G", color="white")
-        self.canvas_widget.artists['SCATTER'].ax.set_ylabel("S", color="white")
+        text_color = "white"
+
+        self.canvas_widget.artists['SCATTER'].ax.set_xlabel(
+            "G", color=text_color
+        )
+        self.canvas_widget.artists['SCATTER'].ax.set_ylabel(
+            "S", color=text_color
+        )
         self.canvas_widget.artists['HISTOGRAM2D'].ax.set_xlabel(
-            "G", color="white"
+            "G", color=text_color
         )
         self.canvas_widget.artists['HISTOGRAM2D'].ax.set_ylabel(
-            "S", color="white"
+            "S", color=text_color
         )
 
-    def plot(self):
-        """Plot the selected phasor features.
+        self.canvas_widget.artists['SCATTER'].ax.tick_params(colors=text_color)
+        self.canvas_widget.artists['HISTOGRAM2D'].ax.tick_params(
+            colors=text_color
+        )
 
-        This function plots the selected phasor features in the canvas widget.
-        It also creates the phasors selected layer.
-        """
-        labels_layer_name = (
-            self.plotter_inputs_widget.image_layer_with_phasor_features_combobox.currentText()
-        )
-        apply_filter_and_threshold(
-            self.viewer.layers[labels_layer_name],
-            threshold=self.plotter_inputs_widget.threshold_slider.value()
-            / self.threshold_factor,
-            size=self.plotter_inputs_widget.median_filter_spinbox.value(),
-            repeat=self.plotter_inputs_widget.median_filter_repetition_spinbox.value(),
-        )
-        x_data, y_data, selection_id_data = self.get_features()
-        # Set active artist
-        self.canvas_widget.active_artist = self.plot_type
-        self.canvas_widget.active_artist.ax.set_facecolor('white')
-        # Set data in the active artist
-        self.canvas_widget.active_artist.data = np.column_stack(
-            (x_data, y_data)
-        )
+        for spine in self.canvas_widget.artists['SCATTER'].ax.spines.values():
+            spine.set_color(text_color)
+        for spine in self.canvas_widget.artists[
+            'HISTOGRAM2D'
+        ].ax.spines.values():
+            spine.set_color(text_color)
+
+    def _update_scatter_plot(self, x_data, y_data, selection_id_data=None):
+        """Update the scatter plot with new data."""
+        if len(x_data) == 0 or len(y_data) == 0:
+            return
+
+        plot_data = np.column_stack((x_data, y_data))
+        self.canvas_widget.artists['SCATTER'].data = plot_data
+
+        if selection_id_data is not None:
+            self.canvas_widget.artists['SCATTER'].color_indices = (
+                selection_id_data
+            )
+        else:
+            self.canvas_widget.artists['SCATTER'].color_indices = 0
+
+    def _update_histogram_plot(self, x_data, y_data, selection_id_data=None):
+        """Update the histogram plot with new data."""
+        plot_data = np.column_stack((x_data, y_data))
+
+        # Configure histogram artist properties
+        self.canvas_widget.artists['HISTOGRAM2D'].data = plot_data
         self.canvas_widget.artists['HISTOGRAM2D'].cmin = 1
-        # Set selection data in the active artist
-        self.canvas_widget.active_artist.color_indices = selection_id_data
-        # Set colormap in the active artist
+        self.canvas_widget.artists['HISTOGRAM2D'].bins = self.histogram_bins
+
+        # Set colormap
         selected_histogram_colormap = colormaps.ALL_COLORMAPS[
             self.histogram_colormap
         ]
-        # Temporary convertion to LinearSegmentedColormap to match matplotlib format, while biaplotter is not updated
         selected_histogram_colormap = LinearSegmentedColormap.from_list(
-            selected_histogram_colormap.name,
+            self.histogram_colormap,
             selected_histogram_colormap.colors,
         )
         self.canvas_widget.artists['HISTOGRAM2D'].histogram_colormap = (
             selected_histogram_colormap
         )
-        # Set number of bins in the active artist
-        self.canvas_widget.artists['HISTOGRAM2D'].bins = self.histogram_bins
-        # Temporarily set active artist "again" to have it displayed on top #TODO: Fix this
-        self.canvas_widget.active_artist = self.plot_type
-        # Set log scale in the active artist
+
+        # Set normalization method
         if self.canvas_widget.artists['HISTOGRAM2D'].histogram is not None:
             if self.histogram_log_scale:
                 self.canvas_widget.artists[
@@ -810,18 +1697,28 @@ class PlotterWidget(QWidget):
                     'HISTOGRAM2D'
                 ].histogram_color_normalization_method = "linear"
 
-        # if active artist is histogram, add a colorbar
+        # Apply selection data if available
+        if selection_id_data is not None:
+            self.canvas_widget.artists['HISTOGRAM2D'].color_indices = (
+                selection_id_data
+            )
+        else:
+            self.canvas_widget.artists['HISTOGRAM2D'].color_indices = 0
+
+        # Update colorbar for histogram
+        self._update_colorbar(selected_histogram_colormap)
+
+    def _update_colorbar(self, colormap):
+        """Update or create colorbar for histogram plot."""
+        self._remove_colorbar()
+
         if self.plot_type == 'HISTOGRAM2D':
-            if self.colorbar is not None:
-                self.colorbar.remove()
-            # Create cax for colorbar on the right side of the histogram
             self.cax = self.canvas_widget.artists['HISTOGRAM2D'].ax.inset_axes(
                 [1.05, 0, 0.05, 1]
             )
-            # Create colorbar
             self.colorbar = Colorbar(
                 ax=self.cax,
-                cmap=selected_histogram_colormap,
+                cmap=colormap,
                 norm=self.canvas_widget.artists[
                     'HISTOGRAM2D'
                 ]._get_normalization(
@@ -829,113 +1726,104 @@ class PlotterWidget(QWidget):
                     is_overlay=False,
                 ),
             )
-
             self.set_colorbar_style(color="white")
-        else:
-            if self.colorbar is not None:
-                # remove colorbar
-                self.colorbar.remove()
-                self.colorbar = None
-        # Update axes limits
-        self._redefine_axes_limits()
-        self.canvas_widget.axes.set_aspect(1, adjustable='box')
-        self._update_plot_bg_color(color="white")
-        self.create_phasors_selected_layer()
+
+    def _remove_colorbar(self):
+        """Remove colorbar if it exists."""
+        if self.colorbar is not None:
+            self.colorbar.remove()
+            self.colorbar = None
+
+    def _update_plot_elements(self):
+        """Update common plot elements like semicircle, axes, etc."""
+        if self.toggle_semi_circle:
+            self._update_semi_circle_plot(self.canvas_widget.axes)
+
+        self._enforce_axes_aspect()
+        self._update_plot_bg_color()
+
+    def plot(self, x_data=None, y_data=None, selection_id_data=None):
+        """Plot the selected phasor features efficiently."""
+        if self._labels_layer_with_phasor_features is None:
+            return
+
+        if getattr(self, '_updating_plot', False):
+            return
+
+        self._updating_plot = True
+
+        if x_data is None or y_data is None:
+            features = self.get_features()
+            if features is None:
+                return
+            x_data, y_data, selection_id_data = features
+
+        if len(x_data) == 0 or len(y_data) == 0:
+            return
+
+        self._set_active_artist_and_plot(
+            self.plot_type, x_data, y_data, selection_id_data
+        )
+
+        self._updating_plot = False
+
+    def refresh_current_plot(self):
+        """Refresh the current plot with existing data."""
+        self.plot()
+
+    def switch_plot_type(self, new_plot_type):
+        """Switch between plot types efficiently."""
+        self._connect_active_artist_signals()
+
+        features = self.get_features()
+        if features is not None:
+            x_data, y_data, selection_id_data = features
+            self._set_active_artist_and_plot(
+                new_plot_type, x_data, y_data, selection_id_data
+            )
+
+    def _set_active_artist_and_plot(
+        self, plot_type, x_data, y_data, selection_id_data=None
+    ):
+        """Set the active artist and update only the relevant plot."""
+        if len(x_data) == 0 or len(y_data) == 0:
+            return
+        if plot_type != self.plot_type:
+            self.plotter_inputs_widget.plot_type_combobox.blockSignals(True)
+            self.plotter_inputs_widget.plot_type_combobox.setCurrentText(
+                plot_type
+            )
+            self.plotter_inputs_widget.plot_type_combobox.blockSignals(False)
+            self._connect_active_artist_signals()
+
+        if plot_type == 'HISTOGRAM2D':
+            self._update_histogram_plot(x_data, y_data, selection_id_data)
+        elif plot_type == 'SCATTER':
+            self._remove_colorbar()
+            self._update_scatter_plot(x_data, y_data, selection_id_data)
+
+        current_active = getattr(self.canvas_widget, 'active_artist', None)
+
+        if (
+            current_active != plot_type
+            and plot_type in self.canvas_widget.artists
+        ):
+            self.canvas_widget.active_artist = plot_type
+        elif plot_type not in self.canvas_widget.artists:
+            return
+
+        self._update_plot_elements()
 
     def set_colorbar_style(self, color="white"):
         """Set the colorbar style in the canvas widget."""
-        # Set colorbar tick color
         self.colorbar.ax.yaxis.set_tick_params(color=color)
-        # Set colorbar edgecolor
         self.colorbar.outline.set_edgecolor(color)
-        # Add label to colorbar
         if isinstance(self.colorbar.norm, LogNorm):
             self.colorbar.ax.set_ylabel("Log10(Count)", color=color)
         else:
             self.colorbar.ax.set_ylabel("Count", color=color)
-        # Get the current ticks
         ticks = self.colorbar.ax.get_yticks()
-        # Set the ticks using a FixedLocator
         self.colorbar.ax.yaxis.set_major_locator(ticker.FixedLocator(ticks))
-        # Set colorbar ticklabels colors individually (this may fail for some math expressions)
         tick_labels = self.colorbar.ax.get_yticklabels()
         for tick_label in tick_labels:
             tick_label.set_color(color)
-
-    def create_phasors_selected_layer(self):
-        """Create or update the phasors selected layer."""
-        if self._labels_layer_with_phasor_features is None:
-            return
-        input_array = np.asarray(self._labels_layer_with_phasor_features.data)
-        input_array_values = np.asarray(
-            self._labels_layer_with_phasor_features.features["label"].values
-        )
-        # If no selection id is provided, set all pixels to 0
-        if self.selection_id is None or self.selection_id == "":
-            phasors_layer_data = np.zeros_like(
-                self._labels_layer_with_phasor_features.features[
-                    "label"
-                ].values
-            )
-        else:
-            phasors_layer_data = np.asarray(
-                self._labels_layer_with_phasor_features.features[
-                    self.selection_id
-                ].values
-            )
-
-        mapped_data = map_array(
-            input_array, input_array_values, phasors_layer_data
-        )
-        color_dict = colormap_to_dict(
-            self._colormap, self._colormap.N, exclude_first=True
-        )
-        # Build output phasors Labels layer
-        phasors_selected_layer = Labels(
-            mapped_data,
-            name="Phasors Selected",
-            scale=self._labels_layer_with_phasor_features.scale,
-            colormap=DirectLabelColormap(
-                color_dict=color_dict, name="cat10_mod"
-            ),
-        )
-        if self._phasors_selected_layer is None:
-            self._phasors_selected_layer = self.viewer.add_layer(
-                phasors_selected_layer
-            )
-        else:
-            self._phasors_selected_layer.data = mapped_data
-            self._phasors_selected_layer.scale = (
-                self._labels_layer_with_phasor_features.scale
-            )
-
-    def on_threshold_slider_change(self):
-        self.plotter_inputs_widget.label_3.setText(
-            'Intensity threshold: '
-            + str(
-                self.plotter_inputs_widget.threshold_slider.value()
-                / self.threshold_factor
-            )
-        )
-
-    def on_kernel_size_change(self):
-        kernel_value = self.plotter_inputs_widget.median_filter_spinbox.value()
-        self.plotter_inputs_widget.label_4.setText(
-            'Median Filter Kernel Size: ' + f'{kernel_value} x {kernel_value}'
-        )
-
-
-if __name__ == "__main__":
-    import napari
-
-    time_constants = [0.1, 1, 2, 3, 4, 5, 10]
-    raw_flim_data = make_raw_flim_data(time_constants=time_constants)
-    harmonic = [1, 2, 3]
-    intensity_image_layer = make_intensity_layer_with_phasors(
-        raw_flim_data, harmonic=harmonic
-    )
-    viewer = napari.Viewer()
-    viewer.add_layer(intensity_image_layer)
-    plotter = PlotterWidget(viewer)
-    viewer.window.add_dock_widget(plotter, area="right")
-    napari.run()
