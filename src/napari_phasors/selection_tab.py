@@ -4,7 +4,12 @@ import numpy as np
 from napari.layers import Labels
 from napari.utils import DirectLabelColormap, notifications
 from qtpy import uic
-from qtpy.QtWidgets import QVBoxLayout, QWidget
+from qtpy.QtWidgets import (
+    QHBoxLayout,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 from skimage.util import map_array
 
 from ._utils import colormap_to_dict
@@ -60,6 +65,25 @@ class SelectionWidget(QWidget):
         self._current_selection_id = "None"
         self.selection_id = "None"
         self._phasors_selected_layer = None
+
+        # Create refresh button and add it to the scroll area layout
+        self.refresh_selection_button = QPushButton()
+        self.refresh_selection_button.setIcon(
+            self.refresh_selection_button.style().standardIcon(
+                self.refresh_selection_button.style().SP_BrowserReload
+            )
+        )
+        self.refresh_selection_button.setMaximumWidth(35)
+        self.refresh_selection_button.clicked.connect(
+            self._on_refresh_selection_clicked
+        )
+
+        # Find the grid layout and add the button to row 4, column 3
+        scroll_area_layout = self.selection_input_widget.findChild(
+            QWidget, "scrollAreaWidgetContents"
+        ).layout()
+        if scroll_area_layout is not None:
+            scroll_area_layout.addWidget(self.refresh_selection_button, 4, 3)
 
         # Connect to multiple signals to handle both selection and text editing
         self.selection_input_widget.phasor_selection_id_combobox.currentIndexChanged.connect(
@@ -200,6 +224,10 @@ class SelectionWidget(QWidget):
         self.parent_widget.canvas_widget.show_color_overlay_signal.connect(
             self._on_show_color_overlay
         )
+
+    def _on_refresh_selection_clicked(self):
+        """Callback when refresh button is clicked."""
+        self.update_phasors_layer()
 
     def on_selection_id_changed(self):
         """Callback function when the selection id combobox is changed.

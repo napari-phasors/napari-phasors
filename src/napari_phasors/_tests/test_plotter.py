@@ -5,6 +5,7 @@ from biaplotter.plotter import CanvasWidget
 from napari.layers import Image
 from qtpy.QtWidgets import (
     QComboBox,
+    QLabel,
     QPushButton,
     QSpinBox,
     QTabWidget,
@@ -1453,6 +1454,118 @@ def test_phasor_plotter_visibility_methods_called_by_hide_show_artists(
 
 
 def test_phasor_plotter_visibility_methods_integration_with_tab_changes(
+    make_napari_viewer,
+):
+    """Test visibility methods integration with tab changes."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    # Add an image layer with phasors
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+
+    # Test switching to components tab
+    components_idx = plotter.tab_widget.indexOf(plotter.components_tab)
+    plotter.tab_widget.setCurrentIndex(components_idx)
+
+    # Components should be visible
+    with patch.object(
+        plotter.components_tab, 'set_artists_visible'
+    ) as mock_comp_vis:
+        plotter._show_tab_artists(plotter.components_tab)
+        mock_comp_vis.assert_called_once_with(True)
+
+    # Test switching to FRET tab
+    fret_idx = plotter.tab_widget.indexOf(plotter.fret_tab)
+    plotter.tab_widget.setCurrentIndex(fret_idx)
+
+    with patch.object(
+        plotter.fret_tab, 'set_artists_visible'
+    ) as mock_fret_vis:
+        plotter._show_tab_artists(plotter.fret_tab)
+        mock_fret_vis.assert_called_once_with(True)
+
+
+def test_phasor_plotter_mask_layer_ui_initialization(make_napari_viewer):
+    """Test mask layer UI components exist and are initialized correctly."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    # Test mask layer combobox and label exist
+    assert hasattr(plotter, 'mask_layer_combobox')
+    assert hasattr(plotter, 'mask_layer_label')
+    assert isinstance(plotter.mask_layer_combobox, QComboBox)
+    assert isinstance(plotter.mask_layer_label, QLabel)
+
+    # Test initial state - should have "None" as default
+    assert plotter.mask_layer_combobox.currentText() == "None"
+
+
+def test_phasor_plotter_apply_mask_to_phasor_data(make_napari_viewer):
+    """Test that applying a mask sets G and S values outside mask to NaN."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    # Add image layer with phasors
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+
+    # Create a mask - only right half is masked in
+    mask_data = np.zeros((2, 5), dtype=int)
+    mask_data[:, 3:] = 1
+    labels_layer = viewer.add_labels(mask_data, name="test_mask")
+
+    # Apply mask
+    plotter._apply_mask_to_phasor_data(labels_layer, intensity_image_layer)
+
+    # Check that mask was stored in metadata
+    assert 'mask' in intensity_image_layer.metadata
+
+    # Check that G and S values outside mask are now NaN
+    current_g = plotter._labels_layer_with_phasor_features.features['G']
+    current_s = plotter._labels_layer_with_phasor_features.features['S']
+    assert np.isnan(current_g).sum() > 0
+    assert np.isnan(current_s).sum() > 0
+
+
+def test_phasor_plotter_restore_original_phasor_data(make_napari_viewer):
+    """Test restoring original phasor data removes mask effects."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    # Add image layer with phasors
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+
+    # Get original data
+    original_g = plotter._labels_layer_with_phasor_features.features[
+        'G'
+    ].copy()
+
+    # Apply mask to modify data
+    mask_data = np.zeros((2, 5), dtype=int)
+    mask_data[:, 3:] = 1
+    labels_layer = viewer.add_labels(mask_data, name="test_mask")
+    plotter._apply_mask_to_phasor_data(labels_layer, intensity_image_layer)
+
+    # Verify data was modified (some values are NaN)
+    assert (
+        np.isnan(
+            plotter._labels_layer_with_phasor_features.features['G']
+        ).sum()
+        > 0
+    )
+
+    # Restore original data
+    plotter._restore_original_phasor_data(intensity_image_layer)
+
+    # Verify data was restored (no NaN values in original)
+    np.testing.assert_array_almost_equal(
+        plotter._labels_layer_with_phasor_features.features['G'], original_g
+    )
+
+
+def test_phasor_plotter_visibility_methods_integration_with_tab_changes_extended(
     make_napari_viewer,
 ):
     """Test integration of visibility methods with actual tab changes."""
