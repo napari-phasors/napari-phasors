@@ -32,7 +32,7 @@ contributions:
       title: Export Phasor
   readers:
     - command: napari-phasors.get_reader
-      accepts_directories: false
+      accepts_directories: true
       filename_patterns: ['*.fbd','*.ptu', '*.lsm', '*ome.tif', '*.tif', '*.sdt']
   writers:
     - command: napari-phasors.write_ome_tiff
