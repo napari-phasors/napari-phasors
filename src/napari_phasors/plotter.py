@@ -318,9 +318,14 @@ class PlotterWidget(QWidget):
 
     def _add_analysis_dock_widget(self):
         """Add the analysis widget to the viewer as a dock widget."""
-        self.viewer.window.add_dock_widget(
-            self.analysis_widget, name="Phasor Analysis", area="right"
-        )
+        if (
+            hasattr(self.viewer, 'window')
+            and self.viewer.window is not None
+            and hasattr(self.viewer.window, '_qt_window')
+        ):
+            self.viewer.window.add_dock_widget(
+                self.analysis_widget, name="Phasor Analysis", area="right"
+            )
 
     def _get_default_plot_settings(self):
         """Get default settings dictionary for plot parameters."""
