@@ -13,7 +13,7 @@ from napari.layers import Image, Labels, Shapes
 from napari.utils import colormaps, notifications
 from phasorpy.lifetime import phasor_from_lifetime
 from qtpy import uic
-from qtpy.QtCore import Qt
+from qtpy.QtCore import Qt, QTimer
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -98,13 +98,10 @@ class PlotterWidget(QWidget):
         self.setLayout(QVBoxLayout())
         self._labels_layer_with_phasor_features = None
 
-        # Create a splitter to separate canvas from controls
-        splitter = QSplitter(Qt.Vertical)
-        self.layout().addWidget(splitter)
-
         # Create top widget for canvas
         canvas_container = QWidget()
         canvas_container.setLayout(QVBoxLayout())
+        self.layout().addWidget(canvas_container)
 
         # Load canvas widget (fixed at the top)
         self.canvas_widget = CanvasWidget(
@@ -118,6 +115,7 @@ class PlotterWidget(QWidget):
         # Create bottom widget for controls
         controls_container = QWidget()
         controls_container.setLayout(QVBoxLayout())
+        self.layout().addWidget(controls_container)
 
         # Add select image combobox
         image_layer_layout = QHBoxLayout()
@@ -191,34 +189,17 @@ class PlotterWidget(QWidget):
 
         # Create tab widget
         self.tab_widget = QTabWidget()
-        controls_container.layout().addWidget(self.tab_widget)
 
-        # Add widgets to splitter
-        splitter.addWidget(canvas_container)
-        splitter.addWidget(controls_container)
+        # Create a separate widget for the tabs to allow independent docking
+        self.analysis_widget = QWidget()
+        self.analysis_widget.setLayout(QVBoxLayout())
+        self.analysis_widget.layout().addWidget(self.tab_widget)
 
-        # Configure splitter to prevent overlap
-        splitter.setStretchFactor(0, 1)  # Canvas gets priority
-        splitter.setStretchFactor(1, 0)  # Controls maintain minimum size
-        splitter.setCollapsible(0, False)  # Canvas cannot be collapsed
-        splitter.setCollapsible(1, True)  # Controls can be collapsed if needed
-        splitter.setStyleSheet(
-            """
-            QSplitter::handle {
-                background: #414851;         /* default state */
-            }
-            QSplitter::handle:hover {
-                background: #414851;         /* on hover */
-            }
-            QSplitter::handle:pressed {
-                background: #7b8d8e;         /* while dragging */
-            }
-        """
-        )
+        # Add the analysis widget to the viewer with a delay to ensure correct ordering
+        QTimer.singleShot(100, self._add_analysis_dock_widget)
 
         canvas_container.setMinimumHeight(300)
-        controls_container.setMinimumHeight(300)
-        splitter.setSizes([800, 400])
+        controls_container.setMinimumHeight(100)
 
         # Add a flag to prevent recursive calls
         self._updating_plot = False
@@ -334,6 +315,12 @@ class PlotterWidget(QWidget):
         # Connect tab change signal
         self.tab_widget.currentChanged.connect(self._on_tab_changed)
         self._set_selection_visibility(False)
+
+    def _add_analysis_dock_widget(self):
+        """Add the analysis widget to the viewer as a dock widget."""
+        self.viewer.window.add_dock_widget(
+            self.analysis_widget, name="Phasor Analysis", area="right"
+        )
 
     def _get_default_plot_settings(self):
         """Get default settings dictionary for plot parameters."""
