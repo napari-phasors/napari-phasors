@@ -1047,6 +1047,34 @@ class WriterWidget(QWidget):
 
         self.main_layout = QVBoxLayout(self)
 
+        # Add informational text at the top
+        info_label = QLabel("<b>Export Options:</b>")
+        self.main_layout.addWidget(info_label)
+
+        ome_info = QLabel(
+            "• <b>OME-TIFF:</b> Saves mean intensity and phasor coordinates"
+            " with metadata including napari-phasors settings"
+        )
+        ome_info.setWordWrap(True)
+        self.main_layout.addWidget(ome_info)
+
+        csv_info = QLabel(
+            "• <b>CSV:</b> Exports phasor features table if available, "
+            "otherwise exports raw layer data values, i.e. analysis values"
+        )
+        csv_info.setWordWrap(True)
+        self.main_layout.addWidget(csv_info)
+
+        image_info = QLabel(
+            "• <b>Image (PNG/JPEG/TIFF):</b> Exports visual representation "
+            "with applied colormap and contrast. Optional colorbar can be included"
+        )
+        image_info.setWordWrap(True)
+        self.main_layout.addWidget(image_info)
+
+        # Add some spacing
+        self.main_layout.addSpacing(10)
+
         self.main_layout.addWidget(
             QLabel("Select Image Layer to be Exported: ")
         )
@@ -1164,16 +1192,27 @@ class WriterWidget(QWidget):
 
         clim = export_layer.contrast_limits
 
+        # Calculate aspect ratio from data shape
+        height, width = data_2d.shape
+        aspect_ratio = width / height
+
+        base_height = 8
+        base_width = base_height * aspect_ratio
+
         if include_colorbar:
+            colorbar_width = 0.5  # Width for colorbar in inches
+            total_width = base_width + colorbar_width
             fig, (ax, cax) = plt.subplots(
                 1,
                 2,
-                figsize=(10, 8),
-                gridspec_kw={'width_ratios': [20, 1]},
+                figsize=(total_width, base_height),
+                gridspec_kw={'width_ratios': [base_width, colorbar_width]},
                 facecolor='black',
             )
         else:
-            fig, ax = plt.subplots(figsize=(8, 8), facecolor='black')
+            fig, ax = plt.subplots(
+                figsize=(base_width, base_height), facecolor='black'
+            )
 
         im = ax.imshow(
             data_2d,
