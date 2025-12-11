@@ -14,8 +14,14 @@
    <string>Form</string>
   </property>
   <layout class="QGridLayout" name="gridLayout">
-   <item row="0" column="0">
+   <item row="0" column="0" alignment="Qt::AlignVCenter">
     <widget class="QScrollArea" name="scrollArea">
+     <property name="minimumSize">
+      <size>
+       <width>0</width>
+       <height>130</height>
+      </size>
+     </property>
      <property name="widgetResizable">
       <bool>true</bool>
      </property>
@@ -24,22 +30,56 @@
        <rect>
         <x>0</x>
         <y>0</y>
-        <width>374</width>
-        <height>274</height>
+        <width>380</width>
+        <height>128</height>
        </rect>
       </property>
       <layout class="QGridLayout" name="gridLayout_2">
-       <item row="0" column="0">
+       <item row="4" column="0">
         <widget class="QLabel" name="label">
          <property name="text">
           <string>Phasor Selection ID:</string>
          </property>
         </widget>
        </item>
-       <item row="0" column="1">
+       <item row="1" column="0" colspan="3">
+        <widget class="QLabel" name="label_3">
+         <property name="text">
+          <string>• Change the class number to have different colors.</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="0" colspan="3">
+        <widget class="QLabel" name="label_2">
+         <property name="text">
+          <string>• Select regions with the selection toolbar above plot.</string>
+         </property>
+        </widget>
+       </item>
+       <item row="4" column="1" colspan="2">
         <widget class="QComboBox" name="phasor_selection_id_combobox">
+         <property name="toolTip">
+          <string>Choose or type new text to edit different selection layers.</string>
+         </property>
+         <property name="whatsThis">
+          <string/>
+         </property>
          <property name="editable">
           <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="0" colspan="3">
+        <widget class="QLabel" name="label_4">
+         <property name="text">
+          <string>• Use class 0 to remove selections.</string>
+         </property>
+        </widget>
+       </item>
+       <item row="3" column="0">
+        <widget class="QLabel" name="label_5">
+         <property name="text">
+          <string>• Right-click to apply.</string>
          </property>
         </widget>
        </item>

@@ -370,7 +370,12 @@ class FilterWidget(QWidget):
             "phasor_features_labels_layer"
         ]
 
-        max_mean_value = np.nanmax(layer_metadata["original_mean"])
+        if 'mask' in layer_metadata.keys():
+            max_mean_value = np.nanmax(
+                layer_metadata["original_mean"][layer_metadata['mask'] > 0]
+            )
+        else:
+            max_mean_value = np.nanmax(layer_metadata["original_mean"])
         # Calculate threshold factor based on maximum mean value
         if max_mean_value > 0:
             magnitude = int(log10(max_mean_value))
@@ -533,11 +538,12 @@ class FilterWidget(QWidget):
         labels_layer_name = (
             self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
         )
-        mean_data = (
-            self.viewer.layers[labels_layer_name]
-            .metadata['original_mean']
-            .copy()
-        )
+        mean_data = self.viewer.layers[labels_layer_name].data.copy()
+        if 'mask' in self.viewer.layers[labels_layer_name].metadata:
+            mean_data = mean_data[
+                self.viewer.layers[labels_layer_name].metadata['mask'] > 0
+            ]
+
         self.hist_ax.clear()
         self.threshold_line = None  # Reset line reference when clearing
         self.hist_ax.hist(
