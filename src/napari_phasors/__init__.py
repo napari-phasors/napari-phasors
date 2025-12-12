@@ -11,9 +11,9 @@ from ._sample_data import (
 )
 from ._widget import PhasorTransform, WriterWidget
 from ._writer import (
-    write_ome_tiff,
-    export_layer_as_image,
     export_all_layers_as_images,
+    export_layer_as_image,
+    write_ome_tiff,
 )
 from .plotter import PlotterWidget
 
