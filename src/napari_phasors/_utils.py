@@ -31,7 +31,7 @@ def validate_harmonics_for_wavelet(harmonics):
     bool
         True if harmonics are valid for wavelet filtering, False otherwise
     """
-    harmonics = np.array(harmonics)
+    harmonics = np.atleast_1d(harmonics)
 
     for harmonic in harmonics:
         # Check if double or half exists
