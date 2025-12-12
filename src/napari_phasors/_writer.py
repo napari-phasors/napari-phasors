@@ -112,8 +112,7 @@ def export_layer_as_image(
         if current_step is not None:
             step = list(current_step)
             indices = [
-                step[i] if i < len(step) else 0
-                for i in range(data.ndim - 2)
+                step[i] if i < len(step) else 0 for i in range(data.ndim - 2)
             ]
         else:
             indices = [0] * (data.ndim - 2)
