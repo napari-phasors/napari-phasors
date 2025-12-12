@@ -11,7 +11,7 @@ from ._sample_data import (
 )
 from ._widget import PhasorTransform, WriterWidget
 from ._writer import (
-    export_all_layers_as_images,
+    export_layer_as_csv,
     export_layer_as_image,
     write_ome_tiff,
 )
@@ -20,8 +20,8 @@ from .plotter import PlotterWidget
 __all__ = (
     "napari_get_reader",
     "write_ome_tiff",
+    "export_layer_as_csv",
     "export_layer_as_image",
-    "export_all_layers_as_images",
     "convallaria_FLIM_sample_data",
     "embryo_FLIM_sample_data",
     "paramecium_HSI_sample_data",
