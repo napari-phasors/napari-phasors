@@ -35,7 +35,7 @@ from qtpy.QtWidgets import (
 from superqt import QRangeSlider
 
 from ._reader import _get_filename_extension, napari_get_reader
-from ._writer import write_ome_tiff
+from ._writer import export_layer_as_image, write_ome_tiff
 
 if TYPE_CHECKING:
     import napari
@@ -1162,94 +1162,6 @@ class WriterWidget(QWidget):
         for layer in image_layers:
             self.export_layer_combobox.addItem(layer.name)
 
-    def _export_layer_as_image(
-        self, file_path, export_layer, include_colorbar=True
-    ):
-        """Export layer as an image with proper colormap and contrast limits."""
-        from matplotlib.colors import LinearSegmentedColormap
-
-        data = export_layer.data
-        if data.ndim > 2:
-            current_step = list(self.viewer.dims.current_step)
-            slice_indices = tuple(
-                current_step[i] if i < len(current_step) else slice(None)
-                for i in range(data.ndim - 2)
-            ) + (slice(None), slice(None))
-            data_2d = data[slice_indices]
-        else:
-            data_2d = data
-
-        napari_cmap = export_layer.colormap
-        if hasattr(napari_cmap, 'colors'):
-            cmap = LinearSegmentedColormap.from_list(
-                napari_cmap.name, napari_cmap.colors
-            )
-        else:
-            try:
-                cmap = plt.get_cmap(napari_cmap.name)
-            except (AttributeError, ValueError):
-                cmap = plt.get_cmap('gray')
-
-        clim = export_layer.contrast_limits
-
-        # Calculate aspect ratio from data shape
-        height, width = data_2d.shape
-        aspect_ratio = width / height
-
-        base_height = 8
-        base_width = base_height * aspect_ratio
-
-        if include_colorbar:
-            colorbar_width = 0.5  # Width for colorbar in inches
-            total_width = base_width + colorbar_width
-            fig, (ax, cax) = plt.subplots(
-                1,
-                2,
-                figsize=(total_width, base_height),
-                gridspec_kw={'width_ratios': [base_width, colorbar_width]},
-                facecolor='black',
-            )
-        else:
-            fig, ax = plt.subplots(
-                figsize=(base_width, base_height), facecolor='black'
-            )
-
-        im = ax.imshow(
-            data_2d,
-            cmap=cmap,
-            vmin=clim[0],
-            vmax=clim[1],
-            interpolation='nearest',
-            aspect='auto',
-        )
-        ax.axis('off')
-
-        if include_colorbar:
-            cbar = plt.colorbar(im, cax=cax)
-            cbar.ax.tick_params(colors='white')
-
-        plt.tight_layout(pad=0)
-
-        dpi = 300
-
-        # For JPEG, we need to set facecolor to white since it doesn't support transparency
-        if file_path.endswith(('.jpg', '.jpeg')):
-            fig.patch.set_facecolor('white')
-            if include_colorbar:
-                cax.set_ylabel(
-                    'Intensity', rotation=270, labelpad=15, color='black'
-                )
-                cbar.ax.tick_params(colors='black')
-
-        plt.savefig(
-            file_path,
-            dpi=dpi,
-            bbox_inches='tight',
-            pad_inches=0.1,
-            facecolor=fig.get_facecolor(),
-        )
-        plt.close(fig)
-
     def _save_file(self, file_path, selected_filter, include_colorbar=False):
         """Callback whenever the export location and name are specified."""
         export_layer = self.viewer.layers[
@@ -1312,8 +1224,11 @@ class WriterWidget(QWidget):
             "Layer as JPEG image (*.jpg)",
             "Layer as TIFF image (*.tif)",
         ]:
-            self._export_layer_as_image(
-                file_path, export_layer, include_colorbar
+            export_layer_as_image(
+                file_path,
+                export_layer,
+                include_colorbar=include_colorbar,
+                current_step=self.viewer.dims.current_step,
             )
 
         show_info(f"Exported {export_layer.name} to {file_path}")
