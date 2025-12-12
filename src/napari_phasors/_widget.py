@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 from matplotlib.backends.backend_qt5agg import (
     FigureCanvasQTAgg as FigureCanvas,
 )
@@ -20,6 +21,7 @@ from napari.utils.notifications import show_error, show_info
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QDoubleValidator
 from qtpy.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QCompleter,
     QFileDialog,
@@ -33,7 +35,7 @@ from qtpy.QtWidgets import (
 from superqt import QRangeSlider
 
 from ._reader import _get_filename_extension, napari_get_reader
-from ._writer import write_ome_tiff
+from ._writer import export_layer_as_csv, export_layer_as_image, write_ome_tiff
 
 if TYPE_CHECKING:
     import napari
@@ -1045,11 +1047,45 @@ class WriterWidget(QWidget):
 
         self.main_layout = QVBoxLayout(self)
 
+        # Add informational text at the top
+        info_label = QLabel("<b>Export Options:</b>")
+        self.main_layout.addWidget(info_label)
+
+        ome_info = QLabel(
+            "• <b>OME-TIFF:</b> Saves mean intensity and phasor coordinates"
+            " with metadata including napari-phasors settings"
+        )
+        ome_info.setWordWrap(True)
+        self.main_layout.addWidget(ome_info)
+
+        csv_info = QLabel(
+            "• <b>CSV:</b> Exports phasor features table if available, "
+            "otherwise exports raw layer data values, i.e. analysis values"
+        )
+        csv_info.setWordWrap(True)
+        self.main_layout.addWidget(csv_info)
+
+        image_info = QLabel(
+            "• <b>Image (PNG/JPEG/TIFF):</b> Exports visual representation "
+            "with applied colormap and contrast. Optional colorbar can be included"
+        )
+        image_info.setWordWrap(True)
+        self.main_layout.addWidget(image_info)
+
+        # Add some spacing
+        self.main_layout.addSpacing(10)
+
         self.main_layout.addWidget(
             QLabel("Select Image Layer to be Exported: ")
         )
         self.export_layer_combobox = QComboBox()
         self.main_layout.addWidget(self.export_layer_combobox)
+
+        self.colorbar_checkbox = QCheckBox(
+            "Include colorbar (for image exports)"
+        )
+        self.colorbar_checkbox.setChecked(True)
+        self.main_layout.addWidget(self.colorbar_checkbox)
 
         self.search_button = QPushButton("Select Export Location and Name")
         self.search_button.clicked.connect(self._open_file_dialog)
@@ -1061,38 +1097,61 @@ class WriterWidget(QWidget):
         self._populate_combobox()
 
     def _open_file_dialog(self):
-        """Open a `QFileDialog` to select a directory or specify a filename."""
+        """Open a native file dialog to select export location."""
         if self.export_layer_combobox.currentText() == "":
-            show_error("No layer with phasor data selected")
+            show_error("No layer selected")
             return
-        options = QFileDialog.Options()
-        file_dialog = QFileDialog()
-        file_dialog.setFileMode(QFileDialog.AnyFile)
-        file_dialog.setAcceptMode(QFileDialog.AcceptSave)
-        file_dialog.setOptions(options)
 
-        file_dialog.setNameFilters(
-            ["Phasor as OME-TIFF (*.ome.tif)", "Phasor table as CSV (*.csv)"]
+        # Define filters for the native dialog
+        filters = [
+            "Phasor as OME-TIFF (*.ome.tif)",
+            "Layer data as CSV (*.csv)",
+            "Layer as PNG image (*.png)",
+            "Layer as JPEG image (*.jpg)",
+            "Layer as TIFF image (*.tif)",
+        ]
+        # Join filters with ';;' for the native dialog format
+        filter_str = ";;".join(filters)
+
+        # Use static method to invoke the native OS dialog
+        file_path, selected_filter = QFileDialog.getSaveFileName(
+            self, "Select Export Location", "", filter_str
         )
 
-        if file_dialog.exec_():
-            selected_filter = file_dialog.selectedNameFilter()
-            file_path = file_dialog.selectedFiles()[0]
-
+        if file_path:
+            # Handle file extensions based on the selected filter
             if (
                 selected_filter == "Phasor as OME-TIFF (*.ome.tif)"
                 and not file_path.endswith(".ome.tif")
             ):
                 if file_path.endswith(".tif"):
-                    file_path = file_path[:-4]  # Remove the .tif extension
+                    file_path = file_path[:-4]
                 file_path += ".ome.tif"
             elif (
-                selected_filter == "Phasor table as CSV (*.csv)"
+                selected_filter == "Layer data as CSV (*.csv)"
                 and not file_path.endswith(".csv")
             ):
                 file_path += ".csv"
+            elif (
+                selected_filter == "Layer as PNG image (*.png)"
+                and not file_path.endswith(".png")
+            ):
+                file_path += ".png"
+            elif (
+                selected_filter == "Layer as JPEG image (*.jpg)"
+                and not file_path.endswith((".jpg", ".jpeg"))
+            ):
+                file_path += ".jpg"
+            elif (
+                selected_filter == "Layer as TIFF image (*.tif)"
+                and not file_path.endswith(".tif")
+            ):
+                if file_path.endswith(".ome.tif"):
+                    file_path = file_path[:-8]
+                file_path += ".tif"
 
-            self._save_file(file_path, selected_filter)
+            include_colorbar = self.colorbar_checkbox.isChecked()
+            self._save_file(file_path, selected_filter, include_colorbar)
 
     def _populate_combobox(self):
         """Populate combobox with image layers."""
@@ -1103,33 +1162,28 @@ class WriterWidget(QWidget):
         for layer in image_layers:
             self.export_layer_combobox.addItem(layer.name)
 
-    def _save_file(self, file_path, selected_filter):
+    def _save_file(self, file_path, selected_filter, include_colorbar=False):
         """Callback whenever the export location and name are specified."""
         export_layer = self.viewer.layers[
             self.export_layer_combobox.currentText()
         ]
+
         if selected_filter == "Phasor as OME-TIFF (*.ome.tif)":
             write_ome_tiff(file_path, export_layer)
-        elif selected_filter == "Phasor table as CSV (*.csv)":
-            if not file_path.endswith(".csv"):
-                file_path += ".csv"
-            phasor_table = export_layer.metadata[
-                "phasor_features_labels_layer"
-            ].features
-            harmonics = np.unique(phasor_table["harmonic"])
 
-            coords = np.unravel_index(
-                np.arange(export_layer.data.size), export_layer.data.shape
-            )
+        elif selected_filter == "Layer data as CSV (*.csv)":
+            export_layer_as_csv(file_path, export_layer)
 
-            coords = [np.tile(coord, len(harmonics)) for coord in coords]
-
-            for dim, coord in enumerate(coords):
-                phasor_table[f'dim_{dim}'] = coord
-
-            phasor_table = phasor_table.dropna()
-            phasor_table.to_csv(
+        elif selected_filter in [
+            "Layer as PNG image (*.png)",
+            "Layer as JPEG image (*.jpg)",
+            "Layer as TIFF image (*.tif)",
+        ]:
+            export_layer_as_image(
                 file_path,
-                index=False,
+                export_layer,
+                include_colorbar=include_colorbar,
+                current_step=self.viewer.dims.current_step,
             )
+
         show_info(f"Exported {export_layer.name} to {file_path}")

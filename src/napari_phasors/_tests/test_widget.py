@@ -9,7 +9,6 @@ from phasorpy.io import (
     phasor_from_ometiff,
     signal_from_fbd,
     signal_from_lsm,
-    signal_from_ptu,
     signal_from_sdt,
 )
 from qtpy.QtWidgets import QWidget
@@ -677,9 +676,7 @@ def test_writer_widget(make_napari_viewer, tmp_path):
     # Check error messages if there are no phasor layers
     with patch("napari_phasors._widget.show_error") as mock_show_error:
         main_widget.search_button.click()
-        mock_show_error.assert_called_once_with(
-            "No layer with phasor data selected"
-        )
+        mock_show_error.assert_called_once_with("No layer selected")
     # Create a synthetic FLIM data and an intensity image layer with phasors
     raw_flim_data = make_raw_flim_data()
     harmonic = [1, 2, 3]
@@ -699,14 +696,12 @@ def test_writer_widget(make_napari_viewer, tmp_path):
 
     # Simulate saving as OME-TIFF
     with (
-        patch("napari_phasors._widget.QFileDialog.exec_", return_value=True),
         patch(
-            "napari_phasors._widget.QFileDialog.selectedFiles",
-            return_value=[str(tmp_path / "test.ome.tif")],
-        ),
-        patch(
-            "napari_phasors._widget.QFileDialog.selectedNameFilter",
-            return_value="Phasor as OME-TIFF (*.ome.tif)",
+            "napari_phasors._widget.QFileDialog.getSaveFileName",
+            return_value=(
+                str(tmp_path / "test.ome.tif"),
+                "Phasor as OME-TIFF (*.ome.tif)",
+            ),
         ),
         patch("napari_phasors._widget.show_info") as mock_show_info,
     ):
@@ -755,14 +750,12 @@ def test_writer_widget(make_napari_viewer, tmp_path):
 
     # Simulate saving as CSV
     with (
-        patch("napari_phasors._widget.QFileDialog.exec_", return_value=True),
         patch(
-            "napari_phasors._widget.QFileDialog.selectedFiles",
-            return_value=[str(tmp_path / "test.csv")],
-        ),
-        patch(
-            "napari_phasors._widget.QFileDialog.selectedNameFilter",
-            return_value="Phasor table as CSV (*.csv)",
+            "napari_phasors._widget.QFileDialog.getSaveFileName",
+            return_value=(
+                str(tmp_path / "test.csv"),
+                "Layer data as CSV (*.csv)",
+            ),
         ),
         patch("napari_phasors._widget.show_info") as mock_show_info,
     ):
@@ -789,3 +782,295 @@ def test_writer_widget(make_napari_viewer, tmp_path):
         for dim, coord in enumerate(coords):
             phasor_features.features[f'dim_{dim}'] = coord
         pd.testing.assert_frame_equal(exported_table, phasor_features.features)
+
+
+def test_writer_widget_image_exports(make_napari_viewer, tmp_path):
+    """Test image export functionality in WriterWidget."""
+    viewer = make_napari_viewer()
+    main_widget = WriterWidget(viewer)
+
+    # Create synthetic data
+    raw_flim_data = make_raw_flim_data()
+    harmonic = [1]
+    sample_image_layer = make_intensity_layer_with_phasors(
+        raw_flim_data, harmonic=harmonic
+    )
+    viewer.add_layer(sample_image_layer)
+
+    # Test PNG export with colorbar
+    with (
+        patch(
+            "napari_phasors._widget.QFileDialog.getSaveFileName",
+            return_value=(
+                str(tmp_path / "test_with_colorbar.png"),
+                "Layer as PNG image (*.png)",
+            ),
+        ),
+        patch("napari_phasors._widget.show_info") as mock_show_info,
+    ):
+        main_widget.colorbar_checkbox.setChecked(True)
+        main_widget.search_button.click()
+
+        export_path = str(tmp_path / "test_with_colorbar.png")
+        assert os.path.exists(export_path)
+        mock_show_info.assert_called_with(
+            f"Exported {sample_image_layer.name} to {export_path}"
+        )
+
+    # Test PNG export without colorbar
+    with (
+        patch(
+            "napari_phasors._widget.QFileDialog.getSaveFileName",
+            return_value=(
+                str(tmp_path / "test_no_colorbar.png"),
+                "Layer as PNG image (*.png)",
+            ),
+        ),
+        patch("napari_phasors._widget.show_info") as mock_show_info,
+    ):
+        main_widget.colorbar_checkbox.setChecked(False)
+        main_widget.search_button.click()
+
+        export_path = str(tmp_path / "test_no_colorbar.png")
+        assert os.path.exists(export_path)
+        mock_show_info.assert_called_with(
+            f"Exported {sample_image_layer.name} to {export_path}"
+        )
+
+    # Test JPG export
+    with (
+        patch(
+            "napari_phasors._widget.QFileDialog.getSaveFileName",
+            return_value=(
+                str(tmp_path / "test.jpg"),
+                "Layer as JPEG image (*.jpg)",
+            ),
+        ),
+        patch("napari_phasors._widget.show_info") as mock_show_info,
+    ):
+        main_widget.colorbar_checkbox.setChecked(True)
+        main_widget.search_button.click()
+
+        export_path = str(tmp_path / "test.jpg")
+        assert os.path.exists(export_path)
+        mock_show_info.assert_called_with(
+            f"Exported {sample_image_layer.name} to {export_path}"
+        )
+
+    # Test TIFF image export (not OME-TIFF)
+    with (
+        patch(
+            "napari_phasors._widget.QFileDialog.getSaveFileName",
+            return_value=(
+                str(tmp_path / "test_image.tif"),
+                "Layer as TIFF image (*.tif)",
+            ),
+        ),
+        patch("napari_phasors._widget.show_info") as mock_show_info,
+    ):
+        main_widget.colorbar_checkbox.setChecked(False)
+        main_widget.search_button.click()
+
+        export_path = str(tmp_path / "test_image.tif")
+        assert os.path.exists(export_path)
+        mock_show_info.assert_called_with(
+            f"Exported {sample_image_layer.name} to {export_path}"
+        )
+
+
+def test_writer_widget_colormap_applied(make_napari_viewer, tmp_path):
+    """Test that the napari layer's colormap is correctly applied to exported images."""
+    import matplotlib.pyplot as plt
+    from PIL import Image
+
+    viewer = make_napari_viewer()
+    main_widget = WriterWidget(viewer)
+
+    # Create synthetic data
+    raw_flim_data = make_raw_flim_data()
+    harmonic = [1]
+    sample_image_layer = make_intensity_layer_with_phasors(
+        raw_flim_data, harmonic=harmonic
+    )
+
+    # Set a specific colormap
+    sample_image_layer.colormap = 'viridis'
+    viewer.add_layer(sample_image_layer)
+
+    # Export as PNG
+    with patch(
+        "napari_phasors._widget.QFileDialog.getSaveFileName",
+        return_value=(
+            str(tmp_path / "test_colormap.png"),
+            "Layer as PNG image (*.png)",
+        ),
+    ):
+        main_widget.colorbar_checkbox.setChecked(False)
+        main_widget.search_button.click()
+
+        export_path = str(tmp_path / "test_colormap.png")
+        assert os.path.exists(export_path)
+
+        # Verify the image was created and is not empty
+        img = Image.open(export_path)
+        assert img.size[0] > 0
+        assert img.size[1] > 0
+
+
+def test_writer_widget_file_extension_handling(make_napari_viewer, tmp_path):
+    """Test that file extensions are correctly handled for all export formats."""
+    viewer = make_napari_viewer()
+    main_widget = WriterWidget(viewer)
+
+    # Create synthetic data
+    raw_flim_data = make_raw_flim_data()
+    harmonic = [1]
+    sample_image_layer = make_intensity_layer_with_phasors(
+        raw_flim_data, harmonic=harmonic
+    )
+    viewer.add_layer(sample_image_layer)
+
+    # Test cases: (input_name, selected_filter, expected_output_name)
+    test_cases = [
+        ("test", "Phasor as OME-TIFF (*.ome.tif)", "test.ome.tif"),
+        ("test.tif", "Phasor as OME-TIFF (*.ome.tif)", "test.ome.tif"),
+        ("test", "Layer data as CSV (*.csv)", "test.csv"),
+        ("test.csv", "Layer data as CSV (*.csv)", "test.csv"),
+        ("test", "Layer as PNG image (*.png)", "test.png"),
+        ("test.png", "Layer as PNG image (*.png)", "test.png"),
+        ("test", "Layer as JPEG image (*.jpg)", "test.jpg"),
+        ("test.jpg", "Layer as JPEG image (*.jpg)", "test.jpg"),
+        ("test", "Layer as TIFF image (*.tif)", "test.tif"),
+        ("test.ome.tif", "Layer as TIFF image (*.tif)", "test.tif"),
+    ]
+
+    for input_name, selected_filter, expected_output in test_cases:
+        with patch(
+            "napari_phasors._widget.QFileDialog.getSaveFileName",
+            return_value=(
+                str(tmp_path / input_name),
+                selected_filter,
+            ),
+        ):
+            main_widget.search_button.click()
+
+            export_path = str(tmp_path / expected_output)
+            assert os.path.exists(
+                export_path
+            ), f"Failed for {input_name} -> {expected_output}"
+
+
+def test_writer_widget_colorbar_checkbox_state(make_napari_viewer):
+    """Test that the colorbar checkbox is properly initialized and responsive."""
+    viewer = make_napari_viewer()
+    main_widget = WriterWidget(viewer)
+
+    # Check initial state
+    assert main_widget.colorbar_checkbox.isChecked() is True
+    assert (
+        main_widget.colorbar_checkbox.text()
+        == "Include colorbar (for image exports)"
+    )
+
+    # Test checkbox state changes
+    main_widget.colorbar_checkbox.setChecked(False)
+    assert main_widget.colorbar_checkbox.isChecked() is False
+
+    main_widget.colorbar_checkbox.setChecked(True)
+    assert main_widget.colorbar_checkbox.isChecked() is True
+
+
+def test_writer_widget_csv_export_2d_no_phasor(make_napari_viewer, tmp_path):
+    """Test CSV export for 2D image without phasor metadata."""
+    viewer = make_napari_viewer()
+    widget = WriterWidget(viewer)
+
+    # Create a simple 2D image layer without phasor metadata
+    data = np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+    layer = viewer.add_image(data, name="test_2d_image")
+
+    # Export as CSV
+    csv_path = tmp_path / "test_2d.csv"
+    widget._save_file(str(csv_path), "Layer data as CSV (*.csv)", False)
+
+    # Verify CSV content
+    df = pd.read_csv(csv_path)
+
+    # Check columns
+    assert list(df.columns) == ['y', 'x', 'value']
+
+    # Check shape
+    assert len(df) == 9  # 3x3 = 9 pixels
+
+    # Check coordinates and values
+    expected_y = [0, 0, 0, 1, 1, 1, 2, 2, 2]
+    expected_x = [0, 1, 2, 0, 1, 2, 0, 1, 2]
+    expected_values = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+    np.testing.assert_array_equal(df['y'].values, expected_y)
+    np.testing.assert_array_equal(df['x'].values, expected_x)
+    np.testing.assert_array_equal(df['value'].values, expected_values)
+
+
+def test_writer_widget_csv_export_4d_no_phasor(make_napari_viewer, tmp_path):
+    """Test CSV export for 4D image without phasor metadata."""
+    viewer = make_napari_viewer()
+    widget = WriterWidget(viewer)
+
+    # Create a 4D image layer
+    data = np.arange(48).reshape(2, 2, 3, 4)
+    layer = viewer.add_image(data, name="test_4d_image")
+
+    # Export as CSV
+    csv_path = tmp_path / "test_4d.csv"
+    widget._save_file(str(csv_path), "Layer data as CSV (*.csv)", False)
+
+    # Verify CSV content
+    df = pd.read_csv(csv_path)
+
+    # Check columns
+    assert list(df.columns) == ['dim_0', 'dim_1', 'dim_2', 'dim_3', 'value']
+
+    # Check shape
+    assert len(df) == 48
+
+    # Verify coordinate ranges
+    assert df['dim_0'].min() == 0 and df['dim_0'].max() == 1
+    assert df['dim_1'].min() == 0 and df['dim_1'].max() == 1
+    assert df['dim_2'].min() == 0 and df['dim_2'].max() == 2
+    assert df['dim_3'].min() == 0 and df['dim_3'].max() == 3
+
+
+def test_writer_widget_csv_coordinates_consistency_2d(
+    make_napari_viewer, tmp_path
+):
+    """Test that CSV export maintains coordinate consistency for 2D images."""
+    viewer = make_napari_viewer()
+    widget = WriterWidget(viewer)
+
+    # Create 2D image with known pattern
+    data = np.array([[10, 20], [30, 40]])
+    layer = viewer.add_image(data, name="test_pattern")
+
+    # Export as CSV
+    csv_path = tmp_path / "test_pattern.csv"
+    widget._save_file(str(csv_path), "Layer data as CSV (*.csv)", False)
+
+    # Verify specific coordinate-value mappings
+    df = pd.read_csv(csv_path)
+
+    # Check (0,0) -> 10
+    val_00 = df[(df['y'] == 0) & (df['x'] == 0)]['value'].values[0]
+    assert val_00 == 10
+
+    # Check (0,1) -> 20
+    val_01 = df[(df['y'] == 0) & (df['x'] == 1)]['value'].values[0]
+    assert val_01 == 20
+
+    # Check (1,0) -> 30
+    val_10 = df[(df['y'] == 1) & (df['x'] == 0)]['value'].values[0]
+    assert val_10 == 30
+
+    # Check (1,1) -> 40
+    val_11 = df[(df['y'] == 1) & (df['x'] == 1)]['value'].values[0]
+    assert val_11 == 40
