@@ -10,12 +10,14 @@ from ._sample_data import (
     paramecium_HSI_sample_data,
 )
 from ._widget import PhasorTransform, WriterWidget
-from ._writer import write_ome_tiff
+from ._writer import write_ome_tiff, export_layer_as_image, export_all_layers_as_images
 from .plotter import PlotterWidget
 
 __all__ = (
     "napari_get_reader",
     "write_ome_tiff",
+    "export_layer_as_image",
+    "export_all_layers_as_images",
     "convallaria_FLIM_sample_data",
     "embryo_FLIM_sample_data",
     "paramecium_HSI_sample_data",
