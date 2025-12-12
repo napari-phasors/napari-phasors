@@ -35,7 +35,7 @@ from qtpy.QtWidgets import (
 from superqt import QRangeSlider
 
 from ._reader import _get_filename_extension, napari_get_reader
-from ._writer import export_layer_as_image, write_ome_tiff
+from ._writer import export_layer_as_csv, export_layer_as_image, write_ome_tiff
 
 if TYPE_CHECKING:
     import napari
@@ -1172,52 +1172,7 @@ class WriterWidget(QWidget):
             write_ome_tiff(file_path, export_layer)
 
         elif selected_filter == "Layer data as CSV (*.csv)":
-            has_phasor_table = (
-                "phasor_features_labels_layer" in export_layer.metadata
-                and export_layer.metadata["phasor_features_labels_layer"]
-                is not None
-            )
-
-            if has_phasor_table:
-                phasor_table = export_layer.metadata[
-                    "phasor_features_labels_layer"
-                ].features
-                harmonics = np.unique(phasor_table["harmonic"])
-
-                coords = np.unravel_index(
-                    np.arange(export_layer.data.size), export_layer.data.shape
-                )
-
-                coords = [np.tile(coord, len(harmonics)) for coord in coords]
-
-                for dim, coord in enumerate(coords):
-                    phasor_table[f'dim_{dim}'] = coord
-
-                phasor_table = phasor_table.dropna()
-                phasor_table.to_csv(file_path, index=False)
-            else:
-                data = export_layer.data
-                if data.ndim == 2:
-                    rows, cols = data.shape
-                    y_coords, x_coords = np.meshgrid(
-                        range(rows), range(cols), indexing='ij'
-                    )
-                    df = pd.DataFrame(
-                        {
-                            'y': y_coords.ravel(),
-                            'x': x_coords.ravel(),
-                            'value': data.ravel(),
-                        }
-                    )
-                else:
-                    coords = np.unravel_index(np.arange(data.size), data.shape)
-                    df_dict = {
-                        f'dim_{i}': coord for i, coord in enumerate(coords)
-                    }
-                    df_dict['value'] = data.ravel()
-                    df = pd.DataFrame(df_dict)
-
-                df.to_csv(file_path, index=False)
+            export_layer_as_csv(file_path, export_layer)
 
         elif selected_filter in [
             "Layer as PNG image (*.png)",

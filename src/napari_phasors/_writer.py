@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, List, Optional, Sequence, Tuple, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 from matplotlib.colors import LinearSegmentedColormap
 from napari.layers import Image
 from phasorpy.io import phasor_to_ometiff
@@ -192,3 +193,67 @@ def export_layer_as_image(
         facecolor=fig.get_facecolor(),
     )
     plt.close(fig)
+
+
+def export_layer_as_csv(path: str, image_layer: Image) -> None:
+    """Export layer data or phasor features as a CSV file.
+
+    The function has two behaviors depending on whether the layer has
+    a ``"phasor_features_labels_layer"`` entry in its metadata:
+
+    * If present, the associated phasor features table is exported with
+      additional ``dim_*`` columns describing the pixel coordinates for
+      each harmonic.
+    * Otherwise, the raw layer data is flattened into a table of
+      coordinates and values.
+
+    Parameters
+    ----------
+    path : str
+        Output CSV file path.
+    image_layer : napari.layers.Image
+        Image layer whose data or phasor features will be exported.
+    """
+    has_phasor_table = (
+        "phasor_features_labels_layer" in image_layer.metadata
+        and image_layer.metadata["phasor_features_labels_layer"] is not None
+    )
+
+    if has_phasor_table:
+        phasor_table = image_layer.metadata[
+            "phasor_features_labels_layer"
+        ].features
+        harmonics = np.unique(phasor_table["harmonic"])
+
+        coords = np.unravel_index(
+            np.arange(image_layer.data.size), image_layer.data.shape
+        )
+
+        coords = [np.tile(coord, len(harmonics)) for coord in coords]
+
+        for dim, coord in enumerate(coords):
+            phasor_table[f"dim_{dim}"] = coord
+
+        phasor_table = phasor_table.dropna()
+        phasor_table.to_csv(path, index=False)
+    else:
+        data = image_layer.data
+        if data.ndim == 2:
+            rows, cols = data.shape
+            y_coords, x_coords = np.meshgrid(
+                range(rows), range(cols), indexing="ij"
+            )
+            df = pd.DataFrame(
+                {
+                    "y": y_coords.ravel(),
+                    "x": x_coords.ravel(),
+                    "value": data.ravel(),
+                }
+            )
+        else:
+            coords = np.unravel_index(np.arange(data.size), data.shape)
+            df_dict = {f"dim_{i}": coord for i, coord in enumerate(coords)}
+            df_dict["value"] = data.ravel()
+            df = pd.DataFrame(df_dict)
+
+        df.to_csv(path, index=False)
