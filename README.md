@@ -6,7 +6,7 @@
 [![tests](https://github.com/napari-phasors/napari-phasors/workflows/tests/badge.svg)](https://github.com/napari-phasors/napari-phasors/actions)
 [![codecov](https://codecov.io/gh/napari-phasors/napari-phasors/branch/main/graph/badge.svg)](https://codecov.io/gh/napari-phasors/napari-phasors)
 [![napari hub](https://img.shields.io/endpoint?url=https://api.napari-hub.org/shields/napari-phasors)](https://napari-hub.org/plugins/napari-phasors)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17600615.svg)](https://doi.org/10.5281/zenodo.17600615)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.14647626.svg)](https://doi.org/10.5281/zenodo.14647626)
 
 A comprehensive plugin for phasor analysis in napari. Based on the 
 [phasorpy](https://www.phasorpy.org/) library.
@@ -158,7 +158,9 @@ the coverage at least stays the same before you submit a pull request.
 ## License
 
 Distributed under the terms of the [BSD-3] license,
-"napari-phasors" is free and open source software
+"napari-phasors" is free and open source software.
+
+Please cite doi: [https://doi.org/10.5281/zenodo.14647626](https://doi.org/10.5281/zenodo.14647626) if napari-phasors contributes to a project that leads to a publication.
 
 ## Issues
 
