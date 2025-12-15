@@ -353,12 +353,12 @@ class PlotterWidget(QWidget):
 
         return {
             'harmonic': default_harmonic,
-            'semi_circle': True,
-            'white_background': True,
-            'plot_type': 'HISTOGRAM2D',
-            'colormap': 'turbo',
-            'number_of_bins': 150,
-            'log_scale': False,
+            'semi_circle': self.toggle_semi_circle,  # Use current widget value
+            'white_background': self.white_background,  # Use current widget value
+            'plot_type': self.plot_type,  # Use current widget value
+            'colormap': self.histogram_colormap,  # Use current widget value
+            'number_of_bins': self.histogram_bins,  # Use current widget value
+            'log_scale': self.histogram_log_scale,  # Use current widget value
         }
 
     def _initialize_plot_settings_in_metadata(self, layer):
@@ -436,7 +436,7 @@ class PlotterWidget(QWidget):
             if 'harmonic' in settings:
                 self.harmonic_spinbox.setValue(settings['harmonic'])
 
-            # Restore white background first (this affects circle colors)
+            # Only restore if explicitly set in metadata
             if 'white_background' in settings:
                 self.plotter_inputs_widget.white_background_checkbox.setChecked(
                     settings['white_background']
@@ -445,30 +445,30 @@ class PlotterWidget(QWidget):
                 self.set_axes_labels()
                 self._update_plot_bg_color()
 
-            # Restore semi circle (this will update the circle/semicircle with correct colors)
+            # Only restore if explicitly set in metadata
             if 'semi_circle' in settings:
                 # Use the setter to properly update the display
                 self.toggle_semi_circle = settings['semi_circle']
 
-            # Restore plot type
+            # Only restore if explicitly set in metadata
             if 'plot_type' in settings:
                 self.plotter_inputs_widget.plot_type_combobox.setCurrentText(
                     settings['plot_type']
                 )
 
-            # Restore colormap
+            # Only restore if explicitly set in metadata
             if 'colormap' in settings:
                 self.plotter_inputs_widget.colormap_combobox.setCurrentText(
                     settings['colormap']
                 )
 
-            # Restore number of bins
+            # Only restore if explicitly set in metadata
             if 'number_of_bins' in settings:
                 self.plotter_inputs_widget.number_of_bins_spinbox.setValue(
                     settings['number_of_bins']
                 )
 
-            # Restore log scale
+            # Only restore if explicitly set in metadata
             if 'log_scale' in settings:
                 self.plotter_inputs_widget.log_scale_checkbox.setChecked(
                     settings['log_scale']

@@ -299,18 +299,18 @@ def test_adding_removing_layers_updates_plot(make_napari_viewer):
         viewer.add_layer(intensity_image_layer)
         mock_plot.assert_not_called()
 
-        # Check values were reset to defaults when new layer was added
-        assert plotter.plot_type == 'HISTOGRAM2D'
-        assert plotter.histogram_colormap == 'turbo'
-        assert plotter.toggle_semi_circle == True
-        assert plotter.white_background == True
+        # Check values were not reset to defaults when new layer was added
+        assert plotter.plot_type == 'SCATTER'
+        assert plotter.histogram_colormap == 'viridis'
+        assert plotter.toggle_semi_circle == False
+        assert plotter.white_background == False
         assert (
             plotter.plotter_inputs_widget.semi_circle_checkbox.isChecked()
-            == True
+            == False
         )
         assert (
             plotter.plotter_inputs_widget.white_background_checkbox.isChecked()
-            == True
+            == False
         )
 
         # Check that the combobox has both layers with phasor features
@@ -349,10 +349,10 @@ def test_layer_settings_persistence_across_layer_switches(make_napari_viewer):
     plotter.image_layer_with_phasor_features_combobox.setCurrentText(
         layer_2.name
     )
-    assert plotter.plot_type == 'HISTOGRAM2D'
-    assert plotter.histogram_colormap == 'turbo'
-    assert plotter.toggle_semi_circle == True
-    assert plotter.white_background == True
+    assert plotter.plot_type == 'SCATTER'
+    assert plotter.histogram_colormap == 'viridis'
+    assert plotter.toggle_semi_circle == False
+    assert plotter.white_background == False
 
     # Switch back to layer_1 (should restore settings)
     plotter.image_layer_with_phasor_features_combobox.setCurrentText(
