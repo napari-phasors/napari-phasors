@@ -68,6 +68,18 @@ filter phasor coordinates using the median or wavelet filter.
 
 ![filter_threshold](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/filter%20threshold.gif)
 
+### Mask
+
+![mask](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/mask.gif)
+
+You can create a mask using either a shapes layer or a labels layer in napari. Once the mask is created, select it from the mask combobox in the "Phasor Plot" widget. Only the pixels inside the selected mask will be plotted in the phasor space and included in subsequent analyses. This allows you to focus your analysis on specific regions of interest within your data.
+
+### Copy Settings and Analysis
+
+![copy_settings](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/copy%20settings.gif)
+
+You can quickly copy plot settings and analysis parameters, such as calibration, frequency, filter settings, and component locations, from another layer or from an OME-TIF file previously exported with the napari-phasors plugin. This feature streamlines the workflow by allowing you to reuse established configurations, ensuring consistency and saving time when analyzing multiple datasets.
+
 ### Manual Phasor Selections
 
 Create manual selections on the phasor plot to identify specific regions of 
@@ -84,8 +96,11 @@ the "Selection" tab of the "Phasor Plot" widget.
 Perform multi-component analysis to identify and separate different 
 fluorescent species in your sample. This feature allows you to decompose 
 complex phasor distributions into individual components with distinct 
-lifetimes. Two component analysis can be done in the "Components" tab of the
-"Phasor Plot" widget.
+lifetimes. Multi-component analysis can be done in the "Components" tab of the
+"Phasor Plot" widget, either by projection to a line between components (only two
+component analysis), or by component fitting 'n' number of components based on the
+available harmonics. For more than three component analysis, the location of the
+components in higher harmonics must be provided.
 
 ![components](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/components.gif)
 
@@ -101,7 +116,8 @@ of apparent lifetimes of the FLIM image.
 ### FRET Analysis
 
 Analyze Förster Resonance Energy Transfer (FRET) trajectories and efficiencies
-in the "FRET" tab of the "Phasor Plot" widget.
+in the "FRET" tab of the "Phasor Plot" widget. The lifetime of the donor and the location of the
+background in the phasor plot can be obtained automatically from another layer.
 
 ![fret](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/fret.gif)
 
@@ -109,18 +125,15 @@ in the "FRET" tab of the "Phasor Plot" widget.
 ### Phasor Custom Import
 
 Supported file formats (`.tif`, `.ptu`, `.sdt`, `.fbd`, `.lsm`, `.ome.tif`) 
-can be read and transformed to the phasor space in the "Phasor Custom Import" widget.
-Additional options, such as the harmonics, channels and frames, can be 
-specified depending on the file format to be read.
+can be imported and converted to phasor space using the "Phasor Custom Import" widget.
+Depending on the file format, you can specify additional options such as harmonics, channels, and frames.
+The signal can then be visualized according to the selected parameters for each file.
 
 ![custom_import](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/import.gif)
 
 ### Data Export
 
-The average intensity image and the phasor coordinates can be exported as 
-OME-TIF files that can be read by napari-phasors and PhasorPy. Alternatively, 
-the phasor coordinates, as well as the selections can be exported 
-as a CSV file. This can be done in the "Export Phasor" widget
+The average intensity image and phasor coordinates can be exported as OME-TIF files, which are compatible with both napari-phasors and PhasorPy. Alternatively, you can export the phasor coordinates and selections as a CSV file using the "Export Phasor" widget. Analysis results—such as lifetime, FRET efficiency, and component fractions—can also be exported to CSV. Additionally, the colormapped image layer can be exported with or without its associated colorbar.
 
 ![export_phasors](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/export.gif)
 
