@@ -70,15 +70,15 @@ filter phasor coordinates using the median or wavelet filter.
 
 ### Mask
 
-![mask](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/mask.gif)
-
 You can create a mask using either a shapes layer or a labels layer in napari. Once the mask is created, select it from the mask combobox in the "Phasor Plot" widget. Only the pixels inside the selected mask will be plotted in the phasor space and included in subsequent analyses. This allows you to focus your analysis on specific regions of interest within your data.
+
+![mask](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/mask.gif)
 
 ### Copy Settings and Analysis
 
-![copy_settings](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/copy%20settings.gif)
-
 You can quickly copy plot settings and analysis parameters, such as calibration, frequency, filter settings, and component locations, from another layer or from an OME-TIF file previously exported with the napari-phasors plugin. This feature streamlines the workflow by allowing you to reuse established configurations, ensuring consistency and saving time when analyzing multiple datasets.
+
+![copy_settings](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/copy%20settings.gif)
 
 ### Manual Phasor Selections
 
