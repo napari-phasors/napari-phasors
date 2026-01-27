@@ -57,7 +57,6 @@ class FilterWidget(QWidget):
         self.viewer = viewer
 
         # Initialize attributes
-        self.parent_widget._labels_layer_with_phasor_features = None
         self._phasors_selected_layer = None
         self.threshold_factor = 1
         self.hist_fig, self.hist_ax = plt.subplots(
@@ -243,14 +242,14 @@ class FilterWidget(QWidget):
             self.median_filter_widget.setVisible(False)
             self.wavelet_filter_widget.setVisible(True)
 
-        if self.parent_widget._labels_layer_with_phasor_features is not None:
+        # Check if layer is selected
+        if (
+            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        ):
             self.check_harmonics_compatibility()
 
     def check_harmonics_compatibility(self):
         """Check if current layer's harmonics are compatible with wavelet filtering."""
-        if self.parent_widget._labels_layer_with_phasor_features is None:
-            return
-
         labels_layer_name = (
             self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
         )
@@ -259,10 +258,10 @@ class FilterWidget(QWidget):
             return
 
         layer_metadata = self.viewer.layers[labels_layer_name].metadata
-        phasor_features = layer_metadata[
-            'phasor_features_labels_layer'
-        ].features
-        harmonics = np.unique(phasor_features['harmonic'])
+        harmonics = layer_metadata.get('harmonics')
+
+        if harmonics is None:
+            return
 
         is_valid = validate_harmonics_for_wavelet(harmonics)
 
@@ -317,10 +316,11 @@ class FilterWidget(QWidget):
 
     def on_threshold_method_changed(self):
         """Callback when threshold method is changed."""
-        if (
-            self._updating_threshold
-            or self.parent_widget._labels_layer_with_phasor_features is None
-        ):
+        labels_layer_name = (
+            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        )
+
+        if self._updating_threshold or not labels_layer_name:
             return
 
         method = self.threshold_method_combobox.currentText()
@@ -363,12 +363,9 @@ class FilterWidget(QWidget):
             self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
         )
         if labels_layer_name == "":
-            self.parent_widget._labels_layer_with_phasor_features = None
             return
         layer_metadata = self.viewer.layers[labels_layer_name].metadata
-        self.parent_widget._labels_layer_with_phasor_features = layer_metadata[
-            "phasor_features_labels_layer"
-        ]
+        # Removed _labels_layer_with_phasor_features assignment
 
         if 'mask' in layer_metadata.keys():
             max_mean_value = np.nanmax(
@@ -434,11 +431,11 @@ class FilterWidget(QWidget):
                     if method == "median":
                         self.filter_method_combobox.setCurrentText("Median")
                     elif method == "wavelet":
-                        phasor_features = layer_metadata[
-                            'phasor_features_labels_layer'
-                        ].features
-                        harmonics = np.unique(phasor_features['harmonic'])
-                        if validate_harmonics_for_wavelet(harmonics):
+                        harmonics = layer_metadata.get('harmonics')
+                        if (
+                            harmonics is not None
+                            and validate_harmonics_for_wavelet(harmonics)
+                        ):
                             self.filter_method_combobox.setCurrentText(
                                 "Wavelet"
                             )
@@ -533,12 +530,17 @@ class FilterWidget(QWidget):
 
     def plot_mean_histogram(self):
         """Plot the histogram of the mean intensity data as a line plot."""
-        if self.parent_widget._labels_layer_with_phasor_features is None:
-            return
         labels_layer_name = (
             self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
         )
-        mean_data = self.viewer.layers[labels_layer_name].data.copy()
+        if not labels_layer_name:
+            return
+
+        mean_data = (
+            self.viewer.layers[labels_layer_name]
+            .metadata['original_mean']
+            .copy()
+        )
         if 'mask' in self.viewer.layers[labels_layer_name].metadata:
             mean_data = mean_data[
                 self.viewer.layers[labels_layer_name].metadata['mask'] > 0
@@ -558,7 +560,10 @@ class FilterWidget(QWidget):
 
     def update_threshold_line(self):
         """Update the vertical threshold line on the histogram."""
-        if self.parent_widget._labels_layer_with_phasor_features is None:
+        labels_layer_name = (
+            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        )
+        if not labels_layer_name:
             return
 
         threshold_value = self.threshold_slider.value() / self.threshold_factor
@@ -581,7 +586,10 @@ class FilterWidget(QWidget):
 
     def on_log_scale_changed(self, state):
         """Callback when log scale checkbox is toggled."""
-        if self.parent_widget._labels_layer_with_phasor_features is None:
+        labels_layer_name = (
+            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        )
+        if not labels_layer_name:
             return
 
         if state == 2:
@@ -634,11 +642,10 @@ class FilterWidget(QWidget):
             repeat = self.median_filter_repetition_spinbox.value()
         elif current_filter_method == "wavelet":
             # Check if harmonics are compatible
-            phasor_features = layer.metadata[
-                'phasor_features_labels_layer'
-            ].features
-            harmonics = np.unique(phasor_features['harmonic'])
-            if validate_harmonics_for_wavelet(harmonics):
+            harmonics = layer.metadata.get('harmonics')
+            if harmonics is not None and validate_harmonics_for_wavelet(
+                harmonics
+            ):
                 filter_method = "wavelet"
                 sigma = self.wavelet_sigma_spinbox.value()
                 levels = self.wavelet_levels_spinbox.value()
@@ -656,4 +663,5 @@ class FilterWidget(QWidget):
         )
 
         if self.parent_widget is not None:
-            self.parent_widget.plot()
+            # Refresh the cached phasor data from the updated layer
+            self.parent_widget.refresh_phasor_data()

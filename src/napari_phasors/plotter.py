@@ -96,7 +96,13 @@ class PlotterWidget(QWidget):
         self.viewer = napari_viewer
 
         self.setLayout(QVBoxLayout())
-        self._labels_layer_with_phasor_features = None
+
+        # Initialize data attributes
+        self._g_array = None
+        self._s_array = None
+        self._g_original_array = None
+        self._s_original_array = None
+        self._harmonics_array = None
 
         # Create top widget for canvas
         canvas_container = QWidget()
@@ -233,7 +239,7 @@ class PlotterWidget(QWidget):
 
         # Connect callbacks
         self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
-            self.on_labels_layer_with_phasor_features_changed
+            self.on_image_layer_changed
         )
         # Update all frequency widgets from layer metadata if layer changes
         self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
@@ -337,17 +343,10 @@ class PlotterWidget(QWidget):
         if layer_name:
             try:
                 layer_metadata = self.viewer.layers[layer_name].metadata
-                if "phasor_features_labels_layer" in layer_metadata:
-                    phasor_features = layer_metadata[
-                        "phasor_features_labels_layer"
-                    ]
-                    if (
-                        phasor_features.features is not None
-                        and "harmonic" in phasor_features.features.columns
-                    ):
-                        default_harmonic = int(
-                            phasor_features.features["harmonic"].min()
-                        )
+                if "harmonics" in layer_metadata:
+                    harmonics = layer_metadata["harmonics"]
+                    if harmonics is not None:
+                        default_harmonic = int(np.min(harmonics))
             except (KeyError, AttributeError, ValueError):
                 pass
 
@@ -401,8 +400,7 @@ class PlotterWidget(QWidget):
         self._updating_settings = True
         try:
             if 'mask' in image_layer.metadata:
-                # check if mask combobox has a mask layer selected and if it matches
-                current_mask_name = self.mask_layer_combobox.currentText()
+                # Find a mask layer that matches the saved mask
                 matching_mask_layer_name = None
                 valid_mask_layers = [
                     mask_l
@@ -412,19 +410,20 @@ class PlotterWidget(QWidget):
                 for mask_l in valid_mask_layers:
                     if isinstance(mask_l, Shapes):
                         mask_data = mask_l.to_labels(
-                            labels_shape=self._labels_layer_with_phasor_features.data.shape
+                            labels_shape=image_layer.data.shape
                         )
                     else:
                         mask_data = mask_l.data
                     if np.array_equal(mask_data, image_layer.metadata['mask']):
                         matching_mask_layer_name = mask_l.name
+                        break  # Found a match, no need to continue
                 # Create mask layer if no match found
                 if matching_mask_layer_name is None:
                     matching_mask_layer_name = f"Restored Mask: {layer_name}"
                     self.viewer.add_labels(
                         image_layer.metadata['mask'],
                         name=matching_mask_layer_name,
-                        scale=self._labels_layer_with_phasor_features.scale,
+                        scale=image_layer.scale,
                     )
                 self.mask_layer_combobox.setCurrentText(
                     matching_mask_layer_name
@@ -649,7 +648,10 @@ class PlotterWidget(QWidget):
             layer.name
             for layer in self.viewer.layers
             if isinstance(layer, Image)
-            and "phasor_features_labels_layer" in layer.metadata
+            and all(
+                key in layer.metadata
+                for key in ["G", "S", "G_original", "S_original"]
+            )
             and layer.name != current_layer
         ]
         layer_combo.addItems(available_layers)
@@ -1527,7 +1529,10 @@ class PlotterWidget(QWidget):
                 layer.name
                 for layer in self.viewer.layers
                 if isinstance(layer, Image)
-                and "phasor_features_labels_layer" in layer.metadata.keys()
+                and "G" in layer.metadata.keys()
+                and "S" in layer.metadata.keys()
+                and "G_original" in layer.metadata.keys()
+                and "S_original" in layer.metadata.keys()
             ]
             mask_layer_names = [
                 layer.name
@@ -1602,48 +1607,48 @@ class PlotterWidget(QWidget):
             if new_text != image_layer_combobox_current_text or (
                 image_layer_combobox_current_text == "" and new_text != ""
             ):
-                self.on_labels_layer_with_phasor_features_changed()
+                self.on_image_layer_changed()
                 self._sync_frequency_inputs_from_metadata()
 
         finally:
             self._resetting_layer_choices = False
 
-    def on_labels_layer_with_phasor_features_changed(self):
-        """Handle changes to the labels layer with phasor features."""
-        if getattr(
-            self, "_in_on_labels_layer_with_phasor_features_changed", False
-        ):
+    def on_image_layer_changed(self):
+        """Handle changes to the image layer with phasor features."""
+        if getattr(self, "_in_on_image_layer_changed", False):
             return
-        self._in_on_labels_layer_with_phasor_features_changed = True
+        self._in_on_image_layer_changed = True
         try:
-            image_layer_name = (
+            layer_name = (
                 self.image_layer_with_phasor_features_combobox.currentText()
             )
-            if image_layer_name == "":
-                self._labels_layer_with_phasor_features = None
+            if layer_name == "":
+                self._g_array = None
+                self._s_array = None
+                self._harmonics_array = None
                 return
-            layer_metadata = self.viewer.layers[image_layer_name].metadata
-            self._labels_layer_with_phasor_features = layer_metadata[
-                "phasor_features_labels_layer"
-            ]
 
-            available_harmonics = (
-                self._labels_layer_with_phasor_features.features[
-                    "harmonic"
-                ].unique()
-            )
-            min_harmonic = int(available_harmonics.min())
-            max_harmonic = int(available_harmonics.max())
+            layer = self.viewer.layers[layer_name]
+            layer_metadata = layer.metadata
 
-            self.harmonic_spinbox.setMinimum(min_harmonic)
-            self.harmonic_spinbox.setMaximum(max_harmonic)
+            # Retrieve arrays from metadata
+            self._g_array = layer_metadata.get("G")
+            self._s_array = layer_metadata.get("S")
+            self._g_original_array = layer_metadata.get("G_original")
+            self._s_original_array = layer_metadata.get("S_original")
+            self._harmonics_array = layer_metadata.get("harmonics")
+
+            if self._harmonics_array is not None:
+                self._harmonics_array = np.atleast_1d(self._harmonics_array)
+                min_harmonic = int(np.min(self._harmonics_array))
+                max_harmonic = int(np.max(self._harmonics_array))
+                self.harmonic_spinbox.setRange(min_harmonic, max_harmonic)
 
             # Reset mask layer combobox to "None" when image layer changes
             self.mask_layer_combobox.blockSignals(True)
             self.mask_layer_combobox.setCurrentText("None")
             self.mask_layer_combobox.blockSignals(False)
 
-            layer = self.viewer.layers[image_layer_name]
             self._initialize_plot_settings_in_metadata(layer)
 
             self._restore_plot_settings_from_metadata()
@@ -1673,7 +1678,7 @@ class PlotterWidget(QWidget):
             self.plot()
 
         finally:
-            self._in_on_labels_layer_with_phasor_features_changed = False
+            self._in_on_image_layer_changed = False
 
     def _restore_original_phasor_data(self, image_layer):
         """Restore original G, S, and image data from backups.
@@ -1683,53 +1688,53 @@ class PlotterWidget(QWidget):
         image_layer : napari.layers.Image
             The image layer to restore data for.
         """
-        phasor_features = self._labels_layer_with_phasor_features.features
-        self._labels_layer_with_phasor_features.features['G'] = (
-            phasor_features['G_original'].copy()
-        )
-        self._labels_layer_with_phasor_features.features['S'] = (
-            phasor_features['S_original'].copy()
-        )
+        image_layer.metadata['G'] = image_layer.metadata['G_original']
+        image_layer.metadata['S'] = image_layer.metadata['S_original']
         image_layer.data = image_layer.metadata["original_mean"].copy()
 
     def _apply_mask_to_phasor_data(self, mask_layer, image_layer):
-        """Apply mask to phasor data by setting G and S values outside mask to NaN.
+            """Apply mask to phasor data by setting G and S values outside mask to NaN.
 
-        Parameters
-        ----------
-        mask_layer : napari.layers.Labels or napari.layers.Shapes
-            The mask layer to apply.
-        image_layer : napari.layers.Image
-            The image layer to store mask metadata.
-        """
-        if isinstance(mask_layer, Shapes) and len(mask_layer.data) > 0:
-            mask_data = mask_layer.to_labels(
-                labels_shape=self._labels_layer_with_phasor_features.data.shape
-            )
-        elif isinstance(mask_layer, Labels) and mask_layer.data.any():
-            mask_data = mask_layer.data
-        else:
-            return
+            Parameters
+            ----------
+            mask_layer : napari.layers.Labels or napari.layers.Shapes
+                The mask layer to apply.
+            image_layer : napari.layers.Image
+                The image layer to store mask metadata.
+            """
+            if isinstance(mask_layer, Shapes) and len(mask_layer.data) > 0:
+                mask_data = mask_layer.to_labels(
+                    labels_shape=image_layer.data.shape
+                )
+            elif isinstance(mask_layer, Labels) and mask_layer.data.any():
+                mask_data = mask_layer.data
+            else:
+                return
 
-        image_layer.metadata['mask'] = mask_data.copy()
+            image_layer.metadata['mask'] = mask_data.copy()
 
-        # Apply mask to image data (set values outside mask to NaN)
-        mask_invalid = mask_data <= 0
-        image_layer.data = np.where(mask_invalid, np.nan, image_layer.data)
+            # Apply mask to image data (set values outside mask to NaN)
+            mask_invalid = mask_data <= 0
+            image_layer.data = np.where(mask_invalid, np.nan, image_layer.data)
 
-        # Apply mask data to G and S columns (linearize and tile mask and turn to NaNs values outside mask)
-
-        # Update the mask feature in the labels layer with phasor features
-        mask_data_flattened_and_tiled = np.tile(
-            mask_data.flatten(),
-            self._labels_layer_with_phasor_features.features["harmonic"].max(),
-        )
-        # Turn G and S values outside mask to NaN
-        mask_indices = mask_data_flattened_and_tiled == 0
-        # TODO: In the future, labels not selected could be filtered out like this as well
-        self._labels_layer_with_phasor_features.features.loc[
-            mask_indices, ['G', 'S']
-        ] = np.nan
+            # Apply mask to G and S arrays
+            # G and S have shape (n_harmonics, Y, X) or (Y, X)
+            # mask_data has shape (Y, X)
+            # We need to broadcast the mask across harmonics if needed
+            
+            g_array = image_layer.metadata['G']
+            s_array = image_layer.metadata['S']
+            
+            if g_array.ndim == 3:
+                # Multi-harmonic case: shape is (n_harmonics, Y, X)
+                # Expand mask to (1, Y, X) for broadcasting
+                mask_invalid_expanded = mask_invalid[np.newaxis, :, :]
+                image_layer.metadata['G'] = np.where(mask_invalid_expanded, np.nan, g_array)
+                image_layer.metadata['S'] = np.where(mask_invalid_expanded, np.nan, s_array)
+            else:
+                # Single harmonic case: shape is (Y, X)
+                image_layer.metadata['G'] = np.where(mask_invalid, np.nan, g_array)
+                image_layer.metadata['S'] = np.where(mask_invalid, np.nan, s_array)
 
     def _on_mask_layer_changed(self, text):
         """Handle changes to the mask layer combo box."""
@@ -1796,8 +1801,135 @@ class PlotterWidget(QWidget):
 
         self.refresh_current_plot()
 
+    def refresh_phasor_data(self):
+        """Reload phasor data from the current layer metadata and replot."""
+        layer_name = (
+            self.image_layer_with_phasor_features_combobox.currentText()
+        )
+        if not layer_name or layer_name not in self.viewer.layers:
+            return
+
+        layer = self.viewer.layers[layer_name]
+        layer_metadata = layer.metadata
+
+        # Retrieve arrays from metadata
+        self._g_array = layer_metadata.get("G")
+        self._s_array = layer_metadata.get("S")
+        self._g_original_array = layer_metadata.get("G_original")
+        self._s_original_array = layer_metadata.get("S_original")
+        self._harmonics_array = layer_metadata.get("harmonics")
+
+        if self._harmonics_array is not None:
+            self._harmonics_array = np.atleast_1d(self._harmonics_array)
+
+        self.plot()
+
+    def has_phasor_data(self):
+        """Check if valid phasor data is loaded.
+
+        Returns
+        -------
+        bool
+            True if all required phasor arrays are present, False otherwise.
+        """
+        return (
+            self._g_array is not None
+            and self._s_array is not None
+            and self._harmonics_array is not None
+            and self._g_original_array is not None
+            and self._s_original_array is not None
+        )
+
+    def get_harmonic_index(self, harmonic=None):
+        """Return index of harmonic in loaded harmonics array.
+
+        Parameters
+        ----------
+        harmonic : int, optional
+            Harmonic number to look up. Defaults to current widget harmonic.
+
+        Returns
+        -------
+        int | None
+            Index into the harmonic axis of G/S arrays, or None if not found.
+        """
+        if not self.has_phasor_data():
+            return None
+
+        target = self.harmonic if harmonic is None else int(harmonic)
+        harmonics = np.atleast_1d(self._harmonics_array)
+        try:
+            return int(np.where(harmonics == target)[0][0])
+        except Exception:
+            return None
+
+    def get_phasor_spatial_shape(self):
+        """Return spatial (Y, X[, ...]) shape of loaded phasor arrays."""
+        if not self.has_phasor_data():
+            return None
+
+        shape = self._g_array.shape
+        if self._g_array.ndim == 3:
+            return shape[1:]
+        return shape
+
+    def get_masked_gs(
+        self,
+        harmonic=None,
+        *,
+        flat=False,
+        return_valid_mask=False,
+    ):
+        """Get masked phasor G/S arrays for a harmonic.
+
+        Masking convention: invalid pixels are represented as NaN in G/S.
+
+        Parameters
+        ----------
+        harmonic : int, optional
+            Harmonic number. Defaults to current widget harmonic.
+        flat : bool
+            If True, return 1D arrays (raveled). Otherwise return 2D arrays.
+        return_valid_mask : bool
+            If True, also return a boolean mask where both G and S are valid.
+
+        Returns
+        -------
+        (g, s) or (g, s, valid)
+            g and s are numpy arrays; valid is a boolean array of same shape.
+            Returns (None, None[, None]) if data is unavailable.
+        """
+        if not self.has_phasor_data():
+            if return_valid_mask:
+                return None, None, None
+            return None, None
+
+        harmonic_idx = self.get_harmonic_index(harmonic)
+        if harmonic_idx is None:
+            if return_valid_mask:
+                return None, None, None
+            return None, None
+
+        if self._g_array.ndim == 3:
+            g = self._g_array[harmonic_idx]
+            s = self._s_array[harmonic_idx]
+        else:
+            g = self._g_array
+            s = self._s_array
+
+        valid = (~np.isnan(g)) & (~np.isnan(s))
+
+        if flat:
+            g = g.ravel()
+            s = s.ravel()
+            valid = valid.ravel()
+
+        if return_valid_mask:
+            return g, s, valid
+        return g, s
+
     def get_features(self):
-        """Get the G and S features for the selected harmonic and selection id.
+        """Get the G and S features for the selected harmonic.
 
         Returns
         -------
@@ -1805,33 +1937,14 @@ class PlotterWidget(QWidget):
             The G feature data.
         y_data : np.ndarray
             The S feature data.
-        selection_data : np.ndarray
-            The selection data.
         """
-        if self._labels_layer_with_phasor_features is None:
-            return None
-        if self._labels_layer_with_phasor_features.features is None:
+        g_flat, s_flat, valid = self.get_masked_gs(
+            flat=True, return_valid_mask=True
+        )
+        if g_flat is None or s_flat is None or valid is None:
             return None
 
-        table = self._labels_layer_with_phasor_features.features
-        x_data = table['G'][table['harmonic'] == self.harmonic].values
-        y_data = table['S'][table['harmonic'] == self.harmonic].values
-        mask = np.isnan(x_data) & np.isnan(y_data)
-        x_data = x_data[~mask]
-        y_data = y_data[~mask]
-
-        if (
-            self.selection_tab.selection_id is None
-            or self.selection_tab.selection_id == ""
-            or self.selection_tab.selection_id not in table.columns
-        ):
-            return x_data, y_data, None
-        else:
-            selection_data = table[self.selection_tab.selection_id][
-                table['harmonic'] == self.harmonic
-            ].values
-            selection_data = selection_data[~mask]
-            return x_data, y_data, selection_data
+        return g_flat[valid], s_flat[valid]
 
     def set_axes_labels(self):
         """Set the axes labels in the canvas widget."""
@@ -1956,7 +2069,7 @@ class PlotterWidget(QWidget):
 
     def plot(self, x_data=None, y_data=None, selection_id_data=None):
         """Plot the selected phasor features efficiently."""
-        if self._labels_layer_with_phasor_features is None:
+        if not self.has_phasor_data():
             return
 
         if getattr(self, '_updating_plot', False):
@@ -1964,20 +2077,21 @@ class PlotterWidget(QWidget):
 
         self._updating_plot = True
 
-        if x_data is None or y_data is None:
-            features = self.get_features()
-            if features is None:
+        try:
+            if x_data is None or y_data is None:
+                features = self.get_features()
+                if features is None:
+                    return
+                x_data, y_data = features
+
+            if len(x_data) == 0 or len(y_data) == 0:
                 return
-            x_data, y_data, selection_id_data = features
 
-        if len(x_data) == 0 or len(y_data) == 0:
-            return
-
-        self._set_active_artist_and_plot(
-            self.plot_type, x_data, y_data, selection_id_data
-        )
-
-        self._updating_plot = False
+            self._set_active_artist_and_plot(
+                self.plot_type, x_data, y_data, selection_id_data
+            )
+        finally:
+            self._updating_plot = False
 
     def refresh_current_plot(self):
         """Refresh the current plot with existing data."""
@@ -1989,10 +2103,18 @@ class PlotterWidget(QWidget):
 
         features = self.get_features()
         if features is not None:
-            x_data, y_data, selection_id_data = features
+            x_data, y_data = features
             self._set_active_artist_and_plot(
-                new_plot_type, x_data, y_data, selection_id_data
+                new_plot_type, x_data, y_data, selection_id_data=None
             )
+
+            # Restore selection visualization if active
+            if hasattr(
+                self, 'selection_tab'
+            ) and self.selection_tab.selection_id not in [None, "None", ""]:
+                self.selection_tab.update_phasor_plot_with_selection_id(
+                    self.selection_tab.selection_id
+                )
 
     def _set_active_artist_and_plot(
         self, plot_type, x_data, y_data, selection_id_data=None

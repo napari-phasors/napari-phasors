@@ -268,8 +268,13 @@ class CalibrationWidget(QWidget):
 
     def _get_phasor_data(self, layer):
         """Get phasor data and harmonics from a layer."""
-        phasor_data = layer.metadata["phasor_features_labels_layer"].features
-        harmonics = np.unique(phasor_data["harmonic"])
+        phasor_data = {
+            "G_original": layer.metadata.get("G_original"),
+            "S_original": layer.metadata.get("S_original"),
+            "G": layer.metadata.get("G"),
+            "S": layer.metadata.get("S"),
+        }
+        harmonics = layer.metadata.get("harmonics")
         return phasor_data, harmonics
 
     def _calculate_calibration_parameters(
@@ -284,21 +289,18 @@ class CalibrationWidget(QWidget):
         """Calculate calibration phase and modulation parameters."""
         calibration_mean = calibration_layer.metadata["original_mean"]
 
-        calibration_g = np.reshape(
-            calibration_phasor_data["G_original"],
-            (len(calibration_harmonics),) + calibration_mean.shape,
-        )
-        calibration_s = np.reshape(
-            calibration_phasor_data["S_original"],
-            (len(calibration_harmonics),) + calibration_mean.shape,
-        )
+        # Use arrays directly (assuming harmonic axis is first if present)
+        calibration_g = calibration_phasor_data["G_original"]
+        calibration_s = calibration_phasor_data["S_original"]
 
         _, measured_re, measured_im = phasor_center(
             calibration_mean, calibration_g, calibration_s
         )
 
+        harmonics_array = np.atleast_1d(harmonics)
+
         known_re, known_im = phasor_from_lifetime(
-            frequency * harmonics, lifetime
+            frequency * harmonics_array, lifetime
         )
         phi_zero, mod_zero = polar_from_reference_phasor(
             measured_re, measured_im, known_re, known_im
@@ -346,53 +348,54 @@ class CalibrationWidget(QWidget):
 
     def _apply_phasor_transformation(self, sample_name, phi_zero, mod_zero):
         """Apply phasor transformation with given correction parameters."""
-        sample_metadata = self.viewer.layers[sample_name].metadata
-        sample_phasor_data = sample_metadata[
-            "phasor_features_labels_layer"
-        ].features
-        harmonics = np.unique(sample_phasor_data["harmonic"])
-        original_mean_shape = sample_metadata["original_mean"].shape
+        sample_layer = self.viewer.layers[sample_name]
+        sample_metadata = sample_layer.metadata
 
-        # Handle multi-harmonic case
-        axis = None
-        if len(harmonics) > 1:
-            axis = tuple(range(1, len(original_mean_shape) + 1))
+        harmonics = sample_metadata.get("harmonics")
+        g_original = sample_metadata["G_original"]
+        s_original = sample_metadata["S_original"]
+        g_current = sample_metadata["G"]
+        s_current = sample_metadata["S"]
 
-        # Expand dimensions if needed
-        if np.ndim(phi_zero) > 0 and axis is not None:
-            phi_zero = np.expand_dims(phi_zero, axis=axis)
-            mod_zero = np.expand_dims(mod_zero, axis=axis)
+        # Convert to numpy arrays if they are lists
+        if isinstance(phi_zero, list):
+            phi_zero = np.array(phi_zero)
+        if isinstance(mod_zero, list):
+            mod_zero = np.array(mod_zero)
 
-        # Transform original phasor data
+        # Handle broadcasting for calibration parameters
+        if g_original.ndim > 1 and len(harmonics) > 1:
+            spatial_dims = g_original.ndim - 1
+            expand_shape = (slice(None),) + (None,) * spatial_dims
+
+            if np.ndim(phi_zero) > 0:
+                phi_zero_expanded = phi_zero[expand_shape]
+                mod_zero_expanded = mod_zero[expand_shape]
+            else:
+                phi_zero_expanded = phi_zero
+                mod_zero_expanded = mod_zero
+        else:
+            phi_zero_expanded = phi_zero
+            mod_zero_expanded = mod_zero
+
         real_original, imag_original = phasor_transform(
-            np.reshape(
-                sample_phasor_data["G_original"],
-                (len(harmonics),) + original_mean_shape,
-            ),
-            np.reshape(
-                sample_phasor_data["S_original"],
-                (len(harmonics),) + original_mean_shape,
-            ),
-            phi_zero,
-            mod_zero,
+            g_original,
+            s_original,
+            phi_zero_expanded,
+            mod_zero_expanded,
         )
 
-        # Transform current phasor data
         real, imag = phasor_transform(
-            np.reshape(
-                sample_phasor_data["G"],
-                (len(harmonics),) + original_mean_shape,
-            ),
-            np.reshape(
-                sample_phasor_data["S"],
-                (len(harmonics),) + original_mean_shape,
-            ),
-            phi_zero,
-            mod_zero,
+            g_current,
+            s_current,
+            phi_zero_expanded,
+            mod_zero_expanded,
         )
 
-        # Update the phasor data
-        sample_phasor_data["G_original"] = real_original.flatten()
-        sample_phasor_data["S_original"] = imag_original.flatten()
-        sample_phasor_data["G"] = real.flatten()
-        sample_phasor_data["S"] = imag.flatten()
+        sample_metadata["G_original"] = real_original
+        sample_metadata["S_original"] = imag_original
+        sample_metadata["G"] = real
+        sample_metadata["S"] = imag
+
+        if self.parent_widget:
+            self.parent_widget.refresh_phasor_data()
