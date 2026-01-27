@@ -34,9 +34,6 @@ def test_filter_widget_initialization_values(make_napari_viewer):
     assert isinstance(filter_widget.layout(), QVBoxLayout)
 
     # Test initial attribute values
-    assert (
-        filter_widget.parent_widget._labels_layer_with_phasor_features is None
-    )
     assert filter_widget._phasors_selected_layer is None
     assert filter_widget.threshold_factor == 1
     assert filter_widget.threshold_line is None
@@ -256,17 +253,24 @@ def create_image_layer_with_incompatible_harmonics():
     return layer
 
 
+def create_image_layer_with_incompatible_harmonics():
+    """Create an image layer with incompatible harmonics for wavelet filtering."""
+    layer = create_image_layer_with_phasors()
+
+    # Update harmonics in the new array-based metadata structure
+    # Incompatible harmonics are non-consecutive (e.g., [1, 3, 5] instead of [1, 2])
+    layer.metadata['harmonics'] = [1, 3, 5]
+
+    return layer
+
+
 def test_wavelet_harmonics_validation_compatible(make_napari_viewer):
     """Test wavelet harmonics validation with compatible harmonics."""
     viewer = make_napari_viewer()
     intensity_image_layer = create_image_layer_with_phasors()
 
-    phasor_features = intensity_image_layer.metadata[
-        'phasor_features_labels_layer'
-    ]
-    num_pixels = len(phasor_features.features['harmonic'])
-    compatible_harmonics = np.random.choice([1, 2], size=num_pixels)
-    phasor_features.features['harmonic'] = compatible_harmonics
+    # Set compatible harmonics (consecutive: 1, 2)
+    intensity_image_layer.metadata['harmonics'] = [1, 2]
 
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -303,12 +307,8 @@ def test_apply_button_with_wavelet_filter(make_napari_viewer):
     viewer = make_napari_viewer()
     intensity_image_layer = create_image_layer_with_phasors()
 
-    phasor_features = intensity_image_layer.metadata[
-        'phasor_features_labels_layer'
-    ]
-    num_pixels = len(phasor_features.features['harmonic'])
-    compatible_harmonics = np.random.choice([1, 2], size=num_pixels)
-    phasor_features.features['harmonic'] = compatible_harmonics
+    # Set compatible harmonics (consecutive: 1, 2)
+    intensity_image_layer.metadata['harmonics'] = [1, 2]
 
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -429,12 +429,8 @@ def test_settings_restoration_with_wavelet(make_napari_viewer):
     viewer = make_napari_viewer()
     intensity_image_layer = create_image_layer_with_phasors()
 
-    phasor_features = intensity_image_layer.metadata[
-        'phasor_features_labels_layer'
-    ]
-    num_pixels = len(phasor_features.features['harmonic'])
-    compatible_harmonics = np.random.choice([1, 2], size=num_pixels)
-    phasor_features.features['harmonic'] = compatible_harmonics
+    # Set compatible harmonics (consecutive: 1, 2)
+    intensity_image_layer.metadata['harmonics'] = [1, 2]
 
     intensity_image_layer.metadata["settings"] = {
         "threshold": 0.1,

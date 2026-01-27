@@ -837,24 +837,22 @@ def test_lifetime_widget_calculate_lifetimes_with_real_data(
     frequency = 80.0  # MHz
 
     # Create realistic phasor data
-    real_values = np.array([0.5, 0.6, 0.7, 0.8])
-    imag_values = np.array([0.3, 0.4, 0.5, 0.6])
+    real_values = np.array([[0.5, 0.6], [0.7, 0.8]])
+    imag_values = np.array([[0.3, 0.4], [0.5, 0.6]])
 
-    # Create mock labels layer with features
-    mock_labels_layer = MagicMock()
-    mock_labels_layer.data = np.ones((2, 2))  # 2x2 shape to match test data
-    mock_labels_layer.scale = (1.0, 1.0)
-
-    # Create phasor features DataFrame
-    mock_features = pd.DataFrame(
-        {'harmonic': [1, 1, 1, 1], 'G': real_values, 'S': imag_values}
-    )
-    mock_labels_layer.features = mock_features
-
-    parent._labels_layer_with_phasor_features = mock_labels_layer
-    parent.image_layer_with_phasor_features_combobox.setCurrentText(
-        "test_layer"
-    )
+    # Create a real layer with the new array-based metadata structure
+    layer = create_image_layer_with_phasors()
+    
+    # Override the phasor data with our test values
+    layer.metadata['G'] = real_values
+    layer.metadata['S'] = imag_values
+    layer.metadata['harmonics'] = np.array([1])
+    layer.data = np.ones((2, 2))  # Match shape
+    
+    viewer.add_layer(layer)
+    
+    # Select the layer
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
     lifetime_widget.frequency_input.setText(str(frequency))
 
     # Test Apparent Phase Lifetime
@@ -872,7 +870,6 @@ def test_lifetime_widget_calculate_lifetimes_with_real_data(
     expected_phase_clipped = np.clip(
         expected_phase_lifetime, a_min=0, a_max=None
     )
-    expected_phase_reshaped = np.reshape(expected_phase_clipped, (2, 2))
 
     # Calculate using widget
     lifetime_widget.calculate_lifetimes()
@@ -880,11 +877,11 @@ def test_lifetime_widget_calculate_lifetimes_with_real_data(
     # Compare results
     np.testing.assert_array_almost_equal(
         lifetime_widget.lifetime_data_original,
-        expected_phase_reshaped,
+        expected_phase_clipped,
         decimal=10,
     )
     np.testing.assert_array_almost_equal(
-        lifetime_widget.lifetime_data, expected_phase_reshaped, decimal=10
+        lifetime_widget.lifetime_data, expected_phase_clipped, decimal=10
     )
 
     # Test Apparent Modulation Lifetime
@@ -894,7 +891,6 @@ def test_lifetime_widget_calculate_lifetimes_with_real_data(
 
     # Calculate expected values
     expected_mod_clipped = np.clip(expected_mod_lifetime, a_min=0, a_max=None)
-    expected_mod_reshaped = np.reshape(expected_mod_clipped, (2, 2))
 
     # Calculate using widget
     lifetime_widget.calculate_lifetimes()
@@ -902,7 +898,7 @@ def test_lifetime_widget_calculate_lifetimes_with_real_data(
     # Compare results
     np.testing.assert_array_almost_equal(
         lifetime_widget.lifetime_data_original,
-        expected_mod_reshaped,
+        expected_mod_clipped,
         decimal=10,
     )
 
@@ -913,7 +909,6 @@ def test_lifetime_widget_calculate_lifetimes_with_real_data(
     expected_normal_lifetime = phasor_to_normal_lifetime(
         real_values, imag_values, frequency=expected_frequency
     )
-    expected_normal_reshaped = np.reshape(expected_normal_lifetime, (2, 2))
 
     # Calculate using widget
     lifetime_widget.calculate_lifetimes()
@@ -921,7 +916,7 @@ def test_lifetime_widget_calculate_lifetimes_with_real_data(
     # Compare results
     np.testing.assert_array_almost_equal(
         lifetime_widget.lifetime_data_original,
-        expected_normal_reshaped,
+        expected_normal_lifetime,
         decimal=10,
     )
 
@@ -951,10 +946,25 @@ def test_lifetime_widget_full_workflow_with_real_calculations(
 
     harmonic = parent.harmonic
 
-    phasor_features = layer.metadata['phasor_features_labels_layer'].features
-    harmonic_mask = phasor_features['harmonic'] == harmonic
-    real = phasor_features.loc[harmonic_mask, 'G']
-    imag = phasor_features.loc[harmonic_mask, 'S']
+    # Use the new array-based metadata structure
+    metadata = layer.metadata
+    G_image = metadata["G"]
+    S_image = metadata["S"]
+    harmonics = metadata.get("harmonics", [1])
+
+    # Handle both single harmonic and multi-harmonic cases
+    harmonics = np.atleast_1d(harmonics)
+    if len(harmonics) > 1 and G_image.ndim > 2:
+        harmonic_idx = np.where(harmonics == harmonic)[0]
+        if len(harmonic_idx) == 0:
+            harmonic_idx = 0
+        else:
+            harmonic_idx = harmonic_idx[0]
+        real = G_image[harmonic_idx].flatten()
+        imag = S_image[harmonic_idx].flatten()
+    else:
+        real = G_image.flatten()
+        imag = S_image.flatten()
 
     expected_phase_lifetime, expected_mod_lifetime = (
         phasor_to_apparent_lifetime(real, imag, frequency=80)
@@ -1179,18 +1189,9 @@ def test_lifetime_widget_different_harmonics_and_frequencies(
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.lifetime_tab
 
-    # Test data
-    real_values = np.array([0.6, 0.7, 0.8, 0.5])
-    imag_values = np.array([0.4, 0.3, 0.2, 0.5])
-
-    mock_labels_layer = MagicMock()
-    mock_labels_layer.data = np.ones((2, 2))
-    mock_labels_layer.scale = (1.0, 1.0)
-
-    parent._labels_layer_with_phasor_features = mock_labels_layer
-    parent.image_layer_with_phasor_features_combobox.setCurrentText(
-        "test_layer"
-    )
+    # Test data - 2x2 arrays
+    real_values = np.array([[0.6, 0.7], [0.8, 0.5]])
+    imag_values = np.array([[0.4, 0.3], [0.2, 0.5]])
 
     # Test different combinations
     test_cases = [
@@ -1201,15 +1202,25 @@ def test_lifetime_widget_different_harmonics_and_frequencies(
     ]
 
     for harmonic, base_frequency in test_cases:
+        # Create a fresh layer for each test case
+        layer = create_image_layer_with_phasors()
+        layer.name = f"test_layer_{harmonic}_{int(base_frequency)}"
+        
+        # Override the phasor data with our test values
+        layer.metadata['G'] = real_values
+        layer.metadata['S'] = imag_values
+        layer.metadata['harmonics'] = np.array([harmonic])
+        layer.data = np.ones((2, 2))  # Match shape
+        
+        viewer.add_layer(layer)
+        
         # Set up for this test case
         parent.harmonic = harmonic
+        
+        # Select the layer in the combobox
+        parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+        
         lifetime_widget.frequency_input.setText(str(base_frequency))
-
-        # Create features with correct harmonic
-        mock_features = pd.DataFrame(
-            {'harmonic': [harmonic] * 4, 'G': real_values, 'S': imag_values}
-        )
-        mock_labels_layer.features = mock_features
 
         # Calculate expected values
         expected_frequency = base_frequency * harmonic
@@ -1219,7 +1230,6 @@ def test_lifetime_widget_different_harmonics_and_frequencies(
         expected_clipped = np.clip(
             expected_phase_lifetime, a_min=0, a_max=None
         )
-        expected_reshaped = np.reshape(expected_clipped, (2, 2))
 
         # Calculate using widget
         lifetime_widget.lifetime_type_combobox.setCurrentText(
@@ -1230,10 +1240,14 @@ def test_lifetime_widget_different_harmonics_and_frequencies(
         # Verify results for this combination
         np.testing.assert_array_almost_equal(
             lifetime_widget.lifetime_data_original,
-            expected_reshaped,
+            expected_clipped,
             decimal=10,
             err_msg=f"Failed for harmonic={harmonic}, frequency={base_frequency}",
         )
 
         # Verify frequency was calculated correctly
         assert lifetime_widget.frequency == base_frequency
+        
+        # Clean up layer for next iteration
+        viewer.layers.remove(layer)
+

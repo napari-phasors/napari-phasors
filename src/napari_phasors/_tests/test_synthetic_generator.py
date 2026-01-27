@@ -1,11 +1,10 @@
 def test_synthetic_generator():
-    from napari.layers import Labels
+    import numpy as np
 
     from napari_phasors._synthetic_generator import (
         make_intensity_layer_with_phasors,
         make_raw_flim_data,
     )
-    from napari_phasors.selection_tab import DATA_COLUMNS
 
     # Create a synthetic FLIM data and an intensity image layer with phasors
     raw_flim_data = make_raw_flim_data()
@@ -14,20 +13,22 @@ def test_synthetic_generator():
         raw_flim_data, harmonic=harmonic
     )
 
-    # Check that Image layer contains Labels layer in metadata
-    assert "phasor_features_labels_layer" in intensity_image_layer.metadata
-    assert isinstance(
-        intensity_image_layer.metadata["phasor_features_labels_layer"], Labels
-    )
-    assert hasattr(
-        intensity_image_layer.metadata["phasor_features_labels_layer"],
-        "features",
-    )
+    # Check that Image layer contains phasor data in metadata
+    assert "G" in intensity_image_layer.metadata
+    assert "S" in intensity_image_layer.metadata
+    assert "G_original" in intensity_image_layer.metadata
+    assert "S_original" in intensity_image_layer.metadata
+    assert "harmonics" in intensity_image_layer.metadata
+    assert "summed_signal" in intensity_image_layer.metadata
+    assert "original_mean" in intensity_image_layer.metadata
 
-    # Check phasors_table generation
-    phasors_table = intensity_image_layer.metadata[
-        "phasor_features_labels_layer"
-    ].features
-    # Ensure all items in DATA_COLUMNS are columns in the phasors_table
-    for column in DATA_COLUMNS:
-        assert column in phasors_table
+    # Check that phasor arrays have correct shape (n_harmonics, height, width)
+    G = intensity_image_layer.metadata["G"]
+    S = intensity_image_layer.metadata["S"]
+    harmonics = intensity_image_layer.metadata["harmonics"]
+    
+    assert isinstance(G, np.ndarray)
+    assert isinstance(S, np.ndarray)
+    assert G.shape == (len(harmonic), *raw_flim_data.shape[1:])
+    assert S.shape == (len(harmonic), *raw_flim_data.shape[1:])
+    assert harmonics == harmonic

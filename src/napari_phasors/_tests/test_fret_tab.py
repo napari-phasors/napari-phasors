@@ -189,9 +189,6 @@ def test_calculate_background_position_with_layer(make_napari_viewer):
 
     # Set up the parent widget properly
     parent.harmonic = 1
-    parent._labels_layer_with_phasor_features = test_layer.metadata[
-        'phasor_features_labels_layer'
-    ]
 
     # Calculate background position
     widget._calculate_background_position()
@@ -297,11 +294,23 @@ def test_calculate_fret_efficiency_with_layer(make_napari_viewer):
     widget.background_real_edit.setText("0.1")
     widget.background_imag_edit.setText("0.1")
 
-    # Get values of G and S from the test layer
-    phasor_data = parent._labels_layer_with_phasor_features.features
-    harmonic_mask = phasor_data['harmonic'] == parent.harmonic
-    real = phasor_data.loc[harmonic_mask, 'G']
-    imag = phasor_data.loc[harmonic_mask, 'S']
+    # Get values of G and S from the test layer using new array-based metadata
+    metadata = test_layer.metadata
+    G_image = metadata["G"]
+    S_image = metadata["S"]
+    harmonics = metadata.get("harmonics", [1])
+
+    # Get the harmonic index (0-based for array access)
+    harmonic = parent.harmonic
+    if isinstance(harmonics, (list, np.ndarray)) and len(harmonics) > 1:
+        # Multi-harmonic case: G and S have shape (n_harmonics, ...)
+        harmonic_idx = list(harmonics).index(harmonic) if harmonic in harmonics else 0
+        real = G_image[harmonic_idx].flatten()
+        imag = S_image[harmonic_idx].flatten()
+    else:
+        # Single harmonic case
+        real = G_image.flatten()
+        imag = S_image.flatten()
 
     # Get trajectory data
     donor_trajectory_real, donor_trajectory_imag = phasor_from_fret_donor(
@@ -316,8 +325,8 @@ def test_calculate_fret_efficiency_with_layer(make_napari_viewer):
 
     # Calculate expected FRET efficiency
     expected_fret_efficiency = phasor_nearest_neighbor(
-        real.values,
-        imag.values,
+        np.array(real),
+        np.array(imag),
         donor_trajectory_real,
         donor_trajectory_imag,
         values=widget._fret_efficiencies,
@@ -351,8 +360,8 @@ def test_calculate_fret_efficiency_with_layer(make_napari_viewer):
 
     # Calculate expected FRET efficiency
     expected_fret_efficiency = phasor_nearest_neighbor(
-        real.values,
-        imag.values,
+        np.array(real),
+        np.array(imag),
         donor_trajectory_real,
         donor_trajectory_imag,
         values=widget._fret_efficiencies,

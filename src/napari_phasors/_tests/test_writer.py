@@ -53,21 +53,17 @@ def test_write_ometif(tmp_path):
     assert layer_data_tuple[1]["metadata"]["settings"]["version"] == str(
         importlib.metadata.version("napari-phasors")
     )
-    phasor_features = layer_data_tuple[1]["metadata"][
-        "phasor_features_labels_layer"
-    ]
-    np.testing.assert_array_equal(
-        phasor_features.data, [[1, 2, 3, 4, 5], [6, 7, 8, 9, 10]]
-    )
-    assert phasor_features.features.shape == (30, 6)
-    expected_columns = [
-        "label",
-        "G_original",
-        "S_original",
-        "G",
-        "S",
-        "harmonic",
-    ]
-    actual_columns = phasor_features.features.columns.tolist()
-    assert actual_columns == expected_columns
-    assert phasor_features.features["harmonic"].unique().tolist() == [1, 2, 3]
+    # Check phasor data in metadata (new array-based structure)
+    metadata = layer_data_tuple[1]["metadata"]
+    assert "G" in metadata
+    assert "S" in metadata
+    assert "G_original" in metadata
+    assert "S_original" in metadata
+    assert "harmonics" in metadata
+    # Check harmonics
+    assert list(metadata["harmonics"]) == [1, 2, 3]
+    # Check G and S shapes: (n_harmonics, height, width)
+    assert metadata["G"].shape == (3, 2, 5)
+    assert metadata["S"].shape == (3, 2, 5)
+    assert metadata["G_original"].shape == (3, 2, 5)
+    assert metadata["S_original"].shape == (3, 2, 5)
