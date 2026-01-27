@@ -1047,8 +1047,14 @@ class ComponentsWidget(QWidget):
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
     def _restore_components_for_harmonic(self, harmonic):
-        """Restore component locations for the given harmonic from metadata."""
+        """Restore component states for a specific harmonic."""
         if not self.current_image_layer_name:
+            return
+
+        try:
+            layer = self.viewer.layers[self.current_image_layer_name]
+        except KeyError:
+            self.current_image_layer_name = None
             return
 
         layer = self.viewer.layers[self.current_image_layer_name]
