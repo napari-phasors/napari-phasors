@@ -51,7 +51,9 @@ def write_ome_tiff(path: str, image_layer: Any) -> List[str]:
         # Include summed_signal if available
         if "summed_signal" in image_layer.metadata:
             summed = image_layer.metadata["summed_signal"]
-            settings["summed_signal"] = summed.tolist() if hasattr(summed, 'tolist') else summed
+            settings["summed_signal"] = (
+                summed.tolist() if hasattr(summed, 'tolist') else summed
+            )
     else:
         metadata = image_layer[0][1]["metadata"]
         mean = metadata["original_mean"]
@@ -64,8 +66,10 @@ def write_ome_tiff(path: str, image_layer: Any) -> List[str]:
             settings = {}
         if "summed_signal" in metadata:
             summed = metadata["summed_signal"]
-            settings["summed_signal"] = summed.tolist() if hasattr(summed, 'tolist') else summed
-    
+            settings["summed_signal"] = (
+                summed.tolist() if hasattr(summed, 'tolist') else summed
+            )
+
     if not path.endswith(".ome.tif"):
         path += ".ome.tif"
     settings["version"] = str(importlib.metadata.version('napari-phasors'))
@@ -227,15 +231,15 @@ def export_layer_as_csv(path: str, image_layer: Image) -> None:
         G_original = image_layer.metadata.get("G_original", G)
         S_original = image_layer.metadata.get("S_original", S)
         harmonics = image_layer.metadata["harmonics"]
-        
+
         # Get spatial shape (last 2 dimensions of G)
         spatial_shape = G.shape[-2:]
         n_harmonics = len(harmonics)
         n_pixels = np.prod(spatial_shape)
-        
+
         # Create coordinate arrays
         coords = np.unravel_index(np.arange(n_pixels), spatial_shape)
-        
+
         # Build dataframe with phasor data
         rows = []
         for h_idx, harmonic in enumerate(harmonics):
@@ -243,7 +247,7 @@ def export_layer_as_csv(path: str, image_layer: Image) -> None:
             s_flat = S[h_idx].ravel()
             g_orig_flat = G_original[h_idx].ravel()
             s_orig_flat = S_original[h_idx].ravel()
-            
+
             for px_idx in range(n_pixels):
                 if not (np.isnan(g_flat[px_idx]) and np.isnan(s_flat[px_idx])):
                     row = {
@@ -256,7 +260,7 @@ def export_layer_as_csv(path: str, image_layer: Image) -> None:
                     for dim, coord in enumerate(coords):
                         row[f'dim_{dim}'] = coord[px_idx]
                     rows.append(row)
-        
+
         df = pd.DataFrame(rows)
         df.to_csv(path, index=False)
     else:

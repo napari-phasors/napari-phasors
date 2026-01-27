@@ -1693,48 +1693,52 @@ class PlotterWidget(QWidget):
         image_layer.data = image_layer.metadata["original_mean"].copy()
 
     def _apply_mask_to_phasor_data(self, mask_layer, image_layer):
-            """Apply mask to phasor data by setting G and S values outside mask to NaN.
+        """Apply mask to phasor data by setting G and S values outside mask to NaN.
 
-            Parameters
-            ----------
-            mask_layer : napari.layers.Labels or napari.layers.Shapes
-                The mask layer to apply.
-            image_layer : napari.layers.Image
-                The image layer to store mask metadata.
-            """
-            if isinstance(mask_layer, Shapes) and len(mask_layer.data) > 0:
-                mask_data = mask_layer.to_labels(
-                    labels_shape=image_layer.data.shape
-                )
-            elif isinstance(mask_layer, Labels) and mask_layer.data.any():
-                mask_data = mask_layer.data
-            else:
-                return
+        Parameters
+        ----------
+        mask_layer : napari.layers.Labels or napari.layers.Shapes
+            The mask layer to apply.
+        image_layer : napari.layers.Image
+            The image layer to store mask metadata.
+        """
+        if isinstance(mask_layer, Shapes) and len(mask_layer.data) > 0:
+            mask_data = mask_layer.to_labels(
+                labels_shape=image_layer.data.shape
+            )
+        elif isinstance(mask_layer, Labels) and mask_layer.data.any():
+            mask_data = mask_layer.data
+        else:
+            return
 
-            image_layer.metadata['mask'] = mask_data.copy()
+        image_layer.metadata['mask'] = mask_data.copy()
 
-            # Apply mask to image data (set values outside mask to NaN)
-            mask_invalid = mask_data <= 0
-            image_layer.data = np.where(mask_invalid, np.nan, image_layer.data)
+        # Apply mask to image data (set values outside mask to NaN)
+        mask_invalid = mask_data <= 0
+        image_layer.data = np.where(mask_invalid, np.nan, image_layer.data)
 
-            # Apply mask to G and S arrays
-            # G and S have shape (n_harmonics, Y, X) or (Y, X)
-            # mask_data has shape (Y, X)
-            # We need to broadcast the mask across harmonics if needed
-            
-            g_array = image_layer.metadata['G']
-            s_array = image_layer.metadata['S']
-            
-            if g_array.ndim == 3:
-                # Multi-harmonic case: shape is (n_harmonics, Y, X)
-                # Expand mask to (1, Y, X) for broadcasting
-                mask_invalid_expanded = mask_invalid[np.newaxis, :, :]
-                image_layer.metadata['G'] = np.where(mask_invalid_expanded, np.nan, g_array)
-                image_layer.metadata['S'] = np.where(mask_invalid_expanded, np.nan, s_array)
-            else:
-                # Single harmonic case: shape is (Y, X)
-                image_layer.metadata['G'] = np.where(mask_invalid, np.nan, g_array)
-                image_layer.metadata['S'] = np.where(mask_invalid, np.nan, s_array)
+        # Apply mask to G and S arrays
+        # G and S have shape (n_harmonics, Y, X) or (Y, X)
+        # mask_data has shape (Y, X)
+        # We need to broadcast the mask across harmonics if needed
+
+        g_array = image_layer.metadata['G']
+        s_array = image_layer.metadata['S']
+
+        if g_array.ndim == 3:
+            # Multi-harmonic case: shape is (n_harmonics, Y, X)
+            # Expand mask to (1, Y, X) for broadcasting
+            mask_invalid_expanded = mask_invalid[np.newaxis, :, :]
+            image_layer.metadata['G'] = np.where(
+                mask_invalid_expanded, np.nan, g_array
+            )
+            image_layer.metadata['S'] = np.where(
+                mask_invalid_expanded, np.nan, s_array
+            )
+        else:
+            # Single harmonic case: shape is (Y, X)
+            image_layer.metadata['G'] = np.where(mask_invalid, np.nan, g_array)
+            image_layer.metadata['S'] = np.where(mask_invalid, np.nan, s_array)
 
     def _on_mask_layer_changed(self, text):
         """Handle changes to the mask layer combo box."""

@@ -813,7 +813,9 @@ def test_on_image_layer_changed_with_empty_layer_name(
         plotter.deleteLater()
 
     # Verify no layer is selected when combobox is empty
-    assert plotter.image_layer_with_phasor_features_combobox.currentText() == ''
+    assert (
+        plotter.image_layer_with_phasor_features_combobox.currentText() == ''
+    )
 
     # Now add a layer with phasors
 
@@ -863,7 +865,9 @@ def test_on_image_layer_changed_updates_phasors_selected_layer(
     plotter = PlotterWidget(viewer)
 
     # Verify the selected layer name is in the combobox
-    layer_name = plotter.image_layer_with_phasor_features_combobox.currentText()
+    layer_name = (
+        plotter.image_layer_with_phasor_features_combobox.currentText()
+    )
     assert layer_name == intensity_image_layer.name
 
     # Verify the layer has phasor data
@@ -876,7 +880,9 @@ def test_on_image_layer_changed_updates_phasors_selected_layer(
     plotter.on_image_layer_changed()
 
     # Verify phasor data is still accessible
-    layer_name = plotter.image_layer_with_phasor_features_combobox.currentText()
+    layer_name = (
+        plotter.image_layer_with_phasor_features_combobox.currentText()
+    )
     assert layer_name == intensity_image_layer.name
     selected_layer = viewer.layers[layer_name]
     assert "G" in selected_layer.metadata
@@ -905,9 +911,7 @@ def test_on_image_layer_changed_guard_flag_cleanup(
 
     # Verify guard flag is cleaned up even after exception
     assert (
-        not hasattr(
-            plotter, '_in_on_image_layer_changed'
-        )
+        not hasattr(plotter, '_in_on_image_layer_changed')
         or plotter._in_on_image_layer_changed == False
     )
 
@@ -1516,7 +1520,7 @@ def test_phasor_plotter_apply_mask_to_phasor_data(make_napari_viewer):
         mask_shape = G_original.shape
 
     mask_data = np.zeros(mask_shape, dtype=int)
-    mask_data[mask_shape[0] // 2:, :] = 1  # Mask in bottom half
+    mask_data[mask_shape[0] // 2 :, :] = 1  # Mask in bottom half
     labels_layer = viewer.add_labels(mask_data, name="test_mask")
 
     # Apply mask
@@ -1553,7 +1557,7 @@ def test_phasor_plotter_restore_original_phasor_data(make_napari_viewer):
 
     # Apply mask to modify data
     mask_data = np.zeros(mask_shape, dtype=int)
-    mask_data[mask_shape[0] // 2:, :] = 1
+    mask_data[mask_shape[0] // 2 :, :] = 1
     labels_layer = viewer.add_labels(mask_data, name="test_mask")
     plotter._apply_mask_to_phasor_data(labels_layer, intensity_image_layer)
 

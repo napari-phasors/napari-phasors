@@ -26,7 +26,7 @@ def test_synthetic_generator():
     G = intensity_image_layer.metadata["G"]
     S = intensity_image_layer.metadata["S"]
     harmonics = intensity_image_layer.metadata["harmonics"]
-    
+
     assert isinstance(G, np.ndarray)
     assert isinstance(S, np.ndarray)
     assert G.shape == (len(harmonic), *raw_flim_data.shape[1:])

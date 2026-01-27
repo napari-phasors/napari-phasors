@@ -151,19 +151,21 @@ def test_components_widget_fraction_calculation_creates_both_layers(
     G_image = metadata["G"]
     S_image = metadata["S"]
     harmonics = metadata.get("harmonics", [1])
-    
+
     # Get the harmonic index (0-based for array access)
     harmonic = parent.harmonic
     if isinstance(harmonics, (list, np.ndarray)) and len(harmonics) > 1:
         # Multi-harmonic case: G and S have shape (n_harmonics, ...)
-        harmonic_idx = list(harmonics).index(harmonic) if harmonic in harmonics else 0
+        harmonic_idx = (
+            list(harmonics).index(harmonic) if harmonic in harmonics else 0
+        )
         real = G_image[harmonic_idx].flatten()
         imag = S_image[harmonic_idx].flatten()
     else:
         # Single harmonic case
         real = G_image.flatten()
         imag = S_image.flatten()
-    
+
     expected_comp1_fractions = phasor_component_fraction(
         np.array(real),
         np.array(imag),

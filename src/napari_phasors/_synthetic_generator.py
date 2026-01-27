@@ -1,6 +1,7 @@
 import numpy as np
-from phasorpy.phasor import phasor_from_signal
 from napari.layers import Image
+from phasorpy.phasor import phasor_from_signal
+
 
 def make_raw_flim_data(
     n_time_bins=1000,
@@ -70,8 +71,8 @@ def make_intensity_layer_with_phasors(
     -------
     layer or layer_data : napari.layers.Image or tuple
         If viewer is provided, returns the created Image layer object.
-        Otherwise, returns a tuple (data, kwargs) where data is the mean 
-        intensity image and kwargs contains metadata with phasor coordinates 
+        Otherwise, returns a tuple (data, kwargs) where data is the mean
+        intensity image and kwargs contains metadata with phasor coordinates
         stored as numpy arrays.
     """
     if harmonic is None:
@@ -86,11 +87,11 @@ def make_intensity_layer_with_phasors(
         i for i in range(len(raw_flim_data.shape)) if i != axis
     )
     summed_signal = np.sum(raw_flim_data, axis=axes_to_sum)
-    
+
     mean_intensity_image_layer = Image(
         mean_intensity_image,
         name=name + " Intensity Image",
-        metadata= {
+        metadata={
             "original_mean": mean_intensity_image.copy(),
             "settings": {},
             "summed_signal": (

@@ -753,7 +753,9 @@ def test_writer_widget(make_napari_viewer, tmp_path):
         # Check the CSV has the expected structure for phasor data
         assert len(exported_table) > 0
         # The CSV should contain coordinate columns and phasor values
-        assert 'G' in exported_table.columns or 'value' in exported_table.columns
+        assert (
+            'G' in exported_table.columns or 'value' in exported_table.columns
+        )
 
 
 def test_writer_widget_image_exports(make_napari_viewer, tmp_path):

@@ -693,7 +693,6 @@ class FretWidget(QWidget):
         self._update_background_combobox()
         self._update_donor_lifetime_combobox()
 
-
     def _calculate_background_position(self):
         """Calculate the background position from selected background image layer for all harmonics."""
         background_layer_name = self.background_image_combobox.currentText()
@@ -736,10 +735,10 @@ class FretWidget(QWidget):
         for harmonic in unique_harmonics:
             try:
                 harmonic_idx = np.where(harmonics == harmonic)[0]
-                
+
                 if len(harmonic_idx) == 0:
                     continue
-                    
+
                 harmonic_idx = harmonic_idx[0]
 
                 if g_array.ndim >= 3:
@@ -792,7 +791,6 @@ class FretWidget(QWidget):
 
         self.plot_donor_trajectory()
 
-
     def _calculate_donor_lifetime(self):
         """Calculate the donor lifetime from selected layer for current harmonic."""
         donor_layer_name = self.donor_lifetime_combobox.currentText()
@@ -831,12 +829,12 @@ class FretWidget(QWidget):
             # Ensure harmonics is at least 1D for np.where
             harmonics = np.atleast_1d(harmonics)
             harmonic_idx = np.where(harmonics == current_harmonic)[0]
-            
+
             if len(harmonic_idx) == 0:
                 if self.donor_source_selector.currentIndex() == 1:
                     self.donor_label.setText("Donor lifetime (ns):")
                 return
-            
+
             harmonic_idx = harmonic_idx[0]
 
             if g_array.ndim == 3:
@@ -913,7 +911,6 @@ class FretWidget(QWidget):
             show_error(f"Error calculating donor lifetime: {str(e)}")
             if self.donor_source_selector.currentIndex() == 1:
                 self.donor_label.setText("Donor lifetime (ns): Error")
-
 
     def plot_donor_trajectory(self):
         """Plot the donor trajectory with current parameters."""

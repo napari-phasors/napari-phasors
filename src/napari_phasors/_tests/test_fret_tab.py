@@ -304,7 +304,9 @@ def test_calculate_fret_efficiency_with_layer(make_napari_viewer):
     harmonic = parent.harmonic
     if isinstance(harmonics, (list, np.ndarray)) and len(harmonics) > 1:
         # Multi-harmonic case: G and S have shape (n_harmonics, ...)
-        harmonic_idx = list(harmonics).index(harmonic) if harmonic in harmonics else 0
+        harmonic_idx = (
+            list(harmonics).index(harmonic) if harmonic in harmonics else 0
+        )
         real = G_image[harmonic_idx].flatten()
         imag = S_image[harmonic_idx].flatten()
     else:

@@ -842,15 +842,15 @@ def test_lifetime_widget_calculate_lifetimes_with_real_data(
 
     # Create a real layer with the new array-based metadata structure
     layer = create_image_layer_with_phasors()
-    
+
     # Override the phasor data with our test values
     layer.metadata['G'] = real_values
     layer.metadata['S'] = imag_values
     layer.metadata['harmonics'] = np.array([1])
     layer.data = np.ones((2, 2))  # Match shape
-    
+
     viewer.add_layer(layer)
-    
+
     # Select the layer
     parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
     lifetime_widget.frequency_input.setText(str(frequency))
@@ -1205,21 +1205,23 @@ def test_lifetime_widget_different_harmonics_and_frequencies(
         # Create a fresh layer for each test case
         layer = create_image_layer_with_phasors()
         layer.name = f"test_layer_{harmonic}_{int(base_frequency)}"
-        
+
         # Override the phasor data with our test values
         layer.metadata['G'] = real_values
         layer.metadata['S'] = imag_values
         layer.metadata['harmonics'] = np.array([harmonic])
         layer.data = np.ones((2, 2))  # Match shape
-        
+
         viewer.add_layer(layer)
-        
+
         # Set up for this test case
         parent.harmonic = harmonic
-        
+
         # Select the layer in the combobox
-        parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
-        
+        parent.image_layer_with_phasor_features_combobox.setCurrentText(
+            layer.name
+        )
+
         lifetime_widget.frequency_input.setText(str(base_frequency))
 
         # Calculate expected values
@@ -1247,7 +1249,6 @@ def test_lifetime_widget_different_harmonics_and_frequencies(
 
         # Verify frequency was calculated correctly
         assert lifetime_widget.frequency == base_frequency
-        
+
         # Clean up layer for next iteration
         viewer.layers.remove(layer)
-

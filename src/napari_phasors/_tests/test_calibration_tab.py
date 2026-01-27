@@ -213,7 +213,7 @@ def test_calibrate_layer_success(make_napari_viewer):
     harmonic = sample_layer.metadata['harmonics']
     frequency = [80 * h for h in harmonic]
     lifetime = 2.0
-    
+
     # Reshape for phasor_calibrate if needed
     if g_original.ndim == mean_original.ndim + 1:
         g_reshaped = g_original
@@ -381,7 +381,9 @@ def test_harmonic_mismatch_error(make_napari_viewer):
     calibration_layer.name = "calibration_layer"
 
     # Modify harmonics to be different
-    calibration_layer.metadata["harmonics"] = [h + 1 for h in sample_layer.metadata["harmonics"]]
+    calibration_layer.metadata["harmonics"] = [
+        h + 1 for h in sample_layer.metadata["harmonics"]
+    ]
 
     viewer.add_layer(sample_layer)
     viewer.add_layer(calibration_layer)

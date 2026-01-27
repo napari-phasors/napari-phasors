@@ -54,9 +54,10 @@ def test_selection_widget_with_layer_data(make_napari_viewer):
     assert combobox.currentText() == "None"
 
     # Test that the metadata does not have any selections yet
-    assert "selections" not in intensity_image_layer.metadata or len(
-        intensity_image_layer.metadata.get("selections", {})
-    ) == 0
+    assert (
+        "selections" not in intensity_image_layer.metadata
+        or len(intensity_image_layer.metadata.get("selections", {})) == 0
+    )
 
     # Make a manual selection
     manual_selection = np.array([1, 0, 1, 0, 1, 0, 0, 0, 0, 0])
@@ -65,10 +66,14 @@ def test_selection_widget_with_layer_data(make_napari_viewer):
 
     # Check that the selection was added to the metadata
     assert "selections" in intensity_image_layer.metadata
-    assert "MANUAL SELECTION #1" in intensity_image_layer.metadata["selections"]
+    assert (
+        "MANUAL SELECTION #1" in intensity_image_layer.metadata["selections"]
+    )
 
     # The selection is stored as a 2D array matching the image shape
-    selection_map = intensity_image_layer.metadata["selections"]["MANUAL SELECTION #1"]
+    selection_map = intensity_image_layer.metadata["selections"][
+        "MANUAL SELECTION #1"
+    ]
     assert isinstance(selection_map, np.ndarray)
 
 
@@ -115,7 +120,9 @@ def test_ensure_selection_storage_valid(make_napari_viewer):
     # Should add new selection to metadata
     assert "selections" in intensity_image_layer.metadata
     assert "new_selection" in intensity_image_layer.metadata["selections"]
-    selection_map = intensity_image_layer.metadata["selections"]["new_selection"]
+    selection_map = intensity_image_layer.metadata["selections"][
+        "new_selection"
+    ]
     assert isinstance(selection_map, np.ndarray)
     assert np.all(selection_map == 0)  # Initially all zeros
 
