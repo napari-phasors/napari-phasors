@@ -23,7 +23,7 @@ def convallaria_FLIM_sample_data():
     """Fetch Convallaria image and Calibration"""
     downloader = pooch.create(
         path=pooch.os_cache("napari-phasors"),
-        base_url="https://zenodo.org/records/14026720/files/",
+        base_url="https://github.com/napari-phasors/napari-phasors-data/raw/main/sample_data/",
         registry={
             'Convallaria_$EI0S.fbd': (
                 'sha256:'
@@ -50,7 +50,7 @@ def embryo_FLIM_sample_data():
     """Fetch FLUTE's FLIM Embryo image and Calibration"""
     downloader = pooch.create(
         path=pooch.os_cache("napari-phasors"),
-        base_url="doi:10.5281/zenodo.8046636",
+        base_url="https://github.com/napari-phasors/napari-phasors-data/raw/main/sample_data/",
         registry={
             'Embryo.tif': (
                 'sha256:'
