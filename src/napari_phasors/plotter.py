@@ -820,7 +820,12 @@ class PlotterWidget(QWidget):
     def _show_tab_artists(self, current_tab):
         """Show artists for the specified tab."""
         if current_tab == getattr(self, 'selection_tab', None):
-            self._set_selection_visibility(True)
+            # Only show toolbar if manual selection mode is active
+            if hasattr(self.selection_tab, 'is_manual_selection_mode'):
+                is_manual = self.selection_tab.is_manual_selection_mode()
+                self._set_selection_visibility(is_manual)
+            else:
+                self._set_selection_visibility(True)
         elif current_tab == getattr(self, 'components_tab', None):
             self._set_components_visibility(True)
         elif current_tab == getattr(self, 'fret_tab', None):

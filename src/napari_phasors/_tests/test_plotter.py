@@ -1578,6 +1578,145 @@ def test_phasor_plotter_restore_original_phasor_data(make_napari_viewer):
 def test_phasor_plotter_visibility_methods_integration_with_tab_changes_extended(
     make_napari_viewer,
 ):
+    """Extended test for visibility integration with tab changes."""
+    pass
+
+
+def test_toolbar_visibility_based_on_selection_mode(make_napari_viewer):
+    """Test that toolbar visibility is controlled by selection mode."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    plotter = PlotterWidget(viewer)
+
+    # Initially in circular cursor mode, toolbar should be hidden
+    assert plotter.selection_tab.selection_mode_combobox.currentIndex() == 0
+    assert not plotter.selection_tab.is_manual_selection_mode()
+
+    # In circular cursor mode, _show_tab_artists should not show toolbar
+    with patch.object(plotter, '_set_selection_visibility') as mock_vis:
+        plotter._show_tab_artists(plotter.selection_tab)
+        # Should call _set_selection_visibility(False) when in circular cursor mode
+        mock_vis.assert_called_once_with(False)
+
+    # Switch to manual selection mode
+    plotter.selection_tab.selection_mode_combobox.setCurrentIndex(1)
+    assert plotter.selection_tab.is_manual_selection_mode()
+
+    # Now _show_tab_artists should show toolbar
+    with patch.object(plotter, '_set_selection_visibility') as mock_vis:
+        plotter._show_tab_artists(plotter.selection_tab)
+    # Switch to manual selection mode first
+    plotter.selection_tab.selection_mode_combobox.setCurrentIndex(1)
+    assert plotter.selection_tab.is_manual_selection_mode()
+
+    # Mock _set_selection_visibility to track calls
+    with patch.object(plotter, '_set_selection_visibility') as mock_vis:
+        # Switch to circular cursor mode
+        plotter.selection_tab.selection_mode_combobox.setCurrentIndex(0)
+
+        # Should call _set_selection_visibility(False) to hide toolbar
+        mock_vis.assert_called_once_with(False)
+
+
+def test_is_manual_selection_mode_method(make_napari_viewer):
+    """Test the is_manual_selection_mode() method."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    selection_widget = plotter.selection_tab
+
+    # Initially in circular cursor mode (index 0)
+    assert selection_widget.selection_mode_combobox.currentIndex() == 0
+    assert not selection_widget.is_manual_selection_mode()
+
+    # Switch to manual selection mode (index 1)
+    selection_widget.selection_mode_combobox.setCurrentIndex(1)
+    assert selection_widget.is_manual_selection_mode()
+
+    # Switch back to circular cursor mode
+    selection_widget.selection_mode_combobox.setCurrentIndex(0)
+    assert not selection_widget.is_manual_selection_mode()
+
+
+def test_plot_colors_cleared_when_switching_from_manual_mode(
+    make_napari_viewer,
+):
+    """Test that plot colors are cleared when switching from manual selection mode."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    plotter = PlotterWidget(viewer)
+
+    # Switch to manual selection mode
+    plotter.selection_tab.selection_mode_combobox.setCurrentIndex(1)
+
+    # Make a manual selection (this would create colored points on plot)
+    manual_selection = np.array([1, 0, 1, 0, 1, 0, 0, 0, 0, 0])
+    plotter.selection_tab.manual_selection_changed(manual_selection)
+
+    # Mock plot method to verify it's called with selection_id_data=None
+    with patch.object(plotter, 'plot') as mock_plot:
+        # Switch to circular cursor mode
+        plotter.selection_tab.selection_mode_combobox.setCurrentIndex(0)
+
+        # plot should be called with selection_id_data=None to clear colors
+        mock_plot.assert_called_once_with(selection_id_data=None)
+
+
+def test_selection_tab_mode_switching_integration(make_napari_viewer):
+    """Integration test for complete mode switching workflow."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    plotter = PlotterWidget(viewer)
+    selection_widget = plotter.selection_tab
+
+    # Start in circular cursor mode
+    assert selection_widget.selection_mode_combobox.currentIndex() == 0
+    assert selection_widget.stacked_widget.currentIndex() == 0
+
+    # Add a circular cursor
+    circular_widget = selection_widget.circular_cursor_widget
+    circular_widget._add_cursor()
+    circular_widget._apply_selection()
+
+    # Verify circular cursor layer exists
+    circular_layer_name = (
+        f"Selection CIRCULAR CURSOR SELECTION: {intensity_image_layer.name}"
+    )
+    assert circular_layer_name in [layer.name for layer in viewer.layers]
+    circular_layer = viewer.layers[circular_layer_name]
+    assert circular_layer.visible is True
+
+    # Switch to manual selection mode
+    selection_widget.selection_mode_combobox.setCurrentIndex(1)
+
+    # Verify UI switched
+    assert selection_widget.stacked_widget.currentIndex() == 1
+    assert selection_widget.is_manual_selection_mode()
+
+    # Circular cursor layer should be hidden
+    assert circular_layer.visible is False
+
+    # Make a manual selection
+    manual_selection = np.array([1, 0, 1, 0, 1, 0, 0, 0, 0, 0])
+    selection_widget.manual_selection_changed(manual_selection)
+
+    # Verify manual selection layer exists and is visible
+    manual_layer_name = (
+        f"Selection MANUAL SELECTION #1: {intensity_image_layer.name}"
+    )
+    assert manual_layer_name in [layer.name for layer in viewer.layers]
+    manual_layer = viewer.layers[manual_layer_name]
+    assert manual_layer.visible is True
+
+    # Switch back to circular cursor mode
+    selection_widget.selection_mode_combobox.setCurrentIndex(0)
+
+    # Verify circular cursor layer is visible again
+    assert circular_layer.visible is True
+    # Verify manual selection layer is hidden
+    assert manual_layer.visible is False
     """Test integration of visibility methods with actual tab changes."""
     viewer = make_napari_viewer()
     intensity_image_layer = create_image_layer_with_phasors()
