@@ -66,6 +66,8 @@ def _extract_phasor_arrays_from_layer(
     if harmonics is None:
         harmonics = layer.metadata.get('harmonics')
 
+    harmonics = np.atleast_1d(harmonics)
+
     real = layer.metadata['G_original'].copy()
     imag = layer.metadata['S_original'].copy()
 

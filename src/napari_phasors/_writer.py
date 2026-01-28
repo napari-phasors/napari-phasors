@@ -230,11 +230,10 @@ def export_layer_as_csv(path: str, image_layer: Image) -> None:
         S = image_layer.metadata["S"]
         G_original = image_layer.metadata.get("G_original", G)
         S_original = image_layer.metadata.get("S_original", S)
-        harmonics = image_layer.metadata["harmonics"]
+        harmonics = np.atleast_1d(image_layer.metadata["harmonics"])
 
-        # Get spatial shape (last 2 dimensions of G)
+        # Get spatial shape (last 2 dimensions)
         spatial_shape = G.shape[-2:]
-        n_harmonics = len(harmonics)
         n_pixels = np.prod(spatial_shape)
 
         # Create coordinate arrays
@@ -243,10 +242,17 @@ def export_layer_as_csv(path: str, image_layer: Image) -> None:
         # Build dataframe with phasor data
         rows = []
         for h_idx, harmonic in enumerate(harmonics):
-            g_flat = G[h_idx].ravel()
-            s_flat = S[h_idx].ravel()
-            g_orig_flat = G_original[h_idx].ravel()
-            s_orig_flat = S_original[h_idx].ravel()
+            # Handle both 2D (single harmonic) and 3D (multiple harmonics) cases
+            if G.ndim == 3:
+                g_flat = G[h_idx].ravel()
+                s_flat = S[h_idx].ravel()
+                g_orig_flat = G_original[h_idx].ravel()
+                s_orig_flat = S_original[h_idx].ravel()
+            else:
+                g_flat = G.ravel()
+                s_flat = S.ravel()
+                g_orig_flat = G_original.ravel()
+                s_orig_flat = S_original.ravel()
 
             for px_idx in range(n_pixels):
                 if not (np.isnan(g_flat[px_idx]) and np.isnan(s_flat[px_idx])):

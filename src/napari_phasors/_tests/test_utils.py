@@ -107,7 +107,6 @@ def test_apply_filter_and_threshold_median(make_napari_viewer):
     assert np.all(intensity_image_layer.metadata['G_original'] == original_g)
     assert np.all(intensity_image_layer.metadata['S_original'] == original_s)
 
-    harmonics = intensity_image_layer.metadata['harmonics']
     # Calculate expected filtered values
     filtered_mean, expected_g, expected_s = phasor_filter_median(
         original_mean, original_g, original_s, repeat=1, size=3

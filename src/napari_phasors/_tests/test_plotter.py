@@ -1509,7 +1509,6 @@ def test_phasor_plotter_apply_mask_to_phasor_data(make_napari_viewer):
 
     # Get original G and S shape
     G_original = intensity_image_layer.metadata["G"]
-    S_original = intensity_image_layer.metadata["S"]
 
     # Create a mask - need to match the spatial dimensions of G and S
     if G_original.ndim == 3:

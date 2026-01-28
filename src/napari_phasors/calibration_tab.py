@@ -363,6 +363,8 @@ class CalibrationWidget(QWidget):
         if isinstance(mod_zero, list):
             mod_zero = np.array(mod_zero)
 
+        harmonics = np.atleast_1d(harmonics)
+
         # Handle broadcasting for calibration parameters
         if g_original.ndim > 1 and len(harmonics) > 1:
             spatial_dims = g_original.ndim - 1

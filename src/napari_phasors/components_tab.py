@@ -1057,7 +1057,6 @@ class ComponentsWidget(QWidget):
             self.current_image_layer_name = None
             return
 
-        layer = self.viewer.layers[self.current_image_layer_name]
         if (
             'settings' not in layer.metadata
             or 'component_analysis' not in layer.metadata['settings']

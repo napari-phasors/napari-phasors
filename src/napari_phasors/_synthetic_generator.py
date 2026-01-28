@@ -88,6 +88,9 @@ def make_intensity_layer_with_phasors(
     )
     summed_signal = np.sum(raw_flim_data, axis=axes_to_sum)
 
+    # Normalize harmonic to always be a list for consistency
+    harmonics_list = harmonic if isinstance(harmonic, list) else [harmonic]
+
     mean_intensity_image_layer = Image(
         mean_intensity_image,
         name=name + " Intensity Image",
@@ -103,7 +106,7 @@ def make_intensity_layer_with_phasors(
             "S": S_image,
             "G_original": G_image.copy(),
             "S_original": S_image.copy(),
-            "harmonics": harmonic,
+            "harmonics": harmonics_list,
         },
     )
     return mean_intensity_image_layer
