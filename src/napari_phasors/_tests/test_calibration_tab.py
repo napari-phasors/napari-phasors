@@ -206,23 +206,21 @@ def test_calibrate_layer_success(make_napari_viewer):
 
     # Make copies of the original data before calibration modifies it
     original_image = sample_layer.data.copy()
-    g_original = (
-        sample_layer.metadata['phasor_features_labels_layer']
-        .features['G']
-        .values.copy()
-    )
-    s_original = (
-        sample_layer.metadata['phasor_features_labels_layer']
-        .features['S']
-        .values.copy()
-    )
+    g_original = sample_layer.metadata['G_original'].copy()
+    s_original = sample_layer.metadata['S_original'].copy()
     mean_original = sample_layer.metadata['original_mean'].copy()
     mean_shape = mean_original.shape
-    harmonic = [1, 2, 3]
+    harmonic = sample_layer.metadata['harmonics']
     frequency = [80 * h for h in harmonic]
     lifetime = 2.0
-    g_reshaped = g_original.reshape((len(harmonic),) + mean_shape)
-    s_reshaped = s_original.reshape((len(harmonic),) + mean_shape)
+
+    # Reshape for phasor_calibrate if needed
+    if g_original.ndim == mean_original.ndim + 1:
+        g_reshaped = g_original
+        s_reshaped = s_original
+    else:
+        g_reshaped = g_original.reshape((len(harmonic),) + mean_shape)
+        s_reshaped = s_original.reshape((len(harmonic),) + mean_shape)
 
     # Calculate expected values using copies
     real, imag = phasor_calibrate(
@@ -253,12 +251,12 @@ def test_calibrate_layer_success(make_napari_viewer):
         sample_layer.metadata["settings"]["calibration_modulation"], mod
     )
     assert_array_equal(
-        sample_layer.metadata['phasor_features_labels_layer'].features['G'],
-        real.flatten(),
+        sample_layer.metadata['G'],
+        real,
     )
     assert_array_equal(
-        sample_layer.metadata['phasor_features_labels_layer'].features['S'],
-        imag.flatten(),
+        sample_layer.metadata['S'],
+        imag,
     )
     assert_array_equal(sample_layer.metadata['original_mean'], mean_original)
     assert_array_equal(sample_layer.data, original_image)
@@ -319,16 +317,8 @@ def test_uncalibrate_layer_success(make_napari_viewer):
 
     # Make copies of the original data before calibration modifies it
     original_image = sample_layer.data.copy()
-    g_original = (
-        sample_layer.metadata['phasor_features_labels_layer']
-        .features['G']
-        .values.copy()
-    )
-    s_original = (
-        sample_layer.metadata['phasor_features_labels_layer']
-        .features['S']
-        .values.copy()
-    )
+    g_original = sample_layer.metadata['G_original'].copy()
+    s_original = sample_layer.metadata['S_original'].copy()
     mean_original = sample_layer.metadata['original_mean'].copy()
 
     # Click Calibrate button
@@ -339,16 +329,12 @@ def test_uncalibrate_layer_success(make_napari_viewer):
     with pytest.raises(AssertionError):
         np.testing.assert_array_equal(
             g_original,
-            sample_layer.metadata['phasor_features_labels_layer'].features[
-                'G'
-            ],
+            sample_layer.metadata['G'],
         )
     with pytest.raises(AssertionError):
         np.testing.assert_array_equal(
             s_original,
-            sample_layer.metadata['phasor_features_labels_layer'].features[
-                'S'
-            ],
+            sample_layer.metadata['S'],
         )
     assert_array_equal(mean_original, sample_layer.metadata['original_mean'])
     assert_array_equal(sample_layer.data, original_image)
@@ -360,11 +346,11 @@ def test_uncalibrate_layer_success(make_napari_viewer):
     assert "calibration_phase" not in sample_layer.metadata["settings"]
     assert "calibration_modulation" not in sample_layer.metadata["settings"]
     assert_almost_equal(
-        sample_layer.metadata['phasor_features_labels_layer'].features['G'],
+        sample_layer.metadata['G'],
         g_original,
     )
     assert_almost_equal(
-        sample_layer.metadata['phasor_features_labels_layer'].features['S'],
+        sample_layer.metadata['S'],
         s_original,
     )
     assert_almost_equal(sample_layer.metadata['original_mean'], mean_original)
@@ -395,15 +381,9 @@ def test_harmonic_mismatch_error(make_napari_viewer):
     calibration_layer.name = "calibration_layer"
 
     # Modify harmonics to be different
-    sample_features = sample_layer.metadata[
-        "phasor_features_labels_layer"
-    ].features
-    calibration_features = calibration_layer.metadata[
-        "phasor_features_labels_layer"
-    ].features
-    calibration_features["harmonic"] = (
-        calibration_features["harmonic"] + 1
-    )  # Make them different
+    calibration_layer.metadata["harmonics"] = [
+        h + 1 for h in sample_layer.metadata["harmonics"]
+    ]
 
     viewer.add_layer(sample_layer)
     viewer.add_layer(calibration_layer)

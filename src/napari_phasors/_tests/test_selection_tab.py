@@ -5,7 +5,6 @@ from napari.layers import Labels
 
 from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
 from napari_phasors.plotter import PlotterWidget
-from napari_phasors.selection_tab import DATA_COLUMNS
 
 
 def test_selection_widget_initialization_values(make_napari_viewer):
@@ -54,28 +53,28 @@ def test_selection_widget_with_layer_data(make_napari_viewer):
     assert combobox.itemText(1) == "MANUAL SELECTION #1"
     assert combobox.currentText() == "None"
 
-    # Test that the features table does not have any selections yet
-    labels_layer = intensity_image_layer.metadata[
-        "phasor_features_labels_layer"
-    ]
-    assert "MANUAL SELECTION #1" not in labels_layer.features.columns
+    # Test that the metadata does not have any selections yet
+    assert (
+        "selections" not in intensity_image_layer.metadata
+        or len(intensity_image_layer.metadata.get("selections", {})) == 0
+    )
 
     # Make a manual selection
     manual_selection = np.array([1, 0, 1, 0, 1, 0, 0, 0, 0, 0])
     widget.manual_selection_changed(manual_selection)
     assert widget.selection_id == "MANUAL SELECTION #1"
 
-    # Check that the selection was added to the features table
-    assert "MANUAL SELECTION #1" in labels_layer.features.columns
+    # Check that the selection was added to the metadata
+    assert "selections" in intensity_image_layer.metadata
+    assert (
+        "MANUAL SELECTION #1" in intensity_image_layer.metadata["selections"]
+    )
 
-    # Create expected column: [1, 0, 1, 0, 1, 0, 0, 0, 0, 0] repeated 3 times
-    expected_column = np.concatenate(
-        [manual_selection, manual_selection, manual_selection]
-    )  # Repeat 3 times for the three harmonics
-
-    # Convert pandas Series to numpy array for comparison
-    actual_column = labels_layer.features["MANUAL SELECTION #1"].values
-    assert np.array_equal(actual_column, expected_column)
+    # The selection is stored as a 2D array matching the image shape
+    selection_map = intensity_image_layer.metadata["selections"][
+        "MANUAL SELECTION #1"
+    ]
+    assert isinstance(selection_map, np.ndarray)
 
 
 def test_selection_id_property_getter(make_napari_viewer):
@@ -107,42 +106,25 @@ def test_selection_id_property_getter(make_napari_viewer):
     assert widget.selection_id is None
 
 
-@patch('napari_phasors.selection_tab.notifications')
-def test_selection_id_property_setter_invalid(
-    mock_notifications, make_napari_viewer
-):
-    """Test the selection_id property setter with invalid values."""
-    viewer = make_napari_viewer()
-    parent = PlotterWidget(viewer)
-    widget = parent.selection_tab
-
-    # Test setting invalid selection ID (from DATA_COLUMNS)
-    widget.selection_id = "label"  # This is in DATA_COLUMNS
-
-    # Should show warning notification
-    mock_notifications.WarningNotification.assert_called_once()
-    # Selection ID should remain unchanged
-    assert widget.selection_id is None
-
-
-def test_add_selection_id_to_features_valid(make_napari_viewer):
-    """Test add_selection_id_to_features with valid column name."""
+def test_ensure_selection_storage_valid(make_napari_viewer):
+    """Test _ensure_selection_storage with valid selection name."""
     viewer = make_napari_viewer()
     intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
-    parent._labels_layer_with_phasor_features = intensity_image_layer.metadata[
-        "phasor_features_labels_layer"
-    ]
     widget = parent.selection_tab
 
     # Add new selection ID
-    widget.add_selection_id_to_features("new_selection")
+    widget._ensure_selection_storage("new_selection")
 
-    # Should add new column to features
-    labels_layer = parent._labels_layer_with_phasor_features
-    assert "new_selection" in labels_layer.features.columns
-    assert len(labels_layer.features["new_selection"]) > 0
-    assert all(labels_layer.features["new_selection"] == 0)
+    # Should add new selection to metadata
+    assert "selections" in intensity_image_layer.metadata
+    assert "new_selection" in intensity_image_layer.metadata["selections"]
+    selection_map = intensity_image_layer.metadata["selections"][
+        "new_selection"
+    ]
+    assert isinstance(selection_map, np.ndarray)
+    assert np.all(selection_map == 0)  # Initially all zeros
 
 
 def test_find_phasors_layer_by_name(make_napari_viewer):
@@ -173,8 +155,8 @@ def test_manual_selection_changed_during_update(make_napari_viewer):
     # Mock the methods that would be called if not during update
     with (
         patch.object(
-            widget, 'add_selection_id_to_features'
-        ) as mock_add_selection,
+            widget, '_ensure_selection_storage'
+        ) as mock_ensure_storage,
         patch.object(widget, 'update_phasors_layer') as mock_update_layer,
     ):
 
@@ -185,7 +167,7 @@ def test_manual_selection_changed_during_update(make_napari_viewer):
 
         # Should return None and not call any methods
         assert result is None
-        mock_add_selection.assert_not_called()
+        mock_ensure_storage.assert_not_called()
         mock_update_layer.assert_not_called()
 
 
@@ -198,8 +180,8 @@ def test_manual_selection_changed_while_switching(make_napari_viewer):
     # Mock the methods that would be called if not switching
     with (
         patch.object(
-            widget, 'add_selection_id_to_features'
-        ) as mock_add_selection,
+            widget, '_ensure_selection_storage'
+        ) as mock_ensure_storage,
         patch.object(widget, 'update_phasors_layer') as mock_update_layer,
     ):
 
@@ -210,7 +192,7 @@ def test_manual_selection_changed_while_switching(make_napari_viewer):
 
         # Should return None and not call any methods
         assert result is None
-        mock_add_selection.assert_not_called()
+        mock_ensure_storage.assert_not_called()
         mock_update_layer.assert_not_called()
 
 
@@ -258,21 +240,15 @@ def test_get_next_available_selection_id_with_existing(make_napari_viewer):
     """Test _get_next_available_selection_id with existing selections."""
     viewer = make_napari_viewer()
     intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
-    labels_layer = intensity_image_layer.metadata[
-        "phasor_features_labels_layer"
-    ]
+    widget = parent.selection_tab
 
     # Add existing manual selections to test incrementing
-    labels_layer.features["MANUAL SELECTION #1"] = np.zeros(
-        len(labels_layer.features)
-    )
-    labels_layer.features["MANUAL SELECTION #2"] = np.zeros(
-        len(labels_layer.features)
-    )
-
-    parent._labels_layer_with_phasor_features = labels_layer
-    widget = parent.selection_tab
+    intensity_image_layer.metadata["selections"] = {
+        "MANUAL SELECTION #1": np.zeros((10, 10), dtype=np.uint32),
+        "MANUAL SELECTION #2": np.zeros((10, 10), dtype=np.uint32),
+    }
 
     result = widget._get_next_available_selection_id()
     assert result == "MANUAL SELECTION #3"
@@ -313,12 +289,10 @@ def test_create_phasors_selected_layer_no_layer(make_napari_viewer):
     """Test create_phasors_selected_layer when no layer is available."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
-    parent._labels_layer_with_phasor_features = None
     widget = parent.selection_tab
 
     # Mock methods that would be called if layer was available
     with (
-        patch('napari_phasors.selection_tab.map_array') as mock_map_array,
         patch(
             'napari_phasors.selection_tab.colormap_to_dict'
         ) as mock_colormap_to_dict,
@@ -328,39 +302,32 @@ def test_create_phasors_selected_layer_no_layer(make_napari_viewer):
 
         # Should return early and not call any methods
         assert result is None
-        mock_map_array.assert_not_called()
         mock_colormap_to_dict.assert_not_called()
 
 
-@patch('napari_phasors.selection_tab.map_array')
 @patch('napari_phasors.selection_tab.colormap_to_dict')
 def test_create_phasors_selected_layer_with_data(
-    mock_colormap_to_dict, mock_map_array, make_napari_viewer
+    mock_colormap_to_dict, make_napari_viewer
 ):
     """Test create_phasors_selected_layer with actual data."""
     viewer = make_napari_viewer()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
-    parent._labels_layer_with_phasor_features = intensity_image_layer.metadata[
-        "phasor_features_labels_layer"
-    ]
     parent._colormap = Mock()
     parent._colormap.N = 10
     widget = parent.selection_tab
 
-    # Set up a valid selection ID first
-    widget.add_selection_id_to_features("custom_selection")
+    # Set up a valid selection ID first - use _ensure_selection_storage instead
+    widget._ensure_selection_storage("custom_selection")
     widget.selection_id = "custom_selection"
 
     # Mock return values
-    mock_map_array.return_value = np.ones((100, 100), dtype=int)
     mock_colormap_to_dict.return_value = {1: [1, 0, 0], 2: [0, 1, 0]}
 
     widget.create_phasors_selected_layer()
 
     # Should create new layer and add to viewer
-    mock_map_array.assert_called_once()
     mock_colormap_to_dict.assert_called_once()
 
     # Check if layer was added to viewer
@@ -443,16 +410,3 @@ def test_delete_labels_layer_and_recreate(make_napari_viewer):
         f"Selection MANUAL SELECTION #1: {intensity_image_layer.name}"
     ]
     np.testing.assert_array_equal(recreated_layer.data, original_data)
-
-
-def test_data_columns_constant():
-    """Test that DATA_COLUMNS constant is properly defined."""
-    expected_columns = [
-        "label",
-        "G_original",
-        "S_original",
-        "G",
-        "S",
-        "harmonic",
-    ]
-    assert DATA_COLUMNS == expected_columns

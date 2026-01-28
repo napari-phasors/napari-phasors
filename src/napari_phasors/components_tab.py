@@ -1047,11 +1047,16 @@ class ComponentsWidget(QWidget):
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
     def _restore_components_for_harmonic(self, harmonic):
-        """Restore component locations for the given harmonic from metadata."""
+        """Restore component states for a specific harmonic."""
         if not self.current_image_layer_name:
             return
 
-        layer = self.viewer.layers[self.current_image_layer_name]
+        try:
+            layer = self.viewer.layers[self.current_image_layer_name]
+        except KeyError:
+            self.current_image_layer_name = None
+            return
+
         if (
             'settings' not in layer.metadata
             or 'component_analysis' not in layer.metadata['settings']
@@ -2692,13 +2697,16 @@ class ComponentsWidget(QWidget):
 
     def _get_available_harmonics(self):
         """Get available harmonics from the phasor data."""
-        if self.parent_widget._labels_layer_with_phasor_features is None:
+        if not self.current_image_layer_name:
             return []
 
-        phasor_data = (
-            self.parent_widget._labels_layer_with_phasor_features.features
-        )
-        return sorted(phasor_data['harmonic'].unique())
+        layer = self.viewer.layers[self.current_image_layer_name]
+        harmonics = layer.metadata.get('harmonics')
+
+        if harmonics is None:
+            return []
+
+        return sorted(np.atleast_1d(harmonics).tolist())
 
     def _get_next_harmonic(self, current_harmonic, available_harmonics):
         """Get the next available harmonic after the current one."""
@@ -3179,7 +3187,7 @@ class ComponentsWidget(QWidget):
 
     def _run_linear_projection(self):
         """Run linear projection for 2-component analysis."""
-        if self.parent_widget._labels_layer_with_phasor_features is None:
+        if not self.current_image_layer_name:
             return
         if not all(c.dot is not None for c in self.components[:2]):
             return
@@ -3188,18 +3196,32 @@ class ComponentsWidget(QWidget):
         component_real = (c1.dot.get_data()[0][0], c2.dot.get_data()[0][0])
         component_imag = (c1.dot.get_data()[1][0], c2.dot.get_data()[1][0])
 
-        phasor_data = (
-            self.parent_widget._labels_layer_with_phasor_features.features
-        )
-        harmonic_mask = phasor_data['harmonic'] == self.parent_widget.harmonic
-        real = phasor_data.loc[harmonic_mask, 'G']
-        imag = phasor_data.loc[harmonic_mask, 'S']
+        layer = self.viewer.layers[self.current_image_layer_name]
+        g_array = layer.metadata.get('G')
+        s_array = layer.metadata.get('S')
+        harmonics = layer.metadata.get('harmonics')
 
-        fractions = phasor_component_fraction(
-            np.array(real), np.array(imag), component_real, component_imag
-        )
-        fractions = fractions.reshape(
-            self.parent_widget._labels_layer_with_phasor_features.data.shape
+        if g_array is None or s_array is None or harmonics is None:
+            return
+
+        try:
+            harmonics_array = np.atleast_1d(harmonics)
+            harmonic_idx = np.where(
+                harmonics_array == self.parent_widget.harmonic
+            )[0][0]
+        except IndexError:
+            return
+
+        # Handle dimensions: Check if G has an extra axis for harmonics compared to the image layer
+        if g_array.ndim == layer.data.ndim + 1:
+            real = g_array[harmonic_idx]
+            imag = s_array[harmonic_idx]
+        else:
+            real = g_array
+            imag = s_array
+
+        fraction_comp1 = phasor_component_fraction(
+            real, imag, component_real, component_imag
         )
 
         comp1_name = c1.name_edit.text().strip() or "Component 1"
@@ -3211,7 +3233,6 @@ class ComponentsWidget(QWidget):
             f"{comp2_name} fractions: {self.current_image_layer_name}"
         )
 
-        layer = self.viewer.layers[self.current_image_layer_name]
         settings = layer.metadata.get('settings', {}).get(
             'component_analysis', {}
         )
@@ -3259,9 +3280,9 @@ class ComponentsWidget(QWidget):
             )
 
         comp1_selected_fractions_layer = Image(
-            fractions,
+            fraction_comp1,
             name=comp1_fractions_layer_name,
-            scale=self.parent_widget._labels_layer_with_phasor_features.scale,
+            scale=layer.scale,
             colormap=comp1_colormap,
             contrast_limits=contrast_limits,
         )
@@ -3275,9 +3296,9 @@ class ComponentsWidget(QWidget):
         )
 
         comp2_selected_fractions_layer = Image(
-            1.0 - fractions,
+            1.0 - fraction_comp1,
             name=comp2_fractions_layer_name,
-            scale=self.parent_widget._labels_layer_with_phasor_features.scale,
+            scale=layer.scale,
             colormap=comp2_colormap,
             contrast_limits=contrast_limits,
         )
@@ -3355,7 +3376,7 @@ class ComponentsWidget(QWidget):
 
     def _run_component_fit(self):
         """Run multi-component analysis using phasor_component_fit."""
-        if self.parent_widget._labels_layer_with_phasor_features is None:
+        if not self.current_image_layer_name:
             return
 
         active_components = [
@@ -3410,6 +3431,15 @@ class ComponentsWidget(QWidget):
                     :required_harmonics
                 ]
 
+        layer = self.viewer.layers[self.current_image_layer_name]
+        g_array = layer.metadata.get('G')
+        s_array = layer.metadata.get('S')
+        harmonics = layer.metadata.get('harmonics')
+        mean = layer.metadata.get('original_mean')
+
+        if harmonics is not None:
+            harmonics = np.atleast_1d(harmonics)
+
         if required_harmonics == 1:
             component_g, component_s, component_names = (
                 self._get_component_coords_for_harmonic(current_harmonic)
@@ -3420,23 +3450,17 @@ class ComponentsWidget(QWidget):
                 )
                 return
 
-            phasor_data = (
-                self.parent_widget._labels_layer_with_phasor_features.features
-            )
-            harmonic_mask = phasor_data['harmonic'] == current_harmonic
+            try:
+                harmonic_idx = np.where(harmonics == current_harmonic)[0][0]
+            except IndexError:
+                return
 
-            mean = self.viewer.layers[self.current_image_layer_name].metadata[
-                'original_mean'
-            ]
-
-            real = np.reshape(
-                phasor_data.loc[harmonic_mask, "G"].values,
-                mean.shape,
-            )
-            imag = np.reshape(
-                phasor_data.loc[harmonic_mask, "S"].values,
-                mean.shape,
-            )
+            if g_array.ndim == layer.data.ndim + 1:
+                real = g_array[harmonic_idx]
+                imag = s_array[harmonic_idx]
+            else:
+                real = g_array
+                imag = s_array
 
         else:
             harmonics_with_components = sorted(
@@ -3479,29 +3503,20 @@ class ComponentsWidget(QWidget):
                         for name in names
                     ]
 
-            phasor_data = (
-                self.parent_widget._labels_layer_with_phasor_features.features
-            )
-
-            mean = self.viewer.layers[self.current_image_layer_name].metadata[
-                'original_mean'
-            ]
-
             real_list = []
             imag_list = []
 
             for harmonic in harmonics_with_components:
-                harmonic_mask = phasor_data['harmonic'] == harmonic
-                real_h = np.reshape(
-                    phasor_data.loc[harmonic_mask, "G"].values,
-                    mean.shape,
-                )
-                imag_h = np.reshape(
-                    phasor_data.loc[harmonic_mask, "S"].values,
-                    mean.shape,
-                )
-                real_list.append(real_h)
-                imag_list.append(imag_h)
+                try:
+                    harmonic_idx = np.where(harmonics == harmonic)[0][0]
+                    if g_array.ndim == layer.data.ndim + 1:
+                        real_list.append(g_array[harmonic_idx])
+                        imag_list.append(s_array[harmonic_idx])
+                    else:
+                        real_list.append(g_array)
+                        imag_list.append(s_array)
+                except IndexError:
+                    continue
 
             real = np.stack(real_list, axis=0)
             imag = np.stack(imag_list, axis=0)
@@ -3511,7 +3526,6 @@ class ComponentsWidget(QWidget):
                 mean, real, imag, component_g, component_s
             )
 
-            layer = self.viewer.layers[self.current_image_layer_name]
             settings = layer.metadata['settings']['component_analysis']
             harmonic_key = str(current_harmonic)
 
@@ -3520,10 +3534,6 @@ class ComponentsWidget(QWidget):
             for i, (fraction, name) in enumerate(
                 zip(fractions, component_names)
             ):
-                fraction_reshaped = fraction.reshape(
-                    self.parent_widget._labels_layer_with_phasor_features.data.shape
-                )
-
                 fraction_layer_name = (
                     f"{name} fraction: {self.current_image_layer_name}"
                 )
@@ -3580,9 +3590,9 @@ class ComponentsWidget(QWidget):
                 except KeyError:
                     pass
                 new_layer = self.viewer.add_image(
-                    fraction_reshaped,
+                    fraction,
                     name=fraction_layer_name,
-                    scale=self.parent_widget._labels_layer_with_phasor_features.scale,
+                    scale=layer.scale,
                     colormap=colormap,
                 )
 

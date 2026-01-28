@@ -2,8 +2,6 @@ import json
 import sys
 
 import numpy as np
-import pandas as pd
-from napari.layers import Labels
 from phasorpy.io import (
     phasor_from_ometiff,
     signal_from_fbd,
@@ -34,39 +32,37 @@ def test_reader_ptu():
     assert (
         layer_data_tuple[1]["name"] == "test_file Intensity Image: Channel 0"
     )
-    assert (
-        len(layer_data_tuple[1]["metadata"]) == 3
-        and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
-        and "original_mean" in layer_data_tuple[1]["metadata"]
-        and "settings" in layer_data_tuple[1]["metadata"]
-    )
+    metadata = layer_data_tuple[1]["metadata"]
+    assert "G" in metadata
+    assert "S" in metadata
+    assert "G_original" in metadata
+    assert "S_original" in metadata
+    assert "harmonics" in metadata
+    assert "original_mean" in metadata
+    assert "settings" in metadata
+
     signal_data = signal_from_ptu(ptu_file, frame=-1)
     signal_data = np.sum(signal_data, axis=(0, 1))
-    signal_from_settings = np.array(
-        layer_data_tuple[1]["metadata"]["settings"]["summed_signal"]
+    signal_from_metadata = np.array(
+        layer_data_tuple[1]["metadata"]["summed_signal"]
     )
-    np.testing.assert_array_almost_equal(signal_data, signal_from_settings)
+    np.testing.assert_array_almost_equal(signal_data, signal_from_metadata)
 
     assert layer_data_tuple[1]["metadata"]["settings"]["channel"] == 0
 
-    phasor_features = layer_data_tuple[1]["metadata"][
-        "phasor_features_labels_layer"
-    ]
-    assert isinstance(phasor_features, Labels)
-    assert phasor_features.data.shape == (256, 256)
-    assert isinstance(phasor_features.features, pd.DataFrame)
-    assert phasor_features.features.shape == (131072, 6)
-    expected_columns = [
-        "label",
-        "G_original",
-        "S_original",
-        "G",
-        "S",
-        "harmonic",
-    ]
-    actual_columns = phasor_features.features.columns.tolist()
-    assert actual_columns == expected_columns
-    assert np.unique(phasor_features.features["harmonic"]).tolist() == [1, 2]
+    # Check phasor arrays
+    G = metadata["G"]
+    S = metadata["S"]
+    G_original = metadata["G_original"]
+    S_original = metadata["S_original"]
+    harmonics = metadata["harmonics"]
+
+    # Check shapes - G and S should have shape (n_harmonics, height, width)
+    assert G.shape == (2, 256, 256)
+    assert S.shape == (2, 256, 256)
+    assert G_original.shape == (2, 256, 256)
+    assert S_original.shape == (2, 256, 256)
+    assert list(harmonics) == [1, 2]
 
 
 def test_reader_fbd():
@@ -88,43 +84,40 @@ def test_reader_fbd():
         layer_data_tuple[1]["name"]
         == "test_file$EI0S Intensity Image: Channel 0"
     )
-    assert (
-        len(layer_data_tuple[1]["metadata"]) == 3
-        and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
-        and "original_mean" in layer_data_tuple[1]["metadata"]
-        and "settings" in layer_data_tuple[1]["metadata"]
-    )
+    metadata = layer_data_tuple[1]["metadata"]
+    assert "G" in metadata
+    assert "S" in metadata
+    assert "G_original" in metadata
+    assert "S_original" in metadata
+    assert "harmonics" in metadata
+    assert "original_mean" in metadata
+    assert "settings" in metadata
 
     signal_channel_0 = signal_from_fbd(fbd_file, frame=-1, channel=0)
     signal_channel_0 = np.sum(signal_channel_0, axis=(0, 1))
 
-    signal_from_settings = np.array(
-        layer_data_tuple[1]["metadata"]["settings"]["summed_signal"]
+    signal_from_metadata = np.array(
+        layer_data_tuple[1]["metadata"]["summed_signal"]
     )
     np.testing.assert_array_almost_equal(
-        signal_channel_0, signal_from_settings
+        signal_channel_0, signal_from_metadata
     )
 
     assert layer_data_tuple[1]["metadata"]["settings"]["channel"] == 0
 
-    phasor_features = layer_data_tuple[1]["metadata"][
-        "phasor_features_labels_layer"
-    ]
-    assert isinstance(phasor_features, Labels)
-    assert phasor_features.data.shape == (256, 256)
-    assert isinstance(phasor_features.features, pd.DataFrame)
-    assert phasor_features.features.shape == (131072, 6)
-    expected_columns = [
-        "label",
-        "G_original",
-        "S_original",
-        "G",
-        "S",
-        "harmonic",
-    ]
-    actual_columns = phasor_features.features.columns.tolist()
-    assert actual_columns == expected_columns
-    assert np.unique(phasor_features.features["harmonic"]).tolist() == [1, 2]
+    # Check phasor arrays for channel 0
+    G = metadata["G"]
+    S = metadata["S"]
+    G_original = metadata["G_original"]
+    S_original = metadata["S_original"]
+    harmonics = metadata["harmonics"]
+
+    assert G.shape == (2, 256, 256)
+    assert S.shape == (2, 256, 256)
+    assert G_original.shape == (2, 256, 256)
+    assert S_original.shape == (2, 256, 256)
+    assert list(harmonics) == [1, 2]
+
     # Second Channel
     layer_data_tuple = layer_data_list[1]
     assert isinstance(layer_data_tuple, tuple) and len(layer_data_tuple) == 2
@@ -137,42 +130,38 @@ def test_reader_fbd():
         layer_data_tuple[1]["name"]
         == "test_file$EI0S Intensity Image: Channel 1"
     )
-    assert (
-        len(layer_data_tuple[1]["metadata"]) == 3
-        and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
-        and "original_mean" in layer_data_tuple[1]["metadata"]
-        and "settings" in layer_data_tuple[1]["metadata"]
-    )
+    metadata = layer_data_tuple[1]["metadata"]
+    assert "G" in metadata
+    assert "S" in metadata
+    assert "G_original" in metadata
+    assert "S_original" in metadata
+    assert "harmonics" in metadata
+    assert "original_mean" in metadata
+    assert "settings" in metadata
 
     signal_channel_1 = signal_from_fbd(fbd_file, frame=-1, channel=1)
     signal_channel_1 = np.sum(signal_channel_1, axis=(0, 1))
-    signal_from_settings = np.array(
-        layer_data_tuple[1]["metadata"]["settings"]["summed_signal"]
+    signal_from_metadata = np.array(
+        layer_data_tuple[1]["metadata"]["summed_signal"]
     )
     np.testing.assert_array_almost_equal(
-        signal_channel_1, signal_from_settings
+        signal_channel_1, signal_from_metadata
     )
 
     assert layer_data_tuple[1]["metadata"]["settings"]["channel"] == 1
 
-    phasor_features = layer_data_tuple[1]["metadata"][
-        "phasor_features_labels_layer"
-    ]
-    assert isinstance(phasor_features, Labels)
-    assert phasor_features.data.shape == (256, 256)
-    assert isinstance(phasor_features.features, pd.DataFrame)
-    assert phasor_features.features.shape == (131072, 6)
-    expected_columns = [
-        "label",
-        "G_original",
-        "S_original",
-        "G",
-        "S",
-        "harmonic",
-    ]
-    actual_columns = phasor_features.features.columns.tolist()
-    assert actual_columns == expected_columns
-    assert np.unique(phasor_features.features["harmonic"]).tolist() == [1, 2]
+    # Check phasor arrays for channel 1
+    G = metadata["G"]
+    S = metadata["S"]
+    G_original = metadata["G_original"]
+    S_original = metadata["S_original"]
+    harmonics = metadata["harmonics"]
+
+    assert G.shape == (2, 256, 256)
+    assert S.shape == (2, 256, 256)
+    assert G_original.shape == (2, 256, 256)
+    assert S_original.shape == (2, 256, 256)
+    assert list(harmonics) == [1, 2]
 
 
 def test_reader_sdt():
@@ -194,39 +183,35 @@ def test_reader_sdt():
         layer_data_tuple[1]["name"]
         == "seminal_receptacle_FLIM_single_image Intensity Image: Channel 0"
     )
-    assert (
-        len(layer_data_tuple[1]["metadata"]) == 3
-        and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
-        and "original_mean" in layer_data_tuple[1]["metadata"]
-        and "settings" in layer_data_tuple[1]["metadata"]
-    )
+    metadata = layer_data_tuple[1]["metadata"]
+    assert "G" in metadata
+    assert "S" in metadata
+    assert "G_original" in metadata
+    assert "S_original" in metadata
+    assert "harmonics" in metadata
+    assert "original_mean" in metadata
+    assert "settings" in metadata
 
     signal_data = signal_from_sdt(sdt_file)
     signal_data = np.sum(signal_data, axis=(0, 1))
 
-    signal_from_settings = np.array(
-        layer_data_tuple[1]["metadata"]["settings"]["summed_signal"]
+    signal_from_metadata = np.array(
+        layer_data_tuple[1]["metadata"]["summed_signal"]
     )
-    np.testing.assert_array_almost_equal(signal_data, signal_from_settings)
+    np.testing.assert_array_almost_equal(signal_data, signal_from_metadata)
 
-    phasor_features = layer_data_tuple[1]["metadata"][
-        "phasor_features_labels_layer"
-    ]
-    assert isinstance(phasor_features, Labels)
-    assert phasor_features.data.shape == (512, 512)
-    assert isinstance(phasor_features.features, pd.DataFrame)
-    assert phasor_features.features.shape == (524288, 6)
-    expected_columns = [
-        "label",
-        "G_original",
-        "S_original",
-        "G",
-        "S",
-        "harmonic",
-    ]
-    actual_columns = phasor_features.features.columns.tolist()
-    assert actual_columns == expected_columns
-    assert np.unique(phasor_features.features["harmonic"]).tolist() == [1, 2]
+    # Check phasor arrays
+    G = metadata["G"]
+    S = metadata["S"]
+    G_original = metadata["G_original"]
+    S_original = metadata["S_original"]
+    harmonics = metadata["harmonics"]
+
+    assert G.shape == (2, 512, 512)
+    assert S.shape == (2, 512, 512)
+    assert G_original.shape == (2, 512, 512)
+    assert S_original.shape == (2, 512, 512)
+    assert list(harmonics) == [1, 2]
 
 
 def test_reader_lsm():
@@ -244,38 +229,34 @@ def test_reader_lsm():
     assert layer_data_tuple[0].shape == (512, 512)
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert layer_data_tuple[1]["name"] == "test_file Intensity Image"
-    assert (
-        len(layer_data_tuple[1]["metadata"]) == 3
-        and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
-        and "original_mean" in layer_data_tuple[1]["metadata"]
-        and "settings" in layer_data_tuple[1]["metadata"]
-    )
+    metadata = layer_data_tuple[1]["metadata"]
+    assert "G" in metadata
+    assert "S" in metadata
+    assert "G_original" in metadata
+    assert "S_original" in metadata
+    assert "harmonics" in metadata
+    assert "original_mean" in metadata
+    assert "settings" in metadata
 
     signal_data = signal_from_lsm(lsm_file)
     signal_data = np.sum(signal_data, axis=(1, 2))
-    signal_from_settings = np.array(
-        layer_data_tuple[1]["metadata"]["settings"]["summed_signal"]
+    signal_from_metadata = np.array(
+        layer_data_tuple[1]["metadata"]["summed_signal"]
     )
-    np.testing.assert_array_almost_equal(signal_data, signal_from_settings)
+    np.testing.assert_array_almost_equal(signal_data, signal_from_metadata)
 
-    phasor_features = layer_data_tuple[1]["metadata"][
-        "phasor_features_labels_layer"
-    ]
-    assert isinstance(phasor_features, Labels)
-    assert phasor_features.data.shape == (512, 512)
-    assert isinstance(phasor_features.features, pd.DataFrame)
-    assert phasor_features.features.shape == (524288, 6)
-    expected_columns = [
-        "label",
-        "G_original",
-        "S_original",
-        "G",
-        "S",
-        "harmonic",
-    ]
-    actual_columns = phasor_features.features.columns.tolist()
-    assert actual_columns == expected_columns
-    assert np.unique(phasor_features.features["harmonic"]).tolist() == [1, 2]
+    # Check phasor arrays
+    G = metadata["G"]
+    S = metadata["S"]
+    G_original = metadata["G_original"]
+    S_original = metadata["S_original"]
+    harmonics = metadata["harmonics"]
+
+    assert G.shape == (2, 512, 512)
+    assert S.shape == (2, 512, 512)
+    assert G_original.shape == (2, 512, 512)
+    assert S_original.shape == (2, 512, 512)
+    assert list(harmonics) == [1, 2]
 
 
 def test_reader_ometif():
@@ -293,30 +274,27 @@ def test_reader_ometif():
     assert layer_data_tuple[0].shape == (512, 512)
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert layer_data_tuple[1]["name"] == "test_file Intensity Image"
-    assert (
-        len(layer_data_tuple[1]["metadata"]) == 3
-        and "phasor_features_labels_layer" in layer_data_tuple[1]["metadata"]
-        and "settings" in layer_data_tuple[1]["metadata"]
-        and "original_mean" in layer_data_tuple[1]["metadata"]
-    )
-    phasor_features = layer_data_tuple[1]["metadata"][
-        "phasor_features_labels_layer"
-    ]
-    assert isinstance(phasor_features, Labels)
-    assert phasor_features.data.shape == (512, 512)
-    assert isinstance(phasor_features.features, pd.DataFrame)
-    assert phasor_features.features.shape == (524288, 6)
-    expected_columns = [
-        "label",
-        "G_original",
-        "S_original",
-        "G",
-        "S",
-        "harmonic",
-    ]
-    actual_columns = phasor_features.features.columns.tolist()
-    assert actual_columns == expected_columns
-    assert np.unique(phasor_features.features["harmonic"]).tolist() == [1, 2]
+    metadata = layer_data_tuple[1]["metadata"]
+    assert "G" in metadata
+    assert "S" in metadata
+    assert "G_original" in metadata
+    assert "S_original" in metadata
+    assert "harmonics" in metadata
+    assert "original_mean" in metadata
+    assert "settings" in metadata
+
+    # Check phasor arrays
+    G = metadata["G"]
+    S = metadata["S"]
+    G_original = metadata["G_original"]
+    S_original = metadata["S_original"]
+    harmonics = metadata["harmonics"]
+
+    assert G.shape == (2, 512, 512)
+    assert S.shape == (2, 512, 512)
+    assert G_original.shape == (2, 512, 512)
+    assert S_original.shape == (2, 512, 512)
+    assert list(harmonics) == [1, 2]
 
 
 def test_reader_ometif_metadata():

@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 
 def write_ome_tiff(path: str, image_layer: Any) -> List[str]:
-    """Save Labels layer with phasor coordinates as 'OME-TIFF'.
+    """Save image layer with phasor coordinates as 'OME-TIFF'.
 
     Parameters
     ----------
@@ -32,9 +32,8 @@ def write_ome_tiff(path: str, image_layer: Any) -> List[str]:
     image_layer : napari.layers.Image
         Napari image layer or a list with the mean intensity image as the
         first element and as second element a dict with `metadata` as key.
-        The value associated to 'metadata' must be a dict with
-        `phasor_features_labels_layer` as key which contains as value a Labels
-        layer with a Dataframe with `G`, `S`  and 'harmonic' columns.
+        The value associated to 'metadata' must be a dict containing
+        `G_original`, `S_original`, and `harmonics` keys with NumPy arrays.
 
     Returns
     -------
@@ -42,27 +41,35 @@ def write_ome_tiff(path: str, image_layer: Any) -> List[str]:
     """
     if isinstance(image_layer, Image):
         mean = image_layer.metadata["original_mean"]
-        phasor_data = image_layer.metadata["phasor_features_labels_layer"]
+        G = image_layer.metadata["G_original"]
+        S = image_layer.metadata["S_original"]
+        harmonics = image_layer.metadata["harmonics"]
         if "settings" in image_layer.metadata:
-            settings = image_layer.metadata["settings"]
+            settings = image_layer.metadata["settings"].copy()
         else:
             settings = {}
+        # Include summed_signal if available
+        if "summed_signal" in image_layer.metadata:
+            summed = image_layer.metadata["summed_signal"]
+            settings["summed_signal"] = (
+                summed.tolist() if hasattr(summed, 'tolist') else summed
+            )
     else:
-        mean = image_layer[0][1]["metadata"]["original_mean"]
-        phasor_data = image_layer[0][1]["metadata"][
-            "phasor_features_labels_layer"
-        ]
-        if "settings" in image_layer[0][1]["metadata"]:
-            settings = image_layer[0][1]["settings"]
+        metadata = image_layer[0][1]["metadata"]
+        mean = metadata["original_mean"]
+        G = metadata["G_original"]
+        S = metadata["S_original"]
+        harmonics = metadata["harmonics"]
+        if "settings" in metadata:
+            settings = metadata["settings"].copy()
         else:
             settings = {}
-    harmonics = phasor_data.features["harmonic"].unique()
-    G = np.reshape(
-        phasor_data.features["G_original"], (len(harmonics), *mean.shape)
-    )
-    S = np.reshape(
-        phasor_data.features["S_original"], (len(harmonics), *mean.shape)
-    )
+        if "summed_signal" in metadata:
+            summed = metadata["summed_signal"]
+            settings["summed_signal"] = (
+                summed.tolist() if hasattr(summed, 'tolist') else summed
+            )
+
     if not path.endswith(".ome.tif"):
         path += ".ome.tif"
     settings["version"] = str(importlib.metadata.version('napari-phasors'))
@@ -198,11 +205,10 @@ def export_layer_as_csv(path: str, image_layer: Image) -> None:
     """Export layer data or phasor features as a CSV file.
 
     The function has two behaviors depending on whether the layer has
-    a ``"phasor_features_labels_layer"`` entry in its metadata:
+    phasor data (G, S arrays) in its metadata:
 
-    * If present, the associated phasor features table is exported with
-      additional ``dim_*`` columns describing the pixel coordinates for
-      each harmonic.
+    * If present, the phasor data is exported with coordinate columns
+      describing the pixel positions for each harmonic.
     * Otherwise, the raw layer data is flattened into a table of
       coordinates and values.
 
@@ -213,28 +219,56 @@ def export_layer_as_csv(path: str, image_layer: Image) -> None:
     image_layer : napari.layers.Image
         Image layer whose data or phasor features will be exported.
     """
-    has_phasor_table = (
-        "phasor_features_labels_layer" in image_layer.metadata
-        and image_layer.metadata["phasor_features_labels_layer"] is not None
+    has_phasor_data = (
+        "G" in image_layer.metadata
+        and "S" in image_layer.metadata
+        and "harmonics" in image_layer.metadata
     )
 
-    if has_phasor_table:
-        phasor_table = image_layer.metadata[
-            "phasor_features_labels_layer"
-        ].features
-        harmonics = np.unique(phasor_table["harmonic"])
+    if has_phasor_data:
+        G = image_layer.metadata["G"]
+        S = image_layer.metadata["S"]
+        G_original = image_layer.metadata.get("G_original", G)
+        S_original = image_layer.metadata.get("S_original", S)
+        harmonics = np.atleast_1d(image_layer.metadata["harmonics"])
 
-        coords = np.unravel_index(
-            np.arange(image_layer.data.size), image_layer.data.shape
-        )
+        # Get spatial shape (last 2 dimensions)
+        spatial_shape = G.shape[-2:]
+        n_pixels = np.prod(spatial_shape)
 
-        coords = [np.tile(coord, len(harmonics)) for coord in coords]
+        # Create coordinate arrays
+        coords = np.unravel_index(np.arange(n_pixels), spatial_shape)
 
-        for dim, coord in enumerate(coords):
-            phasor_table[f"dim_{dim}"] = coord
+        # Build dataframe with phasor data
+        rows = []
+        for h_idx, harmonic in enumerate(harmonics):
+            # Handle both 2D (single harmonic) and 3D (multiple harmonics) cases
+            if G.ndim == 3:
+                g_flat = G[h_idx].ravel()
+                s_flat = S[h_idx].ravel()
+                g_orig_flat = G_original[h_idx].ravel()
+                s_orig_flat = S_original[h_idx].ravel()
+            else:
+                g_flat = G.ravel()
+                s_flat = S.ravel()
+                g_orig_flat = G_original.ravel()
+                s_orig_flat = S_original.ravel()
 
-        phasor_table = phasor_table.dropna()
-        phasor_table.to_csv(path, index=False)
+            for px_idx in range(n_pixels):
+                if not (np.isnan(g_flat[px_idx]) and np.isnan(s_flat[px_idx])):
+                    row = {
+                        'harmonic': harmonic,
+                        'G': g_flat[px_idx],
+                        'S': s_flat[px_idx],
+                        'G_original': g_orig_flat[px_idx],
+                        'S_original': s_orig_flat[px_idx],
+                    }
+                    for dim, coord in enumerate(coords):
+                        row[f'dim_{dim}'] = coord[px_idx]
+                    rows.append(row)
+
+        df = pd.DataFrame(rows)
+        df.to_csv(path, index=False)
     else:
         data = image_layer.data
         if data.ndim == 2:

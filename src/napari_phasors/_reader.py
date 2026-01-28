@@ -210,25 +210,17 @@ def raw_file_reader(
             # FLIM files without "C" dimension (single channel)
             axis = raw_data.dims.index("H")
 
-        # Calculate summed signal over spatial dimensions
         if file_extension in [".lsm", ".tif"]:
-            # For hyperspectral files, sum over spatial dimensions (axes 1 onwards)
             axes_to_sum = tuple(range(1, len(raw_data.shape)))
         else:
-            # For FLIM files, sum over all dimensions except the histogram axis
             axes_to_sum = tuple(
                 i for i in range(len(raw_data.shape)) if i != axis
             )
 
         summed_signal = np.sum(raw_data, axis=axes_to_sum)
-        # Convert xarray DataArray to numpy array before converting to list
+
         if hasattr(summed_signal, 'values'):
             summed_signal = summed_signal.values
-        settings['summed_signal'] = (
-            summed_signal.tolist()
-            if hasattr(summed_signal, 'tolist')
-            else summed_signal
-        )
 
         # Only set channel for files that actually have channels (FLIM files)
         if file_extension not in [".lsm", ".tif"]:
@@ -236,13 +228,6 @@ def raw_file_reader(
 
         mean_intensity_image, G_image, S_image = phasor_from_signal(
             raw_data, axis=axis, harmonic=harmonics
-        )
-        labels_layer = make_phasors_labels_layer(
-            mean_intensity_image,
-            G_image,
-            S_image,
-            name=filename,
-            harmonics=harmonics,
         )
         channel_suffix = (
             " Intensity Image"
@@ -252,9 +237,18 @@ def raw_file_reader(
         add_kwargs = {
             "name": f"{filename}{channel_suffix}",
             "metadata": {
-                "phasor_features_labels_layer": labels_layer,
                 "original_mean": mean_intensity_image,
                 "settings": settings,
+                "summed_signal": (
+                    summed_signal.tolist()
+                    if hasattr(summed_signal, 'tolist')
+                    else summed_signal
+                ),
+                "G": G_image,
+                "S": S_image,
+                "G_original": G_image.copy(),
+                "S_original": S_image.copy(),
+                "harmonics": harmonics,
             },
         }
         layers.append((mean_intensity_image, add_kwargs))
@@ -279,11 +273,6 @@ def raw_file_reader(
 
             # Create settings dict for this channel
             channel_settings = settings.copy()
-            channel_settings['summed_signal'] = (
-                summed_signal.tolist()
-                if hasattr(summed_signal, 'tolist')
-                else summed_signal
-            )
             channel_settings['channel'] = channel
 
             mean_intensity_image, G_image, S_image = phasor_from_signal(
@@ -291,19 +280,21 @@ def raw_file_reader(
                 axis=histogram_axis,
                 harmonic=harmonics,
             )
-            labels_layer = make_phasors_labels_layer(
-                mean_intensity_image,
-                G_image,
-                S_image,
-                name=filename,
-                harmonics=harmonics,
-            )
             add_kwargs = {
                 "name": f"{filename} Intensity Image: Channel {channel}",
                 "metadata": {
-                    "phasor_features_labels_layer": labels_layer,
                     "original_mean": mean_intensity_image,
                     "settings": channel_settings,
+                    "summed_signal": (
+                        summed_signal.tolist()
+                        if hasattr(summed_signal, 'tolist')
+                        else summed_signal
+                    ),
+                    "G": G_image,
+                    "S": S_image,
+                    "G_original": G_image.copy(),
+                    "S_original": S_image.copy(),
+                    "harmonics": harmonics,
                 },
             }
             layers.append((mean_intensity_image, add_kwargs))
@@ -357,9 +348,9 @@ def processed_file_reader(
         harmonics = 'all'
     filename, file_extension = _get_filename_extension(path)
     reader_options = reader_options or {"harmonic": harmonics}
-    mean_intensity_image, G_image, S_image, attrs = extension_mapping[
-        "processed"
-    ][file_extension](path, reader_options)
+    mean_intensity_image, real, imag, attrs = extension_mapping["processed"][
+        file_extension
+    ](path, reader_options)
     if "description" in attrs.keys():
         description = json.loads(attrs["description"])
         if len(json.dumps(description)) > 512 * 512:  # Threshold: 256 KB
@@ -374,25 +365,9 @@ def processed_file_reader(
         settings["frequency"] = attrs["frequency"]
     harmonics_read = attrs.get("harmonic", None)
 
-    labels_layer = make_phasors_labels_layer(
-        mean_intensity_image,
-        G_image,
-        S_image,
-        name=filename,
-        harmonics=harmonics_read,
-    )
-
     original_mean_intensity_image = mean_intensity_image.copy()
-
-    harmonics_array = np.unique(labels_layer.features['harmonic'])
-    real = labels_layer.features['G_original'].copy()
-    imag = labels_layer.features['S_original'].copy()
-    real = np.reshape(
-        real, (len(harmonics_array),) + mean_intensity_image.shape
-    )
-    imag = np.reshape(
-        imag, (len(harmonics_array),) + mean_intensity_image.shape
-    )
+    g_original = real.copy()
+    s_original = imag.copy()
 
     should_apply_processing = False
     filter_params = {}
@@ -422,14 +397,11 @@ def processed_file_reader(
                 mean_intensity_image,
                 real,
                 imag,
-                harmonics_array,
+                harmonics_read,
                 threshold=threshold_value,
                 **filter_params,
             )
         )
-
-        labels_layer.features['G'] = real.flatten()
-        labels_layer.features['S'] = imag.flatten()
 
         if "settings" not in settings:
             settings["settings"] = {}
@@ -446,84 +418,17 @@ def processed_file_reader(
     add_kwargs = {
         "name": filename + " Intensity Image",
         "metadata": {
-            "phasor_features_labels_layer": labels_layer,
             "original_mean": original_mean_intensity_image,
             "settings": settings,
+            "G": real,
+            "S": imag,
+            "G_original": g_original,
+            "S_original": s_original,
+            "harmonics": harmonics_read,
         },
     }
     layers.append((mean_intensity_image, add_kwargs))
     return layers
-
-
-def make_phasors_labels_layer(
-    mean_intensity_image: Any,
-    G_image: Any,
-    S_image: Any,
-    name: str = "",
-    harmonics: Union[int, Sequence[int], None] = None,
-) -> Labels:
-    """Create a napari Labels layer from phasor coordinates.
-
-    Parameters
-    ----------
-    mean_intensity_image : np.ndarray
-        Mean intensity image.
-    G_image : np.ndarray
-        G phasor coordinates.
-    S_image : np.ndarray
-        S phasor coordinates.
-    name : str, optional
-        Name of the layer, by default ''.
-    harmonics : Union[int, Sequence[int], None], optional
-        Harmonic(s) to be processed. Can be a single integer, a sequence of
-        integers, or None. Default is None.
-
-    Returns
-    -------
-    labels_layer : napari.layers.Labels
-        Labels layer with phasor coordinates as features.
-
-    """
-    pixel_id = np.arange(1, mean_intensity_image.size + 1)
-    table = pd.DataFrame()
-    if len(G_image.shape) > 2:
-        for i in range(G_image.shape[0]):
-            harmonic_value = harmonics[i] if harmonics is not None else i + 1
-            sub_table = pd.DataFrame(
-                {
-                    "label": pixel_id,
-                    "G_original": G_image[i].ravel(),
-                    "S_original": S_image[i].ravel(),
-                    "G": G_image[i].ravel(),
-                    "S": S_image[i].ravel(),
-                    "harmonic": harmonic_value,
-                }
-            )
-            table = pd.concat([table, sub_table])
-    else:
-        if isinstance(harmonics, list):
-            harmonic_value = harmonics[0]
-        else:
-            harmonic_value = harmonics if harmonics is not None else 1
-        table = pd.DataFrame(
-            {
-                "label": pixel_id,
-                "G_original": G_image.ravel(),
-                "S_original": S_image.ravel(),
-                "G": G_image.ravel(),
-                "S": S_image.ravel(),
-                "harmonic": harmonic_value,
-            }
-        )
-
-    labels_data = pixel_id.reshape(mean_intensity_image.shape)
-    labels_layer = Labels(
-        labels_data,
-        name=f"{name} Phasor Features Layer",
-        scale=(1, 1),
-        features=table,
-    )
-    return labels_layer
 
 
 def _parse_and_call_io_function(

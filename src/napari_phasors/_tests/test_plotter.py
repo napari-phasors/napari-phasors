@@ -42,7 +42,6 @@ def test_phasor_plotter_initialization_values(make_napari_viewer):
     # Basic widget structure tests
     assert plotter.viewer == viewer
     assert isinstance(plotter.layout(), QVBoxLayout)
-    assert plotter._labels_layer_with_phasor_features is None
 
     # Canvas widget tests
     assert hasattr(plotter, 'canvas_widget')
@@ -215,19 +214,14 @@ def test_phasor_plotter_initialization_with_layer(make_napari_viewer):
         == intensity_image_layer.name
     )
 
-    # Test that the phasor features layer is set
-    assert plotter._labels_layer_with_phasor_features is not None
-    assert (
-        plotter._labels_layer_with_phasor_features
-        == intensity_image_layer.metadata["phasor_features_labels_layer"]
-    )
+    # Test that the phasor data is available in metadata
+    assert "G" in intensity_image_layer.metadata
+    assert "S" in intensity_image_layer.metadata
+    assert "harmonics" in intensity_image_layer.metadata
 
     # Test harmonic spinbox maximum is set based on data
-    expected_max_harmonic = (
-        intensity_image_layer.metadata["phasor_features_labels_layer"]
-        .features["harmonic"]
-        .max()
-    )
+    harmonics = np.atleast_1d(intensity_image_layer.metadata["harmonics"])
+    expected_max_harmonic = int(np.max(harmonics))
     assert plotter.harmonic_spinbox.maximum() == expected_max_harmonic
 
     # Test that histogram 2D is plotted in the canvas
@@ -489,14 +483,14 @@ def test_add_layer_without_phasor_features_does_not_trigger_plot_or_combobox(
 
     viewer = make_napari_viewer()
 
-    # Patch plot and on_labels_layer_with_phasor_features_changed
+    # Patch plot and on_image_layer_changed
     with (
         patch.object(
             PlotterWidget, '_set_active_artist_and_plot'
         ) as mock_plot,
         patch.object(
-            PlotterWidget, 'on_labels_layer_with_phasor_features_changed'
-        ) as mock_labels_changed,
+            PlotterWidget, 'on_image_layer_changed'
+        ) as mock_layer_changed,
     ):
 
         plotter = PlotterWidget(viewer)
@@ -504,9 +498,9 @@ def test_add_layer_without_phasor_features_does_not_trigger_plot_or_combobox(
         regular_layer = Image(np.random.random((10, 10)))
         viewer.add_layer(regular_layer)
 
-        # plot and on_labels_layer_with_phasor_features_changed should NOT be called
+        # plot and on_image_layer_changed should NOT be called
         mock_plot.assert_not_called()
-        mock_labels_changed.assert_not_called()
+        mock_layer_changed.assert_not_called()
 
         # The combobox should not be updated
         assert plotter.image_layer_with_phasor_features_combobox.count() == 0
@@ -558,7 +552,6 @@ def test_phasor_plotter_layer_management(make_napari_viewer):
 
     # Initially no layers with phasor features
     assert plotter.image_layer_with_phasor_features_combobox.count() == 0
-    assert plotter._labels_layer_with_phasor_features is None
 
     # Add layer with phasor features
     intensity_image_layer = create_image_layer_with_phasors()
@@ -583,7 +576,6 @@ def test_phasor_plotter_layer_management(make_napari_viewer):
 
     # Combobox should be empty again
     assert plotter.image_layer_with_phasor_features_combobox.count() == 0
-    assert plotter._labels_layer_with_phasor_features is None
 
 
 def test_phasor_plotter_semicircle_checkbox(make_napari_viewer):
@@ -777,7 +769,7 @@ def test_phasor_plotter_colorbar_updates(make_napari_viewer):
     assert plotter.colorbar is not None
 
 
-def test_on_labels_layer_with_phasor_features_changed_prevents_recursion(
+def test_on_image_layer_changed_prevents_recursion(
     make_napari_viewer,
 ):
     """Test that the method prevents recursive calls using the guard flag."""
@@ -788,21 +780,21 @@ def test_on_labels_layer_with_phasor_features_changed_prevents_recursion(
     plotter = PlotterWidget(viewer)
 
     # Set the guard flag to simulate being already in the method
-    plotter._in_on_labels_layer_with_phasor_features_changed = True
+    plotter._in_on_image_layer_changed = True
 
     with patch.object(plotter, 'plot') as mock_plot:
         # Call the method - should return early due to guard
-        plotter.on_labels_layer_with_phasor_features_changed()
+        plotter.on_image_layer_changed()
 
         # Verify plot was not called due to guard
         mock_plot.assert_not_called()
         plotter.deleteLater()
 
     # Verify guard flag is still True (not reset by early return)
-    assert plotter._in_on_labels_layer_with_phasor_features_changed == True
+    assert plotter._in_on_image_layer_changed == True
 
 
-def test_on_labels_layer_with_phasor_features_changed_with_empty_layer_name(
+def test_on_image_layer_changed_with_empty_layer_name(
     make_napari_viewer,
 ):
     """Test behavior when combobox has empty layer name."""
@@ -814,14 +806,16 @@ def test_on_labels_layer_with_phasor_features_changed_with_empty_layer_name(
     plotter.image_layer_with_phasor_features_combobox.clear()
 
     with patch.object(plotter, 'plot') as mock_plot:
-        plotter.on_labels_layer_with_phasor_features_changed()
+        plotter.on_image_layer_changed()
 
         # Should not call plot when layer name is empty
         mock_plot.assert_not_called()
         plotter.deleteLater()
 
-    # Verify labels layer is set to None
-    assert plotter._labels_layer_with_phasor_features is None
+    # Verify no layer is selected when combobox is empty
+    assert (
+        plotter.image_layer_with_phasor_features_combobox.currentText() == ''
+    )
 
     # Now add a layer with phasors
 
@@ -841,7 +835,7 @@ def test_on_labels_layer_with_phasor_features_changed_with_empty_layer_name(
         plotter.deleteLater()
 
 
-def test_on_labels_layer_with_phasor_features_changed_sets_harmonic_maximum(
+def test_on_image_layer_changed_sets_harmonic_maximum(
     make_napari_viewer,
 ):
     """Test that harmonic spinbox maximum is set based on layer data."""
@@ -850,47 +844,52 @@ def test_on_labels_layer_with_phasor_features_changed_sets_harmonic_maximum(
     viewer.add_layer(intensity_image_layer)
     plotter = PlotterWidget(viewer)
 
-    # Get expected maximum harmonic from the data
-    expected_max = (
-        intensity_image_layer.metadata["phasor_features_labels_layer"]
-        .features["harmonic"]
-        .max()
-    )
+    # Get expected maximum harmonic from the data using new array-based structure
+    harmonics = np.atleast_1d(intensity_image_layer.metadata["harmonics"])
+    expected_max = int(np.max(harmonics))
 
     # Call the method
-    plotter.on_labels_layer_with_phasor_features_changed()
+    plotter.on_image_layer_changed()
 
     # Verify harmonic spinbox maximum is set correctly
     assert plotter.harmonic_spinbox.maximum() == expected_max
 
 
-def test_on_labels_layer_with_phasor_features_changed_updates_labels_layer(
+def test_on_image_layer_changed_updates_phasors_selected_layer(
     make_napari_viewer,
 ):
-    """Test that the _labels_layer_with_phasor_features attribute is updated correctly."""
+    """Test that the phasor data is accessible after layer change."""
     viewer = make_napari_viewer()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     plotter = PlotterWidget(viewer)
 
-    # Initially should be set from initialization
-    initial_layer = plotter._labels_layer_with_phasor_features
+    # Verify the selected layer name is in the combobox
+    layer_name = (
+        plotter.image_layer_with_phasor_features_combobox.currentText()
+    )
+    assert layer_name == intensity_image_layer.name
 
-    # Clear it to test the update
-    plotter._labels_layer_with_phasor_features = None
+    # Verify the layer has phasor data
+    selected_layer = viewer.layers[layer_name]
+    assert "G" in selected_layer.metadata
+    assert "S" in selected_layer.metadata
+    assert "harmonics" in selected_layer.metadata
 
     # Call the method
-    plotter.on_labels_layer_with_phasor_features_changed()
+    plotter.on_image_layer_changed()
 
-    # Verify it's set to the correct layer
-    expected_layer = intensity_image_layer.metadata[
-        "phasor_features_labels_layer"
-    ]
-    assert plotter._labels_layer_with_phasor_features == expected_layer
-    assert plotter._labels_layer_with_phasor_features == initial_layer
+    # Verify phasor data is still accessible
+    layer_name = (
+        plotter.image_layer_with_phasor_features_combobox.currentText()
+    )
+    assert layer_name == intensity_image_layer.name
+    selected_layer = viewer.layers[layer_name]
+    assert "G" in selected_layer.metadata
+    assert "S" in selected_layer.metadata
 
 
-def test_on_labels_layer_with_phasor_features_changed_guard_flag_cleanup(
+def test_on_image_layer_changed_guard_flag_cleanup(
     make_napari_viewer,
 ):
     """Test that guard flag is properly cleaned up even if an exception occurs."""
@@ -905,21 +904,19 @@ def test_on_labels_layer_with_phasor_features_changed_guard_flag_cleanup(
         plotter, 'plot', side_effect=Exception("Test exception")
     ):
         try:
-            plotter.on_labels_layer_with_phasor_features_changed()
+            plotter.on_image_layer_changed()
         except Exception:
             pass  # We expect the exception
         plotter.deleteLater()
 
     # Verify guard flag is cleaned up even after exception
     assert (
-        not hasattr(
-            plotter, '_in_on_labels_layer_with_phasor_features_changed'
-        )
-        or plotter._in_on_labels_layer_with_phasor_features_changed == False
+        not hasattr(plotter, '_in_on_image_layer_changed')
+        or plotter._in_on_image_layer_changed == False
     )
 
 
-def test_on_labels_layer_with_phasor_features_changed_multiple_calls(
+def test_on_image_layer_changed_multiple_calls(
     make_napari_viewer,
 ):
     """Test multiple sequential calls to ensure plot is called each time."""
@@ -931,9 +928,9 @@ def test_on_labels_layer_with_phasor_features_changed_multiple_calls(
 
     with patch.object(plotter, 'plot') as mock_plot:
         # Call multiple times
-        plotter.on_labels_layer_with_phasor_features_changed()
-        plotter.on_labels_layer_with_phasor_features_changed()
-        plotter.on_labels_layer_with_phasor_features_changed()
+        plotter.on_image_layer_changed()
+        plotter.on_image_layer_changed()
+        plotter.on_image_layer_changed()
 
         # Each call should result in plot being called once
         assert mock_plot.call_count == 3
@@ -1510,9 +1507,19 @@ def test_phasor_plotter_apply_mask_to_phasor_data(make_napari_viewer):
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
 
-    # Create a mask - only right half is masked in
-    mask_data = np.zeros((2, 5), dtype=int)
-    mask_data[:, 3:] = 1
+    # Get original G and S shape
+    G_original = intensity_image_layer.metadata["G"]
+
+    # Create a mask - need to match the spatial dimensions of G and S
+    if G_original.ndim == 3:
+        # Multi-harmonic: shape is (n_harmonics, height, width)
+        mask_shape = G_original.shape[1:]
+    else:
+        # Single harmonic: shape is (height, width)
+        mask_shape = G_original.shape
+
+    mask_data = np.zeros(mask_shape, dtype=int)
+    mask_data[mask_shape[0] // 2 :, :] = 1  # Mask in bottom half
     labels_layer = viewer.add_labels(mask_data, name="test_mask")
 
     # Apply mask
@@ -1522,8 +1529,8 @@ def test_phasor_plotter_apply_mask_to_phasor_data(make_napari_viewer):
     assert 'mask' in intensity_image_layer.metadata
 
     # Check that G and S values outside mask are now NaN
-    current_g = plotter._labels_layer_with_phasor_features.features['G']
-    current_s = plotter._labels_layer_with_phasor_features.features['S']
+    current_g = intensity_image_layer.metadata["G"]
+    current_s = intensity_image_layer.metadata["S"]
     assert np.isnan(current_g).sum() > 0
     assert np.isnan(current_s).sum() > 0
 
@@ -1538,30 +1545,33 @@ def test_phasor_plotter_restore_original_phasor_data(make_napari_viewer):
     viewer.add_layer(intensity_image_layer)
 
     # Get original data
-    original_g = plotter._labels_layer_with_phasor_features.features[
-        'G'
-    ].copy()
+    original_g = intensity_image_layer.metadata["G"].copy()
+    original_s = intensity_image_layer.metadata["S"].copy()
+
+    # Get the shape for the mask
+    if original_g.ndim == 3:
+        mask_shape = original_g.shape[1:]
+    else:
+        mask_shape = original_g.shape
 
     # Apply mask to modify data
-    mask_data = np.zeros((2, 5), dtype=int)
-    mask_data[:, 3:] = 1
+    mask_data = np.zeros(mask_shape, dtype=int)
+    mask_data[mask_shape[0] // 2 :, :] = 1
     labels_layer = viewer.add_labels(mask_data, name="test_mask")
     plotter._apply_mask_to_phasor_data(labels_layer, intensity_image_layer)
 
     # Verify data was modified (some values are NaN)
-    assert (
-        np.isnan(
-            plotter._labels_layer_with_phasor_features.features['G']
-        ).sum()
-        > 0
-    )
+    assert np.isnan(intensity_image_layer.metadata["G"]).sum() > 0
 
     # Restore original data
     plotter._restore_original_phasor_data(intensity_image_layer)
 
     # Verify data was restored (no NaN values in original)
     np.testing.assert_array_almost_equal(
-        plotter._labels_layer_with_phasor_features.features['G'], original_g
+        intensity_image_layer.metadata["G"], original_g
+    )
+    np.testing.assert_array_almost_equal(
+        intensity_image_layer.metadata["S"], original_s
     )
 
 

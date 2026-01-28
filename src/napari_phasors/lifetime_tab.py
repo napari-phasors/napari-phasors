@@ -364,7 +364,7 @@ class LifetimeWidget(QWidget):
 
     def calculate_lifetimes(self):
         """Calculate the lifetimes for all harmonics."""
-        if self.parent_widget._labels_layer_with_phasor_features is None:
+        if not self.parent_widget.has_phasor_data():
             return
 
         frequency_text = self.frequency_input.text().strip()
@@ -375,25 +375,8 @@ class LifetimeWidget(QWidget):
         base_frequency = float(frequency_text)
         effective_frequency = base_frequency * self.parent_widget.harmonic
 
-        phasor_data = (
-            self.parent_widget._labels_layer_with_phasor_features.features
-        )
-        harmonic_mask = phasor_data['harmonic'] == self.parent_widget.harmonic
-
-        layer_data = self.parent_widget._labels_layer_with_phasor_features.data
-        valid_pixel_mask = ~np.isnan(layer_data) & (layer_data != 0)
-        valid_pixel_indices = np.where(valid_pixel_mask.flatten())[0]
-
-        filtered_harmonic_data = phasor_data[harmonic_mask]
-
-        real = filtered_harmonic_data['G']
-        imag = filtered_harmonic_data['S']
-
-        if len(real) == 0:
-            self.lifetime_data_original = np.full(layer_data.shape, np.nan)
-            self.lifetime_data = self.lifetime_data_original.copy()
-            self.frequency = base_frequency
-            self._update_lifetime_range_slider()
+        real, imag = self.parent_widget.get_masked_gs(flat=False)
+        if real is None or imag is None:
             return
 
         if self.lifetime_type_combobox.currentText() == "Normal Lifetime":
@@ -415,18 +398,14 @@ class LifetimeWidget(QWidget):
                     modulation_lifetime, a_min=0, a_max=None
                 )
 
-        self.lifetime_data_original = np.full(layer_data.shape, np.nan)
-        lifetime_flat = np.full(layer_data.size, np.nan)
+        self.lifetime_data_original = np.array(lifetime_values, copy=True)
 
-        for i, pixel_idx in enumerate(valid_pixel_indices):
-            lifetime_flat[pixel_idx] = lifetime_values.iloc[i]
-
-        self.lifetime_data_original = lifetime_flat.reshape(layer_data.shape)
+        # Clip negative values to 0, ignoring NaNs during comparison
+        with np.errstate(invalid='ignore'):
+            self.lifetime_data_original[self.lifetime_data_original < 0] = 0
 
         self.lifetime_data = self.lifetime_data_original.copy()
-
         self.frequency = base_frequency
-
         self._update_lifetime_range_slider()
 
     def _update_lifetime_range_slider(self):
@@ -523,7 +502,7 @@ class LifetimeWidget(QWidget):
         if self.lifetime_data is None:
             self.histogram_widget.hide()
             return
-        if self.parent_widget._labels_layer_with_phasor_features is None:
+        if not self.parent_widget.has_phasor_data():
             self.histogram_widget.hide()
             return
         if self.parent_widget.harmonic is None:
@@ -558,11 +537,21 @@ class LifetimeWidget(QWidget):
         """Create or update the lifetime layer for all harmonics."""
         if self.lifetime_data is None:
             return
-        lifetime_layer_name = f"{self.lifetime_type_combobox.currentText()}: {self.parent_widget.image_layer_with_phasor_features_combobox.currentText()}"
+
+        layer_name = (
+            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        )
+        if not layer_name:
+            return
+        source_layer = self.viewer.layers[layer_name]
+
+        lifetime_layer_name = (
+            f"{self.lifetime_type_combobox.currentText()}: {layer_name}"
+        )
         selected_lifetime_layer = Image(
             self.lifetime_data,
             name=lifetime_layer_name,
-            scale=self.parent_widget._labels_layer_with_phasor_features.scale,
+            scale=source_layer.scale,
             colormap='plasma',
         )
 

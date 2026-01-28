@@ -146,12 +146,26 @@ def test_components_widget_fraction_calculation_creates_both_layers(
     comp_widget.components[1].s_edit.setText("0.5")
     comp_widget._on_component_coords_changed(1)
 
-    # Calculate expected fractions
-    phasor_labels_layer = layer.metadata["phasor_features_labels_layer"]
-    features = phasor_labels_layer.features
-    harmonic_mask = features["harmonic"] == parent.harmonic
-    real = features.loc[harmonic_mask, "G"]
-    imag = features.loc[harmonic_mask, "S"]
+    # Calculate expected fractions using the new array-based metadata
+    metadata = layer.metadata
+    G_image = metadata["G"]
+    S_image = metadata["S"]
+    harmonics = metadata.get("harmonics", [1])
+
+    # Get the harmonic index (0-based for array access)
+    harmonic = parent.harmonic
+    if isinstance(harmonics, (list, np.ndarray)) and len(harmonics) > 1:
+        # Multi-harmonic case: G and S have shape (n_harmonics, ...)
+        harmonic_idx = (
+            list(harmonics).index(harmonic) if harmonic in harmonics else 0
+        )
+        real = G_image[harmonic_idx].flatten()
+        imag = S_image[harmonic_idx].flatten()
+    else:
+        # Single harmonic case
+        real = G_image.flatten()
+        imag = S_image.flatten()
+
     expected_comp1_fractions = phasor_component_fraction(
         np.array(real),
         np.array(imag),
@@ -159,7 +173,7 @@ def test_components_widget_fraction_calculation_creates_both_layers(
         (0.1, 0.5),
     )
     expected_comp1_fractions = expected_comp1_fractions.reshape(
-        phasor_labels_layer.data.shape
+        layer.data.shape
     )
     expected_comp2_fractions = 1.0 - expected_comp1_fractions
 

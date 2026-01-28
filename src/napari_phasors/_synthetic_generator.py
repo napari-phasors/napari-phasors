@@ -1,3 +1,8 @@
+import numpy as np
+from napari.layers import Image
+from phasorpy.phasor import phasor_from_signal
+
+
 def make_raw_flim_data(
     n_time_bins=1000,
     shape=(2, 5),
@@ -22,8 +27,6 @@ def make_raw_flim_data(
     raw_flim_data : np.ndarray
         A synthetic FLIM data with exponential decay for each pixel. The shape of the array is (n_time_bins, shape[0], shape[1]).
     """
-    import numpy as np
-
     n_pixels = np.prod(shape)
     # Ensure time_constants length matches the number of samples by repeating the whole list
     time_constants = np.tile(
@@ -60,66 +63,50 @@ def make_intensity_layer_with_phasors(
     axis : int
         Axis of the time bins.
     harmonic : int or list of int
-        The harmonic number(s) to calculate the phasor. If None, the default is 1.
+        The harmonic number(s) to calculate the phasor. If None, the default is [1, 2].
     name : str
         Name of the layer.
 
     Returns
     -------
-    mean_intensity_image_layer : napari.layers.Image
-        A napari Image layer with a Labels layer in the metadata, which stores the phasors table in its features attribute.
+    layer or layer_data : napari.layers.Image or tuple
+        If viewer is provided, returns the created Image layer object.
+        Otherwise, returns a tuple (data, kwargs) where data is the mean
+        intensity image and kwargs contains metadata with phasor coordinates
+        stored as numpy arrays.
     """
-    import numpy as np
-    import pandas as pd
-    from napari.layers import Image, Labels
-    from phasorpy.phasor import phasor_from_signal
-
     if harmonic is None:
-        harmonic = [1]
+        harmonic = [1, 2]
+
     mean_intensity_image, G_image, S_image = phasor_from_signal(
         raw_flim_data, axis=axis, harmonic=harmonic
     )
-    pixel_id = np.arange(1, mean_intensity_image.size + 1)
-    if len(harmonic) > 1:
-        table = pd.DataFrame([])
-        for i in range(G_image.shape[0]):
-            sub_table = pd.DataFrame(
-                {
-                    "label": pixel_id,
-                    # "Average Image": mean_intensity_image.ravel(),
-                    "G_original": G_image[i].ravel(),
-                    "S_original": S_image[i].ravel(),
-                    "G": G_image[i].ravel(),
-                    "S": S_image[i].ravel(),
-                    "harmonic": harmonic[i],
-                }
-            )
-            table = pd.concat([table, sub_table])
-    else:
-        table = pd.DataFrame(
-            {
-                "label": pixel_id,
-                # "Average Image": mean_intensity_image.ravel(),
-                "G_original": G_image.ravel(),
-                "S_original": S_image.ravel(),
-                "G": G_image.ravel(),
-                "S": S_image.ravel(),
-                "harmonic": np.full(len(pixel_id), harmonic),
-            }
-        )
-    labels_data = pixel_id.reshape(mean_intensity_image.shape)
-    labels_layer = Labels(
-        labels_data,
-        name=name + " Phasor Features Layer",
-        scale=(1, 1),
-        features=table,
+
+    # Calculate summed signal along time axis
+    axes_to_sum = tuple(
+        i for i in range(len(raw_flim_data.shape)) if i != axis
     )
+    summed_signal = np.sum(raw_flim_data, axis=axes_to_sum)
+
+    # Normalize harmonic to always be a list for consistency
+    harmonics_list = harmonic if isinstance(harmonic, list) else [harmonic]
+
     mean_intensity_image_layer = Image(
         mean_intensity_image,
         name=name + " Intensity Image",
         metadata={
-            "phasor_features_labels_layer": labels_layer,
-            "original_mean": mean_intensity_image,
+            "original_mean": mean_intensity_image.copy(),
+            "settings": {},
+            "summed_signal": (
+                summed_signal.tolist()
+                if hasattr(summed_signal, 'tolist')
+                else summed_signal
+            ),
+            "G": G_image,
+            "S": S_image,
+            "G_original": G_image.copy(),
+            "S_original": S_image.copy(),
+            "harmonics": harmonics_list,
         },
     )
     return mean_intensity_image_layer

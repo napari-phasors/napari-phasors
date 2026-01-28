@@ -76,12 +76,8 @@ def test_apply_filter_and_threshold_median(make_napari_viewer):
         raw_flim_data, harmonic=harmonic
     )
     original_mean = intensity_image_layer.metadata['original_mean']
-    original_g = intensity_image_layer.metadata[
-        'phasor_features_labels_layer'
-    ].features['G']
-    original_s = intensity_image_layer.metadata[
-        'phasor_features_labels_layer'
-    ].features['S']
+    original_g = intensity_image_layer.metadata['G'].copy()
+    original_s = intensity_image_layer.metadata['S'].copy()
     assert np.all(
         intensity_image_layer.data
         == intensity_image_layer.metadata['original_mean']
@@ -106,32 +102,23 @@ def test_apply_filter_and_threshold_median(make_napari_viewer):
     assert intensity_image_layer.data.shape == (5, 5)
     assert np.isnan(intensity_image_layer.data[0][0])
     assert not np.isnan(intensity_image_layer.data[0][4])
-    phasor_features = intensity_image_layer.metadata[
-        'phasor_features_labels_layer'
-    ].features
-    assert np.all(phasor_features['G_original'] == original_g)
-    assert np.all(phasor_features['S_original'] == original_s)
-    harmonics = np.unique(phasor_features['harmonic'])
-    original_g = np.reshape(
-        original_g, (len(harmonics),) + original_mean.shape
-    )
-    original_s = np.reshape(
-        original_s, (len(harmonics),) + original_mean.shape
-    )
-    original_mean, original_g, original_s = phasor_filter_median(
+
+    # Check original values are preserved
+    assert np.all(intensity_image_layer.metadata['G_original'] == original_g)
+    assert np.all(intensity_image_layer.metadata['S_original'] == original_s)
+
+    # Calculate expected filtered values
+    filtered_mean, expected_g, expected_s = phasor_filter_median(
         original_mean, original_g, original_s, repeat=1, size=3
     )
-    _, original_g, original_s = phasor_threshold(
-        original_mean, original_g, original_s, threshold
+    _, expected_g, expected_s = phasor_threshold(
+        filtered_mean, expected_g, expected_s, threshold
     )
-    filtered_thresholded_g = np.reshape(
-        phasor_features['G'], (len(harmonics),) + original_mean.shape
-    )
-    filtered_thresholded_s = np.reshape(
-        phasor_features['S'], (len(harmonics),) + original_mean.shape
-    )
-    assert np.allclose(original_g, filtered_thresholded_g, equal_nan=True)
-    assert np.allclose(original_s, filtered_thresholded_s, equal_nan=True)
+
+    filtered_g = intensity_image_layer.metadata['G']
+    filtered_s = intensity_image_layer.metadata['S']
+    assert np.allclose(expected_g, filtered_g, equal_nan=True)
+    assert np.allclose(expected_s, filtered_s, equal_nan=True)
 
     # Check that settings are saved in metadata
     assert "settings" in intensity_image_layer.metadata
@@ -152,16 +139,8 @@ def test_apply_filter_and_threshold_wavelet_compatible(make_napari_viewer):
         raw_flim_data, harmonic=harmonic
     )
     original_mean = intensity_image_layer.metadata['original_mean'].copy()
-    original_g = (
-        intensity_image_layer.metadata['phasor_features_labels_layer']
-        .features['G_original']
-        .copy()
-    )
-    original_s = (
-        intensity_image_layer.metadata['phasor_features_labels_layer']
-        .features['S_original']
-        .copy()
-    )
+    original_g = intensity_image_layer.metadata['G_original'].copy()
+    original_s = intensity_image_layer.metadata['S_original'].copy()
 
     viewer = make_napari_viewer()
     viewer.add_layer(intensity_image_layer)
@@ -184,19 +163,15 @@ def test_apply_filter_and_threshold_wavelet_compatible(make_napari_viewer):
         intensity_image_layer.metadata['original_mean'] == original_mean
     )
 
-    # Check that phasor features are updated (they should be different from original)
-    phasor_features = intensity_image_layer.metadata[
-        'phasor_features_labels_layer'
-    ].features
-    assert np.all(phasor_features['G_original'] == original_g)
-    assert np.all(phasor_features['S_original'] == original_s)
+    # Check that original phasor values are preserved
+    assert np.all(intensity_image_layer.metadata['G_original'] == original_g)
+    assert np.all(intensity_image_layer.metadata['S_original'] == original_s)
 
-    # The filtered G and S should be different from original (unless no filtering occurred)
-    # We can't easily predict the exact values, but we can check they exist and are valid
-    assert 'G' in phasor_features
-    assert 'S' in phasor_features
-    assert len(phasor_features['G']) == len(original_g)
-    assert len(phasor_features['S']) == len(original_s)
+    # The filtered G and S should exist and be valid arrays
+    assert 'G' in intensity_image_layer.metadata
+    assert 'S' in intensity_image_layer.metadata
+    assert intensity_image_layer.metadata['G'].shape == original_g.shape
+    assert intensity_image_layer.metadata['S'].shape == original_s.shape
 
     # Check that settings are saved
     assert "settings" in intensity_image_layer.metadata
@@ -222,16 +197,8 @@ def test_apply_filter_and_threshold_wavelet_incompatible(make_napari_viewer):
         raw_flim_data, harmonic=[1, 3]  # Incompatible harmonics
     )
     original_mean = intensity_image_layer.metadata['original_mean'].copy()
-    original_g = (
-        intensity_image_layer.metadata['phasor_features_labels_layer']
-        .features['G_original']
-        .copy()
-    )
-    original_s = (
-        intensity_image_layer.metadata['phasor_features_labels_layer']
-        .features['S_original']
-        .copy()
-    )
+    original_g = intensity_image_layer.metadata['G_original'].copy()
+    original_s = intensity_image_layer.metadata['S_original'].copy()
 
     viewer = make_napari_viewer()
     viewer.add_layer(intensity_image_layer)
@@ -254,31 +221,14 @@ def test_apply_filter_and_threshold_wavelet_incompatible(make_napari_viewer):
 
     # Since harmonics are incompatible, no wavelet filtering should occur
     # Only thresholding should be applied
-    phasor_features = intensity_image_layer.metadata[
-        'phasor_features_labels_layer'
-    ].features
-
-    # The G and S values should be thresholded versions of the original
-    # (without wavelet filtering)
-    harmonics = np.unique(phasor_features['harmonic'])
-    reshaped_g = np.reshape(
-        original_g, (len(harmonics),) + original_mean.shape
-    )
-    reshaped_s = np.reshape(
-        original_s, (len(harmonics),) + original_mean.shape
-    )
 
     # Apply only threshold (no filtering) for comparison
     _, expected_g, expected_s = phasor_threshold(
-        original_mean, reshaped_g, reshaped_s, threshold
+        original_mean, original_g, original_s, threshold
     )
 
-    actual_g = np.reshape(
-        phasor_features['G'], (len(harmonics),) + original_mean.shape
-    )
-    actual_s = np.reshape(
-        phasor_features['S'], (len(harmonics),) + original_mean.shape
-    )
+    actual_g = intensity_image_layer.metadata['G']
+    actual_s = intensity_image_layer.metadata['S']
 
     assert np.allclose(expected_g, actual_g, equal_nan=True)
     assert np.allclose(expected_s, actual_s, equal_nan=True)
@@ -293,16 +243,8 @@ def test_apply_filter_and_threshold_custom_harmonics_values():
     )
 
     original_mean = intensity_image_layer.metadata['original_mean'].copy()
-    original_g = (
-        intensity_image_layer.metadata['phasor_features_labels_layer']
-        .features['G_original']
-        .copy()
-    )
-    original_s = (
-        intensity_image_layer.metadata['phasor_features_labels_layer']
-        .features['S_original']
-        .copy()
-    )
+    original_g = intensity_image_layer.metadata['G_original'].copy()
+    original_s = intensity_image_layer.metadata['S_original'].copy()
 
     # Test with custom harmonics that match the layer's harmonics
     custom_harmonics = np.array([1, 2])
@@ -320,17 +262,10 @@ def test_apply_filter_and_threshold_custom_harmonics_values():
     )
 
     # Calculate expected results
-    expected_g = np.reshape(
-        original_g, (len(custom_harmonics),) + original_mean.shape
-    )
-    expected_s = np.reshape(
-        original_s, (len(custom_harmonics),) + original_mean.shape
-    )
-
     expected_mean, expected_g, expected_s = phasor_filter_pawflim(
         original_mean,
-        expected_g,
-        expected_s,
+        original_g,
+        original_s,
         sigma=sigma,
         levels=levels,
         harmonic=custom_harmonics,
@@ -341,15 +276,8 @@ def test_apply_filter_and_threshold_custom_harmonics_values():
     )
 
     # Compare results
-    phasor_features = intensity_image_layer.metadata[
-        'phasor_features_labels_layer'
-    ].features
-    actual_g = np.reshape(
-        phasor_features['G'], (len(custom_harmonics),) + original_mean.shape
-    )
-    actual_s = np.reshape(
-        phasor_features['S'], (len(custom_harmonics),) + original_mean.shape
-    )
+    actual_g = intensity_image_layer.metadata['G']
+    actual_s = intensity_image_layer.metadata['S']
 
     assert np.allclose(expected_g, actual_g, equal_nan=True)
     assert np.allclose(expected_s, actual_s, equal_nan=True)
@@ -373,16 +301,8 @@ def test_apply_filter_and_threshold_no_filter():
         raw_flim_data, harmonic=harmonic
     )
     original_mean = intensity_image_layer.metadata['original_mean'].copy()
-    original_g = (
-        intensity_image_layer.metadata['phasor_features_labels_layer']
-        .features['G_original']
-        .copy()
-    )
-    original_s = (
-        intensity_image_layer.metadata['phasor_features_labels_layer']
-        .features['S_original']
-        .copy()
-    )
+    original_g = intensity_image_layer.metadata['G_original'].copy()
+    original_s = intensity_image_layer.metadata['S_original'].copy()
 
     threshold = 0.02
 
@@ -396,29 +316,13 @@ def test_apply_filter_and_threshold_no_filter():
     )
 
     # Only thresholding should be applied
-    phasor_features = intensity_image_layer.metadata[
-        'phasor_features_labels_layer'
-    ].features
-
-    harmonics = np.unique(phasor_features['harmonic'])
-    reshaped_g = np.reshape(
-        original_g, (len(harmonics),) + original_mean.shape
-    )
-    reshaped_s = np.reshape(
-        original_s, (len(harmonics),) + original_mean.shape
-    )
-
     # Apply only threshold for comparison
     _, expected_g, expected_s = phasor_threshold(
-        original_mean, reshaped_g, reshaped_s, threshold
+        original_mean, original_g, original_s, threshold
     )
 
-    actual_g = np.reshape(
-        phasor_features['G'], (len(harmonics),) + original_mean.shape
-    )
-    actual_s = np.reshape(
-        phasor_features['S'], (len(harmonics),) + original_mean.shape
-    )
+    actual_g = intensity_image_layer.metadata['G']
+    actual_s = intensity_image_layer.metadata['S']
 
     assert np.allclose(expected_g, actual_g, equal_nan=True)
     assert np.allclose(expected_s, actual_s, equal_nan=True)
@@ -460,45 +364,17 @@ def test_apply_filter_and_threshold_custom_harmonics_subset():
         raw_flim_data, harmonic=harmonic
     )
 
-    # Get original features
-    original_g = (
-        intensity_image_layer.metadata['phasor_features_labels_layer']
-        .features['G_original']
-        .copy()
-    )
-    original_s = (
-        intensity_image_layer.metadata['phasor_features_labels_layer']
-        .features['S_original']
-        .copy()
-    )
+    # Get original arrays
+    original_g = intensity_image_layer.metadata['G_original'].copy()
+    original_s = intensity_image_layer.metadata['S_original'].copy()
 
-    # Manually create a subset of G and S for custom harmonics
-    # This simulates what should happen when using a subset of harmonics
-    layer_harmonics = np.unique(
-        intensity_image_layer.metadata[
-            'phasor_features_labels_layer'
-        ].features['harmonic']
-    )
-
-    # Create new features with only harmonic [1]
-    phasor_features = intensity_image_layer.metadata[
-        'phasor_features_labels_layer'
-    ]
-    mask = phasor_features.features['harmonic'] == 1
-
-    # Create new G_original and S_original with only harmonic 1
-    new_g_original = original_g[mask]
-    new_s_original = original_s[mask]
-    new_harmonics = phasor_features.features['harmonic'][mask]
-
-    # Update the layer's features to have only harmonic 1
-    phasor_features.features = {
-        'G_original': new_g_original,
-        'S_original': new_s_original,
-        'G': new_g_original.copy(),
-        'S': new_s_original.copy(),
-        'harmonic': new_harmonics,
-    }
+    # Update layer to only have harmonic 1 (subset)
+    # Take only the first harmonic's data
+    intensity_image_layer.metadata['G_original'] = original_g[0:1]
+    intensity_image_layer.metadata['S_original'] = original_s[0:1]
+    intensity_image_layer.metadata['G'] = original_g[0:1].copy()
+    intensity_image_layer.metadata['S'] = original_s[0:1].copy()
+    intensity_image_layer.metadata['harmonics'] = [1]
 
     # Now test with custom harmonics
     custom_harmonics = np.array([1])
@@ -512,7 +388,7 @@ def test_apply_filter_and_threshold_custom_harmonics_subset():
         harmonics=custom_harmonics,
     )
 
-    # Should work without error since harmonics match the modified features
+    # Should work without error since harmonics match the modified data
     assert "settings" in intensity_image_layer.metadata
     assert (
         intensity_image_layer.metadata["settings"]["filter"]["method"]
