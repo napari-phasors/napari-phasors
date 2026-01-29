@@ -54,7 +54,9 @@ def write_ome_tiff(path: str, image_layer: Any) -> List[str]:
                 summed.tolist() if hasattr(summed, 'tolist') else summed
             )
         if "circular_cursors" in image_layer.metadata:
-            settings["circular_cursors"] = image_layer.metadata["circular_cursors"]
+            settings["circular_cursors"] = image_layer.metadata[
+                "circular_cursors"
+            ]
     else:
         metadata = image_layer[0][1]["metadata"]
         mean = metadata["original_mean"]
@@ -72,7 +74,7 @@ def write_ome_tiff(path: str, image_layer: Any) -> List[str]:
             )
         if "circular_cursors" in metadata:
             settings["circular_cursors"] = metadata["circular_cursors"]
-    
+
     # Convert NumPy arrays in selections to lists for JSON serialization
     if "selections" in settings:
         if "manual_selections" in settings["selections"]:

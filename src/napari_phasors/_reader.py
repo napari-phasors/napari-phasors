@@ -415,11 +415,11 @@ def processed_file_reader(
         settings["threshold"] = threshold_value
 
     layers = []
-    
+
     circular_cursors = {}
     if "circular_cursors" in settings:
         circular_cursors = settings.pop("circular_cursors")
-    
+
     add_kwargs = {
         "name": filename + " Intensity Image",
         "metadata": {
@@ -432,10 +432,10 @@ def processed_file_reader(
             "harmonics": harmonics_read,
         },
     }
-    
+
     if circular_cursors:
         add_kwargs["metadata"]["circular_cursors"] = circular_cursors
-    
+
     layers.append((mean_intensity_image, add_kwargs))
     return layers
 

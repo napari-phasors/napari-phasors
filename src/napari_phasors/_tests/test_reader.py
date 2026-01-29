@@ -343,5 +343,22 @@ def test_reader_ometif_metadata():
     assert "threshold" in settings
     assert settings["threshold"] == 1.0
 
+    # Test circular cursors in metadata (may not be present in older files)
+    # If present, verify structure
+    if (
+        "selections" in settings
+        and "circular_cursors" in settings["selections"]
+    ):
+        circular_cursors = settings["selections"]["circular_cursors"]
+        assert isinstance(circular_cursors, list)
+        # If there are cursors, verify each has the required fields
+        for cursor in circular_cursors:
+            assert "g" in cursor
+            assert "s" in cursor
+            assert "radius" in cursor
+            assert "color" in cursor
+            assert isinstance(cursor["color"], (list, tuple))
+            assert len(cursor["color"]) == 4  # RGBA
+
 
 # TODO: Add tests for .tif files

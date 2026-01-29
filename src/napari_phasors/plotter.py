@@ -1,7 +1,7 @@
+import copy
 import math
 import warnings
 from pathlib import Path
-import copy
 
 import matplotlib.ticker as ticker
 import numpy as np
@@ -155,9 +155,7 @@ class PlotterWidget(QWidget):
         self.harmonic_spinbox.setMinimum(1)
         self.harmonic_spinbox.setValue(1)
         self.harmonic_spinbox.setMaximumHeight(25)
-        harmonics_and_mask_container.addWidget(
-            self.harmonic_spinbox, 1
-        )
+        harmonics_and_mask_container.addWidget(self.harmonic_spinbox, 1)
 
         # Mask label and combobox
         self.mask_layer_label = QLabel("Mask Layer:")
@@ -284,9 +282,7 @@ class PlotterWidget(QWidget):
         self.plotter_inputs_widget.colormap_combobox.addItems(
             list(colormaps.ALL_COLORMAPS.keys())
         )
-        self.histogram_colormap = (
-            "turbo"
-        )
+        self.histogram_colormap = "turbo"
 
         # Initialize attributes
         self.polar_plot_artist_list = []
@@ -671,7 +667,9 @@ class PlotterWidget(QWidget):
             source_settings = source_layer.metadata.get('settings', {}).copy()
             # Add selections to source_settings for dialog detection
             if 'selections' in source_layer.metadata:
-                source_settings['selections'] = source_layer.metadata['selections']
+                source_settings['selections'] = source_layer.metadata[
+                    'selections'
+                ]
 
             selected_tabs = self._show_import_dialog(
                 source_settings=source_settings
