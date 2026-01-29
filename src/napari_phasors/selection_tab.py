@@ -1,12 +1,24 @@
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.patches import Circle
 from napari.layers import Labels
-from napari.utils import DirectLabelColormap, notifications
+from napari.utils import DirectLabelColormap
+from phasorpy.cursor import mask_from_circular_cursor
 from qtpy import uic
+from qtpy.QtCore import Signal
+from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
+    QColorDialog,
+    QComboBox,
+    QDoubleSpinBox,
     QHBoxLayout,
+    QHeaderView,
+    QLabel,
     QPushButton,
+    QStackedWidget,
+    QTableWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -21,6 +33,8 @@ class SelectionWidget(QWidget):
 
     Provides:
       - A dropdown to manage and select manual or custom selection IDs
+      - Manual selection mode for free-form selection
+      - Circular cursor selection mode for defining circular ROIs
 
     Parameters
     ----------
@@ -41,14 +55,35 @@ class SelectionWidget(QWidget):
         self.parent_widget = parent
         self.viewer = viewer
 
+        # Main layout
+        layout = QVBoxLayout(self)
+
+        # Selection mode combobox at the top
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(QLabel("Selection Mode:"))
+        self.selection_mode_combobox = QComboBox()
+        self.selection_mode_combobox.addItems(
+            ["Circular Cursor", "Manual Selection"]
+        )
+        mode_layout.addWidget(self.selection_mode_combobox, 1)
+        layout.addLayout(mode_layout)
+
+        # Stacked widget to switch between modes
+        self.stacked_widget = QStackedWidget()
+        layout.addWidget(self.stacked_widget)
+
+        # === Manual Selection Mode Widget ===
+        self.manual_selection_widget = QWidget()
+        manual_layout = QVBoxLayout(self.manual_selection_widget)
+        manual_layout.setContentsMargins(0, 0, 0, 0)
+
         # Load the UI from the .ui file
         self.selection_input_widget = QWidget()
         uic.loadUi(
             Path(__file__).parent / "ui/selection_tab.ui",
             self.selection_input_widget,
         )
-        layout = QVBoxLayout(self)
-        layout.addWidget(self.selection_input_widget)
+        manual_layout.addWidget(self.selection_input_widget)
 
         # Add default items to the selection id combobox
         self.selection_input_widget.phasor_selection_id_combobox.addItem(
@@ -98,6 +133,84 @@ class SelectionWidget(QWidget):
             )
             if line_edit:
                 line_edit.editingFinished.connect(self.on_selection_id_changed)
+
+        # === Circular Cursor Mode Widget ===
+        self.circular_cursor_widget = CircularCursorWidget(
+            viewer, self.parent_widget
+        )
+        self.stacked_widget.addWidget(self.circular_cursor_widget)
+
+        self.stacked_widget.addWidget(self.manual_selection_widget)
+
+        # Connect mode change
+        self.selection_mode_combobox.currentIndexChanged.connect(
+            self._on_selection_mode_changed
+        )
+
+    def is_manual_selection_mode(self):
+        """Check if manual selection mode is currently active."""
+        return (
+            self.selection_mode_combobox.currentIndex() == 1
+        )  # Manual is index 1
+
+    def _manage_labels_layer_visibility(self, show_manual):
+        """Manage visibility of labels layers based on selection mode.
+
+        Parameters
+        ----------
+        show_manual : bool
+            If True, show manual selection layers and hide circular cursor layer.
+            If False, show circular cursor layer and hide manual selection layers.
+        """
+        layer = self._get_current_layer()
+        if layer is None:
+            return
+
+        # Define patterns for different selection methods
+        circular_cursor_pattern = (
+            f"Selection CIRCULAR CURSOR SELECTION: {layer.name}"
+        )
+        manual_selection_pattern = f"Selection MANUAL SELECTION"
+
+        for viewer_layer in self.viewer.layers:
+            if not hasattr(viewer_layer, 'name'):
+                continue
+
+            layer_name = viewer_layer.name
+
+            # Check if this is a circular cursor layer
+            if layer_name == circular_cursor_pattern:
+                viewer_layer.visible = not show_manual
+            # Check if this is a manual selection layer
+            elif (
+                manual_selection_pattern in layer_name
+                and layer.name in layer_name
+            ):
+                viewer_layer.visible = show_manual
+
+    def _on_selection_mode_changed(self, index):
+        """Handle selection mode change."""
+        self.stacked_widget.setCurrentIndex(index)
+
+        if index == 1:  # Manual selection mode (now index 1)
+            # Clear circular cursor patches
+            self.circular_cursor_widget.clear_all_patches()
+            # Show manual selection toolbar
+            if self.parent_widget is not None:
+                self.parent_widget._set_selection_visibility(True)
+            # Show manual selection layers and hide circular cursor layer
+            self._manage_labels_layer_visibility(show_manual=True)
+        else:  # Circular cursor mode (now index 0)
+            # Redraw circular cursor patches
+            self.circular_cursor_widget.redraw_all_patches()
+            # Hide manual selection toolbar
+            if self.parent_widget is not None:
+                self.parent_widget._set_selection_visibility(False)
+            # Clear manual selection colors from plot
+            if self.parent_widget is not None:
+                self.parent_widget.plot(selection_id_data=None)
+            # Show circular cursor layer and hide manual selection layers
+            self._manage_labels_layer_visibility(show_manual=False)
 
     @property
     def selection_id(self):
@@ -473,3 +586,571 @@ class SelectionWidget(QWidget):
                 ][self.selection_id]
 
         self._phasors_selected_layer = existing_phasors_selected_layer
+
+
+class ColorButton(QPushButton):
+    """A button that displays a color and opens a color dialog when clicked."""
+
+    color_changed = Signal(QColor)
+
+    def __init__(self, color=None, parent=None):
+        """Initialize the ColorButton."""
+        super().__init__(parent)
+        self._color = color or QColor(255, 0, 0)
+        self.setFixedSize(25, 25)
+        self._update_style()
+        self.clicked.connect(self._on_clicked)
+
+    def _update_style(self):
+        """Update the button style to show the current color."""
+        self.setStyleSheet(
+            f"background-color: {self._color.name()}; "
+            f"border: 1px solid #555; border-radius: 3px;"
+        )
+
+    def _on_clicked(self):
+        """Open a color dialog when clicked."""
+        color = QColorDialog.getColor(self._color, self, "Select Cursor Color")
+        if color.isValid():
+            self._color = color
+            self._update_style()
+            self.color_changed.emit(color)
+
+    def color(self):
+        """Return the current color."""
+        return self._color
+
+    def set_color(self, color):
+        """Set the current color."""
+        self._color = color
+        self._update_style()
+
+
+class CircularCursorWidget(QWidget):
+    """
+    Widget for circular cursor selection in phasor plots.
+
+    This widget provides a table interface for adding and managing
+    circular cursors that can be used to select regions in the phasor plot.
+
+    Parameters
+    ----------
+    viewer : napari.Viewer
+        The napari viewer instance.
+    parent_widget : QWidget
+        The parent PlotterWidget.
+    """
+
+    # Get colors from matplotlib Set1 colormap
+    DEFAULT_COLORS = [
+        QColor(int(r * 255), int(g * 255), int(b * 255))
+        for r, g, b, _ in [plt.get_cmap('Set1')(i) for i in range(9)]
+    ]
+
+    def __init__(self, viewer, parent_widget):
+        """Initialize the CircularCursorWidget."""
+        super().__init__()
+        self.viewer = viewer
+        self.parent_widget = parent_widget
+
+        # Store cursor data: list of dicts with g, s, radius, color, patch
+        self._cursors = []
+        self._phasors_selected_layer = None
+        self._selection_id = "CIRCULAR CURSOR SELECTION"
+
+        # Dragging state
+        self._dragging_cursor = None
+        self._drag_offset = (0, 0)
+
+        self._setup_ui()
+        self._connect_drag_events()
+
+    def _setup_ui(self):
+        """Set up the user interface."""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 5, 0, 0)
+
+        # Table for cursors
+        self.cursor_table = QTableWidget()
+        self.cursor_table.setColumnCount(5)
+        self.cursor_table.setHorizontalHeaderLabels(
+            ["G", "S", "Radius", "Color", ""]
+        )
+        self.cursor_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.Stretch
+        )
+        self.cursor_table.horizontalHeader().setSectionResizeMode(
+            3, QHeaderView.Fixed
+        )
+        self.cursor_table.horizontalHeader().setSectionResizeMode(
+            4, QHeaderView.Fixed
+        )
+        self.cursor_table.setColumnWidth(3, 40)
+        self.cursor_table.setColumnWidth(4, 40)
+        self.cursor_table.verticalHeader().setVisible(False)
+        layout.addWidget(self.cursor_table)
+
+        # Buttons for add/remove/apply
+        buttons_layout = QHBoxLayout()
+
+        self.add_cursor_button = QPushButton("Add Cursor")
+        self.add_cursor_button.clicked.connect(self._add_cursor)
+        buttons_layout.addWidget(self.add_cursor_button)
+
+        self.clear_all_button = QPushButton("Clear All")
+        self.clear_all_button.clicked.connect(self._clear_all_cursors)
+        buttons_layout.addWidget(self.clear_all_button)
+
+        layout.addLayout(buttons_layout)
+
+        # Add stretch at the bottom
+        layout.addStretch()
+
+    def _get_next_color(self):
+        """Get the next color from the default palette."""
+        index = len(self._cursors) % len(self.DEFAULT_COLORS)
+        return self.DEFAULT_COLORS[index]
+
+    def _get_last_radius(self):
+        """Get the radius from the last cursor, or default if none."""
+        if self._cursors:
+            return self._cursors[-1]['radius']
+        return 0.05  # Default radius
+
+    def _add_cursor(self, g=0.5, s=0.5, radius=None, color=None):
+        """Add a new cursor to the table."""
+        if color is None:
+            color = self._get_next_color()
+        if radius is None:
+            radius = self._get_last_radius()
+
+        row = self.cursor_table.rowCount()
+        self.cursor_table.insertRow(row)
+
+        # G spinbox
+        g_spinbox = QDoubleSpinBox()
+        g_spinbox.setRange(-1.0, 2.0)
+        g_spinbox.setSingleStep(0.01)
+        g_spinbox.setDecimals(3)
+        g_spinbox.setValue(g)
+        g_spinbox.valueChanged.connect(
+            lambda val, r=row: self._on_cursor_changed(r)
+        )
+        self.cursor_table.setCellWidget(row, 0, g_spinbox)
+
+        # S spinbox
+        s_spinbox = QDoubleSpinBox()
+        s_spinbox.setRange(-1.0, 2.0)
+        s_spinbox.setSingleStep(0.01)
+        s_spinbox.setDecimals(3)
+        s_spinbox.setValue(s)
+        s_spinbox.valueChanged.connect(
+            lambda val, r=row: self._on_cursor_changed(r)
+        )
+        self.cursor_table.setCellWidget(row, 1, s_spinbox)
+
+        # Radius spinbox
+        radius_spinbox = QDoubleSpinBox()
+        radius_spinbox.setRange(0.001, 1.0)
+        radius_spinbox.setSingleStep(0.01)
+        radius_spinbox.setDecimals(3)
+        radius_spinbox.setValue(radius)
+        radius_spinbox.valueChanged.connect(
+            lambda val, r=row: self._on_cursor_changed(r)
+        )
+        self.cursor_table.setCellWidget(row, 2, radius_spinbox)
+
+        # Color button
+        color_button = ColorButton(color)
+        color_button.color_changed.connect(
+            lambda c, r=row: self._on_cursor_changed(r)
+        )
+        self.cursor_table.setCellWidget(row, 3, color_button)
+
+        # Remove button
+        remove_button = QPushButton("×")
+        remove_button.setFixedSize(25, 25)
+        remove_button.clicked.connect(lambda _, r=row: self._remove_cursor(r))
+        self.cursor_table.setCellWidget(row, 4, remove_button)
+
+        # Store cursor data
+        cursor_data = {
+            'g': g,
+            's': s,
+            'radius': radius,
+            'color': color,
+            'patch': None,
+        }
+        self._cursors.append(cursor_data)
+
+        # Draw patch on canvas
+        self._update_cursor_patch(row)
+
+        # Apply selection to update labels layer
+        if self._cursors:
+            self._apply_selection()
+
+    def _remove_cursor(self, row):
+        """Remove a cursor from the table."""
+        if row < 0 or row >= len(self._cursors):
+            return
+
+        # Remove patch from canvas
+        if self._cursors[row]['patch'] is not None:
+            try:
+                self._cursors[row]['patch'].remove()
+            except ValueError:
+                pass
+
+        # Remove from data
+        self._cursors.pop(row)
+
+        # Remove row from table
+        self.cursor_table.removeRow(row)
+
+        # Re-connect signals for remaining rows
+        self._reconnect_row_signals()
+
+        # Redraw canvas
+        if self.parent_widget is not None:
+            self.parent_widget.canvas_widget.canvas.draw_idle()
+
+        # Apply selection to update labels layer
+        if self._cursors:
+            self._apply_selection()
+        else:
+            # If no cursors left, remove the selection layer
+            self._remove_selection_layer()
+
+    def _reconnect_row_signals(self):
+        """Reconnect signals after row removal to update row indices."""
+        for row in range(self.cursor_table.rowCount()):
+            # Get widgets
+            g_spinbox = self.cursor_table.cellWidget(row, 0)
+            s_spinbox = self.cursor_table.cellWidget(row, 1)
+            radius_spinbox = self.cursor_table.cellWidget(row, 2)
+            color_button = self.cursor_table.cellWidget(row, 3)
+            remove_button = self.cursor_table.cellWidget(row, 4)
+
+            # Disconnect existing connections and reconnect with correct row
+            try:
+                g_spinbox.valueChanged.disconnect()
+                s_spinbox.valueChanged.disconnect()
+                radius_spinbox.valueChanged.disconnect()
+                color_button.color_changed.disconnect()
+                remove_button.clicked.disconnect()
+            except TypeError:
+                pass
+
+            g_spinbox.valueChanged.connect(
+                lambda val, r=row: self._on_cursor_changed(r)
+            )
+            s_spinbox.valueChanged.connect(
+                lambda val, r=row: self._on_cursor_changed(r)
+            )
+            radius_spinbox.valueChanged.connect(
+                lambda val, r=row: self._on_cursor_changed(r)
+            )
+            color_button.color_changed.connect(
+                lambda c, r=row: self._on_cursor_changed(r)
+            )
+            remove_button.clicked.connect(
+                lambda _, r=row: self._remove_cursor(r)
+            )
+
+    def _on_cursor_changed(self, row):
+        """Handle cursor parameter changes."""
+        if row < 0 or row >= len(self._cursors):
+            return
+
+        # Get current values from widgets
+        g_spinbox = self.cursor_table.cellWidget(row, 0)
+        s_spinbox = self.cursor_table.cellWidget(row, 1)
+        radius_spinbox = self.cursor_table.cellWidget(row, 2)
+        color_button = self.cursor_table.cellWidget(row, 3)
+
+        if all([g_spinbox, s_spinbox, radius_spinbox, color_button]):
+            self._cursors[row]['g'] = g_spinbox.value()
+            self._cursors[row]['s'] = s_spinbox.value()
+            self._cursors[row]['radius'] = radius_spinbox.value()
+            self._cursors[row]['color'] = color_button.color()
+
+            self._update_cursor_patch(row)
+
+            # Apply selection automatically if not currently dragging
+            if self._dragging_cursor is None and self._cursors:
+                self._apply_selection()
+
+    def _update_cursor_patch(self, row):
+        """Update or create the patch for a cursor."""
+        if row < 0 or row >= len(self._cursors):
+            return
+
+        if self.parent_widget is None:
+            return
+
+        cursor = self._cursors[row]
+        ax = self.parent_widget.canvas_widget.axes
+
+        # Remove existing patch if any
+        if cursor['patch'] is not None:
+            try:
+                cursor['patch'].remove()
+            except ValueError:
+                pass
+
+        # Create new patch with no fill (transparent)
+        color = cursor['color']
+        edge_rgba = (color.redF(), color.greenF(), color.blueF(), 1.0)
+
+        patch = Circle(
+            (cursor['g'], cursor['s']),
+            cursor['radius'],
+            fill=False,  # No fill
+            edgecolor=edge_rgba,
+            linewidth=2,
+            zorder=10,
+            picker=True,  # Enable picking for dragging
+        )
+        cursor['patch'] = ax.add_patch(patch)
+
+        # Redraw canvas
+        self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def _clear_all_cursors(self):
+        """Clear all cursors."""
+        # Remove all patches
+        for cursor in self._cursors:
+            if cursor['patch'] is not None:
+                try:
+                    cursor['patch'].remove()
+                except ValueError:
+                    pass
+
+        self._cursors.clear()
+        self.cursor_table.setRowCount(0)
+
+        # Remove selection layer if exists
+        self._remove_selection_layer()
+
+        # Redraw canvas
+        if self.parent_widget is not None:
+            self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def clear_all_patches(self):
+        """Clear all patches from the canvas (called when switching modes)."""
+        for cursor in self._cursors:
+            if cursor['patch'] is not None:
+                try:
+                    cursor['patch'].remove()
+                except ValueError:
+                    pass
+                cursor['patch'] = None
+
+        if self.parent_widget is not None:
+            self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def redraw_all_patches(self):
+        """Redraw all patches on the canvas (called when switching back to circular cursor mode)."""
+        for row in range(len(self._cursors)):
+            self._update_cursor_patch(row)
+
+    def _get_current_layer(self):
+        """Helper to get the currently selected image layer."""
+        if self.parent_widget is None:
+            return None
+        layer_name = (
+            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
+        )
+        if not layer_name or layer_name not in self.viewer.layers:
+            return None
+        return self.viewer.layers[layer_name]
+
+    def _remove_selection_layer(self):
+        """Remove the selection layer if it exists."""
+        layer = self._get_current_layer()
+        if layer is None:
+            return
+
+        layer_name = f"Selection {self._selection_id}: {layer.name}"
+        for viewer_layer in list(self.viewer.layers):
+            if viewer_layer.name == layer_name:
+                self.viewer.layers.remove(viewer_layer)
+                break
+
+        self._phasors_selected_layer = None
+
+    def _apply_selection(self):
+        """Apply the circular cursor selections to create a labels layer."""
+        if not self._cursors:
+            return
+        if self.parent_widget is None:
+            return None
+
+        layer = self._get_current_layer()
+        if layer is None:
+            return
+
+        # Get phasor data
+        g_flat, s_flat, valid_mask = self.parent_widget.get_masked_gs(
+            flat=True, return_valid_mask=True
+        )
+        if g_flat is None or s_flat is None:
+            return
+
+        # Get full phasor arrays for shape
+        spatial_shape = self.parent_widget.get_phasor_spatial_shape()
+        if spatial_shape is None:
+            return
+
+        # Get full G and S arrays
+        g_full, s_full = self.parent_widget.get_masked_gs(flat=False)
+        if g_full is None or s_full is None:
+            return
+
+        # Create selection map
+        selection_map = np.zeros(spatial_shape, dtype=np.uint32)
+
+        # Apply each cursor
+        for idx, cursor in enumerate(self._cursors):
+            g_center = cursor['g']
+            s_center = cursor['s']
+            radius = cursor['radius']
+
+            # Use phasorpy mask_from_circular_cursor
+            # The function expects arrays: (real, imag, g_centers, s_centers, radius=radii)
+            # Returns shape (n_cursors, *spatial_shape), so we take [0] for single cursor
+            mask = mask_from_circular_cursor(
+                g_full, s_full, [g_center], [s_center], radius=[radius]
+            )[0]
+
+            # Assign label index (1-based, later cursors override earlier ones)
+            selection_map[mask] = idx + 1
+
+        # Store in layer metadata
+        if "selections" not in layer.metadata:
+            layer.metadata["selections"] = {}
+        layer.metadata["selections"][self._selection_id] = selection_map
+
+        # Create or update the labels layer
+        self._create_or_update_labels_layer(layer, selection_map)
+
+    def _create_or_update_labels_layer(self, image_layer, selection_map):
+        """Create or update the labels layer for the selection."""
+        layer_name = f"Selection {self._selection_id}: {image_layer.name}"
+
+        # Build color dict from cursor colors
+        color_dict = {None: (0, 0, 0, 0)}
+        for idx, cursor in enumerate(self._cursors):
+            color = cursor['color']
+            color_dict[idx + 1] = (
+                color.redF(),
+                color.greenF(),
+                color.blueF(),
+                1.0,
+            )
+
+        # Check if layer already exists
+        existing_layer = None
+        for viewer_layer in self.viewer.layers:
+            if viewer_layer.name == layer_name:
+                existing_layer = viewer_layer
+                break
+
+        if existing_layer is not None:
+            # Update existing layer
+            existing_layer.data = selection_map
+            existing_layer.colormap = DirectLabelColormap(
+                color_dict=color_dict, name="circular_cursor_colors"
+            )
+            existing_layer.visible = True  # Ensure it's visible
+            self._phasors_selected_layer = existing_layer
+        else:
+            # Create new layer
+            labels_layer = Labels(
+                selection_map,
+                name=layer_name,
+                scale=image_layer.scale,
+                colormap=DirectLabelColormap(
+                    color_dict=color_dict, name="circular_cursor_colors"
+                ),
+            )
+            self._phasors_selected_layer = self.viewer.add_layer(labels_layer)
+
+    def _connect_drag_events(self):
+        """Connect matplotlib events for dragging circles."""
+        if self.parent_widget is None:
+            return
+
+        canvas = self.parent_widget.canvas_widget.canvas
+        canvas.mpl_connect('pick_event', self._on_pick)
+        canvas.mpl_connect('motion_notify_event', self._on_motion)
+        canvas.mpl_connect('button_release_event', self._on_release)
+
+    def _on_pick(self, event):
+        """Handle pick event when clicking on a circle."""
+        if event.artist is None:
+            return
+
+        # Find which cursor was picked
+        for row, cursor in enumerate(self._cursors):
+            if cursor['patch'] == event.artist:
+                self._dragging_cursor = row
+                # Store the offset between click position and circle center
+                click_pos = (event.mouseevent.xdata, event.mouseevent.ydata)
+                if click_pos[0] is not None and click_pos[1] is not None:
+                    self._drag_offset = (
+                        cursor['g'] - click_pos[0],
+                        cursor['s'] - click_pos[1],
+                    )
+                break
+
+    def _on_motion(self, event):
+        """Handle mouse motion to drag the circle."""
+        if self._dragging_cursor is None:
+            return
+
+        if event.xdata is None or event.ydata is None:
+            return
+
+        row = self._dragging_cursor
+        if row < 0 or row >= len(self._cursors):
+            return
+
+        # Calculate new position
+        new_g = event.xdata + self._drag_offset[0]
+        new_s = event.ydata + self._drag_offset[1]
+
+        # Update cursor data
+        self._cursors[row]['g'] = new_g
+        self._cursors[row]['s'] = new_s
+
+        # Update the patch position
+        patch = self._cursors[row]['patch']
+        if patch is not None:
+            patch.center = (new_g, new_s)
+
+        # Update the spinboxes in the table
+        g_spinbox = self.cursor_table.cellWidget(row, 0)
+        s_spinbox = self.cursor_table.cellWidget(row, 1)
+
+        if g_spinbox is not None:
+            g_spinbox.blockSignals(True)
+            g_spinbox.setValue(new_g)
+            g_spinbox.blockSignals(False)
+
+        if s_spinbox is not None:
+            s_spinbox.blockSignals(True)
+            s_spinbox.setValue(new_s)
+            s_spinbox.blockSignals(False)
+
+        # Redraw
+        self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def _on_release(self, event):
+        """Handle mouse release to finish dragging and update selection."""
+        if self._dragging_cursor is not None:
+            # Apply selection after dragging
+            self._apply_selection()
+            self._dragging_cursor = None
+            self._drag_offset = (0, 0)
