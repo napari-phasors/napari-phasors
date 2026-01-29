@@ -1,13 +1,13 @@
 from pathlib import Path
 
-import matplotlib.cm as cm
+import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Circle
 from napari.layers import Labels
-from napari.utils import DirectLabelColormap, notifications
+from napari.utils import DirectLabelColormap
 from phasorpy.cursor import mask_from_circular_cursor
 from qtpy import uic
-from qtpy.QtCore import Qt, Signal
+from qtpy.QtCore import Signal
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QColorDialog,
@@ -19,7 +19,6 @@ from qtpy.QtWidgets import (
     QPushButton,
     QStackedWidget,
     QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -188,13 +187,6 @@ class SelectionWidget(QWidget):
                 and layer.name in layer_name
             ):
                 viewer_layer.visible = show_manual
-
-    def _initialize_toolbar_visibility(self):
-        """Initialize toolbar visibility after parent widget is fully set up."""
-        if self.parent_widget is not None and hasattr(
-            self.parent_widget, '_set_selection_visibility'
-        ):
-            self.parent_widget._set_selection_visibility(False)
 
     def _on_selection_mode_changed(self, index):
         """Handle selection mode change."""
@@ -652,7 +644,7 @@ class CircularCursorWidget(QWidget):
     # Get colors from matplotlib Set1 colormap
     DEFAULT_COLORS = [
         QColor(int(r * 255), int(g * 255), int(b * 255))
-        for r, g, b, _ in [cm.get_cmap('Set1')(i) for i in range(9)]
+        for r, g, b, _ in [plt.get_cmap('Set1')(i) for i in range(9)]
     ]
 
     def __init__(self, viewer, parent_widget):
@@ -663,7 +655,6 @@ class CircularCursorWidget(QWidget):
 
         # Store cursor data: list of dicts with g, s, radius, color, patch
         self._cursors = []
-        self._cursor_patches = []
         self._phasors_selected_layer = None
         self._selection_id = "CIRCULAR CURSOR SELECTION"
 
@@ -992,12 +983,12 @@ class CircularCursorWidget(QWidget):
     def _apply_selection(self):
         """Apply the circular cursor selections to create a labels layer."""
         if not self._cursors:
-            notifications.show_warning("No cursors defined.")
             return
+        if self.parent_widget is None:
+            return None
 
         layer = self._get_current_layer()
         if layer is None:
-            notifications.show_warning("No image layer selected.")
             return
 
         # Get phasor data
@@ -1005,13 +996,11 @@ class CircularCursorWidget(QWidget):
             flat=True, return_valid_mask=True
         )
         if g_flat is None or s_flat is None:
-            notifications.show_warning("No phasor data available.")
             return
 
         # Get full phasor arrays for shape
         spatial_shape = self.parent_widget.get_phasor_spatial_shape()
         if spatial_shape is None:
-            notifications.show_warning("Could not determine spatial shape.")
             return
 
         # Get full G and S arrays

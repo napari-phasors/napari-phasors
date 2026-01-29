@@ -1575,13 +1575,6 @@ def test_phasor_plotter_restore_original_phasor_data(make_napari_viewer):
     )
 
 
-def test_phasor_plotter_visibility_methods_integration_with_tab_changes_extended(
-    make_napari_viewer,
-):
-    """Extended test for visibility integration with tab changes."""
-    pass
-
-
 def test_toolbar_visibility_based_on_selection_mode(make_napari_viewer):
     """Test that toolbar visibility is controlled by selection mode."""
     viewer = make_napari_viewer()
@@ -1606,9 +1599,7 @@ def test_toolbar_visibility_based_on_selection_mode(make_napari_viewer):
     # Now _show_tab_artists should show toolbar
     with patch.object(plotter, '_set_selection_visibility') as mock_vis:
         plotter._show_tab_artists(plotter.selection_tab)
-    # Switch to manual selection mode first
-    plotter.selection_tab.selection_mode_combobox.setCurrentIndex(1)
-    assert plotter.selection_tab.is_manual_selection_mode()
+        mock_vis.assert_called_once_with(True)
 
     # Mock _set_selection_visibility to track calls
     with patch.object(plotter, '_set_selection_visibility') as mock_vis:
