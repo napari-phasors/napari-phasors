@@ -14,7 +14,8 @@ from napari.layers import Image, Labels, Shapes
 from napari.utils import colormaps, notifications
 from phasorpy.lifetime import phasor_from_lifetime
 from qtpy import uic
-from qtpy.QtCore import Qt, QTimer
+from qtpy.QtCore import Qt, QTimer, Signal
+from qtpy.QtGui import QStandardItem, QStandardItemModel
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -26,6 +27,7 @@ from qtpy.QtWidgets import (
     QLabel,
     QPushButton,
     QSpinBox,
+    QStyledItemDelegate,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -38,6 +40,160 @@ from .filter_tab import FilterWidget
 from .fret_tab import FretWidget
 from .lifetime_tab import LifetimeWidget
 from .selection_tab import SelectionWidget
+
+
+class CheckableComboBox(QComboBox):
+    """A ComboBox with checkable items for multi-selection.
+
+    Displays selected items as comma-separated text and emits
+    selectionChanged signal when items are checked/unchecked.
+    """
+
+    selectionChanged = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setModel(QStandardItemModel(self))
+        self.setEditable(True)
+        self.lineEdit().setReadOnly(True)
+        self.lineEdit().setPlaceholderText("Select layers...")
+
+        # Use a delegate to prevent closing on click
+        self.setItemDelegate(QStyledItemDelegate(self))
+
+        # Connect model signals
+        self.model().dataChanged.connect(self._on_data_changed)
+
+        # Track if we're inside the popup
+        self._popup_visible = False
+
+        # Make the line edit clickable to open popup
+        self.lineEdit().installEventFilter(self)
+        # Prevent cursor positioning in line edit
+        self.lineEdit().setFocusPolicy(Qt.NoFocus)
+
+    def eventFilter(self, obj, event):
+        """Filter events to make line edit clickable."""
+        if obj == self.lineEdit():
+            if event.type() == event.MouseButtonRelease:
+                # Toggle popup on mouse release
+                if not self.view().isVisible():
+                    self.showPopup()
+                return True
+            elif event.type() == event.MouseButtonPress:
+                # Consume press event to prevent default behavior
+                return True
+        return super().eventFilter(obj, event)
+
+    def addItem(self, text, checked=False):
+        """Add a checkable item to the combobox."""
+        item = QStandardItem(text)
+        item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
+        item.setData(Qt.Checked if checked else Qt.Unchecked, Qt.CheckStateRole)
+        self.model().appendRow(item)
+
+    def addItems(self, texts):
+        """Add multiple items to the combobox."""
+        for text in texts:
+            self.addItem(text)
+
+    def clear(self):
+        """Clear all items."""
+        self.model().clear()
+        self._update_display_text()
+
+    def checkedItems(self):
+        """Return list of checked item texts."""
+        checked = []
+        for i in range(self.model().rowCount()):
+            item = self.model().item(i)
+            if item.checkState() == Qt.Checked:
+                checked.append(item.text())
+        return checked
+
+    def setCheckedItems(self, texts):
+        """Set which items are checked by their text."""
+        self.blockSignals(True)
+        for i in range(self.model().rowCount()):
+            item = self.model().item(i)
+            if item.text() in texts:
+                item.setCheckState(Qt.Checked)
+            else:
+                item.setCheckState(Qt.Unchecked)
+        self.blockSignals(False)
+        self._update_display_text()
+
+    def _on_data_changed(self, topLeft, bottomRight, roles):
+        """Handle item check state changes."""
+        if Qt.CheckStateRole in roles:
+            self._update_display_text()
+            self.selectionChanged.emit()
+
+    def _update_display_text(self):
+        """Update the display text to show checked items."""
+        checked = self.checkedItems()
+        if not checked:
+            self.lineEdit().setText("")
+            self.lineEdit().setPlaceholderText("Select layers...")
+        elif len(checked) == 1:
+            self.lineEdit().setText(checked[0])
+        else:
+            self.lineEdit().setText(f"{len(checked)} layers selected")
+
+    def showPopup(self):
+        """Show the popup and track visibility."""
+        self._popup_visible = True
+        super().showPopup()
+
+    def hidePopup(self):
+        """Hide the popup."""
+        self._popup_visible = False
+        super().hidePopup()
+
+    def itemCheckState(self, index):
+        """Get the check state of item at index."""
+        item = self.model().item(index)
+        return item.checkState() if item else Qt.Unchecked
+
+    def setItemCheckState(self, index, state):
+        """Set the check state of item at index."""
+        item = self.model().item(index)
+        if item:
+            item.setCheckState(state)
+
+
+class _ListWidgetCompatWrapper:
+    """Compatibility wrapper to provide combobox-like API for the checkable combobox.
+
+    This allows existing code that calls .currentText() to continue working
+    by returning the primary (first) selected layer name.
+    """
+
+    def __init__(self, plotter_widget):
+        self._plotter = plotter_widget
+
+    def currentText(self):
+        """Return the primary selected layer name."""
+        return self._plotter.get_primary_layer_name()
+
+    def setCurrentText(self, text):
+        """Select a layer by name (clears other selections)."""
+        combo = self._plotter.image_layers_checkable_combobox
+        combo.setCheckedItems([text])
+
+    @property
+    def currentIndexChanged(self):
+        """Return the selectionChanged signal for compatibility."""
+        return self._plotter.image_layers_checkable_combobox.selectionChanged
+
+    @property
+    def currentTextChanged(self):
+        """Return the selectionChanged signal for compatibility.
+
+        Note: This doesn't pass the text as argument like the original signal,
+        but connected slots should handle being called without arguments.
+        """
+        return self._plotter.image_layers_checkable_combobox.selectionChanged
 
 
 class PlotterWidget(QWidget):
@@ -57,8 +213,11 @@ class PlotterWidget(QWidget):
         The napari viewer object.
     canvas_widget : biaplotter.plotter.CanvasWidget
         The canvas widget for plotting phasor features (fixed at the top).
-    image_layer_with_phasor_features_combobox : QComboBox
-        The combobox for selecting the image layer with phasor features.
+    image_layer_with_phasor_features_listwidget : QListWidget
+        The list widget for selecting multiple image layers with phasor features.
+    image_layers_checkable_combobox : CheckableComboBox
+        The dropdown combobox for selecting multiple image layers with phasor features.
+        Supports multi-selection via checkboxes for merged plotting.
     harmonic_spinbox : QSpinBox
         The spinbox for selecting the harmonic.
     tab_widget : QTabWidget
@@ -123,18 +282,17 @@ class PlotterWidget(QWidget):
         controls_container.setLayout(QVBoxLayout())
         self.layout().addWidget(controls_container)
 
-        # Add select image combobox
+        # Add checkable combobox for multi-layer selection
         image_layer_layout = QHBoxLayout()
         image_layer_layout.setContentsMargins(0, 0, 0, 0)  # Remove margins
         image_layer_layout.setSpacing(5)  # Reduce spacing between widgets
-        image_layer_layout.addWidget(QLabel("Image Layer:"))
-        self.image_layer_with_phasor_features_combobox = QComboBox()
-        self.image_layer_with_phasor_features_combobox.setMaximumHeight(
-            25
-        )  # Set smaller height
-        image_layer_layout.addWidget(
-            self.image_layer_with_phasor_features_combobox, 1
-        )  # Add stretch factor of 1
+        image_layer_layout.addWidget(QLabel("Image Layers:"))
+        self.image_layers_checkable_combobox = CheckableComboBox()
+        self.image_layers_checkable_combobox.setMaximumHeight(25)
+        self.image_layers_checkable_combobox.setToolTip(
+            "Select one or more layers to plot. Check multiple layers to merge their phasor data in the plot."
+        )
+        image_layer_layout.addWidget(self.image_layers_checkable_combobox, 1)
 
         image_layer_widget = QWidget()
         image_layer_widget.setLayout(image_layer_layout)
@@ -236,11 +394,11 @@ class PlotterWidget(QWidget):
         self.viewer.layers.events.removed.connect(self.reset_layer_choices)
 
         # Connect callbacks
-        self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
+        self.image_layers_checkable_combobox.selectionChanged.connect(
             self.on_image_layer_changed
         )
         # Update all frequency widgets from layer metadata if layer changes
-        self.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
+        self.image_layers_checkable_combobox.selectionChanged.connect(
             self._sync_frequency_inputs_from_metadata
         )
         # Update mask when mask layer selection changes
@@ -328,6 +486,69 @@ class PlotterWidget(QWidget):
             self.viewer.window.add_dock_widget(
                 self.analysis_widget, name="Phasor Analysis", area="right"
             )
+
+    def get_selected_layer_names(self):
+        """Get the names of all selected (checked) layers.
+
+        Returns
+        -------
+        list of str
+            List of checked layer names.
+        """
+        return self.image_layers_checkable_combobox.checkedItems()
+
+    def get_primary_layer_name(self):
+        """Get the name of the primary (first) selected layer.
+
+        The primary layer is used for metadata operations and analysis.
+        For backward compatibility, this returns the first selected layer
+        or an empty string if no layer is selected.
+
+        Returns
+        -------
+        str
+            Name of the primary selected layer, or empty string if none.
+        """
+        selected = self.get_selected_layer_names()
+        return selected[0] if selected else ""
+
+    def get_selected_layers(self):
+        """Get all selected layer objects.
+
+        Returns
+        -------
+        list of napari.layers.Image
+            List of selected Image layer objects.
+        """
+        selected_names = self.get_selected_layer_names()
+        return [
+            self.viewer.layers[name]
+            for name in selected_names
+            if name in self.viewer.layers
+        ]
+
+    def get_primary_layer(self):
+        """Get the primary (first) selected layer object.
+
+        Returns
+        -------
+        napari.layers.Image or None
+            The primary selected layer, or None if none selected.
+        """
+        primary_name = self.get_primary_layer_name()
+        if primary_name and primary_name in self.viewer.layers:
+            return self.viewer.layers[primary_name]
+        return None
+
+    # Backward compatibility property
+    @property
+    def image_layer_with_phasor_features_combobox(self):
+        """Backward compatibility property.
+
+        Returns a wrapper object that provides currentText() for
+        compatibility with code that still uses the old combobox API.
+        """
+        return _ListWidgetCompatWrapper(self)
 
     def _get_default_plot_settings(self):
         """Get default settings dictionary for plot parameters."""
@@ -1517,7 +1738,7 @@ class PlotterWidget(QWidget):
             pass
 
     def reset_layer_choices(self):
-        """Reset the image layer with phasor features combobox choices."""
+        """Reset the image layer checkable combobox choices."""
         if getattr(self, '_resetting_layer_choices', False):
             return
 
@@ -1525,17 +1746,15 @@ class PlotterWidget(QWidget):
 
         try:
             # Store current selection
-            image_layer_combobox_current_text = (
-                self.image_layer_with_phasor_features_combobox.currentText()
-            )
+            previously_selected = self.get_selected_layer_names()
             mask_layer_combobox_current_text = (
                 self.mask_layer_combobox.currentText()
             )
 
-            self.image_layer_with_phasor_features_combobox.blockSignals(True)
+            self.image_layers_checkable_combobox.blockSignals(True)
             self.mask_layer_combobox.blockSignals(True)
 
-            self.image_layer_with_phasor_features_combobox.clear()
+            self.image_layers_checkable_combobox.clear()
             self.mask_layer_combobox.clear()
 
             layer_names = [
@@ -1553,9 +1772,12 @@ class PlotterWidget(QWidget):
                 if isinstance(layer, Labels) or isinstance(layer, Shapes)
             ]
 
-            self.image_layer_with_phasor_features_combobox.addItems(
-                layer_names
-            )
+            # Add items to the checkable combobox
+            for name in layer_names:
+                # Check if this layer was previously selected
+                checked = name in previously_selected
+                self.image_layers_checkable_combobox.addItem(name, checked)
+
             self.mask_layer_combobox.addItems(["None"] + mask_layer_names)
 
             # Check if previously selected mask layer was deleted
@@ -1564,17 +1786,12 @@ class PlotterWidget(QWidget):
                 and mask_layer_combobox_current_text not in mask_layer_names
             )
 
-            # Restore combobox selection if it still exists
-            if image_layer_combobox_current_text in layer_names:
-                self.image_layer_with_phasor_features_combobox.setCurrentText(
-                    image_layer_combobox_current_text
-                )
             if mask_layer_combobox_current_text in mask_layer_names:
                 self.mask_layer_combobox.setCurrentText(
                     mask_layer_combobox_current_text
                 )
 
-            self.image_layer_with_phasor_features_combobox.blockSignals(False)
+            self.image_layers_checkable_combobox.blockSignals(False)
             self.mask_layer_combobox.blockSignals(False)
 
             # If mask layer was deleted, trigger the cleanup
@@ -1614,11 +1831,9 @@ class PlotterWidget(QWidget):
                     layer.events.paint.connect(self._on_mask_data_changed)
                     layer.events.set_data.connect(self._on_mask_data_changed)
 
-            new_text = (
-                self.image_layer_with_phasor_features_combobox.currentText()
-            )
-            if new_text != image_layer_combobox_current_text or (
-                image_layer_combobox_current_text == "" and new_text != ""
+            new_selected = self.get_selected_layer_names()
+            if new_selected != previously_selected or (
+                not previously_selected and new_selected
             ):
                 self.on_image_layer_changed()
                 self._sync_frequency_inputs_from_metadata()
@@ -1627,14 +1842,22 @@ class PlotterWidget(QWidget):
             self._resetting_layer_choices = False
 
     def on_image_layer_changed(self):
-        """Handle changes to the image layer with phasor features."""
+        """Handle changes to the image layer with phasor features.
+
+        When multiple layers are selected, the primary (first) layer is used
+        for metadata operations and analysis, while all selected layers
+        contribute to the merged plot.
+        """
         if getattr(self, "_in_on_image_layer_changed", False):
             return
         self._in_on_image_layer_changed = True
         try:
-            layer_name = (
-                self.image_layer_with_phasor_features_combobox.currentText()
-            )
+            selected_layers = self.get_selected_layers()
+
+            # Update grid view based on selection
+            self._update_grid_view(selected_layers)
+
+            layer_name = self.get_primary_layer_name()
             if layer_name == "":
                 self._g_array = None
                 self._s_array = None
@@ -1644,14 +1867,21 @@ class PlotterWidget(QWidget):
             layer = self.viewer.layers[layer_name]
             layer_metadata = layer.metadata
 
-            # Retrieve arrays from metadata
+            # Retrieve arrays from metadata (primary layer for backward compat)
             self._g_array = layer_metadata.get("G")
             self._s_array = layer_metadata.get("S")
             self._g_original_array = layer_metadata.get("G_original")
             self._s_original_array = layer_metadata.get("S_original")
             self._harmonics_array = layer_metadata.get("harmonics")
 
-            if self._harmonics_array is not None:
+            # Compute intersection of harmonics across all selected layers
+            if len(selected_layers) > 1:
+                common_harmonics = self._get_common_harmonics(selected_layers)
+                if common_harmonics is not None and len(common_harmonics) > 0:
+                    min_harmonic = int(np.min(common_harmonics))
+                    max_harmonic = int(np.max(common_harmonics))
+                    self.harmonic_spinbox.setRange(min_harmonic, max_harmonic)
+            elif self._harmonics_array is not None:
                 self._harmonics_array = np.atleast_1d(self._harmonics_array)
                 min_harmonic = int(np.min(self._harmonics_array))
                 max_harmonic = int(np.max(self._harmonics_array))
@@ -1696,6 +1926,67 @@ class PlotterWidget(QWidget):
 
         finally:
             self._in_on_image_layer_changed = False
+
+    def _update_grid_view(self, selected_layers):
+        """Update napari grid view based on selected layers.
+
+        When multiple layers are selected, enables grid mode and makes
+        selected layers visible. When only one layer is selected,
+        disables grid mode.
+
+        Parameters
+        ----------
+        selected_layers : list of napari.layers.Image
+            List of currently selected layers.
+        """
+        selected_names = {layer.name for layer in selected_layers}
+
+        if len(selected_layers) > 1:
+            # Enable grid mode for multiple layers
+            self.viewer.grid.enabled = True
+
+            # Make selected layers visible, hide others (only phasor layers)
+            for layer in self.viewer.layers:
+                if isinstance(layer, Image) and "G" in layer.metadata:
+                    layer.visible = layer.name in selected_names
+        else:
+            # Disable grid mode for single selection
+            self.viewer.grid.enabled = False
+
+            # Make the selected layer visible
+            if selected_layers:
+                selected_layers[0].visible = True
+
+    def _get_common_harmonics(self, layers):
+        """Get the intersection of harmonics available in all layers.
+
+        Parameters
+        ----------
+        layers : list of napari.layers.Image
+            List of image layers to check.
+
+        Returns
+        -------
+        np.ndarray or None
+            Array of common harmonic values, or None if no common harmonics.
+        """
+        if not layers:
+            return None
+
+        common = None
+        for layer in layers:
+            harmonics = layer.metadata.get("harmonics")
+            if harmonics is None:
+                continue
+            harmonics = np.atleast_1d(harmonics)
+            if common is None:
+                common = set(harmonics.tolist())
+            else:
+                common = common.intersection(set(harmonics.tolist()))
+
+        if common is None or len(common) == 0:
+            return None
+        return np.array(sorted(common))
 
     def _restore_original_phasor_data(self, image_layer):
         """Restore original G, S, and image data from backups.
@@ -1848,18 +2139,32 @@ class PlotterWidget(QWidget):
     def has_phasor_data(self):
         """Check if valid phasor data is loaded.
 
+        Returns True if the primary layer has phasor data, or if any
+        selected layer has valid G/S arrays.
+
         Returns
         -------
         bool
-            True if all required phasor arrays are present, False otherwise.
+            True if phasor data is available, False otherwise.
         """
-        return (
+        # Check primary layer arrays (backward compatibility)
+        if (
             self._g_array is not None
             and self._s_array is not None
             and self._harmonics_array is not None
-            and self._g_original_array is not None
-            and self._s_original_array is not None
-        )
+        ):
+            return True
+
+        # Also check if any selected layer has phasor data
+        selected_layers = self.get_selected_layers()
+        for layer in selected_layers:
+            if (
+                layer.metadata.get("G") is not None
+                and layer.metadata.get("S") is not None
+            ):
+                return True
+
+        return False
 
     def get_harmonic_index(self, harmonic=None):
         """Return index of harmonic in loaded harmonics array.
@@ -1952,20 +2257,84 @@ class PlotterWidget(QWidget):
     def get_features(self):
         """Get the G and S features for the selected harmonic.
 
+        Merges data from all selected layers for combined plotting.
+
         Returns
         -------
         x_data : np.ndarray
-            The G feature data.
+            The G feature data (merged from all selected layers).
         y_data : np.ndarray
-            The S feature data.
+            The S feature data (merged from all selected layers).
         """
-        g_flat, s_flat, valid = self.get_masked_gs(
-            flat=True, return_valid_mask=True
-        )
-        if g_flat is None or s_flat is None or valid is None:
+        return self.get_merged_features()
+
+    def get_merged_features(self):
+        """Get merged G and S features from all selected layers.
+
+        Combines phasor data from all selected layers into single arrays
+        for unified plotting. Each layer's data is extracted at the current
+        harmonic and merged together.
+
+        Returns
+        -------
+        tuple or None
+            (g_merged, s_merged) arrays, or None if no valid data.
+        """
+        selected_layers = self.get_selected_layers()
+        if not selected_layers:
             return None
 
-        return g_flat[valid], s_flat[valid]
+        all_g = []
+        all_s = []
+
+        for layer in selected_layers:
+            g_array = layer.metadata.get("G")
+            s_array = layer.metadata.get("S")
+            harmonics_array = layer.metadata.get("harmonics")
+
+            if g_array is None or s_array is None:
+                continue
+
+            # Get harmonic index for this layer
+            if harmonics_array is not None:
+                harmonics_array = np.atleast_1d(harmonics_array)
+                target_harmonic = self.harmonic
+                try:
+                    harmonic_idx = int(
+                        np.where(harmonics_array == target_harmonic)[0][0]
+                    )
+                except (IndexError, ValueError):
+                    # Harmonic not found in this layer, skip it
+                    continue
+            else:
+                harmonic_idx = 0
+
+            # Extract data for the harmonic
+            if g_array.ndim == 3:
+                g = g_array[harmonic_idx]
+                s = s_array[harmonic_idx]
+            else:
+                g = g_array
+                s = s_array
+
+            # Flatten and filter valid values
+            g_flat = g.ravel()
+            s_flat = s.ravel()
+            valid = (~np.isnan(g_flat)) & (~np.isnan(s_flat))
+
+            all_g.append(g_flat[valid])
+            all_s.append(s_flat[valid])
+
+        if not all_g:
+            return None
+
+        g_merged = np.concatenate(all_g)
+        s_merged = np.concatenate(all_s)
+
+        if len(g_merged) == 0:
+            return None
+
+        return g_merged, s_merged
 
     def set_axes_labels(self):
         """Set the axes labels in the canvas widget."""
