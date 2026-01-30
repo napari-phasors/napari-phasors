@@ -619,10 +619,8 @@ def test_circular_cursor_labels_layer_visibility(make_napari_viewer):
     # Switch to manual selection mode
     selection_widget.selection_mode_combobox.setCurrentIndex(1)
 
-    # Circular cursor layer visibility is managed by _manage_labels_layer_visibility
-    # which is called during mode change
-    # The layer may not be immediately hidden without layer changes or explicit updates
-    # Just verify the mode switch happened correctly
+    # Circular cursor layer should be hidden now
+    assert circular_layer.visible is False
     assert selection_widget.is_manual_selection_mode()
 
     # Switch back to circular cursor mode
@@ -711,8 +709,8 @@ def test_manual_selection_layers_hidden_in_circular_mode(make_napari_viewer):
     # Switch to circular cursor mode
     selection_widget.selection_mode_combobox.setCurrentIndex(0)
 
-    # Manual selection layer visibility is managed during mode changes
-    # Just verify the mode switch happened correctly
+    # Manual selection layer should be hidden now
+    assert manual_layer.visible is False
     assert not selection_widget.is_manual_selection_mode()
 
     # Switch back to manual selection mode

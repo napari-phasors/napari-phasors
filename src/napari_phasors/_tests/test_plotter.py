@@ -1684,9 +1684,8 @@ def test_selection_tab_mode_switching_integration(make_napari_viewer):
     assert selection_widget.stacked_widget.currentIndex() == 1
     assert selection_widget.is_manual_selection_mode()
 
-    # Note: Layer visibility is managed via _manage_labels_layer_visibility
-    # which may not immediately update visibility without explicit triggering
-    # Just verify mode switching worked
+    # Verify circular cursor layer is now hidden
+    assert circular_layer.visible is False
 
     # Make a manual selection
     manual_selection = np.array([1, 0, 1, 0, 1, 0, 0, 0, 0, 0])
@@ -1703,6 +1702,10 @@ def test_selection_tab_mode_switching_integration(make_napari_viewer):
 
     # Verify we're back in circular cursor mode
     assert not selection_widget.is_manual_selection_mode()
+
+    # Verify visibility has switched back
+    assert circular_layer.visible is True
+    assert manual_layer.visible is False
 
 
 def test_toolbar_hidden_when_switching_tabs(make_napari_viewer):

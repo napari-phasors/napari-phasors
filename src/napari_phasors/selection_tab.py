@@ -166,27 +166,27 @@ class SelectionWidget(QWidget):
         if layer is None:
             return
 
-        # Define patterns for different selection methods
-        circular_cursor_pattern = (
-            f"Selection CIRCULAR CURSOR SELECTION: {layer.name}"
-        )
-        manual_selection_pattern = f"Selection MANUAL SELECTION"
-
         for viewer_layer in self.viewer.layers:
-            if not hasattr(viewer_layer, 'name'):
+            if not isinstance(viewer_layer, Labels):
+                continue
+            if not hasattr(viewer_layer, 'metadata'):
                 continue
 
-            layer_name = viewer_layer.name
+            # Check metadata tags to identify layer type
+            if 'napari_phasors_selection_type' in viewer_layer.metadata:
+                selection_type = viewer_layer.metadata[
+                    'napari_phasors_selection_type'
+                ]
+                source_layer = viewer_layer.metadata.get(
+                    'napari_phasors_source_layer'
+                )
 
-            # Check if this is a circular cursor layer
-            if layer_name == circular_cursor_pattern:
-                viewer_layer.visible = not show_manual
-            # Check if this is a manual selection layer
-            elif (
-                manual_selection_pattern in layer_name
-                and layer.name in layer_name
-            ):
-                viewer_layer.visible = show_manual
+                # Only manage layers belonging to the current image layer
+                if source_layer == layer.name:
+                    if selection_type == 'circular_cursor':
+                        viewer_layer.visible = not show_manual
+                    elif selection_type == 'manual':
+                        viewer_layer.visible = show_manual
 
     def _on_selection_mode_changed(self, index):
         """Handle selection mode change."""
@@ -607,6 +607,10 @@ class SelectionWidget(QWidget):
             colormap=DirectLabelColormap(
                 color_dict=color_dict, name="cat10_mod"
             ),
+            metadata={
+                'napari_phasors_selection_type': 'manual',
+                'napari_phasors_source_layer': layer.name,
+            },
         )
 
         self._phasors_selected_layer = self.viewer.add_layer(
@@ -678,6 +682,10 @@ class SelectionWidget(QWidget):
                 color_dict=color_dict, name="cat10_mod"
             ),
             visible=False,
+            metadata={
+                'napari_phasors_selection_type': 'manual',
+                'napari_phasors_source_layer': layer.name,
+            },
         )
 
         self.viewer.add_layer(phasors_selected_layer)
@@ -1067,8 +1075,6 @@ class CircularCursorWidget(QWidget):
                 "circular_cursors"
             ]
             for params in cursor_params:
-                from qtpy.QtGui import QColor
-
                 color = QColor(*params['color'])
                 self._add_cursor(
                     g=params['g'],
@@ -1210,6 +1216,10 @@ class CircularCursorWidget(QWidget):
                 colormap=DirectLabelColormap(
                     color_dict=color_dict, name="circular_cursor_colors"
                 ),
+                metadata={
+                    'napari_phasors_selection_type': 'circular_cursor',
+                    'napari_phasors_source_layer': image_layer.name,
+                },
             )
             self._phasors_selected_layer = self.viewer.add_layer(labels_layer)
 

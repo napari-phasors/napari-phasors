@@ -665,11 +665,6 @@ class PlotterWidget(QWidget):
             source_layer = self.viewer.layers[source_layer_name]
 
             source_settings = source_layer.metadata.get('settings', {}).copy()
-            # Add selections to source_settings for dialog detection
-            if 'selections' in source_layer.metadata:
-                source_settings['selections'] = source_layer.metadata[
-                    'selections'
-                ]
 
             selected_tabs = self._show_import_dialog(
                 source_settings=source_settings
@@ -758,20 +753,7 @@ class PlotterWidget(QWidget):
                 current_layer.metadata['settings'] = copy.deepcopy(
                     source_layer.metadata['settings']
                 )
-            if (
-                'selections' in source_layer.metadata
-                and 'selection_tab' in selected_tabs
-            ):
-                current_layer.metadata['selections'] = copy.deepcopy(
-                    source_layer.metadata['selections']
-                )
-            if (
-                'circular_cursors' in source_layer.metadata
-                and 'selection_tab' in selected_tabs
-            ):
-                current_layer.metadata['circular_cursors'] = copy.deepcopy(
-                    source_layer.metadata['circular_cursors']
-                )
+
             self._restore_plot_settings_from_metadata()
             self._restore_all_tab_analyses(selected_tabs)
             self.plot()
