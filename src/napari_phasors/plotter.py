@@ -1,3 +1,4 @@
+import copy
 import math
 import warnings
 from pathlib import Path
@@ -25,7 +26,6 @@ from qtpy.QtWidgets import (
     QLabel,
     QPushButton,
     QSpinBox,
-    QSplitter,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -154,12 +154,10 @@ class PlotterWidget(QWidget):
         self.harmonic_spinbox = QSpinBox()
         self.harmonic_spinbox.setMinimum(1)
         self.harmonic_spinbox.setValue(1)
-        self.harmonic_spinbox.setMaximumHeight(25)  # Set smaller height
-        harmonics_and_mask_container.addWidget(
-            self.harmonic_spinbox, 1
-        )  # Add stretch factor of 1
+        self.harmonic_spinbox.setMaximumHeight(25)
+        harmonics_and_mask_container.addWidget(self.harmonic_spinbox, 1)
 
-        # Mask label and combobox (right side)
+        # Mask label and combobox
         self.mask_layer_label = QLabel("Mask Layer:")
         harmonics_and_mask_container.addWidget(self.mask_layer_label)
         self.mask_layer_combobox = QComboBox()
@@ -168,7 +166,7 @@ class PlotterWidget(QWidget):
             "Selecting 'None' will disable masking."
         )
         self.mask_layer_combobox.addItem("None")
-        self.mask_layer_combobox.setMaximumHeight(25)  # Set smaller height
+        self.mask_layer_combobox.setMaximumHeight(25)
         harmonics_and_mask_container.addWidget(self.mask_layer_combobox, 1)
 
         controls_container.layout().addLayout(harmonics_and_mask_container)
@@ -216,7 +214,7 @@ class PlotterWidget(QWidget):
         self.settings_tab.setLayout(QVBoxLayout())
         self.tab_widget.addTab(self.settings_tab, "Plot Settings")
 
-        # Load plotter inputs widget from ui file (moved to Settings tab)
+        # Load plotter inputs widget from ui file
         self.plotter_inputs_widget = QWidget()
         uic.loadUi(
             Path(__file__).parent / "ui/plotter_inputs_widget.ui",
@@ -284,9 +282,7 @@ class PlotterWidget(QWidget):
         self.plotter_inputs_widget.colormap_combobox.addItems(
             list(colormaps.ALL_COLORMAPS.keys())
         )
-        self.histogram_colormap = (
-            "turbo"  # Set default colormap (same as in biaplotter)
-        )
+        self.histogram_colormap = "turbo"
 
         # Initialize attributes
         self.polar_plot_artist_list = []
@@ -336,7 +332,7 @@ class PlotterWidget(QWidget):
     def _get_default_plot_settings(self):
         """Get default settings dictionary for plot parameters."""
 
-        default_harmonic = 1  # fallback default
+        default_harmonic = 1
         layer_name = (
             self.image_layer_with_phasor_features_combobox.currentText()
         )
@@ -352,12 +348,12 @@ class PlotterWidget(QWidget):
 
         return {
             'harmonic': default_harmonic,
-            'semi_circle': self.toggle_semi_circle,  # Use current widget value
-            'white_background': self.white_background,  # Use current widget value
-            'plot_type': self.plot_type,  # Use current widget value
-            'colormap': self.histogram_colormap,  # Use current widget value
-            'number_of_bins': self.histogram_bins,  # Use current widget value
-            'log_scale': self.histogram_log_scale,  # Use current widget value
+            'semi_circle': self.toggle_semi_circle,
+            'white_background': self.white_background,
+            'plot_type': self.plot_type,
+            'colormap': self.histogram_colormap,
+            'number_of_bins': self.histogram_bins,
+            'log_scale': self.histogram_log_scale,
         }
 
     def _initialize_plot_settings_in_metadata(self, layer):
@@ -513,16 +509,17 @@ class PlotterWidget(QWidget):
 
         # Map tab display names to their metadata keys
         tab_mapping = [
-            ("Plot Settings", "settings_tab", None),  # Always has settings
+            ("Plot Settings", "settings_tab", None),
             ("Calibration", "calibration_tab", "calibrated"),
             (
                 "Filter/Threshold",
                 "filter_tab",
                 ["threshold", "filter"],
-            ),  # Either threshold or filter
+            ),
             ("Lifetime", "lifetime_tab", "lifetime"),
             ("FRET", "fret_tab", "fret"),
             ("Components", "components_tab", "component_analysis"),
+            ("Selection", "selection_tab", "selections"),
         ]
 
         checkboxes = {}
@@ -530,18 +527,13 @@ class PlotterWidget(QWidget):
         for label, attr, settings_key in tab_mapping:
             # Determine if this tab should be shown
             show_tab = False
-
             if source_settings is None:
-                # No settings provided, show all tabs
                 show_tab = True
             elif settings_key is None:
-                # Always show (e.g., Plot Settings)
                 show_tab = True
             elif isinstance(settings_key, list):
-                # Show if any of the keys exist (e.g., Filter/Threshold)
                 show_tab = any(key in source_settings for key in settings_key)
             else:
-                # Show if the specific key exists
                 show_tab = settings_key in source_settings
 
             if show_tab:
@@ -585,6 +577,7 @@ class PlotterWidget(QWidget):
                 "lifetime_tab",
                 "fret_tab",
                 "components_tab",
+                "selection_tab",
             ]
 
         # Restore plot settings first if selected
@@ -607,6 +600,8 @@ class PlotterWidget(QWidget):
             self.lifetime_tab._on_image_layer_changed()
         if "fret_tab" in selected_tabs and hasattr(self, 'fret_tab'):
             self.fret_tab._on_image_layer_changed()
+        if "selection_tab" in selected_tabs and hasattr(self, 'selection_tab'):
+            self.selection_tab._on_image_layer_changed()
 
         current_tab_index = self.tab_widget.currentIndex()
         self._on_tab_changed(current_tab_index)
@@ -669,7 +664,7 @@ class PlotterWidget(QWidget):
             source_layer_name = layer_combo.currentText()
             source_layer = self.viewer.layers[source_layer_name]
 
-            source_settings = source_layer.metadata.get('settings', {})
+            source_settings = source_layer.metadata.get('settings', {}).copy()
 
             selected_tabs = self._show_import_dialog(
                 source_settings=source_settings
@@ -758,6 +753,7 @@ class PlotterWidget(QWidget):
                 current_layer.metadata['settings'] = copy.deepcopy(
                     source_layer.metadata['settings']
                 )
+
             self._restore_plot_settings_from_metadata()
             self._restore_all_tab_analyses(selected_tabs)
             self.plot()
@@ -779,7 +775,6 @@ class PlotterWidget(QWidget):
         current_layer = self.viewer.layers[current_layer_name]
         if 'settings' not in current_layer.metadata:
             current_layer.metadata['settings'] = {}
-        import copy
 
         current_layer.metadata['settings'] = copy.deepcopy(settings)
 
@@ -809,11 +804,13 @@ class PlotterWidget(QWidget):
     def _hide_all_tab_artists(self):
         """Hide all tab-specific artists."""
         if hasattr(self, 'selection_tab'):
+            # Deactivate any active selection tools before hiding toolbar
+            if hasattr(self, 'canvas_widget'):
+                self.canvas_widget._on_escape(None)
             self._set_selection_visibility(False)
-        # Hide components tab artists
+            self._set_circular_cursor_visibility(False)
         if hasattr(self, 'components_tab'):
             self._set_components_visibility(False)
-        # Hide other tabs' artists (add similar methods for other tabs)
         if hasattr(self, 'fret_tab'):
             self._set_fret_visibility(False)
 
@@ -824,6 +821,8 @@ class PlotterWidget(QWidget):
             if hasattr(self.selection_tab, 'is_manual_selection_mode'):
                 is_manual = self.selection_tab.is_manual_selection_mode()
                 self._set_selection_visibility(is_manual)
+                if not is_manual:
+                    self._set_circular_cursor_visibility(True)
             else:
                 self._set_selection_visibility(True)
         elif current_tab == getattr(self, 'components_tab', None):
@@ -840,6 +839,15 @@ class PlotterWidget(QWidget):
                 widget = item.widget()
                 if widget is not None:
                     widget.setVisible(visible)
+
+    def _set_circular_cursor_visibility(self, visible):
+        """Set visibility of circular cursor patches."""
+        if hasattr(self, 'selection_tab'):
+            circular_cursor_widget = self.selection_tab.circular_cursor_widget
+            if visible:
+                circular_cursor_widget.redraw_all_patches()
+            else:
+                circular_cursor_widget.clear_all_patches()
 
     def _set_components_visibility(self, visible):
         """Set visibility of components tab artists."""
@@ -1667,6 +1675,10 @@ class PlotterWidget(QWidget):
             # Update calibration button state when layer changes
             if hasattr(self, 'calibration_tab'):
                 self.calibration_tab._on_image_layer_changed()
+
+            # Update selection tab when layer changes
+            if hasattr(self, 'selection_tab'):
+                self.selection_tab._on_image_layer_changed()
 
             # Update lifetime tab when layer changes
             if hasattr(self, 'lifetime_tab'):

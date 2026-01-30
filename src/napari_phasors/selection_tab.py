@@ -166,50 +166,47 @@ class SelectionWidget(QWidget):
         if layer is None:
             return
 
-        # Define patterns for different selection methods
-        circular_cursor_pattern = (
-            f"Selection CIRCULAR CURSOR SELECTION: {layer.name}"
-        )
-        manual_selection_pattern = f"Selection MANUAL SELECTION"
-
         for viewer_layer in self.viewer.layers:
-            if not hasattr(viewer_layer, 'name'):
+            if not isinstance(viewer_layer, Labels):
+                continue
+            if not hasattr(viewer_layer, 'metadata'):
                 continue
 
-            layer_name = viewer_layer.name
+            # Check metadata tags to identify layer type
+            if 'napari_phasors_selection_type' in viewer_layer.metadata:
+                selection_type = viewer_layer.metadata[
+                    'napari_phasors_selection_type'
+                ]
+                source_layer = viewer_layer.metadata.get(
+                    'napari_phasors_source_layer'
+                )
 
-            # Check if this is a circular cursor layer
-            if layer_name == circular_cursor_pattern:
-                viewer_layer.visible = not show_manual
-            # Check if this is a manual selection layer
-            elif (
-                manual_selection_pattern in layer_name
-                and layer.name in layer_name
-            ):
-                viewer_layer.visible = show_manual
+                # Only manage layers belonging to the current image layer
+                if source_layer == layer.name:
+                    if selection_type == 'circular_cursor':
+                        viewer_layer.visible = not show_manual
+                    elif selection_type == 'manual':
+                        viewer_layer.visible = show_manual
 
     def _on_selection_mode_changed(self, index):
         """Handle selection mode change."""
         self.stacked_widget.setCurrentIndex(index)
 
-        if index == 1:  # Manual selection mode (now index 1)
-            # Clear circular cursor patches
+        if index == 1:  # Manual selection mode
             self.circular_cursor_widget.clear_all_patches()
-            # Show manual selection toolbar
             if self.parent_widget is not None:
                 self.parent_widget._set_selection_visibility(True)
-            # Show manual selection layers and hide circular cursor layer
             self._manage_labels_layer_visibility(show_manual=True)
-        else:  # Circular cursor mode (now index 0)
-            # Redraw circular cursor patches
+            self.update_phasor_plot_with_selection_id(self.selection_id)
+        else:  # Circular cursor mode
+            # Deactivate any active selection tools before hiding toolbar
+            if self.parent_widget is not None:
+                self.parent_widget.canvas_widget._on_escape(None)
             self.circular_cursor_widget.redraw_all_patches()
-            # Hide manual selection toolbar
             if self.parent_widget is not None:
                 self.parent_widget._set_selection_visibility(False)
-            # Clear manual selection colors from plot
             if self.parent_widget is not None:
                 self.parent_widget.plot(selection_id_data=None)
-            # Show circular cursor layer and hide manual selection layers
             self._manage_labels_layer_visibility(show_manual=False)
 
     @property
@@ -250,12 +247,7 @@ class SelectionWidget(QWidget):
         self.selection_input_widget.phasor_selection_id_combobox.setCurrentText(
             new_selection_id
         )
-        # Update the internal tracking variable
         self._current_selection_id = new_selection_id
-
-        # Ensure storage exists
-        if new_selection_id != "None":
-            self._ensure_selection_storage(new_selection_id)
 
     def _get_current_layer(self):
         """Helper to get the currently selected image layer."""
@@ -265,25 +257,6 @@ class SelectionWidget(QWidget):
         if not layer_name or layer_name not in self.viewer.layers:
             return None
         return self.viewer.layers[layer_name]
-
-    def _ensure_selection_storage(self, selection_id: str):
-        """Ensure the selection ID exists in the layer metadata."""
-        layer = self._get_current_layer()
-        if layer is None:
-            return
-
-        if "selections" not in layer.metadata:
-            layer.metadata["selections"] = {}
-
-        if selection_id not in layer.metadata["selections"]:
-            # Initialize with zeros, shape of image
-            spatial_shape = self.parent_widget.get_phasor_spatial_shape()
-            if spatial_shape is None:
-                return
-
-            layer.metadata["selections"][selection_id] = np.zeros(
-                spatial_shape, dtype=np.uint32
-            )
 
     def _find_phasors_layer_by_name(self, layer_name):
         """Find a phasors layer by name in the viewer."""
@@ -332,45 +305,95 @@ class SelectionWidget(QWidget):
             self._switching_selection_id = True
 
             self._current_selection_id = new_selection_id_for_comparison
-            if new_selection_id_for_comparison != "None":
-                self._ensure_selection_storage(new_selection_id_for_comparison)
 
-            # Check if we need to recreate a missing selection layer
+            # Update phasors_selected_layer reference
             layer = self._get_current_layer()
             if new_selection_id_for_comparison != "None" and layer is not None:
-                layer_name = f"Selection {new_selection_id_for_comparison}: {layer.name}"
+                layer_name = f"{new_selection_id_for_comparison}: {layer.name}"
                 existing_layer = self._find_phasors_layer_by_name(layer_name)
 
-                # If layer doesn't exist but data exists in metadata, recreate it
-                if (
-                    existing_layer is None
-                    and "selections" in layer.metadata
-                    and new_selection_id_for_comparison
-                    in layer.metadata["selections"]
-                ):
-                    self.create_phasors_selected_layer()
-                else:
-                    # If layer exists, just update the reference
-                    self._phasors_selected_layer = existing_layer
+                if existing_layer is None:
+                    if (
+                        "settings" in layer.metadata
+                        and "selections" in layer.metadata["settings"]
+                        and "manual_selections"
+                        in layer.metadata["settings"]["selections"]
+                        and new_selection_id_for_comparison
+                        in layer.metadata["settings"]["selections"][
+                            "manual_selections"
+                        ]
+                    ):
+                        selection_map = layer.metadata["settings"][
+                            "selections"
+                        ]["manual_selections"][new_selection_id_for_comparison]
+                        self._recreate_manual_selection_layer(
+                            new_selection_id_for_comparison, selection_map
+                        )
+                        existing_layer = self._find_phasors_layer_by_name(
+                            layer_name
+                        )
+
+                self._phasors_selected_layer = existing_layer
             else:
-                # If "None" is selected, set phasors_selected_layer to None
                 self._phasors_selected_layer = None
 
-            # Always (re)connect the overlay signal to the current layer
             self._connect_show_overlay_signal()
 
             processed_selection_id = new_selection_id
 
-            # Only update the plot if we're not processing an initial selection
             if not getattr(self, '_processing_initial_selection', False):
                 self.update_phasor_plot_with_selection_id(
                     processed_selection_id
                 )
-                # update phasor_selected_layer
                 if self._phasors_selected_layer is not None:
                     self.update_phasors_layer()
 
             self._switching_selection_id = False
+
+    def _on_image_layer_changed(self):
+        """Callback when the image layer changes - restores circular cursors from metadata."""
+        # NOTE: Commented out restoring manual selections until they are saved during export
+        # layer = self._get_current_layer()
+        # if layer is None:
+        #     return
+
+        # self.selection_input_widget.phasor_selection_id_combobox.blockSignals(
+        #     True
+        # )
+        # self.selection_input_widget.phasor_selection_id_combobox.clear()
+        # self.selection_input_widget.phasor_selection_id_combobox.addItem(
+        #     "None"
+        # )
+
+        # if (
+        #     "settings" in layer.metadata
+        #     and "selections" in layer.metadata["settings"]
+        #     and "manual_selections" in layer.metadata["settings"]["selections"]
+        # ):
+        #     manual_selections = layer.metadata["settings"]["selections"][
+        #         "manual_selections"
+        #     ]
+        #     for selection_id in manual_selections.keys():
+        #         self.selection_input_widget.phasor_selection_id_combobox.addItem(
+        #             selection_id
+        #         )
+        #         self._recreate_manual_selection_layer(
+        #             selection_id, manual_selections[selection_id]
+        #         )
+
+        # self.selection_input_widget.phasor_selection_id_combobox.setCurrentText(
+        #     "None"
+        # )
+        # self._current_selection_id = "None"
+        # self.selection_id = "None"
+
+        # self.selection_input_widget.phasor_selection_id_combobox.blockSignals(
+        #     False
+        # )
+
+        # self._phasors_selected_layer = None
+
+        self.circular_cursor_widget._on_image_layer_changed()
 
     def update_phasor_plot_with_selection_id(self, selection_id):
         """Update the phasor plot with the selected ID and show/hide label layers."""
@@ -382,9 +405,7 @@ class SelectionWidget(QWidget):
         if getattr(self.parent_widget, '_updating_plot', False):
             return
 
-        # If selection_id is None, hide all selection layers and clear color indices
         if selection_id is None or selection_id == "":
-            # Iterate over all choices in selection_input_widget
             for i in range(
                 self.selection_input_widget.phasor_selection_id_combobox.count()
             ):
@@ -392,25 +413,31 @@ class SelectionWidget(QWidget):
                     i
                 )
                 if sel_id != "None":
-                    selection_layer_name = f"Selection {sel_id}: {layer.name}"
+                    selection_layer_name = f"{sel_id}: {layer.name}"
                     existing_layer = self._find_phasors_layer_by_name(
                         selection_layer_name
                     )
                     if existing_layer is not None:
                         existing_layer.visible = False
 
-            # Trigger plot update with None to clear selection
             self.parent_widget.plot(selection_id_data=None)
             return
 
-        # Check if the selection_id exists in metadata
-        if (
-            "selections" not in layer.metadata
-            or selection_id not in layer.metadata["selections"]
+        for i in range(
+            self.selection_input_widget.phasor_selection_id_combobox.count()
         ):
-            return
+            sel_id = self.selection_input_widget.phasor_selection_id_combobox.itemText(
+                i
+            )
+            if sel_id != "None" and sel_id != selection_id:
+                other_layer_name = f"{sel_id}: {layer.name}"
+                other_layer = self._find_phasors_layer_by_name(
+                    other_layer_name
+                )
+                if other_layer is not None:
+                    other_layer.visible = False
 
-        selection_layer_name = f"Selection {selection_id}: {layer.name}"
+        selection_layer_name = f"{selection_id}: {layer.name}"
         selection_layer = self._find_phasors_layer_by_name(
             selection_layer_name
         )
@@ -421,9 +448,21 @@ class SelectionWidget(QWidget):
         if selection_layer:
             selection_layer.visible = True
 
-        # Get selection data for the plot
-        # We need to extract the values corresponding to valid pixels
-        selection_map = layer.metadata["selections"][selection_id]
+        if (
+            "settings" in layer.metadata
+            and "selections" in layer.metadata["settings"]
+            and "manual_selections" in layer.metadata["settings"]["selections"]
+            and selection_id
+            in layer.metadata["settings"]["selections"]["manual_selections"]
+        ):
+            selection_map = layer.metadata["settings"]["selections"][
+                "manual_selections"
+            ][selection_id]
+        else:
+            spatial_shape = self.parent_widget.get_phasor_spatial_shape()
+            if spatial_shape is None:
+                return
+            selection_map = np.zeros(spatial_shape, dtype=np.uint32)
 
         _, _, valid = self.parent_widget.get_masked_gs(
             flat=True, return_valid_mask=True
@@ -431,23 +470,44 @@ class SelectionWidget(QWidget):
         if valid is None:
             return
 
-        # Extract selection data for valid pixels
         selection_data = selection_map.ravel()[valid]
 
-        # Trigger plot update with selection data
         self.parent_widget.plot(selection_id_data=selection_data)
 
     def _get_next_available_selection_id(self):
         """Get the next available manual selection ID."""
-        layer = self._get_current_layer()
-        if layer is None:
-            return "MANUAL SELECTION #1"
+        combobox_selections = [
+            self.selection_input_widget.phasor_selection_id_combobox.itemText(
+                i
+            )
+            for i in range(
+                self.selection_input_widget.phasor_selection_id_combobox.count()
+            )
+        ]
 
-        existing_selections = layer.metadata.get("selections", {}).keys()
+        layer = self._get_current_layer()
+        used_selections = set()
+        if (
+            layer is not None
+            and "settings" in layer.metadata
+            and "selections" in layer.metadata["settings"]
+            and "manual_selections" in layer.metadata["settings"]["selections"]
+        ):
+            used_selections = set(
+                layer.metadata["settings"]["selections"][
+                    "manual_selections"
+                ].keys()
+            )
+
         counter = 1
         while True:
             candidate_name = f"MANUAL SELECTION #{counter}"
-            if candidate_name not in existing_selections:
+            if (
+                candidate_name in combobox_selections
+                and candidate_name not in used_selections
+            ):
+                return candidate_name
+            elif candidate_name not in combobox_selections:
                 return candidate_name
             counter += 1
 
@@ -457,11 +517,9 @@ class SelectionWidget(QWidget):
         if layer is None:
             return
 
-        # Add guard to prevent recursive calls
         if getattr(self.parent_widget, '_updating_plot', False):
             return
 
-        # Check if we're in the middle of switching selection IDs
         if getattr(self, '_switching_selection_id', False):
             return
 
@@ -469,24 +527,33 @@ class SelectionWidget(QWidget):
             self.selection_input_widget.phasor_selection_id_combobox.currentText()
         )
 
-        # If "None" is selected in combobox, automatically switch to new selection ID
         if current_combobox_text == "None":
             new_selection_id = self._get_next_available_selection_id()
 
-            # Set a flag to indicate we're processing the original manual selection
             self._processing_initial_selection = True
             self._initial_manual_selection = manual_selection
 
             self._current_selection_id = new_selection_id
             self.selection_id = new_selection_id
 
-        self._ensure_selection_storage(self.selection_id)
+        if (
+            "settings" in layer.metadata
+            and "selections" in layer.metadata["settings"]
+            and "manual_selections" in layer.metadata["settings"]["selections"]
+            and self.selection_id
+            in layer.metadata["settings"]["selections"]["manual_selections"]
+        ):
+            selection_map = layer.metadata["settings"]["selections"][
+                "manual_selections"
+            ][self.selection_id].copy()
+        else:
+            spatial_shape = self.parent_widget.get_phasor_spatial_shape()
+            if spatial_shape is None:
+                return
+            selection_map = np.zeros(spatial_shape, dtype=np.uint32)
 
-        # Get the selection map array
-        selection_map = layer.metadata["selections"][self.selection_id]
         selection_map_flat = selection_map.ravel()
 
-        # Mask of valid pixels (where G and S are not NaN)
         _, _, valid_pixels_mask = self.parent_widget.get_masked_gs(
             flat=True, return_valid_mask=True
         )
@@ -502,16 +569,21 @@ class SelectionWidget(QWidget):
             self._processing_initial_selection = False
             delattr(self, '_initial_manual_selection')
 
-        # Update the selection map
-        # manual_selection contains the color indices for the valid pixels
         if selection_to_use is None:
-            # Clear selection for valid pixels
             selection_map_flat[valid_pixels_mask] = 0
         else:
-            # Map the selection values back to the full image
-            # selection_to_use corresponds to the compressed array (valid pixels only)
-            # We assign it to the locations in the full array where valid_pixels_mask is True
             selection_map_flat[valid_pixels_mask] = selection_to_use
+
+        if "settings" not in layer.metadata:
+            layer.metadata["settings"] = {}
+        if "selections" not in layer.metadata["settings"]:
+            layer.metadata["settings"]["selections"] = {}
+        if "manual_selections" not in layer.metadata["settings"]["selections"]:
+            layer.metadata["settings"]["selections"]["manual_selections"] = {}
+
+        layer.metadata["settings"]["selections"]["manual_selections"][
+            self.selection_id
+        ] = selection_map.copy()
 
         self.update_phasors_layer()
 
@@ -523,13 +595,23 @@ class SelectionWidget(QWidget):
         if self.selection_id is None or self.selection_id == "":
             return
 
-        if (
-            "selections" not in layer.metadata
-            or self.selection_id not in layer.metadata["selections"]
-        ):
+        spatial_shape = self.parent_widget.get_phasor_spatial_shape()
+        if spatial_shape is None:
             return
 
-        selection_map = layer.metadata["selections"][self.selection_id]
+        # Get selection map from metadata if it exists, otherwise create empty
+        if (
+            "settings" in layer.metadata
+            and "selections" in layer.metadata["settings"]
+            and "manual_selections" in layer.metadata["settings"]["selections"]
+            and self.selection_id
+            in layer.metadata["settings"]["selections"]["manual_selections"]
+        ):
+            selection_map = layer.metadata["settings"]["selections"][
+                "manual_selections"
+            ][self.selection_id].copy()
+        else:
+            selection_map = np.zeros(spatial_shape, dtype=np.uint32)
 
         color_dict = colormap_to_dict(
             self.parent_widget._colormap,
@@ -537,9 +619,8 @@ class SelectionWidget(QWidget):
             exclude_first=True,
         )
 
-        layer_name = f"Selection {self.selection_id}: {layer.name}"
+        layer_name = f"{self.selection_id}: {layer.name}"
 
-        # Create Labels layer directly from the selection map
         phasors_selected_layer = Labels(
             selection_map,
             name=layer_name,
@@ -547,13 +628,16 @@ class SelectionWidget(QWidget):
             colormap=DirectLabelColormap(
                 color_dict=color_dict, name="cat10_mod"
             ),
+            metadata={
+                'napari_phasors_selection_type': 'manual',
+                'napari_phasors_source_layer': layer.name,
+            },
         )
 
         self._phasors_selected_layer = self.viewer.add_layer(
             phasors_selected_layer
         )
 
-        # Always (re)connect the overlay signal to the new layer
         self._connect_show_overlay_signal()
 
     def update_phasors_layer(self):
@@ -562,7 +646,7 @@ class SelectionWidget(QWidget):
         if layer is None:
             return
 
-        selection_layer_name = f"Selection {self.selection_id}: {layer.name}"
+        selection_layer_name = f"{self.selection_id}: {layer.name}"
         existing_phasors_selected_layer = self._find_phasors_layer_by_name(
             selection_layer_name
         )
@@ -572,20 +656,60 @@ class SelectionWidget(QWidget):
             return
 
         if self.selection_id is None or self.selection_id == "":
-            # Should probably not happen here, but clear if it does
             existing_phasors_selected_layer.data = np.zeros_like(
                 existing_phasors_selected_layer.data
             )
         else:
+            # Update the layer with the selection map from metadata
             if (
-                "selections" in layer.metadata
-                and self.selection_id in layer.metadata["selections"]
+                "settings" in layer.metadata
+                and "selections" in layer.metadata["settings"]
+                and "manual_selections"
+                in layer.metadata["settings"]["selections"]
+                and self.selection_id
+                in layer.metadata["settings"]["selections"][
+                    "manual_selections"
+                ]
             ):
-                existing_phasors_selected_layer.data = layer.metadata[
-                    "selections"
+                selection_map = layer.metadata["settings"]["selections"][
+                    "manual_selections"
                 ][self.selection_id]
+                existing_phasors_selected_layer.data = selection_map
 
         self._phasors_selected_layer = existing_phasors_selected_layer
+
+    def _recreate_manual_selection_layer(self, selection_id, selection_map):
+        """Recreate a manual selection labels layer from metadata."""
+        layer = self._get_current_layer()
+        if layer is None:
+            return
+
+        layer_name = f"{selection_id}: {layer.name}"
+
+        if self._find_phasors_layer_by_name(layer_name):
+            return
+
+        color_dict = colormap_to_dict(
+            self.parent_widget._colormap,
+            self.parent_widget._colormap.N,
+            exclude_first=True,
+        )
+
+        phasors_selected_layer = Labels(
+            selection_map,
+            name=layer_name,
+            scale=layer.scale,
+            colormap=DirectLabelColormap(
+                color_dict=color_dict, name="cat10_mod"
+            ),
+            visible=False,
+            metadata={
+                'napari_phasors_selection_type': 'manual',
+                'napari_phasors_source_layer': layer.name,
+            },
+        )
+
+        self.viewer.add_layer(phasors_selected_layer)
 
 
 class ColorButton(QPushButton):
@@ -641,7 +765,6 @@ class CircularCursorWidget(QWidget):
         The parent PlotterWidget.
     """
 
-    # Get colors from matplotlib Set1 colormap
     DEFAULT_COLORS = [
         QColor(int(r * 255), int(g * 255), int(b * 255))
         for r, g, b, _ in [plt.get_cmap('Set1')(i) for i in range(9)]
@@ -656,7 +779,6 @@ class CircularCursorWidget(QWidget):
         # Store cursor data: list of dicts with g, s, radius, color, patch
         self._cursors = []
         self._phasors_selected_layer = None
-        self._selection_id = "CIRCULAR CURSOR SELECTION"
 
         # Dragging state
         self._dragging_cursor = None
@@ -690,7 +812,7 @@ class CircularCursorWidget(QWidget):
         self.cursor_table.verticalHeader().setVisible(False)
         layout.addWidget(self.cursor_table)
 
-        # Buttons for add/remove/apply
+        # Buttons for add and remove
         buttons_layout = QHBoxLayout()
 
         self.add_cursor_button = QPushButton("Add Cursor")
@@ -703,7 +825,6 @@ class CircularCursorWidget(QWidget):
 
         layout.addLayout(buttons_layout)
 
-        # Add stretch at the bottom
         layout.addStretch()
 
     def _get_next_color(self):
@@ -729,9 +850,9 @@ class CircularCursorWidget(QWidget):
 
         # G spinbox
         g_spinbox = QDoubleSpinBox()
-        g_spinbox.setRange(-1.0, 2.0)
+        g_spinbox.setRange(-1.5, 1.5)
         g_spinbox.setSingleStep(0.01)
-        g_spinbox.setDecimals(3)
+        g_spinbox.setDecimals(2)
         g_spinbox.setValue(g)
         g_spinbox.valueChanged.connect(
             lambda val, r=row: self._on_cursor_changed(r)
@@ -740,9 +861,9 @@ class CircularCursorWidget(QWidget):
 
         # S spinbox
         s_spinbox = QDoubleSpinBox()
-        s_spinbox.setRange(-1.0, 2.0)
+        s_spinbox.setRange(-1.5, 1.5)
         s_spinbox.setSingleStep(0.01)
-        s_spinbox.setDecimals(3)
+        s_spinbox.setDecimals(2)
         s_spinbox.setValue(s)
         s_spinbox.valueChanged.connect(
             lambda val, r=row: self._on_cursor_changed(r)
@@ -892,34 +1013,30 @@ class CircularCursorWidget(QWidget):
         cursor = self._cursors[row]
         ax = self.parent_widget.canvas_widget.axes
 
-        # Remove existing patch if any
         if cursor['patch'] is not None:
             try:
                 cursor['patch'].remove()
             except ValueError:
                 pass
 
-        # Create new patch with no fill (transparent)
         color = cursor['color']
         edge_rgba = (color.redF(), color.greenF(), color.blueF(), 1.0)
 
         patch = Circle(
             (cursor['g'], cursor['s']),
             cursor['radius'],
-            fill=False,  # No fill
+            fill=False,
             edgecolor=edge_rgba,
             linewidth=2,
             zorder=10,
-            picker=True,  # Enable picking for dragging
+            picker=True,
         )
         cursor['patch'] = ax.add_patch(patch)
 
-        # Redraw canvas
         self.parent_widget.canvas_widget.canvas.draw_idle()
 
     def _clear_all_cursors(self):
         """Clear all cursors."""
-        # Remove all patches
         for cursor in self._cursors:
             if cursor['patch'] is not None:
                 try:
@@ -930,10 +1047,8 @@ class CircularCursorWidget(QWidget):
         self._cursors.clear()
         self.cursor_table.setRowCount(0)
 
-        # Remove selection layer if exists
         self._remove_selection_layer()
 
-        # Redraw canvas
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
@@ -955,6 +1070,56 @@ class CircularCursorWidget(QWidget):
         for row in range(len(self._cursors)):
             self._update_cursor_patch(row)
 
+    def _on_image_layer_changed(self):
+        """Callback when image layer changes - clear and restore circular cursors."""
+        for cursor in self._cursors:
+            if cursor['patch'] is not None:
+                try:
+                    cursor['patch'].remove()
+                except ValueError:
+                    pass
+                cursor['patch'] = None
+
+        self._cursors.clear()
+        self.cursor_table.setRowCount(0)
+
+        layer = self._get_current_layer()
+        if layer is None:
+            return
+
+        if (
+            "settings" in layer.metadata
+            and "selections" in layer.metadata["settings"]
+            and "circular_cursors" in layer.metadata["settings"]["selections"]
+        ):
+            cursor_params = layer.metadata["settings"]["selections"][
+                "circular_cursors"
+            ]
+
+            original_apply_selection = getattr(self, "_apply_selection", None)
+
+            def _noop_apply_selection(*args, **kwargs):
+                return None
+
+            if original_apply_selection is not None:
+                self._apply_selection = _noop_apply_selection
+            try:
+                for params in cursor_params:
+                    color = QColor(*params["color"])
+                    self._add_cursor(
+                        g=params["g"],
+                        s=params["s"],
+                        radius=params["radius"],
+                        color=color,
+                    )
+            finally:
+                if original_apply_selection is not None:
+                    self._apply_selection = original_apply_selection
+                    self._apply_selection()
+
+        if self.parent_widget is not None:
+            self.parent_widget.canvas_widget.canvas.draw_idle()
+
     def _get_current_layer(self):
         """Helper to get the currently selected image layer."""
         if self.parent_widget is None:
@@ -972,7 +1137,7 @@ class CircularCursorWidget(QWidget):
         if layer is None:
             return
 
-        layer_name = f"Selection {self._selection_id}: {layer.name}"
+        layer_name = f"Cursor Selection: {layer.name}"
         for viewer_layer in list(self.viewer.layers):
             if viewer_layer.name == layer_name:
                 self.viewer.layers.remove(viewer_layer)
@@ -1017,29 +1182,43 @@ class CircularCursorWidget(QWidget):
             s_center = cursor['s']
             radius = cursor['radius']
 
-            # Use phasorpy mask_from_circular_cursor
-            # The function expects arrays: (real, imag, g_centers, s_centers, radius=radii)
-            # Returns shape (n_cursors, *spatial_shape), so we take [0] for single cursor
             mask = mask_from_circular_cursor(
                 g_full, s_full, [g_center], [s_center], radius=[radius]
             )[0]
 
-            # Assign label index (1-based, later cursors override earlier ones)
             selection_map[mask] = idx + 1
 
-        # Store in layer metadata
-        if "selections" not in layer.metadata:
-            layer.metadata["selections"] = {}
-        layer.metadata["selections"][self._selection_id] = selection_map
+        cursor_params = []
+        for cursor in self._cursors:
+            cursor_params.append(
+                {
+                    'g': cursor['g'],
+                    's': cursor['s'],
+                    'radius': cursor['radius'],
+                    'color': (
+                        cursor['color'].red(),
+                        cursor['color'].green(),
+                        cursor['color'].blue(),
+                        cursor['color'].alpha(),
+                    ),
+                }
+            )
 
-        # Create or update the labels layer
+        if "settings" not in layer.metadata:
+            layer.metadata["settings"] = {}
+        if "selections" not in layer.metadata["settings"]:
+            layer.metadata["settings"]["selections"] = {}
+
+        layer.metadata["settings"]["selections"][
+            "circular_cursors"
+        ] = cursor_params
+
         self._create_or_update_labels_layer(layer, selection_map)
 
     def _create_or_update_labels_layer(self, image_layer, selection_map):
         """Create or update the labels layer for the selection."""
-        layer_name = f"Selection {self._selection_id}: {image_layer.name}"
+        layer_name = f"Cursor Selection: {image_layer.name}"
 
-        # Build color dict from cursor colors
         color_dict = {None: (0, 0, 0, 0)}
         for idx, cursor in enumerate(self._cursors):
             color = cursor['color']
@@ -1050,7 +1229,6 @@ class CircularCursorWidget(QWidget):
                 1.0,
             )
 
-        # Check if layer already exists
         existing_layer = None
         for viewer_layer in self.viewer.layers:
             if viewer_layer.name == layer_name:
@@ -1058,15 +1236,13 @@ class CircularCursorWidget(QWidget):
                 break
 
         if existing_layer is not None:
-            # Update existing layer
             existing_layer.data = selection_map
             existing_layer.colormap = DirectLabelColormap(
                 color_dict=color_dict, name="circular_cursor_colors"
             )
-            existing_layer.visible = True  # Ensure it's visible
+            existing_layer.visible = True
             self._phasors_selected_layer = existing_layer
         else:
-            # Create new layer
             labels_layer = Labels(
                 selection_map,
                 name=layer_name,
@@ -1074,6 +1250,10 @@ class CircularCursorWidget(QWidget):
                 colormap=DirectLabelColormap(
                     color_dict=color_dict, name="circular_cursor_colors"
                 ),
+                metadata={
+                    'napari_phasors_selection_type': 'circular_cursor',
+                    'napari_phasors_source_layer': image_layer.name,
+                },
             )
             self._phasors_selected_layer = self.viewer.add_layer(labels_layer)
 
@@ -1092,11 +1272,9 @@ class CircularCursorWidget(QWidget):
         if event.artist is None:
             return
 
-        # Find which cursor was picked
         for row, cursor in enumerate(self._cursors):
             if cursor['patch'] == event.artist:
                 self._dragging_cursor = row
-                # Store the offset between click position and circle center
                 click_pos = (event.mouseevent.xdata, event.mouseevent.ydata)
                 if click_pos[0] is not None and click_pos[1] is not None:
                     self._drag_offset = (
@@ -1150,7 +1328,6 @@ class CircularCursorWidget(QWidget):
     def _on_release(self, event):
         """Handle mouse release to finish dragging and update selection."""
         if self._dragging_cursor is not None:
-            # Apply selection after dragging
             self._apply_selection()
             self._dragging_cursor = None
             self._drag_offset = (0, 0)

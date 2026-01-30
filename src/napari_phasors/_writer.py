@@ -48,7 +48,6 @@ def write_ome_tiff(path: str, image_layer: Any) -> List[str]:
             settings = image_layer.metadata["settings"].copy()
         else:
             settings = {}
-        # Include summed_signal if available
         if "summed_signal" in image_layer.metadata:
             summed = image_layer.metadata["summed_signal"]
             settings["summed_signal"] = (
@@ -70,6 +69,19 @@ def write_ome_tiff(path: str, image_layer: Any) -> List[str]:
                 summed.tolist() if hasattr(summed, 'tolist') else summed
             )
 
+    # Convert NumPy arrays in selections to lists for JSON serialization
+    if "selections" in settings:
+        # Make a copy of selections dict to avoid mutating the layer's metadata
+        settings["selections"] = settings["selections"].copy()
+        if "manual_selections" in settings["selections"]:
+            # Note: The following code is commented out to avoid saving large selection maps.
+            # manual_selections = {}
+            # for sel_id, sel_array in settings["selections"]["manual_selections"].items():
+            #     manual_selections[sel_id] = (
+            #         sel_array.tolist() if hasattr(sel_array, 'tolist') else sel_array
+            #     )
+            # settings["selections"]["manual_selections"] = manual_selections
+            del settings["selections"]["manual_selections"]
     if not path.endswith(".ome.tif"):
         path += ".ome.tif"
     settings["version"] = str(importlib.metadata.version('napari-phasors'))

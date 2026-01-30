@@ -415,6 +415,7 @@ def processed_file_reader(
         settings["threshold"] = threshold_value
 
     layers = []
+
     add_kwargs = {
         "name": filename + " Intensity Image",
         "metadata": {
@@ -427,6 +428,7 @@ def processed_file_reader(
             "harmonics": harmonics_read,
         },
     }
+
     layers.append((mean_intensity_image, add_kwargs))
     return layers
 

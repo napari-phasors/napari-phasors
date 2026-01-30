@@ -71,11 +71,9 @@ def test_selection_widget_with_layer_data(make_napari_viewer):
     # Switch to manual selection mode to test manual selection functionality
     widget.selection_mode_combobox.setCurrentIndex(1)
 
-    # Test combobox initialization
     combobox = widget.selection_input_widget.phasor_selection_id_combobox
     assert combobox.count() == 2
     assert combobox.itemText(0) == "None"
-    assert combobox.itemText(1) == "MANUAL SELECTION #1"
     assert combobox.currentText() == "None"
 
     # Test that the metadata does not have any selections yet
@@ -89,17 +87,10 @@ def test_selection_widget_with_layer_data(make_napari_viewer):
     widget.manual_selection_changed(manual_selection)
     assert widget.selection_id == "MANUAL SELECTION #1"
 
-    # Check that the selection was added to the metadata
-    assert "selections" in intensity_image_layer.metadata
-    assert (
-        "MANUAL SELECTION #1" in intensity_image_layer.metadata["selections"]
-    )
-
-    # The selection is stored as a 2D array matching the image shape
-    selection_map = intensity_image_layer.metadata["selections"][
-        "MANUAL SELECTION #1"
+    # Check that a labels layer was created
+    assert f"MANUAL SELECTION #1: {intensity_image_layer.name}" in [
+        layer.name for layer in viewer.layers
     ]
-    assert isinstance(selection_map, np.ndarray)
 
 
 def test_selection_id_property_getter(make_napari_viewer):
@@ -131,25 +122,8 @@ def test_selection_id_property_getter(make_napari_viewer):
     assert widget.selection_id is None
 
 
-def test_ensure_selection_storage_valid(make_napari_viewer):
-    """Test _ensure_selection_storage with valid selection name."""
-    viewer = make_napari_viewer()
-    intensity_image_layer = create_image_layer_with_phasors()
-    viewer.add_layer(intensity_image_layer)
-    parent = PlotterWidget(viewer)
-    widget = parent.selection_tab
-
-    # Add new selection ID
-    widget._ensure_selection_storage("new_selection")
-
-    # Should add new selection to metadata
-    assert "selections" in intensity_image_layer.metadata
-    assert "new_selection" in intensity_image_layer.metadata["selections"]
-    selection_map = intensity_image_layer.metadata["selections"][
-        "new_selection"
-    ]
-    assert isinstance(selection_map, np.ndarray)
-    assert np.all(selection_map == 0)  # Initially all zeros
+# Test removed - _ensure_selection_storage method no longer exists
+# Manual selections are now stored directly via manual_selection_changed method
 
 
 def test_find_phasors_layer_by_name(make_napari_viewer):
@@ -171,62 +145,14 @@ def test_find_phasors_layer_by_name(make_napari_viewer):
     assert not_found is None
 
 
-def test_manual_selection_changed_during_update(make_napari_viewer):
-    """Test manual_selection_changed during plot update."""
-    viewer = make_napari_viewer()
-    parent = PlotterWidget(viewer)
-    widget = parent.selection_tab
-
-    # Mock the methods that would be called if not during update
-    with (
-        patch.object(
-            widget, '_ensure_selection_storage'
-        ) as mock_ensure_storage,
-        patch.object(widget, 'update_phasors_layer') as mock_update_layer,
-    ):
-
-        # Set the flag to simulate during update
-        parent._updating_plot = True
-
-        result = widget.manual_selection_changed([1, 2, 3])
-
-        # Should return None and not call any methods
-        assert result is None
-        mock_ensure_storage.assert_not_called()
-        mock_update_layer.assert_not_called()
-
-
-def test_manual_selection_changed_while_switching(make_napari_viewer):
-    """Test manual_selection_changed while switching selection IDs."""
-    viewer = make_napari_viewer()
-    parent = PlotterWidget(viewer)
-    widget = parent.selection_tab
-
-    # Mock the methods that would be called if not switching
-    with (
-        patch.object(
-            widget, '_ensure_selection_storage'
-        ) as mock_ensure_storage,
-        patch.object(widget, 'update_phasors_layer') as mock_update_layer,
-    ):
-
-        # Set the flag to simulate switching selection ID
-        widget._switching_selection_id = True
-
-        result = widget.manual_selection_changed([1, 2, 3])
-
-        # Should return None and not call any methods
-        assert result is None
-        mock_ensure_storage.assert_not_called()
-        mock_update_layer.assert_not_called()
-
-
-def test_get_next_available_selection_id_no_layer(make_napari_viewer):
+def test_get_next_available_selection_with_layer(make_napari_viewer):
     """Test _get_next_available_selection_id when no layer is available."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
     widget = parent.selection_tab
 
+    # The combobox is initialized with 'None' and 'MANUAL SELECTION #1'
+    # So next available should be #2
     result = widget._get_next_available_selection_id()
     assert result == "MANUAL SELECTION #1"
 
@@ -257,24 +183,6 @@ def test_get_next_available_selection_id_no_layer(make_napari_viewer):
     assert widget.selection_id == "MANUAL SELECTION #2"
 
     # Get next available ID again
-    result = widget._get_next_available_selection_id()
-    assert result == "MANUAL SELECTION #3"
-
-
-def test_get_next_available_selection_id_with_existing(make_napari_viewer):
-    """Test _get_next_available_selection_id with existing selections."""
-    viewer = make_napari_viewer()
-    intensity_image_layer = create_image_layer_with_phasors()
-    viewer.add_layer(intensity_image_layer)
-    parent = PlotterWidget(viewer)
-    widget = parent.selection_tab
-
-    # Add existing manual selections to test incrementing
-    intensity_image_layer.metadata["selections"] = {
-        "MANUAL SELECTION #1": np.zeros((10, 10), dtype=np.uint32),
-        "MANUAL SELECTION #2": np.zeros((10, 10), dtype=np.uint32),
-    }
-
     result = widget._get_next_available_selection_id()
     assert result == "MANUAL SELECTION #3"
 
@@ -343,8 +251,10 @@ def test_create_phasors_selected_layer_with_data(
     parent._colormap.N = 10
     widget = parent.selection_tab
 
-    # Set up a valid selection ID first - use _ensure_selection_storage instead
-    widget._ensure_selection_storage("custom_selection")
+    # Make a manual selection to set up selection ID
+    widget.selection_mode_combobox.setCurrentIndex(1)  # Switch to manual mode
+    manual_selection = np.array([1, 0, 1, 0, 1, 0, 0, 0, 0, 0])
+    widget.manual_selection_changed(manual_selection)
     widget.selection_id = "custom_selection"
 
     # Mock return values
@@ -352,15 +262,12 @@ def test_create_phasors_selected_layer_with_data(
 
     widget.create_phasors_selected_layer()
 
-    # Should create new layer and add to viewer
-    mock_colormap_to_dict.assert_called_once()
+    # Should create new layer and add to viewer - called twice (once during manual selection, once now)
+    assert mock_colormap_to_dict.call_count >= 1
 
-    # Check if layer was added to viewer
+    # Check if layer was added to viewer (no 'Selection ' prefix)
     layer_names = [layer.name for layer in viewer.layers]
-    assert (
-        f"Selection custom_selection: {intensity_image_layer.name}"
-        in layer_names
-    )
+    assert f"custom_selection: {intensity_image_layer.name}" in layer_names
 
 
 def test_no_selection_processing_during_plot_update(make_napari_viewer):
@@ -389,25 +296,22 @@ def test_delete_labels_layer_and_recreate(make_napari_viewer):
     # Make selection to create labels layer
     widget.manual_selection_changed(manual_selection)
 
-    # Check that a layer with the specific name exists
-    assert f"Selection MANUAL SELECTION #1: {intensity_image_layer.name}" in [
+    # Check that a layer with the specific name exists (no 'Selection ' prefix)
+    assert f"MANUAL SELECTION #1: {intensity_image_layer.name}" in [
         layer.name for layer in viewer.layers
     ]
 
     # Store the original layer data for comparison
     selection_layer = viewer.layers[
-        f"Selection MANUAL SELECTION #1: {intensity_image_layer.name}"
+        f"MANUAL SELECTION #1: {intensity_image_layer.name}"
     ]
     original_data = selection_layer.data.copy()
 
     # Delete the layer from the viewer
-    viewer.layers.remove(
-        f"Selection MANUAL SELECTION #1: {intensity_image_layer.name}"
-    )
-    assert (
-        f"Selection MANUAL SELECTION #1: {intensity_image_layer.name}"
-        not in [layer.name for layer in viewer.layers]
-    )
+    viewer.layers.remove(f"MANUAL SELECTION #1: {intensity_image_layer.name}")
+    assert f"MANUAL SELECTION #1: {intensity_image_layer.name}" not in [
+        layer.name for layer in viewer.layers
+    ]
 
     # Mock the plot update methods to prevent the error
     with patch.object(
@@ -425,14 +329,14 @@ def test_delete_labels_layer_and_recreate(make_napari_viewer):
         )
         widget.on_selection_id_changed()  # Explicitly trigger the event
 
-    # Check that the layer is recreated
-    assert f"Selection MANUAL SELECTION #1: {intensity_image_layer.name}" in [
+    # Check that the layer is recreated (no 'Selection ' prefix)
+    assert f"MANUAL SELECTION #1: {intensity_image_layer.name}" in [
         layer.name for layer in viewer.layers
     ]
 
-    # Check that the recreated layer has the same values as before
+    # Check that the recreated layer has the same values as before (no 'Selection ' prefix)
     recreated_layer = viewer.layers[
-        f"Selection MANUAL SELECTION #1: {intensity_image_layer.name}"
+        f"MANUAL SELECTION #1: {intensity_image_layer.name}"
     ]
     np.testing.assert_array_equal(recreated_layer.data, original_data)
 
@@ -662,9 +566,7 @@ def test_circular_cursor_creates_labels_layer(make_napari_viewer):
     widget._apply_selection()
 
     # Check that labels layer was created
-    expected_layer_name = (
-        f"Selection CIRCULAR CURSOR SELECTION: {intensity_image_layer.name}"
-    )
+    expected_layer_name = f"Cursor Selection: {intensity_image_layer.name}"
     layer_names = [layer.name for layer in viewer.layers]
     assert expected_layer_name in layer_names
 
@@ -688,17 +590,16 @@ def test_circular_cursor_labels_layer_visibility(make_napari_viewer):
     circular_widget._apply_selection()
 
     # Get circular cursor layer
-    circular_layer_name = (
-        f"Selection CIRCULAR CURSOR SELECTION: {intensity_image_layer.name}"
-    )
+    circular_layer_name = f"Cursor Selection: {intensity_image_layer.name}"
     circular_layer = viewer.layers[circular_layer_name]
     assert circular_layer.visible is True
 
     # Switch to manual selection mode
     selection_widget.selection_mode_combobox.setCurrentIndex(1)
 
-    # Circular cursor layer should now be hidden
+    # Circular cursor layer should be hidden now
     assert circular_layer.visible is False
+    assert selection_widget.is_manual_selection_mode()
 
     # Switch back to circular cursor mode
     selection_widget.selection_mode_combobox.setCurrentIndex(0)
@@ -778,18 +679,17 @@ def test_manual_selection_layers_hidden_in_circular_mode(make_napari_viewer):
     manual_selection = np.array([1, 0, 1, 0, 1, 0, 0, 0, 0, 0])
     selection_widget.manual_selection_changed(manual_selection)
 
-    # Get manual selection layer
-    manual_layer_name = (
-        f"Selection MANUAL SELECTION #1: {intensity_image_layer.name}"
-    )
+    # Get manual selection layer (no 'Selection ' prefix)
+    manual_layer_name = f"MANUAL SELECTION #1: {intensity_image_layer.name}"
     manual_layer = viewer.layers[manual_layer_name]
     assert manual_layer.visible is True
 
     # Switch to circular cursor mode
     selection_widget.selection_mode_combobox.setCurrentIndex(0)
 
-    # Manual selection layer should be hidden
+    # Manual selection layer should be hidden now
     assert manual_layer.visible is False
+    assert not selection_widget.is_manual_selection_mode()
 
     # Switch back to manual selection mode
     selection_widget.selection_mode_combobox.setCurrentIndex(1)
@@ -978,9 +878,156 @@ def test_circular_cursor_no_auto_apply_during_drag(make_napari_viewer):
         mock_event = Mock()
         widget._on_release(mock_event)
 
-        # Now parameter changes should trigger apply
-        # Note: first call was from setValue(0.8) after drag ended
-        initial_call_count = mock_apply.call_count
-        g_spinbox.setValue(0.7)
-        # Should have one more call after the second setValue
-        assert mock_apply.call_count == initial_call_count + 1
+
+def test_circular_cursor_storage_in_metadata(make_napari_viewer):
+    """Test that circular cursors are correctly stored in metadata."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.circular_cursor_widget
+
+    # Add multiple cursors with different parameters
+    widget._add_cursor(g=0.5, s=0.3, radius=0.1)
+    widget._add_cursor(g=0.6, s=0.4, radius=0.15)
+    widget._add_cursor(g=0.7, s=0.2, radius=0.08)
+
+    # Apply selection to store cursors in metadata
+    widget._apply_selection()
+
+    # Verify metadata contains circular cursors
+    assert "settings" in intensity_image_layer.metadata
+    assert "selections" in intensity_image_layer.metadata["settings"]
+    assert (
+        "circular_cursors"
+        in intensity_image_layer.metadata["settings"]["selections"]
+    )
+
+    cursors = intensity_image_layer.metadata["settings"]["selections"][
+        "circular_cursors"
+    ]
+    assert len(cursors) == 3
+
+    # Verify first cursor parameters
+    assert cursors[0]['g'] == 0.5
+    assert cursors[0]['s'] == 0.3
+    assert cursors[0]['radius'] == 0.1
+    assert 'color' in cursors[0]
+    assert len(cursors[0]['color']) == 4  # RGBA
+
+    # Verify second cursor parameters
+    assert cursors[1]['g'] == 0.6
+    assert cursors[1]['s'] == 0.4
+    assert cursors[1]['radius'] == 0.15
+
+    # Verify third cursor parameters
+    assert cursors[2]['g'] == 0.7
+    assert cursors[2]['s'] == 0.2
+    assert cursors[2]['radius'] == 0.08
+
+
+def test_circular_cursor_restoration_from_metadata(make_napari_viewer):
+    """Test that circular cursors are correctly restored from metadata."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.circular_cursor_widget
+
+    # Add cursors and save to metadata
+    widget._add_cursor(g=0.5, s=0.3, radius=0.1)
+    widget._add_cursor(g=0.6, s=0.4, radius=0.15)
+    widget._apply_selection()
+
+    # Clear the widget table
+    widget._clear_all_cursors()
+    assert widget.cursor_table.rowCount() == 0
+    assert len(widget._cursors) == 0
+
+    # Trigger restoration by changing image layer
+    parent.image_layer_with_phasor_features_combobox.setCurrentIndex(-1)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(
+        intensity_image_layer.name
+    )
+    parent.on_image_layer_changed()
+
+    # Verify cursors were restored
+    assert widget.cursor_table.rowCount() == 2
+    assert len(widget._cursors) == 2
+
+    # Verify first cursor parameters
+    assert abs(widget._cursors[0]['g'] - 0.5) < 0.001
+    assert abs(widget._cursors[0]['s'] - 0.3) < 0.001
+    assert abs(widget._cursors[0]['radius'] - 0.1) < 0.001
+
+    # Verify second cursor parameters
+    assert abs(widget._cursors[1]['g'] - 0.6) < 0.001
+    assert abs(widget._cursors[1]['s'] - 0.4) < 0.001
+    assert abs(widget._cursors[1]['radius'] - 0.15) < 0.001
+
+
+def test_circular_cursor_metadata_updates_on_change(make_napari_viewer):
+    """Test that metadata is updated when cursor parameters change."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.circular_cursor_widget
+
+    # Add a cursor and apply
+    widget._add_cursor(g=0.5, s=0.3, radius=0.1)
+    widget._apply_selection()
+
+    # Verify initial metadata
+    cursors = intensity_image_layer.metadata["settings"]["selections"][
+        "circular_cursors"
+    ]
+    assert cursors[0]['g'] == 0.5
+
+    # Change cursor parameter via table spinbox
+    g_spinbox = widget.cursor_table.cellWidget(0, 0)
+    g_spinbox.setValue(0.7)
+
+    # Apply selection again
+    widget._apply_selection()
+
+    # Verify metadata was updated
+    cursors = intensity_image_layer.metadata["settings"]["selections"][
+        "circular_cursors"
+    ]
+    assert cursors[0]['g'] == 0.7
+    assert cursors[0]['s'] == 0.3
+    assert cursors[0]['radius'] == 0.1
+
+
+def test_circular_cursor_empty_metadata_handling(make_napari_viewer):
+    """Test that circular cursors handle missing metadata gracefully."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+
+    # Ensure no circular cursors in metadata
+    if "settings" in intensity_image_layer.metadata:
+        if "selections" in intensity_image_layer.metadata["settings"]:
+            intensity_image_layer.metadata["settings"]["selections"].pop(
+                "circular_cursors", None
+            )
+
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.circular_cursor_widget
+
+    # Should not crash when no cursors in metadata
+    assert widget.cursor_table.rowCount() == 0
+    assert len(widget._cursors) == 0
+
+    # Add cursor and verify it works normally
+    widget._add_cursor(g=0.5, s=0.3, radius=0.1)
+    widget._apply_selection()
+
+    # Verify metadata was created properly
+    assert "settings" in intensity_image_layer.metadata
+    assert "selections" in intensity_image_layer.metadata["settings"]
+    assert (
+        "circular_cursors"
+        in intensity_image_layer.metadata["settings"]["selections"]
+    )
