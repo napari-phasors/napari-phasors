@@ -131,6 +131,65 @@ def test_apply_filter_and_threshold_median(make_napari_viewer):
     assert intensity_image_layer.metadata["settings"]["threshold"] == threshold
 
 
+def test_apply_filter_and_threshold_with_upper_threshold(make_napari_viewer):
+    """Test apply_filter_and_threshold function with both lower and upper thresholds."""
+    raw_flim_data = make_raw_flim_data(shape=(5, 5))
+    harmonic = [1, 2]
+    intensity_image_layer = make_intensity_layer_with_phasors(
+        raw_flim_data, harmonic=harmonic
+    )
+    original_mean = intensity_image_layer.metadata['original_mean']
+    original_g = intensity_image_layer.metadata['G'].copy()
+    original_s = intensity_image_layer.metadata['S'].copy()
+
+    viewer = make_napari_viewer()
+    viewer.add_layer(intensity_image_layer)
+
+    threshold_lower = 0.01
+    threshold_upper = 0.8
+
+    # Apply both lower and upper threshold
+    apply_filter_and_threshold(
+        intensity_image_layer,
+        threshold=threshold_lower,
+        threshold_upper=threshold_upper,
+        threshold_method="Manual",
+    )
+
+    # Check that settings are saved with both thresholds
+    assert "settings" in intensity_image_layer.metadata
+    assert (
+        intensity_image_layer.metadata["settings"]["threshold"]
+        == threshold_lower
+    )
+    assert (
+        intensity_image_layer.metadata["settings"]["threshold_upper"]
+        == threshold_upper
+    )
+    assert (
+        intensity_image_layer.metadata["settings"]["threshold_method"]
+        == "Manual"
+    )
+
+    # Check that original values are preserved
+    assert np.all(intensity_image_layer.metadata['G_original'] == original_g)
+    assert np.all(intensity_image_layer.metadata['S_original'] == original_s)
+
+    # Calculate expected values
+    _, expected_g, expected_s = phasor_threshold(
+        original_mean,
+        original_g,
+        original_s,
+        mean_min=threshold_lower,
+        mean_max=threshold_upper,
+    )
+
+    filtered_g = intensity_image_layer.metadata['G']
+    filtered_s = intensity_image_layer.metadata['S']
+    assert np.allclose(expected_g, filtered_g, equal_nan=True)
+    assert np.allclose(expected_s, filtered_s, equal_nan=True)
+
+
 def test_apply_filter_and_threshold_wavelet_compatible(make_napari_viewer):
     """Test apply_filter_and_threshold function with compatible wavelet harmonics."""
     raw_flim_data = make_raw_flim_data(shape=(5, 5))

@@ -91,6 +91,7 @@ def _apply_filter_and_threshold_to_phasor_arrays(
     harmonics: np.ndarray,
     *,
     threshold: float = None,
+    threshold_upper: float = None,
     filter_method: str = None,
     size: int = None,
     repeat: int = None,
@@ -110,8 +111,11 @@ def _apply_filter_and_threshold_to_phasor_arrays(
     harmonics : np.ndarray
         Harmonic values.
     threshold : float, optional
-        Threshold value for the mean value to be applied to G and S.
-        If None, no threshold is applied.
+        Lower threshold value for the mean value to be applied to G and S.
+        If None, no lower threshold is applied.
+    threshold_upper : float, optional
+        Upper threshold value for the mean value to be applied to G and S.
+        If None, no upper threshold is applied.
     filter_method : str, optional
         Filter method. Options are 'median' or 'wavelet'.
         If None, no filter is applied.
@@ -129,7 +133,6 @@ def _apply_filter_and_threshold_to_phasor_arrays(
     tuple
         (mean, real, imag) filtered and thresholded arrays
     """
-    # Apply filter only if filter_method is specified
     if filter_method == "median" and repeat is not None and repeat > 0:
         mean, real, imag = phasor_filter_median(
             mean,
@@ -150,10 +153,11 @@ def _apply_filter_and_threshold_to_phasor_arrays(
             harmonic=harmonics,
         )
 
-    if threshold is not None and threshold > 0:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-            mean, real, imag = phasor_threshold(mean, real, imag, threshold)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        mean, real, imag = phasor_threshold(
+            mean, real, imag, mean_min=threshold, mean_max=threshold_upper
+        )
 
     return mean, real, imag
 
@@ -163,6 +167,7 @@ def apply_filter_and_threshold(
     /,
     *,
     threshold: float = None,
+    threshold_upper: float = None,
     threshold_method: str = None,
     filter_method: str = None,
     size: int = None,
@@ -178,8 +183,11 @@ def apply_filter_and_threshold(
     layer : napari.layers.Image
         Napari image layer with phasor features.
     threshold : float, optional
-        Threshold value for the mean value to be applied to G and S.
-        If None, no threshold is applied.
+        Lower threshold value for the mean value to be applied to G and S.
+        If None, no lower threshold is applied.
+    threshold_upper : float, optional
+        Upper threshold value for the mean value to be applied to G and S.
+        If None, no upper threshold is applied.
     threshold_method : str, optional
         Threshold method used. If None, no threshold method is saved.
     filter_method : str, optional
@@ -207,6 +215,7 @@ def apply_filter_and_threshold(
         imag,
         harmonics,
         threshold=threshold,
+        threshold_upper=threshold_upper,
         filter_method=filter_method,
         size=size,
         repeat=repeat,
@@ -237,13 +246,11 @@ def apply_filter_and_threshold(
             if levels is not None:
                 layer.metadata["settings"]["filter"]["levels"] = levels
 
-    # Only save threshold settings if a threshold was actually applied
-    if threshold is not None and threshold > 0:
-        layer.metadata["settings"]["threshold"] = threshold
-    if threshold_method is not None and threshold_method != "None":
-        layer.metadata["settings"]["threshold_method"] = threshold_method
-
+    layer.metadata["settings"]["threshold"] = threshold
+    layer.metadata["settings"]["threshold_upper"] = threshold_upper
+    layer.metadata["settings"]["threshold_method"] = threshold_method
     layer.refresh()
+
     return
 
 

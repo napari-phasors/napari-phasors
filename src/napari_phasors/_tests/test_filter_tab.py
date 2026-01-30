@@ -10,12 +10,13 @@ from qtpy.QtWidgets import (
     QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QScrollArea,
-    QSlider,
     QSpinBox,
     QVBoxLayout,
 )
+from superqt import QRangeSlider
 
 from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
 from napari_phasors.filter_tab import FilterWidget
@@ -36,7 +37,10 @@ def test_filter_widget_initialization_values(make_napari_viewer):
     # Test initial attribute values
     assert filter_widget._phasors_selected_layer is None
     assert filter_widget.threshold_factor == 1
-    assert filter_widget.threshold_line is None
+    assert filter_widget.threshold_line_lower is None
+    assert filter_widget.threshold_line_upper is None
+    assert filter_widget.threshold_area_lower is None
+    assert filter_widget.threshold_area_upper is None
 
     # Test histogram figure initialization
     assert isinstance(filter_widget.hist_fig, Figure)
@@ -64,7 +68,7 @@ def test_filter_widget_initialization_values(make_napari_viewer):
     # Test log scale checkbox
     assert hasattr(filter_widget, 'log_scale_checkbox')
     assert isinstance(filter_widget.log_scale_checkbox, QCheckBox)
-    assert filter_widget.log_scale_checkbox.text() == "Log scale"
+    assert filter_widget.log_scale_checkbox.text() == "Log Scale Histogram"
     assert (
         not filter_widget.log_scale_checkbox.isChecked()
     )  # Should start unchecked
@@ -106,17 +110,22 @@ def test_filter_widget_initialization_values(make_napari_viewer):
     assert isinstance(filter_widget.harmonic_warning_label, QLabel)
     assert not filter_widget.harmonic_warning_label.isVisible()
 
-    # Test threshold slider and label
-    assert hasattr(filter_widget, 'label_3')
-    assert isinstance(filter_widget.label_3, QLabel)
-    assert filter_widget.label_3.text() == "Intensity threshold: 0"
+    # Test threshold editable text fields (min and max intensity)
+    assert hasattr(filter_widget, 'min_threshold_edit')
+    assert isinstance(filter_widget.min_threshold_edit, QLineEdit)
+    assert filter_widget.min_threshold_edit.text() == "0.00"
 
+    assert hasattr(filter_widget, 'max_threshold_edit')
+    assert isinstance(filter_widget.max_threshold_edit, QLineEdit)
+    assert filter_widget.max_threshold_edit.text() == "0.00"
+
+    # Test threshold range slider
     assert hasattr(filter_widget, 'threshold_slider')
-    assert isinstance(filter_widget.threshold_slider, QSlider)
+    assert isinstance(filter_widget.threshold_slider, QRangeSlider)
     assert filter_widget.threshold_slider.orientation() == Qt.Horizontal
     assert filter_widget.threshold_slider.minimum() == 0
     assert filter_widget.threshold_slider.maximum() == 100
-    assert filter_widget.threshold_slider.value() == 0
+    assert filter_widget.threshold_slider.value() == (0, 100)
 
     # Test apply button
     assert hasattr(filter_widget, 'apply_button')
@@ -166,15 +175,16 @@ def test_threshold_method_none_option(make_napari_viewer):
     filter_widget = parent.filter_tab
 
     # Set threshold to some value first
-    filter_widget.threshold_slider.setValue(10)
+    filter_widget.threshold_slider.setValue((10, 37))
     filter_widget.on_threshold_slider_change()
-    assert filter_widget.threshold_slider.value() == 10
+    assert filter_widget.threshold_slider.value() == (10, 37)
 
     filter_widget.threshold_method_combobox.setCurrentText("None")
     filter_widget.on_threshold_method_changed()
 
-    assert filter_widget.threshold_slider.value() == 0
-    assert filter_widget.label_3.text() == "Intensity threshold: 0"
+    lower_val, upper_val = filter_widget.threshold_slider.value()
+    assert lower_val == 0
+    assert filter_widget.min_threshold_edit.text() == "0.00"
 
 
 def test_automatic_threshold_methods(make_napari_viewer):
@@ -187,20 +197,20 @@ def test_automatic_threshold_methods(make_napari_viewer):
 
     filter_widget.threshold_method_combobox.setCurrentText("Otsu")
     filter_widget.on_threshold_method_changed()
-    otsu_value = filter_widget.threshold_slider.value()
-    assert otsu_value > 0
+    otsu_lower, otsu_upper = filter_widget.threshold_slider.value()
+    assert otsu_lower > 0
 
     filter_widget.threshold_method_combobox.setCurrentText("Li")
     filter_widget.on_threshold_method_changed()
-    li_value = filter_widget.threshold_slider.value()
-    assert li_value > 0
+    li_lower, li_upper = filter_widget.threshold_slider.value()
+    assert li_lower > 0
 
     filter_widget.threshold_method_combobox.setCurrentText("Yen")
     filter_widget.on_threshold_method_changed()
-    yen_value = filter_widget.threshold_slider.value()
-    assert yen_value > 0
+    yen_lower, yen_upper = filter_widget.threshold_slider.value()
+    assert yen_lower > 0
 
-    values = [otsu_value, li_value, yen_value]
+    values = [otsu_lower, li_lower, yen_lower]
     assert len(set(values)) >= 1
 
 
@@ -216,14 +226,14 @@ def test_manual_threshold_switching(make_napari_viewer):
     filter_widget.on_threshold_method_changed()
     assert filter_widget.threshold_method_combobox.currentText() == "Otsu"
 
-    filter_widget.threshold_slider.setValue(42)
+    filter_widget.threshold_slider.setValue((42, 80))
     filter_widget.on_threshold_slider_change()
 
     assert filter_widget.threshold_method_combobox.currentText() == "Manual"
 
 
 def test_none_threshold_slider_behavior(make_napari_viewer):
-    """Test that None threshold doesn't switch to Manual when slider is at 0."""
+    """Test that None threshold doesn't switch to Manual when slider is at full range."""
     viewer = make_napari_viewer()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
@@ -233,7 +243,8 @@ def test_none_threshold_slider_behavior(make_napari_viewer):
     filter_widget.threshold_method_combobox.setCurrentText("None")
     filter_widget.on_threshold_method_changed()
     assert filter_widget.threshold_method_combobox.currentText() == "None"
-    assert filter_widget.threshold_slider.value() == 0
+    lower_val, upper_val = filter_widget.threshold_slider.value()
+    assert lower_val == 0
 
     filter_widget.on_threshold_slider_change()
 
@@ -317,7 +328,7 @@ def test_apply_button_with_wavelet_filter(make_napari_viewer):
     filter_widget.filter_method_combobox.setCurrentText("Wavelet")
     filter_widget.wavelet_sigma_spinbox.setValue(1.5)
     filter_widget.wavelet_levels_spinbox.setValue(2)
-    filter_widget.threshold_slider.setValue(10)
+    filter_widget.threshold_slider.setValue((10, 90))
 
     with (
         patch(
@@ -350,7 +361,7 @@ def test_apply_button_with_median_filter(make_napari_viewer):
     filter_widget.filter_method_combobox.setCurrentText("Median")
     filter_widget.median_filter_spinbox.setValue(5)
     filter_widget.median_filter_repetition_spinbox.setValue(2)
-    filter_widget.threshold_slider.setValue(10)
+    filter_widget.threshold_slider.setValue((10, 90))
 
     with (
         patch(
@@ -400,28 +411,24 @@ def test_calculate_automatic_threshold(make_napari_viewer):
 
     test_data = np.random.rand(100, 100) * 100
 
-    otsu_threshold = filter_widget.calculate_automatic_threshold(
-        "Otsu", test_data
-    )
-    li_threshold = filter_widget.calculate_automatic_threshold("Li", test_data)
-    yen_threshold = filter_widget.calculate_automatic_threshold(
-        "Yen", test_data
-    )
+    otsu_lower = filter_widget.calculate_automatic_threshold("Otsu", test_data)
+    li_lower = filter_widget.calculate_automatic_threshold("Li", test_data)
+    yen_lower = filter_widget.calculate_automatic_threshold("Yen", test_data)
 
-    assert isinstance(otsu_threshold, (int, float))
-    assert isinstance(li_threshold, (int, float))
-    assert isinstance(yen_threshold, (int, float))
-    assert otsu_threshold >= 0
-    assert li_threshold >= 0
-    assert yen_threshold >= 0
+    assert isinstance(otsu_lower, (int, float))
+    assert isinstance(li_lower, (int, float))
+    assert isinstance(yen_lower, (int, float))
+    assert otsu_lower >= 0
+    assert li_lower >= 0
+    assert yen_lower >= 0
 
     empty_data = np.array([])
-    result = filter_widget.calculate_automatic_threshold("Otsu", empty_data)
-    assert result == 0
+    lower = filter_widget.calculate_automatic_threshold("Otsu", empty_data)
+    assert lower == 0
 
     nan_data = np.full((10, 10), np.nan)
-    result = filter_widget.calculate_automatic_threshold("Otsu", nan_data)
-    assert result == 0
+    lower = filter_widget.calculate_automatic_threshold("Otsu", nan_data)
+    assert lower == 0
 
 
 def test_settings_restoration_with_wavelet(make_napari_viewer):
@@ -434,6 +441,7 @@ def test_settings_restoration_with_wavelet(make_napari_viewer):
 
     intensity_image_layer.metadata["settings"] = {
         "threshold": 0.1,
+        "threshold_upper": 5.0,
         "threshold_method": "Li",
         "filter": {
             "method": "wavelet",
@@ -450,6 +458,18 @@ def test_settings_restoration_with_wavelet(make_napari_viewer):
     assert filter_widget.wavelet_sigma_spinbox.value() == 3.5
     assert filter_widget.wavelet_levels_spinbox.value() == 4
     assert filter_widget.threshold_method_combobox.currentText() == "Li"
+
+    # Check that both thresholds are restored
+    lower_val, upper_val = filter_widget.threshold_slider.value()
+    assert lower_val == int(0.1 * filter_widget.threshold_factor)
+
+    # Upper value should be restored from settings, but clamped to slider maximum
+    # Since 5.0 is much larger than the actual max mean value, it will be clamped
+    expected_upper = min(
+        int(5.0 * filter_widget.threshold_factor),
+        filter_widget.threshold_slider.maximum(),
+    )
+    assert upper_val == expected_upper
 
 
 def test_settings_restoration_with_incompatible_wavelet(make_napari_viewer):
@@ -521,13 +541,17 @@ def test_filter_widget_with_layer_data(make_napari_viewer):
     assert filter_widget.threshold_slider.maximum() == expected_max
 
     mean_data = intensity_image_layer.metadata["original_mean"]
-    expected_otsu_threshold = filter_widget.calculate_automatic_threshold(
+    expected_otsu_lower = filter_widget.calculate_automatic_threshold(
         "Otsu", mean_data
     )
-    expected_default_threshold = int(
-        expected_otsu_threshold * filter_widget.threshold_factor
+    expected_default_lower = int(
+        expected_otsu_lower * filter_widget.threshold_factor
     )
-    assert filter_widget.threshold_slider.value() == expected_default_threshold
+    # Upper defaults to max
+    expected_default_upper = filter_widget.threshold_slider.maximum()
+    actual_lower, actual_upper = filter_widget.threshold_slider.value()
+    assert actual_lower == expected_default_lower
+    assert actual_upper == expected_default_upper
 
     assert filter_widget.threshold_method_combobox.currentText() == "Otsu"
 
@@ -540,14 +564,15 @@ def test_filter_widget_threshold_slider_callback(make_napari_viewer):
 
     filter_widget.threshold_factor = 10
 
-    test_value = 50
-    filter_widget.threshold_slider.setValue(test_value)
+    test_lower = 20
+    test_upper = 80
+    filter_widget.threshold_slider.setValue((test_lower, test_upper))
     filter_widget.on_threshold_slider_change()
 
-    expected_text = (
-        f"Intensity threshold: {test_value / filter_widget.threshold_factor}"
-    )
-    assert filter_widget.label_3.text() == expected_text
+    expected_min_text = f"{test_lower / filter_widget.threshold_factor:.2f}"
+    expected_max_text = f"{test_upper / filter_widget.threshold_factor:.2f}"
+    assert filter_widget.min_threshold_edit.text() == expected_min_text
+    assert filter_widget.max_threshold_edit.text() == expected_max_text
 
 
 def test_filter_widget_kernel_size_callback(make_napari_viewer):
@@ -563,23 +588,6 @@ def test_filter_widget_kernel_size_callback(make_napari_viewer):
     assert filter_widget.median_filter_label.text() == expected_text
 
 
-def test_filter_widget_histogram_plotting(make_napari_viewer):
-    """Test histogram plotting functionality."""
-    viewer = make_napari_viewer()
-    intensity_image_layer = create_image_layer_with_phasors()
-    viewer.add_layer(intensity_image_layer)
-
-    parent = PlotterWidget(viewer)
-    filter_widget = parent.filter_tab
-
-    filter_widget.plot_mean_histogram()
-
-    assert len(filter_widget.hist_ax.get_children()) > 0
-
-    filter_widget.threshold_slider.setValue(50)
-    filter_widget.update_threshold_line()
-
-
 def test_spinbox_and_slider_do_not_call_plot(make_napari_viewer):
     """Changing spinbox or slider does not call parent.plot() unless apply is clicked."""
     viewer = make_napari_viewer()
@@ -588,7 +596,7 @@ def test_spinbox_and_slider_do_not_call_plot(make_napari_viewer):
 
     with patch.object(parent, 'plot') as mock_plot:
         filter_widget.median_filter_spinbox.setValue(5)
-        filter_widget.threshold_slider.setValue(42)
+        filter_widget.threshold_slider.setValue((5, 20))
 
         mock_plot.assert_not_called()
 
@@ -603,14 +611,28 @@ def test_slider_value_modifies_threshold_line(make_napari_viewer):
     filter_widget._on_image_layer_changed()
     filter_widget.plot_mean_histogram()
 
-    filter_widget.threshold_slider.setValue(77)
+    filter_widget.threshold_slider.setValue((5, 20))
     filter_widget.on_threshold_slider_change()
-    assert filter_widget.threshold_line is not None
-    expected_x = (
-        filter_widget.threshold_slider.value() / filter_widget.threshold_factor
+    assert filter_widget.threshold_line_lower is not None
+    assert filter_widget.threshold_line_upper is not None
+    expected_x_lower = (
+        filter_widget.threshold_slider.value()[0]
+        / filter_widget.threshold_factor
     )
-    line_data = filter_widget.threshold_line.get_xdata()
-    assert line_data[0] == expected_x and line_data[1] == expected_x
+    expected_x_upper = (
+        filter_widget.threshold_slider.value()[1]
+        / filter_widget.threshold_factor
+    )
+    line_data_lower = filter_widget.threshold_line_lower.get_xdata()
+    line_data_upper = filter_widget.threshold_line_upper.get_xdata()
+    assert (
+        line_data_lower[0] == expected_x_lower
+        and line_data_lower[1] == expected_x_lower
+    )
+    assert (
+        line_data_upper[0] == expected_x_upper
+        and line_data_upper[1] == expected_x_upper
+    )
 
 
 def test_no_plot_called_if_combobox_empty(make_napari_viewer):
@@ -625,7 +647,7 @@ def test_no_plot_called_if_combobox_empty(make_napari_viewer):
         mock_plot.assert_not_called()
 
     filter_widget.plot_mean_histogram()
-    filter_widget.update_threshold_line()
+    filter_widget.update_threshold_lines()
 
 
 def test_slider_and_histogram_update_on_layer_add_and_select(
@@ -648,7 +670,8 @@ def test_slider_and_histogram_update_on_layer_add_and_select(
         )
     )
     assert filter_widget.threshold_slider.maximum() == expected_max1
-    assert filter_widget.threshold_line is not None
+    assert filter_widget.threshold_line_lower is not None
+    assert filter_widget.threshold_line_upper is not None
     assert len(filter_widget.hist_ax.patches) > 0
 
     intensity_image_layer2 = create_image_layer_with_phasors()
@@ -667,7 +690,8 @@ def test_slider_and_histogram_update_on_layer_add_and_select(
         )
     )
     assert filter_widget.threshold_slider.maximum() == expected_max2
-    assert filter_widget.threshold_line is not None
+    assert filter_widget.threshold_line_lower is not None
+    assert filter_widget.threshold_line_upper is not None
     assert len(filter_widget.hist_ax.patches) > 0
 
 
@@ -681,7 +705,7 @@ def test_layer_with_no_phasor_features_does_nothing(make_napari_viewer):
         ) as mock_on_labels,
         patch.object(FilterWidget, 'plot_mean_histogram') as mock_plot_hist,
         patch.object(
-            FilterWidget, 'update_threshold_line'
+            FilterWidget, 'update_threshold_lines'
         ) as mock_update_line,
     ):
 
@@ -708,7 +732,8 @@ def test_layer_with_no_phasor_features_does_nothing(make_napari_viewer):
             == ''
         )
 
-    assert filter_widget.threshold_line is None
+    assert filter_widget.threshold_line_lower is None
+    assert filter_widget.threshold_line_upper is None
 
 
 def test_filter_widget_layer_with_settings(make_napari_viewer):
@@ -718,6 +743,7 @@ def test_filter_widget_layer_with_settings(make_napari_viewer):
 
     intensity_image_layer.metadata["settings"] = {
         "threshold": 0.1,
+        "threshold_upper": 0.2,
         "threshold_method": "Li",
         "filter": {"method": "median", "size": 7, "repeat": 3},
     }
@@ -726,10 +752,7 @@ def test_filter_widget_layer_with_settings(make_napari_viewer):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    assert (
-        filter_widget.threshold_slider.value()
-        == 0.1 * filter_widget.threshold_factor
-    )
+    assert filter_widget.threshold_slider.value() == (10, 20)
     assert filter_widget.median_filter_spinbox.value() == 7
     assert filter_widget.median_filter_repetition_spinbox.value() == 3
     assert filter_widget.threshold_method_combobox.currentText() == "Li"
@@ -753,9 +776,10 @@ def test_filter_widget_update_threshold_line_no_layer(make_napari_viewer):
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
-    filter_widget.update_threshold_line()
+    filter_widget.update_threshold_lines()
 
-    assert filter_widget.threshold_line is None
+    assert filter_widget.threshold_line_lower is None
+    assert filter_widget.threshold_line_upper is None
 
 
 def test_filter_widget_ui_layout(make_napari_viewer):
@@ -878,3 +902,150 @@ def test_filter_widget_without_mask_uses_full_image(make_napari_viewer):
 
     # Should use full image for calculations
     assert filter_widget.threshold_slider.maximum() > 0
+
+
+def test_min_threshold_edit_changes_slider(make_napari_viewer):
+    """Test that editing min threshold text field updates the slider."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    filter_widget = parent.filter_tab
+
+    # First set slider to known values with room to move
+    filter_widget.threshold_slider.setValue((10, 80))
+    filter_widget.on_threshold_slider_change()
+
+    # Set a new minimum threshold value that's between current min and max
+    new_min_value = (
+        0.15  # Choose a value that will be between 10 and 80 when scaled
+    )
+    filter_widget.min_threshold_edit.setText(str(new_min_value))
+    filter_widget.on_min_threshold_edit_changed()
+
+    # Check that slider was updated
+    lower_val, _ = filter_widget.threshold_slider.value()
+    expected_slider_value = int(new_min_value * filter_widget.threshold_factor)
+    assert lower_val == expected_slider_value
+
+    # Check that threshold method switched to Manual
+    assert filter_widget.threshold_method_combobox.currentText() == "Manual"
+
+
+def test_max_threshold_edit_changes_slider(make_napari_viewer):
+    """Test that editing max threshold text field updates the slider."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    filter_widget = parent.filter_tab
+
+    # Set a new maximum threshold value
+    max_mean = np.nanmax(intensity_image_layer.metadata["original_mean"])
+    new_max_value = max_mean * 0.8
+    filter_widget.max_threshold_edit.setText(f"{new_max_value:.2f}")
+    filter_widget.on_max_threshold_edit_changed()
+
+    # Check that slider was updated
+    _, upper_val = filter_widget.threshold_slider.value()
+    # The value gets rounded when converted to text with .2f format, then converted back
+    # So we need to calculate the expected value the same way
+    text_value = float(f"{new_max_value:.2f}")
+    expected_slider_value = int(text_value * filter_widget.threshold_factor)
+    assert upper_val == expected_slider_value
+
+    # Check that threshold method switched to Manual
+    assert filter_widget.threshold_method_combobox.currentText() == "Manual"
+
+
+def test_min_threshold_edit_clamped_to_max(make_napari_viewer):
+    """Test that min threshold cannot exceed max threshold."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    filter_widget = parent.filter_tab
+
+    # Set slider to known values
+    filter_widget.threshold_slider.setValue((10, 50))
+    filter_widget.on_threshold_slider_change()
+
+    # Try to set min higher than max
+    filter_widget.min_threshold_edit.setText("100.0")
+    filter_widget.on_min_threshold_edit_changed()
+
+    # Min should be clamped to max
+    lower_val, upper_val = filter_widget.threshold_slider.value()
+    assert lower_val <= upper_val
+
+
+def test_max_threshold_edit_clamped_to_min(make_napari_viewer):
+    """Test that max threshold cannot go below min threshold."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    filter_widget = parent.filter_tab
+
+    # Set slider to known values
+    filter_widget.threshold_slider.setValue((30, 80))
+    filter_widget.on_threshold_slider_change()
+
+    # Try to set max lower than min
+    filter_widget.max_threshold_edit.setText("0.5")
+    filter_widget.on_max_threshold_edit_changed()
+
+    # Max should be clamped to min
+    lower_val, upper_val = filter_widget.threshold_slider.value()
+    assert upper_val >= lower_val
+
+
+def test_invalid_threshold_edit_resets_to_current(make_napari_viewer):
+    """Test that invalid input in threshold edits resets to current value."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    filter_widget = parent.filter_tab
+
+    # Get current slider values
+    lower_val, upper_val = filter_widget.threshold_slider.value()
+    expected_min = f"{lower_val / filter_widget.threshold_factor:.2f}"
+    expected_max = f"{upper_val / filter_widget.threshold_factor:.2f}"
+
+    # Try invalid inputs
+    filter_widget.min_threshold_edit.setText("invalid")
+    filter_widget.on_min_threshold_edit_changed()
+    assert filter_widget.min_threshold_edit.text() == expected_min
+
+    filter_widget.max_threshold_edit.setText("also_invalid")
+    filter_widget.on_max_threshold_edit_changed()
+    assert filter_widget.max_threshold_edit.text() == expected_max
+
+
+def test_threshold_edit_updates_histogram_lines(make_napari_viewer):
+    """Test that editing threshold values updates the histogram lines."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    filter_widget = parent.filter_tab
+    filter_widget.plot_mean_histogram()
+
+    # Set slider to known values first
+    filter_widget.threshold_slider.setValue((10, 80))
+    filter_widget.on_threshold_slider_change()
+
+    # Edit min threshold to a value within the valid range
+    new_min_value = 0.2
+    filter_widget.min_threshold_edit.setText(str(new_min_value))
+    filter_widget.on_min_threshold_edit_changed()
+
+    # Check that threshold line exists and is at correct position
+    assert filter_widget.threshold_line_lower is not None
+    expected_x = (
+        int(new_min_value * filter_widget.threshold_factor)
+        / filter_widget.threshold_factor
+    )
+    line_data = filter_widget.threshold_line_lower.get_xdata()
+    assert abs(line_data[0] - expected_x) < 0.01

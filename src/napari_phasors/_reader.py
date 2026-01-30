@@ -372,6 +372,7 @@ def processed_file_reader(
     should_apply_processing = False
     filter_params = {}
     threshold_value = 0
+    threshold_upper_value = None
 
     if "filter" in settings.keys():
         filter_settings = settings["filter"]
@@ -389,6 +390,13 @@ def processed_file_reader(
         should_apply_processing = True
         threshold_value = settings["threshold"]
 
+    if (
+        "threshold_upper" in settings.keys()
+        and settings["threshold_upper"] is not None
+    ):
+        should_apply_processing = True
+        threshold_upper_value = settings["threshold_upper"]
+
     if should_apply_processing:
         from ._utils import _apply_filter_and_threshold_to_phasor_arrays
 
@@ -399,6 +407,7 @@ def processed_file_reader(
                 imag,
                 harmonics_read,
                 threshold=threshold_value,
+                threshold_upper=threshold_upper_value,
                 **filter_params,
             )
         )
@@ -413,6 +422,8 @@ def processed_file_reader(
             "levels": filter_params.get("levels", 3),
         }
         settings["threshold"] = threshold_value
+        if threshold_upper_value is not None:
+            settings["threshold_upper"] = threshold_upper_value
 
     layers = []
 
