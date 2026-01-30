@@ -476,7 +476,6 @@ class SelectionWidget(QWidget):
 
     def _get_next_available_selection_id(self):
         """Get the next available manual selection ID."""
-        # Get selections from combobox
         combobox_selections = [
             self.selection_input_widget.phasor_selection_id_combobox.itemText(
                 i
@@ -486,7 +485,6 @@ class SelectionWidget(QWidget):
             )
         ]
 
-        # Get selections from metadata (actually used selections)
         layer = self._get_current_layer()
         used_selections = set()
         if (
@@ -504,16 +502,14 @@ class SelectionWidget(QWidget):
         counter = 1
         while True:
             candidate_name = f"MANUAL SELECTION #{counter}"
-            # Only skip if the name is in combobox AND has been used in metadata
             if (
                 candidate_name in combobox_selections
-                and candidate_name in used_selections
+                and candidate_name not in used_selections
             ):
-                counter += 1
-            elif candidate_name not in combobox_selections:
-                counter += 1
-            else:
                 return candidate_name
+            elif candidate_name not in combobox_selections:
+                return candidate_name
+            counter += 1
 
     def manual_selection_changed(self, manual_selection):
         """Update the manual selection in the layer metadata."""

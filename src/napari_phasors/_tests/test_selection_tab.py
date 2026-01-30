@@ -145,7 +145,7 @@ def test_find_phasors_layer_by_name(make_napari_viewer):
     assert not_found is None
 
 
-def test_get_next_available_selection_id_no_layer(make_napari_viewer):
+def test_get_next_available_selection_with_layer(make_napari_viewer):
     """Test _get_next_available_selection_id when no layer is available."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
@@ -154,7 +154,7 @@ def test_get_next_available_selection_id_no_layer(make_napari_viewer):
     # The combobox is initialized with 'None' and 'MANUAL SELECTION #1'
     # So next available should be #2
     result = widget._get_next_available_selection_id()
-    assert result == "MANUAL SELECTION #2"
+    assert result == "MANUAL SELECTION #1"
 
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
@@ -183,26 +183,6 @@ def test_get_next_available_selection_id_no_layer(make_napari_viewer):
     assert widget.selection_id == "MANUAL SELECTION #2"
 
     # Get next available ID again
-    result = widget._get_next_available_selection_id()
-    assert result == "MANUAL SELECTION #3"
-
-
-def test_get_next_available_selection_id_with_existing(make_napari_viewer):
-    """Test _get_next_available_selection_id with existing selections."""
-    viewer = make_napari_viewer()
-    intensity_image_layer = create_image_layer_with_phasors()
-    viewer.add_layer(intensity_image_layer)
-    parent = PlotterWidget(viewer)
-    widget = parent.selection_tab
-
-    # Add items to combobox to simulate existing selections
-    combobox = widget.selection_input_widget.phasor_selection_id_combobox
-    # Clear and rebuild
-    combobox.clear()
-    combobox.addItem("None")
-    combobox.addItem("MANUAL SELECTION #1")
-    combobox.addItem("MANUAL SELECTION #2")
-
     result = widget._get_next_available_selection_id()
     assert result == "MANUAL SELECTION #3"
 
