@@ -133,7 +133,6 @@ def _apply_filter_and_threshold_to_phasor_arrays(
     tuple
         (mean, real, imag) filtered and thresholded arrays
     """
-    # Apply filter only if filter_method is specified
     if filter_method == "median" and repeat is not None and repeat > 0:
         mean, real, imag = phasor_filter_median(
             mean,
@@ -154,20 +153,11 @@ def _apply_filter_and_threshold_to_phasor_arrays(
             harmonic=harmonics,
         )
 
-    # Apply threshold with both lower and upper bounds
-    if threshold is not None and threshold > 0:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-            mean, real, imag = phasor_threshold(
-                mean, real, imag, mean_min=threshold, mean_max=threshold_upper
-            )
-    elif threshold_upper is not None:
-        # Apply only upper threshold
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-            mean, real, imag = phasor_threshold(
-                mean, real, imag, mean_max=threshold_upper
-            )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        mean, real, imag = phasor_threshold(
+            mean, real, imag, mean_min=threshold, mean_max=threshold_upper
+        )
 
     return mean, real, imag
 
@@ -256,15 +246,11 @@ def apply_filter_and_threshold(
             if levels is not None:
                 layer.metadata["settings"]["filter"]["levels"] = levels
 
-    # Only save threshold settings if a threshold was actually applied
-    if threshold is not None and threshold > 0:
-        layer.metadata["settings"]["threshold"] = threshold
-    if threshold_upper is not None:
-        layer.metadata["settings"]["threshold_upper"] = threshold_upper
-    if threshold_method is not None and threshold_method != "None":
-        layer.metadata["settings"]["threshold_method"] = threshold_method
-
+    layer.metadata["settings"]["threshold"] = threshold
+    layer.metadata["settings"]["threshold_upper"] = threshold_upper
+    layer.metadata["settings"]["threshold_method"] = threshold_method
     layer.refresh()
+
     return
 
 

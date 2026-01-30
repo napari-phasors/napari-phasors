@@ -411,15 +411,9 @@ def test_calculate_automatic_threshold(make_napari_viewer):
 
     test_data = np.random.rand(100, 100) * 100
 
-    otsu_lower = filter_widget.calculate_automatic_threshold(
-        "Otsu", test_data
-    )
-    li_lower = filter_widget.calculate_automatic_threshold(
-        "Li", test_data
-    )
-    yen_lower = filter_widget.calculate_automatic_threshold(
-        "Yen", test_data
-    )
+    otsu_lower = filter_widget.calculate_automatic_threshold("Otsu", test_data)
+    li_lower = filter_widget.calculate_automatic_threshold("Li", test_data)
+    yen_lower = filter_widget.calculate_automatic_threshold("Yen", test_data)
 
     assert isinstance(otsu_lower, (int, float))
     assert isinstance(li_lower, (int, float))
@@ -429,15 +423,11 @@ def test_calculate_automatic_threshold(make_napari_viewer):
     assert yen_lower >= 0
 
     empty_data = np.array([])
-    lower = filter_widget.calculate_automatic_threshold(
-        "Otsu", empty_data
-    )
+    lower = filter_widget.calculate_automatic_threshold("Otsu", empty_data)
     assert lower == 0
 
     nan_data = np.full((10, 10), np.nan)
-    lower = filter_widget.calculate_automatic_threshold(
-        "Otsu", nan_data
-    )
+    lower = filter_widget.calculate_automatic_threshold("Otsu", nan_data)
     assert lower == 0
 
 
@@ -477,7 +467,7 @@ def test_settings_restoration_with_wavelet(make_napari_viewer):
     # Since 5.0 is much larger than the actual max mean value, it will be clamped
     expected_upper = min(
         int(5.0 * filter_widget.threshold_factor),
-        filter_widget.threshold_slider.maximum()
+        filter_widget.threshold_slider.maximum(),
     )
     assert upper_val == expected_upper
 
@@ -606,7 +596,7 @@ def test_spinbox_and_slider_do_not_call_plot(make_napari_viewer):
 
     with patch.object(parent, 'plot') as mock_plot:
         filter_widget.median_filter_spinbox.setValue(5)
-        filter_widget.threshold_slider.setValue((5,20))
+        filter_widget.threshold_slider.setValue((5, 20))
 
         mock_plot.assert_not_called()
 
@@ -626,15 +616,23 @@ def test_slider_value_modifies_threshold_line(make_napari_viewer):
     assert filter_widget.threshold_line_lower is not None
     assert filter_widget.threshold_line_upper is not None
     expected_x_lower = (
-        filter_widget.threshold_slider.value()[0] / filter_widget.threshold_factor
+        filter_widget.threshold_slider.value()[0]
+        / filter_widget.threshold_factor
     )
     expected_x_upper = (
-        filter_widget.threshold_slider.value()[1] / filter_widget.threshold_factor
+        filter_widget.threshold_slider.value()[1]
+        / filter_widget.threshold_factor
     )
     line_data_lower = filter_widget.threshold_line_lower.get_xdata()
     line_data_upper = filter_widget.threshold_line_upper.get_xdata()
-    assert line_data_lower[0] == expected_x_lower and line_data_lower[1] == expected_x_lower
-    assert line_data_upper[0] == expected_x_upper and line_data_upper[1] == expected_x_upper
+    assert (
+        line_data_lower[0] == expected_x_lower
+        and line_data_lower[1] == expected_x_lower
+    )
+    assert (
+        line_data_upper[0] == expected_x_upper
+        and line_data_upper[1] == expected_x_upper
+    )
 
 
 def test_no_plot_called_if_combobox_empty(make_napari_viewer):
@@ -754,10 +752,7 @@ def test_filter_widget_layer_with_settings(make_napari_viewer):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    assert (
-        filter_widget.threshold_slider.value()
-        == (10, 20)
-    )
+    assert filter_widget.threshold_slider.value() == (10, 20)
     assert filter_widget.median_filter_spinbox.value() == 7
     assert filter_widget.median_filter_repetition_spinbox.value() == 3
     assert filter_widget.threshold_method_combobox.currentText() == "Li"
@@ -922,7 +917,9 @@ def test_min_threshold_edit_changes_slider(make_napari_viewer):
     filter_widget.on_threshold_slider_change()
 
     # Set a new minimum threshold value that's between current min and max
-    new_min_value = 0.15  # Choose a value that will be between 10 and 80 when scaled
+    new_min_value = (
+        0.15  # Choose a value that will be between 10 and 80 when scaled
+    )
     filter_widget.min_threshold_edit.setText(str(new_min_value))
     filter_widget.on_min_threshold_edit_changed()
 
@@ -1046,6 +1043,9 @@ def test_threshold_edit_updates_histogram_lines(make_napari_viewer):
 
     # Check that threshold line exists and is at correct position
     assert filter_widget.threshold_line_lower is not None
-    expected_x = int(new_min_value * filter_widget.threshold_factor) / filter_widget.threshold_factor
+    expected_x = (
+        int(new_min_value * filter_widget.threshold_factor)
+        / filter_widget.threshold_factor
+    )
     line_data = filter_widget.threshold_line_lower.get_xdata()
     assert abs(line_data[0] - expected_x) < 0.01

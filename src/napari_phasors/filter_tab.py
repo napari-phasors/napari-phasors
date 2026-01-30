@@ -65,11 +65,11 @@ class FilterWidget(QWidget):
         )
         self.threshold_line_lower = None
         self.threshold_line_upper = None
-        self.threshold_area_lower = None  # Greyish area showing lower thresholded region
-        self.threshold_area_upper = None  # Greyish area showing upper thresholded region
-        self._updating_threshold = False  # Flag to prevent recursive updates
-        self._dragging_line = None  # Which line is being dragged: 'lower', 'upper', or None
-        self._canvas = None  # Reference to matplotlib canvas
+        self.threshold_area_lower = None
+        self.threshold_area_upper = None
+        self._updating_threshold = False
+        self._dragging_line = None
+        self._canvas = None
 
         # Style the histogram axes and figure initially
         self.style_histogram_axes()
@@ -136,7 +136,7 @@ class FilterWidget(QWidget):
         # Set Otsu as default
         self.threshold_method_combobox.setCurrentText("Otsu")
         threshold_method_layout.addWidget(self.threshold_method_combobox)
-        
+
         # Add min and max intensity editable fields to the same row
         threshold_method_layout.addSpacing(20)
         threshold_method_layout.addWidget(QLabel("Min Intensity:"))
@@ -145,7 +145,7 @@ class FilterWidget(QWidget):
         self.min_threshold_edit.setText("0.00")
         self.min_threshold_edit.setToolTip("Lower threshold value")
         threshold_method_layout.addWidget(self.min_threshold_edit)
-        
+
         threshold_method_layout.addSpacing(10)
         threshold_method_layout.addWidget(QLabel("Max Intensity:"))
         self.max_threshold_edit = QLineEdit()
@@ -154,7 +154,7 @@ class FilterWidget(QWidget):
         self.max_threshold_edit.setToolTip("Upper threshold value")
         threshold_method_layout.addWidget(self.max_threshold_edit)
         threshold_method_layout.addStretch()
-        
+
         scroll_layout.addLayout(threshold_method_layout)
 
         # Threshold range slider with log scale checkbox
@@ -164,13 +164,13 @@ class FilterWidget(QWidget):
         self.threshold_slider.setMaximum(100)
         self.threshold_slider.setValue((0, 100))
         theshold_slider_layout.addWidget(self.threshold_slider)
-        
+
         # Add log scale checkbox to the same line as the slider
         self.log_scale_checkbox = QCheckBox("Log Scale Histogram")
         self.log_scale_checkbox.setChecked(False)
         self.log_scale_checkbox.stateChanged.connect(self.on_log_scale_changed)
         theshold_slider_layout.addWidget(self.log_scale_checkbox)
-        
+
         scroll_layout.addLayout(theshold_slider_layout)
 
         # Embed the Matplotlib figure into the widget with fixed size
@@ -180,12 +180,12 @@ class FilterWidget(QWidget):
             canvas.sizePolicy().Expanding, canvas.sizePolicy().Fixed
         )
         self._canvas = canvas
-        
+
         # Connect mouse events for draggable threshold line
         canvas.mpl_connect('button_press_event', self.on_mouse_press)
         canvas.mpl_connect('motion_notify_event', self.on_mouse_move)
         canvas.mpl_connect('button_release_event', self.on_mouse_release)
-        
+
         scroll_layout.addWidget(canvas)
 
         # Set scroll area
@@ -278,7 +278,6 @@ class FilterWidget(QWidget):
             self.median_filter_widget.setVisible(False)
             self.wavelet_filter_widget.setVisible(True)
 
-        # Check if layer is selected
         if (
             self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
         ):
@@ -331,7 +330,6 @@ class FilterWidget(QWidget):
         float
             Lower threshold value
         """
-        # Remove NaN values for threshold calculation
         clean_data = data[~np.isnan(data)]
 
         if len(clean_data) == 0:
@@ -383,7 +381,6 @@ class FilterWidget(QWidget):
                 method, mean_data
             )
 
-            # Keep the current upper threshold value
             _, current_upper_val = self.threshold_slider.value()
 
             self._updating_threshold = True
@@ -406,7 +403,6 @@ class FilterWidget(QWidget):
         if labels_layer_name == "":
             return
         layer_metadata = self.viewer.layers[labels_layer_name].metadata
-        # Removed _labels_layer_with_phasor_features assignment
 
         if 'mask' in layer_metadata.keys():
             max_mean_value = np.nanmax(
@@ -414,7 +410,6 @@ class FilterWidget(QWidget):
             )
         else:
             max_mean_value = np.nanmax(layer_metadata["original_mean"])
-        # Calculate threshold factor based on maximum mean value
         if max_mean_value > 0:
             magnitude = int(log10(max_mean_value))
             self.threshold_factor = (
@@ -442,7 +437,7 @@ class FilterWidget(QWidget):
             if "threshold" in settings.keys():
                 lower_val = int(settings["threshold"] * self.threshold_factor)
                 upper_val = int(
-                    settings.get("threshold_upper", max_mean_value) 
+                    settings.get("threshold_upper", max_mean_value)
                     * self.threshold_factor
                 )
                 self.threshold_slider.setValue((lower_val, upper_val))
@@ -453,7 +448,6 @@ class FilterWidget(QWidget):
                     f'{upper_val / self.threshold_factor:.2f}'
                 )
             else:
-                # Calculate Otsu threshold as default
                 mean_data = layer_metadata["original_mean"].copy()
                 lower_threshold = self.calculate_automatic_threshold(
                     "Otsu", mean_data
@@ -506,7 +500,6 @@ class FilterWidget(QWidget):
                     )
         else:
             self.threshold_method_combobox.setCurrentText("Otsu")
-            # Calculate Otsu threshold as default
             mean_data = layer_metadata["original_mean"].copy()
             lower_threshold = self.calculate_automatic_threshold(
                 "Otsu", mean_data
@@ -536,8 +529,11 @@ class FilterWidget(QWidget):
             current_method = self.threshold_method_combobox.currentText()
             lower_val, upper_val = self.threshold_slider.value()
 
-            if not (current_method == "None" and lower_val == 0 and 
-                    upper_val == self.threshold_slider.maximum()):
+            if not (
+                current_method == "None"
+                and lower_val == 0
+                and upper_val == self.threshold_slider.maximum()
+            ):
                 self.threshold_method_combobox.setCurrentText("Manual")
 
         lower_val, upper_val = self.threshold_slider.value()
@@ -560,32 +556,30 @@ class FilterWidget(QWidget):
         """Callback when the minimum threshold text edit is changed."""
         try:
             new_value = float(self.min_threshold_edit.text())
-            # Convert to slider value
             new_slider_value = int(new_value * self.threshold_factor)
-            
-            # Get current upper value
+
             _, upper_val = self.threshold_slider.value()
-            
-            # Clamp to valid range and ensure it doesn't exceed upper
+
             slider_max = self.threshold_slider.maximum()
-            new_slider_value = max(0, min(new_slider_value, upper_val, slider_max))
-            
-            # Update slider and lines
+            new_slider_value = max(
+                0, min(new_slider_value, upper_val, slider_max)
+            )
+
             self._updating_threshold = True
             self.threshold_slider.setValue((new_slider_value, upper_val))
-            # Update the text field with the clamped value
             self.min_threshold_edit.setText(
                 f'{new_slider_value / self.threshold_factor:.2f}'
             )
             self._updating_threshold = False
-            
-            # Set to manual mode
-            if self.threshold_method_combobox.currentText() not in ["Manual", "None"]:
+
+            if self.threshold_method_combobox.currentText() not in [
+                "Manual",
+                "None",
+            ]:
                 self.threshold_method_combobox.setCurrentText("Manual")
-            
+
             self.update_threshold_lines()
         except ValueError:
-            # If invalid input, reset to current slider value
             lower_val, _ = self.threshold_slider.value()
             self.min_threshold_edit.setText(
                 f'{lower_val / self.threshold_factor:.2f}'
@@ -595,32 +589,31 @@ class FilterWidget(QWidget):
         """Callback when the maximum threshold text edit is changed."""
         try:
             new_value = float(self.max_threshold_edit.text())
-            # Convert to slider value
             new_slider_value = int(new_value * self.threshold_factor)
-            
-            # Get current lower value
+
             lower_val, _ = self.threshold_slider.value()
-            
-            # Clamp to valid range and ensure it's not below lower
+
             slider_max = self.threshold_slider.maximum()
-            new_slider_value = max(lower_val, min(new_slider_value, slider_max))
-            
-            # Update slider and lines
+            new_slider_value = max(
+                lower_val, min(new_slider_value, slider_max)
+            )
+
             self._updating_threshold = True
             self.threshold_slider.setValue((lower_val, new_slider_value))
-            # Update the text field with the clamped value
+
             self.max_threshold_edit.setText(
                 f'{new_slider_value / self.threshold_factor:.2f}'
             )
             self._updating_threshold = False
-            
-            # Set to manual mode
-            if self.threshold_method_combobox.currentText() not in ["Manual", "None"]:
+
+            if self.threshold_method_combobox.currentText() not in [
+                "Manual",
+                "None",
+            ]:
                 self.threshold_method_combobox.setCurrentText("Manual")
-            
+
             self.update_threshold_lines()
         except ValueError:
-            # If invalid input, reset to current slider value
             _, upper_val = self.threshold_slider.value()
             self.max_threshold_edit.setText(
                 f'{upper_val / self.threshold_factor:.2f}'
@@ -667,17 +660,15 @@ class FilterWidget(QWidget):
             ]
 
         self.hist_ax.clear()
-        self.threshold_line_lower = None  # Reset line references when clearing
+        self.threshold_line_lower = None
         self.threshold_line_upper = None
         self.threshold_area_lower = None
         self.threshold_area_upper = None
         self.hist_ax.hist(
             mean_data.flatten(), bins=100, color='white', edgecolor='white'
         )
-        # Apply styling after clearing/plotting
         self.style_histogram_axes()
 
-        # Add the threshold lines if slider has values
         self.update_threshold_lines()
         self.hist_fig.canvas.draw_idle()
 
@@ -693,73 +684,91 @@ class FilterWidget(QWidget):
         threshold_lower = lower_val / self.threshold_factor
         threshold_upper = upper_val / self.threshold_factor
 
-        # Store current xlim to preserve it
         xlim = self.hist_ax.get_xlim()
         ylim = self.hist_ax.get_ylim()
 
-        # Remove existing threshold lines if they exist
-        if self.threshold_line_lower is not None:
-            self.threshold_line_lower.remove()
-            self.threshold_line_lower = None
-        if self.threshold_line_upper is not None:
-            self.threshold_line_upper.remove()
-            self.threshold_line_upper = None
-        
-        # Remove existing threshold areas if they exist
-        if self.threshold_area_lower is not None:
-            try:
+        if self.threshold_line_lower is None:
+            self.threshold_line_lower = self.hist_ax.axvline(
+                x=threshold_lower,
+                color='red',
+                linestyle='-',
+                linewidth=2.5,
+                label='Lower Threshold',
+                picker=5,
+                zorder=10,
+            )
+        else:
+            self.threshold_line_lower.set_xdata(
+                [threshold_lower, threshold_lower]
+            )
+
+        if self.threshold_line_upper is None:
+            self.threshold_line_upper = self.hist_ax.axvline(
+                x=threshold_upper,
+                color='red',
+                linestyle='-',
+                linewidth=2.5,
+                label='Upper Threshold',
+                picker=5,
+                zorder=10,
+            )
+        else:
+            self.threshold_line_upper.set_xdata(
+                [threshold_upper, threshold_upper]
+            )
+
+        if self.threshold_area_lower is None:
+            self.threshold_area_lower = self.hist_ax.axvspan(
+                xlim[0], threshold_lower, alpha=0.4, color='black', zorder=5
+            )
+        else:
+            xy = np.array(self.threshold_area_lower.get_xy())
+            if xy.ndim == 2 and xy.shape[0] == 5:
+                xy[:, 0] = [
+                    xlim[0],
+                    threshold_lower,
+                    threshold_lower,
+                    xlim[0],
+                    xlim[0],
+                ]
+                self.threshold_area_lower.set_xy(xy)
+            else:
+                # If shape is not as expected, recreate the patch
                 self.threshold_area_lower.remove()
-            except (NotImplementedError, AttributeError):
-                self.threshold_area_lower.set_visible(False)
-            self.threshold_area_lower = None
-        if self.threshold_area_upper is not None:
-            try:
+                self.threshold_area_lower = self.hist_ax.axvspan(
+                    xlim[0],
+                    threshold_lower,
+                    alpha=0.4,
+                    color='black',
+                    zorder=5,
+                )
+
+        if self.threshold_area_upper is None:
+            self.threshold_area_upper = self.hist_ax.axvspan(
+                threshold_upper, xlim[1], alpha=0.4, color='black', zorder=5
+            )
+        else:
+            xy = np.array(self.threshold_area_upper.get_xy())
+            if xy.ndim == 2 and xy.shape[0] == 5:
+                xy[:, 0] = [
+                    threshold_upper,
+                    xlim[1],
+                    xlim[1],
+                    threshold_upper,
+                    threshold_upper,
+                ]
+                self.threshold_area_upper.set_xy(xy)
+            else:
+                # If shape is not as expected, recreate the patch
                 self.threshold_area_upper.remove()
-            except (NotImplementedError, AttributeError):
-                self.threshold_area_upper.set_visible(False)
-            self.threshold_area_upper = None
+                self.threshold_area_upper = self.hist_ax.axvspan(
+                    threshold_upper,
+                    xlim[1],
+                    alpha=0.4,
+                    color='black',
+                    zorder=5,
+                )
 
-        # Add greyish transparent area for lower thresholded region (left of lower threshold)
-        self.threshold_area_lower = self.hist_ax.axvspan(
-            xlim[0],
-            threshold_lower,
-            alpha=0.4,
-            color='black',
-            zorder=5
-        )
-        
-        # Add greyish transparent area for upper thresholded region (right of upper threshold)
-        self.threshold_area_upper = self.hist_ax.axvspan(
-            threshold_upper,
-            xlim[1],
-            alpha=0.4,
-            color='black',
-            zorder=5
-        )
-        
-        # Add lower threshold line
-        self.threshold_line_lower = self.hist_ax.axvline(
-            x=threshold_lower,
-            color='red',
-            linestyle='-',
-            linewidth=2.5,
-            label='Lower Threshold',
-            picker=5,
-            zorder=10
-        )
-        
-        # Add upper threshold line
-        self.threshold_line_upper = self.hist_ax.axvline(
-            x=threshold_upper,
-            color='red',
-            linestyle='-',
-            linewidth=2.5,
-            label='Upper Threshold',
-            picker=5,
-            zorder=10
-        )
-
-        # Restore the original axis limits
         self.hist_ax.set_xlim(xlim)
         self.hist_ax.set_ylim(ylim)
 
@@ -794,7 +803,6 @@ class FilterWidget(QWidget):
 
         layer = self.viewer.layers[labels_layer_name]
 
-        # Determine threshold values and method
         threshold_method = self.threshold_method_combobox.currentText()
         threshold_lower = None
         threshold_upper = None
@@ -803,7 +811,6 @@ class FilterWidget(QWidget):
             threshold_lower = lower_val / self.threshold_factor
             threshold_upper = upper_val / self.threshold_factor
 
-        # Determine filter method and parameters
         filter_method = None
         size = None
         repeat = None
@@ -811,7 +818,6 @@ class FilterWidget(QWidget):
         levels = None
         harmonics = None
 
-        # Only set filter parameters if median filter has repetitions > 0 or wavelet is selected
         current_filter_method = (
             self.filter_method_combobox.currentText().lower()
         )
@@ -823,11 +829,10 @@ class FilterWidget(QWidget):
             size = self.median_filter_spinbox.value()
             repeat = self.median_filter_repetition_spinbox.value()
         elif current_filter_method == "wavelet":
-            # Check if harmonics are compatible
             harmonics = layer.metadata.get('harmonics')
             if harmonics is not None and validate_harmonics_for_wavelet(
                 harmonics
-            ): 
+            ):
                 filter_method = "wavelet"
                 sigma = self.wavelet_sigma_spinbox.value()
                 levels = self.wavelet_levels_spinbox.value()
@@ -846,32 +851,31 @@ class FilterWidget(QWidget):
         )
 
         if self.parent_widget is not None:
-            # Refresh the cached phasor data from the updated layer
             self.parent_widget.refresh_phasor_data()
-    
+
     def on_mouse_press(self, event):
         """Handle mouse press event for threshold line dragging."""
         if event.inaxes != self.hist_ax:
             return
-        
-        if self.threshold_line_lower is None or self.threshold_line_upper is None:
+
+        if (
+            self.threshold_line_lower is None
+            or self.threshold_line_upper is None
+        ):
             return
-        
-        # Check if click is near either threshold line
+
         lower_val, upper_val = self.threshold_slider.value()
         threshold_lower = lower_val / self.threshold_factor
         threshold_upper = upper_val / self.threshold_factor
-        
+
         xlim = self.hist_ax.get_xlim()
         x_range = xlim[1] - xlim[0]
-        
-        # Allow clicking within 2% of the x-range from either line
+
         tolerance = x_range * 0.02
-        
+
         dist_to_lower = abs(event.xdata - threshold_lower)
         dist_to_upper = abs(event.xdata - threshold_upper)
-        
-        # Determine which line is closer and being dragged
+
         if dist_to_lower < tolerance and dist_to_lower <= dist_to_upper:
             self._dragging_line = 'lower'
             if self._canvas:
@@ -880,26 +884,22 @@ class FilterWidget(QWidget):
             self._dragging_line = 'upper'
             if self._canvas:
                 self._canvas.setCursor(Qt.SizeHorCursor)
-    
+
     def on_mouse_move(self, event):
         """Handle mouse move event for threshold line dragging."""
         if self._dragging_line is None or event.inaxes != self.hist_ax:
             return
-        
+
         if event.xdata is None:
             return
-        
-        # Get the x-axis limits
+
         xlim = self.hist_ax.get_xlim()
         lower_val, upper_val = self.threshold_slider.value()
-        
-        # Clamp the threshold value within valid range
+
         new_threshold = max(xlim[0], min(event.xdata, xlim[1]))
         new_slider_value = int(new_threshold * self.threshold_factor)
-        
-        # Update the appropriate slider value
+
         if self._dragging_line == 'lower':
-            # Don't let lower exceed upper
             new_slider_value = min(new_slider_value, upper_val)
             if new_slider_value != lower_val:
                 self._updating_threshold = True
@@ -913,7 +913,6 @@ class FilterWidget(QWidget):
                 self._updating_threshold = False
                 self.update_threshold_lines()
         elif self._dragging_line == 'upper':
-            # Don't let upper go below lower
             new_slider_value = max(new_slider_value, lower_val)
             if new_slider_value != upper_val:
                 self._updating_threshold = True
@@ -926,15 +925,14 @@ class FilterWidget(QWidget):
                 )
                 self._updating_threshold = False
                 self.update_threshold_lines()
-    
+
     def on_mouse_release(self, event):
         """Handle mouse release event for threshold line dragging."""
         if self._dragging_line is not None:
             self._dragging_line = None
-            # Reset cursor
+
             if self._canvas:
                 self._canvas.setCursor(Qt.ArrowCursor)
-            
-            # Set method to Manual after dragging
+
             if not self._updating_threshold:
                 self.threshold_method_combobox.setCurrentText("Manual")
