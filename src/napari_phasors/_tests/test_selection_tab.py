@@ -71,10 +71,8 @@ def test_selection_widget_with_layer_data(make_napari_viewer):
     # Switch to manual selection mode to test manual selection functionality
     widget.selection_mode_combobox.setCurrentIndex(1)
 
-    # Test combobox initialization - only 'None' is present until a layer is added
     combobox = widget.selection_input_widget.phasor_selection_id_combobox
-    # After adding a layer with parent widget properly configured, combobox may have items
-    assert combobox.count() >= 1
+    assert combobox.count() == 2
     assert combobox.itemText(0) == "None"
     assert combobox.currentText() == "None"
 

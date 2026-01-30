@@ -352,45 +352,46 @@ class SelectionWidget(QWidget):
 
     def _on_image_layer_changed(self):
         """Callback when the image layer changes - restores circular cursors from metadata."""
-        layer = self._get_current_layer()
-        if layer is None:
-            return
+        # NOTE: Commented out restoring manual selections until they are saved during export
+        # layer = self._get_current_layer()
+        # if layer is None:
+        #     return
 
-        self.selection_input_widget.phasor_selection_id_combobox.blockSignals(
-            True
-        )
-        self.selection_input_widget.phasor_selection_id_combobox.clear()
-        self.selection_input_widget.phasor_selection_id_combobox.addItem(
-            "None"
-        )
+        # self.selection_input_widget.phasor_selection_id_combobox.blockSignals(
+        #     True
+        # )
+        # self.selection_input_widget.phasor_selection_id_combobox.clear()
+        # self.selection_input_widget.phasor_selection_id_combobox.addItem(
+        #     "None"
+        # )
 
-        if (
-            "settings" in layer.metadata
-            and "selections" in layer.metadata["settings"]
-            and "manual_selections" in layer.metadata["settings"]["selections"]
-        ):
-            manual_selections = layer.metadata["settings"]["selections"][
-                "manual_selections"
-            ]
-            for selection_id in manual_selections.keys():
-                self.selection_input_widget.phasor_selection_id_combobox.addItem(
-                    selection_id
-                )
-                self._recreate_manual_selection_layer(
-                    selection_id, manual_selections[selection_id]
-                )
+        # if (
+        #     "settings" in layer.metadata
+        #     and "selections" in layer.metadata["settings"]
+        #     and "manual_selections" in layer.metadata["settings"]["selections"]
+        # ):
+        #     manual_selections = layer.metadata["settings"]["selections"][
+        #         "manual_selections"
+        #     ]
+        #     for selection_id in manual_selections.keys():
+        #         self.selection_input_widget.phasor_selection_id_combobox.addItem(
+        #             selection_id
+        #         )
+        #         self._recreate_manual_selection_layer(
+        #             selection_id, manual_selections[selection_id]
+        #         )
 
-        self.selection_input_widget.phasor_selection_id_combobox.setCurrentText(
-            "None"
-        )
-        self._current_selection_id = "None"
-        self.selection_id = "None"
+        # self.selection_input_widget.phasor_selection_id_combobox.setCurrentText(
+        #     "None"
+        # )
+        # self._current_selection_id = "None"
+        # self.selection_id = "None"
 
-        self.selection_input_widget.phasor_selection_id_combobox.blockSignals(
-            False
-        )
+        # self.selection_input_widget.phasor_selection_id_combobox.blockSignals(
+        #     False
+        # )
 
-        self._phasors_selected_layer = None
+        # self._phasors_selected_layer = None
 
         self.circular_cursor_widget._on_image_layer_changed()
 
@@ -475,7 +476,8 @@ class SelectionWidget(QWidget):
 
     def _get_next_available_selection_id(self):
         """Get the next available manual selection ID."""
-        existing_selections = [
+        # Get selections from combobox
+        combobox_selections = [
             self.selection_input_widget.phasor_selection_id_combobox.itemText(
                 i
             )
@@ -483,12 +485,35 @@ class SelectionWidget(QWidget):
                 self.selection_input_widget.phasor_selection_id_combobox.count()
             )
         ]
+
+        # Get selections from metadata (actually used selections)
+        layer = self._get_current_layer()
+        used_selections = set()
+        if (
+            layer is not None
+            and "settings" in layer.metadata
+            and "selections" in layer.metadata["settings"]
+            and "manual_selections" in layer.metadata["settings"]["selections"]
+        ):
+            used_selections = set(
+                layer.metadata["settings"]["selections"][
+                    "manual_selections"
+                ].keys()
+            )
+
         counter = 1
         while True:
             candidate_name = f"MANUAL SELECTION #{counter}"
-            if candidate_name not in existing_selections:
+            # Only skip if the name is in combobox AND has been used in metadata
+            if (
+                candidate_name in combobox_selections
+                and candidate_name in used_selections
+            ):
+                counter += 1
+            elif candidate_name not in combobox_selections:
+                counter += 1
+            else:
                 return candidate_name
-            counter += 1
 
     def manual_selection_changed(self, manual_selection):
         """Update the manual selection in the layer metadata."""
@@ -1074,14 +1099,27 @@ class CircularCursorWidget(QWidget):
             cursor_params = layer.metadata["settings"]["selections"][
                 "circular_cursors"
             ]
-            for params in cursor_params:
-                color = QColor(*params['color'])
-                self._add_cursor(
-                    g=params['g'],
-                    s=params['s'],
-                    radius=params['radius'],
-                    color=color,
-                )
+
+            original_apply_selection = getattr(self, "_apply_selection", None)
+
+            def _noop_apply_selection(*args, **kwargs):
+                return None
+
+            if original_apply_selection is not None:
+                self._apply_selection = _noop_apply_selection
+            try:
+                for params in cursor_params:
+                    color = QColor(*params["color"])
+                    self._add_cursor(
+                        g=params["g"],
+                        s=params["s"],
+                        radius=params["radius"],
+                        color=color,
+                    )
+            finally:
+                if original_apply_selection is not None:
+                    self._apply_selection = original_apply_selection
+                    self._apply_selection()
 
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
