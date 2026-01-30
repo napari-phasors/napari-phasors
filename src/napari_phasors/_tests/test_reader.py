@@ -343,6 +343,11 @@ def test_reader_ometif_metadata():
     assert "threshold" in settings
     assert settings["threshold"] == 1.0
 
+    # Test threshold_upper if present (may not be in older files)
+    if "threshold_upper" in settings:
+        assert isinstance(settings["threshold_upper"], (int, float))
+        assert settings["threshold_upper"] >= settings["threshold"]
+
     # Test circular cursors in metadata (may not be present in older files)
     # If present, verify structure
     if (

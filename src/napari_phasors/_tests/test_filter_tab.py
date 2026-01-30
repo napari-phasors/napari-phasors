@@ -12,10 +12,10 @@ from qtpy.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
-    QSlider,
     QSpinBox,
     QVBoxLayout,
 )
+from superqt import QRangeSlider
 
 from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
 from napari_phasors.filter_tab import FilterWidget
@@ -36,7 +36,10 @@ def test_filter_widget_initialization_values(make_napari_viewer):
     # Test initial attribute values
     assert filter_widget._phasors_selected_layer is None
     assert filter_widget.threshold_factor == 1
-    assert filter_widget.threshold_line is None
+    assert filter_widget.threshold_line_lower is None
+    assert filter_widget.threshold_line_upper is None
+    assert filter_widget.threshold_area_lower is None
+    assert filter_widget.threshold_area_upper is None
 
     # Test histogram figure initialization
     assert isinstance(filter_widget.hist_fig, Figure)
@@ -64,7 +67,7 @@ def test_filter_widget_initialization_values(make_napari_viewer):
     # Test log scale checkbox
     assert hasattr(filter_widget, 'log_scale_checkbox')
     assert isinstance(filter_widget.log_scale_checkbox, QCheckBox)
-    assert filter_widget.log_scale_checkbox.text() == "Log scale"
+    assert filter_widget.log_scale_checkbox.text() == "Log Scale Histogram"
     assert (
         not filter_widget.log_scale_checkbox.isChecked()
     )  # Should start unchecked
@@ -106,17 +109,22 @@ def test_filter_widget_initialization_values(make_napari_viewer):
     assert isinstance(filter_widget.harmonic_warning_label, QLabel)
     assert not filter_widget.harmonic_warning_label.isVisible()
 
-    # Test threshold slider and label
-    assert hasattr(filter_widget, 'label_3')
-    assert isinstance(filter_widget.label_3, QLabel)
-    assert filter_widget.label_3.text() == "Intensity threshold: 0"
+    # Test threshold labels (min and max intensity)
+    assert hasattr(filter_widget, 'label_min_intensity')
+    assert isinstance(filter_widget.label_min_intensity, QLabel)
+    assert filter_widget.label_min_intensity.text() == "Min intensity: 0"
 
+    assert hasattr(filter_widget, 'label_max_intensity')
+    assert isinstance(filter_widget.label_max_intensity, QLabel)
+    assert filter_widget.label_max_intensity.text() == "Max intensity: 0"
+
+    # Test threshold range slider
     assert hasattr(filter_widget, 'threshold_slider')
-    assert isinstance(filter_widget.threshold_slider, QSlider)
+    assert isinstance(filter_widget.threshold_slider, QRangeSlider)
     assert filter_widget.threshold_slider.orientation() == Qt.Horizontal
     assert filter_widget.threshold_slider.minimum() == 0
     assert filter_widget.threshold_slider.maximum() == 100
-    assert filter_widget.threshold_slider.value() == 0
+    assert filter_widget.threshold_slider.value() == (0, 100)
 
     # Test apply button
     assert hasattr(filter_widget, 'apply_button')
@@ -166,15 +174,16 @@ def test_threshold_method_none_option(make_napari_viewer):
     filter_widget = parent.filter_tab
 
     # Set threshold to some value first
-    filter_widget.threshold_slider.setValue(10)
+    filter_widget.threshold_slider.setValue((10, 50))
     filter_widget.on_threshold_slider_change()
-    assert filter_widget.threshold_slider.value() == 10
+    assert filter_widget.threshold_slider.value() == (10, 50)
 
     filter_widget.threshold_method_combobox.setCurrentText("None")
     filter_widget.on_threshold_method_changed()
 
-    assert filter_widget.threshold_slider.value() == 0
-    assert filter_widget.label_3.text() == "Intensity threshold: 0"
+    lower_val, upper_val = filter_widget.threshold_slider.value()
+    assert lower_val == 0
+    assert filter_widget.label_min_intensity.text() == "Min intensity: 0"
 
 
 def test_automatic_threshold_methods(make_napari_viewer):
@@ -187,20 +196,20 @@ def test_automatic_threshold_methods(make_napari_viewer):
 
     filter_widget.threshold_method_combobox.setCurrentText("Otsu")
     filter_widget.on_threshold_method_changed()
-    otsu_value = filter_widget.threshold_slider.value()
-    assert otsu_value > 0
+    otsu_lower, otsu_upper = filter_widget.threshold_slider.value()
+    assert otsu_lower > 0
 
     filter_widget.threshold_method_combobox.setCurrentText("Li")
     filter_widget.on_threshold_method_changed()
-    li_value = filter_widget.threshold_slider.value()
-    assert li_value > 0
+    li_lower, li_upper = filter_widget.threshold_slider.value()
+    assert li_lower > 0
 
     filter_widget.threshold_method_combobox.setCurrentText("Yen")
     filter_widget.on_threshold_method_changed()
-    yen_value = filter_widget.threshold_slider.value()
-    assert yen_value > 0
+    yen_lower, yen_upper = filter_widget.threshold_slider.value()
+    assert yen_lower > 0
 
-    values = [otsu_value, li_value, yen_value]
+    values = [otsu_lower, li_lower, yen_lower]
     assert len(set(values)) >= 1
 
 
@@ -216,14 +225,14 @@ def test_manual_threshold_switching(make_napari_viewer):
     filter_widget.on_threshold_method_changed()
     assert filter_widget.threshold_method_combobox.currentText() == "Otsu"
 
-    filter_widget.threshold_slider.setValue(42)
+    filter_widget.threshold_slider.setValue((42, 80))
     filter_widget.on_threshold_slider_change()
 
     assert filter_widget.threshold_method_combobox.currentText() == "Manual"
 
 
 def test_none_threshold_slider_behavior(make_napari_viewer):
-    """Test that None threshold doesn't switch to Manual when slider is at 0."""
+    """Test that None threshold doesn't switch to Manual when slider is at full range."""
     viewer = make_napari_viewer()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
@@ -233,7 +242,8 @@ def test_none_threshold_slider_behavior(make_napari_viewer):
     filter_widget.threshold_method_combobox.setCurrentText("None")
     filter_widget.on_threshold_method_changed()
     assert filter_widget.threshold_method_combobox.currentText() == "None"
-    assert filter_widget.threshold_slider.value() == 0
+    lower_val, upper_val = filter_widget.threshold_slider.value()
+    assert lower_val == 0
 
     filter_widget.on_threshold_slider_change()
 
@@ -317,7 +327,7 @@ def test_apply_button_with_wavelet_filter(make_napari_viewer):
     filter_widget.filter_method_combobox.setCurrentText("Wavelet")
     filter_widget.wavelet_sigma_spinbox.setValue(1.5)
     filter_widget.wavelet_levels_spinbox.setValue(2)
-    filter_widget.threshold_slider.setValue(10)
+    filter_widget.threshold_slider.setValue((10, 90))
 
     with (
         patch(
@@ -350,7 +360,7 @@ def test_apply_button_with_median_filter(make_napari_viewer):
     filter_widget.filter_method_combobox.setCurrentText("Median")
     filter_widget.median_filter_spinbox.setValue(5)
     filter_widget.median_filter_repetition_spinbox.setValue(2)
-    filter_widget.threshold_slider.setValue(10)
+    filter_widget.threshold_slider.setValue((10, 90))
 
     with (
         patch(
@@ -400,28 +410,40 @@ def test_calculate_automatic_threshold(make_napari_viewer):
 
     test_data = np.random.rand(100, 100) * 100
 
-    otsu_threshold = filter_widget.calculate_automatic_threshold(
+    otsu_lower, otsu_upper = filter_widget.calculate_automatic_threshold(
         "Otsu", test_data
     )
-    li_threshold = filter_widget.calculate_automatic_threshold("Li", test_data)
-    yen_threshold = filter_widget.calculate_automatic_threshold(
+    li_lower, li_upper = filter_widget.calculate_automatic_threshold(
+        "Li", test_data
+    )
+    yen_lower, yen_upper = filter_widget.calculate_automatic_threshold(
         "Yen", test_data
     )
 
-    assert isinstance(otsu_threshold, (int, float))
-    assert isinstance(li_threshold, (int, float))
-    assert isinstance(yen_threshold, (int, float))
-    assert otsu_threshold >= 0
-    assert li_threshold >= 0
-    assert yen_threshold >= 0
+    assert isinstance(otsu_lower, (int, float))
+    assert isinstance(otsu_upper, (int, float))
+    assert isinstance(li_lower, (int, float))
+    assert isinstance(li_upper, (int, float))
+    assert isinstance(yen_lower, (int, float))
+    assert isinstance(yen_upper, (int, float))
+    assert otsu_lower >= 0
+    assert li_lower >= 0
+    assert yen_lower >= 0
+    assert otsu_upper >= otsu_lower
+    assert li_upper >= li_lower
+    assert yen_upper >= yen_lower
 
     empty_data = np.array([])
-    result = filter_widget.calculate_automatic_threshold("Otsu", empty_data)
-    assert result == 0
+    lower, upper = filter_widget.calculate_automatic_threshold(
+        "Otsu", empty_data
+    )
+    assert lower == 0
 
     nan_data = np.full((10, 10), np.nan)
-    result = filter_widget.calculate_automatic_threshold("Otsu", nan_data)
-    assert result == 0
+    lower, upper = filter_widget.calculate_automatic_threshold(
+        "Otsu", nan_data
+    )
+    assert lower == 0
 
 
 def test_settings_restoration_with_wavelet(make_napari_viewer):
@@ -434,6 +456,7 @@ def test_settings_restoration_with_wavelet(make_napari_viewer):
 
     intensity_image_layer.metadata["settings"] = {
         "threshold": 0.1,
+        "threshold_upper": 5.0,
         "threshold_method": "Li",
         "filter": {
             "method": "wavelet",
@@ -450,6 +473,11 @@ def test_settings_restoration_with_wavelet(make_napari_viewer):
     assert filter_widget.wavelet_sigma_spinbox.value() == 3.5
     assert filter_widget.wavelet_levels_spinbox.value() == 4
     assert filter_widget.threshold_method_combobox.currentText() == "Li"
+
+    # Check that both thresholds are restored
+    lower_val, upper_val = filter_widget.threshold_slider.value()
+    assert lower_val == int(0.1 * filter_widget.threshold_factor)
+    assert upper_val == int(5.0 * filter_widget.threshold_factor)
 
 
 def test_settings_restoration_with_incompatible_wavelet(make_napari_viewer):
@@ -521,13 +549,18 @@ def test_filter_widget_with_layer_data(make_napari_viewer):
     assert filter_widget.threshold_slider.maximum() == expected_max
 
     mean_data = intensity_image_layer.metadata["original_mean"]
-    expected_otsu_threshold = filter_widget.calculate_automatic_threshold(
-        "Otsu", mean_data
+    expected_otsu_lower, expected_otsu_upper = (
+        filter_widget.calculate_automatic_threshold("Otsu", mean_data)
     )
-    expected_default_threshold = int(
-        expected_otsu_threshold * filter_widget.threshold_factor
+    expected_default_lower = int(
+        expected_otsu_lower * filter_widget.threshold_factor
     )
-    assert filter_widget.threshold_slider.value() == expected_default_threshold
+    expected_default_upper = int(
+        expected_otsu_upper * filter_widget.threshold_factor
+    )
+    actual_lower, actual_upper = filter_widget.threshold_slider.value()
+    assert actual_lower == expected_default_lower
+    assert actual_upper == expected_default_upper
 
     assert filter_widget.threshold_method_combobox.currentText() == "Otsu"
 
@@ -540,14 +573,19 @@ def test_filter_widget_threshold_slider_callback(make_napari_viewer):
 
     filter_widget.threshold_factor = 10
 
-    test_value = 50
-    filter_widget.threshold_slider.setValue(test_value)
+    test_lower = 20
+    test_upper = 80
+    filter_widget.threshold_slider.setValue((test_lower, test_upper))
     filter_widget.on_threshold_slider_change()
 
-    expected_text = (
-        f"Intensity threshold: {test_value / filter_widget.threshold_factor}"
+    expected_min_text = (
+        f"Min intensity: {test_lower / filter_widget.threshold_factor:.2f}"
     )
-    assert filter_widget.label_3.text() == expected_text
+    expected_max_text = (
+        f"Max intensity: {test_upper / filter_widget.threshold_factor:.2f}"
+    )
+    assert filter_widget.label_min_intensity.text() == expected_min_text
+    assert filter_widget.label_max_intensity.text() == expected_max_text
 
 
 def test_filter_widget_kernel_size_callback(make_napari_viewer):
