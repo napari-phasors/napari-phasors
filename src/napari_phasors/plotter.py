@@ -71,9 +71,12 @@ class CheckableComboBox(QComboBox):
         self.lineEdit().installEventFilter(self)
         # Prevent cursor positioning in line edit
         self.lineEdit().setFocusPolicy(Qt.NoFocus)
+        
+        # Install event filter on view to handle item clicks
+        self.view().viewport().installEventFilter(self)
 
     def eventFilter(self, obj, event):
-        """Filter events to make line edit clickable."""
+        """Filter events to make line edit clickable and handle item clicks."""
         if obj == self.lineEdit():
             if event.type() == event.MouseButtonRelease:
                 # Toggle popup on mouse release
@@ -83,6 +86,18 @@ class CheckableComboBox(QComboBox):
             elif event.type() == event.MouseButtonPress:
                 # Consume press event to prevent default behavior
                 return True
+        elif obj == self.view().viewport():
+            if event.type() == event.MouseButtonRelease:
+                # Get the index of the clicked item
+                index = self.view().indexAt(event.pos())
+                if index.isValid():
+                    # Toggle the check state
+                    item = self.model().itemFromIndex(index)
+                    if item:
+                        current_state = item.checkState()
+                        new_state = Qt.Unchecked if current_state == Qt.Checked else Qt.Checked
+                        item.setCheckState(new_state)
+                    return True
         return super().eventFilter(obj, event)
 
     def addItem(self, text, checked=False):
@@ -1778,6 +1793,10 @@ class PlotterWidget(QWidget):
                 checked = name in previously_selected
                 self.image_layers_checkable_combobox.addItem(name, checked)
 
+            # If no layers were previously selected and we have layers, select the first one
+            if not previously_selected and layer_names:
+                self.image_layers_checkable_combobox.setCheckedItems([layer_names[0]])
+
             self.mask_layer_combobox.addItems(["None"] + mask_layer_names)
 
             # Check if previously selected mask layer was deleted
@@ -1854,7 +1873,6 @@ class PlotterWidget(QWidget):
         try:
             selected_layers = self.get_selected_layers()
 
-            # Update grid view based on selection
             self._update_grid_view(selected_layers)
 
             layer_name = self.get_primary_layer_name()
@@ -1862,19 +1880,23 @@ class PlotterWidget(QWidget):
                 self._g_array = None
                 self._s_array = None
                 self._harmonics_array = None
+                if hasattr(self.canvas_widget, 'active_artist') and self.canvas_widget.active_artist:
+                    active_artist = self.canvas_widget.artists.get(self.canvas_widget.active_artist)
+                    if active_artist and hasattr(active_artist, 'ax'):
+                        active_artist.ax.clear()
+                        active_artist.ax.set_aspect(1, adjustable='box')
+                        self.canvas_widget.canvas.draw_idle()
                 return
 
             layer = self.viewer.layers[layer_name]
             layer_metadata = layer.metadata
 
-            # Retrieve arrays from metadata (primary layer for backward compat)
             self._g_array = layer_metadata.get("G")
             self._s_array = layer_metadata.get("S")
             self._g_original_array = layer_metadata.get("G_original")
             self._s_original_array = layer_metadata.get("S_original")
             self._harmonics_array = layer_metadata.get("harmonics")
 
-            # Compute intersection of harmonics across all selected layers
             if len(selected_layers) > 1:
                 common_harmonics = self._get_common_harmonics(selected_layers)
                 if common_harmonics is not None and len(common_harmonics) > 0:
@@ -1887,7 +1909,6 @@ class PlotterWidget(QWidget):
                 max_harmonic = int(np.max(self._harmonics_array))
                 self.harmonic_spinbox.setRange(min_harmonic, max_harmonic)
 
-            # Reset mask layer combobox to "None" when image layer changes
             self.mask_layer_combobox.blockSignals(True)
             self.mask_layer_combobox.setCurrentText("None")
             self.mask_layer_combobox.blockSignals(False)
@@ -1898,27 +1919,21 @@ class PlotterWidget(QWidget):
 
             self._sync_frequency_inputs_from_metadata()
 
-            # Update filter widget when layer changes
             if hasattr(self, 'filter_tab'):
                 self.filter_tab._on_image_layer_changed()
 
-            # Update calibration button state when layer changes
             if hasattr(self, 'calibration_tab'):
                 self.calibration_tab._on_image_layer_changed()
 
-            # Update selection tab when layer changes
             if hasattr(self, 'selection_tab'):
                 self.selection_tab._on_image_layer_changed()
 
-            # Update lifetime tab when layer changes
             if hasattr(self, 'lifetime_tab'):
                 self.lifetime_tab._on_image_layer_changed()
 
-            # Update components tab when layer changes
             if hasattr(self, 'components_tab'):
                 self.components_tab._on_image_layer_changed()
 
-            # Update FRET tab when layer changes
             if hasattr(self, 'fret_tab'):
                 self.fret_tab._on_image_layer_changed()
 
@@ -1942,18 +1957,14 @@ class PlotterWidget(QWidget):
         selected_names = {layer.name for layer in selected_layers}
 
         if len(selected_layers) > 1:
-            # Enable grid mode for multiple layers
             self.viewer.grid.enabled = True
 
-            # Make selected layers visible, hide others (only phasor layers)
             for layer in self.viewer.layers:
                 if isinstance(layer, Image) and "G" in layer.metadata:
                     layer.visible = layer.name in selected_names
         else:
-            # Disable grid mode for single selection
             self.viewer.grid.enabled = False
 
-            # Make the selected layer visible
             if selected_layers:
                 selected_layers[0].visible = True
 
@@ -2021,21 +2032,13 @@ class PlotterWidget(QWidget):
 
         image_layer.metadata['mask'] = mask_data.copy()
 
-        # Apply mask to image data (set values outside mask to NaN)
         mask_invalid = mask_data <= 0
         image_layer.data = np.where(mask_invalid, np.nan, image_layer.data)
-
-        # Apply mask to G and S arrays
-        # G and S have shape (n_harmonics, Y, X) or (Y, X)
-        # mask_data has shape (Y, X)
-        # We need to broadcast the mask across harmonics if needed
 
         g_array = image_layer.metadata['G']
         s_array = image_layer.metadata['S']
 
         if g_array.ndim == 3:
-            # Multi-harmonic case: shape is (n_harmonics, Y, X)
-            # Expand mask to (1, Y, X) for broadcasting
             mask_invalid_expanded = mask_invalid[np.newaxis, :, :]
             image_layer.metadata['G'] = np.where(
                 mask_invalid_expanded, np.nan, g_array
@@ -2044,7 +2047,6 @@ class PlotterWidget(QWidget):
                 mask_invalid_expanded, np.nan, s_array
             )
         else:
-            # Single harmonic case: shape is (Y, X)
             image_layer.metadata['G'] = np.where(mask_invalid, np.nan, g_array)
             image_layer.metadata['S'] = np.where(mask_invalid, np.nan, s_array)
 
@@ -2068,10 +2070,8 @@ class PlotterWidget(QWidget):
             mask_layer = self.viewer.layers[text]
             self._apply_mask_to_phasor_data(mask_layer, current_image_layer)
 
-        # Update filter widget when layer changes
         if hasattr(self, 'filter_tab'):
             self.filter_tab._on_image_layer_changed()
-            # Re-apply filter if previously applied
             if (
                 current_image_layer.metadata['settings'].get('filter', None)
                 is not None
@@ -2092,15 +2092,12 @@ class PlotterWidget(QWidget):
             self.image_layer_with_phasor_features_combobox.currentText()
         )
         current_image_layer = self.viewer.layers[current_image_layer_name]
-        # Restore original G and S and image data (this also clears previously applied filters)
         self._restore_original_phasor_data(current_image_layer)
         mask_layer = event.source
         self._apply_mask_to_phasor_data(mask_layer, current_image_layer)
 
-        # Apply changes to the filter tab
         if hasattr(self, 'filter_tab'):
             self.filter_tab._on_image_layer_changed()
-            # Re-apply filter if previously applied
             if (
                 current_image_layer.metadata['settings'].get('filter', None)
                 is not None
@@ -2124,7 +2121,6 @@ class PlotterWidget(QWidget):
         layer = self.viewer.layers[layer_name]
         layer_metadata = layer.metadata
 
-        # Retrieve arrays from metadata
         self._g_array = layer_metadata.get("G")
         self._s_array = layer_metadata.get("S")
         self._g_original_array = layer_metadata.get("G_original")
@@ -2147,7 +2143,6 @@ class PlotterWidget(QWidget):
         bool
             True if phasor data is available, False otherwise.
         """
-        # Check primary layer arrays (backward compatibility)
         if (
             self._g_array is not None
             and self._s_array is not None
@@ -2155,7 +2150,6 @@ class PlotterWidget(QWidget):
         ):
             return True
 
-        # Also check if any selected layer has phasor data
         selected_layers = self.get_selected_layers()
         for layer in selected_layers:
             if (
@@ -2295,7 +2289,6 @@ class PlotterWidget(QWidget):
             if g_array is None or s_array is None:
                 continue
 
-            # Get harmonic index for this layer
             if harmonics_array is not None:
                 harmonics_array = np.atleast_1d(harmonics_array)
                 target_harmonic = self.harmonic
@@ -2304,12 +2297,10 @@ class PlotterWidget(QWidget):
                         np.where(harmonics_array == target_harmonic)[0][0]
                     )
                 except (IndexError, ValueError):
-                    # Harmonic not found in this layer, skip it
                     continue
             else:
                 harmonic_idx = 0
 
-            # Extract data for the harmonic
             if g_array.ndim == 3:
                 g = g_array[harmonic_idx]
                 s = s_array[harmonic_idx]
@@ -2317,7 +2308,6 @@ class PlotterWidget(QWidget):
                 g = g_array
                 s = s_array
 
-            # Flatten and filter valid values
             g_flat = g.ravel()
             s_flat = s.ravel()
             valid = (~np.isnan(g_flat)) & (~np.isnan(s_flat))

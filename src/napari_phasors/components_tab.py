@@ -539,9 +539,7 @@ class ComponentsWidget(QWidget):
 
     def _update_components_setting_in_metadata(self, key_path, value):
         """Update a specific component setting in the current layer's metadata."""
-        layer_name = (
-            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-        )
+        layer_name = self.parent_widget.get_primary_layer_name()
         if not layer_name:
             return
 
@@ -563,9 +561,7 @@ class ComponentsWidget(QWidget):
     def _restore_and_recreate_components_from_metadata(self):
         """Restore all components settings and recreate visual elements from metadata."""
 
-        layer_name = (
-            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-        )
+        layer_name = self.parent_widget.get_primary_layer_name()
 
         if not layer_name:
             return
@@ -2931,9 +2927,7 @@ class ComponentsWidget(QWidget):
 
     def _on_image_layer_changed(self):
         """Callback whenever the image layer with phasor features changes."""
-        self.current_image_layer_name = (
-            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-        )
+        self.current_image_layer_name = self.parent_widget.get_primary_layer_name()
 
         for comp in self.components:
             if comp is not None:
@@ -2987,9 +2981,7 @@ class ComponentsWidget(QWidget):
 
         self._update_lifetime_inputs_visibility()
 
-        layer_name = (
-            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-        )
+        layer_name = self.parent_widget.get_primary_layer_name()
         if layer_name:
             self._reconnect_existing_fraction_layers(layer_name)
 
@@ -3100,85 +3092,87 @@ class ComponentsWidget(QWidget):
         )
 
     def _run_analysis(self):
-        """Run the selected analysis and store component locations in metadata."""
+        """Run the selected analysis and store component locations in metadata for all selected layers."""
         self._analysis_attempted = True
         self._update_all_component_styling()
 
-        if not self._updating_settings and self.current_image_layer_name:
-            layer = self.viewer.layers[self.current_image_layer_name]
-            if 'settings' not in layer.metadata:
-                layer.metadata['settings'] = {}
-            if 'component_analysis' not in layer.metadata['settings']:
-                layer.metadata['settings'][
-                    'component_analysis'
-                ] = self._get_default_components_settings()
+        selected_layers = self.parent_widget.get_selected_layers()
+        if not self._updating_settings and selected_layers:
+            # Store metadata in all selected layers
+            for layer in selected_layers:
+                if 'settings' not in layer.metadata:
+                    layer.metadata['settings'] = {}
+                if 'component_analysis' not in layer.metadata['settings']:
+                    layer.metadata['settings'][
+                        'component_analysis'
+                    ] = self._get_default_components_settings()
 
-            settings = layer.metadata['settings']['component_analysis']
+                settings = layer.metadata['settings']['component_analysis']
 
-            if 'components' not in settings:
-                settings['components'] = {}
+                if 'components' not in settings:
+                    settings['components'] = {}
 
-            current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
-            settings['last_analysis_harmonic'] = current_harmonic
+                current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
+                settings['last_analysis_harmonic'] = current_harmonic
 
-            active_components = [
-                c
-                for c in self.components
-                if c is not None and c.dot is not None
-            ]
+                active_components = [
+                    c
+                    for c in self.components
+                    if c is not None and c.dot is not None
+                ]
 
-            for comp in active_components:
-                idx = comp.idx
-                idx_str = str(idx)
-                name = comp.name_edit.text().strip()
+                for comp in active_components:
+                    idx = comp.idx
+                    idx_str = str(idx)
+                    name = comp.name_edit.text().strip()
 
-                if idx_str not in settings['components']:
-                    settings['components'][idx_str] = {
-                        'idx': idx,
-                        'name': name if name else None,
-                        'gs_harmonics': {},
-                    }
-                else:
-                    if name:
-                        settings['components'][idx_str]['name'] = name
+                    if idx_str not in settings['components']:
+                        settings['components'][idx_str] = {
+                            'idx': idx,
+                            'name': name if name else None,
+                            'gs_harmonics': {},
+                        }
+                    else:
+                        if name:
+                            settings['components'][idx_str]['name'] = name
 
-                comp_data = settings['components'][idx_str]
+                    comp_data = settings['components'][idx_str]
 
-                if 'gs_harmonics' not in comp_data:
-                    comp_data['gs_harmonics'] = {}
+                    if 'gs_harmonics' not in comp_data:
+                        comp_data['gs_harmonics'] = {}
 
-                try:
-                    x_data, y_data = comp.dot.get_data()
-                    g_val = x_data[0]
-                    s_val = y_data[0]
-                except (ValueError, IndexError):
-                    continue
+                    try:
+                        x_data, y_data = comp.dot.get_data()
+                        g_val = x_data[0]
+                        s_val = y_data[0]
+                    except (ValueError, IndexError):
+                        continue
 
-                harmonic_key = str(current_harmonic)
-                if harmonic_key not in comp_data['gs_harmonics']:
-                    comp_data['gs_harmonics'][harmonic_key] = {}
+                    harmonic_key = str(current_harmonic)
+                    if harmonic_key not in comp_data['gs_harmonics']:
+                        comp_data['gs_harmonics'][harmonic_key] = {}
 
-                comp_data['gs_harmonics'][harmonic_key]['g'] = g_val
-                comp_data['gs_harmonics'][harmonic_key]['s'] = s_val
+                    comp_data['gs_harmonics'][harmonic_key]['g'] = g_val
+                    comp_data['gs_harmonics'][harmonic_key]['s'] = s_val
 
-                if comp.lifetime_edit is not None:
-                    lifetime_text = comp.lifetime_edit.text().strip()
-                    if lifetime_text:
-                        try:
-                            lifetime_val = float(lifetime_text)
-                            comp_data['gs_harmonics'][harmonic_key][
-                                'lifetime'
-                            ] = lifetime_val
-                        except ValueError:
-                            comp_data['gs_harmonics'][harmonic_key][
-                                'lifetime'
-                            ] = None
+                    if comp.lifetime_edit is not None:
+                        lifetime_text = comp.lifetime_edit.text().strip()
+                        if lifetime_text:
+                            try:
+                                lifetime_val = float(lifetime_text)
+                                comp_data['gs_harmonics'][harmonic_key][
+                                    'lifetime'
+                                ] = lifetime_val
+                            except ValueError:
+                                comp_data['gs_harmonics'][harmonic_key][
+                                    'lifetime'
+                                ] = None
                     else:
                         comp_data['gs_harmonics'][harmonic_key][
                             'lifetime'
                         ] = None
 
-            settings['analysis_type'] = self.analysis_type
+                settings['analysis_type'] = self.analysis_type
 
         if self.analysis_type == "Linear Projection":
             self._run_linear_projection()
@@ -3186,8 +3180,9 @@ class ComponentsWidget(QWidget):
             self._run_component_fit()
 
     def _run_linear_projection(self):
-        """Run linear projection for 2-component analysis."""
-        if not self.current_image_layer_name:
+        """Run linear projection for 2-component analysis on all selected layers."""
+        selected_layers = self.parent_widget.get_selected_layers()
+        if not selected_layers:
             return
         if not all(c.dot is not None for c in self.components[:2]):
             return
@@ -3196,7 +3191,12 @@ class ComponentsWidget(QWidget):
         component_real = (c1.dot.get_data()[0][0], c2.dot.get_data()[0][0])
         component_imag = (c1.dot.get_data()[1][0], c2.dot.get_data()[1][0])
 
-        layer = self.viewer.layers[self.current_image_layer_name]
+        # Apply analysis to all selected layers
+        for layer in selected_layers:
+            self._run_linear_projection_for_layer(layer, component_real, component_imag, c1, c2)
+
+    def _run_linear_projection_for_layer(self, layer, component_real, component_imag, c1, c2):
+        """Run linear projection for a single layer."""
         g_array = layer.metadata.get('G')
         s_array = layer.metadata.get('S')
         harmonics = layer.metadata.get('harmonics')
@@ -3226,11 +3226,11 @@ class ComponentsWidget(QWidget):
 
         comp1_name = c1.name_edit.text().strip() or "Component 1"
         comp1_fractions_layer_name = (
-            f"{comp1_name} fractions: {self.current_image_layer_name}"
+            f"{comp1_name} fractions: {layer.name}"
         )
         comp2_name = c2.name_edit.text().strip() or "Component 2"
         comp2_fractions_layer_name = (
-            f"{comp2_name} fractions: {self.current_image_layer_name}"
+            f"{comp2_name} fractions: {layer.name}"
         )
 
         settings = layer.metadata.get('settings', {}).get(
@@ -3375,8 +3375,9 @@ class ComponentsWidget(QWidget):
         self.draw_line_between_components()
 
     def _run_component_fit(self):
-        """Run multi-component analysis using phasor_component_fit."""
-        if not self.current_image_layer_name:
+        """Run multi-component analysis using phasor_component_fit on all selected layers."""
+        selected_layers = self.parent_widget.get_selected_layers()
+        if not selected_layers:
             return
 
         active_components = [
@@ -3398,7 +3399,15 @@ class ComponentsWidget(QWidget):
                     f"{required_harmonics} harmonics in the data"
                 )
                 return
+        
+        # Apply analysis to all selected layers
+        for layer in selected_layers:
+            self._run_component_fit_for_layer(layer, active_components, num_components, current_harmonic, required_harmonics)
 
+    def _run_component_fit_for_layer(self, layer, active_components, num_components, current_harmonic, required_harmonics):
+        """Run component fit analysis for a single layer."""
+        if required_harmonics > 1:
+            available_harmonics = self._get_available_harmonics()
             harmonics_with_components = self._get_harmonics_with_components()
             if len(harmonics_with_components) < required_harmonics:
 
@@ -3431,7 +3440,6 @@ class ComponentsWidget(QWidget):
                     :required_harmonics
                 ]
 
-        layer = self.viewer.layers[self.current_image_layer_name]
         g_array = layer.metadata.get('G')
         s_array = layer.metadata.get('S')
         harmonics = layer.metadata.get('harmonics')
@@ -3535,7 +3543,7 @@ class ComponentsWidget(QWidget):
                 zip(fractions, component_names)
             ):
                 fraction_layer_name = (
-                    f"{name} fraction: {self.current_image_layer_name}"
+                    f"{name} fraction: {layer.name}"
                 )
 
                 colormap = None

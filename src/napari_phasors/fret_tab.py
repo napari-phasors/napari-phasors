@@ -43,9 +43,11 @@ class FretWidget(QWidget):
         self.donor_lifetime = 2.0
         self._fret_efficiencies = np.linspace(0, 1, 500)
         self.current_donor_line = None
-        self.fret_layer = None
+        self.fret_layer = None  # Reference to first layer for backward compatibility
+        self.fret_layers = []  # List of all FRET efficiency layers
         self.colormap_contrast_limits = None
         self.fret_colormap = None
+        self._updating_linked_layers = False  # Flag to prevent recursive updates
         self.use_colormap = True
         self.colormap_density_factor = (
             5  # Controls trajectory colormap detail level
@@ -432,9 +434,7 @@ class FretWidget(QWidget):
                     self.current_harmonic
                 ] = {'real': real, 'imag': imag}
 
-                layer_name = (
-                    self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-                )
+                layer_name = self.parent_widget.get_primary_layer_name()
                 if layer_name and (
                     not hasattr(self, '_updating_settings')
                     or not self._updating_settings
@@ -491,9 +491,7 @@ class FretWidget(QWidget):
                 not hasattr(self, '_updating_settings')
                 or not self._updating_settings
             ):
-                layer_name = (
-                    self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-                )
+                layer_name = self.parent_widget.get_primary_layer_name()
                 if layer_name:
                     self._update_fret_setting_in_metadata(
                         'background_real', real
@@ -561,9 +559,7 @@ class FretWidget(QWidget):
         if self._updating_settings:
             return
 
-        layer_name = (
-            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-        )
+        layer_name = self.parent_widget.get_primary_layer_name()
         if not layer_name:
             return
 
@@ -1085,50 +1081,80 @@ class FretWidget(QWidget):
         self.current_donor_line = ax.add_collection(lc)
 
     def _on_colormap_changed(self, event):
-        """Handle changes to the colormap of the FRET layer."""
-        if self.fret_layer is not None:
-            layer = event.source
-            self.fret_colormap = layer.colormap.colors
-            self.colormap_contrast_limits = layer.contrast_limits
-
-            colormap_name = getattr(layer.colormap, 'name', 'custom')
-            colormap_colors = getattr(layer.colormap, 'colors', None)
-
-            if colormap_colors is not None:
-                if hasattr(colormap_colors, 'tolist'):
-                    colormap_colors = colormap_colors.tolist()
-                elif isinstance(colormap_colors, np.ndarray):
-                    colormap_colors = colormap_colors.tolist()
-
-            self._update_fret_setting_in_metadata(
-                'colormap_settings.colormap_name', colormap_name
-            )
-            self._update_fret_setting_in_metadata(
-                'colormap_settings.colormap_colors', colormap_colors
-            )
-            self._update_fret_setting_in_metadata(
-                'colormap_settings.colormap_changed', True
-            )
-
-            self.plot_donor_trajectory()
+        """Handle changes to the colormap of any FRET layer and sync all layers."""
+        if self._updating_linked_layers:
+            return
+            
+        source_layer = event.source
+        new_colormap = source_layer.colormap
+        
+        # Update stored values
+        self.fret_colormap = new_colormap.colors
+        self.colormap_contrast_limits = source_layer.contrast_limits
+        
+        # Extract colormap info for metadata
+        colormap_name = getattr(new_colormap, 'name', 'custom')
+        colormap_colors = getattr(new_colormap, 'colors', None)
+        
+        if colormap_colors is not None:
+            if hasattr(colormap_colors, 'tolist'):
+                colormap_colors = colormap_colors.tolist()
+            elif isinstance(colormap_colors, np.ndarray):
+                colormap_colors = colormap_colors.tolist()
+        
+        self._update_fret_setting_in_metadata(
+            'colormap_settings.colormap_name', colormap_name
+        )
+        self._update_fret_setting_in_metadata(
+            'colormap_settings.colormap_colors', colormap_colors
+        )
+        self._update_fret_setting_in_metadata(
+            'colormap_settings.colormap_changed', True
+        )
+        
+        # Update all other FRET layers to match
+        self._updating_linked_layers = True
+        try:
+            for layer in self.fret_layers:
+                if layer != source_layer and layer in self.viewer.layers:
+                    layer.colormap = new_colormap
+        finally:
+            self._updating_linked_layers = False
+        
+        self.plot_donor_trajectory()
 
     def _on_contrast_limits_changed(self, event):
-        """Handle changes to the contrast limits of the FRET layer."""
-        if self.fret_layer is not None:
-            layer = event.source
-            self.colormap_contrast_limits = layer.contrast_limits
-
-            contrast_limits = layer.contrast_limits
-            if hasattr(contrast_limits, 'tolist'):
-                contrast_limits = contrast_limits.tolist()
-            elif isinstance(contrast_limits, np.ndarray):
-                contrast_limits = contrast_limits.tolist()
-
-            self._update_fret_setting_in_metadata(
-                'colormap_settings.contrast_limits', contrast_limits
-            )
-
-            self.plot_donor_trajectory()
+        """Handle changes to the contrast limits of any FRET layer and sync all layers."""
+        if self._updating_linked_layers:
+            return
+            
+        source_layer = event.source
+        new_contrast_limits = source_layer.contrast_limits
+        
+        # Update stored values
+        self.colormap_contrast_limits = new_contrast_limits
+        
+        # Prepare for metadata
+        contrast_limits = new_contrast_limits
+        if hasattr(contrast_limits, 'tolist'):
+            contrast_limits = contrast_limits.tolist()
+        elif isinstance(contrast_limits, np.ndarray):
+            contrast_limits = contrast_limits.tolist()
+        
+        self._update_fret_setting_in_metadata(
+            'colormap_settings.contrast_limits', contrast_limits
+        )
+        
+        # Update all other FRET layers to match
+        self._updating_linked_layers = True
+        try:
+            for layer in self.fret_layers:
+                if layer != source_layer and layer in self.viewer.layers:
+                    layer.contrast_limits = new_contrast_limits
+        finally:
+            self._updating_linked_layers = False
+        
+        self.plot_donor_trajectory()
 
     def _get_default_fret_settings(self):
         """Get default settings dictionary for FRET parameters."""
@@ -1158,9 +1184,7 @@ class FretWidget(QWidget):
         if self._updating_settings:
             return
 
-        layer_name = (
-            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-        )
+        layer_name = self.parent_widget.get_primary_layer_name()
         if not layer_name:
             return
 
@@ -1181,9 +1205,7 @@ class FretWidget(QWidget):
 
     def _restore_fret_settings_from_metadata(self):
         """Restore all FRET settings from the current layer's metadata."""
-        layer_name = (
-            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-        )
+        layer_name = self.parent_widget.get_primary_layer_name()
         if not layer_name:
             return
 
@@ -1318,9 +1340,7 @@ class FretWidget(QWidget):
 
     def _recreate_fret_from_metadata(self):
         """Recreate FRET analysis from metadata if it was previously performed."""
-        layer_name = (
-            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-        )
+        layer_name = self.parent_widget.get_primary_layer_name()
         if layer_name:
             layer = self.viewer.layers[layer_name]
             if (
@@ -1441,24 +1461,25 @@ class FretWidget(QWidget):
                 pass
             self.current_background_circle = None
 
-        if self.fret_layer is not None:
-            try:
-                self.fret_layer.events.colormap.disconnect(
-                    self._on_colormap_changed
-                )
-                self.fret_layer.events.contrast_limits.disconnect(
-                    self._on_contrast_limits_changed
-                )
-            except Exception:
-                pass
+        # Disconnect events from all FRET layers
+        for layer in self.fret_layers:
+            if layer in self.viewer.layers:
+                try:
+                    layer.events.colormap.disconnect(
+                        self._on_colormap_changed
+                    )
+                    layer.events.contrast_limits.disconnect(
+                        self._on_contrast_limits_changed
+                    )
+                except Exception:
+                    pass
 
         self.fret_layer = None
+        self.fret_layers = []
         self.fret_colormap = None
         self.colormap_contrast_limits = None
 
-        layer_name = (
-            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-        )
+        layer_name = self.parent_widget.get_primary_layer_name()
 
         if layer_name:
             self._reconnect_existing_fret_layer(layer_name)
@@ -1512,12 +1533,22 @@ class FretWidget(QWidget):
         if not self.parent_widget.has_phasor_data():
             return
 
-        labels_layer_name = (
-            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-        )
-        if not labels_layer_name:
+        selected_layers = self.parent_widget.get_selected_layers()
+        if not selected_layers:
             return
+        
+        # Clear previous FRET layers list and disconnect events
+        for layer in self.fret_layers:
+            if layer in self.viewer.layers:
+                try:
+                    layer.events.colormap.disconnect(self._on_colormap_changed)
+                    layer.events.contrast_limits.disconnect(self._on_contrast_limits_changed)
+                except Exception:
+                    pass
+        self.fret_layers = []
 
+        # Save settings to metadata for primary layer
+        primary_layer_name = self.parent_widget.get_primary_layer_name()
         if (
             not hasattr(self, '_updating_settings')
             or not self._updating_settings
@@ -1532,54 +1563,34 @@ class FretWidget(QWidget):
             except ValueError:
                 pass
 
-            layer = self.viewer.layers[labels_layer_name]
-            if 'settings' not in layer.metadata:
-                layer.metadata['settings'] = {}
-            if 'fret' not in layer.metadata['settings']:
-                layer.metadata['settings'][
-                    'fret'
-                ] = self._get_default_fret_settings()
+            if primary_layer_name:
+                primary_layer = self.viewer.layers[primary_layer_name]
+                if 'settings' not in primary_layer.metadata:
+                    primary_layer.metadata['settings'] = {}
+                if 'fret' not in primary_layer.metadata['settings']:
+                    primary_layer.metadata['settings'][
+                        'fret'
+                    ] = self._get_default_fret_settings()
 
-            self._update_fret_setting_in_metadata(
-                'donor_background', self.donor_background
-            )
-            self._update_fret_setting_in_metadata(
-                'background_real', self.background_real
-            )
-            self._update_fret_setting_in_metadata(
-                'background_imag', self.background_imag
-            )
-            self._update_fret_setting_in_metadata(
-                'donor_fretting_proportion', self.donor_fretting_proportion
-            )
-            self._update_fret_setting_in_metadata(
-                'use_colormap', self.use_colormap
-            )
-            self._update_fret_setting_in_metadata(
-                'background_positions_by_harmonic',
-                self.background_positions_by_harmonic,
-            )
-
-        sample_layer = self.viewer.layers[labels_layer_name]
-
-        # Retrieve arrays from metadata
-        g_array = sample_layer.metadata.get("G")
-        s_array = sample_layer.metadata.get("S")
-        harmonics = np.atleast_1d(sample_layer.metadata.get("harmonics"))
-
-        try:
-            harmonic_idx = np.where(harmonics == self.parent_widget.harmonic)[
-                0
-            ][0]
-
-            if g_array.ndim >= 3:
-                real = g_array[harmonic_idx]
-                imag = s_array[harmonic_idx]
-            else:
-                real = g_array
-                imag = s_array
-        except IndexError:
-            return
+                self._update_fret_setting_in_metadata(
+                    'donor_background', self.donor_background
+                )
+                self._update_fret_setting_in_metadata(
+                    'background_real', self.background_real
+                )
+                self._update_fret_setting_in_metadata(
+                    'background_imag', self.background_imag
+                )
+                self._update_fret_setting_in_metadata(
+                    'donor_fretting_proportion', self.donor_fretting_proportion
+                )
+                self._update_fret_setting_in_metadata(
+                    'use_colormap', self.use_colormap
+                )
+                self._update_fret_setting_in_metadata(
+                    'background_positions_by_harmonic',
+                    self.background_positions_by_harmonic,
+                )
 
         if not hasattr(self, 'donor_lifetime') or self.donor_lifetime is None:
             try:
@@ -1588,104 +1599,126 @@ class FretWidget(QWidget):
                 show_error("Please enter a valid donor lifetime")
                 return
 
+        # Get or calculate donor trajectory
         if hasattr(self.current_donor_line, 'get_xydata'):
-            neighbor_real, neighbor_imag = (
-                self.current_donor_line.get_xydata().T
-            )
+            donor_trajectory = self.current_donor_line.get_xydata()
+            neighbor_real = donor_trajectory[:, 0]
+            neighbor_imag = donor_trajectory[:, 1]
         else:
+            # Calculate donor trajectory if not available
             base_frequency = float(self.frequency_input.text().strip())
             effective_frequency = base_frequency * self.parent_widget.harmonic
-
-            donor_trajectory_real, donor_trajectory_imag = (
-                phasor_from_fret_donor(
-                    effective_frequency,
-                    self.donor_lifetime,
-                    fret_efficiency=self._fret_efficiencies,
-                    donor_background=self.donor_background,
-                    background_imag=self.background_imag,
-                    background_real=self.background_real,
-                    donor_fretting=self.donor_fretting_proportion,
-                )
-            )
-            neighbor_real, neighbor_imag = (
-                donor_trajectory_real,
-                donor_trajectory_imag,
+            neighbor_real, neighbor_imag = phasor_from_fret_donor(
+                frequency=effective_frequency,
+                donor_lifetime=self.donor_lifetime,
+                fret_efficiency=self._fret_efficiencies,
+                donor_background=self.donor_background,
+                background_real=self.background_real,
+                background_imag=self.background_imag,
+                donor_fretting=self.donor_fretting_proportion,
             )
 
-        fret_efficiency = phasor_nearest_neighbor(
-            real,
-            imag,
-            neighbor_real,
-            neighbor_imag,
-            values=self._fret_efficiencies,
-        )
+        # Process each selected layer
+        for layer in selected_layers:
+            # Retrieve arrays from metadata
+            g_array = layer.metadata.get("G")
+            s_array = layer.metadata.get("S")
+            harmonics = np.atleast_1d(layer.metadata.get("harmonics"))
 
-        fret_layer_name = f"FRET efficiency: {labels_layer_name}"
+            if g_array is None or s_array is None:
+                continue
 
-        default_colormap = 'viridis'
-        default_contrast_limits = (0, 1)
+            try:
+                harmonic_index = np.where(
+                    harmonics == self.parent_widget.harmonic
+                )[0][0]
+                real = g_array[harmonic_index]
+                imag = s_array[harmonic_index]
+            except IndexError:
+                continue
 
-        if (
-            hasattr(self, '_saved_colormap_name')
-            and not self._updating_settings
-        ):
-            if self._saved_colormap_colors is not None:
-                from napari.utils.colormaps import Colormap
+            fret_efficiency = phasor_nearest_neighbor(
+                real,
+                imag,
+                neighbor_real,
+                neighbor_imag,
+                values=self._fret_efficiencies,
+            )
 
-                if isinstance(self._saved_colormap_colors, list):
-                    saved_colors = np.array(self._saved_colormap_colors)
+            fret_layer_name = f"FRET efficiency: {layer.name}"
+
+            default_colormap = 'viridis'
+            default_contrast_limits = (0, 1)
+
+            if (
+                hasattr(self, '_saved_colormap_name')
+                and not self._updating_settings
+            ):
+                if self._saved_colormap_colors is not None:
+                    from napari.utils.colormaps import Colormap
+
+                    if isinstance(self._saved_colormap_colors, list):
+                        saved_colors = np.array(self._saved_colormap_colors)
+                    else:
+                        saved_colors = self._saved_colormap_colors
+                    default_colormap = Colormap(
+                        colors=saved_colors, name="saved_custom"
+                    )
                 else:
-                    saved_colors = self._saved_colormap_colors
-                default_colormap = Colormap(
-                    colors=saved_colors, name="saved_custom"
-                )
-            else:
-                default_colormap = self._saved_colormap_name
+                    default_colormap = self._saved_colormap_name
 
-            if isinstance(self._saved_contrast_limits, list):
-                default_contrast_limits = tuple(self._saved_contrast_limits)
-            else:
-                default_contrast_limits = self._saved_contrast_limits
+                if isinstance(self._saved_contrast_limits, list):
+                    default_contrast_limits = tuple(self._saved_contrast_limits)
+                else:
+                    default_contrast_limits = self._saved_contrast_limits
 
-        selected_fret_layer = Image(
-            fret_efficiency,
-            name=fret_layer_name,
-            scale=sample_layer.scale,
-            colormap=default_colormap,
-            contrast_limits=default_contrast_limits,
-        )
+            selected_fret_layer = Image(
+                fret_efficiency,
+                name=fret_layer_name,
+                scale=layer.scale,
+                colormap=default_colormap,
+                contrast_limits=default_contrast_limits,
+            )
 
-        if fret_layer_name in self.viewer.layers:
-            self.viewer.layers.remove(self.viewer.layers[fret_layer_name])
+            if fret_layer_name in self.viewer.layers:
+                self.viewer.layers.remove(self.viewer.layers[fret_layer_name])
 
-        self.fret_layer = self.viewer.add_layer(selected_fret_layer)
-        self.fret_colormap = self.fret_layer.colormap.colors
-        self.fret_layer.events.colormap.connect(self._on_colormap_changed)
-        self.colormap_contrast_limits = self.fret_layer.contrast_limits
-        self.fret_layer.events.contrast_limits.connect(
-            self._on_contrast_limits_changed
-        )
+            fret_layer = self.viewer.add_layer(selected_fret_layer)
+            
+            # Add to list of FRET layers and connect events
+            self.fret_layers.append(fret_layer)
+            fret_layer.events.colormap.connect(self._on_colormap_changed)
+            fret_layer.events.contrast_limits.connect(self._on_contrast_limits_changed)
+            
+            # Store reference to first FRET layer for backward compatibility
+            if self.fret_layer is None:
+                self.fret_layer = fret_layer
+                self.fret_colormap = fret_layer.colormap.colors
+                self.colormap_contrast_limits = fret_layer.contrast_limits
+
+            update_frequency_in_metadata(
+                layer,
+                self.frequency_input.text().strip(),
+            )
 
         if (
             not hasattr(self, '_saved_colormap_name')
             or self._updating_settings
         ):
-            self._update_fret_setting_in_metadata(
-                'colormap_settings.colormap_name', 'viridis'
-            )
-            self._update_fret_setting_in_metadata(
-                'colormap_settings.colormap_colors', None
-            )
-            self._update_fret_setting_in_metadata(
-                'colormap_settings.contrast_limits', [0, 1]
-            )
-            self._update_fret_setting_in_metadata(
-                'colormap_settings.colormap_changed', False
-            )
+            if self.fret_layer is not None:
+                self._update_fret_setting_in_metadata(
+                    'colormap_settings.colormap_name',
+                    self.fret_layer.colormap.name,
+                )
+                self._update_fret_setting_in_metadata(
+                    'colormap_settings.colormap_colors', None
+                )
+                self._update_fret_setting_in_metadata(
+                    'colormap_settings.contrast_limits',
+                    self.fret_layer.contrast_limits,
+                )
+                self._update_fret_setting_in_metadata(
+                    'colormap_settings.colormap_changed', False
+                )
 
         self.plot_donor_trajectory()
-
-        update_frequency_in_metadata(
-            sample_layer,
-            self.frequency_input.text().strip(),
-        )
