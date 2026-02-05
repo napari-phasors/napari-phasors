@@ -241,17 +241,18 @@ class CalibrationWidget(QWidget):
             lifetime,
         )
 
-        settings = sample_layer.metadata.setdefault("settings", {})
-        settings["calibration_phase"] = phi_zero.tolist()
-        settings["calibration_modulation"] = mod_zero.tolist()
-        settings["calibrated"] = True
+        try:
+            settings = sample_layer.metadata.setdefault("settings", {})
+            settings["calibration_phase"] = phi_zero.tolist()
+            settings["calibration_modulation"] = mod_zero.tolist()
+            settings["calibrated"] = True
 
-        self._apply_phasor_transformation(sample_name, phi_zero, mod_zero)
+            self._apply_phasor_transformation(sample_name, phi_zero, mod_zero)
 
-        self._apply_existing_filters_and_thresholds(sample_layer)
-
-        if calibration_was_calibrated:
-            self._restore_calibration(calibration_name)
+            self._apply_existing_filters_and_thresholds(sample_layer)
+        finally:
+            if calibration_was_calibrated:
+                self._restore_calibration(calibration_name)
 
     def _restore_calibration(self, layer_name):
         """Restore calibration to a layer using stored parameters."""

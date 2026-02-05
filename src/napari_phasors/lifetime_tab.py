@@ -618,7 +618,6 @@ class LifetimeWidget(QWidget):
         if not selected_layers:
             return
 
-        # Clear previous lifetime layers list and disconnect events
         for layer in self.lifetime_layers:
             if layer in self.viewer.layers:
                 try:
@@ -626,13 +625,17 @@ class LifetimeWidget(QWidget):
                     layer.events.contrast_limits.disconnect(
                         self._on_colormap_changed
                     )
-                except Exception:
+                except (AttributeError, RuntimeError, TypeError):
                     pass
+                except Exception as exc:
+                    show_warning(
+                        f"Failed to disconnect lifetime layer events for "
+                        f"'{getattr(layer, 'name', 'unknown layer')}': {exc}"
+                    )
         self.lifetime_layers = []
+        self.lifetime_layer = None
 
-        # Create lifetime layer for each selected layer
         for layer in selected_layers:
-            # Get lifetime data for this layer from metadata
             if 'lifetime_data' not in layer.metadata:
                 continue
 
@@ -646,7 +649,6 @@ class LifetimeWidget(QWidget):
                 f"{self.lifetime_type_combobox.currentText()}: {layer.name}"
             )
 
-            # Apply current range clipping
             min_val, max_val = self.lifetime_range_slider.value()
             min_lifetime = min_val / self.lifetime_range_factor
             max_lifetime = max_val / self.lifetime_range_factor
@@ -669,14 +671,12 @@ class LifetimeWidget(QWidget):
 
             lifetime_layer = self.viewer.add_layer(selected_lifetime_layer)
 
-            # Add to list of lifetime layers and connect events
             self.lifetime_layers.append(lifetime_layer)
             lifetime_layer.events.colormap.connect(self._on_colormap_changed)
             lifetime_layer.events.contrast_limits.connect(
                 self._on_colormap_changed
             )
 
-            # Store reference to first layer for backward compatibility
             if self.lifetime_layer is None:
                 self.lifetime_layer = lifetime_layer
                 self.lifetime_colormap = lifetime_layer.colormap.colors

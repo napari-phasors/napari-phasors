@@ -1973,7 +1973,13 @@ class PlotterWidget(QWidget):
             self.viewer.grid.enabled = True
 
             for layer in self.viewer.layers:
-                if isinstance(layer, Image) and "G" in layer.metadata:
+                if (
+                    isinstance(layer, Image)
+                    and "G" in layer.metadata
+                    and "S" in layer.metadata
+                    and "G_original" in layer.metadata
+                    and "S_original" in layer.metadata
+                ):
                     layer.visible = layer.name in selected_names
         else:
             self.viewer.grid.enabled = False

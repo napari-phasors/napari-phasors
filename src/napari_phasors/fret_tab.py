@@ -432,15 +432,18 @@ class FretWidget(QWidget):
                 real = float(self.background_real_edit.text().strip())
                 imag = float(self.background_imag_edit.text().strip())
 
-                # Only store if values are non-zero or if explicitly clearing an existing value
-                # Don't store default (0.0, 0.0) values accidentally during initialization
+                harmonic_exists = (
+                    self.current_harmonic
+                    in self.background_positions_by_harmonic
+                )
+
                 if real == 0.0 and imag == 0.0:
-                    # Only store zeros if there's already an entry for this harmonic
-                    # (meaning user explicitly set it to zero)
-                    if (
+                    if not harmonic_exists:
+                        return
+                    existing = self.background_positions_by_harmonic[
                         self.current_harmonic
-                        not in self.background_positions_by_harmonic
-                    ):
+                    ]
+                    if existing['real'] == 0.0 and existing['imag'] == 0.0:
                         return
 
                 self.background_positions_by_harmonic[
