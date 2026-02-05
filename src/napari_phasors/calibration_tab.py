@@ -125,8 +125,10 @@ class CalibrationWidget(QWidget):
             return
 
         # Check if any selected layer is calibrated
-        any_calibrated = any(self._is_layer_calibrated(layer) for layer in selected_layers)
-        
+        any_calibrated = any(
+            self._is_layer_calibrated(layer) for layer in selected_layers
+        )
+
         if any_calibrated:
             self.calibration_widget.calibrate_push_button.setText(
                 "Uncalibrate"
@@ -140,7 +142,7 @@ class CalibrationWidget(QWidget):
         if not selected_layers:
             show_error("Select sample and calibration layers")
             return
-            
+
         calibration_name = (
             self.calibration_widget.calibration_layer_combobox.currentText()
         )
@@ -149,15 +151,23 @@ class CalibrationWidget(QWidget):
             show_error("Select sample and calibration layers")
             return
 
-        any_calibrated = any(self._is_layer_calibrated(layer) for layer in selected_layers)
+        any_calibrated = any(
+            self._is_layer_calibrated(layer) for layer in selected_layers
+        )
 
         if any_calibrated:
-            calibrated_layers = [layer for layer in selected_layers if self._is_layer_calibrated(layer)]
+            calibrated_layers = [
+                layer
+                for layer in selected_layers
+                if self._is_layer_calibrated(layer)
+            ]
             for layer in calibrated_layers:
                 self._uncalibrate_layer(layer.name)
-            
+
             if calibrated_layers:
-                layer_names = ", ".join([layer.name for layer in calibrated_layers])
+                layer_names = ", ".join(
+                    [layer.name for layer in calibrated_layers]
+                )
                 show_info(f"Uncalibrated {layer_names}")
         else:
             calibrated_layers = []
@@ -165,11 +175,13 @@ class CalibrationWidget(QWidget):
                 result = self._calibrate_layer(layer.name, calibration_name)
                 if result is not False:
                     calibrated_layers.append(layer)
-            
+
             if calibrated_layers:
-                layer_names = ", ".join([layer.name for layer in calibrated_layers])
+                layer_names = ", ".join(
+                    [layer.name for layer in calibrated_layers]
+                )
                 show_info(f"Calibrated {layer_names}")
-        
+
         self._update_button_state()
         self.parent_widget.plot()
 
@@ -193,9 +205,9 @@ class CalibrationWidget(QWidget):
                 'Yes: Use original uncalibrated data\n'
                 'No: Use current calibrated data',
                 QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes
+                QMessageBox.Yes,
             )
-            
+
             if reply == QMessageBox.Yes:
                 calibration_was_calibrated = True
                 self._uncalibrate_layer(calibration_name)
@@ -245,16 +257,16 @@ class CalibrationWidget(QWidget):
         """Restore calibration to a layer using stored parameters."""
         layer = self.viewer.layers[layer_name]
         settings = layer.metadata.get("settings", {})
-        
+
         phi_zero = settings.get("calibration_phase")
         mod_zero = settings.get("calibration_modulation")
-        
+
         if phi_zero is not None and mod_zero is not None:
             if isinstance(phi_zero, list):
                 phi_zero = np.array(phi_zero)
             if isinstance(mod_zero, list):
                 mod_zero = np.array(mod_zero)
-            
+
             self._apply_phasor_transformation(layer_name, phi_zero, mod_zero)
             settings["calibrated"] = True
             self._apply_existing_filters_and_thresholds(layer)

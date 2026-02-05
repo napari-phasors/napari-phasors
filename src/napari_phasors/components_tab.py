@@ -2927,7 +2927,9 @@ class ComponentsWidget(QWidget):
 
     def _on_image_layer_changed(self):
         """Callback whenever the image layer with phasor features changes."""
-        self.current_image_layer_name = self.parent_widget.get_primary_layer_name()
+        self.current_image_layer_name = (
+            self.parent_widget.get_primary_layer_name()
+        )
 
         for comp in self.components:
             if comp is not None:
@@ -3193,9 +3195,13 @@ class ComponentsWidget(QWidget):
 
         # Apply analysis to all selected layers
         for layer in selected_layers:
-            self._run_linear_projection_for_layer(layer, component_real, component_imag, c1, c2)
+            self._run_linear_projection_for_layer(
+                layer, component_real, component_imag, c1, c2
+            )
 
-    def _run_linear_projection_for_layer(self, layer, component_real, component_imag, c1, c2):
+    def _run_linear_projection_for_layer(
+        self, layer, component_real, component_imag, c1, c2
+    ):
         """Run linear projection for a single layer."""
         g_array = layer.metadata.get('G')
         s_array = layer.metadata.get('S')
@@ -3225,13 +3231,9 @@ class ComponentsWidget(QWidget):
         )
 
         comp1_name = c1.name_edit.text().strip() or "Component 1"
-        comp1_fractions_layer_name = (
-            f"{comp1_name} fractions: {layer.name}"
-        )
+        comp1_fractions_layer_name = f"{comp1_name} fractions: {layer.name}"
         comp2_name = c2.name_edit.text().strip() or "Component 2"
-        comp2_fractions_layer_name = (
-            f"{comp2_name} fractions: {layer.name}"
-        )
+        comp2_fractions_layer_name = f"{comp2_name} fractions: {layer.name}"
 
         settings = layer.metadata.get('settings', {}).get(
             'component_analysis', {}
@@ -3399,12 +3401,25 @@ class ComponentsWidget(QWidget):
                     f"{required_harmonics} harmonics in the data"
                 )
                 return
-        
+
         # Apply analysis to all selected layers
         for layer in selected_layers:
-            self._run_component_fit_for_layer(layer, active_components, num_components, current_harmonic, required_harmonics)
+            self._run_component_fit_for_layer(
+                layer,
+                active_components,
+                num_components,
+                current_harmonic,
+                required_harmonics,
+            )
 
-    def _run_component_fit_for_layer(self, layer, active_components, num_components, current_harmonic, required_harmonics):
+    def _run_component_fit_for_layer(
+        self,
+        layer,
+        active_components,
+        num_components,
+        current_harmonic,
+        required_harmonics,
+    ):
         """Run component fit analysis for a single layer."""
         if required_harmonics > 1:
             available_harmonics = self._get_available_harmonics()
@@ -3542,9 +3557,7 @@ class ComponentsWidget(QWidget):
             for i, (fraction, name) in enumerate(
                 zip(fractions, component_names)
             ):
-                fraction_layer_name = (
-                    f"{name} fraction: {layer.name}"
-                )
+                fraction_layer_name = f"{name} fraction: {layer.name}"
 
                 colormap = None
                 contrast_limits = (0, 1)

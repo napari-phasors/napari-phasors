@@ -375,10 +375,10 @@ class FilterWidget(QWidget):
                 mean_data = layer.metadata.get('original_mean')
                 if mean_data is not None:
                     all_mean_data.append(mean_data.copy().flatten())
-            
+
             if not all_mean_data:
                 return
-            
+
             merged_mean_data = np.concatenate(all_mean_data)
 
             lower_threshold = self.calculate_automatic_threshold(
@@ -404,7 +404,7 @@ class FilterWidget(QWidget):
         selected_layers = self.parent_widget.get_selected_layers()
         if not selected_layers:
             return
-        
+
         # Use primary layer metadata for settings restoration
         primary_layer = selected_layers[0]
         layer_metadata = primary_layer.metadata
@@ -420,10 +420,10 @@ class FilterWidget(QWidget):
             else:
                 max_val = np.nanmax(mean_data)
             max_mean_values.append(max_val)
-        
+
         if not max_mean_values:
             return
-        
+
         max_mean_value = max(max_mean_values)
         if max_mean_value > 0:
             magnitude = int(log10(max_mean_value))
@@ -521,7 +521,7 @@ class FilterWidget(QWidget):
                 mean_data = layer.metadata.get('original_mean')
                 if mean_data is not None:
                     all_mean_data.append(mean_data.copy().flatten())
-            
+
             if all_mean_data:
                 merged_mean_data = np.concatenate(all_mean_data)
                 lower_threshold = self.calculate_automatic_threshold(
@@ -677,11 +677,11 @@ class FilterWidget(QWidget):
             if mean_data is None:
                 continue
             mean_data = mean_data.copy()
-            
+
             # Apply mask if present
             if 'mask' in layer.metadata:
                 mean_data = mean_data[layer.metadata['mask'] > 0]
-            
+
             all_mean_data.append(mean_data.flatten())
 
         if not all_mean_data:
@@ -820,7 +820,9 @@ class FilterWidget(QWidget):
         """Apply the filter and threshold to all selected layers."""
         selected_layers = self.parent_widget.get_selected_layers()
         if not selected_layers:
-            show_error("Please select at least one image layer with phasor features.")
+            show_error(
+                "Please select at least one image layer with phasor features."
+            )
             return
 
         threshold_method = self.threshold_method_combobox.currentText()

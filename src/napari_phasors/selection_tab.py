@@ -281,11 +281,13 @@ class SelectionWidget(QWidget):
         """Slot to show/hide the current phasors_selected_layer(s)."""
         if self.selection_id is None or self.selection_id == "":
             return
-        
+
         selected_layers = self._get_selected_layers()
         for layer in selected_layers:
             selection_layer_name = f"{self.selection_id}: {layer.name}"
-            selection_layer = self._find_phasors_layer_by_name(selection_layer_name)
+            selection_layer = self._find_phasors_layer_by_name(
+                selection_layer_name
+            )
             if selection_layer is not None:
                 selection_layer.visible = visible
 
@@ -447,22 +449,29 @@ class SelectionWidget(QWidget):
             if (
                 "settings" in layer.metadata
                 and "selections" in layer.metadata["settings"]
-                and "manual_selections" in layer.metadata["settings"]["selections"]
+                and "manual_selections"
+                in layer.metadata["settings"]["selections"]
                 and selection_id
-                in layer.metadata["settings"]["selections"]["manual_selections"]
+                in layer.metadata["settings"]["selections"][
+                    "manual_selections"
+                ]
             ):
                 selection_map = layer.metadata["settings"]["selections"][
                     "manual_selections"
                 ][selection_id]
             else:
-                spatial_shape = layer.data.shape[:2] if layer.data.ndim >= 2 else layer.data.shape
+                spatial_shape = (
+                    layer.data.shape[:2]
+                    if layer.data.ndim >= 2
+                    else layer.data.shape
+                )
                 selection_map = np.zeros(spatial_shape, dtype=np.uint32)
 
             # Get valid pixels for this layer
             g_array = layer.metadata.get('G')
             s_array = layer.metadata.get('S')
             harmonics_array = layer.metadata.get('harmonics')
-            
+
             if g_array is not None and s_array is not None:
                 # Extract correct harmonic if arrays are 3D
                 if harmonics_array is not None:
@@ -476,14 +485,14 @@ class SelectionWidget(QWidget):
                         continue
                 else:
                     harmonic_idx = 0
-                
+
                 if g_array.ndim == 3:
                     g = g_array[harmonic_idx]
                     s = s_array[harmonic_idx]
                 else:
                     g = g_array
                     s = s_array
-                
+
                 valid = np.isfinite(g.ravel()) & np.isfinite(s.ravel())
                 selection_data = selection_map.ravel()[valid]
                 all_selection_data.append(selection_data)
@@ -514,7 +523,8 @@ class SelectionWidget(QWidget):
             if (
                 "settings" in primary_layer.metadata
                 and "selections" in primary_layer.metadata["settings"]
-                and "manual_selections" in primary_layer.metadata["settings"]["selections"]
+                and "manual_selections"
+                in primary_layer.metadata["settings"]["selections"]
             ):
                 used_selections = set(
                     primary_layer.metadata["settings"]["selections"][
@@ -577,7 +587,7 @@ class SelectionWidget(QWidget):
                 g_array = layer.metadata.get('G')
                 s_array = layer.metadata.get('S')
                 harmonics_array = layer.metadata.get('harmonics')
-                
+
                 if g_array is not None and s_array is not None:
                     # Extract correct harmonic if arrays are 3D
                     if harmonics_array is not None:
@@ -585,21 +595,23 @@ class SelectionWidget(QWidget):
                         target_harmonic = self.parent_widget.harmonic
                         try:
                             harmonic_idx = int(
-                                np.where(harmonics_array == target_harmonic)[0][0]
+                                np.where(harmonics_array == target_harmonic)[
+                                    0
+                                ][0]
                             )
                         except (IndexError, ValueError):
                             layer_valid_counts.append(0)
                             continue
                     else:
                         harmonic_idx = 0
-                    
+
                     if g_array.ndim == 3:
                         g = g_array[harmonic_idx]
                         s = s_array[harmonic_idx]
                     else:
                         g = g_array
                         s = s_array
-                    
+
                     valid = np.isfinite(g.ravel()) & np.isfinite(s.ravel())
                     layer_valid_counts.append(np.sum(valid))
                 else:
@@ -610,7 +622,9 @@ class SelectionWidget(QWidget):
             start_idx = 0
             for count in layer_valid_counts:
                 if count > 0:
-                    selection_splits.append(selection_to_use[start_idx:start_idx + count])
+                    selection_splits.append(
+                        selection_to_use[start_idx : start_idx + count]
+                    )
                     start_idx += count
                 else:
                     selection_splits.append(None)
@@ -622,16 +636,23 @@ class SelectionWidget(QWidget):
             if (
                 "settings" in layer.metadata
                 and "selections" in layer.metadata["settings"]
-                and "manual_selections" in layer.metadata["settings"]["selections"]
+                and "manual_selections"
+                in layer.metadata["settings"]["selections"]
                 and self.selection_id
-                in layer.metadata["settings"]["selections"]["manual_selections"]
+                in layer.metadata["settings"]["selections"][
+                    "manual_selections"
+                ]
             ):
                 selection_map = layer.metadata["settings"]["selections"][
                     "manual_selections"
                 ][self.selection_id].copy()
             else:
                 # Get spatial shape for this specific layer
-                spatial_shape = layer.data.shape[:2] if layer.data.ndim >= 2 else layer.data.shape
+                spatial_shape = (
+                    layer.data.shape[:2]
+                    if layer.data.ndim >= 2
+                    else layer.data.shape
+                )
                 selection_map = np.zeros(spatial_shape, dtype=np.uint32)
 
             selection_map_flat = selection_map.ravel()
@@ -640,10 +661,10 @@ class SelectionWidget(QWidget):
             g_array = layer.metadata.get('G')
             s_array = layer.metadata.get('S')
             harmonics_array = layer.metadata.get('harmonics')
-            
+
             if g_array is None or s_array is None:
                 continue
-            
+
             # Extract correct harmonic if arrays are 3D
             if harmonics_array is not None:
                 harmonics_array = np.atleast_1d(harmonics_array)
@@ -656,7 +677,7 @@ class SelectionWidget(QWidget):
                     continue
             else:
                 harmonic_idx = 0
-            
+
             if g_array.ndim == 3:
                 g = g_array[harmonic_idx]
                 s = s_array[harmonic_idx]
@@ -675,8 +696,13 @@ class SelectionWidget(QWidget):
                 layer.metadata["settings"] = {}
             if "selections" not in layer.metadata["settings"]:
                 layer.metadata["settings"]["selections"] = {}
-            if "manual_selections" not in layer.metadata["settings"]["selections"]:
-                layer.metadata["settings"]["selections"]["manual_selections"] = {}
+            if (
+                "manual_selections"
+                not in layer.metadata["settings"]["selections"]
+            ):
+                layer.metadata["settings"]["selections"][
+                    "manual_selections"
+                ] = {}
 
             layer.metadata["settings"]["selections"]["manual_selections"][
                 self.selection_id
@@ -700,15 +726,22 @@ class SelectionWidget(QWidget):
 
         # Create selection layer for each selected layer
         for layer in selected_layers:
-            spatial_shape = layer.data.shape[:2] if layer.data.ndim >= 2 else layer.data.shape
+            spatial_shape = (
+                layer.data.shape[:2]
+                if layer.data.ndim >= 2
+                else layer.data.shape
+            )
 
             # Get selection map from metadata if it exists, otherwise create empty
             if (
                 "settings" in layer.metadata
                 and "selections" in layer.metadata["settings"]
-                and "manual_selections" in layer.metadata["settings"]["selections"]
+                and "manual_selections"
+                in layer.metadata["settings"]["selections"]
                 and self.selection_id
-                in layer.metadata["settings"]["selections"]["manual_selections"]
+                in layer.metadata["settings"]["selections"][
+                    "manual_selections"
+                ]
             ):
                 selection_map = layer.metadata["settings"]["selections"][
                     "manual_selections"
@@ -1203,7 +1236,8 @@ class CircularCursorWidget(QWidget):
         if (
             "settings" in primary_layer.metadata
             and "selections" in primary_layer.metadata["settings"]
-            and "circular_cursors" in primary_layer.metadata["settings"]["selections"]
+            and "circular_cursors"
+            in primary_layer.metadata["settings"]["selections"]
         ):
             cursor_params = primary_layer.metadata["settings"]["selections"][
                 "circular_cursors"
@@ -1309,10 +1343,10 @@ class CircularCursorWidget(QWidget):
             g_array = layer.metadata.get('G')
             s_array = layer.metadata.get('S')
             harmonics_array = layer.metadata.get('harmonics')
-            
+
             if g_array is None or s_array is None:
                 continue
-            
+
             # Extract correct harmonic if arrays are 3D
             if harmonics_array is not None:
                 harmonics_array = np.atleast_1d(harmonics_array)
@@ -1325,7 +1359,7 @@ class CircularCursorWidget(QWidget):
                     continue
             else:
                 harmonic_idx = 0
-            
+
             if g_array.ndim == 3:
                 g = g_array[harmonic_idx]
                 s = s_array[harmonic_idx]
@@ -1333,7 +1367,11 @@ class CircularCursorWidget(QWidget):
                 g = g_array
                 s = s_array
 
-            spatial_shape = layer.data.shape[:2] if layer.data.ndim >= 2 else layer.data.shape
+            spatial_shape = (
+                layer.data.shape[:2]
+                if layer.data.ndim >= 2
+                else layer.data.shape
+            )
 
             # Create selection map
             selection_map = np.zeros(spatial_shape, dtype=np.uint32)

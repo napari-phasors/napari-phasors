@@ -43,11 +43,15 @@ class FretWidget(QWidget):
         self.donor_lifetime = 2.0
         self._fret_efficiencies = np.linspace(0, 1, 500)
         self.current_donor_line = None
-        self.fret_layer = None  # Reference to first layer for backward compatibility
+        self.fret_layer = (
+            None  # Reference to first layer for backward compatibility
+        )
         self.fret_layers = []  # List of all FRET efficiency layers
         self.colormap_contrast_limits = None
         self.fret_colormap = None
-        self._updating_linked_layers = False  # Flag to prevent recursive updates
+        self._updating_linked_layers = (
+            False  # Flag to prevent recursive updates
+        )
         self.use_colormap = True
         self.colormap_density_factor = (
             5  # Controls trajectory colormap detail level
@@ -1084,24 +1088,24 @@ class FretWidget(QWidget):
         """Handle changes to the colormap of any FRET layer and sync all layers."""
         if self._updating_linked_layers:
             return
-            
+
         source_layer = event.source
         new_colormap = source_layer.colormap
-        
+
         # Update stored values
         self.fret_colormap = new_colormap.colors
         self.colormap_contrast_limits = source_layer.contrast_limits
-        
+
         # Extract colormap info for metadata
         colormap_name = getattr(new_colormap, 'name', 'custom')
         colormap_colors = getattr(new_colormap, 'colors', None)
-        
+
         if colormap_colors is not None:
             if hasattr(colormap_colors, 'tolist'):
                 colormap_colors = colormap_colors.tolist()
             elif isinstance(colormap_colors, np.ndarray):
                 colormap_colors = colormap_colors.tolist()
-        
+
         self._update_fret_setting_in_metadata(
             'colormap_settings.colormap_name', colormap_name
         )
@@ -1111,7 +1115,7 @@ class FretWidget(QWidget):
         self._update_fret_setting_in_metadata(
             'colormap_settings.colormap_changed', True
         )
-        
+
         # Update all other FRET layers to match
         self._updating_linked_layers = True
         try:
@@ -1120,31 +1124,31 @@ class FretWidget(QWidget):
                     layer.colormap = new_colormap
         finally:
             self._updating_linked_layers = False
-        
+
         self.plot_donor_trajectory()
 
     def _on_contrast_limits_changed(self, event):
         """Handle changes to the contrast limits of any FRET layer and sync all layers."""
         if self._updating_linked_layers:
             return
-            
+
         source_layer = event.source
         new_contrast_limits = source_layer.contrast_limits
-        
+
         # Update stored values
         self.colormap_contrast_limits = new_contrast_limits
-        
+
         # Prepare for metadata
         contrast_limits = new_contrast_limits
         if hasattr(contrast_limits, 'tolist'):
             contrast_limits = contrast_limits.tolist()
         elif isinstance(contrast_limits, np.ndarray):
             contrast_limits = contrast_limits.tolist()
-        
+
         self._update_fret_setting_in_metadata(
             'colormap_settings.contrast_limits', contrast_limits
         )
-        
+
         # Update all other FRET layers to match
         self._updating_linked_layers = True
         try:
@@ -1153,7 +1157,7 @@ class FretWidget(QWidget):
                     layer.contrast_limits = new_contrast_limits
         finally:
             self._updating_linked_layers = False
-        
+
         self.plot_donor_trajectory()
 
     def _get_default_fret_settings(self):
@@ -1207,6 +1211,7 @@ class FretWidget(QWidget):
         """Restore all FRET settings from the current layer's metadata."""
         layer_name = self.parent_widget.get_primary_layer_name()
         if not layer_name:
+            self.background_positions_by_harmonic = {}
             return
 
         layer = self.viewer.layers[layer_name]
@@ -1214,11 +1219,23 @@ class FretWidget(QWidget):
             'settings' not in layer.metadata
             or 'fret' not in layer.metadata['settings']
         ):
+            self.background_positions_by_harmonic = {}
             return
 
         self._updating_settings = True
         try:
             settings = layer.metadata['settings']['fret']
+
+            # Initialize or restore background positions by harmonic
+            if settings.get('background_positions_by_harmonic'):
+                # Convert string keys to integers (they get stringified in JSON)
+                bg_positions = settings['background_positions_by_harmonic']
+                self.background_positions_by_harmonic = {
+                    int(k) if isinstance(k, str) and k.isdigit() else k: v
+                    for k, v in bg_positions.items()
+                }
+            else:
+                self.background_positions_by_harmonic = {}
 
             self.donor_line_edit.clear()
             self.frequency_input.clear()
@@ -1241,11 +1258,6 @@ class FretWidget(QWidget):
                     int(self.donor_background * 100)
                 )
                 self.background_label.setText(f"{self.donor_background:.2f}")
-
-            if settings.get('background_positions_by_harmonic'):
-                self.background_positions_by_harmonic = settings[
-                    'background_positions_by_harmonic'
-                ].copy()
 
             self._load_background_position_for_harmonic(self.current_harmonic)
 
@@ -1312,13 +1324,6 @@ class FretWidget(QWidget):
                     self.background_image_combobox.setCurrentIndex(index)
             else:
                 self.bg_source_selector.setCurrentIndex(0)
-                if settings.get('background_positions_by_harmonic'):
-                    self.background_positions_by_harmonic = settings[
-                        'background_positions_by_harmonic'
-                    ].copy()
-                    self._load_background_position_for_harmonic(
-                        self.current_harmonic
-                    )
 
             if 'colormap_settings' in settings:
                 colormap_settings = settings['colormap_settings']
@@ -1465,9 +1470,7 @@ class FretWidget(QWidget):
         for layer in self.fret_layers:
             if layer in self.viewer.layers:
                 try:
-                    layer.events.colormap.disconnect(
-                        self._on_colormap_changed
-                    )
+                    layer.events.colormap.disconnect(self._on_colormap_changed)
                     layer.events.contrast_limits.disconnect(
                         self._on_contrast_limits_changed
                     )
@@ -1486,7 +1489,6 @@ class FretWidget(QWidget):
 
             self._updating_settings = True
             try:
-                self.background_positions_by_harmonic = {}
                 self._restore_fret_settings_from_metadata()
                 self._recreate_fret_from_metadata()
             finally:
@@ -1536,13 +1538,15 @@ class FretWidget(QWidget):
         selected_layers = self.parent_widget.get_selected_layers()
         if not selected_layers:
             return
-        
+
         # Clear previous FRET layers list and disconnect events
         for layer in self.fret_layers:
             if layer in self.viewer.layers:
                 try:
                     layer.events.colormap.disconnect(self._on_colormap_changed)
-                    layer.events.contrast_limits.disconnect(self._on_contrast_limits_changed)
+                    layer.events.contrast_limits.disconnect(
+                        self._on_contrast_limits_changed
+                    )
                 except Exception:
                     pass
         self.fret_layers = []
@@ -1668,7 +1672,9 @@ class FretWidget(QWidget):
                     default_colormap = self._saved_colormap_name
 
                 if isinstance(self._saved_contrast_limits, list):
-                    default_contrast_limits = tuple(self._saved_contrast_limits)
+                    default_contrast_limits = tuple(
+                        self._saved_contrast_limits
+                    )
                 else:
                     default_contrast_limits = self._saved_contrast_limits
 
@@ -1684,12 +1690,14 @@ class FretWidget(QWidget):
                 self.viewer.layers.remove(self.viewer.layers[fret_layer_name])
 
             fret_layer = self.viewer.add_layer(selected_fret_layer)
-            
+
             # Add to list of FRET layers and connect events
             self.fret_layers.append(fret_layer)
             fret_layer.events.colormap.connect(self._on_colormap_changed)
-            fret_layer.events.contrast_limits.connect(self._on_contrast_limits_changed)
-            
+            fret_layer.events.contrast_limits.connect(
+                self._on_contrast_limits_changed
+            )
+
             # Store reference to first FRET layer for backward compatibility
             if self.fret_layer is None:
                 self.fret_layer = fret_layer
