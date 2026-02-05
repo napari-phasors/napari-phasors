@@ -725,12 +725,8 @@ def test_layer_with_no_phasor_features_does_nothing(make_napari_viewer):
         mock_plot_hist.assert_not_called()
         mock_update_line.assert_not_called()
 
-        # The combobox should not be updated
-        assert parent.image_layer_with_phasor_features_combobox.count() == 0
-        assert (
-            parent.image_layer_with_phasor_features_combobox.currentText()
-            == ''
-        )
+        # The combobox should not be updated (no items checked)
+        assert len(parent.image_layers_checkable_combobox.checkedItems()) == 0
 
     assert filter_widget.threshold_line_lower is None
     assert filter_widget.threshold_line_upper is None

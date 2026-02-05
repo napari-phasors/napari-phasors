@@ -52,9 +52,7 @@ def test_phasor_plotter_initialization_values(make_napari_viewer):
 
     # UI components tests
     assert hasattr(plotter, 'image_layer_with_phasor_features_combobox')
-    assert isinstance(
-        plotter.image_layer_with_phasor_features_combobox, QComboBox
-    )
+    # Note: image_layer_with_phasor_features_combobox is now a wrapper, not QComboBox
     assert hasattr(plotter, 'harmonic_spinbox')
     assert isinstance(plotter.harmonic_spinbox, QSpinBox)
     assert plotter.harmonic_spinbox.minimum() == 1
@@ -208,7 +206,7 @@ def test_phasor_plotter_initialization_with_layer(make_napari_viewer):
 
     plotter = PlotterWidget(viewer)
     # Test that the layer is automatically detected and selected
-    assert plotter.image_layer_with_phasor_features_combobox.count() == 1
+    assert plotter.image_layers_checkable_combobox.count() == 1
     assert (
         plotter.image_layer_with_phasor_features_combobox.currentText()
         == intensity_image_layer.name
@@ -308,7 +306,7 @@ def test_adding_removing_layers_updates_plot(make_napari_viewer):
         )
 
         # Check that the combobox has both layers with phasor features
-        assert plotter.image_layer_with_phasor_features_combobox.count() == 2
+        assert plotter.image_layers_checkable_combobox.count() == 2
         # Check that the first layer is still selected
         assert (
             plotter.image_layer_with_phasor_features_combobox.currentText()
@@ -503,7 +501,7 @@ def test_add_layer_without_phasor_features_does_not_trigger_plot_or_combobox(
         mock_layer_changed.assert_not_called()
 
         # The combobox should not be updated
-        assert plotter.image_layer_with_phasor_features_combobox.count() == 0
+        assert plotter.image_layers_checkable_combobox.count() == 0
         assert (
             plotter.image_layer_with_phasor_features_combobox.currentText()
             == ''
@@ -551,14 +549,14 @@ def test_phasor_plotter_layer_management(make_napari_viewer):
     plotter = PlotterWidget(viewer)
 
     # Initially no layers with phasor features
-    assert plotter.image_layer_with_phasor_features_combobox.count() == 0
+    assert plotter.image_layers_checkable_combobox.count() == 0
 
     # Add layer with phasor features
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
 
     # Check that combobox is updated
-    assert plotter.image_layer_with_phasor_features_combobox.count() == 1
+    assert plotter.image_layers_checkable_combobox.count() == 1
     assert (
         plotter.image_layer_with_phasor_features_combobox.currentText()
         == intensity_image_layer.name
@@ -569,13 +567,13 @@ def test_phasor_plotter_layer_management(make_napari_viewer):
     viewer.add_layer(regular_layer)
 
     # Combobox should still have only the layer with phasor features
-    assert plotter.image_layer_with_phasor_features_combobox.count() == 1
+    assert plotter.image_layers_checkable_combobox.count() == 1
 
     # Remove the phasor layer
     viewer.layers.remove(intensity_image_layer)
 
     # Combobox should be empty again
-    assert plotter.image_layer_with_phasor_features_combobox.count() == 0
+    assert plotter.image_layers_checkable_combobox.count() == 0
 
 
 def test_phasor_plotter_semicircle_checkbox(make_napari_viewer):
@@ -802,8 +800,8 @@ def test_on_image_layer_changed_with_empty_layer_name(
     viewer = make_napari_viewer()
     plotter = PlotterWidget(viewer)
 
-    # Ensure combobox is empty
-    plotter.image_layer_with_phasor_features_combobox.clear()
+    # Ensure combobox is empty by deselecting all
+    plotter.image_layers_checkable_combobox.setCheckedItems([])
 
     with patch.object(plotter, 'plot') as mock_plot:
         plotter.on_image_layer_changed()

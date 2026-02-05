@@ -153,38 +153,44 @@ def test_calibration_button_state_updates(make_napari_viewer):
     """Test that calibration button text updates based on layer calibration status."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
-    parent.image_layer_with_phasor_features_combobox = Mock()
 
     widget = parent.calibration_tab
 
     # Test with no layer selected
-    parent.image_layer_with_phasor_features_combobox.currentText.return_value = (
-        ""
-    )
-    widget._update_button_state()
-    assert (
-        widget.calibration_widget.calibrate_push_button.text() == "Calibrate"
-    )
+    with patch.object(
+        parent.image_layer_with_phasor_features_combobox,
+        'currentText',
+        return_value="",
+    ):
+        widget._update_button_state()
+        assert (
+            widget.calibration_widget.calibrate_push_button.text()
+            == "Calibrate"
+        )
 
     # Test with uncalibrated layer
     sample_layer = create_image_layer_with_phasors()
     sample_layer.name = "sample_layer"
     viewer.add_layer(sample_layer)
-    parent.image_layer_with_phasor_features_combobox.currentText.return_value = (
-        "sample_layer"
-    )
 
-    widget._update_button_state()
-    assert (
-        widget.calibration_widget.calibrate_push_button.text() == "Calibrate"
-    )
+    with patch.object(
+        parent.image_layer_with_phasor_features_combobox,
+        'currentText',
+        return_value="sample_layer",
+    ):
+        widget._update_button_state()
+        assert (
+            widget.calibration_widget.calibrate_push_button.text()
+            == "Calibrate"
+        )
 
-    # Test with calibrated layer
-    sample_layer.metadata["settings"] = {"calibrated": True}
-    widget._update_button_state()
-    assert (
-        widget.calibration_widget.calibrate_push_button.text() == "Uncalibrate"
-    )
+        # Test with calibrated layer
+        sample_layer.metadata["settings"] = {"calibrated": True}
+        widget._update_button_state()
+        assert (
+            widget.calibration_widget.calibrate_push_button.text()
+            == "Uncalibrate"
+        )
 
 
 def test_calibrate_layer_success(make_napari_viewer):

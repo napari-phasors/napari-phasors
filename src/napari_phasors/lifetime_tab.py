@@ -223,6 +223,28 @@ class LifetimeWidget(QWidget):
             return
 
         layer = self.viewer.layers[layer_name]
+
+        if 'settings' in layer.metadata:
+            if 'frequency' in layer.metadata['settings']:
+                frequency = layer.metadata['settings']['frequency']
+                self._updating_settings = True
+                try:
+                    self.frequency_input.setText(str(frequency))
+                finally:
+                    self._updating_settings = False
+            else:
+                self._updating_settings = True
+                try:
+                    self.frequency_input.clear()
+                finally:
+                    self._updating_settings = False
+        else:
+            self._updating_settings = True
+            try:
+                self.frequency_input.clear()
+            finally:
+                self._updating_settings = False
+
         if (
             'settings' not in layer.metadata
             or 'lifetime' not in layer.metadata['settings']

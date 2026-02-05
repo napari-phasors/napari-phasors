@@ -408,12 +408,9 @@ class FretWidget(QWidget):
         new_harmonic = self.parent_widget.harmonic
 
         if self.current_harmonic != new_harmonic:
-            was_updating = getattr(self, '_updating_settings', False)
-            self._updating_settings = True
-            try:
-                self._store_current_background_position()
-            finally:
-                self._updating_settings = was_updating
+            # Store background position for the current harmonic before switching
+            # Don't set _updating_settings here so metadata gets updated
+            self._store_current_background_position()
 
         self.current_harmonic = new_harmonic
 
@@ -434,6 +431,18 @@ class FretWidget(QWidget):
             try:
                 real = float(self.background_real_edit.text().strip())
                 imag = float(self.background_imag_edit.text().strip())
+
+                # Only store if values are non-zero or if explicitly clearing an existing value
+                # Don't store default (0.0, 0.0) values accidentally during initialization
+                if real == 0.0 and imag == 0.0:
+                    # Only store zeros if there's already an entry for this harmonic
+                    # (meaning user explicitly set it to zero)
+                    if (
+                        self.current_harmonic
+                        not in self.background_positions_by_harmonic
+                    ):
+                        return
+
                 self.background_positions_by_harmonic[
                     self.current_harmonic
                 ] = {'real': real, 'imag': imag}
@@ -480,6 +489,10 @@ class FretWidget(QWidget):
 
     def _on_background_position_changed(self):
         """Handle manual changes to background position fields."""
+        # Don't update during settings restoration
+        if hasattr(self, '_updating_settings') and self._updating_settings:
+            return
+
         try:
             real = float(self.background_real_edit.text().strip())
             imag = float(self.background_imag_edit.text().strip())
@@ -491,22 +504,12 @@ class FretWidget(QWidget):
                 'imag': imag,
             }
 
-            if (
-                not hasattr(self, '_updating_settings')
-                or not self._updating_settings
-            ):
-                layer_name = self.parent_widget.get_primary_layer_name()
-                if layer_name:
-                    self._update_fret_setting_in_metadata(
-                        'background_real', real
-                    )
-                    self._update_fret_setting_in_metadata(
-                        'background_imag', imag
-                    )
-                    self._update_fret_setting_in_metadata(
-                        'background_positions_by_harmonic',
-                        self.background_positions_by_harmonic,
-                    )
+            layer_name = self.parent_widget.get_primary_layer_name()
+            if layer_name:
+                self._update_fret_setting_in_metadata(
+                    'background_positions_by_harmonic',
+                    self.background_positions_by_harmonic,
+                )
         except ValueError:
             show_error(
                 "Invalid background position: please enter numeric values."
@@ -1165,8 +1168,6 @@ class FretWidget(QWidget):
         return {
             'donor_lifetime': None,
             'donor_background': 0.1,
-            'background_real': 0.0,
-            'background_imag': 0.0,
             'donor_fretting_proportion': 1.0,
             'use_colormap': True,
             'background_positions_by_harmonic': {},
@@ -1578,12 +1579,6 @@ class FretWidget(QWidget):
 
                 self._update_fret_setting_in_metadata(
                     'donor_background', self.donor_background
-                )
-                self._update_fret_setting_in_metadata(
-                    'background_real', self.background_real
-                )
-                self._update_fret_setting_in_metadata(
-                    'background_imag', self.background_imag
                 )
                 self._update_fret_setting_in_metadata(
                     'donor_fretting_proportion', self.donor_fretting_proportion
