@@ -284,63 +284,6 @@ def test_no_selection_processing_during_plot_update(make_napari_viewer):
     assert widget.update_phasor_plot_with_selection_id("test") is None
 
 
-def test_delete_labels_layer_and_recreate(make_napari_viewer):
-    """Test that delete_labels_layer_and_recreate works as expected."""
-    viewer = make_napari_viewer()
-    intensity_image_layer = create_image_layer_with_phasors()
-    viewer.add_layer(intensity_image_layer)
-    parent = PlotterWidget(viewer)
-    widget = parent.selection_tab
-
-    manual_selection = np.array([1, 0, 1, 0, 1, 0, 0, 0, 0, 0])
-    # Make selection to create labels layer
-    widget.manual_selection_changed(manual_selection)
-
-    # Check that a layer with the specific name exists (no 'Selection ' prefix)
-    assert f"MANUAL SELECTION #1: {intensity_image_layer.name}" in [
-        layer.name for layer in viewer.layers
-    ]
-
-    # Store the original layer data for comparison
-    selection_layer = viewer.layers[
-        f"MANUAL SELECTION #1: {intensity_image_layer.name}"
-    ]
-    original_data = selection_layer.data.copy()
-
-    # Delete the layer from the viewer
-    viewer.layers.remove(f"MANUAL SELECTION #1: {intensity_image_layer.name}")
-    assert f"MANUAL SELECTION #1: {intensity_image_layer.name}" not in [
-        layer.name for layer in viewer.layers
-    ]
-
-    # Mock the plot update methods to prevent the error
-    with patch.object(
-        widget, 'update_phasor_plot_with_selection_id'
-    ) as mock_update_plot:
-        # Select None ID to trigger recreation
-        widget.selection_input_widget.phasor_selection_id_combobox.setCurrentText(
-            "None"
-        )
-        widget.on_selection_id_changed()  # Explicitly trigger the event
-
-        # Select again MANUAL SELECTION #1 to recreate the layer
-        widget.selection_input_widget.phasor_selection_id_combobox.setCurrentText(
-            "MANUAL SELECTION #1"
-        )
-        widget.on_selection_id_changed()  # Explicitly trigger the event
-
-    # Check that the layer is recreated (no 'Selection ' prefix)
-    assert f"MANUAL SELECTION #1: {intensity_image_layer.name}" in [
-        layer.name for layer in viewer.layers
-    ]
-
-    # Check that the recreated layer has the same values as before (no 'Selection ' prefix)
-    recreated_layer = viewer.layers[
-        f"MANUAL SELECTION #1: {intensity_image_layer.name}"
-    ]
-    np.testing.assert_array_equal(recreated_layer.data, original_data)
-
-
 def test_selection_mode_switching(make_napari_viewer):
     """Test switching between circular cursor and manual selection modes."""
     viewer = make_napari_viewer()
@@ -945,7 +888,7 @@ def test_circular_cursor_restoration_from_metadata(make_napari_viewer):
     assert len(widget._cursors) == 0
 
     # Trigger restoration by changing image layer
-    parent.image_layer_with_phasor_features_combobox.setCurrentIndex(-1)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText("")
     parent.image_layer_with_phasor_features_combobox.setCurrentText(
         intensity_image_layer.name
     )

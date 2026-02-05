@@ -350,11 +350,9 @@ class FilterWidget(QWidget):
 
     def on_threshold_method_changed(self):
         """Callback when threshold method is changed."""
-        labels_layer_name = (
-            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-        )
+        selected_layers = self.parent_widget.get_selected_layers()
 
-        if self._updating_threshold or not labels_layer_name:
+        if self._updating_threshold or not selected_layers:
             return
 
         method = self.threshold_method_combobox.currentText()
@@ -371,14 +369,20 @@ class FilterWidget(QWidget):
             self._updating_threshold = False
 
         elif method != "Manual":
-            mean_data = (
-                self.viewer.layers[labels_layer_name]
-                .metadata['original_mean']
-                .copy()
-            )
+            # Collect mean data from all selected layers for automatic threshold
+            all_mean_data = []
+            for layer in selected_layers:
+                mean_data = layer.metadata.get('original_mean')
+                if mean_data is not None:
+                    all_mean_data.append(mean_data.copy().flatten())
+
+            if not all_mean_data:
+                return
+
+            merged_mean_data = np.concatenate(all_mean_data)
 
             lower_threshold = self.calculate_automatic_threshold(
-                method, mean_data
+                method, merged_mean_data
             )
 
             _, current_upper_val = self.threshold_slider.value()
@@ -396,20 +400,31 @@ class FilterWidget(QWidget):
             self._updating_threshold = False
 
     def _on_image_layer_changed(self):
-        """Callback function when the image layer combobox is changed."""
-        labels_layer_name = (
-            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-        )
-        if labels_layer_name == "":
+        """Callback function when the image layer selection is changed."""
+        selected_layers = self.parent_widget.get_selected_layers()
+        if not selected_layers:
             return
-        layer_metadata = self.viewer.layers[labels_layer_name].metadata
 
-        if 'mask' in layer_metadata.keys():
-            max_mean_value = np.nanmax(
-                layer_metadata["original_mean"][layer_metadata['mask'] > 0]
-            )
-        else:
-            max_mean_value = np.nanmax(layer_metadata["original_mean"])
+        # Use primary layer metadata for settings restoration
+        primary_layer = selected_layers[0]
+        layer_metadata = primary_layer.metadata
+
+        # Calculate max mean value across all selected layers
+        max_mean_values = []
+        for layer in selected_layers:
+            mean_data = layer.metadata.get("original_mean")
+            if mean_data is None:
+                continue
+            if 'mask' in layer.metadata.keys():
+                max_val = np.nanmax(mean_data[layer.metadata['mask'] > 0])
+            else:
+                max_val = np.nanmax(mean_data)
+            max_mean_values.append(max_val)
+
+        if not max_mean_values:
+            return
+
+        max_mean_value = max(max_mean_values)
         if max_mean_value > 0:
             magnitude = int(log10(max_mean_value))
             self.threshold_factor = (
@@ -500,19 +515,27 @@ class FilterWidget(QWidget):
                     )
         else:
             self.threshold_method_combobox.setCurrentText("Otsu")
-            mean_data = layer_metadata["original_mean"].copy()
-            lower_threshold = self.calculate_automatic_threshold(
-                "Otsu", mean_data
-            )
-            lower_val = int(lower_threshold * self.threshold_factor)
-            upper_val = self.threshold_slider.maximum()
-            self.threshold_slider.setValue((lower_val, upper_val))
-            self.min_threshold_edit.setText(
-                f'{lower_val / self.threshold_factor:.2f}'
-            )
-            self.max_threshold_edit.setText(
-                f'{upper_val / self.threshold_factor:.2f}'
-            )
+            # Use merged mean data for initial threshold calculation
+            all_mean_data = []
+            for layer in selected_layers:
+                mean_data = layer.metadata.get('original_mean')
+                if mean_data is not None:
+                    all_mean_data.append(mean_data.copy().flatten())
+
+            if all_mean_data:
+                merged_mean_data = np.concatenate(all_mean_data)
+                lower_threshold = self.calculate_automatic_threshold(
+                    "Otsu", merged_mean_data
+                )
+                lower_val = int(lower_threshold * self.threshold_factor)
+                upper_val = self.threshold_slider.maximum()
+                self.threshold_slider.setValue((lower_val, upper_val))
+                self.min_threshold_edit.setText(
+                    f'{lower_val / self.threshold_factor:.2f}'
+                )
+                self.max_threshold_edit.setText(
+                    f'{upper_val / self.threshold_factor:.2f}'
+                )
 
         self._updating_threshold = False
         self.plot_mean_histogram()
@@ -642,22 +665,30 @@ class FilterWidget(QWidget):
         )
 
     def plot_mean_histogram(self):
-        """Plot the histogram of the mean intensity data as a line plot."""
-        labels_layer_name = (
-            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-        )
-        if not labels_layer_name:
+        """Plot the histogram of the mean intensity data from all selected layers."""
+        selected_layers = self.parent_widget.get_selected_layers()
+        if not selected_layers:
             return
 
-        mean_data = (
-            self.viewer.layers[labels_layer_name]
-            .metadata['original_mean']
-            .copy()
-        )
-        if 'mask' in self.viewer.layers[labels_layer_name].metadata:
-            mean_data = mean_data[
-                self.viewer.layers[labels_layer_name].metadata['mask'] > 0
-            ]
+        # Collect mean data from all selected layers
+        all_mean_data = []
+        for layer in selected_layers:
+            mean_data = layer.metadata.get('original_mean')
+            if mean_data is None:
+                continue
+            mean_data = mean_data.copy()
+
+            # Apply mask if present
+            if 'mask' in layer.metadata:
+                mean_data = mean_data[layer.metadata['mask'] > 0]
+
+            all_mean_data.append(mean_data.flatten())
+
+        if not all_mean_data:
+            return
+
+        # Merge all mean data
+        merged_mean_data = np.concatenate(all_mean_data)
 
         self.hist_ax.clear()
         self.threshold_line_lower = None
@@ -665,7 +696,7 @@ class FilterWidget(QWidget):
         self.threshold_area_lower = None
         self.threshold_area_upper = None
         self.hist_ax.hist(
-            mean_data.flatten(), bins=100, color='white', edgecolor='white'
+            merged_mean_data, bins=100, color='white', edgecolor='white'
         )
         self.style_histogram_axes()
 
@@ -674,10 +705,8 @@ class FilterWidget(QWidget):
 
     def update_threshold_lines(self):
         """Update the vertical threshold lines and shaded areas on the histogram."""
-        labels_layer_name = (
-            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-        )
-        if not labels_layer_name:
+        selected_layers = self.parent_widget.get_selected_layers()
+        if not selected_layers:
             return
 
         lower_val, upper_val = self.threshold_slider.value()
@@ -776,10 +805,8 @@ class FilterWidget(QWidget):
 
     def on_log_scale_changed(self, state):
         """Callback when log scale checkbox is toggled."""
-        labels_layer_name = (
-            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-        )
-        if not labels_layer_name:
+        selected_layers = self.parent_widget.get_selected_layers()
+        if not selected_layers:
             return
 
         if state == 2:
@@ -790,18 +817,13 @@ class FilterWidget(QWidget):
         self.hist_fig.canvas.draw_idle()
 
     def apply_button_clicked(self):
-        """Apply the filter and threshold to the selected layer."""
-        if (
-            not self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-        ):
-            show_error("Please select an image layer with phasor features.")
+        """Apply the filter and threshold to all selected layers."""
+        selected_layers = self.parent_widget.get_selected_layers()
+        if not selected_layers:
+            show_error(
+                "Please select at least one image layer with phasor features."
+            )
             return
-
-        labels_layer_name = (
-            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-        )
-
-        layer = self.viewer.layers[labels_layer_name]
 
         threshold_method = self.threshold_method_combobox.currentText()
         threshold_lower = None
@@ -811,44 +833,47 @@ class FilterWidget(QWidget):
             threshold_lower = lower_val / self.threshold_factor
             threshold_upper = upper_val / self.threshold_factor
 
-        filter_method = None
-        size = None
-        repeat = None
-        sigma = None
-        levels = None
-        harmonics = None
-
         current_filter_method = (
             self.filter_method_combobox.currentText().lower()
         )
-        if (
-            current_filter_method == "median"
-            and self.median_filter_repetition_spinbox.value() > 0
-        ):
-            filter_method = "median"
-            size = self.median_filter_spinbox.value()
-            repeat = self.median_filter_repetition_spinbox.value()
-        elif current_filter_method == "wavelet":
-            harmonics = layer.metadata.get('harmonics')
-            if harmonics is not None and validate_harmonics_for_wavelet(
-                harmonics
-            ):
-                filter_method = "wavelet"
-                sigma = self.wavelet_sigma_spinbox.value()
-                levels = self.wavelet_levels_spinbox.value()
 
-        apply_filter_and_threshold(
-            layer,
-            threshold=threshold_lower,
-            threshold_upper=threshold_upper,
-            threshold_method=threshold_method,
-            filter_method=filter_method,
-            size=size,
-            repeat=repeat,
-            sigma=sigma,
-            levels=levels,
-            harmonics=harmonics,
-        )
+        # Apply filter and threshold to each selected layer
+        for layer in selected_layers:
+            filter_method = None
+            size = None
+            repeat = None
+            sigma = None
+            levels = None
+            harmonics = None
+
+            if (
+                current_filter_method == "median"
+                and self.median_filter_repetition_spinbox.value() > 0
+            ):
+                filter_method = "median"
+                size = self.median_filter_spinbox.value()
+                repeat = self.median_filter_repetition_spinbox.value()
+            elif current_filter_method == "wavelet":
+                harmonics = layer.metadata.get('harmonics')
+                if harmonics is not None and validate_harmonics_for_wavelet(
+                    harmonics
+                ):
+                    filter_method = "wavelet"
+                    sigma = self.wavelet_sigma_spinbox.value()
+                    levels = self.wavelet_levels_spinbox.value()
+
+            apply_filter_and_threshold(
+                layer,
+                threshold=threshold_lower,
+                threshold_upper=threshold_upper,
+                threshold_method=threshold_method,
+                filter_method=filter_method,
+                size=size,
+                repeat=repeat,
+                sigma=sigma,
+                levels=levels,
+                harmonics=harmonics,
+            )
 
         if self.parent_widget is not None:
             self.parent_widget.refresh_phasor_data()

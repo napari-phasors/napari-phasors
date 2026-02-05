@@ -7,7 +7,7 @@ from napari.utils.notifications import show_error, show_info
 from phasorpy.lifetime import phasor_from_lifetime, polar_from_reference_phasor
 from phasorpy.phasor import phasor_center, phasor_transform
 from qtpy import uic
-from qtpy.QtWidgets import QScrollArea, QVBoxLayout, QWidget
+from qtpy.QtWidgets import QMessageBox, QScrollArea, QVBoxLayout, QWidget
 
 from ._utils import apply_filter_and_threshold
 
@@ -62,29 +62,27 @@ class CalibrationWidget(QWidget):
 
     def _populate_comboboxes(self, event=None):
         """Populate calibration layer combobox with image layers."""
-        # Prevent recursive calls
         if getattr(self, '_populating_comboboxes', False):
             return
 
         self._populating_comboboxes = True
 
         try:
-            # Store current selection
             current_text = (
                 self.calibration_widget.calibration_layer_combobox.currentText()
             )
 
-            # Temporarily block signals
             self.calibration_widget.calibration_layer_combobox.blockSignals(
                 True
             )
 
-            # Clear and repopulate
             self.calibration_widget.calibration_layer_combobox.clear()
             image_layers = [
                 layer
                 for layer in self.viewer.layers
                 if isinstance(layer, Image)
+                and 'G' in layer.metadata
+                and 'S' in layer.metadata
             ]
 
             layer_names = [layer.name for layer in image_layers]
@@ -92,7 +90,6 @@ class CalibrationWidget(QWidget):
                 layer_names
             )
 
-            # Restore selection if the layer still exists
             if current_text in layer_names:
                 index = self.calibration_widget.calibration_layer_combobox.findText(
                     current_text
@@ -102,17 +99,15 @@ class CalibrationWidget(QWidget):
                         index
                     )
 
-            # Re-enable signals
             self.calibration_widget.calibration_layer_combobox.blockSignals(
                 False
             )
 
-            # Connect layer name change events (disconnect first to avoid duplicates)
             for layer in image_layers:
                 try:
                     layer.events.name.disconnect(self._populate_comboboxes)
                 except (TypeError, ValueError):
-                    pass  # Not connected, ignore
+                    pass
                 layer.events.name.connect(self._populate_comboboxes)
 
         finally:
@@ -124,19 +119,17 @@ class CalibrationWidget(QWidget):
 
     def _update_button_state(self):
         """Update button text and state based on current layer's calibration status."""
-        sample_name = (
-            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-        )
-        if sample_name == "" or sample_name not in self.viewer.layers:
+        selected_layers = self.parent_widget.get_selected_layers()
+        if not selected_layers:
             self.calibration_widget.calibrate_push_button.setText("Calibrate")
             return
 
-        sample_metadata = self.viewer.layers[sample_name].metadata
-        if (
-            "settings" in sample_metadata.keys()
-            and "calibrated" in sample_metadata["settings"].keys()
-            and sample_metadata["settings"]["calibrated"] is True
-        ):
+        # Check if any selected layer is calibrated
+        any_calibrated = any(
+            self._is_layer_calibrated(layer) for layer in selected_layers
+        )
+
+        if any_calibrated:
             self.calibration_widget.calibrate_push_button.setText(
                 "Uncalibrate"
             )
@@ -144,24 +137,53 @@ class CalibrationWidget(QWidget):
             self.calibration_widget.calibrate_push_button.setText("Calibrate")
 
     def _on_click(self):
-        """Handle calibration button click."""
-        sample_name = (
-            self.parent_widget.image_layer_with_phasor_features_combobox.currentText()
-        )
+        """Handle calibration button click for all selected layers."""
+        selected_layers = self.parent_widget.get_selected_layers()
+        if not selected_layers:
+            show_error("Select sample and calibration layers")
+            return
+
         calibration_name = (
             self.calibration_widget.calibration_layer_combobox.currentText()
         )
 
-        if sample_name == "" or calibration_name == "":
+        if calibration_name == "":
             show_error("Select sample and calibration layers")
             return
 
-        sample_layer = self.viewer.layers[sample_name]
+        any_calibrated = any(
+            self._is_layer_calibrated(layer) for layer in selected_layers
+        )
 
-        if self._is_layer_calibrated(sample_layer):
-            self._uncalibrate_layer(sample_name)
+        if any_calibrated:
+            calibrated_layers = [
+                layer
+                for layer in selected_layers
+                if self._is_layer_calibrated(layer)
+            ]
+            for layer in calibrated_layers:
+                self._uncalibrate_layer(layer.name)
+
+            if calibrated_layers:
+                layer_names = ", ".join(
+                    [layer.name for layer in calibrated_layers]
+                )
+                show_info(f"Uncalibrated {layer_names}")
         else:
-            self._calibrate_layer(sample_name, calibration_name)
+            calibrated_layers = []
+            for layer in selected_layers:
+                result = self._calibrate_layer(layer.name, calibration_name)
+                if result is not False:
+                    calibrated_layers.append(layer)
+
+            if calibrated_layers:
+                layer_names = ", ".join(
+                    [layer.name for layer in calibrated_layers]
+                )
+                show_info(f"Calibrated {layer_names}")
+
+        self._update_button_state()
+        self.parent_widget.plot()
 
     def _is_layer_calibrated(self, sample_layer):
         """Check if a layer is already calibrated."""
@@ -173,12 +195,30 @@ class CalibrationWidget(QWidget):
         sample_layer = self.viewer.layers[sample_name]
         calibration_layer = self.viewer.layers[calibration_name]
 
-        # Validate inputs
+        calibration_was_calibrated = False
+        if self._is_layer_calibrated(calibration_layer):
+            reply = QMessageBox.question(
+                self,
+                'Calibration Layer Already Calibrated',
+                f'The calibration layer "{calibration_name}" is already calibrated.\n\n'
+                'Would you like to use the uncalibrated data as reference?\n\n'
+                'Yes: Use original uncalibrated data\n'
+                'No: Use current calibrated data',
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+
+            if reply == QMessageBox.Yes:
+                calibration_was_calibrated = True
+                self._uncalibrate_layer(calibration_name)
+                calibration_layer = self.viewer.layers[calibration_name]
+
         frequency, lifetime = self._get_and_validate_inputs()
         if frequency is None or lifetime is None:
-            return
+            if calibration_was_calibrated:
+                self._restore_calibration(calibration_name)
+            return False
 
-        # Get phasor data and validate harmonics
         sample_phasor_data, harmonics = self._get_phasor_data(sample_layer)
         calibration_phasor_data, calibration_harmonics = self._get_phasor_data(
             calibration_layer
@@ -188,9 +228,10 @@ class CalibrationWidget(QWidget):
             show_error(
                 "Harmonics in sample and calibration layers do not match"
             )
-            return
+            if calibration_was_calibrated:
+                self._restore_calibration(calibration_name)
+            return False
 
-        # Calculate calibration parameters
         phi_zero, mod_zero = self._calculate_calibration_parameters(
             calibration_layer,
             calibration_phasor_data,
@@ -200,21 +241,36 @@ class CalibrationWidget(QWidget):
             lifetime,
         )
 
-        # Store calibration parameters
-        settings = sample_layer.metadata.setdefault("settings", {})
-        settings["calibration_phase"] = phi_zero.tolist()
-        settings["calibration_modulation"] = mod_zero.tolist()
-        settings["calibrated"] = True
+        try:
+            settings = sample_layer.metadata.setdefault("settings", {})
+            settings["calibration_phase"] = phi_zero.tolist()
+            settings["calibration_modulation"] = mod_zero.tolist()
+            settings["calibrated"] = True
 
-        # Apply calibration transformation
-        self._apply_phasor_transformation(sample_name, phi_zero, mod_zero)
+            self._apply_phasor_transformation(sample_name, phi_zero, mod_zero)
 
-        # Apply existing filters and thresholds
-        self._apply_existing_filters_and_thresholds(sample_layer)
+            self._apply_existing_filters_and_thresholds(sample_layer)
+        finally:
+            if calibration_was_calibrated:
+                self._restore_calibration(calibration_name)
 
-        show_info(f"Calibrated {sample_name}")
-        self._update_button_state()
-        self.parent_widget.plot()
+    def _restore_calibration(self, layer_name):
+        """Restore calibration to a layer using stored parameters."""
+        layer = self.viewer.layers[layer_name]
+        settings = layer.metadata.get("settings", {})
+
+        phi_zero = settings.get("calibration_phase")
+        mod_zero = settings.get("calibration_modulation")
+
+        if phi_zero is not None and mod_zero is not None:
+            if isinstance(phi_zero, list):
+                phi_zero = np.array(phi_zero)
+            if isinstance(mod_zero, list):
+                mod_zero = np.array(mod_zero)
+
+            self._apply_phasor_transformation(layer_name, phi_zero, mod_zero)
+            settings["calibrated"] = True
+            self._apply_existing_filters_and_thresholds(layer)
 
     def _uncalibrate_layer(self, sample_name):
         """Uncalibrate a layer."""
@@ -245,10 +301,6 @@ class CalibrationWidget(QWidget):
         settings.pop("calibration_modulation", None)
 
         self._apply_existing_filters_and_thresholds(sample_layer)
-
-        show_info(f"Uncalibrated {sample_name}")
-        self._update_button_state()
-        self.parent_widget.plot()
 
     def _get_and_validate_inputs(self):
         """Get and validate frequency and lifetime inputs."""
@@ -289,7 +341,6 @@ class CalibrationWidget(QWidget):
         """Calculate calibration phase and modulation parameters."""
         calibration_mean = calibration_layer.metadata["original_mean"]
 
-        # Use arrays directly (assuming harmonic axis is first if present)
         calibration_g = calibration_phasor_data["G_original"]
         calibration_s = calibration_phasor_data["S_original"]
 
@@ -357,7 +408,6 @@ class CalibrationWidget(QWidget):
         g_current = sample_metadata["G"]
         s_current = sample_metadata["S"]
 
-        # Convert to numpy arrays if they are lists
         if isinstance(phi_zero, list):
             phi_zero = np.array(phi_zero)
         if isinstance(mod_zero, list):
@@ -365,7 +415,6 @@ class CalibrationWidget(QWidget):
 
         harmonics = np.atleast_1d(harmonics)
 
-        # Handle broadcasting for calibration parameters
         if g_original.ndim > 1 and len(harmonics) > 1:
             spatial_dims = g_original.ndim - 1
             expand_shape = (slice(None),) + (None,) * spatial_dims

@@ -1495,8 +1495,6 @@ def test_metadata_initialization(make_napari_viewer):
     assert fret_settings['donor_lifetime'] == 2.0
     assert test_layer.metadata['settings']['frequency'] == '80'
     assert fret_settings['donor_background'] == 0.1
-    assert fret_settings['background_real'] == 0.1
-    assert fret_settings['background_imag'] == 0.1
     assert fret_settings['donor_fretting_proportion'] == 1.0
     assert fret_settings['use_colormap'] is True
     assert fret_settings['background_positions_by_harmonic'] == {
@@ -1539,6 +1537,7 @@ def test_metadata_storage_manual_values(make_napari_viewer):
     # Trigger updates
     parent._broadcast_frequency_value_across_tabs('85')
     widget._on_parameters_changed()
+    widget._on_background_position_changed()  # Explicitly store background position
     widget._on_background_slider_changed()
     widget._on_fretting_slider_changed()
     widget._on_colormap_checkbox_changed()
@@ -1547,11 +1546,13 @@ def test_metadata_storage_manual_values(make_napari_viewer):
     fret_settings = test_layer.metadata['settings']['fret']
     assert fret_settings['donor_lifetime'] == 2.5
     assert test_layer.metadata['settings']['frequency'] == 85.0
-    assert fret_settings['background_real'] == 0.15
-    assert fret_settings['background_imag'] == 0.25
     assert fret_settings['donor_background'] == 0.3
     assert fret_settings['donor_fretting_proportion'] == 0.75
     assert fret_settings['use_colormap'] is False
+    # Background positions should be stored in background_positions_by_harmonic
+    assert 1 in fret_settings['background_positions_by_harmonic']
+    assert fret_settings['background_positions_by_harmonic'][1]['real'] == 0.15
+    assert fret_settings['background_positions_by_harmonic'][1]['imag'] == 0.25
 
 
 def test_metadata_storage_background_positions_by_harmonic(make_napari_viewer):

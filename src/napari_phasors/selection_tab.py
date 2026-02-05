@@ -258,6 +258,18 @@ class SelectionWidget(QWidget):
             return None
         return self.viewer.layers[layer_name]
 
+    def _get_selected_layers(self):
+        """Get all currently selected layers."""
+        if self.parent_widget is None:
+            return []
+        return self.parent_widget.get_selected_layers()
+
+    def _get_primary_layer_name(self):
+        """Get the name of the primary (first selected) layer."""
+        if self.parent_widget is None:
+            return None
+        return self.parent_widget.get_primary_layer_name()
+
     def _find_phasors_layer_by_name(self, layer_name):
         """Find a phasors layer by name in the viewer."""
         for layer in self.viewer.layers:
@@ -266,9 +278,18 @@ class SelectionWidget(QWidget):
         return None
 
     def _on_show_color_overlay(self, visible: bool):
-        """Slot to show/hide the current phasors_selected_layer."""
-        if self._phasors_selected_layer is not None:
-            self._phasors_selected_layer.visible = visible
+        """Slot to show/hide the current phasors_selected_layer(s)."""
+        if self.selection_id is None or self.selection_id == "":
+            return
+
+        selected_layers = self._get_selected_layers()
+        for layer in selected_layers:
+            selection_layer_name = f"{self.selection_id}: {layer.name}"
+            selection_layer = self._find_phasors_layer_by_name(
+                selection_layer_name
+            )
+            if selection_layer is not None:
+                selection_layer.visible = visible
 
     def _connect_show_overlay_signal(self):
         """Ensure show_color_overlay_signal is connected only to the current layer's visibility."""
@@ -306,37 +327,6 @@ class SelectionWidget(QWidget):
 
             self._current_selection_id = new_selection_id_for_comparison
 
-            # Update phasors_selected_layer reference
-            layer = self._get_current_layer()
-            if new_selection_id_for_comparison != "None" and layer is not None:
-                layer_name = f"{new_selection_id_for_comparison}: {layer.name}"
-                existing_layer = self._find_phasors_layer_by_name(layer_name)
-
-                if existing_layer is None:
-                    if (
-                        "settings" in layer.metadata
-                        and "selections" in layer.metadata["settings"]
-                        and "manual_selections"
-                        in layer.metadata["settings"]["selections"]
-                        and new_selection_id_for_comparison
-                        in layer.metadata["settings"]["selections"][
-                            "manual_selections"
-                        ]
-                    ):
-                        selection_map = layer.metadata["settings"][
-                            "selections"
-                        ]["manual_selections"][new_selection_id_for_comparison]
-                        self._recreate_manual_selection_layer(
-                            new_selection_id_for_comparison, selection_map
-                        )
-                        existing_layer = self._find_phasors_layer_by_name(
-                            layer_name
-                        )
-
-                self._phasors_selected_layer = existing_layer
-            else:
-                self._phasors_selected_layer = None
-
             self._connect_show_overlay_signal()
 
             processed_selection_id = new_selection_id
@@ -345,8 +335,6 @@ class SelectionWidget(QWidget):
                 self.update_phasor_plot_with_selection_id(
                     processed_selection_id
                 )
-                if self._phasors_selected_layer is not None:
-                    self.update_phasors_layer()
 
             self._switching_selection_id = False
 
@@ -397,8 +385,8 @@ class SelectionWidget(QWidget):
 
     def update_phasor_plot_with_selection_id(self, selection_id):
         """Update the phasor plot with the selected ID and show/hide label layers."""
-        layer = self._get_current_layer()
-        if layer is None:
+        selected_layers = self._get_selected_layers()
+        if not selected_layers:
             return
 
         # Prevent this from running during plot updates
@@ -406,73 +394,115 @@ class SelectionWidget(QWidget):
             return
 
         if selection_id is None or selection_id == "":
+            for layer in selected_layers:
+                for i in range(
+                    self.selection_input_widget.phasor_selection_id_combobox.count()
+                ):
+                    sel_id = self.selection_input_widget.phasor_selection_id_combobox.itemText(
+                        i
+                    )
+                    if sel_id != "None":
+                        selection_layer_name = f"{sel_id}: {layer.name}"
+                        existing_layer = self._find_phasors_layer_by_name(
+                            selection_layer_name
+                        )
+                        if existing_layer is not None:
+                            existing_layer.visible = False
+
+            self.parent_widget.plot(selection_id_data=None)
+            return
+
+        # Hide other selections for all layers
+        for layer in selected_layers:
             for i in range(
                 self.selection_input_widget.phasor_selection_id_combobox.count()
             ):
                 sel_id = self.selection_input_widget.phasor_selection_id_combobox.itemText(
                     i
                 )
-                if sel_id != "None":
-                    selection_layer_name = f"{sel_id}: {layer.name}"
-                    existing_layer = self._find_phasors_layer_by_name(
-                        selection_layer_name
+                if sel_id != "None" and sel_id != selection_id:
+                    other_layer_name = f"{sel_id}: {layer.name}"
+                    other_layer = self._find_phasors_layer_by_name(
+                        other_layer_name
                     )
-                    if existing_layer is not None:
-                        existing_layer.visible = False
+                    if other_layer is not None:
+                        other_layer.visible = False
 
-            self.parent_widget.plot(selection_id_data=None)
-            return
-
-        for i in range(
-            self.selection_input_widget.phasor_selection_id_combobox.count()
-        ):
-            sel_id = self.selection_input_widget.phasor_selection_id_combobox.itemText(
-                i
+        # Show current selection for all layers
+        need_to_create = False
+        for layer in selected_layers:
+            selection_layer_name = f"{selection_id}: {layer.name}"
+            selection_layer = self._find_phasors_layer_by_name(
+                selection_layer_name
             )
-            if sel_id != "None" and sel_id != selection_id:
-                other_layer_name = f"{sel_id}: {layer.name}"
-                other_layer = self._find_phasors_layer_by_name(
-                    other_layer_name
-                )
-                if other_layer is not None:
-                    other_layer.visible = False
+            if selection_layer is None:
+                need_to_create = True
+            else:
+                selection_layer.visible = True
 
-        selection_layer_name = f"{selection_id}: {layer.name}"
-        selection_layer = self._find_phasors_layer_by_name(
-            selection_layer_name
-        )
-        if selection_layer is None:
+        if need_to_create:
             self.create_phasors_selected_layer()
-            selection_layer = self._phasors_selected_layer
 
-        if selection_layer:
-            selection_layer.visible = True
+        # Collect selection data from all selected layers for the phasor plot
+        all_selection_data = []
+        for layer in selected_layers:
+            if (
+                "settings" in layer.metadata
+                and "selections" in layer.metadata["settings"]
+                and "manual_selections"
+                in layer.metadata["settings"]["selections"]
+                and selection_id
+                in layer.metadata["settings"]["selections"][
+                    "manual_selections"
+                ]
+            ):
+                selection_map = layer.metadata["settings"]["selections"][
+                    "manual_selections"
+                ][selection_id]
+            else:
+                spatial_shape = (
+                    layer.data.shape[:2]
+                    if layer.data.ndim >= 2
+                    else layer.data.shape
+                )
+                selection_map = np.zeros(spatial_shape, dtype=np.uint32)
 
-        if (
-            "settings" in layer.metadata
-            and "selections" in layer.metadata["settings"]
-            and "manual_selections" in layer.metadata["settings"]["selections"]
-            and selection_id
-            in layer.metadata["settings"]["selections"]["manual_selections"]
-        ):
-            selection_map = layer.metadata["settings"]["selections"][
-                "manual_selections"
-            ][selection_id]
+            # Get valid pixels for this layer
+            g_array = layer.metadata.get('G')
+            s_array = layer.metadata.get('S')
+            harmonics_array = layer.metadata.get('harmonics')
+
+            if g_array is not None and s_array is not None:
+                # Extract correct harmonic if arrays are 3D
+                if harmonics_array is not None:
+                    harmonics_array = np.atleast_1d(harmonics_array)
+                    target_harmonic = self.parent_widget.harmonic
+                    try:
+                        harmonic_idx = int(
+                            np.where(harmonics_array == target_harmonic)[0][0]
+                        )
+                    except (IndexError, ValueError):
+                        continue
+                else:
+                    harmonic_idx = 0
+
+                if g_array.ndim == 3:
+                    g = g_array[harmonic_idx]
+                    s = s_array[harmonic_idx]
+                else:
+                    g = g_array
+                    s = s_array
+
+                valid = np.isfinite(g.ravel()) & np.isfinite(s.ravel())
+                selection_data = selection_map.ravel()[valid]
+                all_selection_data.append(selection_data)
+
+        if all_selection_data:
+            # Concatenate all selection data from all layers
+            combined_selection_data = np.concatenate(all_selection_data)
+            self.parent_widget.plot(selection_id_data=combined_selection_data)
         else:
-            spatial_shape = self.parent_widget.get_phasor_spatial_shape()
-            if spatial_shape is None:
-                return
-            selection_map = np.zeros(spatial_shape, dtype=np.uint32)
-
-        _, _, valid = self.parent_widget.get_masked_gs(
-            flat=True, return_valid_mask=True
-        )
-        if valid is None:
-            return
-
-        selection_data = selection_map.ravel()[valid]
-
-        self.parent_widget.plot(selection_id_data=selection_data)
+            self.parent_widget.plot(selection_id_data=None)
 
     def _get_next_available_selection_id(self):
         """Get the next available manual selection ID."""
@@ -485,19 +515,22 @@ class SelectionWidget(QWidget):
             )
         ]
 
-        layer = self._get_current_layer()
+        # Use primary layer for checking used selections
+        selected_layers = self._get_selected_layers()
         used_selections = set()
-        if (
-            layer is not None
-            and "settings" in layer.metadata
-            and "selections" in layer.metadata["settings"]
-            and "manual_selections" in layer.metadata["settings"]["selections"]
-        ):
-            used_selections = set(
-                layer.metadata["settings"]["selections"][
-                    "manual_selections"
-                ].keys()
-            )
+        if selected_layers:
+            primary_layer = selected_layers[0]
+            if (
+                "settings" in primary_layer.metadata
+                and "selections" in primary_layer.metadata["settings"]
+                and "manual_selections"
+                in primary_layer.metadata["settings"]["selections"]
+            ):
+                used_selections = set(
+                    primary_layer.metadata["settings"]["selections"][
+                        "manual_selections"
+                    ].keys()
+                )
 
         counter = 1
         while True:
@@ -513,8 +546,8 @@ class SelectionWidget(QWidget):
 
     def manual_selection_changed(self, manual_selection):
         """Update the manual selection in the layer metadata."""
-        layer = self._get_current_layer()
-        if layer is None:
+        selected_layers = self._get_selected_layers()
+        if not selected_layers:
             return
 
         if getattr(self.parent_widget, '_updating_plot', False):
@@ -536,30 +569,6 @@ class SelectionWidget(QWidget):
             self._current_selection_id = new_selection_id
             self.selection_id = new_selection_id
 
-        if (
-            "settings" in layer.metadata
-            and "selections" in layer.metadata["settings"]
-            and "manual_selections" in layer.metadata["settings"]["selections"]
-            and self.selection_id
-            in layer.metadata["settings"]["selections"]["manual_selections"]
-        ):
-            selection_map = layer.metadata["settings"]["selections"][
-                "manual_selections"
-            ][self.selection_id].copy()
-        else:
-            spatial_shape = self.parent_widget.get_phasor_spatial_shape()
-            if spatial_shape is None:
-                return
-            selection_map = np.zeros(spatial_shape, dtype=np.uint32)
-
-        selection_map_flat = selection_map.ravel()
-
-        _, _, valid_pixels_mask = self.parent_widget.get_masked_gs(
-            flat=True, return_valid_mask=True
-        )
-        if valid_pixels_mask is None:
-            return
-
         selection_to_use = manual_selection
         if (
             hasattr(self, '_processing_initial_selection')
@@ -569,98 +578,61 @@ class SelectionWidget(QWidget):
             self._processing_initial_selection = False
             delattr(self, '_initial_manual_selection')
 
-        if selection_to_use is None:
-            selection_map_flat[valid_pixels_mask] = 0
+        # The manual_selection array corresponds to merged/concatenated data from all layers
+        # We need to split it back to individual layers based on valid pixel counts
+        if selection_to_use is not None:
+            # Calculate how many valid pixels each layer contributes
+            layer_valid_counts = []
+            for layer in selected_layers:
+                g_array = layer.metadata.get('G')
+                s_array = layer.metadata.get('S')
+                harmonics_array = layer.metadata.get('harmonics')
+
+                if g_array is not None and s_array is not None:
+                    # Extract correct harmonic if arrays are 3D
+                    if harmonics_array is not None:
+                        harmonics_array = np.atleast_1d(harmonics_array)
+                        target_harmonic = self.parent_widget.harmonic
+                        try:
+                            harmonic_idx = int(
+                                np.where(harmonics_array == target_harmonic)[
+                                    0
+                                ][0]
+                            )
+                        except (IndexError, ValueError):
+                            layer_valid_counts.append(0)
+                            continue
+                    else:
+                        harmonic_idx = 0
+
+                    if g_array.ndim == 3:
+                        g = g_array[harmonic_idx]
+                        s = s_array[harmonic_idx]
+                    else:
+                        g = g_array
+                        s = s_array
+
+                    valid = np.isfinite(g.ravel()) & np.isfinite(s.ravel())
+                    layer_valid_counts.append(np.sum(valid))
+                else:
+                    layer_valid_counts.append(0)
+
+            # Split the selection array based on valid counts
+            selection_splits = []
+            start_idx = 0
+            for count in layer_valid_counts:
+                if count > 0:
+                    selection_splits.append(
+                        selection_to_use[start_idx : start_idx + count]
+                    )
+                    start_idx += count
+                else:
+                    selection_splits.append(None)
         else:
-            selection_map_flat[valid_pixels_mask] = selection_to_use
+            selection_splits = [None] * len(selected_layers)
 
-        if "settings" not in layer.metadata:
-            layer.metadata["settings"] = {}
-        if "selections" not in layer.metadata["settings"]:
-            layer.metadata["settings"]["selections"] = {}
-        if "manual_selections" not in layer.metadata["settings"]["selections"]:
-            layer.metadata["settings"]["selections"]["manual_selections"] = {}
-
-        layer.metadata["settings"]["selections"]["manual_selections"][
-            self.selection_id
-        ] = selection_map.copy()
-
-        self.update_phasors_layer()
-
-    def create_phasors_selected_layer(self):
-        """Create the phasors selected layer."""
-        layer = self._get_current_layer()
-        if layer is None:
-            return
-        if self.selection_id is None or self.selection_id == "":
-            return
-
-        spatial_shape = self.parent_widget.get_phasor_spatial_shape()
-        if spatial_shape is None:
-            return
-
-        # Get selection map from metadata if it exists, otherwise create empty
-        if (
-            "settings" in layer.metadata
-            and "selections" in layer.metadata["settings"]
-            and "manual_selections" in layer.metadata["settings"]["selections"]
-            and self.selection_id
-            in layer.metadata["settings"]["selections"]["manual_selections"]
-        ):
-            selection_map = layer.metadata["settings"]["selections"][
-                "manual_selections"
-            ][self.selection_id].copy()
-        else:
-            selection_map = np.zeros(spatial_shape, dtype=np.uint32)
-
-        color_dict = colormap_to_dict(
-            self.parent_widget._colormap,
-            self.parent_widget._colormap.N,
-            exclude_first=True,
-        )
-
-        layer_name = f"{self.selection_id}: {layer.name}"
-
-        phasors_selected_layer = Labels(
-            selection_map,
-            name=layer_name,
-            scale=layer.scale,
-            colormap=DirectLabelColormap(
-                color_dict=color_dict, name="cat10_mod"
-            ),
-            metadata={
-                'napari_phasors_selection_type': 'manual',
-                'napari_phasors_source_layer': layer.name,
-            },
-        )
-
-        self._phasors_selected_layer = self.viewer.add_layer(
-            phasors_selected_layer
-        )
-
-        self._connect_show_overlay_signal()
-
-    def update_phasors_layer(self):
-        """Update the existing phasors layer data without recreating it."""
-        layer = self._get_current_layer()
-        if layer is None:
-            return
-
-        selection_layer_name = f"{self.selection_id}: {layer.name}"
-        existing_phasors_selected_layer = self._find_phasors_layer_by_name(
-            selection_layer_name
-        )
-
-        if existing_phasors_selected_layer is None:
-            self.create_phasors_selected_layer()
-            return
-
-        if self.selection_id is None or self.selection_id == "":
-            existing_phasors_selected_layer.data = np.zeros_like(
-                existing_phasors_selected_layer.data
-            )
-        else:
-            # Update the layer with the selection map from metadata
+        # Apply selection to all selected layers
+        for layer, layer_selection in zip(selected_layers, selection_splits):
             if (
                 "settings" in layer.metadata
                 and "selections" in layer.metadata["settings"]
@@ -673,10 +645,182 @@ class SelectionWidget(QWidget):
             ):
                 selection_map = layer.metadata["settings"]["selections"][
                     "manual_selections"
-                ][self.selection_id]
-                existing_phasors_selected_layer.data = selection_map
+                ][self.selection_id].copy()
+            else:
+                # Get spatial shape for this specific layer
+                spatial_shape = (
+                    layer.data.shape[:2]
+                    if layer.data.ndim >= 2
+                    else layer.data.shape
+                )
+                selection_map = np.zeros(spatial_shape, dtype=np.uint32)
 
-        self._phasors_selected_layer = existing_phasors_selected_layer
+            selection_map_flat = selection_map.ravel()
+
+            # Get valid pixels mask for this specific layer
+            g_array = layer.metadata.get('G')
+            s_array = layer.metadata.get('S')
+            harmonics_array = layer.metadata.get('harmonics')
+
+            if g_array is None or s_array is None:
+                continue
+
+            # Extract correct harmonic if arrays are 3D
+            if harmonics_array is not None:
+                harmonics_array = np.atleast_1d(harmonics_array)
+                target_harmonic = self.parent_widget.harmonic
+                try:
+                    harmonic_idx = int(
+                        np.where(harmonics_array == target_harmonic)[0][0]
+                    )
+                except (IndexError, ValueError):
+                    continue
+            else:
+                harmonic_idx = 0
+
+            if g_array.ndim == 3:
+                g = g_array[harmonic_idx]
+                s = s_array[harmonic_idx]
+            else:
+                g = g_array
+                s = s_array
+
+            valid_pixels_mask = np.isfinite(g.ravel()) & np.isfinite(s.ravel())
+
+            if layer_selection is None:
+                selection_map_flat[valid_pixels_mask] = 0
+            else:
+                selection_map_flat[valid_pixels_mask] = layer_selection
+
+            if "settings" not in layer.metadata:
+                layer.metadata["settings"] = {}
+            if "selections" not in layer.metadata["settings"]:
+                layer.metadata["settings"]["selections"] = {}
+            if (
+                "manual_selections"
+                not in layer.metadata["settings"]["selections"]
+            ):
+                layer.metadata["settings"]["selections"][
+                    "manual_selections"
+                ] = {}
+
+            layer.metadata["settings"]["selections"]["manual_selections"][
+                self.selection_id
+            ] = selection_map.copy()
+
+        self.update_phasors_layer()
+
+    def create_phasors_selected_layer(self):
+        """Create the phasors selected layer for all selected layers."""
+        selected_layers = self._get_selected_layers()
+        if not selected_layers:
+            return
+        if self.selection_id is None or self.selection_id == "":
+            return
+
+        color_dict = colormap_to_dict(
+            self.parent_widget._colormap,
+            self.parent_widget._colormap.N,
+            exclude_first=True,
+        )
+
+        # Create selection layer for each selected layer
+        for layer in selected_layers:
+            spatial_shape = (
+                layer.data.shape[:2]
+                if layer.data.ndim >= 2
+                else layer.data.shape
+            )
+
+            # Get selection map from metadata if it exists, otherwise create empty
+            if (
+                "settings" in layer.metadata
+                and "selections" in layer.metadata["settings"]
+                and "manual_selections"
+                in layer.metadata["settings"]["selections"]
+                and self.selection_id
+                in layer.metadata["settings"]["selections"][
+                    "manual_selections"
+                ]
+            ):
+                selection_map = layer.metadata["settings"]["selections"][
+                    "manual_selections"
+                ][self.selection_id].copy()
+            else:
+                selection_map = np.zeros(spatial_shape, dtype=np.uint32)
+
+            layer_name = f"{self.selection_id}: {layer.name}"
+
+            # Check if layer already exists, skip if it does
+            existing_layer = self._find_phasors_layer_by_name(layer_name)
+            if existing_layer is not None:
+                continue
+
+            phasors_selected_layer = Labels(
+                selection_map,
+                name=layer_name,
+                scale=layer.scale,
+                colormap=DirectLabelColormap(
+                    color_dict=color_dict, name="cat10_mod"
+                ),
+                metadata={
+                    'napari_phasors_selection_type': 'manual',
+                    'napari_phasors_source_layer': layer.name,
+                },
+            )
+
+            self.viewer.add_layer(phasors_selected_layer)
+
+        self._connect_show_overlay_signal()
+
+    def update_phasors_layer(self):
+        """Update the existing phasors layer data without recreating it."""
+        selected_layers = self._get_selected_layers()
+        if not selected_layers:
+            return
+
+        # Check if any layers need to be created
+        need_creation = False
+        for layer in selected_layers:
+            selection_layer_name = f"{self.selection_id}: {layer.name}"
+            if self._find_phasors_layer_by_name(selection_layer_name) is None:
+                need_creation = True
+                break
+
+        # Create layers if needed
+        if need_creation:
+            self.create_phasors_selected_layer()
+
+        # Update layer for each selected layer
+        for layer in selected_layers:
+            selection_layer_name = f"{self.selection_id}: {layer.name}"
+            existing_phasors_selected_layer = self._find_phasors_layer_by_name(
+                selection_layer_name
+            )
+
+            if existing_phasors_selected_layer is None:
+                continue
+
+            if self.selection_id is None or self.selection_id == "":
+                existing_phasors_selected_layer.data = np.zeros_like(
+                    existing_phasors_selected_layer.data
+                )
+            else:
+                # Update the layer with the selection map from metadata
+                if (
+                    "settings" in layer.metadata
+                    and "selections" in layer.metadata["settings"]
+                    and "manual_selections"
+                    in layer.metadata["settings"]["selections"]
+                    and self.selection_id
+                    in layer.metadata["settings"]["selections"][
+                        "manual_selections"
+                    ]
+                ):
+                    selection_map = layer.metadata["settings"]["selections"][
+                        "manual_selections"
+                    ][self.selection_id]
+                    existing_phasors_selected_layer.data = selection_map
 
     def _recreate_manual_selection_layer(self, selection_id, selection_map):
         """Recreate a manual selection labels layer from metadata."""
@@ -1083,16 +1227,19 @@ class CircularCursorWidget(QWidget):
         self._cursors.clear()
         self.cursor_table.setRowCount(0)
 
-        layer = self._get_current_layer()
-        if layer is None:
+        # Use primary layer for restoring cursors
+        selected_layers = self._get_selected_layers()
+        if not selected_layers:
             return
 
+        primary_layer = selected_layers[0]
         if (
-            "settings" in layer.metadata
-            and "selections" in layer.metadata["settings"]
-            and "circular_cursors" in layer.metadata["settings"]["selections"]
+            "settings" in primary_layer.metadata
+            and "selections" in primary_layer.metadata["settings"]
+            and "circular_cursors"
+            in primary_layer.metadata["settings"]["selections"]
         ):
-            cursor_params = layer.metadata["settings"]["selections"][
+            cursor_params = primary_layer.metadata["settings"]["selections"][
                 "circular_cursors"
             ]
 
@@ -1131,17 +1278,24 @@ class CircularCursorWidget(QWidget):
             return None
         return self.viewer.layers[layer_name]
 
+    def _get_selected_layers(self):
+        """Get all currently selected layers."""
+        if self.parent_widget is None:
+            return []
+        return self.parent_widget.get_selected_layers()
+
     def _remove_selection_layer(self):
         """Remove the selection layer if it exists."""
-        layer = self._get_current_layer()
-        if layer is None:
+        selected_layers = self._get_selected_layers()
+        if not selected_layers:
             return
 
-        layer_name = f"Cursor Selection: {layer.name}"
-        for viewer_layer in list(self.viewer.layers):
-            if viewer_layer.name == layer_name:
-                self.viewer.layers.remove(viewer_layer)
-                break
+        for layer in selected_layers:
+            layer_name = f"Cursor Selection: {layer.name}"
+            for viewer_layer in list(self.viewer.layers):
+                if viewer_layer.name == layer_name:
+                    self.viewer.layers.remove(viewer_layer)
+                    break
 
         self._phasors_selected_layer = None
 
@@ -1152,41 +1306,9 @@ class CircularCursorWidget(QWidget):
         if self.parent_widget is None:
             return None
 
-        layer = self._get_current_layer()
-        if layer is None:
+        selected_layers = self._get_selected_layers()
+        if not selected_layers:
             return
-
-        # Get phasor data
-        g_flat, s_flat, valid_mask = self.parent_widget.get_masked_gs(
-            flat=True, return_valid_mask=True
-        )
-        if g_flat is None or s_flat is None:
-            return
-
-        # Get full phasor arrays for shape
-        spatial_shape = self.parent_widget.get_phasor_spatial_shape()
-        if spatial_shape is None:
-            return
-
-        # Get full G and S arrays
-        g_full, s_full = self.parent_widget.get_masked_gs(flat=False)
-        if g_full is None or s_full is None:
-            return
-
-        # Create selection map
-        selection_map = np.zeros(spatial_shape, dtype=np.uint32)
-
-        # Apply each cursor
-        for idx, cursor in enumerate(self._cursors):
-            g_center = cursor['g']
-            s_center = cursor['s']
-            radius = cursor['radius']
-
-            mask = mask_from_circular_cursor(
-                g_full, s_full, [g_center], [s_center], radius=[radius]
-            )[0]
-
-            selection_map[mask] = idx + 1
 
         cursor_params = []
         for cursor in self._cursors:
@@ -1204,16 +1326,69 @@ class CircularCursorWidget(QWidget):
                 }
             )
 
-        if "settings" not in layer.metadata:
-            layer.metadata["settings"] = {}
-        if "selections" not in layer.metadata["settings"]:
-            layer.metadata["settings"]["selections"] = {}
+        # Save cursor params to primary layer
+        primary_layer = selected_layers[0]
+        if "settings" not in primary_layer.metadata:
+            primary_layer.metadata["settings"] = {}
+        if "selections" not in primary_layer.metadata["settings"]:
+            primary_layer.metadata["settings"]["selections"] = {}
 
-        layer.metadata["settings"]["selections"][
+        primary_layer.metadata["settings"]["selections"][
             "circular_cursors"
         ] = cursor_params
 
-        self._create_or_update_labels_layer(layer, selection_map)
+        # Apply selection to each selected layer
+        for layer in selected_layers:
+            # Get phasor data for this specific layer
+            g_array = layer.metadata.get('G')
+            s_array = layer.metadata.get('S')
+            harmonics_array = layer.metadata.get('harmonics')
+
+            if g_array is None or s_array is None:
+                continue
+
+            # Extract correct harmonic if arrays are 3D
+            if harmonics_array is not None:
+                harmonics_array = np.atleast_1d(harmonics_array)
+                target_harmonic = self.parent_widget.harmonic
+                try:
+                    harmonic_idx = int(
+                        np.where(harmonics_array == target_harmonic)[0][0]
+                    )
+                except (IndexError, ValueError):
+                    continue
+            else:
+                harmonic_idx = 0
+
+            if g_array.ndim == 3:
+                g = g_array[harmonic_idx]
+                s = s_array[harmonic_idx]
+            else:
+                g = g_array
+                s = s_array
+
+            spatial_shape = (
+                layer.data.shape[:2]
+                if layer.data.ndim >= 2
+                else layer.data.shape
+            )
+
+            # Create selection map
+            selection_map = np.zeros(spatial_shape, dtype=np.uint32)
+
+            # Apply each cursor
+            for idx, cursor in enumerate(self._cursors):
+                g_center = cursor['g']
+                s_center = cursor['s']
+                radius = cursor['radius']
+
+                mask = mask_from_circular_cursor(
+                    g, s, [g_center], [s_center], radius=[radius]
+                )[0]
+
+                selection_map[mask] = idx + 1
+
+            self._create_or_update_labels_layer(layer, selection_map)
 
     def _create_or_update_labels_layer(self, image_layer, selection_map):
         """Create or update the labels layer for the selection."""
