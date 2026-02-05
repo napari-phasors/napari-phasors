@@ -71,7 +71,7 @@ class CheckableComboBox(QComboBox):
         self.lineEdit().installEventFilter(self)
         # Prevent cursor positioning in line edit
         self.lineEdit().setFocusPolicy(Qt.NoFocus)
-        
+
         # Install event filter on view to handle item clicks
         self.view().viewport().installEventFilter(self)
 
@@ -95,7 +95,11 @@ class CheckableComboBox(QComboBox):
                     item = self.model().itemFromIndex(index)
                     if item:
                         current_state = item.checkState()
-                        new_state = Qt.Unchecked if current_state == Qt.Checked else Qt.Checked
+                        new_state = (
+                            Qt.Unchecked
+                            if current_state == Qt.Checked
+                            else Qt.Checked
+                        )
                         item.setCheckState(new_state)
                     return True
         return super().eventFilter(obj, event)
@@ -104,7 +108,9 @@ class CheckableComboBox(QComboBox):
         """Add a checkable item to the combobox."""
         item = QStandardItem(text)
         item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
-        item.setData(Qt.Checked if checked else Qt.Unchecked, Qt.CheckStateRole)
+        item.setData(
+            Qt.Checked if checked else Qt.Unchecked, Qt.CheckStateRole
+        )
         self.model().appendRow(item)
 
     def addItems(self, texts):
@@ -1795,7 +1801,9 @@ class PlotterWidget(QWidget):
 
             # If no layers were previously selected and we have layers, select the first one
             if not previously_selected and layer_names:
-                self.image_layers_checkable_combobox.setCheckedItems([layer_names[0]])
+                self.image_layers_checkable_combobox.setCheckedItems(
+                    [layer_names[0]]
+                )
 
             self.mask_layer_combobox.addItems(["None"] + mask_layer_names)
 
@@ -1880,8 +1888,13 @@ class PlotterWidget(QWidget):
                 self._g_array = None
                 self._s_array = None
                 self._harmonics_array = None
-                if hasattr(self.canvas_widget, 'active_artist') and self.canvas_widget.active_artist:
-                    active_artist = self.canvas_widget.artists.get(self.canvas_widget.active_artist)
+                if (
+                    hasattr(self.canvas_widget, 'active_artist')
+                    and self.canvas_widget.active_artist
+                ):
+                    active_artist = self.canvas_widget.artists.get(
+                        self.canvas_widget.active_artist
+                    )
                     if active_artist and hasattr(active_artist, 'ax'):
                         active_artist.ax.clear()
                         active_artist.ax.set_aspect(1, adjustable='box')
@@ -2052,32 +2065,30 @@ class PlotterWidget(QWidget):
 
     def _on_mask_layer_changed(self, text):
         """Handle changes to the mask layer combo box."""
-        current_image_layer_name = (
-            self.image_layer_with_phasor_features_combobox.currentText()
-        )
-        if not current_image_layer_name:
+        selected_layers = self.get_selected_layers()
+        if not selected_layers:
             return
 
-        current_image_layer = self.viewer.layers[current_image_layer_name]
+        # Apply mask changes to all selected layers
+        for image_layer in selected_layers:
+            # Restore original G and S and image data
+            self._restore_original_phasor_data(image_layer)
 
-        # Restore original G and S and image data
-        self._restore_original_phasor_data(current_image_layer)
-
-        if text == "None":
-            if 'mask' in current_image_layer.metadata:
-                del current_image_layer.metadata['mask']
-        else:
-            mask_layer = self.viewer.layers[text]
-            self._apply_mask_to_phasor_data(mask_layer, current_image_layer)
+            if text == "None":
+                if 'mask' in image_layer.metadata:
+                    del image_layer.metadata['mask']
+            else:
+                mask_layer = self.viewer.layers[text]
+                self._apply_mask_to_phasor_data(mask_layer, image_layer)
 
         if hasattr(self, 'filter_tab'):
             self.filter_tab._on_image_layer_changed()
+            # Apply filter to the first selected layer if applicable
+            first_layer = selected_layers[0]
             if (
-                current_image_layer.metadata['settings'].get('filter', None)
+                first_layer.metadata['settings'].get('filter', None)
                 is not None
-                and current_image_layer.metadata['settings'].get(
-                    'threshold', None
-                )
+                and first_layer.metadata['settings'].get('threshold', None)
                 is not None
             ):
                 self.filter_tab.apply_button_clicked()
@@ -2088,22 +2099,24 @@ class PlotterWidget(QWidget):
         """Handle changes to the mask layer data."""
         if self.mask_layer_combobox.currentText() != event.source.name:
             return
-        current_image_layer_name = (
-            self.image_layer_with_phasor_features_combobox.currentText()
-        )
-        current_image_layer = self.viewer.layers[current_image_layer_name]
-        self._restore_original_phasor_data(current_image_layer)
+
+        selected_layers = self.get_selected_layers()
+        if not selected_layers:
+            return
+
         mask_layer = event.source
-        self._apply_mask_to_phasor_data(mask_layer, current_image_layer)
+
+        for image_layer in selected_layers:
+            self._restore_original_phasor_data(image_layer)
+            self._apply_mask_to_phasor_data(mask_layer, image_layer)
 
         if hasattr(self, 'filter_tab'):
             self.filter_tab._on_image_layer_changed()
+            first_layer = selected_layers[0]
             if (
-                current_image_layer.metadata['settings'].get('filter', None)
+                first_layer.metadata['settings'].get('filter', None)
                 is not None
-                and current_image_layer.metadata['settings'].get(
-                    'threshold', None
-                )
+                and first_layer.metadata['settings'].get('threshold', None)
                 is not None
             ):
                 self.filter_tab.apply_button_clicked()
