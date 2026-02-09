@@ -28,8 +28,8 @@ def test_selection_widget_initialization_values(make_napari_viewer):
     mode_combobox = widget.selection_mode_combobox
     assert mode_combobox.count() == 3
     assert mode_combobox.itemText(0) == "Circular Cursor"
-    assert mode_combobox.itemText(1) == "Manual Selection"
-    assert mode_combobox.itemText(2) == "Automatic Clustering"
+    assert mode_combobox.itemText(1) == "Automatic Clustering"
+    assert mode_combobox.itemText(2) == "Manual Selection"
     assert mode_combobox.currentIndex() == 0  # Circular Cursor is default
 
     # Test stacked widget has all three mode widgets
