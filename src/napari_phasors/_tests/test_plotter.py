@@ -1907,3 +1907,143 @@ def test_phasor_plotter_visibility_methods_integration_with_tab_changes(
             assert call[0][0] == False
         # The last FRET call should be True (show FRET)
         assert calls_fret[-1][0][0] == True
+
+
+def test_canvas_cleared_when_no_layer_selected(make_napari_viewer):
+    """Test that canvas phasor data is cleared but semicircle/circle remains when no layer is selected."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    # Add a layer with phasors and verify plot is populated
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+
+    # Verify layer is selected and data is plotted
+    assert plotter.get_primary_layer_name() == intensity_image_layer.name
+    assert plotter._g_array is not None
+    assert plotter._s_array is not None
+    assert plotter.colorbar is not None  # Should have colorbar for histogram
+
+    # Store reference to semicircle/polar plot artists before clearing
+    initial_semicircle_artists = len(plotter.semi_circle_plot_artist_list)
+    initial_polar_artists = len(plotter.polar_plot_artist_list)
+
+    # Deselect all layers (simulate no layer selected)
+    plotter.image_layers_checkable_combobox.setCheckedItems([])
+
+    # Trigger the layer change
+    plotter.on_image_layer_changed()
+
+    # Verify phasor data arrays are cleared
+    assert plotter._g_array is None
+    assert plotter._s_array is None
+    assert plotter._g_original_array is None
+    assert plotter._s_original_array is None
+    assert plotter._harmonics_array is None
+
+    # Verify colorbar is removed
+    assert plotter.colorbar is None
+
+    # Verify semicircle/polar plot remains (artists should still exist)
+    if plotter.toggle_semi_circle:
+        # Semicircle should have artists (lines, labels for lifetime ticks)
+        assert len(plotter.semi_circle_plot_artist_list) > 0
+    else:
+        # Polar plot should have artists (lines and circles)
+        assert len(plotter.polar_plot_artist_list) > 0
+
+    # Verify axes are still configured properly
+    assert plotter.canvas_widget.axes.get_xlabel() == "G"
+    assert plotter.canvas_widget.axes.get_ylabel() == "S"
+    assert plotter.canvas_widget.axes.get_aspect() == 1
+
+    # Verify axes limits are reasonable (not cleared to default [0,1])
+    xlim = plotter.canvas_widget.axes.get_xlim()
+    ylim = plotter.canvas_widget.axes.get_ylim()
+    if plotter.toggle_semi_circle:
+        # Semicircle mode
+        assert xlim[0] < 0 and xlim[1] > 1
+        assert ylim[0] <= 0 and ylim[1] > 0.5
+    else:
+        # Full circle mode
+        assert xlim[0] < -0.5 and xlim[1] > 0.5
+        assert ylim[0] < -0.5 and ylim[1] > 0.5
+
+    # Verify tab artists are hidden
+    with (
+        patch.object(plotter, '_set_components_visibility') as mock_comp_vis,
+        patch.object(plotter, '_set_fret_visibility') as mock_fret_vis,
+        patch.object(plotter, '_set_selection_visibility') as mock_sel_vis,
+    ):
+        # This was already called during on_image_layer_changed, but verify the method works
+        plotter._hide_all_tab_artists()
+
+        # All should be called with False
+        mock_comp_vis.assert_called_with(False)
+        mock_fret_vis.assert_called_with(False)
+        # Selection visibility is called in hide_all
+
+
+def test_canvas_cleared_then_restored_with_new_layer(make_napari_viewer):
+    """Test that canvas can be restored after being cleared."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    # Add first layer
+    layer1 = create_image_layer_with_phasors()
+    viewer.add_layer(layer1)
+
+    # Verify data is loaded
+    assert plotter._g_array is not None
+    assert plotter._s_array is not None
+
+    # Clear by deselecting
+    plotter.image_layers_checkable_combobox.setCheckedItems([])
+    plotter.on_image_layer_changed()
+
+    # Verify cleared
+    assert plotter._g_array is None
+    assert plotter._s_array is None
+    assert plotter.colorbar is None
+
+    # Add second layer and select it
+    layer2 = create_image_layer_with_phasors()
+    viewer.add_layer(layer2)
+
+    # Select the old layer
+    plotter.image_layers_checkable_combobox.setCheckedItems([layer1.name])
+    plotter.on_image_layer_changed()
+
+    # Verify data is restored (new layer data)
+    assert plotter._g_array is not None
+    assert plotter._s_array is not None
+    assert plotter.colorbar is not None
+    assert plotter.get_primary_layer_name() == layer1.name
+
+
+def test_artist_data_cleared_when_no_layer_selected(make_napari_viewer):
+    """Test that biaplotter artists' internal data is properly cleared."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    # Add a layer to populate artist data
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+
+    # Verify histogram artist has data
+    histogram_artist = plotter.canvas_widget.artists['HISTOGRAM2D']
+    scatter_artist = plotter.canvas_widget.artists['SCATTER']
+
+    # Note: We can't directly check _data because the artists may not expose it,
+    # but we can verify _remove_artists was called
+    with (
+        patch.object(histogram_artist, '_remove_artists') as mock_hist_remove,
+        patch.object(scatter_artist, '_remove_artists') as mock_scatter_remove,
+    ):
+        # Deselect all layers
+        plotter.image_layers_checkable_combobox.setCheckedItems([])
+        plotter.on_image_layer_changed()
+
+        # Verify _remove_artists was called on both artists
+        mock_hist_remove.assert_called_once()
+        mock_scatter_remove.assert_called_once()
