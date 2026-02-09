@@ -86,7 +86,7 @@ where = ["src"]
 
 [tool.setuptools_scm]
 write_to = "src/napari_phasors/_version.py"
-fallback_version = "0.1"
+fallback_version = "0.3"
 
 [tool.black]
 line-length = 79
