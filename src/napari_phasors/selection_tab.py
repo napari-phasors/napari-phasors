@@ -934,7 +934,7 @@ class AutomaticClusteringWidget(QWidget):
         method_layout.addWidget(QLabel("Clustering Method:"))
         self.clustering_method_combobox = QComboBox()
         self.clustering_method_combobox.addItems(
-            ["Gaussian Mixture Models (GMM)"]
+            ["GMM (Gaussian Mixture Model)"]
         )
         method_layout.addWidget(self.clustering_method_combobox, 1)
         layout.addLayout(method_layout)
