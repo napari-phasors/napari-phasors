@@ -1079,9 +1079,9 @@ def test_automatic_clustering_multiple_layers_merged(make_napari_viewer):
     parent = PlotterWidget(viewer)
 
     # Select both layers
-    parent.image_layer_combobox.setCurrentIndex(
-        0
-    )  # Should be "All Layers" or similar
+    parent.image_layers_checkable_combobox.setCheckedItems(
+        ["Layer1", "Layer2"]
+    )
 
     widget = parent.selection_tab.automatic_clustering_widget
 
@@ -1354,9 +1354,10 @@ def test_circular_cursor_labels_layer_per_harmonic(make_napari_viewer):
     parent = PlotterWidget(viewer)
     widget = parent.selection_tab.circular_cursor_widget
 
-    # Add cursor on harmonic 1
+    # Add cursor on harmonic 1 with large radius to capture data
     parent.harmonic_spinbox.setValue(1)
-    widget._add_cursor(g=0.5, s=0.3, radius=0.1)
+    widget._add_cursor(g=0.5, s=0.5, radius=0.5)
+    widget._apply_selection()
 
     # Check labels layer was created
     layer_name = f"Cursor Selection: {intensity_image_layer.name}"
@@ -1372,8 +1373,6 @@ def test_circular_cursor_labels_layer_per_harmonic(make_napari_viewer):
     widget.on_harmonic_changed()
 
     # Labels layer should be cleared (no cursors on harmonic 2)
-    # Actually, the layer should be removed
-    # Let me check if the layer still exists or was removed
     if layer_name in [layer.name for layer in viewer.layers]:
         labels_layer = viewer.layers[layer_name]
         h2_labeled_pixels = np.count_nonzero(labels_layer.data)

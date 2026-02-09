@@ -68,7 +68,7 @@ class SelectionWidget(QWidget):
         mode_layout.addWidget(QLabel("Selection Mode:"))
         self.selection_mode_combobox = QComboBox()
         self.selection_mode_combobox.addItems(
-            ["Circular Cursor", "Manual Selection", "Automatic Clustering"]
+            ["Circular Cursor", "Automatic Clustering", "Manual Selection"]
         )
         mode_layout.addWidget(self.selection_mode_combobox, 1)
         layout.addLayout(mode_layout)
