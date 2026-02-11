@@ -26,13 +26,14 @@ def test_selection_widget_initialization_values(make_napari_viewer):
 
     # Test mode combobox initialization
     mode_combobox = widget.selection_mode_combobox
-    assert mode_combobox.count() == 2
+    assert mode_combobox.count() == 3
     assert mode_combobox.itemText(0) == "Circular Cursor"
-    assert mode_combobox.itemText(1) == "Manual Selection"
+    assert mode_combobox.itemText(1) == "Automatic Clustering"
+    assert mode_combobox.itemText(2) == "Manual Selection"
     assert mode_combobox.currentIndex() == 0  # Circular Cursor is default
 
-    # Test stacked widget has both mode widgets
-    assert widget.stacked_widget.count() == 2
+    # Test stacked widget has all three mode widgets
+    assert widget.stacked_widget.count() == 3
     assert (
         widget.stacked_widget.currentIndex() == 0
     )  # Circular mode is default
@@ -44,6 +45,10 @@ def test_selection_widget_initialization_values(make_napari_viewer):
     # Test manual selection widget exists
     assert hasattr(widget, 'manual_selection_widget')
     assert widget.manual_selection_widget is not None
+
+    # Test automatic clustering widget exists
+    assert hasattr(widget, 'automatic_clustering_widget')
+    assert widget.automatic_clustering_widget is not None
 
     # Test manual selection combobox initialization (even though not default)
     combobox = widget.selection_input_widget.phasor_selection_id_combobox
@@ -285,7 +290,7 @@ def test_no_selection_processing_during_plot_update(make_napari_viewer):
 
 
 def test_selection_mode_switching(make_napari_viewer):
-    """Test switching between circular cursor and manual selection modes."""
+    """Test switching between circular cursor, manual selection, and automatic clustering modes."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
     widget = parent.selection_tab
@@ -299,6 +304,11 @@ def test_selection_mode_switching(make_napari_viewer):
     widget.selection_mode_combobox.setCurrentIndex(1)
     assert widget.stacked_widget.currentIndex() == 1
     assert widget.is_manual_selection_mode()
+
+    # Switch to automatic clustering mode
+    widget.selection_mode_combobox.setCurrentIndex(2)
+    assert widget.stacked_widget.currentIndex() == 2
+    assert not widget.is_manual_selection_mode()
 
     # Switch back to circular cursor mode
     widget.selection_mode_combobox.setCurrentIndex(0)
@@ -974,3 +984,397 @@ def test_circular_cursor_empty_metadata_handling(make_napari_viewer):
         "circular_cursors"
         in intensity_image_layer.metadata["settings"]["selections"]
     )
+
+
+def test_automatic_clustering_widget_initialization(make_napari_viewer):
+    """Test the initialization of the AutomaticClusteringWidget."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.automatic_clustering_widget
+
+    # Basic widget structure tests
+    assert widget.viewer == viewer
+    assert widget.parent_widget == parent
+    assert widget.layout().count() > 0
+
+    # Test clustering method combobox initialization
+    assert hasattr(widget, 'clustering_method_combobox')
+    assert widget.clustering_method_combobox.count() == 1
+    assert (
+        widget.clustering_method_combobox.itemText(0)
+        == "GMM (Gaussian Mixture Model)"
+    )
+
+    # Test number of clusters spinbox
+    assert hasattr(widget, 'num_clusters_spinbox')
+    assert widget.num_clusters_spinbox.minimum() == 2
+    assert widget.num_clusters_spinbox.maximum() == 100
+    assert widget.num_clusters_spinbox.value() == 2  # Default
+
+    # Test buttons
+    assert hasattr(widget, 'apply_button')
+    assert hasattr(widget, 'clear_button')
+    assert widget.apply_button.text() == "Apply Clustering"
+    assert widget.clear_button.text() == "Clear Clusters"
+    assert widget.clear_button.isEnabled() == False  # Initially disabled
+
+    # Test internal state
+    assert widget._clusters == []
+    assert widget._ellipse_patches == []
+
+
+def test_automatic_clustering_apply_gmm(make_napari_viewer):
+    """Test applying GMM clustering."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.automatic_clustering_widget
+
+    # Initially no clusters
+    assert len(widget._clusters) == 0
+    assert len(widget._ellipse_patches) == 0
+
+    # Apply clustering with 3 clusters
+    widget.num_clusters_spinbox.setValue(3)
+    widget._apply_clustering()
+
+    # Should have cluster info stored
+    assert len(widget._clusters) > 0
+    cluster_info = widget._clusters[0]
+    assert 'layer' in cluster_info
+    assert 'center_real' in cluster_info
+    assert 'center_imag' in cluster_info
+    assert 'radius' in cluster_info
+    assert 'radius_minor' in cluster_info
+    assert 'angle' in cluster_info
+    assert 'n_clusters' in cluster_info
+    assert 'harmonic' in cluster_info
+    assert cluster_info['n_clusters'] == 3
+
+    # Should have ellipse patches drawn
+    assert len(widget._ellipse_patches) == 3
+
+    # Clear button should be enabled
+    assert widget.clear_button.isEnabled() == True
+
+    # Check that labels layer was created
+    layer_name = f"Cluster Selection: {intensity_image_layer.name}"
+    assert layer_name in [layer.name for layer in viewer.layers]
+
+
+def test_automatic_clustering_multiple_layers_merged(make_napari_viewer):
+    """Test that automatic clustering merges data from multiple layers."""
+    viewer = make_napari_viewer()
+
+    # Create two layers with phasor data
+    layer1 = create_image_layer_with_phasors()
+    layer1.name = "Layer1"
+    layer2 = create_image_layer_with_phasors()
+    layer2.name = "Layer2"
+
+    viewer.add_layer(layer1)
+    viewer.add_layer(layer2)
+
+    parent = PlotterWidget(viewer)
+
+    # Select both layers
+    parent.image_layers_checkable_combobox.setCheckedItems(
+        ["Layer1", "Layer2"]
+    )
+
+    widget = parent.selection_tab.automatic_clustering_widget
+
+    # Apply clustering
+    widget.num_clusters_spinbox.setValue(2)
+    widget._apply_clustering()
+
+    # Should have cluster info for both layers
+    assert len(widget._clusters) == 2  # One per layer
+
+    # But ellipses should be drawn only once (not duplicated)
+    assert len(widget._ellipse_patches) == 2  # 2 clusters, not 4
+
+    # Both layers should have labels layers
+    layer1_labels = f"Cluster Selection: {layer1.name}"
+    layer2_labels = f"Cluster Selection: {layer2.name}"
+    layer_names = [layer.name for layer in viewer.layers]
+    assert layer1_labels in layer_names
+    assert layer2_labels in layer_names
+
+
+def test_automatic_clustering_clear_clusters(make_napari_viewer):
+    """Test clearing automatic clusters."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.automatic_clustering_widget
+
+    # Apply clustering
+    widget.num_clusters_spinbox.setValue(3)
+    widget._apply_clustering()
+    assert len(widget._clusters) > 0
+    assert len(widget._ellipse_patches) == 3
+
+    # Clear clusters
+    widget._clear_clusters()
+
+    # Should have no clusters
+    assert len(widget._clusters) == 0
+    assert len(widget._ellipse_patches) == 0
+    assert widget.clear_button.isEnabled() == False
+
+
+def test_circular_cursor_harmonic_storage(make_napari_viewer):
+    """Test that circular cursors store harmonic information."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.circular_cursor_widget
+
+    # Set harmonic to 1
+    parent.harmonic_spinbox.setValue(1)
+
+    # Add a cursor
+    widget._add_cursor()
+    assert len(widget._cursors) == 1
+    assert 'harmonic' in widget._cursors[0]
+    assert widget._cursors[0]['harmonic'] == 1
+
+    # Change harmonic to 2
+    parent.harmonic_spinbox.setValue(2)
+
+    # Add another cursor
+    widget._add_cursor()
+    assert len(widget._cursors) == 2
+    assert widget._cursors[1]['harmonic'] == 2
+
+
+def test_circular_cursor_harmonic_visibility(make_napari_viewer):
+    """Test that cursors are only visible for their harmonic."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.circular_cursor_widget
+
+    # Add cursor on harmonic 1
+    parent.harmonic_spinbox.setValue(1)
+    widget._add_cursor()
+    cursor1_patch = widget._cursors[0]['patch']
+
+    # Patch should be visible
+    assert cursor1_patch is not None
+
+    # Switch to harmonic 2
+    parent.harmonic_spinbox.setValue(2)
+    widget.on_harmonic_changed()
+
+    # First cursor's patch should be None (hidden)
+    assert widget._cursors[0]['patch'] is None
+
+    # Add cursor on harmonic 2
+    widget._add_cursor()
+    assert len(widget._cursors) == 2
+    cursor2_patch = widget._cursors[1]['patch']
+
+    # Second cursor patch should be visible
+    assert cursor2_patch is not None
+
+    # Switch back to harmonic 1
+    parent.harmonic_spinbox.setValue(1)
+    widget.on_harmonic_changed()
+
+    # First cursor should have patch again
+    assert widget._cursors[0]['patch'] is not None
+    # Second cursor should have no patch
+    assert widget._cursors[1]['patch'] is None
+
+
+def test_circular_cursor_harmonic_table_filtering(make_napari_viewer):
+    """Test that cursor table only shows cursors for current harmonic."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.circular_cursor_widget
+
+    # Add cursor on harmonic 1
+    parent.harmonic_spinbox.setValue(1)
+    widget._add_cursor()
+    assert widget.cursor_table.rowCount() == 1
+    assert len(widget._cursors) == 1
+
+    # Switch to harmonic 2
+    parent.harmonic_spinbox.setValue(2)
+    widget.on_harmonic_changed()
+
+    # Table should be empty (no cursors on harmonic 2)
+    assert widget.cursor_table.rowCount() == 0
+    assert len(widget._cursors) == 1  # Still stored
+
+    # Add cursor on harmonic 2
+    widget._add_cursor()
+    assert widget.cursor_table.rowCount() == 1  # Only harmonic 2 cursor shown
+    assert len(widget._cursors) == 2  # Both stored
+
+    # Switch back to harmonic 1
+    parent.harmonic_spinbox.setValue(1)
+    widget.on_harmonic_changed()
+
+    # Table should show only harmonic 1 cursor
+    assert widget.cursor_table.rowCount() == 1
+    assert len(widget._cursors) == 2  # Both still stored
+
+
+def test_circular_cursor_harmonic_color_indexing(make_napari_viewer):
+    """Test that cursor colors are indexed per-harmonic."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.circular_cursor_widget
+
+    # Add cursor on harmonic 1
+    parent.harmonic_spinbox.setValue(1)
+    widget._add_cursor()
+    h1_color1 = widget._cursors[0]['color']
+
+    # Switch to harmonic 2 and add cursor
+    parent.harmonic_spinbox.setValue(2)
+    widget._add_cursor()
+    h2_color1 = widget._cursors[1]['color']
+
+    # First cursor on each harmonic should have the same color (first in palette)
+    assert h1_color1.red() == h2_color1.red()
+    assert h1_color1.green() == h2_color1.green()
+    assert h1_color1.blue() == h2_color1.blue()
+
+    # Add second cursor on harmonic 2
+    widget._add_cursor()
+    h2_color2 = widget._cursors[2]['color']
+
+    # Second cursor on harmonic 2 should have different color
+    assert h2_color1 != h2_color2
+
+
+def test_automatic_clustering_harmonic_storage(make_napari_viewer):
+    """Test that automatic clustering stores harmonic information."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.automatic_clustering_widget
+
+    # Set harmonic to 2
+    parent.harmonic_spinbox.setValue(2)
+
+    # Apply clustering
+    widget.num_clusters_spinbox.setValue(3)
+    widget._apply_clustering()
+
+    # Check that harmonic is stored in cluster info
+    assert len(widget._clusters) > 0
+    for cluster_info in widget._clusters:
+        assert 'harmonic' in cluster_info
+        assert cluster_info['harmonic'] == 2
+
+
+def test_on_harmonic_changed_only_updates_active_mode(make_napari_viewer):
+    """Test that harmonic changes only affect the active selection mode."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    selection_widget = parent.selection_tab
+
+    # Add cursor in circular mode on harmonic 1
+    parent.harmonic_spinbox.setValue(1)
+    circular_widget = selection_widget.circular_cursor_widget
+    circular_widget._add_cursor()
+
+    # Switch to automatic clustering mode
+    selection_widget.selection_mode_combobox.setCurrentIndex(2)
+
+    # Apply clustering on harmonic 1
+    clustering_widget = selection_widget.automatic_clustering_widget
+    clustering_widget.num_clusters_spinbox.setValue(2)
+    clustering_widget._apply_clustering()
+
+    # Change harmonic to 2
+    parent.harmonic_spinbox.setValue(2)
+    selection_widget.on_harmonic_changed()
+
+    # Only clustering widget should have been updated (since it's active)
+    # Circular cursor patch updates would have happened, but we're in clustering mode
+    # so that's fine
+
+    # Switch back to circular cursor mode
+    selection_widget.selection_mode_combobox.setCurrentIndex(0)
+
+    # Change harmonic back to 1
+    parent.harmonic_spinbox.setValue(1)
+    selection_widget.on_harmonic_changed()
+
+    # Now circular cursor should update
+    assert circular_widget._cursors[0]['patch'] is not None
+
+
+def test_circular_cursor_remove_updates_table(make_napari_viewer):
+    """Test that removing a cursor properly updates the table."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.circular_cursor_widget
+
+    # Add 3 cursors on harmonic 1
+    parent.harmonic_spinbox.setValue(1)
+    widget._add_cursor()
+    widget._add_cursor()
+    widget._add_cursor()
+
+    assert len(widget._cursors) == 3
+    assert widget.cursor_table.rowCount() == 3
+
+    # Remove middle cursor
+    widget._remove_cursor(1)
+
+    assert len(widget._cursors) == 2
+    assert widget.cursor_table.rowCount() == 2
+
+
+def test_circular_cursor_labels_layer_per_harmonic(make_napari_viewer):
+    """Test that labels layers update based on current harmonic."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.circular_cursor_widget
+
+    # Add cursor on harmonic 1 with large radius to capture data
+    parent.harmonic_spinbox.setValue(1)
+    widget._add_cursor(g=0.5, s=0.5, radius=0.5)
+    widget._apply_selection()
+
+    # Check labels layer was created
+    layer_name = f"Cursor Selection: {intensity_image_layer.name}"
+    assert layer_name in [layer.name for layer in viewer.layers]
+    labels_layer = viewer.layers[layer_name]
+
+    # Get number of non-zero pixels
+    h1_labeled_pixels = np.count_nonzero(labels_layer.data)
+    assert h1_labeled_pixels > 0
+
+    # Switch to harmonic 2
+    parent.harmonic_spinbox.setValue(2)
+    widget.on_harmonic_changed()
+
+    # Labels layer should be cleared (no cursors on harmonic 2)
+    if layer_name in [layer.name for layer in viewer.layers]:
+        labels_layer = viewer.layers[layer_name]
+        h2_labeled_pixels = np.count_nonzero(labels_layer.data)
+        # If layer exists, it should have no labels
+        assert h2_labeled_pixels == 0

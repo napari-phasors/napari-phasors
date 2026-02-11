@@ -1123,6 +1123,8 @@ class PlotterWidget(QWidget):
         self._update_setting_in_metadata('harmonic', value)
         if not self._updating_settings:
             self.refresh_current_plot()
+        if hasattr(self, 'selection_tab'):
+            self.selection_tab.on_harmonic_changed()
 
     def _on_plot_type_changed(self):
         """Callback for plot type change."""
