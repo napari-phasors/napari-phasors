@@ -765,7 +765,7 @@ class PlotterWidget(QWidget):
             ("Plot Settings", "settings_tab", None),
             ("Calibration", "calibration_tab", "calibrated"),
             (
-                "Filter/Threshold",
+                "Filter",
                 "filter_tab",
                 ["threshold", "filter"],
             ),
@@ -1220,7 +1220,7 @@ class PlotterWidget(QWidget):
     def _create_filter_tab(self):
         """Create the Filtering and Thresholding tab."""
         self.filter_tab = FilterWidget(self.viewer, parent=self)
-        self.tab_widget.addTab(self.filter_tab, "Filter/Threshold")
+        self.tab_widget.addTab(self.filter_tab, "Filter")
 
     def _create_selection_tab(self):
         """Create the Cursor selection tab."""
