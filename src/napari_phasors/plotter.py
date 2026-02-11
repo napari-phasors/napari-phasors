@@ -298,6 +298,17 @@ class PlotterWidget(QWidget):
         self.set_axes_labels()
         canvas_container.layout().addWidget(self.canvas_widget)
 
+        # Monkey-patch biaplotter's _is_click_inside_axes to handle None xdata/ydata
+        # This fixes a bug where clicking outside the axes causes a TypeError
+        original_is_click_inside = self.canvas_widget._is_click_inside_axes
+
+        def _is_click_inside_axes_fixed(event):
+            if event.xdata is None or event.ydata is None:
+                return False
+            return original_is_click_inside(event)
+
+        self.canvas_widget._is_click_inside_axes = _is_click_inside_axes_fixed
+
         # Create bottom widget for controls
         controls_container = QWidget()
         controls_container.setLayout(QVBoxLayout())
@@ -1889,18 +1900,25 @@ class PlotterWidget(QWidget):
             if layer_name == "":
                 self._g_array = None
                 self._s_array = None
+                self._g_original_array = None
+                self._s_original_array = None
                 self._harmonics_array = None
-                if (
-                    hasattr(self.canvas_widget, 'active_artist')
-                    and self.canvas_widget.active_artist
-                ):
-                    active_artist = self.canvas_widget.artists.get(
-                        self.canvas_widget.active_artist
-                    )
-                    if active_artist and hasattr(active_artist, 'ax'):
-                        active_artist.ax.clear()
-                        active_artist.ax.set_aspect(1, adjustable='box')
-                        self.canvas_widget.canvas.draw_idle()
+                # Clear phasor data artists (histogram/scatter) but keep
+                # the semicircle/polar plot and axes styling intact.
+                for artist in self.canvas_widget.artists.values():
+                    artist._remove_artists()
+                self._remove_colorbar()
+                # Hide tab-specific artists
+                self._hide_all_tab_artists()
+                # Redraw circle/semicircle and axes
+                self.set_axes_labels()
+                self._update_plot_bg_color()
+                if self.toggle_semi_circle:
+                    self._update_semi_circle_plot(self.canvas_widget.axes)
+                else:
+                    self._update_polar_plot(self.canvas_widget.axes)
+                self._redefine_axes_limits()
+                self.canvas_widget.figure.canvas.draw_idle()
                 return
 
             layer = self.viewer.layers[layer_name]
