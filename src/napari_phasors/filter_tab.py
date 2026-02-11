@@ -602,11 +602,14 @@ class FilterWidget(QWidget):
             )
             self._updating_threshold = False
 
-            if self.threshold_method_combobox.currentText() not in [
-                "Manual",
-                "None",
-            ]:
-                self.threshold_method_combobox.setCurrentText("Manual")
+            current_method = self.threshold_method_combobox.currentText()
+            if current_method not in ["Manual"]:
+                if not (
+                    current_method == "None"
+                    and new_slider_value == 0
+                    and upper_val == self.threshold_slider.maximum()
+                ):
+                    self.threshold_method_combobox.setCurrentText("Manual")
 
             self.update_threshold_lines()
         except ValueError:
@@ -636,11 +639,14 @@ class FilterWidget(QWidget):
             )
             self._updating_threshold = False
 
-            if self.threshold_method_combobox.currentText() not in [
-                "Manual",
-                "None",
-            ]:
-                self.threshold_method_combobox.setCurrentText("Manual")
+            current_method = self.threshold_method_combobox.currentText()
+            if current_method not in ["Manual"]:
+                if not (
+                    current_method == "None"
+                    and lower_val == 0
+                    and new_slider_value == self.threshold_slider.maximum()
+                ):
+                    self.threshold_method_combobox.setCurrentText("Manual")
 
             self.update_threshold_lines()
         except ValueError:

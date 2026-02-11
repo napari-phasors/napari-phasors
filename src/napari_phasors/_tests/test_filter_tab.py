@@ -49,10 +49,11 @@ def test_filter_widget_initialization_values(make_napari_viewer):
     # Test filter method combobox
     assert hasattr(filter_widget, 'filter_method_combobox')
     assert isinstance(filter_widget.filter_method_combobox, QComboBox)
-    assert filter_widget.filter_method_combobox.count() == 2
-    assert filter_widget.filter_method_combobox.itemText(0) == "Median"
-    assert filter_widget.filter_method_combobox.itemText(1) == "Wavelet"
-    assert filter_widget.filter_method_combobox.currentText() == "Median"
+    assert filter_widget.filter_method_combobox.count() == 3
+    assert filter_widget.filter_method_combobox.itemText(0) == "None"
+    assert filter_widget.filter_method_combobox.itemText(1) == "Median"
+    assert filter_widget.filter_method_combobox.itemText(2) == "Wavelet"
+    assert filter_widget.filter_method_combobox.currentText() == "None"
 
     # Test threshold method combobox
     assert hasattr(filter_widget, 'threshold_method_combobox')
@@ -63,12 +64,12 @@ def test_filter_widget_initialization_values(make_napari_viewer):
     assert filter_widget.threshold_method_combobox.itemText(2) == "Otsu"
     assert filter_widget.threshold_method_combobox.itemText(3) == "Li"
     assert filter_widget.threshold_method_combobox.itemText(4) == "Yen"
-    assert filter_widget.threshold_method_combobox.currentText() == "Otsu"
+    assert filter_widget.threshold_method_combobox.currentText() == "None"
 
     # Test log scale checkbox
     assert hasattr(filter_widget, 'log_scale_checkbox')
     assert isinstance(filter_widget.log_scale_checkbox, QCheckBox)
-    assert filter_widget.log_scale_checkbox.text() == "Log Scale Histogram"
+    assert filter_widget.log_scale_checkbox.text() == "Log Scale"
     assert (
         not filter_widget.log_scale_checkbox.isChecked()
     )  # Should start unchecked
@@ -76,10 +77,7 @@ def test_filter_widget_initialization_values(make_napari_viewer):
     # Test median filter UI components
     assert hasattr(filter_widget, 'median_filter_label')
     assert isinstance(filter_widget.median_filter_label, QLabel)
-    assert (
-        filter_widget.median_filter_label.text()
-        == "Median Filter Kernel Size: 3 x 3"
-    )
+    assert filter_widget.median_filter_label.text() == "Kernel Size: 3 x 3"
 
     assert hasattr(filter_widget, 'median_filter_spinbox')
     assert isinstance(filter_widget.median_filter_spinbox, QSpinBox)
@@ -89,8 +87,8 @@ def test_filter_widget_initialization_values(make_napari_viewer):
 
     assert hasattr(filter_widget, 'median_filter_repetition_spinbox')
     assert isinstance(filter_widget.median_filter_repetition_spinbox, QSpinBox)
-    assert filter_widget.median_filter_repetition_spinbox.minimum() == 0
-    assert filter_widget.median_filter_repetition_spinbox.value() == 0
+    assert filter_widget.median_filter_repetition_spinbox.minimum() == 1
+    assert filter_widget.median_filter_repetition_spinbox.value() == 1
 
     # Test wavelet filter UI components
     assert hasattr(filter_widget, 'wavelet_sigma_spinbox')
@@ -130,7 +128,7 @@ def test_filter_widget_initialization_values(make_napari_viewer):
     # Test apply button
     assert hasattr(filter_widget, 'apply_button')
     assert isinstance(filter_widget.apply_button, QPushButton)
-    assert filter_widget.apply_button.text() == "Apply Filter and Threshold"
+    assert filter_widget.apply_button.text() == "Apply"
 
     # Test scroll area
     scroll_areas = filter_widget.findChildren(QScrollArea)
@@ -139,7 +137,7 @@ def test_filter_widget_initialization_values(make_napari_viewer):
     assert scroll_area.widgetResizable() == True
 
     # Test initial visibility of filter widgets
-    assert not filter_widget.median_filter_widget.isHidden()
+    assert filter_widget.median_filter_widget.isHidden()
     assert filter_widget.wavelet_filter_widget.isHidden()
 
 
@@ -149,7 +147,13 @@ def test_filter_method_switching(make_napari_viewer):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    assert filter_widget.filter_method_combobox.currentText() == "Median"
+    assert filter_widget.filter_method_combobox.currentText() == "None"
+    assert filter_widget.median_filter_widget.isHidden()
+    assert filter_widget.wavelet_filter_widget.isHidden()
+
+    filter_widget.filter_method_combobox.setCurrentText("Median")
+    filter_widget.on_filter_method_changed()
+
     assert not filter_widget.median_filter_widget.isHidden()
     assert filter_widget.wavelet_filter_widget.isHidden()
 
@@ -326,9 +330,11 @@ def test_apply_button_with_wavelet_filter(make_napari_viewer):
     filter_widget = parent.filter_tab
 
     filter_widget.filter_method_combobox.setCurrentText("Wavelet")
+    filter_widget.on_filter_method_changed()
     filter_widget.wavelet_sigma_spinbox.setValue(1.5)
     filter_widget.wavelet_levels_spinbox.setValue(2)
     filter_widget.threshold_slider.setValue((10, 90))
+    filter_widget.threshold_method_combobox.setCurrentText("Manual")
 
     with (
         patch(
@@ -359,9 +365,11 @@ def test_apply_button_with_median_filter(make_napari_viewer):
     filter_widget = parent.filter_tab
 
     filter_widget.filter_method_combobox.setCurrentText("Median")
+    filter_widget.on_filter_method_changed()
     filter_widget.median_filter_spinbox.setValue(5)
     filter_widget.median_filter_repetition_spinbox.setValue(2)
     filter_widget.threshold_slider.setValue((10, 90))
+    filter_widget.threshold_method_combobox.setCurrentText("Manual")
 
     with (
         patch(
@@ -455,6 +463,7 @@ def test_settings_restoration_with_wavelet(make_napari_viewer):
     filter_widget = parent.filter_tab
 
     assert filter_widget.filter_method_combobox.currentText() == "Wavelet"
+    assert filter_widget.filter_method_combobox.currentText() == "Wavelet"
     assert filter_widget.wavelet_sigma_spinbox.value() == 3.5
     assert filter_widget.wavelet_levels_spinbox.value() == 4
     assert filter_widget.threshold_method_combobox.currentText() == "Li"
@@ -540,20 +549,12 @@ def test_filter_widget_with_layer_data(make_napari_viewer):
     )
     assert filter_widget.threshold_slider.maximum() == expected_max
 
-    mean_data = intensity_image_layer.metadata["original_mean"]
-    expected_otsu_lower = filter_widget.calculate_automatic_threshold(
-        "Otsu", mean_data
-    )
-    expected_default_lower = int(
-        expected_otsu_lower * filter_widget.threshold_factor
-    )
-    # Upper defaults to max
-    expected_default_upper = filter_widget.threshold_slider.maximum()
+    # With "None" as default, slider should be at full range
     actual_lower, actual_upper = filter_widget.threshold_slider.value()
-    assert actual_lower == expected_default_lower
-    assert actual_upper == expected_default_upper
+    assert actual_lower == 0
+    assert actual_upper == expected_max
 
-    assert filter_widget.threshold_method_combobox.currentText() == "Otsu"
+    assert filter_widget.threshold_method_combobox.currentText() == "None"
 
 
 def test_filter_widget_threshold_slider_callback(make_napari_viewer):
@@ -583,8 +584,9 @@ def test_filter_widget_kernel_size_callback(make_napari_viewer):
 
     test_value = 5
     filter_widget.median_filter_spinbox.setValue(test_value)
+    filter_widget.on_median_kernel_size_change()
 
-    expected_text = f"Median Filter Kernel Size: {test_value} x {test_value}"
+    expected_text = f"Kernel Size: {test_value} x {test_value}"
     assert filter_widget.median_filter_label.text() == expected_text
 
 
@@ -739,7 +741,7 @@ def test_filter_widget_layer_with_settings(make_napari_viewer):
 
     intensity_image_layer.metadata["settings"] = {
         "threshold": 0.1,
-        "threshold_upper": 0.2,
+        "threshold_upper": 5.0,
         "threshold_method": "Li",
         "filter": {"method": "median", "size": 7, "repeat": 3},
     }
@@ -748,7 +750,18 @@ def test_filter_widget_layer_with_settings(make_napari_viewer):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    assert filter_widget.threshold_slider.value() == (10, 20)
+    # Check settings were properly restored
+    assert filter_widget.filter_method_combobox.currentText() == "Median"
+    lower_val, upper_val = filter_widget.threshold_slider.value()
+    assert lower_val == int(0.1 * filter_widget.threshold_factor)
+
+    # Upper value should be restored from settings, but clamped to slider maximum
+    expected_upper = min(
+        int(5.0 * filter_widget.threshold_factor),
+        filter_widget.threshold_slider.maximum(),
+    )
+    assert upper_val == expected_upper
+
     assert filter_widget.median_filter_spinbox.value() == 7
     assert filter_widget.median_filter_repetition_spinbox.value() == 3
     assert filter_widget.threshold_method_combobox.currentText() == "Li"
@@ -792,11 +805,7 @@ def test_filter_widget_ui_layout(make_napari_viewer):
 
     # Check that apply button is outside scroll area
     apply_buttons = filter_widget.findChildren(QPushButton)
-    apply_button = [
-        btn
-        for btn in apply_buttons
-        if btn.text() == "Apply Filter and Threshold"
-    ][0]
+    apply_button = [btn for btn in apply_buttons if btn.text() == "Apply"][0]
     assert apply_button == filter_widget.apply_button
 
     h_layouts = filter_widget.findChildren(QHBoxLayout)
@@ -811,8 +820,8 @@ def test_filter_widget_canvas_properties(make_napari_viewer):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    assert filter_widget.hist_fig.get_figwidth() == 8
-    assert filter_widget.hist_fig.get_figheight() == 4
+    assert filter_widget.hist_fig.get_figwidth() == 3.5
+    assert filter_widget.hist_fig.get_figheight() == 1.5
 
     assert filter_widget.hist_fig.get_constrained_layout()
 
