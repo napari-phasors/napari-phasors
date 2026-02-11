@@ -175,33 +175,39 @@ def test_components_widget_fraction_calculation_creates_both_layers(
     expected_comp1_fractions = expected_comp1_fractions.reshape(
         layer.data.shape
     )
-    expected_comp2_fractions = 1.0 - expected_comp1_fractions
+    # Apply NaN masking for invalid values (outside 0-1 range)
+    expected_comp1_fractions = np.where(
+        np.isfinite(expected_comp1_fractions)
+        & (expected_comp1_fractions >= 0)
+        & (expected_comp1_fractions <= 1),
+        expected_comp1_fractions,
+        np.nan,
+    )
 
     comp_widget._run_analysis()
 
-    # Both fractions layers should be created
+    # Only comp1 fractions layer should be created (comp2 is no longer created)
     assert comp_widget.comp1_fractions_layer in viewer.layers
-    assert comp_widget.comp2_fractions_layer in viewer.layers
+    assert comp_widget.comp2_fractions_layer is None
 
     # Check data
     comp1_data = comp_widget.comp1_fractions_layer.data
-    comp2_data = comp_widget.comp2_fractions_layer.data
     np.testing.assert_allclose(
-        comp1_data, expected_comp1_fractions, rtol=1e-6, atol=1e-9
-    )
-    np.testing.assert_allclose(
-        comp2_data, expected_comp2_fractions, rtol=1e-6, atol=1e-9
+        comp1_data,
+        expected_comp1_fractions,
+        rtol=1e-6,
+        atol=1e-9,
+        equal_nan=True,
     )
 
-    # Check initial colormaps
+    # Check initial colormap
     assert comp_widget.comp1_fractions_layer.colormap.name == 'PiYG'
-    assert comp_widget.comp2_fractions_layer.colormap.name == 'PiYG_r'
 
     assert isinstance(comp_widget.component_line, LineCollection)
 
 
-def test_components_widget_colormap_synchronization(make_napari_viewer):
-    """Test that changing colormap on one layer updates the other with inverted colors."""
+def test_components_widget_colormap_change(make_napari_viewer):
+    """Test that changing colormap on comp1 layer works correctly."""
     viewer = make_napari_viewer()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
@@ -221,61 +227,22 @@ def test_components_widget_colormap_synchronization(make_napari_viewer):
     comp_widget._on_component_coords_changed(1)
     comp_widget._run_analysis()
 
-    # Store original colormaps
+    # Store original colormap
     orig_comp1_colors = (
         comp_widget.comp1_fractions_layer.colormap.colors.copy()
-    )
-    orig_comp2_colors = (
-        comp_widget.comp2_fractions_layer.colormap.colors.copy()
     )
 
     # Change colormap on comp1 layer
     comp_widget.comp1_fractions_layer.colormap = 'viridis'
 
-    # comp2 should automatically update with inverted colors
+    # comp1 should have new colormap
     comp1_colors = comp_widget.comp1_fractions_layer.colormap.colors
-    comp2_colors = comp_widget.comp2_fractions_layer.colormap.colors
 
-    # Colors should be inverted
-    np.testing.assert_allclose(comp1_colors, comp2_colors[::-1], rtol=1e-6)
-
-    # Both should be different from original
+    # Should be different from original
     assert not np.allclose(orig_comp1_colors, comp1_colors)
-    assert not np.allclose(orig_comp2_colors, comp2_colors)
 
-
-def test_components_widget_colormap_synchronization_from_comp2(
-    make_napari_viewer,
-):
-    """Test that changing colormap on comp2 layer updates comp1 with inverted colors."""
-    viewer = make_napari_viewer()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-    parent = PlotterWidget(viewer)
-    comp_widget = parent.components_tab
-    parent.tab_widget.setCurrentWidget(parent.components_tab)
-
-    # Ensure Linear Projection is selected
-    comp_widget.analysis_type_combo.setCurrentText("Linear Projection")
-
-    # Create components and calculate fractions
-    comp_widget.components[0].g_edit.setText("0.4")
-    comp_widget.components[0].s_edit.setText("0.25")
-    comp_widget._on_component_coords_changed(0)
-    comp_widget.components[1].g_edit.setText("0.7")
-    comp_widget.components[1].s_edit.setText("0.45")
-    comp_widget._on_component_coords_changed(1)
-    comp_widget._run_analysis()
-
-    # Change colormap on comp2 layer
-    comp_widget.comp2_fractions_layer.colormap = 'plasma'
-
-    # comp1 should automatically update with inverted colors
-    comp1_colors = comp_widget.comp1_fractions_layer.colormap.colors
-    comp2_colors = comp_widget.comp2_fractions_layer.colormap.colors
-
-    # Colors should be inverted
-    np.testing.assert_allclose(comp1_colors, comp2_colors[::-1], rtol=1e-6)
+    # comp2_fractions_layer should not exist
+    assert comp_widget.comp2_fractions_layer is None
 
 
 def test_components_widget_colormap_update_legacy(make_napari_viewer):
@@ -338,7 +305,7 @@ def test_components_widget_colormap_fallback_handling(make_napari_viewer):
 
     # Should fall back to default colormaps without crashing
     assert comp_widget.comp1_fractions_layer.colormap is not None
-    assert comp_widget.comp2_fractions_layer.colormap is not None
+    assert comp_widget.comp2_fractions_layer is None
 
 
 def test_components_widget_visibility_toggle(make_napari_viewer):
