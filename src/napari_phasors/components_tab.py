@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
+import vispy.color
 from matplotlib.collections import LineCollection
 from matplotlib.colors import LinearSegmentedColormap, ListedColormap
 from napari.experimental import link_layers
@@ -45,6 +46,7 @@ class ComponentState:
     g_edit: QLineEdit | None = None
     s_edit: QLineEdit | None = None
     select_button: QPushButton | None = None
+    number_label: QLabel | None = None
     text_offset: tuple[float, float] = (0.02, 0.02)
     label: str = "Component"
 
@@ -213,6 +215,14 @@ class ComponentsWidget(QWidget):
         comp_management_layout.addStretch()
         layout.addLayout(comp_management_layout)
 
+        # Calculate button
+        self.calculate_button = QPushButton("Run Analysis")
+        self.calculate_button.clicked.connect(self._run_analysis)
+        self.calculate_button.setToolTip(
+            "Run the selected analysis type on the defined components."
+        )
+        layout.addWidget(self.calculate_button)
+
         # Plot and label settings section
         settings_label = QLabel("Display Settings:")
         settings_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
@@ -237,14 +247,6 @@ class ComponentsWidget(QWidget):
         buttons_row.addStretch()
         layout.addLayout(buttons_row)
 
-        # Calculate button
-        self.calculate_button = QPushButton("Run Analysis")
-        self.calculate_button.clicked.connect(self._run_analysis)
-        self.calculate_button.setToolTip(
-            "Run the selected analysis type on the defined components."
-        )
-        layout.addWidget(self.calculate_button)
-
         layout.addStretch()
         self.setLayout(root_layout)
 
@@ -257,6 +259,12 @@ class ComponentsWidget(QWidget):
         # Single component layout with all elements in one row
         comp_layout = QHBoxLayout()
 
+        # Component number label
+        number_label = QLabel(f"{idx + 1}.")
+        number_label.setStyleSheet("font-weight: bold;")
+        number_label.setMinimumWidth(20)
+        comp_layout.addWidget(number_label)
+
         # Component name
         name_edit = QLineEdit()
         name_edit.setPlaceholderText("Component name (optional)")
@@ -265,8 +273,8 @@ class ComponentsWidget(QWidget):
         comp_layout.addWidget(name_edit)
 
         # Select button
-        select_button = QPushButton("Select location")
-        select_button.setMaximumWidth(100)
+        select_button = QPushButton("Select")
+        select_button.setMaximumWidth(70)
         select_button.setToolTip(
             "Click here and then click on the phasor plot to select the component location."
         )
@@ -313,6 +321,7 @@ class ComponentsWidget(QWidget):
             g_edit=g_edit,
             s_edit=s_edit,
             select_button=select_button,
+            number_label=number_label,
             label=f"Component {idx+1}",
             text_offset=(0.02, 0.02),
         )
@@ -389,6 +398,8 @@ class ComponentsWidget(QWidget):
                 self.components_layout.removeItem(comp_layout)
 
         self.components.pop()
+
+        self._update_component_numbering()
 
         if len(self.components) == 2:
             self._update_analysis_options()
@@ -516,6 +527,12 @@ class ComponentsWidget(QWidget):
 
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def _update_component_numbering(self):
+        """Update the numbering labels for all components."""
+        for i, comp in enumerate(self.components):
+            if comp is not None and comp.number_label is not None:
+                comp.number_label.setText(f"{i + 1}.")
 
     def _get_default_components_settings(self):
         """Get default settings dictionary for components parameters."""
@@ -978,6 +995,8 @@ class ComponentsWidget(QWidget):
         else:
             self.calculate_button.setText("Run Multi-Component Analysis")
 
+        self.draw_line_between_components()
+
     def _on_harmonic_changed(self, new_harmonic):
         """Handle harmonic changes - store current components and restore for new harmonic."""
         self._clear_components_display()
@@ -1231,17 +1250,9 @@ class ComponentsWidget(QWidget):
                 self.comp1_fractions_layer.events.colormap.disconnect(
                     self._on_colormap_changed
                 )
-                self.comp1_fractions_layer.events.colormap.disconnect(
-                    self._sync_colormaps
-                )
                 self.comp1_fractions_layer.events.contrast_limits.disconnect(
                     self._on_contrast_limits_changed
                 )
-
-                if self.comp2_fractions_layer is not None:
-                    self.comp2_fractions_layer.events.colormap.disconnect(
-                        self._sync_colormaps
-                    )
 
                 if self._saved_colormap_colors is not None:
                     from napari.utils.colormaps import Colormap
@@ -1255,25 +1266,10 @@ class ComponentsWidget(QWidget):
                         colors=saved_colors, name="saved_custom"
                     )
                     self.comp1_fractions_layer.colormap = saved_colormap
-
-                    if self.comp2_fractions_layer is not None:
-                        inverted_colors = saved_colors[::-1]
-                        inverted_colormap = Colormap(
-                            colors=inverted_colors,
-                            name="saved_custom_inverted",
-                        )
-                        self.comp2_fractions_layer.colormap = inverted_colormap
                 else:
                     self.comp1_fractions_layer.colormap = (
                         self._saved_colormap_name
                     )
-                    if self.comp2_fractions_layer is not None:
-                        inverted_name = (
-                            self._saved_colormap_name + '_r'
-                            if not self._saved_colormap_name.endswith('_r')
-                            else self._saved_colormap_name[:-2]
-                        )
-                        self.comp2_fractions_layer.colormap = inverted_name
 
                 if isinstance(self._saved_contrast_limits, list):
                     saved_limits = tuple(self._saved_contrast_limits)
@@ -1281,8 +1277,6 @@ class ComponentsWidget(QWidget):
                     saved_limits = self._saved_contrast_limits
 
                 self.comp1_fractions_layer.contrast_limits = saved_limits
-                if self.comp2_fractions_layer is not None:
-                    self.comp2_fractions_layer.contrast_limits = saved_limits
 
                 self.fractions_colormap = (
                     self.comp1_fractions_layer.colormap.colors
@@ -1294,17 +1288,9 @@ class ComponentsWidget(QWidget):
                 self.comp1_fractions_layer.events.colormap.connect(
                     self._on_colormap_changed
                 )
-                self.comp1_fractions_layer.events.colormap.connect(
-                    self._sync_colormaps
-                )
                 self.comp1_fractions_layer.events.contrast_limits.connect(
                     self._on_contrast_limits_changed
                 )
-
-                if self.comp2_fractions_layer is not None:
-                    self.comp2_fractions_layer.events.colormap.connect(
-                        self._sync_colormaps
-                    )
 
                 self.draw_line_between_components()
 
@@ -1314,16 +1300,9 @@ class ComponentsWidget(QWidget):
                     self.comp1_fractions_layer.events.colormap.connect(
                         self._on_colormap_changed
                     )
-                    self.comp1_fractions_layer.events.colormap.connect(
-                        self._sync_colormaps
-                    )
                     self.comp1_fractions_layer.events.contrast_limits.connect(
                         self._on_contrast_limits_changed
                     )
-                    if self.comp2_fractions_layer is not None:
-                        self.comp2_fractions_layer.events.colormap.connect(
-                            self._sync_colormaps
-                        )
                 except Exception:
                     pass
 
@@ -1741,6 +1720,11 @@ class ComponentsWidget(QWidget):
         if not self.current_image_layer_name:
             return
 
+        # Only handle comp1 layer (idx == 0) for two-component linear projection
+        # Component fit creates individual fraction layers per component
+        if idx > 0 and self.analysis_type == "Linear Projection":
+            return
+
         old_display_name = old_name if old_name else f"Component {idx + 1}"
         new_display_name = new_name if new_name else f"Component {idx + 1}"
 
@@ -1760,8 +1744,6 @@ class ComponentsWidget(QWidget):
 
             if idx == 0:
                 self.comp1_fractions_layer = layer_obj
-            elif idx == 1:
-                self.comp2_fractions_layer = layer_obj
 
         elif new_layer_name not in self.viewer.layers:
             possible_old_names = [
@@ -1783,8 +1765,6 @@ class ComponentsWidget(QWidget):
 
                     if idx == 0:
                         self.comp1_fractions_layer = layer_obj
-                    elif idx == 1:
-                        self.comp2_fractions_layer = layer_obj
                     break
 
     def _create_component_at_coordinates(self, idx: int, x: float, y: float):
@@ -2039,8 +2019,10 @@ class ComponentsWidget(QWidget):
             )
 
         if num_components == 2:
+            # Only use fractions colormap for Linear Projection mode
             if (
-                hasattr(self, 'fractions_colormap')
+                self.analysis_type == "Linear Projection"
+                and hasattr(self, 'fractions_colormap')
                 and self.fractions_colormap is not None
             ):
                 if (
@@ -2078,7 +2060,57 @@ class ComponentsWidget(QWidget):
 
                 return [component1_color, component2_color]
             else:
-                return self._get_default_colormap_max_colors(2)
+                # For Component Fit mode, extract colors from actual fraction layers if they exist
+                if len(self.fraction_layers) >= 2:
+                    colors = []
+                    for i in range(2):
+                        if i < len(self.fraction_layers):
+                            layer = self.fraction_layers[i]
+                            try:
+                                cmap = layer.colormap
+                                colormap_name = str(cmap)
+
+                                if 'green' in colormap_name.lower():
+                                    colors.append('green')
+                                else:
+                                    if hasattr(cmap, '__call__'):
+                                        max_color = cmap(1.0)
+                                    elif (
+                                        hasattr(cmap, 'colors')
+                                        and cmap.colors is not None
+                                    ):
+                                        max_color = cmap.colors[-1]
+                                    else:
+                                        mpl_cmap = plt.get_cmap(str(cmap))
+                                        max_color = mpl_cmap(1.0)
+                                    colors.append(max_color)
+                            except Exception:
+                                default_colors = (
+                                    self._get_default_colormap_max_colors(2)
+                                )
+                                if i < len(default_colors):
+                                    colors.append(default_colors[i])
+                                else:
+                                    colors.append(
+                                        self.component_colors[
+                                            i % len(self.component_colors)
+                                        ]
+                                    )
+                        else:
+                            default_colors = (
+                                self._get_default_colormap_max_colors(2)
+                            )
+                            if i < len(default_colors):
+                                colors.append(default_colors[i])
+                            else:
+                                colors.append(
+                                    self.component_colors[
+                                        i % len(self.component_colors)
+                                    ]
+                                )
+                    return colors
+                else:
+                    return self._get_default_colormap_max_colors(2)
 
         elif num_components > 2 and len(self.fraction_layers) > 0:
             colors = []
@@ -2229,7 +2261,8 @@ class ComponentsWidget(QWidget):
             ax = self.parent_widget.canvas_widget.figure.gca()
 
             use_colormap = (
-                self.show_colormap_line
+                self.analysis_type == "Linear Projection"
+                and self.show_colormap_line
                 and self.comp1_fractions_layer is not None
                 and self.fractions_colormap is not None
             )
@@ -2397,6 +2430,10 @@ class ComponentsWidget(QWidget):
         """Handle changes to colormap of any fraction layer (linear projection or component fit)."""
         layer = event.source
 
+        # Prevent recursion when we're updating linked layers
+        if getattr(self, '_updating_linked_layers', False):
+            return
+
         if (
             self.comp1_fractions_layer is not None
             and layer == self.comp1_fractions_layer
@@ -2430,12 +2467,19 @@ class ComponentsWidget(QWidget):
             tuple(layer.contrast_limits),
         )
 
+        # Sync colormap to all other layers belonging to the same component
+        self._sync_component_layers_colormap(comp_idx, layer.colormap)
+
         self._update_component_colors()
         self.draw_line_between_components()
 
     def _on_contrast_limits_changed(self, event):
         """Handle changes to contrast limits of any fraction layer."""
         layer = event.source
+
+        # Prevent recursion when we're updating linked layers
+        if getattr(self, '_updating_linked_layers', False):
+            return
 
         if (
             self.comp1_fractions_layer is not None
@@ -2485,42 +2529,94 @@ class ComponentsWidget(QWidget):
                     tuple(contrast_limits),
                 )
 
+        self._sync_component_layers_contrast_limits(
+            comp_idx, layer.contrast_limits
+        )
+
         self.draw_line_between_components()
 
     def _find_component_index_for_layer(self, layer):
         """Find which component index a layer belongs to based on its name."""
-        if not self.current_image_layer_name:
-            return None
-
         layer_name = layer.name
 
         for i, comp in enumerate(self.components):
             if comp is not None:
                 name = comp.name_edit.text().strip() or f"Component {i + 1}"
 
-                expected_names = [
-                    f"{name} fractions: {self.current_image_layer_name}",  # Linear projection
-                    f"{name} fraction: {self.current_image_layer_name}",  # Component fit
-                ]
-
-                if layer_name in expected_names:
+                # Check if layer name matches pattern for this component
+                # Pattern: "{component_name} fractions: {source_layer}" or "{component_name} fraction: {source_layer}"
+                if layer_name.startswith(
+                    f"{name} fractions: "
+                ) or layer_name.startswith(f"{name} fraction: "):
                     return i
 
         return None
 
+    def _get_all_layers_for_component(self, comp_idx):
+        """Get all fraction layers in the viewer belonging to a specific component for the current analysis mode."""
+        if (
+            comp_idx >= len(self.components)
+            or self.components[comp_idx] is None
+        ):
+            return []
+
+        comp = self.components[comp_idx]
+        name = comp.name_edit.text().strip() or f"Component {comp_idx + 1}"
+
+        if self.analysis_type == "Linear Projection":
+            pattern = f"{name} fractions: "
+        else:
+            pattern = f"{name} fraction: "
+
+        matching_layers = []
+        for layer in self.viewer.layers:
+            layer_name = layer.name
+            if layer_name.startswith(pattern):
+                matching_layers.append(layer)
+
+        return matching_layers
+
+    def _sync_component_layers_colormap(self, comp_idx, colormap):
+        """Sync colormap across all layers belonging to the same component."""
+        if getattr(self, '_updating_linked_layers', False):
+            return
+
+        try:
+            self._updating_linked_layers = True
+            layers_to_update = self._get_all_layers_for_component(comp_idx)
+
+            for layer in layers_to_update:
+                if layer.colormap != colormap:
+                    layer.colormap = colormap
+        finally:
+            self._updating_linked_layers = False
+
+    def _sync_component_layers_contrast_limits(
+        self, comp_idx, contrast_limits
+    ):
+        """Sync contrast limits across all layers belonging to the same component."""
+        if getattr(self, '_updating_linked_layers', False):
+            return
+
+        try:
+            self._updating_linked_layers = True
+            layers_to_update = self._get_all_layers_for_component(comp_idx)
+
+            for layer in layers_to_update:
+                if layer.contrast_limits != contrast_limits:
+                    layer.contrast_limits = contrast_limits
+        finally:
+            self._updating_linked_layers = False
+
     def _is_standard_colormap(self, colormap_name):
         """Check if a colormap name refers to a standard matplotlib/vispy/napari colormap."""
         try:
-            import matplotlib.pyplot as plt
-
             plt.get_cmap(colormap_name)
             return True
         except Exception:
             pass
 
         try:
-            import vispy.color
-
             vispy.color.get_colormap(colormap_name)
             return True
         except Exception:
@@ -2735,8 +2831,6 @@ class ComponentsWidget(QWidget):
         if self._is_standard_colormap(colormap_name):
             if self._is_standard_colormap(inverted_name):
                 try:
-                    import matplotlib.pyplot as plt
-
                     mpl_cmap = plt.get_cmap(inverted_name)
                     colors = mpl_cmap(np.linspace(0, 1, 256))
                     return Colormap(colors=colors, name=inverted_name)
@@ -2745,8 +2839,6 @@ class ComponentsWidget(QWidget):
                         return inverted_name
 
             try:
-                import matplotlib.pyplot as plt
-
                 base_name = (
                     colormap_name
                     if not colormap_name.endswith('_r')
@@ -2771,53 +2863,6 @@ class ComponentsWidget(QWidget):
 
         return 'PiYG_r' if not colormap_name.endswith('_r') else 'PiYG'
 
-    def _sync_colormaps(self, event):
-        """Synchronize colormaps between comp1 and comp2 layers with inversion."""
-        if (
-            self.comp1_fractions_layer is None
-            or self.comp2_fractions_layer is None
-        ):
-            return
-
-        try:
-            if event.source == self.comp1_fractions_layer:
-                current_colormap = self.comp1_fractions_layer.colormap
-
-                self.comp2_fractions_layer.events.colormap.disconnect(
-                    self._sync_colormaps
-                )
-                inverted_colormap = self._get_inverted_colormap(
-                    current_colormap
-                )
-                self.comp2_fractions_layer.colormap = inverted_colormap
-                self.comp2_fractions_layer.events.colormap.connect(
-                    self._sync_colormaps
-                )
-
-            elif event.source == self.comp2_fractions_layer:
-                current_colormap = self.comp2_fractions_layer.colormap
-
-                self.comp1_fractions_layer.events.colormap.disconnect(
-                    self._sync_colormaps
-                )
-                inverted_colormap = self._get_inverted_colormap(
-                    current_colormap
-                )
-                self.comp1_fractions_layer.colormap = inverted_colormap
-                self.comp1_fractions_layer.events.colormap.connect(
-                    self._sync_colormaps
-                )
-
-            if hasattr(self.comp1_fractions_layer.colormap, 'colors'):
-                self.fractions_colormap = (
-                    self.comp1_fractions_layer.colormap.colors
-                )
-
-            self.draw_line_between_components()
-
-        except Exception as e:
-            print(f"Error in _sync_colormaps: {e}")
-
     def _find_and_reconnect_layer(
         self, expected_name, component_name, layer_name, idx
     ):
@@ -2828,16 +2873,8 @@ class ComponentsWidget(QWidget):
                 self.comp1_fractions_layer.events.colormap.connect(
                     self._on_colormap_changed
                 )
-                self.comp1_fractions_layer.events.colormap.connect(
-                    self._sync_colormaps
-                )
                 self.comp1_fractions_layer.events.contrast_limits.connect(
                     self._on_contrast_limits_changed
-                )
-            elif idx == 1:
-                self.comp2_fractions_layer = self.viewer.layers[expected_name]
-                self.comp2_fractions_layer.events.colormap.connect(
-                    self._sync_colormaps
                 )
         else:
             possible_names = [
@@ -2855,38 +2892,16 @@ class ComponentsWidget(QWidget):
                         self.comp1_fractions_layer.events.colormap.connect(
                             self._on_colormap_changed
                         )
-                        self.comp1_fractions_layer.events.colormap.connect(
-                            self._sync_colormaps
-                        )
                         self.comp1_fractions_layer.events.contrast_limits.connect(
                             self._on_contrast_limits_changed
                         )
-                    elif idx == 1:
-                        self.comp2_fractions_layer = layer_obj
-                        self.comp2_fractions_layer.events.colormap.connect(
-                            self._sync_colormaps
-                        )
                     break
-
-        if (
-            self.comp1_fractions_layer is not None
-            and self.comp2_fractions_layer is not None
-            and idx == 1
-        ):
-            try:
-                link_layers(
-                    [self.comp1_fractions_layer, self.comp2_fractions_layer],
-                    ('contrast_limits', 'gamma'),
-                )
-            except Exception:
-                pass
 
     def _reconnect_existing_fraction_layers(self, layer_name):
         """Reconnect to existing fraction layers if they exist."""
         layer = self.viewer.layers[layer_name]
 
         comp1_name = "Component 1"
-        comp2_name = "Component 2"
 
         if (
             'settings' in layer.metadata
@@ -2901,20 +2916,11 @@ class ComponentsWidget(QWidget):
                         settings['components']['0'].get('name')
                         or "Component 1"
                     )
-                if '1' in settings['components']:
-                    comp2_name = (
-                        settings['components']['1'].get('name')
-                        or "Component 2"
-                    )
 
         comp1_fractions_layer_name = f"{comp1_name} fractions: {layer_name}"
-        comp2_fractions_layer_name = f"{comp2_name} fractions: {layer_name}"
 
         self._find_and_reconnect_layer(
             comp1_fractions_layer_name, comp1_name, layer_name, 0
-        )
-        self._find_and_reconnect_layer(
-            comp2_fractions_layer_name, comp2_name, layer_name, 1
         )
 
         if self.comp1_fractions_layer is not None:
@@ -2959,19 +2965,8 @@ class ComponentsWidget(QWidget):
                 self.comp1_fractions_layer.events.colormap.disconnect(
                     self._on_colormap_changed
                 )
-                self.comp1_fractions_layer.events.colormap.disconnect(
-                    self._sync_colormaps
-                )
                 self.comp1_fractions_layer.events.contrast_limits.disconnect(
                     self._on_contrast_limits_changed
-                )
-            except Exception:
-                pass
-
-        if self.comp2_fractions_layer is not None:
-            try:
-                self.comp2_fractions_layer.events.colormap.disconnect(
-                    self._sync_colormaps
                 )
             except Exception:
                 pass
@@ -3090,6 +3085,7 @@ class ComponentsWidget(QWidget):
                 'contrast_limits': (
                     list(contrast_limits) if contrast_limits else None
                 ),
+                'analysis_type': self.analysis_type,  # Store which analysis type saved this
             }
         )
 
@@ -3193,7 +3189,6 @@ class ComponentsWidget(QWidget):
         component_real = (c1.dot.get_data()[0][0], c2.dot.get_data()[0][0])
         component_imag = (c1.dot.get_data()[1][0], c2.dot.get_data()[1][0])
 
-        # Apply analysis to all selected layers
         for layer in selected_layers:
             self._run_linear_projection_for_layer(
                 layer, component_real, component_imag, c1, c2
@@ -3218,7 +3213,6 @@ class ComponentsWidget(QWidget):
         except IndexError:
             return
 
-        # Handle dimensions: Check if G has an extra axis for harmonics compared to the image layer
         if g_array.ndim == layer.data.ndim + 1:
             real = g_array[harmonic_idx]
             imag = s_array[harmonic_idx]
@@ -3232,8 +3226,6 @@ class ComponentsWidget(QWidget):
 
         comp1_name = c1.name_edit.text().strip() or "Component 1"
         comp1_fractions_layer_name = f"{comp1_name} fractions: {layer.name}"
-        comp2_name = c2.name_edit.text().strip() or "Component 2"
-        comp2_fractions_layer_name = f"{comp2_name} fractions: {layer.name}"
 
         settings = layer.metadata.get('settings', {}).get(
             'component_analysis', {}
@@ -3249,36 +3241,42 @@ class ComponentsWidget(QWidget):
             if harmonic_key in comp_data.get('gs_harmonics', {}):
                 harmonic_data = comp_data['gs_harmonics'][harmonic_key]
 
-                if harmonic_data.get('colormap_colors') is not None:
-                    colors = harmonic_data['colormap_colors']
-                    if isinstance(colors, list):
-                        colors = np.array(colors)
-
-                    stored_colormap_name = harmonic_data.get(
-                        'colormap_name', 'custom'
-                    )
-                    comp1_colormap = Colormap(
-                        colors=colors,
-                        name=(
-                            stored_colormap_name
-                            if stored_colormap_name
-                            else 'custom'
-                        ),
+                saved_analysis_type = harmonic_data.get('analysis_type')
+                if saved_analysis_type == 'Linear Projection':
+                    has_saved_colormap = (
+                        harmonic_data.get('colormap_colors') is not None
+                        or harmonic_data.get('colormap_name') is not None
                     )
 
-                elif harmonic_data.get('colormap_name'):
-                    comp1_colormap = harmonic_data['colormap_name']
+                    if has_saved_colormap:
+                        if harmonic_data.get('colormap_colors') is not None:
+                            colors = harmonic_data['colormap_colors']
+                            if isinstance(colors, list):
+                                colors = np.array(colors)
 
-                if harmonic_data.get('contrast_limits'):
-                    contrast_limits = tuple(harmonic_data['contrast_limits'])
+                            stored_colormap_name = harmonic_data.get(
+                                'colormap_name', 'custom'
+                            )
+                            comp1_colormap = Colormap(
+                                colors=colors,
+                                name=(
+                                    stored_colormap_name
+                                    if stored_colormap_name
+                                    else 'custom'
+                                ),
+                            )
+
+                        elif harmonic_data.get('colormap_name'):
+                            comp1_colormap = harmonic_data['colormap_name']
+
+                        if harmonic_data.get('contrast_limits'):
+                            contrast_limits = tuple(
+                                harmonic_data['contrast_limits']
+                            )
 
         if comp1_fractions_layer_name in self.viewer.layers:
             self.viewer.layers.remove(
                 self.viewer.layers[comp1_fractions_layer_name]
-            )
-        if comp2_fractions_layer_name in self.viewer.layers:
-            self.viewer.layers.remove(
-                self.viewer.layers[comp2_fractions_layer_name]
             )
 
         comp1_selected_fractions_layer = Image(
@@ -3291,22 +3289,6 @@ class ComponentsWidget(QWidget):
 
         self.comp1_fractions_layer = self.viewer.add_layer(
             comp1_selected_fractions_layer
-        )
-
-        comp2_colormap = self._get_inverted_colormap(
-            self.comp1_fractions_layer.colormap
-        )
-
-        comp2_selected_fractions_layer = Image(
-            1.0 - fraction_comp1,
-            name=comp2_fractions_layer_name,
-            scale=layer.scale,
-            colormap=comp2_colormap,
-            contrast_limits=contrast_limits,
-        )
-
-        self.comp2_fractions_layer = self.viewer.add_layer(
-            comp2_selected_fractions_layer
         )
 
         self.fractions_colormap = self.comp1_fractions_layer.colormap.colors
@@ -3358,19 +3340,8 @@ class ComponentsWidget(QWidget):
         self.comp1_fractions_layer.events.colormap.connect(
             self._on_colormap_changed
         )
-        self.comp1_fractions_layer.events.colormap.connect(
-            self._sync_colormaps
-        )
-        self.comp2_fractions_layer.events.colormap.connect(
-            self._sync_colormaps
-        )
         self.comp1_fractions_layer.events.contrast_limits.connect(
             self._on_contrast_limits_changed
-        )
-
-        link_layers(
-            [self.comp1_fractions_layer, self.comp2_fractions_layer],
-            ('contrast_limits', 'gamma'),
         )
 
         self._update_component_colors()
@@ -3402,7 +3373,6 @@ class ComponentsWidget(QWidget):
                 )
                 return
 
-        # Apply analysis to all selected layers
         for layer in selected_layers:
             self._run_component_fit_for_layer(
                 layer,
@@ -3574,20 +3544,24 @@ class ComponentsWidget(QWidget):
                         'gs_harmonics'
                     ][harmonic_key]
 
-                    if harmonic_data.get('colormap_name'):
-                        colormap = harmonic_data['colormap_name']
-                    elif harmonic_data.get('colormap_colors'):
-                        from napari.utils.colormaps import Colormap
+                    saved_analysis_type = harmonic_data.get('analysis_type')
+                    if saved_analysis_type == 'Component Fit':
+                        if harmonic_data.get('colormap_name'):
+                            colormap = harmonic_data['colormap_name']
+                        elif harmonic_data.get('colormap_colors'):
+                            from napari.utils.colormaps import Colormap
 
-                        colors = harmonic_data['colormap_colors']
-                        if isinstance(colors, list):
-                            colors = np.array(colors)
-                        colormap = Colormap(colors=colors, name="saved_custom")
+                            colors = harmonic_data['colormap_colors']
+                            if isinstance(colors, list):
+                                colors = np.array(colors)
+                            colormap = Colormap(
+                                colors=colors, name="saved_custom"
+                            )
 
-                    if harmonic_data.get('contrast_limits'):
-                        contrast_limits = tuple(
-                            harmonic_data['contrast_limits']
-                        )
+                        if harmonic_data.get('contrast_limits'):
+                            contrast_limits = tuple(
+                                harmonic_data['contrast_limits']
+                            )
 
                 if (
                     colormap is None
@@ -3603,7 +3577,6 @@ class ComponentsWidget(QWidget):
                     else:
                         colormap = 'viridis'
 
-                # Remove previous layer if it exists (avoids duplication)
                 try:
                     self.viewer.layers.remove(
                         self.viewer.layers[fraction_layer_name]
@@ -3633,14 +3606,10 @@ class ComponentsWidget(QWidget):
                         )
                         is_standard_colormap = False
                         try:
-                            import matplotlib.pyplot as plt
-
                             plt.get_cmap(colormap_name)
                             is_standard_colormap = True
                         except Exception:
                             try:
-                                import vispy.color
-
                                 vispy.color.get_colormap(colormap_name)
                                 is_standard_colormap = True
                             except Exception:
