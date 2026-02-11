@@ -1591,7 +1591,7 @@ def test_toolbar_visibility_based_on_selection_mode(make_napari_viewer):
         mock_vis.assert_called_once_with(False)
 
     # Switch to manual selection mode
-    plotter.selection_tab.selection_mode_combobox.setCurrentIndex(1)
+    plotter.selection_tab.selection_mode_combobox.setCurrentIndex(2)
     assert plotter.selection_tab.is_manual_selection_mode()
 
     # Now _show_tab_artists should show toolbar
@@ -1618,8 +1618,8 @@ def test_is_manual_selection_mode_method(make_napari_viewer):
     assert selection_widget.selection_mode_combobox.currentIndex() == 0
     assert not selection_widget.is_manual_selection_mode()
 
-    # Switch to manual selection mode (index 1)
-    selection_widget.selection_mode_combobox.setCurrentIndex(1)
+    # Switch to manual selection mode (index 2)
+    selection_widget.selection_mode_combobox.setCurrentIndex(2)
     assert selection_widget.is_manual_selection_mode()
 
     # Switch back to circular cursor mode
@@ -1637,7 +1637,7 @@ def test_plot_colors_cleared_when_switching_from_manual_mode(
     plotter = PlotterWidget(viewer)
 
     # Switch to manual selection mode
-    plotter.selection_tab.selection_mode_combobox.setCurrentIndex(1)
+    plotter.selection_tab.selection_mode_combobox.setCurrentIndex(2)
 
     # Make a manual selection (this would create colored points on plot)
     manual_selection = np.array([1, 0, 1, 0, 1, 0, 0, 0, 0, 0])
@@ -1676,10 +1676,10 @@ def test_selection_tab_mode_switching_integration(make_napari_viewer):
     assert circular_layer.visible is True
 
     # Switch to manual selection mode
-    selection_widget.selection_mode_combobox.setCurrentIndex(1)
+    selection_widget.selection_mode_combobox.setCurrentIndex(2)
 
     # Verify UI switched
-    assert selection_widget.stacked_widget.currentIndex() == 1
+    assert selection_widget.stacked_widget.currentIndex() == 2
     assert selection_widget.is_manual_selection_mode()
 
     # Verify circular cursor layer is now hidden
@@ -1717,7 +1717,7 @@ def test_toolbar_hidden_when_switching_tabs(make_napari_viewer):
     plotter.tab_widget.setCurrentIndex(3)
 
     # Switch to manual selection mode to show toolbar
-    plotter.selection_tab.selection_mode_combobox.setCurrentIndex(1)
+    plotter.selection_tab.selection_mode_combobox.setCurrentIndex(2)
 
     # Mock _set_selection_visibility to track calls
     with patch.object(plotter, '_set_selection_visibility') as mock_vis:
@@ -1767,7 +1767,7 @@ def test_toolbar_shown_only_in_manual_selection_mode(make_napari_viewer):
         mock_vis.assert_called_once_with(False)
 
     # Test manual selection mode - toolbar should be shown
-    plotter.selection_tab.selection_mode_combobox.setCurrentIndex(1)
+    plotter.selection_tab.selection_mode_combobox.setCurrentIndex(2)
     with patch.object(plotter, '_set_selection_visibility') as mock_vis:
         plotter._show_tab_artists(plotter.selection_tab)
         mock_vis.assert_called_once_with(True)
@@ -1791,7 +1791,7 @@ def test_toolbar_visibility_on_mode_change_within_selection_tab(
     # Mock _set_selection_visibility to track calls
     with patch.object(plotter, '_set_selection_visibility') as mock_vis:
         # Switch to manual selection mode
-        plotter.selection_tab.selection_mode_combobox.setCurrentIndex(1)
+        plotter.selection_tab.selection_mode_combobox.setCurrentIndex(2)
 
         # Should call _set_selection_visibility(True) to show toolbar
         assert mock_vis.call_count >= 1
@@ -1842,7 +1842,7 @@ def test_circular_cursor_and_manual_selection_visibility_coordination(
         patch.object(plotter, '_set_selection_visibility') as mock_manual_vis,
     ):
         # Switch to manual selection mode
-        plotter.selection_tab.selection_mode_combobox.setCurrentIndex(1)
+        plotter.selection_tab.selection_mode_combobox.setCurrentIndex(2)
         plotter._show_tab_artists(plotter.selection_tab)
 
         # Manual selection toolbar should be shown
