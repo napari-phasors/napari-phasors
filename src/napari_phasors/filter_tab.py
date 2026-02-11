@@ -57,11 +57,11 @@ class FilterWidget(QWidget):
         self.parent_widget = parent
         self.viewer = viewer
 
-        # Initialize attributes
         self._phasors_selected_layer = None
         self.threshold_factor = 1
+        self._histogram_data = None
         self.hist_fig, self.hist_ax = plt.subplots(
-            figsize=(8, 4), constrained_layout=True
+            figsize=(3.5, 1.5), constrained_layout=True
         )
         self.threshold_line_lower = None
         self.threshold_line_upper = None
@@ -74,10 +74,8 @@ class FilterWidget(QWidget):
         # Style the histogram axes and figure initially
         self.style_histogram_axes()
 
-        # Create UI elements
         self.setup_ui()
 
-        # Connect callbacks
         self.parent_widget.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
             self._on_image_layer_changed
         )
@@ -113,7 +111,8 @@ class FilterWidget(QWidget):
         filter_method_layout = QHBoxLayout()
         filter_method_layout.addWidget(QLabel("Filter Method:"))
         self.filter_method_combobox = QComboBox()
-        self.filter_method_combobox.addItems(["Median", "Wavelet"])
+        self.filter_method_combobox.addItems(["None", "Median", "Wavelet"])
+        self.filter_method_combobox.setCurrentText("None")
         filter_method_layout.addWidget(self.filter_method_combobox)
         scroll_layout.addLayout(filter_method_layout)
 
@@ -126,6 +125,10 @@ class FilterWidget(QWidget):
         self.setup_wavelet_filter_ui()
         scroll_layout.addWidget(self.wavelet_filter_widget)
 
+        # Initially hide filter parameter widgets
+        self.median_filter_widget.setVisible(False)
+        self.wavelet_filter_widget.setVisible(False)
+
         # Threshold method selection
         threshold_method_layout = QHBoxLayout()
         threshold_method_layout.addWidget(QLabel("Threshold Method:"))
@@ -133,43 +136,46 @@ class FilterWidget(QWidget):
         self.threshold_method_combobox.addItems(
             ["None", "Manual", "Otsu", "Li", "Yen"]
         )
-        # Set Otsu as default
-        self.threshold_method_combobox.setCurrentText("Otsu")
+        self.threshold_method_combobox.setCurrentText("None")
         threshold_method_layout.addWidget(self.threshold_method_combobox)
 
-        # Add min and max intensity editable fields to the same row
-        threshold_method_layout.addSpacing(20)
-        threshold_method_layout.addWidget(QLabel("Min Intensity:"))
-        self.min_threshold_edit = QLineEdit()
-        self.min_threshold_edit.setFixedWidth(80)
-        self.min_threshold_edit.setText("0.00")
-        self.min_threshold_edit.setToolTip("Lower threshold value")
-        threshold_method_layout.addWidget(self.min_threshold_edit)
-
+        # Add log scale checkbox to the same line as threshold method
         threshold_method_layout.addSpacing(10)
-        threshold_method_layout.addWidget(QLabel("Max Intensity:"))
-        self.max_threshold_edit = QLineEdit()
-        self.max_threshold_edit.setFixedWidth(80)
-        self.max_threshold_edit.setText("0.00")
-        self.max_threshold_edit.setToolTip("Upper threshold value")
-        threshold_method_layout.addWidget(self.max_threshold_edit)
+        self.log_scale_checkbox = QCheckBox("Log Scale")
+        self.log_scale_checkbox.setChecked(False)
+        self.log_scale_checkbox.stateChanged.connect(self.on_log_scale_changed)
+        threshold_method_layout.addWidget(self.log_scale_checkbox)
         threshold_method_layout.addStretch()
 
         scroll_layout.addLayout(threshold_method_layout)
 
-        # Threshold range slider with log scale checkbox
+        # Threshold range slider with min/max edits
         theshold_slider_layout = QHBoxLayout()
+
+        # Min threshold edit
+        theshold_slider_layout.addWidget(QLabel("Min:"))
+        self.min_threshold_edit = QLineEdit()
+        self.min_threshold_edit.setFixedWidth(60)
+        self.min_threshold_edit.setText("0.00")
+        self.min_threshold_edit.setToolTip("Lower threshold value")
+        theshold_slider_layout.addWidget(self.min_threshold_edit)
+
+        # Max threshold edit
+        theshold_slider_layout.addSpacing(5)
+        theshold_slider_layout.addWidget(QLabel("Max:"))
+        self.max_threshold_edit = QLineEdit()
+        self.max_threshold_edit.setFixedWidth(60)
+        self.max_threshold_edit.setText("0.00")
+        self.max_threshold_edit.setToolTip("Upper threshold value")
+        theshold_slider_layout.addWidget(self.max_threshold_edit)
+
+        # Threshold slider
+        theshold_slider_layout.addSpacing(10)
         self.threshold_slider = QRangeSlider(Qt.Horizontal)
         self.threshold_slider.setMinimum(0)
         self.threshold_slider.setMaximum(100)
         self.threshold_slider.setValue((0, 100))
         theshold_slider_layout.addWidget(self.threshold_slider)
-
-        # Add log scale checkbox to the same line as the slider
-        self.log_scale_checkbox = QCheckBox("Log Scale Histogram")
-        self.log_scale_checkbox.setChecked(False)
-        self.log_scale_checkbox.stateChanged.connect(self.on_log_scale_changed)
-        theshold_slider_layout.addWidget(self.log_scale_checkbox)
 
         scroll_layout.addLayout(theshold_slider_layout)
 
@@ -195,7 +201,7 @@ class FilterWidget(QWidget):
         layout.addWidget(scroll_area)
 
         # Apply button (not inside scroll area)
-        self.apply_button = QPushButton("Apply Filter and Threshold")
+        self.apply_button = QPushButton("Apply")
         layout.addWidget(self.apply_button)
 
         self.setLayout(layout)
@@ -209,7 +215,7 @@ class FilterWidget(QWidget):
 
         # Median filter kernel size
         median_filter_layout = QHBoxLayout()
-        self.median_filter_label = QLabel("Median Filter Kernel Size: 3 x 3")
+        self.median_filter_label = QLabel("Kernel Size: 3 x 3")
         self.median_filter_spinbox = QSpinBox()
         self.median_filter_spinbox.setMinimum(2)
         self.median_filter_spinbox.setMaximum(99)
@@ -220,10 +226,10 @@ class FilterWidget(QWidget):
 
         # Median filter repetitions
         repetitions_layout = QHBoxLayout()
-        repetitions_layout.addWidget(QLabel("Filter Repetitions:"))
+        repetitions_layout.addWidget(QLabel("Repetitions:"))
         self.median_filter_repetition_spinbox = QSpinBox()
-        self.median_filter_repetition_spinbox.setMinimum(0)
-        self.median_filter_repetition_spinbox.setValue(0)
+        self.median_filter_repetition_spinbox.setMinimum(1)
+        self.median_filter_repetition_spinbox.setValue(1)
         repetitions_layout.addWidget(self.median_filter_repetition_spinbox)
         layout.addLayout(repetitions_layout)
 
@@ -271,7 +277,10 @@ class FilterWidget(QWidget):
         """Callback when filter method is changed."""
         method = self.filter_method_combobox.currentText()
 
-        if method == "Median":
+        if method == "None":
+            self.median_filter_widget.setVisible(False)
+            self.wavelet_filter_widget.setVisible(False)
+        elif method == "Median":
             self.median_filter_widget.setVisible(True)
             self.wavelet_filter_widget.setVisible(False)
         elif method == "Wavelet":
@@ -447,7 +456,7 @@ class FilterWidget(QWidget):
                     settings["threshold_method"]
                 )
             else:
-                self.threshold_method_combobox.setCurrentText("Otsu")
+                self.threshold_method_combobox.setCurrentText("None")
 
             if "threshold" in settings.keys():
                 lower_val = int(settings["threshold"] * self.threshold_factor)
@@ -463,11 +472,7 @@ class FilterWidget(QWidget):
                     f'{upper_val / self.threshold_factor:.2f}'
                 )
             else:
-                mean_data = layer_metadata["original_mean"].copy()
-                lower_threshold = self.calculate_automatic_threshold(
-                    "Otsu", mean_data
-                )
-                lower_val = int(lower_threshold * self.threshold_factor)
+                lower_val = 0
                 upper_val = self.threshold_slider.maximum()
                 self.threshold_slider.setValue((lower_val, upper_val))
                 self.min_threshold_edit.setText(
@@ -479,6 +484,7 @@ class FilterWidget(QWidget):
 
             if "filter" in settings.keys():
                 filter_settings = settings["filter"]
+
                 if "method" in filter_settings:
                     method = filter_settings["method"]
                     if method == "median":
@@ -496,6 +502,8 @@ class FilterWidget(QWidget):
                             self.filter_method_combobox.setCurrentText(
                                 "Median"
                             )
+                else:
+                    self.filter_method_combobox.setCurrentText("None")
 
                 if "size" in filter_settings:
                     self.median_filter_spinbox.setValue(
@@ -513,29 +521,28 @@ class FilterWidget(QWidget):
                     self.wavelet_levels_spinbox.setValue(
                         int(filter_settings["levels"])
                     )
+            else:
+                self.filter_method_combobox.setCurrentText("None")
+                self.median_filter_spinbox.setValue(3)
+                self.median_filter_repetition_spinbox.setValue(1)
+                self.wavelet_sigma_spinbox.setValue(2.0)
+                self.wavelet_levels_spinbox.setValue(1)
         else:
-            self.threshold_method_combobox.setCurrentText("Otsu")
-            # Use merged mean data for initial threshold calculation
-            all_mean_data = []
-            for layer in selected_layers:
-                mean_data = layer.metadata.get('original_mean')
-                if mean_data is not None:
-                    all_mean_data.append(mean_data.copy().flatten())
-
-            if all_mean_data:
-                merged_mean_data = np.concatenate(all_mean_data)
-                lower_threshold = self.calculate_automatic_threshold(
-                    "Otsu", merged_mean_data
-                )
-                lower_val = int(lower_threshold * self.threshold_factor)
-                upper_val = self.threshold_slider.maximum()
-                self.threshold_slider.setValue((lower_val, upper_val))
-                self.min_threshold_edit.setText(
-                    f'{lower_val / self.threshold_factor:.2f}'
-                )
-                self.max_threshold_edit.setText(
-                    f'{upper_val / self.threshold_factor:.2f}'
-                )
+            self.filter_method_combobox.setCurrentText("None")
+            self.threshold_method_combobox.setCurrentText("None")
+            self.median_filter_spinbox.setValue(3)
+            self.median_filter_repetition_spinbox.setValue(1)
+            self.wavelet_sigma_spinbox.setValue(2.0)
+            self.wavelet_levels_spinbox.setValue(1)
+            lower_val = 0
+            upper_val = self.threshold_slider.maximum()
+            self.threshold_slider.setValue((lower_val, upper_val))
+            self.min_threshold_edit.setText(
+                f'{lower_val / self.threshold_factor:.2f}'
+            )
+            self.max_threshold_edit.setText(
+                f'{upper_val / self.threshold_factor:.2f}'
+            )
 
         self._updating_threshold = False
         self.plot_mean_histogram()
@@ -572,7 +579,7 @@ class FilterWidget(QWidget):
     def on_median_kernel_size_change(self):
         kernel_value = self.median_filter_spinbox.value()
         self.median_filter_label.setText(
-            'Median Filter Kernel Size: ' + f'{kernel_value} x {kernel_value}'
+            'Kernel Size: ' + f'{kernel_value} x {kernel_value}'
         )
 
     def on_min_threshold_edit_changed(self):
@@ -595,11 +602,14 @@ class FilterWidget(QWidget):
             )
             self._updating_threshold = False
 
-            if self.threshold_method_combobox.currentText() not in [
-                "Manual",
-                "None",
-            ]:
-                self.threshold_method_combobox.setCurrentText("Manual")
+            current_method = self.threshold_method_combobox.currentText()
+            if current_method not in ["Manual"]:
+                if not (
+                    current_method == "None"
+                    and new_slider_value == 0
+                    and upper_val == self.threshold_slider.maximum()
+                ):
+                    self.threshold_method_combobox.setCurrentText("Manual")
 
             self.update_threshold_lines()
         except ValueError:
@@ -629,11 +639,14 @@ class FilterWidget(QWidget):
             )
             self._updating_threshold = False
 
-            if self.threshold_method_combobox.currentText() not in [
-                "Manual",
-                "None",
-            ]:
-                self.threshold_method_combobox.setCurrentText("Manual")
+            current_method = self.threshold_method_combobox.currentText()
+            if current_method not in ["Manual"]:
+                if not (
+                    current_method == "None"
+                    and lower_val == 0
+                    and new_slider_value == self.threshold_slider.maximum()
+                ):
+                    self.threshold_method_combobox.setCurrentText("Manual")
 
             self.update_threshold_lines()
         except ValueError:
@@ -689,6 +702,9 @@ class FilterWidget(QWidget):
 
         # Merge all mean data
         merged_mean_data = np.concatenate(all_mean_data)
+
+        # Store histogram data for replotting
+        self._histogram_data = merged_mean_data
 
         self.hist_ax.clear()
         self.threshold_line_lower = None
@@ -809,12 +825,31 @@ class FilterWidget(QWidget):
         if not selected_layers:
             return
 
-        if state == 2:
-            self.hist_ax.set_yscale('log')
-        else:
-            self.hist_ax.set_yscale('linear')
+        # Replot the histogram with the appropriate scale
+        if self._histogram_data is not None:
+            self.hist_ax.clear()
+            self.threshold_line_lower = None
+            self.threshold_line_upper = None
+            self.threshold_area_lower = None
+            self.threshold_area_upper = None
 
-        self.hist_fig.canvas.draw_idle()
+            # Plot histogram
+            self.hist_ax.hist(
+                self._histogram_data,
+                bins=100,
+                color='white',
+                edgecolor='white',
+            )
+
+            # Set scale before styling to ensure proper tick formatting
+            if state == 2:
+                self.hist_ax.set_yscale('log')
+            else:
+                self.hist_ax.set_yscale('linear')
+
+            self.style_histogram_axes()
+            self.update_threshold_lines()
+            self.hist_fig.canvas.draw_idle()
 
     def apply_button_clicked(self):
         """Apply the filter and threshold to all selected layers."""
@@ -846,21 +881,24 @@ class FilterWidget(QWidget):
             levels = None
             harmonics = None
 
-            if (
-                current_filter_method == "median"
-                and self.median_filter_repetition_spinbox.value() > 0
-            ):
-                filter_method = "median"
-                size = self.median_filter_spinbox.value()
-                repeat = self.median_filter_repetition_spinbox.value()
-            elif current_filter_method == "wavelet":
-                harmonics = layer.metadata.get('harmonics')
-                if harmonics is not None and validate_harmonics_for_wavelet(
-                    harmonics
+            # Only apply filter if filter method is not None
+            if current_filter_method != "none":
+                if (
+                    current_filter_method == "median"
+                    and self.median_filter_repetition_spinbox.value() > 0
                 ):
-                    filter_method = "wavelet"
-                    sigma = self.wavelet_sigma_spinbox.value()
-                    levels = self.wavelet_levels_spinbox.value()
+                    filter_method = "median"
+                    size = self.median_filter_spinbox.value()
+                    repeat = self.median_filter_repetition_spinbox.value()
+                elif current_filter_method == "wavelet":
+                    harmonics = layer.metadata.get('harmonics')
+                    if (
+                        harmonics is not None
+                        and validate_harmonics_for_wavelet(harmonics)
+                    ):
+                        filter_method = "wavelet"
+                        sigma = self.wavelet_sigma_spinbox.value()
+                        levels = self.wavelet_levels_spinbox.value()
 
             apply_filter_and_threshold(
                 layer,

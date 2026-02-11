@@ -79,7 +79,7 @@ def test_phasor_plotter_initialization_values(make_napari_viewer):
     expected_tabs = [
         "Plot Settings",
         "Calibration",
-        "Filter/Threshold",
+        "Filter",
         "Selection",
         "Components",
         "Lifetime",
@@ -1085,7 +1085,7 @@ def test_phasor_plotter_tab_changed_with_different_tabs(make_napari_viewer):
         tab_names = [
             "Plot Settings",
             "Calibration",
-            "Filter/Threshold",
+            "Filter",
             "Selection",
             "Components",
             "Lifetime",
@@ -1255,7 +1255,7 @@ def test_phasor_plotter_tab_changed_with_different_tabs(make_napari_viewer):
         tab_names = [
             "Plot Settings",
             "Calibration",
-            "Filter/Threshold",
+            "Filter",
             "Selection",
             "Components",
             "Lifetime",
