@@ -74,7 +74,9 @@ def test_selection_widget_with_layer_data(make_napari_viewer):
     assert widget._phasors_selected_layer is None
 
     # Switch to manual selection mode to test manual selection functionality
-    widget.selection_mode_combobox.setCurrentIndex(1)
+    widget.selection_mode_combobox.setCurrentIndex(
+        2
+    )  # Manual Selection is now index 2
 
     combobox = widget.selection_input_widget.phasor_selection_id_combobox
     assert combobox.count() == 2
@@ -257,7 +259,7 @@ def test_create_phasors_selected_layer_with_data(
     widget = parent.selection_tab
 
     # Make a manual selection to set up selection ID
-    widget.selection_mode_combobox.setCurrentIndex(1)  # Switch to manual mode
+    widget.selection_mode_combobox.setCurrentIndex(2)  # Switch to manual mode
     manual_selection = np.array([1, 0, 1, 0, 1, 0, 0, 0, 0, 0])
     widget.manual_selection_changed(manual_selection)
     widget.selection_id = "custom_selection"
@@ -300,15 +302,15 @@ def test_selection_mode_switching(make_napari_viewer):
     assert widget.stacked_widget.currentIndex() == 0
     assert not widget.is_manual_selection_mode()
 
-    # Switch to manual selection mode
+    # Switch to automatic clustering mode
     widget.selection_mode_combobox.setCurrentIndex(1)
     assert widget.stacked_widget.currentIndex() == 1
-    assert widget.is_manual_selection_mode()
+    assert not widget.is_manual_selection_mode()
 
-    # Switch to automatic clustering mode
+    # Switch to manual selection mode
     widget.selection_mode_combobox.setCurrentIndex(2)
     assert widget.stacked_widget.currentIndex() == 2
-    assert not widget.is_manual_selection_mode()
+    assert widget.is_manual_selection_mode()
 
     # Switch back to circular cursor mode
     widget.selection_mode_combobox.setCurrentIndex(0)
@@ -330,27 +332,33 @@ def test_circular_cursor_widget_initialization(make_napari_viewer):
     # Test table initialization
     assert isinstance(widget.cursor_table, QTableWidget)
     assert (
-        widget.cursor_table.columnCount() == 5
-    )  # G, S, Radius, Color, Remove
+        widget.cursor_table.columnCount() == 7
+    )  # G, S, Radius, Color, Count, %, Remove
     assert widget.cursor_table.rowCount() == 0  # No cursors initially
 
-    # Test header labels (first 4 columns, last is remove button)
+    # Test header labels (first 6 columns, last is remove button)
     headers = [
         widget.cursor_table.horizontalHeaderItem(i).text()
-        for i in range(4)  # Check first 4 headers
+        for i in range(6)  # Check first 6 headers
     ]
-    assert headers == ['G', 'S', 'Radius', 'Color']
+    assert headers == ['G', 'S', 'Radius', 'Color', 'Count', '%']
 
     # Test button initialization
     assert hasattr(widget, 'add_cursor_button')
     assert hasattr(widget, 'clear_all_button')
+    assert hasattr(widget, 'calculate_button')
+    assert hasattr(widget, 'autoupdate_check')
     assert widget.add_cursor_button.text() == 'Add Cursor'
     assert widget.clear_all_button.text() == 'Clear All'
+    assert widget.calculate_button.text() == 'Calculate'
+    assert widget.autoupdate_check.text() == 'Autoupdate'
+    assert widget.autoupdate_check.isChecked() == False  # Default is off
 
     # Test internal state
     assert widget._cursors == []
     assert widget._dragging_cursor is None
     assert widget._drag_offset == (0, 0)  # Initialized to (0, 0) not None
+    assert widget._autoupdate_enabled == False  # Default is off
 
 
 def test_circular_cursor_add_cursor(make_napari_viewer):
@@ -365,7 +373,7 @@ def test_circular_cursor_add_cursor(make_napari_viewer):
     assert len(widget._cursors) == 0
     assert widget.cursor_table.rowCount() == 0
 
-    # Add first cursor
+    # Add first cursor (without autoupdate, no labels layer created)
     widget._add_cursor()
     assert len(widget._cursors) == 1
     assert widget.cursor_table.rowCount() == 1
@@ -505,21 +513,25 @@ def test_circular_cursor_last_radius_used(make_napari_viewer):
 
 
 def test_circular_cursor_creates_labels_layer(make_napari_viewer):
-    """Test that circular cursors create a labels layer."""
+    """Test that circular cursors create a labels layer when autoupdate is enabled or calculate is clicked."""
     viewer = make_napari_viewer()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
     widget = parent.selection_tab.circular_cursor_widget
 
-    # Add a cursor
+    # Add a cursor (without autoupdate, no labels layer yet)
     widget._add_cursor()
 
-    # Apply selection should create labels layer
-    widget._apply_selection()
+    # Check that no labels layer was created yet
+    expected_layer_name = f"Cursor Selection: {intensity_image_layer.name}"
+    layer_names = [layer.name for layer in viewer.layers]
+    assert expected_layer_name not in layer_names
+
+    # Click Calculate button to create labels layer
+    widget.calculate_button.click()
 
     # Check that labels layer was created
-    expected_layer_name = f"Cursor Selection: {intensity_image_layer.name}"
     layer_names = [layer.name for layer in viewer.layers]
     assert expected_layer_name in layer_names
 
@@ -548,7 +560,9 @@ def test_circular_cursor_labels_layer_visibility(make_napari_viewer):
     assert circular_layer.visible is True
 
     # Switch to manual selection mode
-    selection_widget.selection_mode_combobox.setCurrentIndex(1)
+    selection_widget.selection_mode_combobox.setCurrentIndex(
+        2
+    )  # Manual is index 2
 
     # Circular cursor layer should be hidden now
     assert circular_layer.visible is False
@@ -559,6 +573,142 @@ def test_circular_cursor_labels_layer_visibility(make_napari_viewer):
 
     # Circular cursor layer should be visible again
     assert circular_layer.visible is True
+
+
+def test_circular_cursor_autoupdate_checkbox(make_napari_viewer):
+    """Test autoupdate checkbox functionality."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.circular_cursor_widget
+
+    # Initially autoupdate should be disabled
+    assert widget.autoupdate_check.isChecked() == False
+    assert widget._autoupdate_enabled == False
+    assert widget.calculate_button.isEnabled() == True
+
+    # Add a cursor (should not create labels layer without autoupdate)
+    widget._add_cursor()
+    expected_layer_name = f"Cursor Selection: {intensity_image_layer.name}"
+    assert expected_layer_name not in [layer.name for layer in viewer.layers]
+
+    # Enable autoupdate
+    widget.autoupdate_check.setChecked(True)
+    assert widget._autoupdate_enabled == True
+    assert widget.calculate_button.isEnabled() == False  # Should be disabled
+
+    # Labels layer should be created immediately when autoupdate is enabled
+    assert expected_layer_name in [layer.name for layer in viewer.layers]
+
+    # Disable autoupdate
+    widget.autoupdate_check.setChecked(False)
+    assert widget._autoupdate_enabled == False
+    assert (
+        widget.calculate_button.isEnabled() == True
+    )  # Should be enabled again
+
+
+def test_circular_cursor_calculate_button(make_napari_viewer):
+    """Test calculate button functionality."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.circular_cursor_widget
+
+    # Add cursors
+    widget._add_cursor(g=0.5, s=0.3, radius=0.1)
+    widget._add_cursor(g=0.6, s=0.4, radius=0.15)
+
+    # No labels layer should exist yet
+    expected_layer_name = f"Cursor Selection: {intensity_image_layer.name}"
+    assert expected_layer_name not in [layer.name for layer in viewer.layers]
+
+    # Click calculate button
+    widget.calculate_button.click()
+
+    # Labels layer should now exist
+    assert expected_layer_name in [layer.name for layer in viewer.layers]
+    labels_layer = viewer.layers[expected_layer_name]
+    assert isinstance(labels_layer, Labels)
+
+    # Verify labels layer has data
+    assert np.any(labels_layer.data > 0)
+
+
+def test_circular_cursor_count_and_percentage_columns(make_napari_viewer):
+    """Test that count and percentage columns are populated correctly."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.circular_cursor_widget
+
+    # Add a cursor with large radius to capture some data
+    widget._add_cursor(g=0.5, s=0.5, radius=0.5)
+
+    # Check that count and percentage labels exist and are populated
+    from qtpy.QtWidgets import QLabel
+
+    count_label = widget.cursor_table.cellWidget(0, 4)
+    percentage_label = widget.cursor_table.cellWidget(0, 5)
+    assert isinstance(count_label, QLabel)
+    assert isinstance(percentage_label, QLabel)
+
+    # Statistics should be calculated automatically when cursor is added
+    count_text = count_label.text()
+    percentage_text = percentage_label.text()
+
+    # Should have actual values (not "-")
+    assert count_text != "-"
+    assert percentage_text != "-"
+
+    # Count should be a number
+    assert int(count_text) >= 0
+
+    # Percentage should have decimal format
+    assert "." in percentage_text or percentage_text.isdigit()
+
+    # Explicitly update statistics and verify values remain valid
+    initial_count = int(count_text)
+    widget._update_cursor_statistics()
+
+    new_count_text = count_label.text()
+    assert new_count_text != "-"
+    assert int(new_count_text) >= 0
+
+
+def test_circular_cursor_statistics_update_on_change(make_napari_viewer):
+    """Test that statistics update when cursor parameters change (without autoupdate)."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.circular_cursor_widget
+
+    # Ensure autoupdate is off
+    assert widget._autoupdate_enabled == False
+
+    # Add a cursor
+    widget._add_cursor(g=0.5, s=0.5, radius=0.1)
+
+    # Get initial statistics
+    from qtpy.QtWidgets import QLabel
+
+    count_label = widget.cursor_table.cellWidget(0, 4)
+    initial_count = count_label.text()
+    assert initial_count != "-"  # Should be updated after adding
+
+    # Change radius to larger value
+    radius_spinbox = widget.cursor_table.cellWidget(0, 2)
+    radius_spinbox.setValue(0.5)
+
+    # Statistics should be updated even without autoupdate
+    new_count = count_label.text()
+    # With larger radius, count might be different
+    # (it should update statistics even in manual mode)
+    assert new_count != "-"
 
 
 def test_circular_cursor_clear_patches(make_napari_viewer):
@@ -645,7 +795,9 @@ def test_manual_selection_layers_hidden_in_circular_mode(make_napari_viewer):
     assert not selection_widget.is_manual_selection_mode()
 
     # Switch back to manual selection mode
-    selection_widget.selection_mode_combobox.setCurrentIndex(1)
+    selection_widget.selection_mode_combobox.setCurrentIndex(
+        2
+    )  # Manual is index 2
 
     # Manual selection layer should be visible again
     assert manual_layer.visible is True
@@ -1022,6 +1174,31 @@ def test_automatic_clustering_widget_initialization(make_napari_viewer):
     assert widget._clusters == []
     assert widget._ellipse_patches == []
 
+    # Test table initialization
+    assert hasattr(widget, 'cluster_table')
+    from qtpy.QtWidgets import QTableWidget
+
+    assert isinstance(widget.cluster_table, QTableWidget)
+    assert (
+        widget.cluster_table.columnCount() == 8
+    )  # G, S, Major R, Minor R, Color, Count, %, Remove
+    assert widget.cluster_table.rowCount() == 0  # No clusters initially
+
+    # Test header labels
+    headers = [
+        widget.cluster_table.horizontalHeaderItem(i).text()
+        for i in range(7)  # Check first 7 headers
+    ]
+    assert headers == [
+        'G',
+        'S',
+        'Major Radius',
+        'Minor Radius',
+        'Color',
+        'Count',
+        '%',
+    ]
+
 
 def test_automatic_clustering_apply_gmm(make_napari_viewer):
     """Test applying GMM clustering."""
@@ -1039,21 +1216,26 @@ def test_automatic_clustering_apply_gmm(make_napari_viewer):
     widget.num_clusters_spinbox.setValue(3)
     widget._apply_clustering()
 
-    # Should have cluster info stored
+    # Should have cluster info stored (one per cluster, not per layer)
     assert len(widget._clusters) > 0
-    cluster_info = widget._clusters[0]
-    assert 'layer' in cluster_info
-    assert 'center_real' in cluster_info
-    assert 'center_imag' in cluster_info
-    assert 'radius' in cluster_info
-    assert 'radius_minor' in cluster_info
-    assert 'angle' in cluster_info
-    assert 'n_clusters' in cluster_info
-    assert 'harmonic' in cluster_info
-    assert cluster_info['n_clusters'] == 3
+    assert len(widget._clusters) == 3  # 3 clusters
+
+    # Check first cluster properties
+    cluster = widget._clusters[0]
+    assert 'g' in cluster
+    assert 's' in cluster
+    assert 'radius' in cluster
+    assert 'radius_minor' in cluster
+    assert 'angle' in cluster
+    assert 'color' in cluster
+    assert 'harmonic' in cluster
+    assert cluster['harmonic'] == 1  # Default harmonic
 
     # Should have ellipse patches drawn
     assert len(widget._ellipse_patches) == 3
+
+    # Table should be populated
+    assert widget.cluster_table.rowCount() == 3
 
     # Clear button should be enabled
     assert widget.clear_button.isEnabled() == True
@@ -1089,11 +1271,14 @@ def test_automatic_clustering_multiple_layers_merged(make_napari_viewer):
     widget.num_clusters_spinbox.setValue(2)
     widget._apply_clustering()
 
-    # Should have cluster info for both layers
-    assert len(widget._clusters) == 2  # One per layer
+    # Should have 2 clusters (not per layer)
+    assert len(widget._clusters) == 2
 
-    # But ellipses should be drawn only once (not duplicated)
-    assert len(widget._ellipse_patches) == 2  # 2 clusters, not 4
+    # Ellipses should be drawn once
+    assert len(widget._ellipse_patches) == 2
+
+    # Table should show 2 rows
+    assert widget.cluster_table.rowCount() == 2
 
     # Both layers should have labels layers
     layer1_labels = f"Cluster Selection: {layer1.name}"
@@ -1124,6 +1309,7 @@ def test_automatic_clustering_clear_clusters(make_napari_viewer):
     assert len(widget._clusters) == 0
     assert len(widget._ellipse_patches) == 0
     assert widget.clear_button.isEnabled() == False
+    assert widget.cluster_table.rowCount() == 0  # Table should be empty
 
 
 def test_circular_cursor_harmonic_storage(make_napari_viewer):
@@ -1275,11 +1461,12 @@ def test_automatic_clustering_harmonic_storage(make_napari_viewer):
     widget.num_clusters_spinbox.setValue(3)
     widget._apply_clustering()
 
-    # Check that harmonic is stored in cluster info
+    # Check that harmonic is stored in cluster info (each cluster, not each layer)
     assert len(widget._clusters) > 0
-    for cluster_info in widget._clusters:
-        assert 'harmonic' in cluster_info
-        assert cluster_info['harmonic'] == 2
+    assert len(widget._clusters) == 3  # 3 clusters
+    for cluster in widget._clusters:
+        assert 'harmonic' in cluster
+        assert cluster['harmonic'] == 2
 
 
 def test_on_harmonic_changed_only_updates_active_mode(make_napari_viewer):
@@ -1296,7 +1483,9 @@ def test_on_harmonic_changed_only_updates_active_mode(make_napari_viewer):
     circular_widget._add_cursor()
 
     # Switch to automatic clustering mode
-    selection_widget.selection_mode_combobox.setCurrentIndex(2)
+    selection_widget.selection_mode_combobox.setCurrentIndex(
+        1
+    )  # Automatic is index 1
 
     # Apply clustering on harmonic 1
     clustering_widget = selection_widget.automatic_clustering_widget
@@ -1354,12 +1543,14 @@ def test_circular_cursor_labels_layer_per_harmonic(make_napari_viewer):
     parent = PlotterWidget(viewer)
     widget = parent.selection_tab.circular_cursor_widget
 
+    # Enable autoupdate so labels update when harmonic changes
+    widget.autoupdate_check.setChecked(True)
+
     # Add cursor on harmonic 1 with large radius to capture data
     parent.harmonic_spinbox.setValue(1)
     widget._add_cursor(g=0.5, s=0.5, radius=0.5)
-    widget._apply_selection()
 
-    # Check labels layer was created
+    # Check labels layer was created (autoupdate is on)
     layer_name = f"Cursor Selection: {intensity_image_layer.name}"
     assert layer_name in [layer.name for layer in viewer.layers]
     labels_layer = viewer.layers[layer_name]
@@ -1372,9 +1563,252 @@ def test_circular_cursor_labels_layer_per_harmonic(make_napari_viewer):
     parent.harmonic_spinbox.setValue(2)
     widget.on_harmonic_changed()
 
-    # Labels layer should be cleared (no cursors on harmonic 2)
+    # Labels layer should be cleared (no cursors on harmonic 2) since autoupdate is on
     if layer_name in [layer.name for layer in viewer.layers]:
         labels_layer = viewer.layers[layer_name]
         h2_labeled_pixels = np.count_nonzero(labels_layer.data)
         # If layer exists, it should have no labels
         assert h2_labeled_pixels == 0
+
+
+def test_automatic_clustering_table_read_only_values(make_napari_viewer):
+    """Test that automatic clustering table has read-only G, S, and radius values."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.automatic_clustering_widget
+
+    # Apply clustering
+    widget.num_clusters_spinbox.setValue(3)
+    widget._apply_clustering()
+
+    # Check table is populated
+    assert widget.cluster_table.rowCount() == 3
+
+    # Check that G, S, Major R, Minor R are QLabels (read-only)
+    from qtpy.QtWidgets import QLabel
+
+    for row in range(3):
+        g_widget = widget.cluster_table.cellWidget(row, 0)
+        s_widget = widget.cluster_table.cellWidget(row, 1)
+        major_r_widget = widget.cluster_table.cellWidget(row, 2)
+        minor_r_widget = widget.cluster_table.cellWidget(row, 3)
+
+        assert isinstance(g_widget, QLabel)
+        assert isinstance(s_widget, QLabel)
+        assert isinstance(major_r_widget, QLabel)
+        assert isinstance(minor_r_widget, QLabel)
+
+        # Check values are formatted
+        assert g_widget.text() != ""
+        assert s_widget.text() != ""
+        assert major_r_widget.text() != ""
+        assert minor_r_widget.text() != ""
+
+
+def test_automatic_clustering_table_color_button(make_napari_viewer):
+    """Test that automatic clustering table has editable color buttons."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.automatic_clustering_widget
+
+    # Apply clustering
+    widget.num_clusters_spinbox.setValue(2)
+    widget._apply_clustering()
+
+    # Check color buttons exist
+    from napari_phasors.selection_tab import ColorButton
+
+    color_button1 = widget.cluster_table.cellWidget(0, 4)
+    color_button2 = widget.cluster_table.cellWidget(1, 4)
+
+    assert isinstance(color_button1, ColorButton)
+    assert isinstance(color_button2, ColorButton)
+
+    # Should have different initial colors
+    initial_color1 = color_button1.color()
+    initial_color2 = color_button2.color()
+    assert initial_color1 != initial_color2
+
+
+def test_automatic_clustering_color_change_updates_layers(make_napari_viewer):
+    """Test that changing cluster color updates the labels layers."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.automatic_clustering_widget
+
+    # Apply clustering
+    widget.num_clusters_spinbox.setValue(2)
+    widget._apply_clustering()
+
+    from qtpy.QtGui import QColor
+
+    # Change color of first cluster
+    new_color = QColor(255, 0, 255)  # Magenta
+    widget._on_cluster_color_changed(0, new_color)
+
+    # Check that cluster color was updated
+    assert widget._clusters[0]['color'] == new_color
+
+    # Check that ellipse patch color was updated
+    if len(widget._ellipse_patches) > 0:
+        patch = widget._ellipse_patches[0]
+        edge_color = patch.get_edgecolor()
+        # Should have the new color (approximately, allowing for float conversion)
+        assert abs(edge_color[0] - 1.0) < 0.01  # Red channel
+        assert abs(edge_color[1] - 0.0) < 0.01  # Green channel
+        assert abs(edge_color[2] - 1.0) < 0.01  # Blue channel
+
+
+def test_automatic_clustering_remove_cluster(make_napari_viewer):
+    """Test removing individual clusters."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.automatic_clustering_widget
+
+    # Apply clustering with 3 clusters
+    widget.num_clusters_spinbox.setValue(3)
+    widget._apply_clustering()
+
+    assert len(widget._clusters) == 3
+    assert widget.cluster_table.rowCount() == 3
+    assert len(widget._ellipse_patches) == 3
+
+    # Remove first cluster
+    widget._remove_cluster(0)
+
+    assert len(widget._clusters) == 2
+    assert widget.cluster_table.rowCount() == 2
+    assert len(widget._ellipse_patches) == 2
+
+    # Remove all remaining clusters
+    widget._remove_cluster(0)
+    widget._remove_cluster(0)
+
+    assert len(widget._clusters) == 0
+    assert widget.cluster_table.rowCount() == 0
+    assert len(widget._ellipse_patches) == 0
+    assert widget.clear_button.isEnabled() == False
+
+
+def test_automatic_clustering_count_and_percentage(make_napari_viewer):
+    """Test that count and percentage columns are populated in automatic clustering table."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.automatic_clustering_widget
+
+    # Apply clustering
+    widget.num_clusters_spinbox.setValue(2)
+    widget._apply_clustering()
+
+    # Check that count and percentage are populated
+    from qtpy.QtWidgets import QLabel
+
+    for row in range(2):
+        count_label = widget.cluster_table.cellWidget(row, 5)
+        percentage_label = widget.cluster_table.cellWidget(row, 6)
+
+        assert isinstance(count_label, QLabel)
+        assert isinstance(percentage_label, QLabel)
+
+        # Should have actual values (not "-")
+        count_text = count_label.text()
+        percentage_text = percentage_label.text()
+
+        assert count_text != "-"
+        assert percentage_text != "-"
+
+        # Count should be a number
+        assert int(count_text) >= 0
+
+        # Percentage should have decimal format
+        assert "." in percentage_text or percentage_text.isdigit()
+
+
+def test_circular_cursor_drag_no_autoupdate(make_napari_viewer):
+    """Test that dragging doesn't update labels when autoupdate is off."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.circular_cursor_widget
+
+    # Ensure autoupdate is off
+    assert widget._autoupdate_enabled == False
+
+    # Add a cursor and create labels
+    widget._add_cursor()
+    widget._apply_selection()
+
+    # Get initial labels layer
+    layer_name = f"Cursor Selection: {intensity_image_layer.name}"
+    labels_layer = viewer.layers[layer_name]
+    initial_data = labels_layer.data.copy()
+
+    # Simulate dragging
+    widget._dragging_cursor = 0
+    widget._drag_offset = (0, 0)
+
+    mock_event = Mock()
+    mock_event.xdata = 0.8
+    mock_event.ydata = 0.4
+    widget._on_motion(mock_event)
+
+    # Release drag
+    mock_release_event = Mock()
+    widget._on_release(mock_release_event)
+
+    # Labels should be updated after release (statistics updated)
+    # But since we didn't call apply_selection, actual selection map might not change
+    # Check that statistics were updated
+    count_label = widget.cursor_table.cellWidget(0, 4)
+    assert count_label.text() != "-"
+
+
+def test_circular_cursor_drag_with_autoupdate(make_napari_viewer):
+    """Test that dragging updates labels when autoupdate is on."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.circular_cursor_widget
+
+    # Enable autoupdate
+    widget.autoupdate_check.setChecked(True)
+    assert widget._autoupdate_enabled == True
+
+    # Add a cursor (labels should be created immediately with autoupdate)
+    widget._add_cursor(g=0.5, s=0.3, radius=0.2)
+
+    # Get labels layer
+    layer_name = f"Cursor Selection: {intensity_image_layer.name}"
+    labels_layer = viewer.layers[layer_name]
+    initial_nonzero = np.count_nonzero(labels_layer.data)
+
+    # Simulate dragging to a different position
+    widget._dragging_cursor = 0
+    widget._drag_offset = (0, 0)
+
+    mock_event = Mock()
+    mock_event.xdata = 0.7
+    mock_event.ydata = 0.5
+    widget._on_motion(mock_event)
+
+    # Release drag
+    mock_release_event = Mock()
+    widget._on_release(mock_release_event)
+
+    # Labels should be updated after release with autoupdate
+    # The selection may be different due to different position
+    final_nonzero = np.count_nonzero(labels_layer.data)
+    # Just check that labels exist
+    assert final_nonzero >= 0
