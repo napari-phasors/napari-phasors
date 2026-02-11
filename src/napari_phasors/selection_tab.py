@@ -11,9 +11,10 @@ from phasorpy.cursor import (
     mask_from_elliptic_cursor,
 )
 from qtpy import uic
-from qtpy.QtCore import Signal
+from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
+    QCheckBox,
     QColorDialog,
     QComboBox,
     QDoubleSpinBox,
@@ -145,13 +146,13 @@ class SelectionWidget(QWidget):
         )
         self.stacked_widget.addWidget(self.circular_cursor_widget)
 
-        self.stacked_widget.addWidget(self.manual_selection_widget)
-
         # === Automatic Clustering Mode Widget ===
         self.automatic_clustering_widget = AutomaticClusteringWidget(
             viewer, self.parent_widget
         )
         self.stacked_widget.addWidget(self.automatic_clustering_widget)
+
+        self.stacked_widget.addWidget(self.manual_selection_widget)
 
         # Connect mode change
         self.selection_mode_combobox.currentIndexChanged.connect(
@@ -164,14 +165,14 @@ class SelectionWidget(QWidget):
         current_mode = self.selection_mode_combobox.currentIndex()
         if current_mode == 0:  # Circular Cursor mode
             self.circular_cursor_widget.on_harmonic_changed()
-        elif current_mode == 2:  # Automatic Clustering mode
+        elif current_mode == 1:  # Automatic Clustering mode
             self.automatic_clustering_widget.on_harmonic_changed()
 
     def is_manual_selection_mode(self):
         """Check if manual selection mode is currently active."""
         return (
-            self.selection_mode_combobox.currentIndex() == 1
-        )  # Manual is index 1
+            self.selection_mode_combobox.currentIndex() == 2
+        )  # Manual is index 2
 
     def _manage_labels_layer_visibility(self, show_manual):
         """Manage visibility of labels layers based on selection mode.
@@ -214,14 +215,14 @@ class SelectionWidget(QWidget):
         """Handle selection mode change."""
         self.stacked_widget.setCurrentIndex(index)
 
-        if index == 1:  # Manual selection mode
+        if index == 2:  # Manual selection mode
             self.circular_cursor_widget.clear_all_patches()
             self.automatic_clustering_widget.clear_all_patches()
             if self.parent_widget is not None:
                 self.parent_widget._set_selection_visibility(True)
             self._manage_labels_layer_visibility(show_manual=True)
             self.update_phasor_plot_with_selection_id(self.selection_id)
-        elif index == 2:  # Automatic clustering mode
+        elif index == 1:  # Automatic clustering mode
             # Deactivate any active selection tools before hiding toolbar
             if self.parent_widget is not None:
                 self.parent_widget.canvas_widget._on_escape(None)
@@ -917,10 +918,12 @@ class AutomaticClusteringWidget(QWidget):
         self.viewer = viewer
         self.parent_widget = parent_widget
 
-        # Store cluster data: list of dicts with cluster info
+        # Store cluster data: list of dicts with cluster info (one per cluster)
         self._clusters = []
         self._ellipse_patches = []
         self._phasors_selected_layer = None
+        # Store label layers per image layer
+        self._label_layers = {}  # {image_layer_name: labels_layer}
 
         self._setup_ui()
 
@@ -952,6 +955,43 @@ class AutomaticClusteringWidget(QWidget):
         self.apply_button = QPushButton("Apply Clustering")
         self.apply_button.clicked.connect(self._apply_clustering)
         layout.addWidget(self.apply_button)
+
+        # Table for clusters
+        self.cluster_table = QTableWidget()
+        self.cluster_table.setColumnCount(8)
+        self.cluster_table.setHorizontalHeaderLabels(
+            [
+                "G",
+                "S",
+                "Major Radius",
+                "Minor Radius",
+                "Color",
+                "Count",
+                "%",
+                "",
+            ]
+        )
+        self.cluster_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.Stretch
+        )
+        self.cluster_table.horizontalHeader().setSectionResizeMode(
+            4, QHeaderView.Fixed
+        )
+        self.cluster_table.horizontalHeader().setSectionResizeMode(
+            5, QHeaderView.Fixed
+        )
+        self.cluster_table.horizontalHeader().setSectionResizeMode(
+            6, QHeaderView.Fixed
+        )
+        self.cluster_table.horizontalHeader().setSectionResizeMode(
+            7, QHeaderView.Fixed
+        )
+        self.cluster_table.setColumnWidth(4, 40)
+        self.cluster_table.setColumnWidth(5, 70)
+        self.cluster_table.setColumnWidth(6, 60)
+        self.cluster_table.setColumnWidth(7, 40)
+        self.cluster_table.verticalHeader().setVisible(False)
+        layout.addWidget(self.cluster_table)
 
         # Clear button
         self.clear_button = QPushButton("Clear Clusters")
@@ -1042,6 +1082,24 @@ class AutomaticClusteringWidget(QWidget):
                 self.parent_widget.harmonic,
             )
 
+            # Store individual cluster information
+            self._clusters.clear()
+            for i in range(n_clusters):
+                color_idx = i % len(self.DEFAULT_COLORS)
+                cluster_data = {
+                    'g': center_real[i],
+                    's': center_imag[i],
+                    'radius': radius[i],
+                    'radius_minor': radius_minor[i],
+                    'angle': angle[i],
+                    'color': self.DEFAULT_COLORS[color_idx],
+                    'harmonic': self.parent_widget.harmonic,
+                }
+                self._clusters.append(cluster_data)
+
+            # Populate the table with cluster information
+            self._populate_cluster_table()
+
             # Step 4: Apply the same cluster parameters to each layer
             for layer_info in layer_data:
                 layer = layer_info['layer']
@@ -1053,30 +1111,17 @@ class AutomaticClusteringWidget(QWidget):
                 selection_map = np.zeros(spatial_shape, dtype=np.uint32)
 
                 # Apply each cluster using elliptic cursor
-                for idx in range(n_clusters):
+                for idx, cluster in enumerate(self._clusters):
                     mask = mask_from_elliptic_cursor(
                         g,
                         s,
-                        center_real[idx],
-                        center_imag[idx],
-                        radius=radius[idx],
-                        radius_minor=radius_minor[idx],
-                        angle=angle[idx],
+                        cluster['g'],
+                        cluster['s'],
+                        radius=cluster['radius'],
+                        radius_minor=cluster['radius_minor'],
+                        angle=cluster['angle'],
                     )
                     selection_map[mask] = idx + 1
-
-                # Store cluster information (once per layer for labels)
-                cluster_info = {
-                    'layer': layer,
-                    'center_real': center_real,
-                    'center_imag': center_imag,
-                    'radius': radius,
-                    'radius_minor': radius_minor,
-                    'angle': angle,
-                    'n_clusters': n_clusters,
-                    'harmonic': self.parent_widget.harmonic,
-                }
-                self._clusters.append(cluster_info)
 
                 # Create labels layer
                 self._create_or_update_labels_layer(layer, selection_map)
@@ -1090,9 +1135,319 @@ class AutomaticClusteringWidget(QWidget):
         # Enable clear button
         self.clear_button.setEnabled(True)
 
+        # Update statistics
+        self._update_cluster_statistics()
+
         # Redraw canvas
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def _populate_cluster_table(self):
+        """Populate the table with cluster information."""
+        self.cluster_table.setRowCount(0)
+
+        for cluster_idx, cluster in enumerate(self._clusters):
+            table_row = self.cluster_table.rowCount()
+            self.cluster_table.insertRow(table_row)
+
+            # G label (read-only)
+            g_label = QLabel(f"{cluster['g']:.3f}")
+            g_label.setAlignment(Qt.AlignCenter)
+            self.cluster_table.setCellWidget(table_row, 0, g_label)
+
+            # S label (read-only)
+            s_label = QLabel(f"{cluster['s']:.3f}")
+            s_label.setAlignment(Qt.AlignCenter)
+            self.cluster_table.setCellWidget(table_row, 1, s_label)
+
+            # Major radius label (read-only)
+            major_r_label = QLabel(f"{cluster['radius']:.3f}")
+            major_r_label.setAlignment(Qt.AlignCenter)
+            self.cluster_table.setCellWidget(table_row, 2, major_r_label)
+
+            # Minor radius label (read-only)
+            minor_r_label = QLabel(f"{cluster['radius_minor']:.3f}")
+            minor_r_label.setAlignment(Qt.AlignCenter)
+            self.cluster_table.setCellWidget(table_row, 3, minor_r_label)
+
+            # Color button (editable)
+            color_button = ColorButton(cluster['color'])
+            color_button.color_changed.connect(
+                lambda c, idx=cluster_idx: self._on_cluster_color_changed(
+                    idx, c
+                )
+            )
+            self.cluster_table.setCellWidget(table_row, 4, color_button)
+
+            # Count label
+            count_label = QLabel("-")
+            count_label.setAlignment(Qt.AlignCenter)
+            self.cluster_table.setCellWidget(table_row, 5, count_label)
+
+            # Percentage label
+            percentage_label = QLabel("-")
+            percentage_label.setAlignment(Qt.AlignCenter)
+            self.cluster_table.setCellWidget(table_row, 6, percentage_label)
+
+            # Remove button
+            remove_button = QPushButton("×")
+            remove_button.setFixedSize(25, 25)
+            remove_button.clicked.connect(
+                lambda _, idx=cluster_idx: self._remove_cluster(idx)
+            )
+            self.cluster_table.setCellWidget(table_row, 7, remove_button)
+
+    def _on_cluster_color_changed(self, cluster_idx, new_color):
+        """Handle color change for a cluster."""
+        if cluster_idx < 0 or cluster_idx >= len(self._clusters):
+            return
+
+        # Update cluster color
+        self._clusters[cluster_idx]['color'] = new_color
+
+        # Redraw ellipse with new color
+        self._redraw_cluster_ellipse(cluster_idx)
+
+        # Update all labels layers with new color
+        self._update_all_labels_layer_colors()
+
+        # Redraw canvas
+        if self.parent_widget is not None:
+            self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def _redraw_cluster_ellipse(self, cluster_idx):
+        """Redraw a specific cluster ellipse with updated color."""
+        if cluster_idx < 0 or cluster_idx >= len(self._clusters):
+            return
+        if cluster_idx >= len(self._ellipse_patches):
+            return
+
+        cluster = self._clusters[cluster_idx]
+        patch = self._ellipse_patches[cluster_idx]
+
+        # Update patch color
+        color = cluster['color']
+        color_rgb = (color.redF(), color.greenF(), color.blueF())
+        patch.set_edgecolor(color_rgb)
+
+    def _remove_cluster(self, cluster_idx):
+        """Remove a specific cluster."""
+        if cluster_idx < 0 or cluster_idx >= len(self._clusters):
+            return
+
+        # Remove ellipse patch
+        if cluster_idx < len(self._ellipse_patches):
+            try:
+                self._ellipse_patches[cluster_idx].remove()
+            except ValueError:
+                pass
+            self._ellipse_patches.pop(cluster_idx)
+
+        # Remove cluster data
+        self._clusters.pop(cluster_idx)
+
+        # Rebuild table
+        self._populate_cluster_table()
+
+        # Reapply clustering to all layers with remaining clusters
+        if self._clusters:
+            self._reapply_clustering_to_layers()
+            self._update_cluster_statistics()
+        else:
+            # If no clusters left, clear everything
+            self._clear_all_labels_layers()
+            self.cluster_table.setRowCount(0)
+            self.clear_button.setEnabled(False)
+
+        # Redraw canvas
+        if self.parent_widget is not None:
+            self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def _reapply_clustering_to_layers(self):
+        """Reapply clustering to all selected layers using current cluster parameters."""
+        selected_layers = self._get_selected_layers()
+        if not selected_layers:
+            return
+
+        current_harmonic = self.parent_widget.harmonic
+
+        for layer in selected_layers:
+            g_array = layer.metadata.get('G')
+            s_array = layer.metadata.get('S')
+
+            if g_array is None or s_array is None:
+                continue
+
+            # Extract correct harmonic if arrays are 3D
+            if g_array.ndim == 3:
+                harmonics_array = layer.metadata.get('harmonics')
+                if harmonics_array is not None:
+                    harmonics_array = np.atleast_1d(harmonics_array)
+                    try:
+                        harmonic_idx = int(
+                            np.where(harmonics_array == current_harmonic)[0][0]
+                        )
+                    except (IndexError, ValueError):
+                        continue
+                else:
+                    harmonic_idx = 0
+                g = g_array[harmonic_idx]
+                s = s_array[harmonic_idx]
+            else:
+                g = g_array
+                s = s_array
+
+            spatial_shape = (
+                layer.data.shape[:2]
+                if layer.data.ndim >= 2
+                else layer.data.shape
+            )
+
+            # Create selection map
+            selection_map = np.zeros(spatial_shape, dtype=np.uint32)
+
+            # Apply each cluster
+            for idx, cluster in enumerate(self._clusters):
+                if cluster.get('harmonic', 1) != current_harmonic:
+                    continue
+                mask = mask_from_elliptic_cursor(
+                    g,
+                    s,
+                    cluster['g'],
+                    cluster['s'],
+                    radius=cluster['radius'],
+                    radius_minor=cluster['radius_minor'],
+                    angle=cluster['angle'],
+                )
+                selection_map[mask] = idx + 1
+
+            # Update labels layer
+            self._create_or_update_labels_layer(layer, selection_map)
+
+    def _update_cluster_statistics(self):
+        """Update the count and percentage columns in the cluster table."""
+        if self.parent_widget is None:
+            return
+
+        selected_layers = self._get_selected_layers()
+        if not selected_layers:
+            return
+
+        current_harmonic = self.parent_widget.harmonic
+
+        # Calculate total valid pixels across all selected layers
+        total_valid_pixels = 0
+        for layer in selected_layers:
+            g_array = layer.metadata.get('G')
+            s_array = layer.metadata.get('S')
+            harmonics_array = layer.metadata.get('harmonics')
+
+            if g_array is None or s_array is None:
+                continue
+
+            # Extract correct harmonic if arrays are 3D
+            if harmonics_array is not None:
+                harmonics_array = np.atleast_1d(harmonics_array)
+                target_harmonic = current_harmonic
+                try:
+                    harmonic_idx = int(
+                        np.where(harmonics_array == target_harmonic)[0][0]
+                    )
+                except (IndexError, ValueError):
+                    continue
+            else:
+                harmonic_idx = 0
+
+            if g_array.ndim == 3:
+                g = g_array[harmonic_idx]
+                s = s_array[harmonic_idx]
+            else:
+                g = g_array
+                s = s_array
+
+            valid_pixels_mask = np.isfinite(g) & np.isfinite(s)
+            total_valid_pixels += np.sum(valid_pixels_mask)
+
+        if total_valid_pixels == 0:
+            # If no valid pixels, clear statistics
+            for table_row in range(self.cluster_table.rowCount()):
+                count_label = self.cluster_table.cellWidget(table_row, 5)
+                percentage_label = self.cluster_table.cellWidget(table_row, 6)
+                if count_label:
+                    count_label.setText("-")
+                if percentage_label:
+                    percentage_label.setText("-")
+            return
+
+        # Calculate statistics for each cluster
+        cluster_pixel_counts = {}
+        for cluster_idx, cluster in enumerate(self._clusters):
+            if cluster.get('harmonic', 1) != current_harmonic:
+                continue
+
+            count = 0
+            for layer in selected_layers:
+                g_array = layer.metadata.get('G')
+                s_array = layer.metadata.get('S')
+                harmonics_array = layer.metadata.get('harmonics')
+
+                if g_array is None or s_array is None:
+                    continue
+
+                # Extract correct harmonic if arrays are 3D
+                if harmonics_array is not None:
+                    harmonics_array = np.atleast_1d(harmonics_array)
+                    target_harmonic = current_harmonic
+                    try:
+                        harmonic_idx = int(
+                            np.where(harmonics_array == target_harmonic)[0][0]
+                        )
+                    except (IndexError, ValueError):
+                        continue
+                else:
+                    harmonic_idx = 0
+
+                if g_array.ndim == 3:
+                    g = g_array[harmonic_idx]
+                    s = s_array[harmonic_idx]
+                else:
+                    g = g_array
+                    s = s_array
+
+                # Calculate mask for this cluster
+                mask = mask_from_elliptic_cursor(
+                    g,
+                    s,
+                    cluster['g'],
+                    cluster['s'],
+                    radius=cluster['radius'],
+                    radius_minor=cluster['radius_minor'],
+                    angle=cluster['angle'],
+                )
+
+                count += np.sum(mask)
+
+            cluster_pixel_counts[cluster_idx] = count
+
+        # Update table with statistics
+        for table_row in range(self.cluster_table.rowCount()):
+            if table_row >= len(self._clusters):
+                break
+
+            count = cluster_pixel_counts.get(table_row, 0)
+            percentage = (
+                (count / total_valid_pixels * 100)
+                if total_valid_pixels > 0
+                else 0
+            )
+
+            count_label = self.cluster_table.cellWidget(table_row, 5)
+            percentage_label = self.cluster_table.cellWidget(table_row, 6)
+
+            if count_label:
+                count_label.setText(str(count))
+            if percentage_label:
+                percentage_label.setText(f"{percentage:.1f}")
 
     def _draw_cluster_ellipses(
         self,
@@ -1156,21 +1511,29 @@ class AutomaticClusteringWidget(QWidget):
         self._ellipse_patches.clear()
 
         if not clear_patches_only:
-            # Remove labels layers
-            for cluster_info in self._clusters:
-                layer = cluster_info['layer']
-                layer_name = f"Cluster Selection: {layer.name}"
-                for viewer_layer in list(self.viewer.layers):
-                    if viewer_layer.name == layer_name:
-                        self.viewer.layers.remove(viewer_layer)
-                        break
+            # Clear table
+            self.cluster_table.setRowCount(0)
+
+            # Remove all labels layers
+            self._clear_all_labels_layers()
 
             self._clusters.clear()
+            self._label_layers.clear()
             self.clear_button.setEnabled(False)
 
         # Redraw canvas
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def _clear_all_labels_layers(self):
+        """Remove all cluster selection labels layers."""
+        for layer_name, labels_layer in list(self._label_layers.items()):
+            try:
+                if labels_layer in self.viewer.layers:
+                    self.viewer.layers.remove(labels_layer)
+            except (ValueError, KeyError):
+                pass
+        self._label_layers.clear()
 
     def clear_all_patches(self):
         """Clear all patches from the canvas (called when switching modes)."""
@@ -1190,16 +1553,38 @@ class AutomaticClusteringWidget(QWidget):
         self.clear_all_patches()
 
         # Redraw ellipses for all clusters
-        for cluster_info in self._clusters:
-            center_real = cluster_info['center_real']
-            center_imag = cluster_info['center_imag']
-            radius = cluster_info['radius']
-            radius_minor = cluster_info['radius_minor']
-            angle = cluster_info['angle']
-            harmonic = cluster_info.get('harmonic', None)
-            self._draw_cluster_ellipses(
-                center_real, center_imag, radius, radius_minor, angle, harmonic
+        if self.parent_widget is None:
+            return
+
+        ax = self.parent_widget.canvas_widget.axes
+        current_harmonic = self.parent_widget.harmonic
+
+        for cluster in self._clusters:
+            # Only draw if harmonic matches
+            if cluster.get('harmonic', 1) != current_harmonic:
+                continue
+
+            color = cluster['color']
+            color_rgb = (color.redF(), color.greenF(), color.blueF())
+
+            width = 2 * cluster['radius']
+            height = 2 * cluster['radius_minor']
+            angle_degrees = np.degrees(cluster['angle'])
+
+            ellipse = Ellipse(
+                xy=(cluster['g'], cluster['s']),
+                width=width,
+                height=height,
+                angle=angle_degrees,
+                edgecolor=color_rgb,
+                facecolor='none',
+                linewidth=2,
+                alpha=1,
+                picker=False,
             )
+
+            ax.add_patch(ellipse)
+            self._ellipse_patches.append(ellipse)
 
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
@@ -1207,17 +1592,16 @@ class AutomaticClusteringWidget(QWidget):
     def on_harmonic_changed(self):
         """Called when the harmonic selection changes. Redraws cluster ellipses to show only those matching the current harmonic."""
         self.redraw_all_patches()
+        if self._clusters:
+            self._update_cluster_statistics()
 
     def _create_or_update_labels_layer(self, image_layer, selection_map):
         """Create or update the labels layer for the cluster selection."""
         layer_name = f"Cluster Selection: {image_layer.name}"
 
-        # Create color dictionary for clusters
         color_dict = {None: (0, 0, 0, 0)}
-        n_clusters = self.num_clusters_spinbox.value()
-        for idx in range(n_clusters):
-            color_idx = idx % len(self.DEFAULT_COLORS)
-            color = self.DEFAULT_COLORS[color_idx]
+        for idx, cluster in enumerate(self._clusters):
+            color = cluster['color']
             color_dict[idx + 1] = (
                 color.redF(),
                 color.greenF(),
@@ -1225,19 +1609,14 @@ class AutomaticClusteringWidget(QWidget):
                 1.0,
             )
 
-        existing_layer = None
-        for viewer_layer in self.viewer.layers:
-            if viewer_layer.name == layer_name:
-                existing_layer = viewer_layer
-                break
+        existing_layer = self._label_layers.get(image_layer.name)
 
-        if existing_layer is not None:
+        if existing_layer is not None and existing_layer in self.viewer.layers:
             existing_layer.data = selection_map
             existing_layer.colormap = DirectLabelColormap(
                 color_dict=color_dict, name="cluster_colors"
             )
             existing_layer.visible = True
-            self._phasors_selected_layer = existing_layer
         else:
             labels_layer = Labels(
                 selection_map,
@@ -1251,7 +1630,26 @@ class AutomaticClusteringWidget(QWidget):
                     'napari_phasors_source_layer': image_layer.name,
                 },
             )
-            self._phasors_selected_layer = self.viewer.add_layer(labels_layer)
+            labels_layer = self.viewer.add_layer(labels_layer)
+            self._label_layers[image_layer.name] = labels_layer
+
+    def _update_all_labels_layer_colors(self):
+        """Update colors in all labels layers after color changes."""
+        color_dict = {None: (0, 0, 0, 0)}
+        for idx, cluster in enumerate(self._clusters):
+            color = cluster['color']
+            color_dict[idx + 1] = (
+                color.redF(),
+                color.greenF(),
+                color.blueF(),
+                1.0,
+            )
+
+        for layer_name, labels_layer in self._label_layers.items():
+            if labels_layer in self.viewer.layers:
+                labels_layer.colormap = DirectLabelColormap(
+                    color_dict=color_dict, name="cluster_colors"
+                )
 
     def _get_selected_layers(self):
         """Get all currently selected layers."""
@@ -1336,6 +1734,9 @@ class CircularCursorWidget(QWidget):
         self._dragging_cursor = None
         self._drag_offset = (0, 0)
 
+        # Autoupdate state (not stored in metadata)
+        self._autoupdate_enabled = False
+
         self._setup_ui()
         self._connect_drag_events()
 
@@ -1346,9 +1747,9 @@ class CircularCursorWidget(QWidget):
 
         # Table for cursors
         self.cursor_table = QTableWidget()
-        self.cursor_table.setColumnCount(5)
+        self.cursor_table.setColumnCount(7)
         self.cursor_table.setHorizontalHeaderLabels(
-            ["G", "S", "Radius", "Color", ""]
+            ["G", "S", "Radius", "Color", "Count", "%", ""]
         )
         self.cursor_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.Stretch
@@ -1359,8 +1760,16 @@ class CircularCursorWidget(QWidget):
         self.cursor_table.horizontalHeader().setSectionResizeMode(
             4, QHeaderView.Fixed
         )
+        self.cursor_table.horizontalHeader().setSectionResizeMode(
+            5, QHeaderView.Fixed
+        )
+        self.cursor_table.horizontalHeader().setSectionResizeMode(
+            6, QHeaderView.Fixed
+        )
         self.cursor_table.setColumnWidth(3, 40)
-        self.cursor_table.setColumnWidth(4, 40)
+        self.cursor_table.setColumnWidth(4, 70)
+        self.cursor_table.setColumnWidth(5, 60)
+        self.cursor_table.setColumnWidth(6, 40)
         self.cursor_table.verticalHeader().setVisible(False)
         layout.addWidget(self.cursor_table)
 
@@ -1376,6 +1785,24 @@ class CircularCursorWidget(QWidget):
         buttons_layout.addWidget(self.clear_all_button)
 
         layout.addLayout(buttons_layout)
+
+        # Calculate button and autoupdate checkbox
+        calculate_layout = QHBoxLayout()
+
+        self.calculate_button = QPushButton("Calculate")
+        self.calculate_button.clicked.connect(self._on_calculate_clicked)
+        calculate_layout.addWidget(self.calculate_button)
+
+        self.autoupdate_checkbox = QWidget()
+        autoupdate_layout = QHBoxLayout(self.autoupdate_checkbox)
+        autoupdate_layout.setContentsMargins(0, 0, 0, 0)
+        self.autoupdate_check = QCheckBox("Autoupdate")
+        self.autoupdate_check.setChecked(False)
+        self.autoupdate_check.stateChanged.connect(self._on_autoupdate_changed)
+        autoupdate_layout.addWidget(self.autoupdate_check)
+        calculate_layout.addWidget(self.autoupdate_checkbox)
+
+        layout.addLayout(calculate_layout)
 
         layout.addStretch()
 
@@ -1467,20 +1894,33 @@ class CircularCursorWidget(QWidget):
         )
         self.cursor_table.setCellWidget(table_row, 3, color_button)
 
+        # Count label
+        count_label = QLabel("-")
+        count_label.setAlignment(Qt.AlignCenter)
+        self.cursor_table.setCellWidget(table_row, 4, count_label)
+
+        # Percentage label
+        percentage_label = QLabel("-")
+        percentage_label.setAlignment(Qt.AlignCenter)
+        self.cursor_table.setCellWidget(table_row, 5, percentage_label)
+
         # Remove button
         remove_button = QPushButton("×")
         remove_button.setFixedSize(25, 25)
         remove_button.clicked.connect(
             lambda _, idx=cursor_idx: self._remove_cursor(idx)
         )
-        self.cursor_table.setCellWidget(table_row, 4, remove_button)
+        self.cursor_table.setCellWidget(table_row, 6, remove_button)
 
         # Draw patch on canvas using cursor_idx
         self._update_cursor_patch(cursor_idx)
 
-        # Apply selection to update labels layer
-        if self._cursors:
+        # Apply selection to update labels layer (only if autoupdate is enabled)
+        if self._cursors and self._autoupdate_enabled:
             self._apply_selection()
+        else:
+            # Update statistics even if not applying selection
+            self._update_cursor_statistics()
 
     def _remove_cursor(self, cursor_idx):
         """Remove a cursor from the table using its index in self._cursors."""
@@ -1522,7 +1962,7 @@ class CircularCursorWidget(QWidget):
             s_spinbox = self.cursor_table.cellWidget(row, 1)
             radius_spinbox = self.cursor_table.cellWidget(row, 2)
             color_button = self.cursor_table.cellWidget(row, 3)
-            remove_button = self.cursor_table.cellWidget(row, 4)
+            remove_button = self.cursor_table.cellWidget(row, 6)
 
             # Disconnect existing connections and reconnect with correct row
             try:
@@ -1585,9 +2025,16 @@ class CircularCursorWidget(QWidget):
 
             self._update_cursor_patch(cursor_idx)
 
-            # Apply selection automatically if not currently dragging
-            if self._dragging_cursor is None and self._cursors:
+            # Apply selection automatically if not currently dragging and autoupdate is enabled
+            if (
+                self._dragging_cursor is None
+                and self._cursors
+                and self._autoupdate_enabled
+            ):
                 self._apply_selection()
+            elif self._dragging_cursor is None and self._cursors:
+                # Update statistics even if not applying selection
+                self._update_cursor_statistics()
 
     def _update_cursor_patch(self, row):
         """Update or create the patch for a cursor."""
@@ -1726,20 +2173,34 @@ class CircularCursorWidget(QWidget):
                 )
                 self.cursor_table.setCellWidget(table_row, 3, color_button)
 
+                # Count label
+                count_label = QLabel("-")
+                count_label.setAlignment(Qt.AlignCenter)
+                self.cursor_table.setCellWidget(table_row, 4, count_label)
+
+                # Percentage label
+                percentage_label = QLabel("-")
+                percentage_label.setAlignment(Qt.AlignCenter)
+                self.cursor_table.setCellWidget(table_row, 5, percentage_label)
+
                 # Remove button
                 remove_button = QPushButton("×")
                 remove_button.setFixedSize(25, 25)
                 remove_button.clicked.connect(
                     lambda _, idx=cursor_idx: self._remove_cursor(idx)
                 )
-                self.cursor_table.setCellWidget(table_row, 4, remove_button)
+                self.cursor_table.setCellWidget(table_row, 6, remove_button)
 
         # Redraw patches for current harmonic
         for row in range(len(self._cursors)):
             self._update_cursor_patch(row)
 
-        # Update labels layer to show only current harmonic selections
-        self._apply_selection()
+        # Update labels layer to show only current harmonic selections (only if autoupdate is enabled)
+        if self._autoupdate_enabled:
+            self._apply_selection()
+        else:
+            # Update statistics even if not applying selection
+            self._update_cursor_statistics()
 
     def _on_image_layer_changed(self):
         """Callback when image layer changes - clear and restore circular cursors."""
@@ -1810,6 +2271,21 @@ class CircularCursorWidget(QWidget):
         if self.parent_widget is None:
             return []
         return self.parent_widget.get_selected_layers()
+
+    def _on_calculate_clicked(self):
+        """Handle Calculate button click - manually trigger selection calculation."""
+        if self._cursors:
+            self._apply_selection()
+
+    def _on_autoupdate_changed(self, state):
+        """Handle Autoupdate checkbox state change."""
+        self._autoupdate_enabled = self.autoupdate_check.isChecked()
+        # Enable/disable calculate button based on autoupdate state
+        self.calculate_button.setEnabled(not self._autoupdate_enabled)
+
+        # If autoupdate is being enabled, immediately apply selection
+        if self._autoupdate_enabled and self._cursors:
+            self._apply_selection()
 
     def _remove_selection_layer(self):
         """Remove the selection layer if it exists."""
@@ -1938,6 +2414,135 @@ class CircularCursorWidget(QWidget):
                 layer, selection_map, current_harmonic_cursors
             )
 
+        # Update count and percentage in the table
+        self._update_cursor_statistics()
+
+    def _update_cursor_statistics(self):
+        """Update the count and percentage columns in the cursor table."""
+        if self.parent_widget is None:
+            return
+
+        selected_layers = self._get_selected_layers()
+        if not selected_layers:
+            return
+
+        current_harmonic = self.parent_widget.harmonic
+
+        # Calculate total valid pixels across all selected layers
+        total_valid_pixels = 0
+        for layer in selected_layers:
+            g_array = layer.metadata.get('G')
+            s_array = layer.metadata.get('S')
+            harmonics_array = layer.metadata.get('harmonics')
+
+            if g_array is None or s_array is None:
+                continue
+
+            # Extract correct harmonic if arrays are 3D
+            if harmonics_array is not None:
+                harmonics_array = np.atleast_1d(harmonics_array)
+                target_harmonic = current_harmonic
+                try:
+                    harmonic_idx = int(
+                        np.where(harmonics_array == target_harmonic)[0][0]
+                    )
+                except (IndexError, ValueError):
+                    continue
+            else:
+                harmonic_idx = 0
+
+            if g_array.ndim == 3:
+                g = g_array[harmonic_idx]
+                s = s_array[harmonic_idx]
+            else:
+                g = g_array
+                s = s_array
+
+            valid_pixels_mask = np.isfinite(g) & np.isfinite(s)
+            total_valid_pixels += np.sum(valid_pixels_mask)
+
+        if total_valid_pixels == 0:
+            # If no valid pixels, clear statistics
+            for table_row in range(self.cursor_table.rowCount()):
+                count_label = self.cursor_table.cellWidget(table_row, 4)
+                percentage_label = self.cursor_table.cellWidget(table_row, 5)
+                if count_label:
+                    count_label.setText("-")
+                if percentage_label:
+                    percentage_label.setText("-")
+            return
+
+        # Calculate statistics for each cursor
+        current_harmonic_cursors = [
+            (idx, cursor)
+            for idx, cursor in enumerate(self._cursors)
+            if cursor.get('harmonic', 1) == current_harmonic
+        ]
+
+        cursor_pixel_counts = {}
+        for cursor_idx, cursor in current_harmonic_cursors:
+            count = 0
+            for layer in selected_layers:
+                g_array = layer.metadata.get('G')
+                s_array = layer.metadata.get('S')
+                harmonics_array = layer.metadata.get('harmonics')
+
+                if g_array is None or s_array is None:
+                    continue
+
+                # Extract correct harmonic if arrays are 3D
+                if harmonics_array is not None:
+                    harmonics_array = np.atleast_1d(harmonics_array)
+                    target_harmonic = current_harmonic
+                    try:
+                        harmonic_idx = int(
+                            np.where(harmonics_array == target_harmonic)[0][0]
+                        )
+                    except (IndexError, ValueError):
+                        continue
+                else:
+                    harmonic_idx = 0
+
+                if g_array.ndim == 3:
+                    g = g_array[harmonic_idx]
+                    s = s_array[harmonic_idx]
+                else:
+                    g = g_array
+                    s = s_array
+
+                # Calculate mask for this cursor
+                g_center = cursor['g']
+                s_center = cursor['s']
+                radius = cursor['radius']
+
+                mask = mask_from_circular_cursor(
+                    g, s, [g_center], [s_center], radius=[radius]
+                )[0]
+
+                count += np.sum(mask)
+
+            cursor_pixel_counts[cursor_idx] = count
+
+        # Update table with statistics
+        table_row = 0
+        for cursor_idx, cursor in current_harmonic_cursors:
+            count = cursor_pixel_counts[cursor_idx]
+            percentage = (
+                (count / total_valid_pixels * 100)
+                if total_valid_pixels > 0
+                else 0
+            )
+
+            count_label = self.cursor_table.cellWidget(table_row, 4)
+            percentage_label = self.cursor_table.cellWidget(table_row, 5)
+
+            if count_label:
+                count_label.setText(str(count))
+            if percentage_label:
+                percentage_label.setText(f"{percentage:.1f}")
+
+            table_row += 1
+
     def _create_or_update_labels_layer(
         self, image_layer, selection_map, cursors_list
     ):
@@ -2063,6 +2668,11 @@ class CircularCursorWidget(QWidget):
     def _on_release(self, event):
         """Handle mouse release to finish dragging and update selection."""
         if self._dragging_cursor is not None:
-            self._apply_selection()
+            # Only apply selection if autoupdate is enabled
+            if self._autoupdate_enabled:
+                self._apply_selection()
+            else:
+                # Update statistics even if not applying selection
+                self._update_cursor_statistics()
             self._dragging_cursor = None
             self._drag_offset = (0, 0)
