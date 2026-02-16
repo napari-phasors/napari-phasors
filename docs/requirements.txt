@@ -1,0 +1,9 @@
+jupyter-book<2.0
+matplotlib
+numpy
+sphinx-inline-tabs
+sphinx-examples
+sphinx-proof
+sphinx-hoverxref
+PyQt5
+qtpy
