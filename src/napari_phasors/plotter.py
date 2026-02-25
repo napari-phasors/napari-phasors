@@ -1,4 +1,5 @@
 import copy
+import html
 import math
 import warnings
 from pathlib import Path
@@ -1334,7 +1335,9 @@ class PlotterWidget(QWidget):
                 settings["frequency"] = attrs["frequency"]
             if "description" in attrs:
                 try:
-                    description = json.loads(attrs["description"])
+                    # HTML-unescape the description to handle tifffile HTML encoding
+                    description_str = html.unescape(attrs["description"])
+                    description = json.loads(description_str)
                     if "napari_phasors_settings" in description:
                         napari_phasors_settings = json.loads(
                             description["napari_phasors_settings"]

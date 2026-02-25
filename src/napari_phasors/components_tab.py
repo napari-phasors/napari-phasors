@@ -449,6 +449,10 @@ class ComponentsWidget(QWidget):
         if not self.current_image_layer_name:
             return
 
+        # Check if layer still exists (defensive check for cleanup/teardown)
+        if self.current_image_layer_name not in self.viewer.layers:
+            return
+
         layer = self.viewer.layers[self.current_image_layer_name]
         if (
             'settings' not in layer.metadata
@@ -1830,6 +1834,9 @@ class ComponentsWidget(QWidget):
 
         old_name = None
         if not self._updating_settings and self.current_image_layer_name:
+            # Check if layer still exists (defensive check for cleanup/teardown)
+            if self.current_image_layer_name not in self.viewer.layers:
+                return
             layer = self.viewer.layers[self.current_image_layer_name]
             if (
                 'settings' in layer.metadata
@@ -2007,6 +2014,10 @@ class ComponentsWidget(QWidget):
                     component_names.append(name)
         else:
             if not self.current_image_layer_name:
+                return component_g, component_s, component_names
+
+            # Check if layer still exists (defensive check for cleanup/teardown)
+            if self.current_image_layer_name not in self.viewer.layers:
                 return component_g, component_s, component_names
 
             layer = self.viewer.layers[self.current_image_layer_name]
@@ -2669,6 +2680,10 @@ class ComponentsWidget(QWidget):
         current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
 
         if not self._updating_settings and self.current_image_layer_name:
+            # Check if layer still exists (defensive check for cleanup/teardown)
+            if self.current_image_layer_name not in self.viewer.layers:
+                return
+
             layer_obj = self.viewer.layers[self.current_image_layer_name]
             settings = layer_obj.metadata.get('settings', {}).get(
                 'component_analysis', {}
@@ -2938,6 +2953,10 @@ class ComponentsWidget(QWidget):
             harmonics.add(current_harmonic)
 
         if self.current_image_layer_name:
+            # Check if layer still exists (defensive check for cleanup/teardown)
+            if self.current_image_layer_name not in self.viewer.layers:
+                return sorted(list(harmonics))
+
             layer = self.viewer.layers[self.current_image_layer_name]
             if (
                 'settings' in layer.metadata
@@ -2957,6 +2976,10 @@ class ComponentsWidget(QWidget):
     def _get_available_harmonics(self):
         """Get available harmonics from the phasor data."""
         if not self.current_image_layer_name:
+            return []
+
+        # Check if layer still exists (defensive check for cleanup/teardown)
+        if self.current_image_layer_name not in self.viewer.layers:
             return []
 
         layer = self.viewer.layers[self.current_image_layer_name]
@@ -3167,6 +3190,10 @@ class ComponentsWidget(QWidget):
     def _ensure_component_metadata(self, idx: int, harmonic: int = None):
         """Ensure component metadata structure exists and return component data dict."""
         if self._updating_settings or not self.current_image_layer_name:
+            return None
+
+        # Check if layer still exists (defensive check for cleanup/teardown)
+        if self.current_image_layer_name not in self.viewer.layers:
             return None
 
         layer = self.viewer.layers[self.current_image_layer_name]
