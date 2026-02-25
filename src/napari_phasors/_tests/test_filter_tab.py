@@ -442,10 +442,11 @@ def test_calculate_automatic_threshold(make_napari_viewer):
 def test_settings_restoration_with_wavelet(make_napari_viewer):
     """Test that wavelet settings are properly restored from metadata."""
     viewer = make_napari_viewer()
-    intensity_image_layer = create_image_layer_with_phasors()
+    harmonics = [1, 2]
+    intensity_image_layer = create_image_layer_with_phasors(harmonic=harmonics)
 
     # Set compatible harmonics (consecutive: 1, 2)
-    intensity_image_layer.metadata['harmonics'] = [1, 2]
+    intensity_image_layer.metadata['harmonics'] = harmonics
 
     intensity_image_layer.metadata["settings"] = {
         "threshold": 0.1,
@@ -665,6 +666,10 @@ def test_slider_and_histogram_update_on_layer_add_and_select(
     intensity_image_layer1 = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer1)
 
+    # Switch to filter tab to trigger histogram plotting
+    filter_tab_index = parent.tab_widget.indexOf(filter_widget)
+    parent.tab_widget.setCurrentIndex(filter_tab_index)
+
     expected_max1 = int(
         np.ceil(
             np.nanmax(intensity_image_layer1.metadata["original_mean"])
@@ -685,6 +690,10 @@ def test_slider_and_histogram_update_on_layer_add_and_select(
     parent.image_layer_with_phasor_features_combobox.setCurrentText(
         intensity_image_layer2.name
     )
+
+    # Ensure filter tab is still active to trigger histogram update
+    parent.tab_widget.setCurrentIndex(filter_tab_index)
+
     expected_max2 = int(
         np.ceil(
             np.nanmax(intensity_image_layer2.metadata["original_mean"])

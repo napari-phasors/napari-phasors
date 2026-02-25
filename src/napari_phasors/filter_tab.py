@@ -70,6 +70,9 @@ class FilterWidget(QWidget):
         self._updating_threshold = False
         self._dragging_line = None
         self._canvas = None
+        self._histogram_needs_update = (
+            False  # Track if histogram needs updating
+        )
 
         # Style the histogram axes and figure initially
         self.style_histogram_axes()
@@ -79,6 +82,19 @@ class FilterWidget(QWidget):
         self.parent_widget.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
             self._on_image_layer_changed
         )
+
+    def _is_tab_visible(self):
+        """Check if the filter tab is currently visible."""
+        if self.parent_widget and hasattr(self.parent_widget, 'tab_widget'):
+            current_widget = self.parent_widget.tab_widget.currentWidget()
+            return current_widget == self
+        return False
+
+    def _update_histogram_if_needed(self):
+        """Update histogram if it needs updating and tab is visible."""
+        if self._histogram_needs_update and self._is_tab_visible():
+            self.plot_mean_histogram()
+            self._histogram_needs_update = False
         self.threshold_slider.valueChanged.connect(
             self.on_threshold_slider_change
         )
@@ -545,7 +561,13 @@ class FilterWidget(QWidget):
             )
 
         self._updating_threshold = False
-        self.plot_mean_histogram()
+
+        # Only plot histogram if the filter tab is currently visible
+        if self._is_tab_visible():
+            self.plot_mean_histogram()
+        else:
+            # Mark that histogram needs updating when tab becomes visible
+            self._histogram_needs_update = True
 
         self.check_harmonics_compatibility()
 

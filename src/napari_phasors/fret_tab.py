@@ -400,6 +400,32 @@ class FretWidget(QWidget):
             if hasattr(artist, 'set_visible'):
                 artist.set_visible(visible)
 
+    def clear_artists(self):
+        """Clear (remove) all artists created by this widget."""
+        if self.current_donor_line is not None:
+            try:
+                self.current_donor_line.remove()
+            except ValueError:
+                pass
+            self.current_donor_line = None
+
+        if self.current_donor_circle is not None:
+            try:
+                self.current_donor_circle.remove()
+            except ValueError:
+                pass
+            self.current_donor_circle = None
+
+        if self.current_background_circle is not None:
+            try:
+                self.current_background_circle.remove()
+            except ValueError:
+                pass
+            self.current_background_circle = None
+
+        if self.parent_widget is not None:
+            self.parent_widget.canvas_widget.canvas.draw_idle()
+
     def _on_harmonic_changed(self):
         """Handle harmonic changes from the parent widget."""
         if self.parent_widget is None:
@@ -1494,7 +1520,11 @@ class FretWidget(QWidget):
             self._updating_settings = True
             try:
                 self._restore_fret_settings_from_metadata()
-                self._recreate_fret_from_metadata()
+                # Only plot the donor trajectory (visual element) but do NOT
+                # run calculate_fret_efficiency. The user must click the
+                # calculate button to run the analysis.
+                if self.donor_line_edit.text() and self.frequency_input.text():
+                    self.plot_donor_trajectory()
             finally:
                 self._updating_settings = False
 

@@ -4,6 +4,7 @@ and computes phasor coordinates with `phasorpy.phasor.phasor_from_signal`
 
 """
 
+import html
 import inspect
 import itertools
 import json
@@ -352,7 +353,9 @@ def processed_file_reader(
         file_extension
     ](path, reader_options)
     if "description" in attrs.keys():
-        description = json.loads(attrs["description"])
+        # HTML-unescape the description to handle tifffile HTML encoding
+        description_str = html.unescape(attrs["description"])
+        description = json.loads(description_str)
         if len(json.dumps(description)) > 512 * 512:  # Threshold: 256 KB
             raise ValueError("Description dictionary is too large.")
         if "napari_phasors_settings" in description:

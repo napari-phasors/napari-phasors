@@ -449,6 +449,10 @@ class ComponentsWidget(QWidget):
         if not self.current_image_layer_name:
             return
 
+        # Check if layer still exists (defensive check for cleanup/teardown)
+        if self.current_image_layer_name not in self.viewer.layers:
+            return
+
         layer = self.viewer.layers[self.current_image_layer_name]
         if (
             'settings' not in layer.metadata
@@ -575,8 +579,171 @@ class ComponentsWidget(QWidget):
             settings = settings[key]
         settings[keys[-1]] = value
 
+    def _restore_components_ui_only_from_metadata(self):
+        """Restore component UI values and visual dots from metadata without running analysis.
+
+        This restores input fields (names, G/S coordinates, lifetimes), component
+        dots on the plot, and draws lines between components, but does NOT run
+        the analysis (no fraction layers are created). The user must click
+        the run button to execute the analysis.
+        """
+
+        layer_name = self.parent_widget.get_primary_layer_name()
+
+        if not layer_name:
+            return
+
+        layer = self.viewer.layers[layer_name]
+
+        if 'settings' not in layer.metadata:
+            return
+
+        if 'component_analysis' not in layer.metadata['settings']:
+            return
+
+        self._updating_settings = True
+        try:
+            settings = layer.metadata['settings']['component_analysis']
+
+            self._clear_components_display()
+
+            if 'analysis_type' in settings:
+                self.analysis_type = settings['analysis_type']
+                if hasattr(self, 'analysis_type_combo'):
+                    index = self.analysis_type_combo.findText(
+                        self.analysis_type
+                    )
+                    if index >= 0:
+                        self.analysis_type_combo.setCurrentIndex(index)
+
+            if 'last_analysis_harmonic' in settings:
+                last_harmonic = settings['last_analysis_harmonic']
+                if hasattr(self.parent_widget, 'harmonic_spinbox'):
+                    self.parent_widget.harmonic_spinbox.setValue(last_harmonic)
+                current_harmonic = last_harmonic
+            else:
+                current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
+
+            current_harmonic_key = str(current_harmonic)
+
+            if 'components' in settings and isinstance(
+                settings['components'], dict
+            ):
+                if settings['components']:
+                    max_idx = max(
+                        int(k) for k in settings['components'].keys()
+                    )
+                else:
+                    max_idx = -1
+
+                while len(self.components) < max_idx + 1:
+                    self._add_component_ui(len(self.components))
+
+                while (
+                    len(self.components) > max_idx + 1
+                    and len(self.components) > 2
+                ):
+                    last_idx = len(self.components) - 1
+                    comp = self.components[last_idx]
+
+                    if comp is not None:
+                        if comp.dot is not None:
+                            comp.dot.remove()
+                            comp.dot = None
+                        if comp.text is not None:
+                            comp.text.remove()
+                            comp.text = None
+
+                        if hasattr(comp, 'ui_elements'):
+                            comp_layout = comp.ui_elements['comp_layout']
+                            while comp_layout.count():
+                                item = comp_layout.takeAt(0)
+                                if item.widget():
+                                    item.widget().deleteLater()
+                            self.components_layout.removeItem(comp_layout)
+
+                    self.components.pop()
+
+                for idx_str, comp_data in settings['components'].items():
+                    idx = int(idx_str)
+
+                    if (
+                        idx >= len(self.components)
+                        or self.components[idx] is None
+                    ):
+                        continue
+
+                    comp = self.components[idx]
+                    name = comp_data.get('name', '')
+
+                    if name:
+                        comp.name_edit.setText(name)
+
+                    gs_harmonics = comp_data.get('gs_harmonics', {})
+
+                    if current_harmonic_key in gs_harmonics:
+                        harmonic_data = gs_harmonics[current_harmonic_key]
+
+                        g = harmonic_data.get('g')
+                        s = harmonic_data.get('s')
+                        lifetime = harmonic_data.get('lifetime')
+
+                        if g is not None:
+                            comp.g_edit.setText(f"{g:.3f}")
+                        if s is not None:
+                            comp.s_edit.setText(f"{s:.3f}")
+                        if (
+                            lifetime is not None
+                            and comp.lifetime_edit is not None
+                        ):
+                            comp.lifetime_edit.setText(str(lifetime))
+
+                        if g is not None and s is not None:
+                            self._create_component_at_coordinates(idx, g, s)
+
+            if 'line_settings' in settings:
+                line_settings = settings['line_settings']
+                self.show_colormap_line = line_settings.get(
+                    'show_colormap_line', True
+                )
+                self.show_component_dots = line_settings.get(
+                    'show_component_dots', True
+                )
+                self.line_offset = line_settings.get('line_offset', 0.0)
+                self.line_width = line_settings.get('line_width', 3.0)
+                self.line_alpha = line_settings.get('line_alpha', 1.0)
+
+            if 'label_settings' in settings:
+                label_settings = settings['label_settings']
+                self.label_fontsize = label_settings.get('fontsize', 10)
+                self.label_bold = label_settings.get('bold', False)
+                self.label_italic = label_settings.get('italic', False)
+                self.label_color = label_settings.get('color', 'black')
+
+            # Draw visual elements (lines between components) but do NOT
+            # run analysis or create fraction layers.
+            components_created = [
+                c
+                for c in self.components
+                if c is not None and c.dot is not None
+            ]
+
+            if len(components_created) >= 2:
+                self.draw_line_between_components()
+
+            self._update_button_states()
+
+            self._update_component_visibility()
+
+        except Exception as e:
+            show_error(
+                f"Error restoring component settings from metadata: {str(e)}"
+            )
+        finally:
+            self._updating_settings = False
+
     def _restore_and_recreate_components_from_metadata(self):
-        """Restore all components settings and recreate visual elements from metadata."""
+        """Restore all components settings, recreate visual elements, and run analysis from metadata."""
 
         layer_name = self.parent_widget.get_primary_layer_name()
 
@@ -1334,6 +1501,10 @@ class ComponentsWidget(QWidget):
         if self.component_polygon is not None:
             self.component_polygon.set_visible(visible)
 
+    def clear_artists(self):
+        """Clear (remove) all artists created by this widget."""
+        self._clear_components()
+
     def _toggle_plot_section(self, checked):
         """Toggle visibility of the plot section."""
         self.plot_section.setVisible(checked)
@@ -1663,6 +1834,9 @@ class ComponentsWidget(QWidget):
 
         old_name = None
         if not self._updating_settings and self.current_image_layer_name:
+            # Check if layer still exists (defensive check for cleanup/teardown)
+            if self.current_image_layer_name not in self.viewer.layers:
+                return
             layer = self.viewer.layers[self.current_image_layer_name]
             if (
                 'settings' in layer.metadata
@@ -1840,6 +2014,10 @@ class ComponentsWidget(QWidget):
                     component_names.append(name)
         else:
             if not self.current_image_layer_name:
+                return component_g, component_s, component_names
+
+            # Check if layer still exists (defensive check for cleanup/teardown)
+            if self.current_image_layer_name not in self.viewer.layers:
                 return component_g, component_s, component_names
 
             layer = self.viewer.layers[self.current_image_layer_name]
@@ -2502,6 +2680,10 @@ class ComponentsWidget(QWidget):
         current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
 
         if not self._updating_settings and self.current_image_layer_name:
+            # Check if layer still exists (defensive check for cleanup/teardown)
+            if self.current_image_layer_name not in self.viewer.layers:
+                return
+
             layer_obj = self.viewer.layers[self.current_image_layer_name]
             settings = layer_obj.metadata.get('settings', {}).get(
                 'component_analysis', {}
@@ -2771,6 +2953,10 @@ class ComponentsWidget(QWidget):
             harmonics.add(current_harmonic)
 
         if self.current_image_layer_name:
+            # Check if layer still exists (defensive check for cleanup/teardown)
+            if self.current_image_layer_name not in self.viewer.layers:
+                return sorted(list(harmonics))
+
             layer = self.viewer.layers[self.current_image_layer_name]
             if (
                 'settings' in layer.metadata
@@ -2790,6 +2976,10 @@ class ComponentsWidget(QWidget):
     def _get_available_harmonics(self):
         """Get available harmonics from the phasor data."""
         if not self.current_image_layer_name:
+            return []
+
+        # Check if layer still exists (defensive check for cleanup/teardown)
+        if self.current_image_layer_name not in self.viewer.layers:
             return []
 
         layer = self.viewer.layers[self.current_image_layer_name]
@@ -2982,7 +3172,7 @@ class ComponentsWidget(QWidget):
         if layer_name:
             self._reconnect_existing_fraction_layers(layer_name)
 
-            self._restore_and_recreate_components_from_metadata()
+            self._restore_components_ui_only_from_metadata()
 
         else:
             self._updating_settings = True
@@ -3000,6 +3190,10 @@ class ComponentsWidget(QWidget):
     def _ensure_component_metadata(self, idx: int, harmonic: int = None):
         """Ensure component metadata structure exists and return component data dict."""
         if self._updating_settings or not self.current_image_layer_name:
+            return None
+
+        # Check if layer still exists (defensive check for cleanup/teardown)
+        if self.current_image_layer_name not in self.viewer.layers:
             return None
 
         layer = self.viewer.layers[self.current_image_layer_name]

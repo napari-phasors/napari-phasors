@@ -102,28 +102,24 @@ class LifetimeWidget(QWidget):
         self.lifetime_type_combobox = QComboBox()
         self.lifetime_type_combobox.addItems(
             [
-                "None",
                 "Apparent Phase Lifetime",
                 "Apparent Modulation Lifetime",
                 "Normal Lifetime",
             ]
         )
-        self.lifetime_type_combobox.setCurrentText("None")
+        self.lifetime_type_combobox.setCurrentText("Apparent Phase Lifetime")
         lifetime_type_layout.addWidget(self.lifetime_type_combobox)
 
-        # Add refresh button
-        self.refresh_lifetime_button = QPushButton()
-        self.refresh_lifetime_button.setIcon(
-            self.refresh_lifetime_button.style().standardIcon(
-                self.refresh_lifetime_button.style().SP_BrowserReload
-            )
+        # Add Calculate button (replaces refresh button)
+        self.calculate_lifetime_button = QPushButton("Calculate")
+        self.calculate_lifetime_button.setMaximumWidth(80)
+        self.calculate_lifetime_button.setToolTip(
+            "Calculate and display lifetime values for the selected layers"
         )
-        self.refresh_lifetime_button.setMaximumWidth(35)
-        self.refresh_lifetime_button.clicked.connect(
-            self._on_refresh_lifetime_clicked
+        self.calculate_lifetime_button.clicked.connect(
+            self._on_calculate_lifetime_clicked
         )
-        lifetime_type_layout.addWidget(self.refresh_lifetime_button)
-        # lifetime_type_layout.addStretch()
+        lifetime_type_layout.addWidget(self.calculate_lifetime_button)
 
         self.main_layout.addLayout(lifetime_type_layout)
 
@@ -195,7 +191,7 @@ class LifetimeWidget(QWidget):
     def _get_default_lifetime_settings(self):
         """Get default settings dictionary for lifetime parameters."""
         return {
-            'lifetime_type': 'None',
+            'lifetime_type': 'Apparent Phase Lifetime',
             'lifetime_range_min': None,
             'lifetime_range_max': None,
         }
@@ -251,7 +247,9 @@ class LifetimeWidget(QWidget):
         ):
             self._updating_settings = True
             try:
-                self.lifetime_type_combobox.setCurrentText('None')
+                self.lifetime_type_combobox.setCurrentText(
+                    'Apparent Phase Lifetime'
+                )
                 self.lifetime_range_slider.setValue((0, 100))
                 self.lifetime_min_edit.setText('0.0')
                 self.lifetime_max_edit.setText('100.0')
@@ -280,8 +278,7 @@ class LifetimeWidget(QWidget):
         frequency_text = self.frequency_input.text().strip()
 
         if not self._updating_settings:
-            current_lifetime_type = self.lifetime_type_combobox.currentText()
-            if current_lifetime_type != "None" and frequency_text:
+            if frequency_text:
                 try:
                     self.frequency = float(frequency_text)
                     self.calculate_lifetimes()
@@ -729,20 +726,16 @@ class LifetimeWidget(QWidget):
 
     def _on_harmonic_changed(self):
         """Callback whenever the harmonic selector changes."""
-        current_lifetime_type = self.lifetime_type_combobox.currentText()
-        if current_lifetime_type != "None":
-            frequency = self.frequency_input.text().strip()
-            if frequency:
-                self.calculate_lifetimes()
-                self._update_lifetime_range_slider()
-                self.create_lifetime_layer()
+        frequency = self.frequency_input.text().strip()
+        if frequency:
+            self.calculate_lifetimes()
+            self._update_lifetime_range_slider()
+            self.create_lifetime_layer()
 
-                self._restore_lifetime_range_from_metadata()
-                self._on_lifetime_range_changed(
-                    self.lifetime_range_slider.value()
-                )
+            self._restore_lifetime_range_from_metadata()
+            self._on_lifetime_range_changed(self.lifetime_range_slider.value())
 
-                self.plot_lifetime_histogram()
+            self.plot_lifetime_histogram()
         else:
             self.plot_lifetime_histogram()
 
@@ -774,29 +767,17 @@ class LifetimeWidget(QWidget):
         self._update_lifetime_histogram()
 
     def _on_image_layer_changed(self):
-        """Callback whenever the image layer with phasor features changes."""
+        """Callback whenever the image layer with phasor features changes.
+
+        This only restores UI state from metadata - it does NOT run calculations.
+        User must click "Calculate" button to run lifetime analysis.
+        """
         layer_name = self.parent_widget.get_primary_layer_name()
         if layer_name:
             self._restore_lifetime_settings_from_metadata()
-
-            current_lifetime_type = self.lifetime_type_combobox.currentText()
-            if current_lifetime_type != "None":
-                frequency_text = self.frequency_input.text().strip()
-                if frequency_text:
-                    try:
-                        self._updating_settings = True
-                        try:
-                            self._on_lifetime_type_changed(
-                                current_lifetime_type
-                            )
-                        finally:
-                            self._updating_settings = False
-                    except ValueError:
-                        self.histogram_widget.hide()
-                else:
-                    self.histogram_widget.hide()
-            else:
-                self.histogram_widget.hide()
+            # Don't auto-calculate - just restore UI state
+            # User must click "Calculate" to run analysis
+            self.histogram_widget.hide()
         else:
             # Disconnect events from all lifetime layers
             for layer in self.lifetime_layers:
@@ -820,61 +801,46 @@ class LifetimeWidget(QWidget):
             self.hist_fig.canvas.draw_idle()
             self.histogram_widget.hide()
 
-    def _on_refresh_lifetime_clicked(self):
-        """Callback when refresh button is clicked."""
-        current_text = self.lifetime_type_combobox.currentText()
-        self._on_lifetime_type_changed(current_text)
+    def _on_calculate_lifetime_clicked(self):
+        """Callback when Calculate button is clicked.
+
+        Runs the lifetime calculation and creates/updates lifetime layers.
+        """
+        selected_layers = self.parent_widget.get_selected_layers()
+        if not selected_layers:
+            show_warning("Select at least one layer")
+            return
+
+        frequency = self.frequency_input.text().strip()
+        if frequency == "":
+            show_warning("Enter frequency")
+            return
+
+        # Run the calculation
+        self.calculate_lifetimes()
+        self._update_lifetime_range_slider()
+        self.create_lifetime_layer()
+
+        self._restore_lifetime_range_from_metadata()
+        self._on_lifetime_range_changed(self.lifetime_range_slider.value())
+
+        if self.lifetime_data is not None:
+            self.plot_lifetime_histogram()
+
+        # Update frequency in metadata
+        if not self._updating_settings:
+            for layer in selected_layers:
+                update_frequency_in_metadata(layer, frequency)
 
     def _on_lifetime_type_changed(self, text):
-        """Callback when lifetime type combobox selection changes."""
+        """Callback when lifetime type combobox selection changes.
+
+        This only updates the setting in metadata - it does NOT run calculations.
+        User must click "Calculate" button to run lifetime analysis.
+        """
         if not self._updating_settings:
             self._update_lifetime_setting_in_metadata('lifetime_type', text)
-
-        if text == "None":
-            self.histogram_widget.hide()
-            if self.lifetime_layer is not None:
-                # Disconnect events from all lifetime layers
-                for layer in self.lifetime_layers:
-                    if layer in self.viewer.layers:
-                        try:
-                            layer.events.colormap.disconnect(
-                                self._on_colormap_changed
-                            )
-                            layer.events.contrast_limits.disconnect(
-                                self._on_colormap_changed
-                            )
-                        except Exception:
-                            pass
-
-                self.lifetime_layer = None
-                self.lifetime_layers = []
-                self.lifetime_data = None
-                self.lifetime_data_original = None
-        else:
-            selected_layers = self.parent_widget.get_selected_layers()
-            if not selected_layers:
-                self.histogram_widget.hide()
-                return
-            frequency = self.frequency_input.text().strip()
-            if frequency == "":
-                show_warning("Enter frequency")
-                self.histogram_widget.hide()
-                return
-
-            self.calculate_lifetimes()
-            self._update_lifetime_range_slider()
-            self.create_lifetime_layer()
-
-            self._restore_lifetime_range_from_metadata()
-
-            self._on_lifetime_range_changed(self.lifetime_range_slider.value())
-
-            if self.lifetime_data is not None:
-                self.plot_lifetime_histogram()
-
-            if not self._updating_settings:
-                for layer in selected_layers:
-                    update_frequency_in_metadata(layer, frequency)
+        # Don't auto-calculate - user must click Calculate
 
     def _restore_lifetime_range_from_metadata(self):
         """Restore lifetime range from metadata after calculation."""
