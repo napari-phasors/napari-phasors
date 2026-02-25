@@ -19,7 +19,10 @@ from qtpy.QtGui import (
     QColor,
     QFont,
     QFontMetrics,
+    QIcon,
+    QPainter,
     QPen,
+    QPixmap,
     QStandardItem,
     QStandardItemModel,
 )
@@ -32,6 +35,7 @@ from qtpy.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QSpinBox,
     QStyle,
@@ -227,6 +231,9 @@ class CheckableComboBox(QComboBox):
         # Track the last known primary for change detection
         self._last_emitted_primary = ""
 
+        # Track star icon action for multi-selection display
+        self._star_action = None
+
         # Make the line edit clickable to open popup
         self.lineEdit().installEventFilter(self)
         # Prevent cursor positioning in line edit
@@ -405,7 +412,6 @@ class CheckableComboBox(QComboBox):
         if emit and old != name:
             self._last_emitted_primary = name
             self.primaryLayerChanged.emit(name)
-            self.selectionChanged.emit()
 
     def _sync_primary_role(self):
         """Update the PRIMARY_ROLE on every item to match _primary_layer_name."""
@@ -443,19 +449,44 @@ class CheckableComboBox(QComboBox):
                 self.primaryLayerChanged.emit(new_primary)
             self.selectionChanged.emit()
 
+    def _create_star_icon(self):
+        """Create a star icon for the line edit using Qt rendering."""
+        pixmap = QPixmap(16, 16)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setPen(QPen(QColor(255, 200, 0)))  # Gold color
+        font = QFont()
+        font.setPointSize(12)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(pixmap.rect(), Qt.AlignCenter, "★")
+        painter.end()
+        return QIcon(pixmap)
+
     def _update_display_text(self):
         """Update the display text to show primary layer and selection count."""
         checked = self.checkedItems()
+        line_edit = self.lineEdit()
+
+        if self._star_action:
+            line_edit.removeAction(self._star_action)
+            self._star_action = None
+
         if not checked:
-            self.lineEdit().setText("")
-            self.lineEdit().setPlaceholderText("Select layers...")
+            line_edit.setText("")
+            line_edit.setPlaceholderText("Select layers...")
         elif len(checked) == 1:
-            self.lineEdit().setText(checked[0])
+            line_edit.setText(checked[0])
         else:
+            star_icon = self._create_star_icon()
+            self._star_action = line_edit.addAction(
+                star_icon, QLineEdit.LeadingPosition
+            )
+
             primary = self._primary_layer_name or checked[0]
             others = len(checked) - 1
             suffix = "selected layer" if others == 1 else "selected layers"
-            self.lineEdit().setText(f"\u2605 {primary}  + {others} {suffix}")
+            line_edit.setText(f"{primary}  + {others} {suffix}")
 
     def showPopup(self):
         """Show the popup and track visibility."""

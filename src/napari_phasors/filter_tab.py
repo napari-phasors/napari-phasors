@@ -2,7 +2,6 @@ from math import ceil, log10
 
 import matplotlib.pyplot as plt
 import numpy as np
-from line_profiler import profile
 from matplotlib.backends.backend_qt5agg import (
     FigureCanvasQTAgg as FigureCanvas,
 )
