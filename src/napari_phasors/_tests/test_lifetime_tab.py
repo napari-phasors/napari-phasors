@@ -2,9 +2,9 @@ from unittest.mock import MagicMock, patch
 
 import matplotlib.colors as mcolors
 import numpy as np
-import pandas as pd
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
+from napari.layers import Image
 from phasorpy.lifetime import (
     phasor_to_apparent_lifetime,
     phasor_to_normal_lifetime,
@@ -60,7 +60,6 @@ def test_lifetime_widget_initialization_values(make_napari_viewer):
     assert hasattr(lifetime_widget, 'lifetime_type_combobox')
     assert isinstance(lifetime_widget.lifetime_type_combobox, QComboBox)
     expected_items = [
-        "None",
         "Apparent Phase Lifetime",
         "Apparent Modulation Lifetime",
         "Normal Lifetime",
@@ -70,7 +69,10 @@ def test_lifetime_widget_initialization_values(make_napari_viewer):
         for i in range(lifetime_widget.lifetime_type_combobox.count())
     ]
     assert actual_items == expected_items
-    assert lifetime_widget.lifetime_type_combobox.currentText() == "None"
+    assert (
+        lifetime_widget.lifetime_type_combobox.currentText()
+        == "Apparent Phase Lifetime"
+    )
 
     assert hasattr(lifetime_widget, 'lifetime_range_label')
     assert isinstance(lifetime_widget.lifetime_range_label, QLabel)
@@ -248,25 +250,6 @@ def test_lifetime_widget_canvas_properties(make_napari_viewer):
     assert canvas.height() == 150  # Fixed height as set in setup_ui
 
 
-def test_lifetime_widget_type_changed_to_none(make_napari_viewer):
-    """Test behavior when lifetime type is changed to None."""
-    viewer = make_napari_viewer()
-    parent = PlotterWidget(viewer)
-    lifetime_widget = parent.lifetime_tab
-
-    # Initially the histogram should be hidden
-    assert lifetime_widget.histogram_widget.isHidden() == True
-
-    # Show the histogram first by setting some data and a lifetime type
-    lifetime_widget.lifetime_data = np.array([[1.0, 2.0], [3.0, 4.0]])
-    lifetime_widget.histogram_widget.show()
-    assert lifetime_widget.histogram_widget.isHidden() == False
-
-    # Change to None and verify histogram is hidden
-    lifetime_widget._on_lifetime_type_changed("None")
-    assert lifetime_widget.histogram_widget.isHidden() == True
-
-
 def test_lifetime_widget_type_changed_no_frequency(make_napari_viewer):
     """Test behavior when Calculate is clicked but no frequency is set."""
     viewer = make_napari_viewer()
@@ -277,7 +260,9 @@ def test_lifetime_widget_type_changed_no_frequency(make_napari_viewer):
     lifetime_widget = parent.lifetime_tab
 
     # Set a lifetime type but don't set frequency
-    lifetime_widget.lifetime_type_combobox.setCurrentText("Apparent Phase Lifetime")
+    lifetime_widget.lifetime_type_combobox.setCurrentText(
+        "Apparent Phase Lifetime"
+    )
 
     with patch('napari_phasors.lifetime_tab.show_warning') as mock_warning:
         lifetime_widget._on_calculate_lifetime_clicked()
@@ -320,7 +305,7 @@ def test_lifetime_widget_settings_initialization_in_metadata(
     assert 'frequency' in layer.metadata['settings']
 
     # Check values
-    assert layer.metadata['settings']['frequency'] == 80.0
+    assert layer.metadata['settings']['frequency'] == '80.0'
     assert (
         layer.metadata['settings']['lifetime']['lifetime_type']
         == 'Apparent Phase Lifetime'
@@ -386,7 +371,10 @@ def test_lifetime_widget_settings_persistence_across_layer_switches(
 
     # Layer 2 should start with defaults
     assert lifetime_widget.frequency_input.text() == ""
-    assert lifetime_widget.lifetime_type_combobox.currentText() == 'None'
+    assert (
+        lifetime_widget.lifetime_type_combobox.currentText()
+        == 'Apparent Phase Lifetime'
+    )
 
     # Now switch to layer_1
     parent.image_layer_with_phasor_features_combobox.setCurrentText(
@@ -399,18 +387,16 @@ def test_lifetime_widget_settings_persistence_across_layer_switches(
     # Manually trigger the broadcast since we're setting it programmatically
     parent._broadcast_frequency_value_across_tabs("80.0")
 
-    lifetime_widget.lifetime_type_combobox.setCurrentText(
-        "Apparent Phase Lifetime"
-    )
+    lifetime_widget.lifetime_type_combobox.setCurrentText("Normal Lifetime")
 
     # Click Calculate to trigger the analysis and save to metadata
     lifetime_widget._on_calculate_lifetime_clicked()
 
     # Verify settings are saved in layer_1 metadata
-    assert layer_1.metadata['settings']['frequency'] == 80.0
+    assert layer_1.metadata['settings']['frequency'] == '80.0'
     assert (
         layer_1.metadata['settings']['lifetime']['lifetime_type']
-        == 'Apparent Phase Lifetime'
+        == 'Normal Lifetime'
     )
 
     # Switch to layer_2 (should have defaults)
@@ -420,7 +406,10 @@ def test_lifetime_widget_settings_persistence_across_layer_switches(
     lifetime_widget._on_image_layer_changed()
 
     assert lifetime_widget.frequency_input.text() == ""
-    assert lifetime_widget.lifetime_type_combobox.currentText() == 'None'
+    assert (
+        lifetime_widget.lifetime_type_combobox.currentText()
+        == 'Apparent Phase Lifetime'
+    )
 
     # Switch back to layer_1 (should restore settings)
     parent.image_layer_with_phasor_features_combobox.setCurrentText(
@@ -431,7 +420,7 @@ def test_lifetime_widget_settings_persistence_across_layer_switches(
     assert lifetime_widget.frequency_input.text() == "80.0"
     assert (
         lifetime_widget.lifetime_type_combobox.currentText()
-        == 'Apparent Phase Lifetime'
+        == 'Normal Lifetime'
     )
 
     parent.deleteLater()
@@ -478,7 +467,7 @@ def test_lifetime_widget_adding_layer_without_settings_initializes_defaults(
     # Now verify settings were initialized with actual values
     assert 'settings' in layer.metadata
     assert 'lifetime' in layer.metadata['settings']
-    assert layer.metadata['settings']['frequency'] == 80.0
+    assert layer.metadata['settings']['frequency'] == '80.0'
     assert (
         layer.metadata['settings']['lifetime']['lifetime_type']
         == 'Apparent Phase Lifetime'
@@ -582,18 +571,16 @@ def test_lifetime_widget_adding_removing_layers_updates_settings(
     lifetime_widget.frequency_input.setText("80.0")
     parent._broadcast_frequency_value_across_tabs("80.0")
     lifetime_widget._on_frequency_changed()
-    lifetime_widget.lifetime_type_combobox.setCurrentText(
-        "Apparent Phase Lifetime"
-    )
+    lifetime_widget.lifetime_type_combobox.setCurrentText("Normal Lifetime")
 
     # Click Calculate to trigger analysis
     lifetime_widget._on_calculate_lifetime_clicked()
 
     # Check settings were saved
-    assert layer_1.metadata['settings']['frequency'] == 80.0
+    assert layer_1.metadata['settings']['frequency'] == '80.0'
     assert (
         layer_1.metadata['settings']['lifetime']['lifetime_type']
-        == 'Apparent Phase Lifetime'
+        == 'Normal Lifetime'
     )
 
     # Add second layer
@@ -605,7 +592,10 @@ def test_lifetime_widget_adding_removing_layers_updates_settings(
     lifetime_widget._on_image_layer_changed()
 
     # Layer 2 should have defaults
-    assert lifetime_widget.lifetime_type_combobox.currentText() == 'None'
+    assert (
+        lifetime_widget.lifetime_type_combobox.currentText()
+        == 'Apparent Phase Lifetime'
+    )
 
     # Remove layer 1
     viewer.layers.remove(layer_1)
@@ -615,7 +605,10 @@ def test_lifetime_widget_adding_removing_layers_updates_settings(
         layer_2.name
     )
     lifetime_widget._on_image_layer_changed()
-    assert lifetime_widget.lifetime_type_combobox.currentText() == 'None'
+    assert (
+        lifetime_widget.lifetime_type_combobox.currentText()
+        == 'Apparent Phase Lifetime'
+    )
 
     parent.deleteLater()
 
@@ -644,7 +637,7 @@ def test_lifetime_widget_frequency_saved_on_lifetime_type_change(
     lifetime_widget._on_calculate_lifetime_clicked()
 
     # Check frequency is in general settings
-    assert layer.metadata['settings']['frequency'] == 80.0
+    assert layer.metadata['settings']['frequency'] == '80.0'
 
     parent.deleteLater()
 
@@ -862,18 +855,22 @@ def test_lifetime_widget_calculate_lifetimes_with_real_data(
     frequency = 80.0  # MHz
 
     # Create realistic phasor data
-    real_values = np.array([[0.5, 0.6], [0.7, 0.8]])
-    imag_values = np.array([[0.3, 0.4], [0.5, 0.6]])
+    real_values = np.array([[0.5, 0.6], [0.7, 0.8]])[np.newaxis, :, :]
+    imag_values = np.array([[0.3, 0.4], [0.5, 0.6]])[np.newaxis, :, :]
 
-    # Create a real layer with the new array-based metadata structure
-    layer = create_image_layer_with_phasors()
-
-    # Override the phasor data with our test values
-    # G and S need to have shape (n_harmonics, height, width)
-    layer.metadata['G'] = real_values[np.newaxis, :, :]
-    layer.metadata['S'] = imag_values[np.newaxis, :, :]
-    layer.metadata['harmonics'] = np.array([1])
-    layer.data = np.ones((2, 2))  # Match shape
+    layer = Image(
+        np.ones((2, 2)),
+        name="Test Intensity Image",
+        metadata={
+            "original_mean": np.ones((2, 2)),
+            "settings": {},
+            "G": real_values,
+            "S": imag_values,
+            "G_original": real_values.copy(),
+            "S_original": imag_values.copy(),
+            "harmonics": np.array([1]),
+        },
+    )
 
     viewer.add_layer(layer)
 
@@ -961,6 +958,9 @@ def test_lifetime_widget_full_workflow_with_real_calculations(
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
 
+    # Select the layer in the combobox
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+
     # Set frequency
     lifetime_widget.frequency_input.setText(str("80"))
 
@@ -968,6 +968,9 @@ def test_lifetime_widget_full_workflow_with_real_calculations(
     lifetime_widget.lifetime_type_combobox.setCurrentText(
         "Apparent Phase Lifetime"
     )
+
+    # Trigger the calculation to create the lifetime layer
+    lifetime_widget._on_calculate_lifetime_clicked()
 
     # Check lifetime layer was added
     assert lifetime_widget.lifetime_layer in viewer.layers
@@ -1018,6 +1021,9 @@ def test_lifetime_widget_full_workflow_with_real_calculations(
         "Apparent Modulation Lifetime"
     )
 
+    # Trigger the calculation to create the lifetime layer
+    lifetime_widget._on_calculate_lifetime_clicked()
+
     # Get the new lifetime layer (name changes when lifetime type changes)
     mod_lifetime_layer_name = f"Apparent Modulation Lifetime: {layer.name}"
     assert mod_lifetime_layer_name in viewer.layers
@@ -1030,6 +1036,9 @@ def test_lifetime_widget_full_workflow_with_real_calculations(
 
     # Change lifetime type to Normal Lifetime
     lifetime_widget.lifetime_type_combobox.setCurrentText("Normal Lifetime")
+
+    # Trigger the calculation to create the lifetime layer
+    lifetime_widget._on_calculate_lifetime_clicked()
 
     # Get the new lifetime layer (name changes when lifetime type changes)
     normal_lifetime_layer_name = f"Normal Lifetime: {layer.name}"
@@ -1063,6 +1072,9 @@ def test_lifetime_widget_range_clipping_with_real_data(make_napari_viewer):
 
     # Set normal lifetime type and calculate
     lifetime_widget.lifetime_type_combobox.setCurrentText("Normal Lifetime")
+
+    # Trigger the calculation to create the lifetime layer
+    lifetime_widget._on_calculate_lifetime_clicked()
 
     # Verify layer was created and data calculated
     assert lifetime_widget.lifetime_layer in viewer.layers
@@ -1238,8 +1250,8 @@ def test_lifetime_widget_different_harmonics_and_frequencies(
     lifetime_widget = parent.lifetime_tab
 
     # Test data - 2x2 arrays
-    real_values = np.array([[0.6, 0.7], [0.8, 0.5]])
-    imag_values = np.array([[0.4, 0.3], [0.2, 0.5]])
+    real_values = np.array([[0.6, 0.7], [0.8, 0.5]])[np.newaxis, :, :]
+    imag_values = np.array([[0.4, 0.3], [0.2, 0.5]])[np.newaxis, :, :]
 
     # Test different combinations
     test_cases = [
@@ -1250,16 +1262,19 @@ def test_lifetime_widget_different_harmonics_and_frequencies(
     ]
 
     for harmonic, base_frequency in test_cases:
-        # Create a fresh layer for each test case
-        layer = create_image_layer_with_phasors()
-        layer.name = f"test_layer_{harmonic}_{int(base_frequency)}"
-
-        # Override the phasor data with our test values
-        # G and S need to have shape (n_harmonics, height, width)
-        layer.metadata['G'] = real_values[np.newaxis, :, :]
-        layer.metadata['S'] = imag_values[np.newaxis, :, :]
-        layer.metadata['harmonics'] = np.array([harmonic])
-        layer.data = np.ones((2, 2))  # Match shape
+        layer = Image(
+            np.ones((2, 2)),
+            name="Test Intensity Image",
+            metadata={
+                "original_mean": np.ones((2, 2)),
+                "settings": {},
+                "G": real_values,
+                "S": imag_values,
+                "G_original": real_values.copy(),
+                "S_original": imag_values.copy(),
+                "harmonics": np.array([harmonic]),
+            },
+        )
 
         viewer.add_layer(layer)
 

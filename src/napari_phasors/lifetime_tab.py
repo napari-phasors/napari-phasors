@@ -247,7 +247,9 @@ class LifetimeWidget(QWidget):
         ):
             self._updating_settings = True
             try:
-                self.lifetime_type_combobox.setCurrentText('Apparent Phase Lifetime')
+                self.lifetime_type_combobox.setCurrentText(
+                    'Apparent Phase Lifetime'
+                )
                 self.lifetime_range_slider.setValue((0, 100))
                 self.lifetime_min_edit.setText('0.0')
                 self.lifetime_max_edit.setText('100.0')
@@ -731,9 +733,7 @@ class LifetimeWidget(QWidget):
             self.create_lifetime_layer()
 
             self._restore_lifetime_range_from_metadata()
-            self._on_lifetime_range_changed(
-                self.lifetime_range_slider.value()
-            )
+            self._on_lifetime_range_changed(self.lifetime_range_slider.value())
 
             self.plot_lifetime_histogram()
         else:

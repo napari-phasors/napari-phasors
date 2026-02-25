@@ -35,9 +35,9 @@ from qtpy.QtWidgets import (
     QPushButton,
     QSpinBox,
     QStyle,
+    QStyledItemDelegate,
     QStyleOptionButton,
     QStyleOptionViewItem,
-    QStyledItemDelegate,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -65,20 +65,15 @@ class _PrimaryLayerDelegate(QStyledItemDelegate):
         self._action_font.setUnderline(True)
         self._label_font = QFont()
         self._label_font.setItalic(True)
-        self._hovered_index = None  # Track which item is hovered
-
-    # ---- sizing -------------------------------------------------------------
+        self._hovered_index = None
 
     def sizeHint(self, option, index):
         base = super().sizeHint(option, index)
         return QSize(base.width(), max(base.height(), 24))
 
-    # ---- painting -----------------------------------------------------------
-
     def paint(self, painter, option, index):
         painter.save()
 
-        # Draw background for selection / hover
         self.initStyleOption(option, index)
         style = option.widget.style() if option.widget else QComboBox().style()
         style.drawPrimitive(
@@ -88,7 +83,6 @@ class _PrimaryLayerDelegate(QStyledItemDelegate):
         rect = option.rect
         is_primary = index.data(self.PRIMARY_ROLE)
 
-        # --- Checkbox on the left ---
         check_state = index.data(Qt.CheckStateRole)
         cb_option = QStyleOptionButton()
         cb_size = 16
@@ -107,27 +101,26 @@ class _PrimaryLayerDelegate(QStyledItemDelegate):
 
         text_left = rect.left() + cb_margin + cb_size + cb_margin
 
-        # --- Right-side label (only for primary, or for hovered non-primary) ---
         right_margin = 8
         label_text = None
         label_color = None
-        
-        is_hovered = (index.row() == getattr(self._hovered_index, 'row', lambda: -1)() 
-                      if self._hovered_index else False)
-        
+
+        is_hovered = (
+            index.row() == getattr(self._hovered_index, 'row', lambda: -1)()
+            if self._hovered_index
+            else False
+        )
+
         if is_primary:
-            # Always show "Primary layer" for the primary layer
             label_text = "Primary layer"
             painter.setFont(self._label_font)
             label_color = QColor(255, 100, 100)
         elif is_hovered:
-            # Only show "Set as primary" when hovering over non-primary checked items
             if check_state == Qt.Checked:
                 label_text = "Set as primary"
                 painter.setFont(self._action_font)
                 label_color = QColor(180, 180, 220)
 
-        # Draw the label if we have one
         label_rect = QRect()
         if label_text:
             fm_label = QFontMetrics(painter.font())
@@ -139,12 +132,12 @@ class _PrimaryLayerDelegate(QStyledItemDelegate):
                 rect.height(),
             )
             painter.setPen(QPen(label_color))
-            painter.drawText(label_rect, Qt.AlignVCenter | Qt.AlignRight, label_text)
+            painter.drawText(
+                label_rect, Qt.AlignVCenter | Qt.AlignRight, label_text
+            )
         else:
-            # No label, use full width for layer name
             label_rect = QRect(rect.right(), rect.top(), 0, rect.height())
 
-        # --- Elided layer name ---
         name = index.data(Qt.DisplayRole) or ""
         text_right = label_rect.left() - 6
         available = text_right - text_left
@@ -152,7 +145,6 @@ class _PrimaryLayerDelegate(QStyledItemDelegate):
         fm_name = QFontMetrics(option.font)
         elided = fm_name.elidedText(name, Qt.ElideRight, max(available, 30))
 
-        # Use default text color
         if option.state & QStyle.State_Selected:
             painter.setPen(QPen(option.palette.highlightedText().color()))
         else:
@@ -163,31 +155,30 @@ class _PrimaryLayerDelegate(QStyledItemDelegate):
 
         painter.restore()
 
-    # ---- hit-testing --------------------------------------------------------
-
     def labelRect(self, option, index):
         """Return the QRect of the right-side label for hit testing."""
         rect = option.rect
         is_primary = index.data(self.PRIMARY_ROLE)
 
-        # Check if we have a label to show
         label_text = None
         font = None
-        
+
         if is_primary:
             label_text = "Primary layer"
             font = self._label_font
         else:
-            # Only show "Set as primary" when hovered
             check_state = index.data(Qt.CheckStateRole)
-            is_hovered = (index.row() == getattr(self._hovered_index, 'row', lambda: -1)() 
-                          if self._hovered_index else False)
+            is_hovered = (
+                index.row()
+                == getattr(self._hovered_index, 'row', lambda: -1)()
+                if self._hovered_index
+                else False
+            )
             if is_hovered and check_state == Qt.Checked:
                 label_text = "Set as primary"
                 font = self._action_font
 
         if not label_text:
-            # No label, return empty rect
             return QRect()
 
         fm = QFontMetrics(font)
@@ -243,9 +234,7 @@ class CheckableComboBox(QComboBox):
 
         # Install event filter on view to handle item clicks and hover
         self.view().viewport().installEventFilter(self)
-        self.view().setMouseTracking(True)  # Enable mouse tracking for hover
-
-    # ---- Bulk helpers -------------------------------------------------------
+        self.view().setMouseTracking(True)
 
     def selectAll(self):
         """Check all items (emits one selectionChanged)."""
@@ -263,8 +252,6 @@ class CheckableComboBox(QComboBox):
         self.blockSignals(False)
         self._refresh_primary_and_notify()
 
-    # ---- Event filter -------------------------------------------------------
-
     def eventFilter(self, obj, event):
         """Filter events to make line edit clickable and handle item clicks."""
         if obj == self.lineEdit():
@@ -276,36 +263,37 @@ class CheckableComboBox(QComboBox):
                 return True
         elif obj == self.view().viewport():
             if event.type() == event.MouseMove:
-                # Update hovered index for "Set as primary" visibility
                 index = self.view().indexAt(event.pos())
                 old_hover = self._delegate._hovered_index
-                self._delegate._hovered_index = index if index.isValid() else None
-                # Trigger repaint if hover changed
+                self._delegate._hovered_index = (
+                    index if index.isValid() else None
+                )
                 if old_hover != self._delegate._hovered_index:
                     self.view().viewport().update()
-                return False  # Allow default processing
+                return False
             elif event.type() == event.MouseButtonRelease:
                 index = self.view().indexAt(event.pos())
                 if index.isValid():
-                    # Check if user clicked the right-side label area
                     vis_rect = self.view().visualRect(index)
                     option = QStyleOptionViewItem()
                     option.rect = vis_rect
                     label_rect = self._delegate.labelRect(option, index)
 
-                    if label_rect.contains(event.pos()) and not label_rect.isEmpty():
-                        # Clicked "Set as primary" (only for non-primary items)
-                        is_primary = index.data(_PrimaryLayerDelegate.PRIMARY_ROLE)
+                    if (
+                        label_rect.contains(event.pos())
+                        and not label_rect.isEmpty()
+                    ):
+                        is_primary = index.data(
+                            _PrimaryLayerDelegate.PRIMARY_ROLE
+                        )
                         if not is_primary:
                             item = self.model().itemFromIndex(index)
                             if item:
-                                # Ensure it's checked first
                                 if item.checkState() != Qt.Checked:
                                     item.setCheckState(Qt.Checked)
                                 self._set_primary_by_name(item.text())
                         return True
                     else:
-                        # Regular click – toggle check state
                         item = self.model().itemFromIndex(index)
                         if item:
                             current_state = item.checkState()
@@ -317,13 +305,10 @@ class CheckableComboBox(QComboBox):
                             item.setCheckState(new_state)
                         return True
             elif event.type() == event.Leave:
-                # Clear hover when mouse leaves viewport
                 if self._delegate._hovered_index is not None:
                     self._delegate._hovered_index = None
                     self.view().viewport().update()
         return super().eventFilter(obj, event)
-
-    # ---- Item management ----------------------------------------------------
 
     def addItem(self, text, checked=False):
         """Add a checkable item to the combobox."""
@@ -334,7 +319,6 @@ class CheckableComboBox(QComboBox):
         )
         item.setData(False, _PrimaryLayerDelegate.PRIMARY_ROLE)
         self.model().appendRow(item)
-        # If this is the first checked item and no primary is set, make it primary
         if checked and not self._primary_layer_name:
             self._set_primary_by_name(text, emit=False)
 
@@ -370,7 +354,6 @@ class CheckableComboBox(QComboBox):
     def getPrimaryLayer(self):
         """Return the name of the primary layer."""
         checked = self.checkedItems()
-        # If current primary is not in checked items, pick the first checked
         if self._primary_layer_name not in checked:
             self._primary_layer_name = checked[0] if checked else ""
             self._sync_primary_role()
@@ -387,23 +370,31 @@ class CheckableComboBox(QComboBox):
 
     def setCheckedItems(self, texts):
         """Set which items are checked by their text."""
-        self.blockSignals(True)
+        # Check if signals are already blocked by parent
+        signals_were_blocked = self.signalsBlocked()
+
+        if not signals_were_blocked:
+            self.blockSignals(True)
+
         for i in range(self.model().rowCount()):
             item = self.model().item(i)
             if item.text() in texts:
                 item.setCheckState(Qt.Checked)
             else:
                 item.setCheckState(Qt.Unchecked)
-        self.blockSignals(False)
-        # Update primary if needed
+
+        if not signals_were_blocked:
+            self.blockSignals(False)
+
         if texts and self._primary_layer_name not in texts:
             self._primary_layer_name = texts[0]
         elif not texts:
             self._primary_layer_name = ""
         self._sync_primary_role()
-        self._refresh_primary_and_notify()
 
-    # ---- Internal primary management ----------------------------------------
+        # Only emit signals if they weren't blocked by parent
+        if not signals_were_blocked:
+            self._refresh_primary_and_notify()
 
     def _set_primary_by_name(self, name, emit=True):
         """Set the primary layer and update role data on all items."""
@@ -427,8 +418,6 @@ class CheckableComboBox(QComboBox):
                     _PrimaryLayerDelegate.PRIMARY_ROLE,
                 )
 
-    # ---- Callbacks ----------------------------------------------------------
-
     def _on_data_changed(self, topLeft, bottomRight, roles):
         """Handle item check state changes."""
         if Qt.CheckStateRole in roles:
@@ -439,10 +428,8 @@ class CheckableComboBox(QComboBox):
         checked = self.checkedItems()
         old_primary = self._last_emitted_primary
 
-        # If primary was unchecked, pick a new one
         if self._primary_layer_name not in checked:
             self._primary_layer_name = checked[0] if checked else ""
-        # If no primary was set but we have checked items
         elif not self._primary_layer_name and checked:
             self._primary_layer_name = checked[0]
 
@@ -450,13 +437,11 @@ class CheckableComboBox(QComboBox):
         self._update_display_text()
 
         new_primary = self._primary_layer_name
-        if old_primary != new_primary:
-            self._last_emitted_primary = new_primary
-            self.primaryLayerChanged.emit(new_primary)
-
-        self.selectionChanged.emit()
-
-    # ---- Display ------------------------------------------------------------
+        if not self.signalsBlocked():
+            if old_primary != new_primary:
+                self._last_emitted_primary = new_primary
+                self.primaryLayerChanged.emit(new_primary)
+            self.selectionChanged.emit()
 
     def _update_display_text(self):
         """Update the display text to show primary layer and selection count."""
@@ -470,11 +455,7 @@ class CheckableComboBox(QComboBox):
             primary = self._primary_layer_name or checked[0]
             others = len(checked) - 1
             suffix = "selected layer" if others == 1 else "selected layers"
-            self.lineEdit().setText(
-                f"\u2605 {primary}  + {others} {suffix}"
-            )
-
-    # ---- Popup control ------------------------------------------------------
+            self.lineEdit().setText(f"\u2605 {primary}  + {others} {suffix}")
 
     def showPopup(self):
         """Show the popup and track visibility."""
@@ -600,6 +581,16 @@ class PlotterWidget(QWidget):
         self._s_original_array = None
         self._harmonics_array = None
 
+        # Cache for histogram properties to avoid redundant updates
+        self._last_histogram_bins = None
+        self._last_histogram_colormap = None
+        self._last_histogram_colormap_object = (
+            None  # Store the actual colormap object
+        )
+        self._last_histogram_norm = None
+        self._last_histogram_color_indices = None
+        self._last_scatter_color_indices = None
+
         # Create top widget for canvas
         canvas_container = QWidget()
         canvas_container.setLayout(QVBoxLayout())
@@ -644,7 +635,7 @@ class PlotterWidget(QWidget):
         )
         image_layer_layout.addWidget(self.image_layers_checkable_combobox, 1)
 
-                # "All | None" clickable labels for quick bulk selection
+        # "All | None" clickable labels for quick bulk selection
         select_all_label = QLabel('<a href="all" style="color: gray;">All</a>')
         select_all_label.setTextFormat(Qt.RichText)
         select_all_label.setCursor(Qt.PointingHandCursor)
@@ -735,7 +726,7 @@ class PlotterWidget(QWidget):
         self.analysis_widget.layout().addWidget(self.tab_widget)
 
         # Add the analysis widget to the viewer with a delay to ensure correct ordering
-        QTimer.singleShot(100, self._add_analysis_dock_widget)
+        QTimer.singleShot(20, self._add_analysis_dock_widget)
 
         canvas_container.setMinimumHeight(300)
         controls_container.setMinimumHeight(100)
@@ -743,6 +734,19 @@ class PlotterWidget(QWidget):
         # Add a flag to prevent recursive calls
         self._updating_plot = False
         self._updating_settings = False
+
+        # Debounce timers for expensive operations
+        self._layer_selection_timer = QTimer()
+        self._layer_selection_timer.setSingleShot(True)
+        self._layer_selection_timer.setInterval(300)  # 300ms delay
+        self._layer_selection_timer.timeout.connect(
+            self._process_layer_selection_change
+        )
+
+        self._bins_timer = QTimer()
+        self._bins_timer.setSingleShot(True)
+        self._bins_timer.setInterval(300)  # 300ms delay
+        self._bins_timer.timeout.connect(self._process_bins_change)
 
         # Create Settings tab
         self.settings_tab = QWidget()
@@ -919,7 +923,6 @@ class PlotterWidget(QWidget):
         if primary_name and primary_name in self.viewer.layers:
             return self.viewer.layers[primary_name]
         return None
-
 
     # Backward compatibility property
     @property
@@ -1404,6 +1407,10 @@ class PlotterWidget(QWidget):
 
         self._show_tab_artists(current_tab)
 
+        # Update filter histogram if switching to filter tab and it needs updating
+        if hasattr(self, 'filter_tab') and current_tab == self.filter_tab:
+            self.filter_tab._update_histogram_if_needed()
+
         self.canvas_widget.figure.canvas.draw_idle()
 
     def _hide_all_tab_artists(self):
@@ -1418,6 +1425,18 @@ class PlotterWidget(QWidget):
             self._set_components_visibility(False)
         if hasattr(self, 'fret_tab'):
             self._set_fret_visibility(False)
+
+    def _clear_all_tab_artists(self):
+        """Clear (remove) all tab-specific artists."""
+        if hasattr(self, 'selection_tab'):
+            # Deactivate any active selection tools before clearing
+            if hasattr(self, 'canvas_widget'):
+                self.canvas_widget._on_escape(None)
+            self.selection_tab.clear_artists()
+        if hasattr(self, 'components_tab'):
+            self.components_tab.clear_artists()
+        if hasattr(self, 'fret_tab'):
+            self.fret_tab.clear_artists()
 
     def _show_tab_artists(self, current_tab):
         """Show artists for the specified tab."""
@@ -1500,10 +1519,20 @@ class PlotterWidget(QWidget):
             self.refresh_current_plot()
 
     def _on_bins_changed(self, value):
-        """Callback for bins change."""
+        """Callback for bins change.
+
+        Debounced to avoid excessive updates while user is still adjusting.
+        The actual processing happens in _process_bins_change.
+        """
         self._update_setting_in_metadata('number_of_bins', value)
         if not self._updating_settings:
-            self.refresh_current_plot()
+            # Start/restart timer - will fire after user stops changing value
+            self._bins_timer.stop()
+            self._bins_timer.start()
+
+    def _process_bins_change(self):
+        """Process bins change after debounce timer expires."""
+        self.refresh_current_plot()
 
     def _on_log_scale_changed(self, state):
         """Callback for log scale change."""
@@ -2186,6 +2215,9 @@ class PlotterWidget(QWidget):
             self.image_layers_checkable_combobox.blockSignals(False)
             self.mask_layer_combobox.blockSignals(False)
 
+            # Update display text after unblocking signals
+            self.image_layers_checkable_combobox._update_display_text()
+
             # If mask layer was deleted, trigger the cleanup
             if mask_layer_was_deleted:
                 self._on_mask_layer_changed("None")
@@ -2263,8 +2295,8 @@ class PlotterWidget(QWidget):
                 for artist in self.canvas_widget.artists.values():
                     artist._remove_artists()
                 self._remove_colorbar()
-                # Hide tab-specific artists
-                self._hide_all_tab_artists()
+                # Clear tab-specific artists
+                self._clear_all_tab_artists()
                 # Redraw circle/semicircle and axes
                 self.set_axes_labels()
                 self._update_plot_bg_color()
@@ -2361,7 +2393,7 @@ class PlotterWidget(QWidget):
                 for artist in self.canvas_widget.artists.values():
                     artist._remove_artists()
                 self._remove_colorbar()
-                self._hide_all_tab_artists()
+                self._clear_all_tab_artists()
                 self.set_axes_labels()
                 self._update_plot_bg_color()
                 if self.toggle_semi_circle:
@@ -2381,7 +2413,6 @@ class PlotterWidget(QWidget):
             self._s_original_array = layer_metadata.get("S_original")
             self._harmonics_array = layer_metadata.get("harmonics")
 
-            # Update harmonic range
             if len(selected_layers) > 1:
                 common_harmonics = self._get_common_harmonics(selected_layers)
                 if common_harmonics is not None and len(common_harmonics) > 0:
@@ -2401,7 +2432,6 @@ class PlotterWidget(QWidget):
             self._initialize_plot_settings_in_metadata(layer)
             self._restore_plot_settings_from_metadata()
 
-            # Update tab UIs (restore settings from metadata, don't run analyses)
             if hasattr(self, 'filter_tab'):
                 self.filter_tab._on_image_layer_changed()
 
@@ -2420,10 +2450,8 @@ class PlotterWidget(QWidget):
             if hasattr(self, 'fret_tab'):
                 self.fret_tab._on_image_layer_changed()
 
-            # Update the plot
             self.plot()
 
-            # Enforce tab-specific artist visibility based on current tab
             current_tab_index = self.tab_widget.currentIndex()
             self._on_tab_changed(current_tab_index)
 
@@ -2432,6 +2460,15 @@ class PlotterWidget(QWidget):
 
     def _on_selection_changed(self):
         """Handle changes to layer selection (adding/removing layers).
+
+        Debounced to avoid excessive updates while user is still selecting.
+        The actual processing happens in _process_layer_selection_change.
+        """
+        self._layer_selection_timer.stop()
+        self._layer_selection_timer.start()
+
+    def _process_layer_selection_change(self):
+        """Process layer selection change after debounce timer expires.
 
         Only updates the phasor plot. Tab UIs are not updated unless
         the primary layer changed (which triggers _on_primary_layer_changed).
@@ -2447,7 +2484,6 @@ class PlotterWidget(QWidget):
             if not layer_name:
                 return
 
-            # Update harmonic range based on current selection
             if len(selected_layers) > 1:
                 common_harmonics = self._get_common_harmonics(selected_layers)
                 if common_harmonics is not None and len(common_harmonics) > 0:
@@ -2455,7 +2491,6 @@ class PlotterWidget(QWidget):
                     max_harmonic = int(np.max(common_harmonics))
                     self.harmonic_spinbox.setRange(min_harmonic, max_harmonic)
 
-            # Only update the plot - tabs remain unchanged
             self.plot()
 
         finally:
@@ -2581,9 +2616,7 @@ class PlotterWidget(QWidget):
         if not selected_layers:
             return
 
-        # Apply mask changes to all selected layers
         for image_layer in selected_layers:
-            # Restore original G and S and image data
             self._restore_original_phasor_data(image_layer)
 
             if text == "None":
@@ -2595,7 +2628,6 @@ class PlotterWidget(QWidget):
 
         if hasattr(self, 'filter_tab'):
             self.filter_tab._on_image_layer_changed()
-            # Apply filter to the first selected layer if applicable
             first_layer = selected_layers[0]
             if (
                 first_layer.metadata['settings'].get('filter', None)
@@ -2888,54 +2920,99 @@ class PlotterWidget(QWidget):
         plot_data = np.column_stack((x_data, y_data))
         self.canvas_widget.artists['SCATTER'].data = plot_data
 
-        if selection_id_data is not None:
-            self.canvas_widget.artists['SCATTER'].color_indices = (
-                selection_id_data
-            )
+        # Only update color_indices if changed
+        target_color_indices = (
+            selection_id_data if selection_id_data is not None else 0
+        )
+
+        # For arrays, use array_equal; for scalars, use direct comparison
+        indices_changed = False
+        if isinstance(target_color_indices, np.ndarray):
+            if (
+                self._last_scatter_color_indices is None
+                or not isinstance(self._last_scatter_color_indices, np.ndarray)
+                or not np.array_equal(
+                    self._last_scatter_color_indices, target_color_indices
+                )
+            ):
+                indices_changed = True
         else:
-            self.canvas_widget.artists['SCATTER'].color_indices = 0
+            # target_color_indices is a scalar
+            if (
+                self._last_scatter_color_indices is None
+                or isinstance(self._last_scatter_color_indices, np.ndarray)
+                or self._last_scatter_color_indices != target_color_indices
+            ):
+                indices_changed = True
+
+        if indices_changed:
+            self.canvas_widget.artists['SCATTER'].color_indices = (
+                target_color_indices
+            )
+            self._last_scatter_color_indices = target_color_indices
 
     def _update_histogram_plot(self, x_data, y_data, selection_id_data=None):
         """Update the histogram plot with new data."""
         plot_data = np.column_stack((x_data, y_data))
+        histogram_artist = self.canvas_widget.artists['HISTOGRAM2D']
 
-        # Configure histogram artist properties
-        self.canvas_widget.artists['HISTOGRAM2D'].data = plot_data
-        self.canvas_widget.artists['HISTOGRAM2D'].cmin = 1
-        self.canvas_widget.artists['HISTOGRAM2D'].bins = self.histogram_bins
+        histogram_artist.data = plot_data
+        histogram_artist.cmin = 1
 
-        # Set colormap
-        selected_histogram_colormap = colormaps.ALL_COLORMAPS[
-            self.histogram_colormap
-        ]
-        selected_histogram_colormap = LinearSegmentedColormap.from_list(
-            self.histogram_colormap,
-            selected_histogram_colormap.colors,
-        )
-        self.canvas_widget.artists['HISTOGRAM2D'].histogram_colormap = (
-            selected_histogram_colormap
-        )
+        if self._last_histogram_bins != self.histogram_bins:
+            histogram_artist.bins = self.histogram_bins
+            self._last_histogram_bins = self.histogram_bins
 
-        # Set normalization method
-        if self.canvas_widget.artists['HISTOGRAM2D'].histogram is not None:
-            if self.histogram_log_scale:
-                self.canvas_widget.artists[
-                    'HISTOGRAM2D'
-                ].histogram_color_normalization_method = "log"
-            else:
-                self.canvas_widget.artists[
-                    'HISTOGRAM2D'
-                ].histogram_color_normalization_method = "linear"
-
-        # Apply selection data if available
-        if selection_id_data is not None:
-            self.canvas_widget.artists['HISTOGRAM2D'].color_indices = (
-                selection_id_data
+        if self._last_histogram_colormap != self.histogram_colormap:
+            selected_histogram_colormap = colormaps.ALL_COLORMAPS[
+                self.histogram_colormap
+            ]
+            selected_histogram_colormap = LinearSegmentedColormap.from_list(
+                self.histogram_colormap,
+                selected_histogram_colormap.colors,
             )
+            histogram_artist.histogram_colormap = selected_histogram_colormap
+            self._last_histogram_colormap = self.histogram_colormap
+            self._last_histogram_colormap_object = selected_histogram_colormap
         else:
-            self.canvas_widget.artists['HISTOGRAM2D'].color_indices = 0
+            selected_histogram_colormap = self._last_histogram_colormap_object
 
-        # Update colorbar for histogram
+        if histogram_artist.histogram is not None:
+            current_norm = "log" if self.histogram_log_scale else "linear"
+            if self._last_histogram_norm != current_norm:
+                histogram_artist.histogram_color_normalization_method = (
+                    current_norm
+                )
+                self._last_histogram_norm = current_norm
+
+        target_color_indices = (
+            selection_id_data if selection_id_data is not None else 0
+        )
+
+        indices_changed = False
+        if isinstance(target_color_indices, np.ndarray):
+            if (
+                self._last_histogram_color_indices is None
+                or not isinstance(
+                    self._last_histogram_color_indices, np.ndarray
+                )
+                or not np.array_equal(
+                    self._last_histogram_color_indices, target_color_indices
+                )
+            ):
+                indices_changed = True
+        else:
+            if (
+                self._last_histogram_color_indices is None
+                or isinstance(self._last_histogram_color_indices, np.ndarray)
+                or self._last_histogram_color_indices != target_color_indices
+            ):
+                indices_changed = True
+
+        if indices_changed:
+            histogram_artist.color_indices = target_color_indices
+            self._last_histogram_color_indices = target_color_indices
+
         self._update_colorbar(selected_histogram_colormap)
 
     def _update_colorbar(self, colormap):
@@ -3013,7 +3090,6 @@ class PlotterWidget(QWidget):
                 new_plot_type, x_data, y_data, selection_id_data=None
             )
 
-            # Restore selection visualization if active
             if hasattr(
                 self, 'selection_tab'
             ) and self.selection_tab.selection_id not in [None, "None", ""]:

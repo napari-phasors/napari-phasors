@@ -1497,6 +1497,10 @@ class ComponentsWidget(QWidget):
         if self.component_polygon is not None:
             self.component_polygon.set_visible(visible)
 
+    def clear_artists(self):
+        """Clear (remove) all artists created by this widget."""
+        self._clear_components()
+
     def _toggle_plot_section(self, checked):
         """Toggle visibility of the plot section."""
         self.plot_section.setVisible(checked)

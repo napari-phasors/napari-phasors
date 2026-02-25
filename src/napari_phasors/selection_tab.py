@@ -28,7 +28,6 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from skimage.util import map_array
 
 from ._utils import colormap_to_dict
 
@@ -167,6 +166,14 @@ class SelectionWidget(QWidget):
             self.circular_cursor_widget.on_harmonic_changed()
         elif current_mode == 1:  # Automatic Clustering mode
             self.automatic_clustering_widget.on_harmonic_changed()
+
+    def clear_artists(self):
+        """Clear (remove) all artists created by this widget."""
+        # Clear artists from all sub-widgets
+        if hasattr(self, 'circular_cursor_widget'):
+            self.circular_cursor_widget.clear_all_patches()
+        if hasattr(self, 'automatic_clustering_widget'):
+            self.automatic_clustering_widget.clear_all_patches()
 
     def is_manual_selection_mode(self):
         """Check if manual selection mode is currently active."""
