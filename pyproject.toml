@@ -53,6 +53,8 @@ testing = [
     "pandas",
     "black",
     "isort",
+    "ruff",
+    "pre-commit",
     "phasorpy>=0.8",
     "tifffile",
     "fbdfile",
