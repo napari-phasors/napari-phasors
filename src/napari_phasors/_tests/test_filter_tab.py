@@ -1063,3 +1063,40 @@ def test_threshold_edit_updates_histogram_lines(make_napari_viewer):
     )
     line_data = filter_widget.threshold_line_lower.get_xdata()
     assert abs(line_data[0] - expected_x) < 0.01
+
+
+def test_filter_widget_no_duplicate_signal_connections(make_napari_viewer):
+    """Test that switching tabs does not accumulate signal connections.
+
+    Regression test: _update_histogram_if_needed() previously connected
+    signals every time it was called (on each tab switch), causing
+    callbacks to fire N times after N tab switches.
+    """
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    filter_widget = parent.filter_tab
+
+    # Count receivers on the threshold_method_combobox signal before
+    initial_receivers = (
+        filter_widget.threshold_method_combobox.receivers(
+            filter_widget.threshold_method_combobox.currentTextChanged
+        )
+    )
+
+    # Simulate switching to the filter tab multiple times
+    for _ in range(5):
+        filter_widget._update_histogram_if_needed()
+
+    # Count receivers after — should be the same as before
+    final_receivers = (
+        filter_widget.threshold_method_combobox.receivers(
+            filter_widget.threshold_method_combobox.currentTextChanged
+        )
+    )
+
+    assert final_receivers == initial_receivers, (
+        f"Signal has {final_receivers} receivers after 5 tab switches "
+        f"(started with {initial_receivers}). "
+        f"Connections are accumulating on each call to "
+        f"_update_histogram_if_needed()."
+    )
