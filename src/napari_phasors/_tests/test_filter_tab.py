@@ -1077,10 +1077,8 @@ def test_filter_widget_no_duplicate_signal_connections(make_napari_viewer):
     filter_widget = parent.filter_tab
 
     # Count receivers on the threshold_method_combobox signal before
-    initial_receivers = (
-        filter_widget.threshold_method_combobox.receivers(
-            filter_widget.threshold_method_combobox.currentTextChanged
-        )
+    initial_receivers = filter_widget.threshold_method_combobox.receivers(
+        filter_widget.threshold_method_combobox.currentTextChanged
     )
 
     # Simulate switching to the filter tab multiple times
@@ -1088,10 +1086,8 @@ def test_filter_widget_no_duplicate_signal_connections(make_napari_viewer):
         filter_widget._update_histogram_if_needed()
 
     # Count receivers after — should be the same as before
-    final_receivers = (
-        filter_widget.threshold_method_combobox.receivers(
-            filter_widget.threshold_method_combobox.currentTextChanged
-        )
+    final_receivers = filter_widget.threshold_method_combobox.receivers(
+        filter_widget.threshold_method_combobox.currentTextChanged
     )
 
     assert final_receivers == initial_receivers, (
