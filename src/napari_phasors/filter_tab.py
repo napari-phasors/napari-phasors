@@ -20,10 +20,15 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from skimage.filters import threshold_li, threshold_otsu, threshold_yen
 from superqt import QRangeSlider
 
-from ._utils import apply_filter_and_threshold, validate_harmonics_for_wavelet
+from ._utils import (
+    apply_filter_and_threshold,
+    threshold_li,
+    threshold_otsu,
+    threshold_yen,
+    validate_harmonics_for_wavelet,
+)
 
 
 class FilterWidget(QWidget):
