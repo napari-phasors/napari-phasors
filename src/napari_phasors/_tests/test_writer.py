@@ -9,7 +9,109 @@ from napari_phasors._synthetic_generator import (
     make_intensity_layer_with_phasors,
     make_raw_flim_data,
 )
-from napari_phasors._writer import write_ome_tiff
+from napari_phasors._writer import _convert_numpy_types, write_ome_tiff
+
+
+def test_convert_numpy_types_scalars():
+    """Test that numpy scalars are converted to native Python types."""
+    assert _convert_numpy_types(np.int64(42)) == 42
+    assert type(_convert_numpy_types(np.int64(42))) is int
+    assert _convert_numpy_types(np.float64(3.14)) == 3.14
+    assert type(_convert_numpy_types(np.float64(3.14))) is float
+    assert _convert_numpy_types(np.bool_(True)) is True
+    assert type(_convert_numpy_types(np.bool_(True))) is bool
+
+
+def test_convert_numpy_types_dict_keys():
+    """Test that numpy types in dict keys are converted (Issue #178)."""
+    data = {np.int64(1): {'real': np.float64(0.5), 'imag': np.float64(0.3)}}
+    result = _convert_numpy_types(data)
+    assert result == {1: {'real': 0.5, 'imag': 0.3}}
+    for key in result:
+        assert type(key) is int
+    for val in result[1].values():
+        assert type(val) is float
+
+
+def test_convert_numpy_types_nested():
+    """Test recursive conversion of complex nested structures."""
+    data = {
+        'harmonics': np.array([1, 2, 3]),
+        'positions': {
+            np.int64(1): [np.float64(0.1), np.float64(0.2)],
+            np.int64(2): (np.float64(0.3), np.float64(0.4)),
+        },
+        'plain': 'string_value',
+        'count': np.int32(10),
+    }
+    result = _convert_numpy_types(data)
+    assert result['harmonics'] == [1, 2, 3]
+    assert 1 in result['positions']
+    assert 2 in result['positions']
+    assert result['positions'][1] == [0.1, 0.2]
+    assert result['positions'][2] == (0.3, 0.4)
+    assert result['plain'] == 'string_value'
+    assert result['count'] == 10
+    assert type(result['count']) is int
+
+
+def test_convert_numpy_types_passthrough():
+    """Test that non-numpy types pass through unchanged."""
+    assert _convert_numpy_types('hello') == 'hello'
+    assert _convert_numpy_types(42) == 42
+    assert _convert_numpy_types(None) is None
+
+
+def test_write_ometif_with_numpy_settings(tmp_path):
+    """Test that OME-TIFF export works when settings contain numpy types.
+
+    Regression test for Issue #178: TypeError with numpy.int64 dict keys.
+    """
+    time_constants = [0.1, 1, 10]
+    raw_flim_data = make_raw_flim_data(time_constants=time_constants)
+    harmonic = [1, 2, 3]
+    intensity_image_layer = make_intensity_layer_with_phasors(
+        raw_flim_data, harmonic=harmonic
+    )
+
+    # Simulate FRET tab storing numpy-typed keys and values in settings
+    if "settings" not in intensity_image_layer.metadata:
+        intensity_image_layer.metadata["settings"] = {}
+    intensity_image_layer.metadata["settings"]["fret"] = {
+        "background_positions_by_harmonic": {
+            np.int64(1): {"real": np.float64(0.5), "imag": np.float64(0.3)},
+            np.int64(2): {"real": np.float64(0.6), "imag": np.float64(0.4)},
+        },
+        "donor_lifetime": np.float64(4.0),
+        "frequency": np.float64(80.0),
+    }
+
+    filepath = os.path.join(tmp_path, "test_numpy_settings.ome.tif")
+
+    # This should NOT raise TypeError
+    result = write_ome_tiff(
+        filepath,
+        [
+            (
+                intensity_image_layer.data,
+                {"metadata": intensity_image_layer.metadata},
+            )
+        ],
+    )
+
+    assert os.path.exists(filepath)
+    assert result == [filepath]
+
+    # Read back and verify settings survived the roundtrip
+    reader = napari_get_reader(filepath, harmonics=harmonic)
+    layer_data_list = reader(filepath)
+    metadata = layer_data_list[0][1]["metadata"]
+    fret = metadata["settings"]["fret"]
+    assert fret["donor_lifetime"] == 4.0
+    assert fret["frequency"] == 80.0
+    positions = fret["background_positions_by_harmonic"]
+    # JSON keys become strings, so verify they're accessible
+    assert "1" in positions or 1 in positions
 
 
 def test_write_ometif(tmp_path):

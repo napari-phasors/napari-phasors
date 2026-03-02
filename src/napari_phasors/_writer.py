@@ -22,6 +22,42 @@ if TYPE_CHECKING:
     FullLayerData = Tuple[DataType, dict, str]
 
 
+def _convert_numpy_types(obj):
+    """Recursively convert numpy types to native Python types.
+
+    Handles numpy scalars in both dict keys and values, making
+    the data structure safe for ``json.dumps``.
+
+    Parameters
+    ----------
+    obj : any
+        The object to convert. Can be a dict, list, tuple,
+        numpy scalar, numpy array, or any other type.
+
+    Returns
+    -------
+    any
+        The converted object with all numpy types replaced
+        by their native Python equivalents.
+    """
+    if isinstance(obj, dict):
+        return {
+            _convert_numpy_types(k): _convert_numpy_types(v)
+            for k, v in obj.items()
+        }
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_convert_numpy_types(item) for item in obj)
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    return obj
+
+
 def write_ome_tiff(path: str, image_layer: Any) -> List[str]:
     """Save image layer with phasor coordinates as 'OME-TIFF'.
 
@@ -85,6 +121,7 @@ def write_ome_tiff(path: str, image_layer: Any) -> List[str]:
     if not path.endswith(".ome.tif"):
         path += ".ome.tif"
     settings["version"] = str(importlib.metadata.version('napari-phasors'))
+    settings = _convert_numpy_types(settings)
     description = json.dumps({"napari_phasors_settings": json.dumps(settings)})
     phasor_to_ometiff(
         path,
@@ -94,7 +131,7 @@ def write_ome_tiff(path: str, image_layer: Any) -> List[str]:
         harmonic=harmonics,
         description=description,
     )
-    return path
+    return [path]
 
 
 def export_layer_as_image(
