@@ -19,8 +19,9 @@ A comprehensive plugin for phasor analysis in napari. Based on the
 
 napari-phasors is a comprehensive plugin that provides a complete workflow 
 for phasor analysis in napari. It includes widgets for reading various FLIM 
-and hyperspectral file formats, performing phasor analysis, calibration, 
-component analysis, FRET analysis, filtering, manual selections, and 
+and hyperspectral file formats, performing phasor analysis on multiple layers 
+simultaneously, calibration, component analysis, FRET analysis, filtering, 
+phasor selections (manual, circular cursor, and automatic clustering), and 
 exporting results.
 
 ### Sample Data
@@ -50,6 +51,20 @@ unchecked.
 
 ![phasors_hyperspectral](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/hsi%20plot.gif)
 
+### Multiple-Layer Selection and Simultaneous Analysis
+
+Multiple image layers containing phasor data can be selected simultaneously 
+from the layer dropdown in the "Phasor Plot" widget. All layers can be 
+selected or deselected at once using the "All" and "None" controls. When more 
+than one layer is selected, their phasor coordinates are merged and displayed 
+together in the phasor plot, enabling direct comparison and joint analysis. A 
+primary layer can be designated from the same dropdown to drive plot settings 
+and analysis parameters (such as calibration, frequency, filter settings, and 
+component locations) for all selected layers. All analyses are then applied to 
+every selected layer at once.
+
+![multiple_layers](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/multiple%20layers.gif)
+
 ### Phasor Calibration
 
 FLIM images can be calibrated using a reference image acquired under the same 
@@ -63,33 +78,63 @@ experiment. This ensures accuracy and consistency in lifetime measurements.
 ### Filtering and Thresholding
 
 Apply various filters and thresholds to your phasor data to enhance analysis 
-quality in the "Filter/Threshold" tab on the "Phasor Plot" widget. You can 
+quality in the "Filter" tab on the "Phasor Plot" widget. You can 
 filter phasor coordinates using the median or wavelet filter.
 
 ![filter_threshold](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/filter%20threshold.gif)
 
 ### Mask
 
-You can create a mask using either a shapes layer or a labels layer in napari. Once the mask is created, select it from the mask combobox in the "Phasor Plot" widget. Only the pixels inside the selected mask will be plotted in the phasor space and included in subsequent analyses. This allows you to focus your analysis on specific regions of interest within your data.
+You can create a mask using either a shapes layer or a labels layer in napari. Once the
+mask is created, select it from the mask combobox in the "Phasor Plot" widget. Only the
+pixels inside the selected mask will be plotted in the phasor space and included in subsequent
+analyses. This allows you to focus your analysis on specific regions of interest within your data.
 
 ![mask](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/mask.gif)
 
 ### Copy Settings and Analysis
 
-You can quickly copy plot settings and analysis parameters, such as calibration, frequency, filter settings, and component locations, from another layer or from an OME-TIF file previously exported with the napari-phasors plugin. This feature streamlines the workflow by allowing you to reuse established configurations, ensuring consistency and saving time when analyzing multiple datasets.
+You can quickly copy plot settings and analysis parameters, such as calibration, frequency, filter
+settings, and component locations, from another layer or from an OME-TIF file previously exported
+with the napari-phasors plugin. This feature streamlines the workflow by allowing you to reuse
+established configurations, ensuring consistency and saving time when analyzing multiple datasets.
 
 ![copy_settings](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/copy%20settings.gif)
 
-### Manual Phasor Selections
+### Phasor Selections
 
-Create manual selections on the phasor plot to identify specific regions of 
-interest. These selections can be used to highlight corresponding pixels in 
-the intensity image and perform targeted analysis. Shape of selection can be
-chosen at the top of the phasor plot and the selection ID can be selected in
-the "Selection" tab of the "Phasor Plot" widget.
+The "Selection" tab of the "Phasor Plot" widget offers three modes for 
+identifying regions of interest in the phasor plot and mapping the 
+corresponding pixels back to the intensity image.
+
+#### Circular Cursor Selection
+
+Define one or more circular cursors on the phasor plot to select regions of 
+interest. Each cursor can be positioned and resized interactively by dragging 
+it on the plot, or by entering coordinates directly in the table. A separate 
+labels layer is created for each cursor, color-coded for easy identification. 
+Statistics for each cursor region are displayed in the table.
+
+![circular_cursors](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/circular%20cursors.gif)
+
+#### Automatic Clustering
+
+Automatically segment the phasor plot into clusters using Gaussian Mixture 
+Models (GMM). The number of clusters can be specified, and the resulting 
+clusters are displayed as ellipses on the phasor plot. Each cluster is 
+assigned a color that can be customized, and the corresponding pixels are
+highlighted in a labels layer. Cluster statistics are shown in the table.
+
+![automatic_clustering](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/automatic%20clustering.gif)
+
+#### Manual Selection
+
+Draw free-form selections directly on the phasor plot using different shape 
+tools available at the top of the plot. The selection ID can be managed from 
+the "Selection" tab, allowing multiple independent selections to be stored 
+and toggled. NOTE: Manual selections are not stored when exporting in OME-TIF format.
 
 ![selections](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/selections.gif)
-
 
 ### Component Analysis
 
@@ -133,7 +178,11 @@ The signal can then be visualized according to the selected parameters for each 
 
 ### Data Export
 
-The average intensity image and phasor coordinates can be exported as OME-TIF files, which are compatible with both napari-phasors and PhasorPy. Alternatively, you can export the phasor coordinates and selections as a CSV file using the "Export Phasor" widget. Analysis results—such as lifetime, FRET efficiency, and component fractions—can also be exported to CSV. Additionally, the colormapped image layer can be exported with or without its associated colorbar.
+The average intensity image and phasor coordinates can be exported as OME-TIF files, which are compatible
+with both napari-phasors and PhasorPy. Alternatively, you can export the phasor coordinates and selections
+as a CSV file using the "Export Phasor" widget. Analysis results—such as lifetime, FRET efficiency, and 
+component fractions—can also be exported to CSV. Additionally, the colormapped image layer can be exported
+with or without its associated colorbar.
 
 ![export_phasors](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/export.gif)
 
@@ -173,7 +222,8 @@ the coverage at least stays the same before you submit a pull request.
 Distributed under the terms of the [BSD-3] license,
 "napari-phasors" is free and open source software.
 
-Please cite doi: [https://doi.org/10.5281/zenodo.14647626](https://doi.org/10.5281/zenodo.14647626) if napari-phasors contributes to a project that leads to a publication.
+Please cite doi: [https://doi.org/10.5281/zenodo.14647626](https://doi.org/10.5281/zenodo.14647626) 
+if napari-phasors contributes to a project that leads to a publication.
 
 ## Issues
 
