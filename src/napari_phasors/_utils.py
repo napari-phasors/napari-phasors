@@ -52,7 +52,9 @@ def threshold_otsu(data, nbins=256):
     if min_val == max_val:
         return float(min_val)
 
-    counts, bin_edges = np.histogram(data, bins=nbins, range=(min_val, max_val))
+    counts, bin_edges = np.histogram(
+        data, bins=nbins, range=(min_val, max_val)
+    )
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
 
     # Class probabilities and means for all possible thresholds
@@ -61,9 +63,8 @@ def threshold_otsu(data, nbins=256):
 
     # Avoid division by zero
     mean1 = np.cumsum(counts * bin_centers) / np.maximum(weight1, 1)
-    mean2 = (
-        np.cumsum((counts * bin_centers)[::-1])[::-1]
-        / np.maximum(weight2, 1)
+    mean2 = np.cumsum((counts * bin_centers)[::-1])[::-1] / np.maximum(
+        weight2, 1
     )
 
     # Between-class variance
@@ -186,7 +187,9 @@ def threshold_yen(data, nbins=256):
     if min_val == max_val:
         return float(min_val)
 
-    counts, bin_edges = np.histogram(data, bins=nbins, range=(min_val, max_val))
+    counts, bin_edges = np.histogram(
+        data, bins=nbins, range=(min_val, max_val)
+    )
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
 
     # Normalize to probabilities
@@ -197,15 +200,14 @@ def threshold_yen(data, nbins=256):
     pmf = counts.astype(float) / total
 
     # Cumulative sums
-    P1 = np.cumsum(pmf)                           # P(class 1)
-    P1_sq = np.cumsum(pmf ** 2)                    # sum of p_i^2 for class 1
-    P2_sq = np.cumsum(pmf[::-1] ** 2)[::-1]        # sum of p_j^2 for class 2
+    P1 = np.cumsum(pmf)  # P(class 1)
+    P1_sq = np.cumsum(pmf**2)  # sum of p_i^2 for class 1
+    P2_sq = np.cumsum(pmf[::-1] ** 2)[::-1]  # sum of p_j^2 for class 2
 
     # Yen's criterion (Eq. 4 in [1]):
     #   crit = log( (P1*(1-P1))^2 / (P1_sq * P2_sq) )
     crit = np.log(
-        ((P1_sq[:-1] * P2_sq[1:]) ** -1)
-        * (P1[:-1] * (1.0 - P1[:-1])) ** 2
+        ((P1_sq[:-1] * P2_sq[1:]) ** -1) * (P1[:-1] * (1.0 - P1[:-1])) ** 2
     )
 
     idx = np.argmax(crit)

@@ -5,11 +5,9 @@ from phasorpy.filter import (
     phasor_filter_pawflim,
     phasor_threshold,
 )
-from skimage.filters import (
-    threshold_li as sk_threshold_li,
-    threshold_otsu as sk_threshold_otsu,
-    threshold_yen as sk_threshold_yen,
-)
+from skimage.filters import threshold_li as sk_threshold_li
+from skimage.filters import threshold_otsu as sk_threshold_otsu
+from skimage.filters import threshold_yen as sk_threshold_yen
 
 from napari_phasors._synthetic_generator import (
     make_intensity_layer_with_phasors,
