@@ -651,6 +651,11 @@ class PlotterWidget(QWidget):
         # Monkey-patch toolbar save_figure to export with black text/spines
         self._patch_toolbar_save()
 
+        # Connect scroll wheel zoom on the phasor plot
+        self.canvas_widget.canvas.mpl_connect(
+            "scroll_event", self._on_scroll_zoom
+        )
+
         # Create bottom widget for controls
         controls_container = QWidget()
         controls_container.setLayout(QVBoxLayout())
@@ -2923,6 +2928,35 @@ class PlotterWidget(QWidget):
             return None
 
         return g_merged, s_merged
+
+    def _on_scroll_zoom(self, event):
+        """Zoom the phasor plot axes centered on the mouse cursor.
+
+        Scrolling up zooms in; scrolling down zooms out.
+        """
+        ax = self.canvas_widget.axes
+        if event.inaxes is not ax:
+            return
+
+        ZOOM_FACTOR = 1.15  # zoom step (>1 means 15% range change per notch)
+        if event.step > 0:  # scroll up → zoom in
+            scale = 1.0 / ZOOM_FACTOR
+        else:  # scroll down → zoom out
+            scale = ZOOM_FACTOR
+
+        x_mouse, y_mouse = event.xdata, event.ydata
+        x_min, x_max = ax.get_xlim()
+        y_min, y_max = ax.get_ylim()
+
+        # New limits centered on mouse position
+        new_x_min = x_mouse - (x_mouse - x_min) * scale
+        new_x_max = x_mouse + (x_max - x_mouse) * scale
+        new_y_min = y_mouse - (y_mouse - y_min) * scale
+        new_y_max = y_mouse + (y_max - y_mouse) * scale
+
+        ax.set_xlim(new_x_min, new_x_max)
+        ax.set_ylim(new_y_min, new_y_max)
+        self.canvas_widget.canvas.draw_idle()
 
     def _patch_toolbar_save(self):
         """Monkey-patch figure.savefig to use black colors for export.
