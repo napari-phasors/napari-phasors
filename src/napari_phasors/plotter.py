@@ -2047,6 +2047,11 @@ class PlotterWidget(QWidget):
 
         self.canvas_widget.axes.set_ylim([ylim_0, ylim_1])
         self.canvas_widget.axes.set_xlim([xlim_0, xlim_1])
+        
+        if hasattr(self.canvas_widget, 'toolbar') and self.canvas_widget.toolbar:
+            self.canvas_widget.toolbar.update()
+            self.canvas_widget.toolbar.push_current()
+        
         self.canvas_widget.figure.canvas.draw_idle()
 
     def _update_plot_bg_color(self, color=None):
@@ -2947,6 +2952,11 @@ class PlotterWidget(QWidget):
         x_mouse, y_mouse = event.xdata, event.ydata
         x_min, x_max = ax.get_xlim()
         y_min, y_max = ax.get_ylim()
+
+        # Push current view to toolbar history before zooming
+        # This allows the Home button to restore the original view
+        if hasattr(self.canvas_widget, 'toolbar') and self.canvas_widget.toolbar:
+            self.canvas_widget.toolbar.push_current()
 
         # New limits centered on mouse position
         new_x_min = x_mouse - (x_mouse - x_min) * scale
