@@ -8,7 +8,7 @@
 [![napari hub](https://img.shields.io/endpoint?url=https://api.napari-hub.org/shields/napari-phasors)](https://napari-hub.org/plugins/napari-phasors)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.14647626.svg)](https://doi.org/10.5281/zenodo.14647626)
 
-A comprehensive plugin for phasor analysis in napari. Based on the 
+A comprehensive plugin for phasor analysis in napari. Based on the
 [phasorpy](https://www.phasorpy.org/) library.
 
 [Jump to Intallation](#installation)
@@ -17,17 +17,17 @@ A comprehensive plugin for phasor analysis in napari. Based on the
 
 ## Usage
 
-napari-phasors is a comprehensive plugin that provides a complete workflow 
-for phasor analysis in napari. It includes widgets for reading various FLIM 
-and hyperspectral file formats, performing phasor analysis on multiple layers 
-simultaneously, calibration, component analysis, FRET analysis, filtering, 
-phasor selections (manual, circular cursor, and automatic clustering), and 
+napari-phasors is a comprehensive plugin that provides a complete workflow
+for phasor analysis in napari. It includes widgets for reading various FLIM
+and hyperspectral file formats, performing phasor analysis on multiple layers
+simultaneously, calibration, component analysis, FRET analysis, filtering,
+phasor selections (manual, circular cursor, and automatic clustering), and
 exporting results.
 
 ### Sample Data
 
-Two sample datasets for FLIM are provided, along with their corresponding 
-calibration images. Additionally, a paramecium image is included as sample 
+Two sample datasets for FLIM are provided, along with their corresponding
+calibration images. Additionally, a paramecium image is included as sample
 data for hyperspectral analysis.
 
 ![sample_data](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/samples.gif)
@@ -37,15 +37,15 @@ data for hyperspectral analysis.
 #### Plot FLIM Data
 
 FLIM phasor data can be plotted as a 2D histogram or scatter plot in the
-"Phasor Plot" widget. The colormap, the number of bins and the scale of the 
+"Phasor Plot" widget. The colormap, the number of bins and the scale of the
 colors can be customized.
 
 ![phasors_flim](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/flim%20plot.gif)
 
 #### Plot Hyperspectral Data
 
-Hyperspectral phasor data can also be plotted as a 2D histogram or scatter 
-plot and visualized in the full universal circle. The 
+Hyperspectral phasor data can also be plotted as a 2D histogram or scatter
+plot and visualized in the full universal circle. The
 'Universal Semi-Circle/Full Polar Plot' in the "Plot Settings" tab must be
 unchecked.
 
@@ -53,32 +53,32 @@ unchecked.
 
 ### Multiple-Layer Selection and Simultaneous Analysis
 
-Multiple image layers containing phasor data can be selected simultaneously 
-from the layer dropdown in the "Phasor Plot" widget. All layers can be 
-selected or deselected at once using the "All" and "None" controls. When more 
-than one layer is selected, their phasor coordinates are merged and displayed 
-together in the phasor plot, enabling direct comparison and joint analysis. A 
-primary layer can be designated from the same dropdown to drive plot settings 
-and analysis parameters (such as calibration, frequency, filter settings, and 
-component locations) for all selected layers. All analyses are then applied to 
+Multiple image layers containing phasor data can be selected simultaneously
+from the layer dropdown in the "Phasor Plot" widget. All layers can be
+selected or deselected at once using the "All" and "None" controls. When more
+than one layer is selected, their phasor coordinates are merged and displayed
+together in the phasor plot, enabling direct comparison and joint analysis. A
+primary layer can be designated from the same dropdown to drive plot settings
+and analysis parameters (such as calibration, frequency, filter settings, and
+component locations) for all selected layers. All analyses are then applied to
 every selected layer at once.
 
 ![multiple_layers](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/multiple%20layers.gif)
 
 ### Phasor Calibration
 
-FLIM images can be calibrated using a reference image acquired under the same 
-experimental parameters in the "Calibration" tab of the "Phasor Plot" widget. 
+FLIM images can be calibrated using a reference image acquired under the same
+experimental parameters in the "Calibration" tab of the "Phasor Plot" widget.
 This reference image should consist of a homogeneous solution of a fluorophore
-with a known fluorescence lifetime and the laser frequency used in the 
+with a known fluorescence lifetime and the laser frequency used in the
 experiment. This ensures accuracy and consistency in lifetime measurements.
 
 ![calibration](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/calibration.gif)
 
 ### Filtering and Thresholding
 
-Apply various filters and thresholds to your phasor data to enhance analysis 
-quality in the "Filter" tab on the "Phasor Plot" widget. You can 
+Apply various filters and thresholds to your phasor data to enhance analysis
+quality in the "Filter" tab on the "Phasor Plot" widget. You can
 filter phasor coordinates using the median or wavelet filter.
 
 ![filter_threshold](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/filter%20threshold.gif)
@@ -103,25 +103,25 @@ established configurations, ensuring consistency and saving time when analyzing 
 
 ### Phasor Selections
 
-The "Selection" tab of the "Phasor Plot" widget offers three modes for 
-identifying regions of interest in the phasor plot and mapping the 
+The "Selection" tab of the "Phasor Plot" widget offers three modes for
+identifying regions of interest in the phasor plot and mapping the
 corresponding pixels back to the intensity image.
 
 #### Circular Cursor Selection
 
-Define one or more circular cursors on the phasor plot to select regions of 
-interest. Each cursor can be positioned and resized interactively by dragging 
-it on the plot, or by entering coordinates directly in the table. A separate 
-labels layer is created for each cursor, color-coded for easy identification. 
+Define one or more circular cursors on the phasor plot to select regions of
+interest. Each cursor can be positioned and resized interactively by dragging
+it on the plot, or by entering coordinates directly in the table. A separate
+labels layer is created for each cursor, color-coded for easy identification.
 Statistics for each cursor region are displayed in the table.
 
 ![circular_cursors](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/circular%20cursors.gif)
 
 #### Automatic Clustering
 
-Automatically segment the phasor plot into clusters using Gaussian Mixture 
-Models (GMM). The number of clusters can be specified, and the resulting 
-clusters are displayed as ellipses on the phasor plot. Each cluster is 
+Automatically segment the phasor plot into clusters using Gaussian Mixture
+Models (GMM). The number of clusters can be specified, and the resulting
+clusters are displayed as ellipses on the phasor plot. Each cluster is
 assigned a color that can be customized, and the corresponding pixels are
 highlighted in a labels layer. Cluster statistics are shown in the table.
 
@@ -129,18 +129,18 @@ highlighted in a labels layer. Cluster statistics are shown in the table.
 
 #### Manual Selection
 
-Draw free-form selections directly on the phasor plot using different shape 
-tools available at the top of the plot. The selection ID can be managed from 
-the "Selection" tab, allowing multiple independent selections to be stored 
+Draw free-form selections directly on the phasor plot using different shape
+tools available at the top of the plot. The selection ID can be managed from
+the "Selection" tab, allowing multiple independent selections to be stored
 and toggled. NOTE: Manual selections are not stored when exporting in OME-TIF format.
 
 ![selections](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/selections.gif)
 
 ### Component Analysis
 
-Perform multi-component analysis to identify and separate different 
-fluorescent species in your sample. This feature allows you to decompose 
-complex phasor distributions into individual components with distinct 
+Perform multi-component analysis to identify and separate different
+fluorescent species in your sample. This feature allows you to decompose
+complex phasor distributions into individual components with distinct
 lifetimes. Multi-component analysis can be done in the "Components" tab of the
 "Phasor Plot" widget, either by projection to a line between components (only two
 component analysis), or by component fitting 'n' number of components based on the
@@ -151,8 +151,8 @@ components in higher harmonics must be provided.
 
 ### Apparent or Normal Lifetime Analysis
 
-A FLIM image can be colormapped according to the phase or modulation apparent 
-lifetime, as well as the normal lifetime in the "Lifetime" tab of the "Phasor 
+A FLIM image can be colormapped according to the phase or modulation apparent
+lifetime, as well as the normal lifetime in the "Lifetime" tab of the "Phasor
 Plot" widget. A histogram is also created for visualization of the distribution
 of apparent lifetimes of the FLIM image.
 
@@ -169,7 +169,7 @@ background in the phasor plot can be obtained automatically from another layer.
 
 ### Phasor Custom Import
 
-Supported file formats (`.tif`, `.ptu`, `.sdt`, `.fbd`, `.lsm`, `.ome.tif`) 
+Supported file formats (`.tif`, `.ptu`, `.sdt`, `.fbd`, `.lsm`, `.ome.tif`)
 can be imported and converted to phasor space using the "Phasor Custom Import" widget.
 Depending on the file format, you can specify additional options such as harmonics, channels, and frames.
 The signal can then be visualized according to the selected parameters for each file.
@@ -180,7 +180,7 @@ The signal can then be visualized according to the selected parameters for each 
 
 The average intensity image and phasor coordinates can be exported as OME-TIF files, which are compatible
 with both napari-phasors and PhasorPy. Alternatively, you can export the phasor coordinates and selections
-as a CSV file using the "Export Phasor" widget. Analysis results—such as lifetime, FRET efficiency, and 
+as a CSV file using the "Export Phasor" widget. Analysis results—such as lifetime, FRET efficiency, and
 component fractions—can also be exported to CSV. Additionally, the colormapped image layer can be exported
 with or without its associated colorbar.
 
@@ -188,18 +188,18 @@ with or without its associated colorbar.
 
 ## Installation
 
-You can install `napari-phasors` via [pip]. Follow these steps from a 
+You can install `napari-phasors` via [pip]. Follow these steps from a
 terminal.
 
-We recommend using `miniforge` whenever possible. Click 
+We recommend using `miniforge` whenever possible. Click
 [here](https://conda-forge.org/download/) to choose the right download option for your OS.
-**If you do not use `miniforge`, but rather Anaconda or Miniconda, replace 
+**If you do not use `miniforge`, but rather Anaconda or Miniconda, replace
 the `mamba` term whenever you see it below with `conda`.**
 
 Create a conda environment with napari by typing :
 
     mamba create -y -n napari-phasors-env napari pyqt python=3.12
-    
+
 Activate the environment :
 
     mamba activate napari-phasors-env
@@ -217,17 +217,48 @@ Alternatively, install latest development version with :
 Contributions are very welcome. Tests can be run with [tox], please ensure
 the coverage at least stays the same before you submit a pull request.
 
+### Pre-commit Hooks
+
+This project uses [pre-commit](https://pre-commit.com/) to run **black**
+and **isort** automatically on every commit. To set it up:
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+From now on, every `git commit` will auto-format your code before the
+commit goes through. You can also run the hooks manually on all files:
+
+```bash
+pre-commit run --all-files
+```
+
+#### Ruff
+
+The project also has a [ruff](https://docs.astral.sh/ruff/) configuration in
+`pyproject.toml`. Ruff is **not** enforced in pre-commit yet because the
+existing codebase has ~280 pre-existing warnings that would block commits on
+unrelated files. You can run it manually to check your changes:
+
+```bash
+ruff check src/napari_phasors/ --config pyproject.toml
+```
+
+Once the legacy warnings are cleaned up, ruff will be added to the
+pre-commit hooks. Incremental lint fixes in PRs are welcome.
+
 ## License
 
 Distributed under the terms of the [BSD-3] license,
 "napari-phasors" is free and open source software.
 
-Please cite doi: [https://doi.org/10.5281/zenodo.14647626](https://doi.org/10.5281/zenodo.14647626) 
+Please cite doi: [https://doi.org/10.5281/zenodo.14647626](https://doi.org/10.5281/zenodo.14647626)
 if napari-phasors contributes to a project that leads to a publication.
 
 ## Issues
 
-If you encounter any problems, please [file an issue] along with a detailed 
+If you encounter any problems, please [file an issue] along with a detailed
 description.
 
 [napari]: https://github.com/napari/napari
