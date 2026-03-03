@@ -5,6 +5,9 @@ from phasorpy.filter import (
     phasor_filter_pawflim,
     phasor_threshold,
 )
+from skimage.filters import threshold_li as sk_threshold_li
+from skimage.filters import threshold_otsu as sk_threshold_otsu
+from skimage.filters import threshold_yen as sk_threshold_yen
 
 from napari_phasors._synthetic_generator import (
     make_intensity_layer_with_phasors,
@@ -13,6 +16,9 @@ from napari_phasors._synthetic_generator import (
 from napari_phasors._utils import (
     apply_filter_and_threshold,
     colormap_to_dict,
+    threshold_li,
+    threshold_otsu,
+    threshold_yen,
     update_frequency_in_metadata,
     validate_harmonics_for_wavelet,
 )
@@ -518,3 +524,107 @@ def test_update_frequency_in_metadata(make_napari_viewer):
     update_frequency_in_metadata(intensity_layer, new_frequency)
     assert intensity_layer.metadata["settings"]["frequency"] == new_frequency
     assert intensity_layer.metadata["settings"]["existing_setting"] == "test"
+
+
+def test_threshold_otsu_matches_skimage():
+    """Test that threshold_otsu matches scikit-image on bimodal data."""
+    np.random.seed(42)
+    data = np.concatenate(
+        [np.random.normal(50, 10, 500), np.random.normal(150, 20, 500)]
+    )
+    assert threshold_otsu(data) == sk_threshold_otsu(data)
+
+
+def test_threshold_otsu_matches_skimage_simple():
+    """Test that threshold_otsu matches scikit-image on simple data."""
+    data = np.array(
+        [1, 1, 1, 1, 2, 2, 2, 5, 5, 5, 5, 5, 10, 10, 10], dtype=float
+    )
+    assert threshold_otsu(data) == sk_threshold_otsu(data)
+
+
+def test_threshold_otsu_matches_skimage_exponential():
+    """Test that threshold_otsu matches scikit-image on exponential data."""
+    np.random.seed(0)
+    data = np.abs(np.random.exponential(100, 10000))
+    assert threshold_otsu(data) == sk_threshold_otsu(data)
+
+
+def test_threshold_otsu_empty():
+    """Test that threshold_otsu returns 0.0 for empty input."""
+    assert threshold_otsu(np.array([])) == 0.0
+
+
+def test_threshold_otsu_uniform():
+    """Test that threshold_otsu returns the value for uniform input."""
+    assert threshold_otsu(np.ones(100)) == 1.0
+
+
+def test_threshold_li_matches_skimage():
+    """Test that threshold_li matches scikit-image on bimodal data."""
+    np.random.seed(42)
+    data = np.concatenate(
+        [np.random.normal(50, 10, 500), np.random.normal(150, 20, 500)]
+    )
+    assert abs(threshold_li(data) - sk_threshold_li(data)) < 1e-6
+
+
+def test_threshold_li_matches_skimage_simple():
+    """Test that threshold_li matches scikit-image on simple data."""
+    data = np.array(
+        [1, 1, 1, 1, 2, 2, 2, 5, 5, 5, 5, 5, 10, 10, 10], dtype=float
+    )
+    assert abs(threshold_li(data) - sk_threshold_li(data)) < 1e-6
+
+
+def test_threshold_li_matches_skimage_negative():
+    """Test that threshold_li matches scikit-image on negative data."""
+    np.random.seed(0)
+    data = np.concatenate(
+        [np.random.normal(-10, 2, 300), np.random.normal(10, 3, 700)]
+    )
+    assert abs(threshold_li(data) - sk_threshold_li(data)) < 1e-6
+
+
+def test_threshold_li_empty():
+    """Test that threshold_li returns 0.0 for empty input."""
+    assert threshold_li(np.array([])) == 0.0
+
+
+def test_threshold_li_uniform():
+    """Test that threshold_li returns the value for uniform input."""
+    assert threshold_li(np.ones(100)) == 1.0
+
+
+def test_threshold_yen_matches_skimage():
+    """Test that threshold_yen matches scikit-image on bimodal data."""
+    np.random.seed(42)
+    data = np.concatenate(
+        [np.random.normal(50, 10, 500), np.random.normal(150, 20, 500)]
+    )
+    assert threshold_yen(data) == sk_threshold_yen(data)
+
+
+def test_threshold_yen_matches_skimage_simple():
+    """Test that threshold_yen matches scikit-image on simple data."""
+    data = np.array(
+        [1, 1, 1, 1, 2, 2, 2, 5, 5, 5, 5, 5, 10, 10, 10], dtype=float
+    )
+    assert threshold_yen(data) == sk_threshold_yen(data)
+
+
+def test_threshold_yen_matches_skimage_exponential():
+    """Test that threshold_yen matches scikit-image on exponential data."""
+    np.random.seed(0)
+    data = np.abs(np.random.exponential(100, 10000))
+    assert threshold_yen(data) == sk_threshold_yen(data)
+
+
+def test_threshold_yen_empty():
+    """Test that threshold_yen returns 0.0 for empty input."""
+    assert threshold_yen(np.array([])) == 0.0
+
+
+def test_threshold_yen_uniform():
+    """Test that threshold_yen returns the value for uniform input."""
+    assert threshold_yen(np.ones(100)) == 1.0

@@ -28,7 +28,6 @@ classifiers = [
 dependencies = [
     "phasorpy>=0.8",
     "qtpy",
-    "scikit-image",
     "biaplotter>=0.4.2",
     "fbdfile",
     "sdtfile",
