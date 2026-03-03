@@ -10,7 +10,7 @@ from biaplotter.plotter import CanvasWidget
 from matplotlib.colorbar import Colorbar
 from matplotlib.colors import LinearSegmentedColormap, LogNorm
 from matplotlib.lines import Line2D
-from matplotlib.patches import Circle
+from matplotlib.patches import Circle, Patch
 from napari.layers import Image, Labels, Shapes
 from napari.utils import colormaps, notifications
 from phasorpy.lifetime import phasor_from_lifetime
@@ -647,6 +647,9 @@ class PlotterWidget(QWidget):
             return original_is_click_inside(event)
 
         self.canvas_widget._is_click_inside_axes = _is_click_inside_axes_fixed
+
+        # Monkey-patch toolbar save_figure to export with black text/spines
+        self._patch_toolbar_save()
 
         # Create bottom widget for controls
         controls_container = QWidget()
@@ -1883,7 +1886,9 @@ class PlotterWidget(QWidget):
                 alpha=alpha,
                 visible=visible,
                 zorder=zorder + 1,
+                clip_on=True,
             )[0]
+            tick_line.set_clip_path(ax.patch)
             self.semi_circle_plot_artist_list.append(tick_line)
 
             if lifetime == 0:
@@ -1908,7 +1913,9 @@ class PlotterWidget(QWidget):
                 alpha=alpha,
                 visible=visible,
                 zorder=zorder + 1,
+                clip_on=True,
             )
+            label.set_clip_path(ax.patch)
             self.semi_circle_plot_artist_list.append(label)
 
     def _get_frequency_from_layer(self):
@@ -2917,21 +2924,190 @@ class PlotterWidget(QWidget):
 
         return g_merged, s_merged
 
+    def _patch_toolbar_save(self):
+        """Monkey-patch figure.savefig to use black colors for export.
+
+        Colors are swapped to black immediately before the file is written
+        and restored right after, so the Qt event loop cannot reset them
+        while the file-save dialog is open.
+        """
+        fig = self.canvas_widget.figure
+        _original_savefig = fig.savefig
+        plotter = self  # prevent closure over 'self' name collisions
+
+        def _savefig_with_black(*args, **kwargs):
+            saved = plotter._capture_plot_colors()
+            plotter._apply_plot_colors("black")
+            try:
+                _original_savefig(*args, **kwargs)
+            finally:
+                plotter._apply_plot_colors_from_saved(saved)
+
+        fig.savefig = _savefig_with_black
+
+    def _capture_plot_colors(self):
+        """Snapshot current colors of all plot elements.
+
+        Returns a dict that can be passed to ``_apply_plot_colors_from_saved``.
+        """
+        saved = {"axes": [], "colorbar": None}
+
+        for key in ("HISTOGRAM2D", "SCATTER"):
+            artist = self.canvas_widget.artists.get(key)
+            if artist is None:
+                continue
+            ax = artist.ax
+            state = {
+                "ax": ax,
+                "xlabel_color": ax.xaxis.label.get_color(),
+                "ylabel_color": ax.yaxis.label.get_color(),
+                "title_color": ax.title.get_color(),
+                "spine_colors": {
+                    name: sp.get_edgecolor()
+                    for name, sp in ax.spines.items()
+                },
+                "xticklabel_colors": [
+                    t.get_color() for t in ax.get_xticklabels()
+                ],
+                "yticklabel_colors": [
+                    t.get_color() for t in ax.get_yticklabels()
+                ],
+                "xtick_colors": [
+                    t.get_markeredgecolor() for t in ax.xaxis.get_ticklines()
+                ],
+                "ytick_colors": [
+                    t.get_markeredgecolor() for t in ax.yaxis.get_ticklines()
+                ],
+            }
+            saved["axes"].append(state)
+
+        if self.colorbar is not None:
+            cb_ax = self.colorbar.ax
+            saved["colorbar"] = {
+                "ylabel_color": cb_ax.yaxis.label.get_color(),
+                "outline_color": self.colorbar.outline.get_edgecolor(),
+                "ticklabel_colors": [
+                    t.get_color() for t in cb_ax.get_yticklabels()
+                ],
+                "tick_colors": [
+                    t.get_markeredgecolor()
+                    for t in cb_ax.yaxis.get_ticklines()
+                ],
+            }
+
+        saved["semi_circle"] = []
+        for artist in self.semi_circle_plot_artist_list:
+            if isinstance(artist, Patch):
+                saved["semi_circle"].append(("edgecolor", artist.get_edgecolor()))
+            else:
+                saved["semi_circle"].append(("color", artist.get_color()))
+
+        saved["polar"] = []
+        for artist in self.polar_plot_artist_list:
+            if isinstance(artist, Patch):
+                saved["polar"].append(("edgecolor", artist.get_edgecolor()))
+            else:
+                saved["polar"].append(("color", artist.get_color()))
+
+        return saved
+
+    def _apply_plot_colors(self, color):
+        """Set spines, labels, ticks, and colorbar elements to *color*."""
+        for key in ("HISTOGRAM2D", "SCATTER"):
+            artist = self.canvas_widget.artists.get(key)
+            if artist is None:
+                continue
+            ax = artist.ax
+            ax.xaxis.label.set_color(color)
+            ax.yaxis.label.set_color(color)
+            ax.title.set_color(color)
+            ax.tick_params(colors=color, which="both")
+            for sp in ax.spines.values():
+                sp.set_edgecolor(color)
+
+        if self.colorbar is not None:
+            self.set_colorbar_style(color=color)
+
+        if not self.white_background:
+            for artist in self.semi_circle_plot_artist_list:
+                if isinstance(artist, Patch):
+                    artist.set_edgecolor(color)
+                else:
+                    artist.set_color(color)
+            for artist in self.polar_plot_artist_list:
+                if isinstance(artist, Patch):
+                    artist.set_edgecolor(color)
+                else:
+                    artist.set_color(color)
+
+    def _apply_plot_colors_from_saved(self, saved):
+        """Restore plot element colors from a snapshot dict."""
+        for state in saved["axes"]:
+            ax = state["ax"]
+            ax.xaxis.label.set_color(state["xlabel_color"])
+            ax.yaxis.label.set_color(state["ylabel_color"])
+            ax.title.set_color(state["title_color"])
+            for name, sp in ax.spines.items():
+                sp.set_edgecolor(state["spine_colors"][name])
+            for t, c in zip(
+                ax.get_xticklabels(), state["xticklabel_colors"]
+            ):
+                t.set_color(c)
+            for t, c in zip(
+                ax.get_yticklabels(), state["yticklabel_colors"]
+            ):
+                t.set_color(c)
+            for t, c in zip(ax.xaxis.get_ticklines(), state["xtick_colors"]):
+                t.set_markeredgecolor(c)
+            for t, c in zip(ax.yaxis.get_ticklines(), state["ytick_colors"]):
+                t.set_markeredgecolor(c)
+
+        if saved["colorbar"] is not None and self.colorbar is not None:
+            cb = saved["colorbar"]
+            self.colorbar.ax.yaxis.label.set_color(cb["ylabel_color"])
+            self.colorbar.outline.set_edgecolor(cb["outline_color"])
+            for t, c in zip(
+                self.colorbar.ax.get_yticklabels(), cb["ticklabel_colors"]
+            ):
+                t.set_color(c)
+            for t, c in zip(
+                self.colorbar.ax.yaxis.get_ticklines(), cb["tick_colors"]
+            ):
+                t.set_markeredgecolor(c)
+
+        for artist, (attr_type, saved_color) in zip(
+            self.semi_circle_plot_artist_list, saved.get("semi_circle", [])
+        ):
+            if attr_type == "edgecolor":
+                artist.set_edgecolor(saved_color)
+            else:
+                artist.set_color(saved_color)
+
+        for artist, (attr_type, saved_color) in zip(
+            self.polar_plot_artist_list, saved.get("polar", [])
+        ):
+            if attr_type == "edgecolor":
+                artist.set_edgecolor(saved_color)
+            else:
+                artist.set_color(saved_color)
+
+        self.canvas_widget.figure.canvas.draw_idle()
+
     def set_axes_labels(self):
         """Set the axes labels in the canvas widget."""
         text_color = "white"
 
         self.canvas_widget.artists['SCATTER'].ax.set_xlabel(
-            "G", color=text_color
+            "G", color=text_color, fontsize=14, fontweight='bold'
         )
         self.canvas_widget.artists['SCATTER'].ax.set_ylabel(
-            "S", color=text_color
+            "S", color=text_color, fontsize=14, fontweight='bold'
         )
         self.canvas_widget.artists['HISTOGRAM2D'].ax.set_xlabel(
-            "G", color=text_color
+            "G", color=text_color, fontsize=14, fontweight='bold'
         )
         self.canvas_widget.artists['HISTOGRAM2D'].ax.set_ylabel(
-            "S", color=text_color
+            "S", color=text_color, fontsize=14, fontweight='bold'
         )
 
         self.canvas_widget.artists['SCATTER'].ax.tick_params(colors=text_color)
