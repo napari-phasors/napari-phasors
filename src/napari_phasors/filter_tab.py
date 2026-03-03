@@ -95,25 +95,6 @@ class FilterWidget(QWidget):
         if self._histogram_needs_update and self._is_tab_visible():
             self.plot_mean_histogram()
             self._histogram_needs_update = False
-        self.threshold_slider.valueChanged.connect(
-            self.on_threshold_slider_change
-        )
-        self.threshold_method_combobox.currentTextChanged.connect(
-            self.on_threshold_method_changed
-        )
-        self.filter_method_combobox.currentTextChanged.connect(
-            self.on_filter_method_changed
-        )
-        self.median_filter_spinbox.valueChanged.connect(
-            self.on_median_kernel_size_change
-        )
-        self.apply_button.clicked.connect(self.apply_button_clicked)
-        self.min_threshold_edit.editingFinished.connect(
-            self.on_min_threshold_edit_changed
-        )
-        self.max_threshold_edit.editingFinished.connect(
-            self.on_max_threshold_edit_changed
-        )
 
     def setup_ui(self):
         """Setup the user interface elements."""
@@ -221,6 +202,27 @@ class FilterWidget(QWidget):
         layout.addWidget(self.apply_button)
 
         self.setLayout(layout)
+
+        # Connect signals (once, not on every tab switch)
+        self.threshold_slider.valueChanged.connect(
+            self.on_threshold_slider_change
+        )
+        self.threshold_method_combobox.currentTextChanged.connect(
+            self.on_threshold_method_changed
+        )
+        self.filter_method_combobox.currentTextChanged.connect(
+            self.on_filter_method_changed
+        )
+        self.median_filter_spinbox.valueChanged.connect(
+            self.on_median_kernel_size_change
+        )
+        self.apply_button.clicked.connect(self.apply_button_clicked)
+        self.min_threshold_edit.editingFinished.connect(
+            self.on_min_threshold_edit_changed
+        )
+        self.max_threshold_edit.editingFinished.connect(
+            self.on_max_threshold_edit_changed
+        )
 
         # Initialize UI state
         self.on_filter_method_changed()
