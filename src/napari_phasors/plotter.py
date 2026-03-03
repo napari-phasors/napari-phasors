@@ -2047,11 +2047,14 @@ class PlotterWidget(QWidget):
 
         self.canvas_widget.axes.set_ylim([ylim_0, ylim_1])
         self.canvas_widget.axes.set_xlim([xlim_0, xlim_1])
-        
-        if hasattr(self.canvas_widget, 'toolbar') and self.canvas_widget.toolbar:
+
+        if (
+            hasattr(self.canvas_widget, 'toolbar')
+            and self.canvas_widget.toolbar
+        ):
             self.canvas_widget.toolbar.update()
             self.canvas_widget.toolbar.push_current()
-        
+
         self.canvas_widget.figure.canvas.draw_idle()
 
     def _update_plot_bg_color(self, color=None):
@@ -2955,7 +2958,10 @@ class PlotterWidget(QWidget):
 
         # Push current view to toolbar history before zooming
         # This allows the Home button to restore the original view
-        if hasattr(self.canvas_widget, 'toolbar') and self.canvas_widget.toolbar:
+        if (
+            hasattr(self.canvas_widget, 'toolbar')
+            and self.canvas_widget.toolbar
+        ):
             self.canvas_widget.toolbar.push_current()
 
         # New limits centered on mouse position
@@ -3007,8 +3013,7 @@ class PlotterWidget(QWidget):
                 "ylabel_color": ax.yaxis.label.get_color(),
                 "title_color": ax.title.get_color(),
                 "spine_colors": {
-                    name: sp.get_edgecolor()
-                    for name, sp in ax.spines.items()
+                    name: sp.get_edgecolor() for name, sp in ax.spines.items()
                 },
                 "xticklabel_colors": [
                     t.get_color() for t in ax.get_xticklabels()
@@ -3042,7 +3047,9 @@ class PlotterWidget(QWidget):
         saved["semi_circle"] = []
         for artist in self.semi_circle_plot_artist_list:
             if isinstance(artist, Patch):
-                saved["semi_circle"].append(("edgecolor", artist.get_edgecolor()))
+                saved["semi_circle"].append(
+                    ("edgecolor", artist.get_edgecolor())
+                )
             else:
                 saved["semi_circle"].append(("color", artist.get_color()))
 
@@ -3093,13 +3100,9 @@ class PlotterWidget(QWidget):
             ax.title.set_color(state["title_color"])
             for name, sp in ax.spines.items():
                 sp.set_edgecolor(state["spine_colors"][name])
-            for t, c in zip(
-                ax.get_xticklabels(), state["xticklabel_colors"]
-            ):
+            for t, c in zip(ax.get_xticklabels(), state["xticklabel_colors"]):
                 t.set_color(c)
-            for t, c in zip(
-                ax.get_yticklabels(), state["yticklabel_colors"]
-            ):
+            for t, c in zip(ax.get_yticklabels(), state["yticklabel_colors"]):
                 t.set_color(c)
             for t, c in zip(ax.xaxis.get_ticklines(), state["xtick_colors"]):
                 t.set_markeredgecolor(c)
