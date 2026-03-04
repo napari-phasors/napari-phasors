@@ -682,10 +682,11 @@ def test_writer_widget(make_napari_viewer, tmp_path):
         main_widget.export_layer_combobox.itemText(0)
         == sample_image_layer.name
     )
-    assert (
-        main_widget.export_layer_combobox.currentText()
-        == sample_image_layer.name
-    )
+    # Select the layer in the CheckableComboBox
+    main_widget.export_layer_combobox.selectAll()
+    assert main_widget.export_layer_combobox.checkedItems() == [
+        sample_image_layer.name
+    ]
 
     # Simulate saving as OME-TIFF
     with (
@@ -703,7 +704,7 @@ def test_writer_widget(make_napari_viewer, tmp_path):
         main_widget.search_button.click()
 
         # Verify file saving logic
-        export_layer_name = main_widget.export_layer_combobox.currentText()
+        export_layer_name = sample_image_layer.name
         export_path = str(tmp_path / "test.ome.tif")
         mock_show_info.assert_called_once_with(
             f"Exported {export_layer_name} to {export_path}"
@@ -741,7 +742,7 @@ def test_writer_widget(make_napari_viewer, tmp_path):
         main_widget.search_button.click()
 
         # Verify CSV export logic
-        export_layer_name = main_widget.export_layer_combobox.currentText()
+        export_layer_name = sample_image_layer.name
         export_path = str(tmp_path / "test.csv")
         mock_show_info.assert_called_once_with(
             f"Exported {export_layer_name} to {export_path}"
@@ -770,6 +771,7 @@ def test_writer_widget_image_exports(make_napari_viewer, tmp_path):
         raw_flim_data, harmonic=harmonic
     )
     viewer.add_layer(sample_image_layer)
+    main_widget.export_layer_combobox.selectAll()
 
     # Test PNG export with colorbar
     with (
@@ -870,6 +872,7 @@ def test_writer_widget_colormap_applied(make_napari_viewer, tmp_path):
     # Set a specific colormap
     sample_image_layer.colormap = 'viridis'
     viewer.add_layer(sample_image_layer)
+    main_widget.export_layer_combobox.selectAll()
 
     # Export as PNG
     with patch(
@@ -903,6 +906,7 @@ def test_writer_widget_file_extension_handling(make_napari_viewer, tmp_path):
         raw_flim_data, harmonic=harmonic
     )
     viewer.add_layer(sample_image_layer)
+    main_widget.export_layer_combobox.selectAll()
 
     # Test cases: (input_name, selected_filter, expected_output_name)
     test_cases = [
@@ -965,7 +969,12 @@ def test_writer_widget_csv_export_2d_no_phasor(make_napari_viewer, tmp_path):
 
     # Export as CSV
     csv_path = tmp_path / "test_2d.csv"
-    widget._save_file(str(csv_path), "Layer data as CSV (*.csv)", False)
+    widget._save_file(
+        str(csv_path),
+        "Layer data as CSV (*.csv)",
+        False,
+        selected_layers=["test_2d_image"],
+    )
 
     # Verify CSV content
     df = pd.read_csv(csv_path)
@@ -997,7 +1006,12 @@ def test_writer_widget_csv_export_4d_no_phasor(make_napari_viewer, tmp_path):
 
     # Export as CSV
     csv_path = tmp_path / "test_4d.csv"
-    widget._save_file(str(csv_path), "Layer data as CSV (*.csv)", False)
+    widget._save_file(
+        str(csv_path),
+        "Layer data as CSV (*.csv)",
+        False,
+        selected_layers=["test_4d_image"],
+    )
 
     # Verify CSV content
     df = pd.read_csv(csv_path)
@@ -1028,7 +1042,12 @@ def test_writer_widget_csv_coordinates_consistency_2d(
 
     # Export as CSV
     csv_path = tmp_path / "test_pattern.csv"
-    widget._save_file(str(csv_path), "Layer data as CSV (*.csv)", False)
+    widget._save_file(
+        str(csv_path),
+        "Layer data as CSV (*.csv)",
+        False,
+        selected_layers=["test_pattern"],
+    )
 
     # Verify specific coordinate-value mappings
     df = pd.read_csv(csv_path)

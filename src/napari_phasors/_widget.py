@@ -7,6 +7,7 @@ This module contains widgets to:
 
 """
 
+import os
 from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
@@ -24,6 +25,7 @@ from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
     QCompleter,
+    QDockWidget,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -35,6 +37,7 @@ from qtpy.QtWidgets import (
 from superqt import QRangeSlider
 
 from ._reader import _get_filename_extension, napari_get_reader
+from ._utils import CheckableComboBox
 from ._writer import export_layer_as_csv, export_layer_as_image, write_ome_tiff
 
 if TYPE_CHECKING:
@@ -1044,6 +1047,7 @@ class WriterWidget(QWidget):
         """Initialize the widget."""
         super().__init__()
         self.viewer = viewer
+        self._floated = False
 
         self.main_layout = QVBoxLayout(self)
 
@@ -1053,14 +1057,17 @@ class WriterWidget(QWidget):
 
         ome_info = QLabel(
             "• <b>OME-TIFF:</b> Saves mean intensity and phasor coordinates"
-            " with metadata including napari-phasors settings"
+            " with metadata including napari-phasors settings if exported layer"
+            "contains phasor features. If not layer data is exported as"
+            "single-channel image with metadata."
         )
         ome_info.setWordWrap(True)
         self.main_layout.addWidget(ome_info)
 
         csv_info = QLabel(
-            "• <b>CSV:</b> Exports phasor features table if available, "
-            "otherwise exports raw layer data values, i.e. analysis values"
+            "• <b>CSV:</b> Exports mean intensity and phasor coordinates"
+            " as a table if available, otherwise exports raw layer data"
+            " values, i.e. analysis values"
         )
         csv_info.setWordWrap(True)
         self.main_layout.addWidget(csv_info)
@@ -1076,10 +1083,44 @@ class WriterWidget(QWidget):
         self.main_layout.addSpacing(10)
 
         self.main_layout.addWidget(
-            QLabel("Select Image Layer to be Exported: ")
+            QLabel("Select Image Layer(s) to be Exported: ")
         )
-        self.export_layer_combobox = QComboBox()
-        self.main_layout.addWidget(self.export_layer_combobox)
+
+        # Create horizontal layout for combobox and All/None controls
+        export_layer_layout = QHBoxLayout()
+        self.export_layer_combobox = CheckableComboBox(
+            enable_primary_layer=False
+        )
+        export_layer_layout.addWidget(self.export_layer_combobox, 1)
+
+        # "All | None" clickable labels for quick bulk selection
+        select_all_label = QLabel('<a href="all" style="color: gray;">All</a>')
+        select_all_label.setTextFormat(Qt.RichText)
+        select_all_label.setCursor(Qt.PointingHandCursor)
+        select_all_label.setToolTip("Select all layers")
+        export_layer_layout.addWidget(select_all_label)
+
+        separator_label = QLabel("|")
+        separator_label.setStyleSheet("color: gray;")
+        export_layer_layout.addWidget(separator_label)
+
+        deselect_all_label = QLabel(
+            '<a href="none" style="color: gray;">None</a>'
+        )
+        deselect_all_label.setTextFormat(Qt.RichText)
+        deselect_all_label.setCursor(Qt.PointingHandCursor)
+        deselect_all_label.setToolTip("Deselect all layers")
+        export_layer_layout.addWidget(deselect_all_label)
+
+        # Connect All/None labels (use lambdas to consume the href argument)
+        select_all_label.linkActivated.connect(
+            lambda _: self.export_layer_combobox.selectAll()
+        )
+        deselect_all_label.linkActivated.connect(
+            lambda _: self.export_layer_combobox.deselectAll()
+        )
+
+        self.main_layout.addLayout(export_layer_layout)
 
         self.colorbar_checkbox = QCheckBox(
             "Include colorbar (for image exports)"
@@ -1096,9 +1137,30 @@ class WriterWidget(QWidget):
 
         self._populate_combobox()
 
+    def showEvent(self, event):
+        """Float the dock widget on first show and center it on screen."""
+        super().showEvent(event)
+        if not self._floated:
+            self._floated = True
+            parent = self.parent()
+            while parent is not None:
+                if isinstance(parent, QDockWidget):
+                    parent.setFloating(True)
+                    from qtpy.QtWidgets import QApplication
+
+                    screen = QApplication.primaryScreen().geometry()
+                    dw_size = parent.sizeHint()
+                    parent.move(
+                        screen.center().x() - dw_size.width() // 2,
+                        screen.center().y() - dw_size.height() // 2,
+                    )
+                    break
+                parent = parent.parent()
+
     def _open_file_dialog(self):
         """Open a native file dialog to select export location."""
-        if self.export_layer_combobox.currentText() == "":
+        selected_layers = self.export_layer_combobox.checkedItems()
+        if not selected_layers:
             show_error("No layer selected")
             return
 
@@ -1113,45 +1175,20 @@ class WriterWidget(QWidget):
         # Join filters with ';;' for the native dialog format
         filter_str = ";;".join(filters)
 
+        # Pre-fill filename with first layer name so the dialog
+        # always has a valid default and the user can just confirm.
+        default_name = selected_layers[0]
+
         # Use static method to invoke the native OS dialog
         file_path, selected_filter = QFileDialog.getSaveFileName(
-            self, "Select Export Location", "", filter_str
+            self, "Select Export Location", default_name, filter_str
         )
 
         if file_path:
-            # Handle file extensions based on the selected filter
-            if (
-                selected_filter == "Phasor as OME-TIFF (*.ome.tif)"
-                and not file_path.endswith(".ome.tif")
-            ):
-                if file_path.endswith(".tif"):
-                    file_path = file_path[:-4]
-                file_path += ".ome.tif"
-            elif (
-                selected_filter == "Layer data as CSV (*.csv)"
-                and not file_path.endswith(".csv")
-            ):
-                file_path += ".csv"
-            elif (
-                selected_filter == "Layer as PNG image (*.png)"
-                and not file_path.endswith(".png")
-            ):
-                file_path += ".png"
-            elif (
-                selected_filter == "Layer as JPEG image (*.jpg)"
-                and not file_path.endswith((".jpg", ".jpeg"))
-            ):
-                file_path += ".jpg"
-            elif (
-                selected_filter == "Layer as TIFF image (*.tif)"
-                and not file_path.endswith(".tif")
-            ):
-                if file_path.endswith(".ome.tif"):
-                    file_path = file_path[:-8]
-                file_path += ".tif"
-
             include_colorbar = self.colorbar_checkbox.isChecked()
-            self._save_file(file_path, selected_filter, include_colorbar)
+            self._save_file(
+                file_path, selected_filter, include_colorbar, selected_layers
+            )
 
     def _populate_combobox(self):
         """Populate combobox with image layers."""
@@ -1161,29 +1198,127 @@ class WriterWidget(QWidget):
         ]
         for layer in image_layers:
             self.export_layer_combobox.addItem(layer.name)
+        # Update display to show placeholder if no items are checked
+        self.export_layer_combobox._update_display_text()
 
-    def _save_file(self, file_path, selected_filter, include_colorbar=False):
+    def _save_file(
+        self,
+        file_path,
+        selected_filter,
+        include_colorbar=False,
+        selected_layers=None,
+    ):
         """Callback whenever the export location and name are specified."""
-        export_layer = self.viewer.layers[
-            self.export_layer_combobox.currentText()
-        ]
+        if selected_layers is None:
+            selected_layers = self.export_layer_combobox.checkedItems()
 
+        if not selected_layers:
+            show_error("No layers selected")
+            return
+
+        # Determine the extension based on selected filter
         if selected_filter == "Phasor as OME-TIFF (*.ome.tif)":
-            write_ome_tiff(file_path, export_layer)
-
+            ext = ".ome.tif"
         elif selected_filter == "Layer data as CSV (*.csv)":
-            export_layer_as_csv(file_path, export_layer)
+            ext = ".csv"
+        elif selected_filter == "Layer as PNG image (*.png)":
+            ext = ".png"
+        elif selected_filter == "Layer as JPEG image (*.jpg)":
+            ext = ".jpg"
+        elif selected_filter == "Layer as TIFF image (*.tif)":
+            ext = ".tif"
+        else:
+            ext = ""
 
-        elif selected_filter in [
-            "Layer as PNG image (*.png)",
-            "Layer as JPEG image (*.jpg)",
-            "Layer as TIFF image (*.tif)",
-        ]:
-            export_layer_as_image(
-                file_path,
-                export_layer,
-                include_colorbar=include_colorbar,
-                current_step=self.viewer.dims.current_step,
-            )
+        # Extract directory and basename from file_path
+        directory = os.path.dirname(file_path)
+        full_basename = os.path.basename(file_path)
 
-        show_info(f"Exported {export_layer.name} to {file_path}")
+        # Remove any existing extension to get the base name
+        if full_basename.endswith('.ome.tif'):
+            base_name = full_basename[:-8]
+        elif full_basename.endswith(('.tif', '.csv', '.png', '.jpg', '.jpeg')):
+            base_name = os.path.splitext(full_basename)[0]
+        else:
+            base_name = full_basename
+
+        # Determine if user provided a custom name.
+        # The dialog is pre-filled with the first selected layer's name,
+        # so if the base name still matches that default we treat it as
+        # "no custom input".
+        user_provided_name = bool(
+            base_name and base_name != selected_layers[0]
+        )
+
+        # Export logic based on number of layers and whether name was provided
+        if len(selected_layers) == 1:
+            # Single layer export
+            layer_name = selected_layers[0]
+            export_layer = self.viewer.layers[layer_name]
+
+            if user_provided_name:
+                # Use the provided name
+                final_path = os.path.join(directory, base_name + ext)
+            else:
+                # Use layer name
+                final_path = os.path.join(directory, layer_name + ext)
+
+            try:
+                if selected_filter == "Phasor as OME-TIFF (*.ome.tif)":
+                    write_ome_tiff(final_path, export_layer)
+                elif selected_filter == "Layer data as CSV (*.csv)":
+                    export_layer_as_csv(final_path, export_layer)
+                elif selected_filter in [
+                    "Layer as PNG image (*.png)",
+                    "Layer as JPEG image (*.jpg)",
+                    "Layer as TIFF image (*.tif)",
+                ]:
+                    export_layer_as_image(
+                        final_path,
+                        export_layer,
+                        include_colorbar=include_colorbar,
+                        current_step=self.viewer.dims.current_step,
+                    )
+                show_info(f"Exported {export_layer.name} to {final_path}")
+            except Exception as e:
+                show_error(f"Error exporting {layer_name}: {str(e)}")
+        else:
+            # Multiple layers export
+            exported_count = 0
+            for layer_name in selected_layers:
+                try:
+                    export_layer = self.viewer.layers[layer_name]
+
+                    if user_provided_name:
+                        # Use provided name + layer name
+                        filename = f"{base_name}_{layer_name}{ext}"
+                    else:
+                        # Use just layer name
+                        filename = f"{layer_name}{ext}"
+
+                    layer_file_path = os.path.join(directory, filename)
+
+                    if selected_filter == "Phasor as OME-TIFF (*.ome.tif)":
+                        write_ome_tiff(layer_file_path, export_layer)
+                    elif selected_filter == "Layer data as CSV (*.csv)":
+                        export_layer_as_csv(layer_file_path, export_layer)
+                    elif selected_filter in [
+                        "Layer as PNG image (*.png)",
+                        "Layer as JPEG image (*.jpg)",
+                        "Layer as TIFF image (*.tif)",
+                    ]:
+                        export_layer_as_image(
+                            layer_file_path,
+                            export_layer,
+                            include_colorbar=include_colorbar,
+                            current_step=self.viewer.dims.current_step,
+                        )
+
+                    exported_count += 1
+                except Exception as e:
+                    show_error(f"Error exporting {layer_name}: {str(e)}")
+
+            if exported_count > 0:
+                show_info(
+                    f"Successfully exported {exported_count} layer(s) to {directory}"
+                )
