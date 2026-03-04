@@ -724,21 +724,6 @@ class LifetimeWidget(QWidget):
 
         self.hist_fig.canvas.draw_idle()
 
-    def _on_harmonic_changed(self):
-        """Callback whenever the harmonic selector changes."""
-        frequency = self.frequency_input.text().strip()
-        if frequency:
-            self.calculate_lifetimes()
-            self._update_lifetime_range_slider()
-            self.create_lifetime_layer()
-
-            self._restore_lifetime_range_from_metadata()
-            self._on_lifetime_range_changed(self.lifetime_range_slider.value())
-
-            self.plot_lifetime_histogram()
-        else:
-            self.plot_lifetime_histogram()
-
     def _on_colormap_changed(self, event):
         """Callback whenever the colormap or contrast limits change on any lifetime layer - sync all layers."""
         if getattr(self, '_updating_contrast_limits', False) or getattr(
@@ -829,8 +814,12 @@ class LifetimeWidget(QWidget):
 
         # Update frequency in metadata
         if not self._updating_settings:
-            for layer in selected_layers:
-                update_frequency_in_metadata(layer, frequency)
+            try:
+                frequency_float = float(frequency)
+                for layer in selected_layers:
+                    update_frequency_in_metadata(layer, frequency_float)
+            except ValueError:
+                pass
 
     def _on_lifetime_type_changed(self, text):
         """Callback when lifetime type combobox selection changes.

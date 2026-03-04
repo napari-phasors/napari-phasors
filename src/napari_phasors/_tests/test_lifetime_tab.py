@@ -305,7 +305,7 @@ def test_lifetime_widget_settings_initialization_in_metadata(
     assert 'frequency' in layer.metadata['settings']
 
     # Check values
-    assert layer.metadata['settings']['frequency'] == '80.0'
+    assert layer.metadata['settings']['frequency'] == 80.0
     assert (
         layer.metadata['settings']['lifetime']['lifetime_type']
         == 'Apparent Phase Lifetime'
@@ -393,7 +393,7 @@ def test_lifetime_widget_settings_persistence_across_layer_switches(
     lifetime_widget._on_calculate_lifetime_clicked()
 
     # Verify settings are saved in layer_1 metadata
-    assert layer_1.metadata['settings']['frequency'] == '80.0'
+    assert layer_1.metadata['settings']['frequency'] == 80.0
     assert (
         layer_1.metadata['settings']['lifetime']['lifetime_type']
         == 'Normal Lifetime'
@@ -467,7 +467,7 @@ def test_lifetime_widget_adding_layer_without_settings_initializes_defaults(
     # Now verify settings were initialized with actual values
     assert 'settings' in layer.metadata
     assert 'lifetime' in layer.metadata['settings']
-    assert layer.metadata['settings']['frequency'] == '80.0'
+    assert layer.metadata['settings']['frequency'] == 80.0
     assert (
         layer.metadata['settings']['lifetime']['lifetime_type']
         == 'Apparent Phase Lifetime'
@@ -577,7 +577,7 @@ def test_lifetime_widget_adding_removing_layers_updates_settings(
     lifetime_widget._on_calculate_lifetime_clicked()
 
     # Check settings were saved
-    assert layer_1.metadata['settings']['frequency'] == '80.0'
+    assert layer_1.metadata['settings']['frequency'] == 80.0
     assert (
         layer_1.metadata['settings']['lifetime']['lifetime_type']
         == 'Normal Lifetime'
@@ -637,7 +637,7 @@ def test_lifetime_widget_frequency_saved_on_lifetime_type_change(
     lifetime_widget._on_calculate_lifetime_clicked()
 
     # Check frequency is in general settings
-    assert layer.metadata['settings']['frequency'] == '80.0'
+    assert layer.metadata['settings']['frequency'] == 80.0
 
     parent.deleteLater()
 

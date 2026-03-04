@@ -10,11 +10,7 @@ from ._sample_data import (
     paramecium_HSI_sample_data,
 )
 from ._widget import PhasorTransform, WriterWidget
-from ._writer import (
-    export_layer_as_csv,
-    export_layer_as_image,
-    write_ome_tiff,
-)
+from ._writer import export_layer_as_csv, export_layer_as_image, write_ome_tiff
 from .plotter import PlotterWidget
 
 __all__ = (

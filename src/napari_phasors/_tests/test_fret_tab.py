@@ -570,8 +570,16 @@ def test_harmonic_change_updates_trajectory(make_napari_viewer):
     parent.canvas_widget = Mock()
     parent.canvas_widget.figure = Mock()
     ax_mock = Mock()
+    # Make ax.plot() return a list-like object that can be subscripted
+    ax_mock.plot.return_value = [Mock()]
     parent.canvas_widget.figure.gca.return_value = ax_mock
     parent.canvas_widget.canvas = Mock()
+    # Set up axes attribute for _update_plot_elements
+    parent.canvas_widget.axes = ax_mock
+    # Mock artists dict to avoid subscript errors
+    histogram_mock = Mock()
+    histogram_mock.histogram = None
+    parent.canvas_widget.artists = {'HISTOGRAM2D': histogram_mock}
 
     # Set initial harmonic to 1
     parent.harmonic = 1
@@ -1493,7 +1501,7 @@ def test_metadata_initialization(make_napari_viewer):
     # Verify default values
     fret_settings = test_layer.metadata['settings']['fret']
     assert fret_settings['donor_lifetime'] == 2.0
-    assert test_layer.metadata['settings']['frequency'] == '80'
+    assert test_layer.metadata['settings']['frequency'] == 80.0
     assert fret_settings['donor_background'] == 0.1
     assert fret_settings['donor_fretting_proportion'] == 1.0
     assert fret_settings['use_colormap'] is True
