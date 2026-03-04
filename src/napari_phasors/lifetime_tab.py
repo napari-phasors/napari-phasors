@@ -814,8 +814,12 @@ class LifetimeWidget(QWidget):
 
         # Update frequency in metadata
         if not self._updating_settings:
-            for layer in selected_layers:
-                update_frequency_in_metadata(layer, frequency)
+            try:
+                frequency_float = float(frequency)
+                for layer in selected_layers:
+                    update_frequency_in_metadata(layer, frequency_float)
+            except ValueError:
+                pass
 
     def _on_lifetime_type_changed(self, text):
         """Callback when lifetime type combobox selection changes.

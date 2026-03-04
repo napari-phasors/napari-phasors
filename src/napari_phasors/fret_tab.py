@@ -1732,10 +1732,14 @@ class FretWidget(QWidget):
                 self.fret_colormap = fret_layer.colormap.colors
                 self.colormap_contrast_limits = fret_layer.contrast_limits
 
-            update_frequency_in_metadata(
-                layer,
-                self.frequency_input.text().strip(),
-            )
+            try:
+                frequency_float = float(self.frequency_input.text().strip())
+                update_frequency_in_metadata(
+                    layer,
+                    frequency_float,
+                )
+            except ValueError:
+                pass
 
         if (
             not hasattr(self, '_saved_colormap_name')

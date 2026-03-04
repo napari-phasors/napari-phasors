@@ -1932,7 +1932,10 @@ class PlotterWidget(QWidget):
         if "settings" in layer.metadata:
             settings = layer.metadata["settings"]
             if "frequency" in settings:
-                return settings["frequency"]
+                try:
+                    return float(settings["frequency"])
+                except (ValueError, TypeError):
+                    return None
 
         return None
 
