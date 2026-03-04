@@ -61,6 +61,9 @@ def _convert_numpy_types(obj):
 def write_ome_tiff(path: str, image_layer: Any) -> List[str]:
     """Save image layer with phasor coordinates as 'OME-TIFF'.
 
+    For layers with phasor metadata, saves mean intensity and phasor coordinates.
+    For layers without phasor metadata, saves the raw layer data as OME-TIFF.
+
     Parameters
     ----------
     path : str
@@ -69,28 +72,34 @@ def write_ome_tiff(path: str, image_layer: Any) -> List[str]:
         Napari image layer or a list with the mean intensity image as the
         first element and as second element a dict with `metadata` as key.
         The value associated to 'metadata' must be a dict containing
-        `G_original`, `S_original`, and `harmonics` keys with NumPy arrays.
+        `G_original`, `S_original`, and `harmonics` keys with NumPy arrays
+        for phasor data, or just raw image data for non-phasor layers.
 
     Returns
     -------
     A list containing the string path to the saved file.
     """
+    # Extract metadata depending on input type
     if isinstance(image_layer, Image):
-        mean = image_layer.metadata["original_mean"]
-        G = image_layer.metadata["G_original"]
-        S = image_layer.metadata["S_original"]
-        harmonics = image_layer.metadata["harmonics"]
-        if "settings" in image_layer.metadata:
-            settings = image_layer.metadata["settings"].copy()
-        else:
-            settings = {}
-        if "summed_signal" in image_layer.metadata:
-            summed = image_layer.metadata["summed_signal"]
-            settings["summed_signal"] = (
-                summed.tolist() if hasattr(summed, 'tolist') else summed
-            )
+        metadata = image_layer.metadata
+        data = image_layer.data
     else:
         metadata = image_layer[0][1]["metadata"]
+        data = image_layer[0][0]
+
+    # Check if layer has phasor data
+    has_phasor_data = (
+        "original_mean" in metadata
+        and "G_original" in metadata
+        and "S_original" in metadata
+        and "harmonics" in metadata
+    )
+
+    if not path.endswith(".ome.tif"):
+        path += ".ome.tif"
+
+    if has_phasor_data:
+        # Export with phasor data
         mean = metadata["original_mean"]
         G = metadata["G_original"]
         S = metadata["S_original"]
@@ -105,32 +114,56 @@ def write_ome_tiff(path: str, image_layer: Any) -> List[str]:
                 summed.tolist() if hasattr(summed, 'tolist') else summed
             )
 
-    # Convert NumPy arrays in selections to lists for JSON serialization
-    if "selections" in settings:
-        # Make a copy of selections dict to avoid mutating the layer's metadata
-        settings["selections"] = settings["selections"].copy()
-        if "manual_selections" in settings["selections"]:
-            # Note: The following code is commented out to avoid saving large selection maps.
-            # manual_selections = {}
-            # for sel_id, sel_array in settings["selections"]["manual_selections"].items():
-            #     manual_selections[sel_id] = (
-            #         sel_array.tolist() if hasattr(sel_array, 'tolist') else sel_array
-            #     )
-            # settings["selections"]["manual_selections"] = manual_selections
-            del settings["selections"]["manual_selections"]
-    if not path.endswith(".ome.tif"):
-        path += ".ome.tif"
-    settings["version"] = str(importlib.metadata.version('napari-phasors'))
-    settings = _convert_numpy_types(settings)
-    description = json.dumps({"napari_phasors_settings": json.dumps(settings)})
-    phasor_to_ometiff(
-        path,
-        mean,
-        G,
-        S,
-        harmonic=harmonics,
-        description=description,
-    )
+        # Convert NumPy arrays in selections to lists for JSON serialization
+        if "selections" in settings:
+            # Make a copy of selections dict to avoid mutating the layer's metadata
+            settings["selections"] = settings["selections"].copy()
+            if "manual_selections" in settings["selections"]:
+                # Note: The following code is commented out to avoid saving large selection maps.
+                # manual_selections = {}
+                # for sel_id, sel_array in settings["selections"]["manual_selections"].items():
+                #     manual_selections[sel_id] = (
+                #         sel_array.tolist() if hasattr(sel_array, 'tolist') else sel_array
+                #     )
+                # settings["selections"]["manual_selections"] = manual_selections
+                del settings["selections"]["manual_selections"]
+
+        settings["version"] = str(importlib.metadata.version('napari-phasors'))
+        settings = _convert_numpy_types(settings)
+        description = json.dumps(
+            {"napari_phasors_settings": json.dumps(settings)}
+        )
+        phasor_to_ometiff(
+            path,
+            mean,
+            G,
+            S,
+            harmonic=harmonics,
+            description=description,
+        )
+    else:
+        # Export without phasor data - just save the raw image data
+        import tifffile
+
+        # Prepare basic metadata
+        settings = {}
+        if "settings" in metadata:
+            settings = metadata["settings"].copy()
+
+        settings["version"] = str(importlib.metadata.version('napari-phasors'))
+        settings = _convert_numpy_types(settings)
+        description = json.dumps(
+            {"napari_phasors_settings": json.dumps(settings)}
+        )
+
+        # Write as OME-TIFF with minimal metadata
+        tifffile.imwrite(
+            path,
+            data,
+            metadata={'axes': 'YX' if data.ndim == 2 else None},
+            description=description,
+        )
+
     return [path]
 
 

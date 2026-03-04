@@ -284,3 +284,37 @@ def test_write_ometif_without_circular_cursors(tmp_path):
     metadata = layer_data_tuple[1]["metadata"]
     if "settings" in metadata and "selections" in metadata["settings"]:
         assert "circular_cursors" not in metadata["settings"]["selections"]
+
+
+def test_write_ometif_without_phasor_data(tmp_path):
+    """Test writing OME-TIFF files for layers without phasor data."""
+    import tifffile
+    from napari.layers import Image
+
+    # Create a simple image layer without phasor data
+    data = np.random.random((100, 100))
+    layer = Image(data, name="test_image")
+
+    # Add some metadata but no phasor data
+    layer.metadata = {
+        "some_info": "test",
+        "values": [1, 2, 3],
+    }
+
+    # Write the file
+    filepath = os.path.join(tmp_path, "test_no_phasor.ome.tif")
+    write_ome_tiff(filepath, layer)
+
+    assert os.path.exists(filepath)
+
+    # Read the file back and verify it contains the data
+    with tifffile.TiffFile(filepath) as tif:
+        loaded_data = tif.asarray()
+        np.testing.assert_array_almost_equal(loaded_data, data)
+
+        # Check that metadata was saved
+        if tif.pages[0].description:
+            import json
+
+            description = json.loads(tif.pages[0].description)
+            assert "napari_phasors_settings" in description
