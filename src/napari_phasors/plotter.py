@@ -15,18 +15,7 @@ from napari.layers import Image, Labels, Shapes
 from napari.utils import colormaps, notifications
 from phasorpy.lifetime import phasor_from_lifetime
 from qtpy import uic
-from qtpy.QtCore import QRect, QSize, Qt, QTimer, Signal
-from qtpy.QtGui import (
-    QColor,
-    QFont,
-    QFontMetrics,
-    QIcon,
-    QPainter,
-    QPen,
-    QPixmap,
-    QStandardItem,
-    QStandardItemModel,
-)
+from qtpy.QtCore import Qt, QTimer
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -36,23 +25,14 @@ from qtpy.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QPushButton,
     QSpinBox,
-    QStyle,
-    QStyledItemDelegate,
-    QStyleOptionButton,
-    QStyleOptionViewItem,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from ._utils import (
-    CheckableComboBox,
-    _PrimaryLayerDelegate,
-    update_frequency_in_metadata,
-)
+from ._utils import CheckableComboBox, update_frequency_in_metadata
 from .calibration_tab import CalibrationWidget
 from .components_tab import ComponentsWidget
 from .filter_tab import FilterWidget
@@ -172,6 +152,12 @@ class PlotterWidget(QWidget):
         self._last_histogram_color_indices = None
         self._last_scatter_color_indices = None
 
+        # User-defined axes limits: set when user explicitly zooms/pans.
+        # When not None, these limits are always restored after every plot()
+        # so that layer selection changes never reset the user's zoom.
+        # Cleared only on fresh layer load.
+        self._user_axes_limits = None
+
         # Create top widget for canvas
         canvas_container = QWidget()
         canvas_container.setLayout(QVBoxLayout())
@@ -199,6 +185,9 @@ class PlotterWidget(QWidget):
 
         # Monkey-patch toolbar save_figure to export with black text/spines
         self._patch_toolbar_save()
+
+        # Patch toolbar zoom/pan release to capture user-set limits
+        self._patch_toolbar_limits()
 
         # Connect scroll wheel zoom on the phasor plot
         self.canvas_widget.canvas.mpl_connect(
@@ -1078,6 +1067,9 @@ class PlotterWidget(QWidget):
         """Callback for semi circle checkbox change."""
         self._update_setting_in_metadata('semi_circle', bool(state))
         if not self._updating_settings:
+            # Clear user zoom so _redefine_axes_limits computes correct
+            # default limits for the new mode and updates the toolbar home.
+            self._user_axes_limits = None
             self.toggle_semi_circle = bool(state)
 
     def _on_harmonic_changed(self, value):
@@ -1554,6 +1546,12 @@ class PlotterWidget(QWidget):
             Whether to ensure the full circle is displayed in the canvas widget.
             By default True.
         """
+        if self._user_axes_limits is not None:
+            xlim, ylim = self._user_axes_limits
+            self.canvas_widget.axes.set_xlim(xlim)
+            self.canvas_widget.axes.set_ylim(ylim)
+            self.canvas_widget.figure.canvas.draw_idle()
+            return
         if self.toggle_semi_circle:
             circle_plot_limits = [0, 1, 0, 0.6]  # xmin, xmax, ymin, ymax
         else:
@@ -1915,6 +1913,10 @@ class PlotterWidget(QWidget):
             layer = self.viewer.layers[layer_name]
             layer_metadata = layer.metadata
 
+            # On a fresh layer load, reset any user-defined zoom so the
+            # view auto-fits to the new data.
+            self._user_axes_limits = None
+
             self._g_array = layer_metadata.get("G")
             self._s_array = layer_metadata.get("S")
             self._g_original_array = layer_metadata.get("G_original")
@@ -2094,6 +2096,10 @@ class PlotterWidget(QWidget):
                     min_harmonic = int(np.min(common_harmonics))
                     max_harmonic = int(np.max(common_harmonics))
                     self.harmonic_spinbox.setRange(min_harmonic, max_harmonic)
+
+            if self._user_axes_limits is None and self.has_phasor_data():
+                ax = self.canvas_widget.axes
+                self._user_axes_limits = (ax.get_xlim(), ax.get_ylim())
 
             self.plot()
 
@@ -2522,7 +2528,49 @@ class PlotterWidget(QWidget):
 
         ax.set_xlim(new_x_min, new_x_max)
         ax.set_ylim(new_y_min, new_y_max)
+        self._user_axes_limits = (ax.get_xlim(), ax.get_ylim())
         self.canvas_widget.canvas.draw_idle()
+
+    def _patch_toolbar_limits(self):
+        """Patch toolbar release_zoom, release_pan, and home to manage user limits."""
+        toolbar = getattr(self.canvas_widget, 'toolbar', None)
+        if toolbar is None:
+            return
+
+        plotter = self
+        _original_release_zoom = getattr(toolbar, 'release_zoom', None)
+        _original_release_pan = getattr(toolbar, 'release_pan', None)
+        _original_home = getattr(toolbar, 'home', None)
+
+        if _original_release_zoom is not None:
+
+            def _release_zoom_patched(event):
+                _original_release_zoom(event)
+                ax = plotter.canvas_widget.axes
+                plotter._user_axes_limits = (ax.get_xlim(), ax.get_ylim())
+
+            toolbar.release_zoom = _release_zoom_patched
+
+        if _original_release_pan is not None:
+
+            def _release_pan_patched(event):
+                _original_release_pan(event)
+                ax = plotter.canvas_widget.axes
+                plotter._user_axes_limits = (ax.get_xlim(), ax.get_ylim())
+
+            toolbar.release_pan = _release_pan_patched
+
+        if _original_home is not None:
+
+            def _home_patched(*args, **kwargs):
+                # Clear user-defined limits so _redefine_axes_limits recomputes
+                # the correct default for the current mode (semi-circle vs full circle)
+                plotter._user_axes_limits = None
+                _original_home(*args, **kwargs)
+                # Re-apply the correct default limits for the current mode
+                plotter._redefine_axes_limits()
+
+            toolbar.home = _home_patched
 
     def _patch_toolbar_save(self):
         """Monkey-patch figure.savefig to use black colors for export.
@@ -2695,16 +2743,16 @@ class PlotterWidget(QWidget):
         text_color = "white"
 
         self.canvas_widget.artists['SCATTER'].ax.set_xlabel(
-            "G", color=text_color, fontsize=14, fontweight='bold'
+            "G", color=text_color, fontweight='bold'
         )
         self.canvas_widget.artists['SCATTER'].ax.set_ylabel(
-            "S", color=text_color, fontsize=14, fontweight='bold'
+            "S", color=text_color, fontweight='bold'
         )
         self.canvas_widget.artists['HISTOGRAM2D'].ax.set_xlabel(
-            "G", color=text_color, fontsize=14, fontweight='bold'
+            "G", color=text_color, fontweight='bold'
         )
         self.canvas_widget.artists['HISTOGRAM2D'].ax.set_ylabel(
-            "S", color=text_color, fontsize=14, fontweight='bold'
+            "S", color=text_color, fontweight='bold'
         )
 
         self.canvas_widget.artists['SCATTER'].ax.tick_params(colors=text_color)
@@ -2879,6 +2927,14 @@ class PlotterWidget(QWidget):
             self._set_active_artist_and_plot(
                 self.plot_type, x_data, y_data, selection_id_data
             )
+
+            # If the user has set a custom zoom, always restore it after
+            # plotting — biaplotter resets the axes limits in its data setter.
+            if self._user_axes_limits is not None:
+                xlim, ylim = self._user_axes_limits
+                self.canvas_widget.axes.set_xlim(xlim)
+                self.canvas_widget.axes.set_ylim(ylim)
+                self.canvas_widget.figure.canvas.draw_idle()
         finally:
             self._updating_plot = False
 
