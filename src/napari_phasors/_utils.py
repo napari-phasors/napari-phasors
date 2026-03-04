@@ -679,7 +679,7 @@ class CheckableComboBox(QComboBox):
         self.setModel(QStandardItemModel(self))
         self.setEditable(True)
         self.lineEdit().setReadOnly(True)
-        self.lineEdit().setPlaceholderText("Select layers...")
+        self.lineEdit().setPlaceholderText("Select Layers...")
 
         self._enable_primary_layer = enable_primary_layer
 
@@ -943,7 +943,7 @@ class CheckableComboBox(QComboBox):
 
         if not checked:
             line_edit.setText("")
-            line_edit.setPlaceholderText("Select layers...")
+            line_edit.setPlaceholderText("Select Layers...")
         elif len(checked) == 1:
             line_edit.setText(checked[0])
         else:

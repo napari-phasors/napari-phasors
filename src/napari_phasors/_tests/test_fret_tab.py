@@ -39,11 +39,8 @@ def test_fret_widget_initialization(make_napari_viewer):
     assert widget.donor_stack.currentIndex() == 0  # Manual page
     assert widget.bg_stack.currentIndex() == 0  # Manual page
 
-    # Test donor lifetime combobox
-    assert widget.donor_lifetime_combobox.currentText() in [
-        "Select layer...",
-        "",
-    ]
+    # Test donor lifetime combobox (CheckableComboBox: empty when no items checked)
+    assert widget.donor_lifetime_combobox.currentText() == ""
     assert (
         widget.lifetime_type_combobox.currentText()
         == "Apparent Phase Lifetime"
@@ -175,17 +172,17 @@ def test_calculate_background_position_with_layer(make_napari_viewer):
     # Update the background combobox to include the new layer
     widget._update_background_combobox()
 
-    # Check that the combobox has been populated correctly
+    # Check that the combobox has been populated correctly (CheckableComboBox: no placeholder item)
     combobox_items = [
         widget.background_image_combobox.itemText(i)
         for i in range(widget.background_image_combobox.count())
     ]
-    assert "Select layer..." in combobox_items
+    assert "Select layer..." not in combobox_items
     assert "test_layer" in combobox_items
 
-    # Switch to "From layer" mode and select the test layer
-    widget.bg_source_selector.setCurrentText("From layer")
-    widget.background_image_combobox.setCurrentText("test_layer")
+    # Switch to "From layer(s)" mode and check the test layer
+    widget.bg_source_selector.setCurrentText("From layer(s)")
+    widget.background_image_combobox.setCheckedItems(["test_layer"])
 
     # Set up the parent widget properly
     parent.harmonic = 1
@@ -217,11 +214,11 @@ def test_calculate_background_position_with_layer(make_napari_viewer):
     expected_label = f"Background position: G={stored_position['real']:.2f}, S={stored_position['imag']:.2f}"
     assert widget.background_position_label.text() == expected_label
 
-    # Test with "Select layer..." selected - should not crash
-    widget.background_image_combobox.setCurrentText("Select layer...")
+    # Test with no layer checked - should not crash
+    widget.background_image_combobox.deselectAll()
     widget._calculate_background_position()
 
-    # Label should revert to default when no valid layer is selected
+    # Label should revert to default when no layer is selected
     assert widget.background_position_label.text() == "Background position:"
 
 
@@ -889,9 +886,9 @@ def test_donor_lifetime_combobox_initialization(make_napari_viewer):
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
-    # Initially should have "Select layer..." option
-    assert widget.donor_lifetime_combobox.count() >= 1
-    assert widget.donor_lifetime_combobox.itemText(0) == "Select layer..."
+    # CheckableComboBox: starts empty (no placeholder item), shows placeholder text
+    assert widget.donor_lifetime_combobox.count() == 0
+    assert widget.donor_lifetime_combobox.currentText() == ""
 
 
 def test_donor_lifetime_combobox_updates_with_layers(make_napari_viewer):
@@ -960,8 +957,7 @@ def test_calculate_donor_lifetime_no_layer_selected(make_napari_viewer):
     # Set frequency for calculations
     widget.frequency_input.setText("80")
 
-    # Should return without error when "None" is selected
-    widget.donor_lifetime_combobox.setCurrentText("None")
+    # Should return without error when no layer is checked
     initial_lifetime = widget.donor_line_edit.text()
 
     widget._calculate_donor_lifetime()
@@ -981,8 +977,8 @@ def test_calculate_donor_lifetime_no_frequency(make_napari_viewer):
     test_layer.name = "test_layer"
     viewer.add_layer(test_layer)
 
-    # Select the layer but don't set frequency
-    widget.donor_lifetime_combobox.setCurrentText("test_layer")
+    # Check the layer but don't set frequency
+    widget.donor_lifetime_combobox.setCheckedItems(["test_layer"])
     widget.frequency_input.setText("")  # No frequency
 
     initial_lifetime = widget.donor_line_edit.text()
@@ -1008,7 +1004,7 @@ def test_calculate_donor_lifetime_apparent_phase(make_napari_viewer):
     # Set up parameters
     widget.frequency_input.setText("80")
     widget.lifetime_type_combobox.setCurrentText("Apparent Phase Lifetime")
-    widget.donor_lifetime_combobox.setCurrentText("test_layer")
+    widget.donor_lifetime_combobox.setCheckedItems(["test_layer"])
 
     # Set up parent widget properly
     parent.harmonic = 1
@@ -1039,7 +1035,7 @@ def test_calculate_donor_lifetime_apparent_modulation(make_napari_viewer):
     widget.lifetime_type_combobox.setCurrentText(
         "Apparent Modulation Lifetime"
     )
-    widget.donor_lifetime_combobox.setCurrentText("test_layer")
+    widget.donor_lifetime_combobox.setCheckedItems(["test_layer"])
 
     # Set up parent widget properly
     parent.harmonic = 1
@@ -1068,7 +1064,7 @@ def test_calculate_donor_lifetime_normal_lifetime(make_napari_viewer):
     # Set up parameters
     widget.frequency_input.setText("80")
     widget.lifetime_type_combobox.setCurrentText("Normal Lifetime")
-    widget.donor_lifetime_combobox.setCurrentText("test_layer")
+    widget.donor_lifetime_combobox.setCheckedItems(["test_layer"])
 
     # Set up parent widget properly
     parent.harmonic = 1
@@ -1097,7 +1093,7 @@ def test_calculate_donor_lifetime_different_harmonics(make_napari_viewer):
     # Set up parameters
     widget.frequency_input.setText("80")
     widget.lifetime_type_combobox.setCurrentText("Apparent Phase Lifetime")
-    widget.donor_lifetime_combobox.setCurrentText("test_layer")
+    widget.donor_lifetime_combobox.setCheckedItems(["test_layer"])
 
     # Test with harmonic 1
     parent.harmonic = 1
@@ -1133,7 +1129,7 @@ def test_calculate_donor_lifetime_mode_differences(make_napari_viewer):
 
     # Set up parameters
     widget.frequency_input.setText("80")
-    widget.donor_lifetime_combobox.setCurrentText("test_layer")
+    widget.donor_lifetime_combobox.setCheckedItems(["test_layer"])
     parent.harmonic = 1
 
     # Test apparent phase lifetime
@@ -1174,7 +1170,7 @@ def test_calculate_donor_lifetime_mode_differences(make_napari_viewer):
 def test_donor_lifetime_combobox_layer_selection_persistence(
     make_napari_viewer,
 ):
-    """Test that donor lifetime combobox selection persists when layers change."""
+    """Test that donor lifetime combobox checked selection persists when layers change."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
@@ -1184,33 +1180,34 @@ def test_donor_lifetime_combobox_layer_selection_persistence(
     test_layer1.name = "test_layer1"
     viewer.add_layer(test_layer1)
 
-    # Select first layer
-    widget.donor_lifetime_combobox.setCurrentText("test_layer1")
-    assert widget.donor_lifetime_combobox.currentText() == "test_layer1"
+    # Check first layer
+    widget.donor_lifetime_combobox.setCheckedItems(["test_layer1"])
+    assert widget.donor_lifetime_combobox.checkedItems() == ["test_layer1"]
 
     # Add second layer
     test_layer2 = create_image_layer_with_phasors()
     test_layer2.name = "test_layer2"
     viewer.add_layer(test_layer2)
 
-    # Selection should persist
-    assert widget.donor_lifetime_combobox.currentText() == "test_layer1"
+    # Checked selection should persist after combobox refresh
+    assert "test_layer1" in widget.donor_lifetime_combobox.checkedItems()
 
-    # Change to second layer
-    widget.donor_lifetime_combobox.setCurrentText("test_layer2")
-    assert widget.donor_lifetime_combobox.currentText() == "test_layer2"
+    # Switch check to second layer
+    widget.donor_lifetime_combobox.setCheckedItems(["test_layer2"])
+    assert widget.donor_lifetime_combobox.checkedItems() == ["test_layer2"]
 
     # Remove first layer
     viewer.layers.remove(test_layer1)
 
-    # Selection should still be test_layer2
-    assert widget.donor_lifetime_combobox.currentText() == "test_layer2"
+    # Checked selection should still be test_layer2
+    assert widget.donor_lifetime_combobox.checkedItems() == ["test_layer2"]
 
     # Remove second layer
     viewer.layers.remove(test_layer2)
 
-    # Should revert to "Select layer..."
-    assert widget.donor_lifetime_combobox.currentText() == "Select layer..."
+    # Should have no checked items and empty display text
+    assert widget.donor_lifetime_combobox.checkedItems() == []
+    assert widget.donor_lifetime_combobox.currentText() == ""
 
 
 def test_calculate_donor_lifetime_error_handling(make_napari_viewer):
@@ -1226,14 +1223,16 @@ def test_calculate_donor_lifetime_error_handling(make_napari_viewer):
     bad_layer = Image(np.random.random((10, 10)), name="bad_layer")
     viewer.add_layer(bad_layer)
 
-    # Try to calculate with bad layer
+    # bad_layer will NOT be added to the CheckableComboBox (no phasor metadata)
+    assert "bad_layer" not in widget.donor_lifetime_combobox.allItems()
+
+    # Calling _calculate_donor_lifetime with no checked layers should be a no-op
     widget.frequency_input.setText("80")
-    widget.donor_lifetime_combobox.setCurrentText("bad_layer")
     parent.harmonic = 1
 
     initial_lifetime = widget.donor_line_edit.text()
 
-    # Should handle error gracefully
+    # Should handle gracefully: no checked layers → no-op
     widget._calculate_donor_lifetime()
 
     # Should not crash and lifetime should remain unchanged
@@ -1241,7 +1240,7 @@ def test_calculate_donor_lifetime_error_handling(make_napari_viewer):
 
 
 def test_donor_source_selector_functionality(make_napari_viewer):
-    """Test the donor source selector switches between Manual and From layer modes."""
+    """Test the donor source selector switches between Manual and From layer(s) modes."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
@@ -1251,11 +1250,11 @@ def test_donor_source_selector_functionality(make_napari_viewer):
     assert widget.donor_stack.currentIndex() == 0  # Manual page
     assert widget.donor_label.text() == "Donor lifetime (ns):"
 
-    # Switch to "From layer" mode
-    widget.donor_source_selector.setCurrentText("From layer")
+    # Switch to "From layer(s)" mode
+    widget.donor_source_selector.setCurrentText("From layer(s)")
     widget._on_donor_source_changed(1)
 
-    assert widget.donor_stack.currentIndex() == 1  # From layer page
+    assert widget.donor_stack.currentIndex() == 1  # From layer(s) page
     assert widget.donor_label.text() == "Donor lifetime (ns):"
 
     # Switch back to Manual mode
@@ -1267,7 +1266,7 @@ def test_donor_source_selector_functionality(make_napari_viewer):
 
 
 def test_background_source_selector_functionality(make_napari_viewer):
-    """Test the background source selector switches between Manual and From layer modes."""
+    """Test the background source selector switches between Manual and From layer(s) modes."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
@@ -1277,11 +1276,11 @@ def test_background_source_selector_functionality(make_napari_viewer):
     assert widget.bg_stack.currentIndex() == 0  # Manual page
     assert widget.background_position_label.text() == "Background position:"
 
-    # Switch to "From layer" mode
-    widget.bg_source_selector.setCurrentText("From layer")
+    # Switch to "From layer(s)" mode
+    widget.bg_source_selector.setCurrentText("From layer(s)")
     widget._on_bg_source_changed(1)
 
-    assert widget.bg_stack.currentIndex() == 1  # From layer page
+    assert widget.bg_stack.currentIndex() == 1  # From layer(s) page
     assert widget.background_position_label.text() == "Background position:"
 
     # Switch back to Manual mode
@@ -1309,19 +1308,19 @@ def test_donor_lifetime_label_updates_with_layer_calculation(
     widget.frequency_input.setText("80")
     parent.harmonic = 1
 
-    # Switch to "From layer" mode
-    widget.donor_source_selector.setCurrentText("From layer")
+    # Switch to "From layer(s)" mode
+    widget.donor_source_selector.setCurrentText("From layer(s)")
     widget._on_donor_source_changed(1)
 
-    # Select the test layer
-    widget.donor_lifetime_combobox.setCurrentText("test_layer")
+    # Check the test layer
+    widget.donor_lifetime_combobox.setCheckedItems(["test_layer"])
 
     # Calculate donor lifetime
     widget._calculate_donor_lifetime()
 
     # Label should now show the calculated lifetime value
     label_text = widget.donor_label.text()
-    assert "Donor lifetime (from layer):" in label_text
+    assert "Donor lifetime (from layer(s)):" in label_text
     assert "ns" in label_text
 
     # Switch back to Manual mode
@@ -1348,12 +1347,12 @@ def test_background_position_label_updates_with_layer_calculation(
     # Set up parameters
     parent.harmonic = 1
 
-    # Switch to "From layer" mode
-    widget.bg_source_selector.setCurrentText("From layer")
+    # Switch to "From layer(s)" mode
+    widget.bg_source_selector.setCurrentText("From layer(s)")
     widget._on_bg_source_changed(1)
 
-    # Select the test layer
-    widget.background_image_combobox.setCurrentText("test_layer")
+    # Check the test layer
+    widget.background_image_combobox.setCheckedItems(["test_layer"])
 
     # Calculate background position
     widget._calculate_background_position()
@@ -1388,11 +1387,9 @@ def test_layer_selection_with_no_valid_layers(make_napari_viewer):
     widget._update_donor_lifetime_combobox()
     widget._update_background_combobox()
 
-    # Should only have "Select layer..." option
-    assert widget.donor_lifetime_combobox.count() == 1
-    assert widget.donor_lifetime_combobox.itemText(0) == "Select layer..."
-    assert widget.background_image_combobox.count() == 1
-    assert widget.background_image_combobox.itemText(0) == "Select layer..."
+    # CheckableComboBox: no items added since invalid_layer has no phasor data
+    assert widget.donor_lifetime_combobox.count() == 0
+    assert widget.background_image_combobox.count() == 0
 
 
 def test_calculate_values_with_select_layer_option(make_napari_viewer):
@@ -1405,15 +1402,13 @@ def test_calculate_values_with_select_layer_option(make_napari_viewer):
     widget.frequency_input.setText("80")
     parent.harmonic = 1
 
-    # Switch to From layer modes
-    widget.donor_source_selector.setCurrentText("From layer")
+    # Switch to From layer(s) modes
+    widget.donor_source_selector.setCurrentText("From layer(s)")
     widget._on_donor_source_changed(1)
-    widget.bg_source_selector.setCurrentText("From layer")
+    widget.bg_source_selector.setCurrentText("From layer(s)")
     widget._on_bg_source_changed(1)
 
-    # Ensure "Select layer..." is selected
-    widget.donor_lifetime_combobox.setCurrentText("Select layer...")
-    widget.background_image_combobox.setCurrentText("Select layer...")
+    # Ensure nothing is checked (comboboxes start empty)
 
     # Store initial values
     initial_donor_text = widget.donor_line_edit.text()
@@ -1445,13 +1440,13 @@ def test_ui_mode_switching_preserves_manual_values(make_napari_viewer):
     widget.background_real_edit.setText("0.3")
     widget.background_imag_edit.setText("0.4")
 
-    # Switch to From layer mode and back
-    widget.donor_source_selector.setCurrentText("From layer")
+    # Switch to From layer(s) mode and back
+    widget.donor_source_selector.setCurrentText("From layer(s)")
     widget._on_donor_source_changed(1)
     widget.donor_source_selector.setCurrentText("Manual")
     widget._on_donor_source_changed(0)
 
-    widget.bg_source_selector.setCurrentText("From layer")
+    widget.bg_source_selector.setCurrentText("From layer(s)")
     widget._on_bg_source_changed(1)
     widget.bg_source_selector.setCurrentText("Manual")
     widget._on_bg_source_changed(0)
@@ -1627,24 +1622,24 @@ def test_metadata_storage_from_layer_mode(make_napari_viewer):
     widget._on_image_layer_changed()
     widget.frequency_input.setText("80")
 
-    # Switch to From layer mode for donor
-    widget.donor_source_selector.setCurrentText("From layer")
+    # Switch to From layer(s) mode for donor
+    widget.donor_source_selector.setCurrentText("From layer(s)")
     widget._on_donor_source_changed(1)
-    widget.donor_lifetime_combobox.setCurrentText("donor_layer")
+    widget.donor_lifetime_combobox.setCheckedItems(["donor_layer"])
     widget.lifetime_type_combobox.setCurrentText("Normal Lifetime")
 
-    # Switch to From layer mode for background
-    widget.bg_source_selector.setCurrentText("From layer")
+    # Switch to From layer(s) mode for background
+    widget.bg_source_selector.setCurrentText("From layer(s)")
     widget._on_bg_source_changed(1)
-    widget.background_image_combobox.setCurrentText("bg_layer")
+    widget.background_image_combobox.setCheckedItems(["bg_layer"])
 
     # Check metadata
     fret_settings = donor_layer.metadata['settings']['fret']
-    assert fret_settings['donor_source'] == 'From layer'
-    assert fret_settings['donor_layer_name'] == 'donor_layer'
+    assert fret_settings['donor_source'] == 'From layer(s)'
+    assert fret_settings['donor_layer_names'] == ['donor_layer']
     assert fret_settings['donor_lifetime_type'] == 'Normal Lifetime'
-    assert fret_settings['background_source'] == 'From layer'
-    assert fret_settings['background_layer_name'] == 'bg_layer'
+    assert fret_settings['background_source'] == 'From layer(s)'
+    assert fret_settings['background_layer_names'] == ['bg_layer']
 
 
 def test_metadata_restoration_manual_values(make_napari_viewer):
@@ -1787,17 +1782,17 @@ def test_metadata_restoration_from_layer_mode(make_napari_viewer):
     widget._on_image_layer_changed()
     widget.frequency_input.setText("80")
 
-    # Configure From layer mode
-    widget.donor_source_selector.setCurrentText("From layer")
+    # Configure From layer(s) mode
+    widget.donor_source_selector.setCurrentText("From layer(s)")
     widget._on_donor_source_changed(1)
-    widget.donor_lifetime_combobox.setCurrentText("donor_layer")
+    widget.donor_lifetime_combobox.setCheckedItems(["donor_layer"])
     widget.lifetime_type_combobox.setCurrentText(
         "Apparent Modulation Lifetime"
     )
 
-    widget.bg_source_selector.setCurrentText("From layer")
+    widget.bg_source_selector.setCurrentText("From layer(s)")
     widget._on_bg_source_changed(1)
-    widget.background_image_combobox.setCurrentText("bg_layer")
+    widget.background_image_combobox.setCheckedItems(["bg_layer"])
 
     # Switch away and back
     parent.image_layer_with_phasor_features_combobox.setCurrentText("")
@@ -1809,14 +1804,14 @@ def test_metadata_restoration_from_layer_mode(make_napari_viewer):
     widget._on_image_layer_changed()
 
     # Verify restoration
-    assert widget.donor_source_selector.currentText() == "From layer"
-    assert widget.donor_lifetime_combobox.currentText() == "donor_layer"
+    assert widget.donor_source_selector.currentText() == "From layer(s)"
+    assert widget.donor_lifetime_combobox.checkedItems() == ["donor_layer"]
     assert (
         widget.lifetime_type_combobox.currentText()
         == "Apparent Modulation Lifetime"
     )
-    assert widget.bg_source_selector.currentText() == "From layer"
-    assert widget.background_image_combobox.currentText() == "bg_layer"
+    assert widget.bg_source_selector.currentText() == "From layer(s)"
+    assert widget.background_image_combobox.checkedItems() == ["bg_layer"]
 
 
 def test_metadata_restoration_reverts_to_manual_when_layer_missing(
@@ -1841,16 +1836,16 @@ def test_metadata_restoration_reverts_to_manual_when_layer_missing(
     )
     widget._on_image_layer_changed()
 
-    # Configure From layer mode
+    # Configure From layer(s) mode
     widget.frequency_input.setText("80")
     widget.donor_line_edit.setText("2.5")
-    widget.donor_source_selector.setCurrentText("From layer")
+    widget.donor_source_selector.setCurrentText("From layer(s)")
     widget._on_donor_source_changed(1)
-    widget.donor_lifetime_combobox.setCurrentText("donor_layer")
+    widget.donor_lifetime_combobox.setCheckedItems(["donor_layer"])
 
-    widget.bg_source_selector.setCurrentText("From layer")
+    widget.bg_source_selector.setCurrentText("From layer(s)")
     widget._on_bg_source_changed(1)
-    widget.background_image_combobox.setCurrentText("bg_layer")
+    widget.background_image_combobox.setCheckedItems(["bg_layer"])
 
     # Remove the referenced layer
     viewer.layers.remove(bg_layer)
@@ -1867,8 +1862,8 @@ def test_metadata_restoration_reverts_to_manual_when_layer_missing(
     # Background should revert to Manual since bg_layer is missing
     assert widget.bg_source_selector.currentText() == "Manual"
 
-    # Donor should still be From layer since donor_layer exists
-    assert widget.donor_source_selector.currentText() == "From layer"
+    # Donor should still be From layer(s) since donor_layer exists
+    assert widget.donor_source_selector.currentText() == "From layer(s)"
 
 
 def test_metadata_colormap_settings_storage(make_napari_viewer):
