@@ -1536,6 +1536,7 @@ class PlotterWidget(QWidget):
         self._update_setting_in_metadata('harmonic', value)
         if not self._updating_settings:
             self.refresh_current_plot()
+            self._update_plot_elements()
         if hasattr(self, 'selection_tab'):
             self.selection_tab.on_harmonic_changed()
 
@@ -1662,9 +1663,6 @@ class PlotterWidget(QWidget):
         self.lifetime_tab = LifetimeWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.lifetime_tab, "Lifetime")
 
-        self.harmonic_spinbox.valueChanged.connect(
-            self.lifetime_tab._on_harmonic_changed
-        )
         self.lifetime_tab.frequency_input.editingFinished.connect(
             lambda: self._broadcast_frequency_value_across_tabs(
                 self.lifetime_tab.frequency_input.text()
