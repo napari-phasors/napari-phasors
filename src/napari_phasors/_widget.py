@@ -25,6 +25,7 @@ from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
     QCompleter,
+    QDockWidget,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -1046,6 +1047,7 @@ class WriterWidget(QWidget):
         """Initialize the widget."""
         super().__init__()
         self.viewer = viewer
+        self._floated = False
 
         self.main_layout = QVBoxLayout(self)
 
@@ -1055,14 +1057,17 @@ class WriterWidget(QWidget):
 
         ome_info = QLabel(
             "• <b>OME-TIFF:</b> Saves mean intensity and phasor coordinates"
-            " with metadata including napari-phasors settings"
+            " with metadata including napari-phasors settings if exported layer"
+            "contains phasor features. If not layer data is exported as"
+            "single-channel image with metadata."
         )
         ome_info.setWordWrap(True)
         self.main_layout.addWidget(ome_info)
 
         csv_info = QLabel(
-            "• <b>CSV:</b> Exports phasor features table if available, "
-            "otherwise exports raw layer data values, i.e. analysis values"
+            "• <b>CSV:</b> Exports mean intensity and phasor coordinates"
+            " as a table if available, otherwise exports raw layer data"
+            " values, i.e. analysis values"
         )
         csv_info.setWordWrap(True)
         self.main_layout.addWidget(csv_info)
@@ -1131,6 +1136,26 @@ class WriterWidget(QWidget):
         self.viewer.layers.events.removed.connect(self._populate_combobox)
 
         self._populate_combobox()
+
+    def showEvent(self, event):
+        """Float the dock widget on first show and center it on screen."""
+        super().showEvent(event)
+        if not self._floated:
+            self._floated = True
+            parent = self.parent()
+            while parent is not None:
+                if isinstance(parent, QDockWidget):
+                    parent.setFloating(True)
+                    from qtpy.QtWidgets import QApplication
+
+                    screen = QApplication.primaryScreen().geometry()
+                    dw_size = parent.sizeHint()
+                    parent.move(
+                        screen.center().x() - dw_size.width() // 2,
+                        screen.center().y() - dw_size.height() // 2,
+                    )
+                    break
+                parent = parent.parent()
 
     def _open_file_dialog(self):
         """Open a native file dialog to select export location."""
