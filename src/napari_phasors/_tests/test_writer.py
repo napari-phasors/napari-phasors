@@ -255,11 +255,13 @@ def test_write_ometif_without_circular_cursors(tmp_path):
     )
 
     # Explicitly ensure no circular cursors in metadata
-    if "settings" in intensity_image_layer.metadata:
-        if "selections" in intensity_image_layer.metadata["settings"]:
-            intensity_image_layer.metadata["settings"]["selections"].pop(
-                "circular_cursors", None
-            )
+    if (
+        "settings" in intensity_image_layer.metadata
+        and "selections" in intensity_image_layer.metadata["settings"]
+    ):
+        intensity_image_layer.metadata["settings"]["selections"].pop(
+            "circular_cursors", None
+        )
 
     # Write the file
     filepath = os.path.join(tmp_path, "test_no_cursors.ome.tif")

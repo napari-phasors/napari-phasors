@@ -376,7 +376,7 @@ class FilterWidget(QWidget):
                 return threshold_yen(clean_data)
             else:
                 return 0
-        except Exception:
+        except Exception:  # noqa: BLE001
             # Fallback to 10% of max if automatic method fails
             return np.nanmax(data) * 0.1
 
@@ -447,7 +447,7 @@ class FilterWidget(QWidget):
             mean_data = layer.metadata.get("original_mean")
             if mean_data is None:
                 continue
-            if 'mask' in layer.metadata.keys():
+            if 'mask' in layer.metadata:
                 max_val = np.nanmax(mean_data[layer.metadata['mask'] > 0])
             else:
                 max_val = np.nanmax(mean_data)
@@ -471,17 +471,17 @@ class FilterWidget(QWidget):
 
         self._updating_threshold = True
 
-        if "settings" in layer_metadata.keys():
+        if "settings" in layer_metadata:
             settings = layer_metadata["settings"]
 
-            if "threshold_method" in settings.keys():
+            if "threshold_method" in settings:
                 self.threshold_method_combobox.setCurrentText(
                     settings["threshold_method"]
                 )
             else:
                 self.threshold_method_combobox.setCurrentText("None")
 
-            if "threshold" in settings.keys():
+            if "threshold" in settings:
                 lower_val = int(settings["threshold"] * self.threshold_factor)
                 upper_val = int(
                     settings.get("threshold_upper", max_mean_value)
@@ -505,7 +505,7 @@ class FilterWidget(QWidget):
                     f'{upper_val / self.threshold_factor:.2f}'
                 )
 
-            if "filter" in settings.keys():
+            if "filter" in settings:
                 filter_settings = settings["filter"]
 
                 if "method" in filter_settings:
@@ -632,13 +632,12 @@ class FilterWidget(QWidget):
             self._updating_threshold = False
 
             current_method = self.threshold_method_combobox.currentText()
-            if current_method not in ["Manual"]:
-                if not (
-                    current_method == "None"
-                    and new_slider_value == 0
-                    and upper_val == self.threshold_slider.maximum()
-                ):
-                    self.threshold_method_combobox.setCurrentText("Manual")
+            if current_method not in ["Manual"] and not (
+                current_method == "None"
+                and new_slider_value == 0
+                and upper_val == self.threshold_slider.maximum()
+            ):
+                self.threshold_method_combobox.setCurrentText("Manual")
 
             self.update_threshold_lines()
         except ValueError:
@@ -669,13 +668,12 @@ class FilterWidget(QWidget):
             self._updating_threshold = False
 
             current_method = self.threshold_method_combobox.currentText()
-            if current_method not in ["Manual"]:
-                if not (
-                    current_method == "None"
-                    and lower_val == 0
-                    and new_slider_value == self.threshold_slider.maximum()
-                ):
-                    self.threshold_method_combobox.setCurrentText("Manual")
+            if current_method not in ["Manual"] and not (
+                current_method == "None"
+                and lower_val == 0
+                and new_slider_value == self.threshold_slider.maximum()
+            ):
+                self.threshold_method_combobox.setCurrentText("Manual")
 
             self.update_threshold_lines()
         except ValueError:

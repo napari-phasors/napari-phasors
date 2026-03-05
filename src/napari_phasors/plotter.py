@@ -1,3 +1,4 @@
+import contextlib
 import copy
 import html
 import math
@@ -584,7 +585,7 @@ class PlotterWidget(QWidget):
                 valid_mask_layers = [
                     mask_l
                     for mask_l in self.viewer.layers
-                    if isinstance(mask_l, Labels) or isinstance(mask_l, Shapes)
+                    if isinstance(mask_l, (Labels, Shapes))
                 ]
                 for mask_l in valid_mask_layers:
                     if isinstance(mask_l, Shapes):
@@ -710,9 +711,7 @@ class PlotterWidget(QWidget):
         for label, attr, settings_key in tab_mapping:
             # Determine if this tab should be shown
             show_tab = False
-            if source_settings is None:
-                show_tab = True
-            elif settings_key is None:
+            if source_settings is None or settings_key is None:
                 show_tab = True
             elif isinstance(settings_key, list):
                 show_tab = any(key in source_settings for key in settings_key)
@@ -907,7 +906,7 @@ class PlotterWidget(QWidget):
                 notifications.WarningNotification(
                     "No valid napari-phasors settings found in file"
                 )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             notifications.WarningNotification(
                 f"Failed to import from file: {str(e)}"
             )
@@ -948,7 +947,7 @@ class PlotterWidget(QWidget):
             notifications.show_info(
                 f"Settings and analyses imported from {source_layer_name}"
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             notifications.WarningNotification(
                 f"Failed to import settings: {str(e)}"
             )
@@ -1394,10 +1393,10 @@ class PlotterWidget(QWidget):
                 )
                 if s_pos >= 0.18:
                     lifetimes.append(lifetime_val)
-            except:
+            except Exception:  # noqa: BLE001
                 continue
 
-        for i, lifetime in enumerate(lifetimes):
+        for _i, lifetime in enumerate(lifetimes):
             if lifetime == 0:
                 g_pos, s_pos = 1.0, 0.0
             else:
@@ -1435,10 +1434,7 @@ class PlotterWidget(QWidget):
             tick_line.set_clip_path(ax.patch)
             self.semi_circle_plot_artist_list.append(tick_line)
 
-            if lifetime == 0:
-                label_text = "0"
-            else:
-                label_text = f"{lifetime:g}"
+            label_text = "0" if lifetime == 0 else f"{lifetime:g}"
 
             label_offset = 0.08
             label_x = g_pos + label_offset * dx_norm
@@ -1616,10 +1612,7 @@ class PlotterWidget(QWidget):
             checkbox state.
         """
         if color is None:
-            if self.white_background:
-                color = "white"
-            else:
-                color = "none"  # Transparent background
+            color = "white" if self.white_background else "none"
 
         if color == "none":
             self.canvas_widget.axes.set_facecolor('none')
@@ -1642,9 +1635,9 @@ class PlotterWidget(QWidget):
         return self.plotter_inputs_widget.plot_type_combobox.currentText()
 
     @plot_type.setter
-    def plot_type(self, type):
+    def plot_type(self, value):
         """Sets the plot type from the plot type combobox."""
-        self.plotter_inputs_widget.plot_type_combobox.setCurrentText(type)
+        self.plotter_inputs_widget.plot_type_combobox.setCurrentText(value)
 
     @property
     def histogram_colormap(self):
@@ -1660,7 +1653,7 @@ class PlotterWidget(QWidget):
     @histogram_colormap.setter
     def histogram_colormap(self, colormap: str):
         """Sets the histogram colormap from the colormap combobox."""
-        if colormap not in colormaps.ALL_COLORMAPS.keys():
+        if colormap not in colormaps.ALL_COLORMAPS:
             notifications.WarningNotification(
                 f"{colormap} is not a valid colormap. Setting to default colormap."
             )
@@ -1736,23 +1729,19 @@ class PlotterWidget(QWidget):
 
     def _disconnect_all_artist_signals(self):
         """Disconnect all artist signals to prevent conflicts."""
-        try:
+        with contextlib.suppress(TypeError, AttributeError):
             self.canvas_widget.artists[
                 'SCATTER'
             ].color_indices_changed_signal.disconnect(
                 self.selection_tab.manual_selection_changed
             )
-        except (TypeError, AttributeError):
-            pass
 
-        try:
+        with contextlib.suppress(TypeError, AttributeError):
             self.canvas_widget.artists[
                 'HISTOGRAM2D'
             ].color_indices_changed_signal.disconnect(
                 self.selection_tab.manual_selection_changed
             )
-        except (TypeError, AttributeError):
-            pass
 
     def reset_layer_choices(self):
         """Reset the image layer checkable combobox choices."""
@@ -1778,15 +1767,15 @@ class PlotterWidget(QWidget):
                 layer.name
                 for layer in self.viewer.layers
                 if isinstance(layer, Image)
-                and "G" in layer.metadata.keys()
-                and "S" in layer.metadata.keys()
-                and "G_original" in layer.metadata.keys()
-                and "S_original" in layer.metadata.keys()
+                and "G" in layer.metadata
+                and "S" in layer.metadata
+                and "G_original" in layer.metadata
+                and "S_original" in layer.metadata
             ]
             mask_layer_names = [
                 layer.name
                 for layer in self.viewer.layers
-                if isinstance(layer, Labels) or isinstance(layer, Shapes)
+                if isinstance(layer, (Labels, Shapes))
             ]
 
             # Add items to the checkable combobox
@@ -1829,20 +1818,16 @@ class PlotterWidget(QWidget):
                 layer = self.viewer.layers[layer_name]
                 if (
                     isinstance(layer, Image)
-                    and "phasor_features_labels_layer" in layer.metadata.keys()
+                    and "phasor_features_labels_layer" in layer.metadata
                 ):
-                    try:
+                    with contextlib.suppress(TypeError, ValueError):
                         layer.events.name.disconnect(self.reset_layer_choices)
-                    except (TypeError, ValueError):
-                        pass  # Not connected, ignore
                     layer.events.name.connect(self.reset_layer_choices)
                 if isinstance(layer, Shapes):
-                    try:
+                    with contextlib.suppress(TypeError, ValueError):
                         layer.events.data.disconnect(
                             self._on_mask_data_changed
                         )
-                    except (TypeError, ValueError):
-                        pass  # Not connected, ignore
                     layer.events.data.connect(self._on_mask_data_changed)
                 if isinstance(layer, Labels):
                     try:
@@ -2347,7 +2332,7 @@ class PlotterWidget(QWidget):
         harmonics = np.atleast_1d(self._harmonics_array)
         try:
             return int(np.where(harmonics == target)[0][0])
-        except Exception:
+        except Exception:  # noqa: BLE001
             return None
 
     def get_phasor_spatial_shape(self):
@@ -2503,10 +2488,7 @@ class PlotterWidget(QWidget):
             return
 
         ZOOM_FACTOR = 1.15  # zoom step (>1 means 15% range change per notch)
-        if event.step > 0:  # scroll up → zoom in
-            scale = 1.0 / ZOOM_FACTOR
-        else:  # scroll down → zoom out
-            scale = ZOOM_FACTOR
+        scale = 1.0 / ZOOM_FACTOR if event.step > 0 else ZOOM_FACTOR
 
         x_mouse, y_mouse = event.xdata, event.ydata
         x_min, x_max = ax.get_xlim()
@@ -2698,13 +2680,21 @@ class PlotterWidget(QWidget):
             ax.title.set_color(state["title_color"])
             for name, sp in ax.spines.items():
                 sp.set_edgecolor(state["spine_colors"][name])
-            for t, c in zip(ax.get_xticklabels(), state["xticklabel_colors"]):
+            for t, c in zip(
+                ax.get_xticklabels(), state["xticklabel_colors"], strict=False
+            ):
                 t.set_color(c)
-            for t, c in zip(ax.get_yticklabels(), state["yticklabel_colors"]):
+            for t, c in zip(
+                ax.get_yticklabels(), state["yticklabel_colors"], strict=False
+            ):
                 t.set_color(c)
-            for t, c in zip(ax.xaxis.get_ticklines(), state["xtick_colors"]):
+            for t, c in zip(
+                ax.xaxis.get_ticklines(), state["xtick_colors"], strict=False
+            ):
                 t.set_markeredgecolor(c)
-            for t, c in zip(ax.yaxis.get_ticklines(), state["ytick_colors"]):
+            for t, c in zip(
+                ax.yaxis.get_ticklines(), state["ytick_colors"], strict=False
+            ):
                 t.set_markeredgecolor(c)
 
         if saved["colorbar"] is not None and self.colorbar is not None:
@@ -2712,16 +2702,22 @@ class PlotterWidget(QWidget):
             self.colorbar.ax.yaxis.label.set_color(cb["ylabel_color"])
             self.colorbar.outline.set_edgecolor(cb["outline_color"])
             for t, c in zip(
-                self.colorbar.ax.get_yticklabels(), cb["ticklabel_colors"]
+                self.colorbar.ax.get_yticklabels(),
+                cb["ticklabel_colors"],
+                strict=False,
             ):
                 t.set_color(c)
             for t, c in zip(
-                self.colorbar.ax.yaxis.get_ticklines(), cb["tick_colors"]
+                self.colorbar.ax.yaxis.get_ticklines(),
+                cb["tick_colors"],
+                strict=False,
             ):
                 t.set_markeredgecolor(c)
 
         for artist, (attr_type, saved_color) in zip(
-            self.semi_circle_plot_artist_list, saved.get("semi_circle", [])
+            self.semi_circle_plot_artist_list,
+            saved.get("semi_circle", []),
+            strict=False,
         ):
             if attr_type == "edgecolor":
                 artist.set_edgecolor(saved_color)
@@ -2729,7 +2725,7 @@ class PlotterWidget(QWidget):
                 artist.set_color(saved_color)
 
         for artist, (attr_type, saved_color) in zip(
-            self.polar_plot_artist_list, saved.get("polar", [])
+            self.polar_plot_artist_list, saved.get("polar", []), strict=False
         ):
             if attr_type == "edgecolor":
                 artist.set_edgecolor(saved_color)

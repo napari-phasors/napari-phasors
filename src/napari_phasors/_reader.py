@@ -9,14 +9,13 @@ import inspect
 import itertools
 import json
 import os
-from typing import Any, Callable, Optional, Sequence, Union
+from collections.abc import Callable, Sequence
+from typing import Any, Union
 
 import numpy as np
-import pandas as pd
 import phasorpy.io as io
 import tifffile
 import xarray as xr
-from napari.layers import Labels
 from napari.utils.colormaps.colormap_utils import CYMRGB, MAGENTA_GREEN
 from napari.utils.notifications import show_error
 from phasorpy.phasor import phasor_from_signal
@@ -92,9 +91,9 @@ when calculating phasor coordinates in the file.
 
 def napari_get_reader(
     path: str,
-    reader_options: Optional[dict] = None,
+    reader_options: dict | None = None,
     harmonics: Union[int, Sequence[int], None] = None,
-) -> Optional[Callable]:
+) -> Callable | None:
     """Initial reader function to map file extension to
     specific reader functions.
 
@@ -134,7 +133,7 @@ def napari_get_reader(
 
 def raw_file_reader(
     path: str,
-    reader_options: Optional[dict] = None,
+    reader_options: dict | None = None,
     harmonics: Union[int, Sequence[int], None] = None,
 ) -> list[tuple]:
     """Read raw data files from supported file formats and apply the phasor
@@ -193,7 +192,7 @@ def raw_file_reader(
     if (
         file_extension != '.fbd'
         and hasattr(raw_data, "attrs")
-        and 'frequency' in raw_data.attrs.keys()
+        and 'frequency' in raw_data.attrs
     ):
         settings['frequency'] = raw_data.attrs['frequency']
 
@@ -302,7 +301,7 @@ def raw_file_reader(
     # Set colormaps if multichannel image
     if len(layers) == 2:
         # add colormaps MAGENTA_GREEN
-        for layer, cmap in zip(layers, MAGENTA_GREEN):
+        for layer, cmap in zip(layers, MAGENTA_GREEN, strict=False):
             layer[1]["colormap"] = cmap
             layer[1]['blending'] = 'additive'
     elif len(layers) > 2:
@@ -316,7 +315,7 @@ def raw_file_reader(
 
 def processed_file_reader(
     path: str,
-    reader_options: Optional[dict[str, str]] = None,
+    reader_options: dict[str, str] | None = None,
     harmonics: Union[int, Sequence[int], None] = None,
 ) -> list[tuple]:
     """Reader function for files that contain processed images, as phasor
@@ -352,7 +351,7 @@ def processed_file_reader(
     mean_intensity_image, real, imag, attrs = extension_mapping["processed"][
         file_extension
     ](path, reader_options)
-    if "description" in attrs.keys():
+    if "description" in attrs:
         # HTML-unescape the description to handle tifffile HTML encoding
         description_str = html.unescape(attrs["description"])
         description = json.loads(description_str)
@@ -360,11 +359,11 @@ def processed_file_reader(
             raise ValueError("Description dictionary is too large.")
         if "napari_phasors_settings" in description:
             settings = json.loads(description["napari_phasors_settings"])
-            if "calibrated" in settings.keys():
+            if "calibrated" in settings:
                 settings["calibrated"] = bool(settings["calibrated"])
     else:
         settings = {}
-    if "frequency" in attrs.keys():
+    if "frequency" in attrs:
         settings["frequency"] = attrs["frequency"]
     harmonics_read = attrs.get("harmonic", None)
 
@@ -377,7 +376,7 @@ def processed_file_reader(
     threshold_value = 0
     threshold_upper_value = None
 
-    if "filter" in settings.keys():
+    if "filter" in settings:
         filter_settings = settings["filter"]
         if filter_settings.get("repeat", 0) > 0:
             should_apply_processing = True
@@ -389,12 +388,12 @@ def processed_file_reader(
                 "levels": filter_settings.get("levels", 3),
             }
 
-    if "threshold" in settings.keys() and settings["threshold"] is not None:
+    if "threshold" in settings and settings["threshold"] is not None:
         should_apply_processing = True
         threshold_value = settings["threshold"]
 
     if (
-        "threshold_upper" in settings.keys()
+        "threshold_upper" in settings
         and settings["threshold_upper"] is not None
     ):
         should_apply_processing = True
@@ -451,7 +450,7 @@ def _parse_and_call_io_function(
     path: str,
     func: Callable,
     args_defaults: dict[str, Any],
-    reader_options: Optional[dict[str, Any]] = None,
+    reader_options: dict[str, Any] | None = None,
 ) -> Any:
     """Private helper function to parse arguments and call a `io` function.
 
@@ -517,8 +516,5 @@ def _get_filename_extension(path: str) -> tuple[str, str]:
     """
     filename = os.path.basename(path)
     parts = filename.split(".", 1)
-    if len(parts) > 1:
-        file_extension = "." + parts[1]
-    else:
-        file_extension = ""
+    file_extension = "." + parts[1] if len(parts) > 1 else ""
     return parts[0], file_extension.lower()

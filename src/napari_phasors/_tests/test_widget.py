@@ -512,7 +512,7 @@ def test_signal_plot_ometif_widget(make_napari_viewer):
     # Get harmonics from attrs
     if "harmonic" in attrs:
         harmonics = attrs["harmonic"]
-    if "description" in attrs.keys():
+    if "description" in attrs:
         description = json.loads(attrs["description"])
         if sys.getsizeof(description) > 512 * 512:  # Threshold: 256 KB
             raise ValueError("Description dictionary is too large.")
@@ -571,7 +571,7 @@ def test_signal_plot_error_handling(make_napari_viewer):
         widget._update_signal_plot()
 
         # Plot should be cleared or show error state
-        lines = widget.ax.get_lines()
+        widget.ax.get_lines()
         # Should either be empty or show error message
 
 
@@ -856,7 +856,6 @@ def test_writer_widget_image_exports(make_napari_viewer, tmp_path):
 
 def test_writer_widget_colormap_applied(make_napari_viewer, tmp_path):
     """Test that the napari layer's colormap is correctly applied to exported images."""
-    import matplotlib.pyplot as plt
     from PIL import Image
 
     viewer = make_napari_viewer()
@@ -965,7 +964,7 @@ def test_writer_widget_csv_export_2d_no_phasor(make_napari_viewer, tmp_path):
 
     # Create a simple 2D image layer without phasor metadata
     data = np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-    layer = viewer.add_image(data, name="test_2d_image")
+    viewer.add_image(data, name="test_2d_image")
 
     # Export as CSV
     csv_path = tmp_path / "test_2d.csv"
@@ -1002,7 +1001,7 @@ def test_writer_widget_csv_export_4d_no_phasor(make_napari_viewer, tmp_path):
 
     # Create a 4D image layer
     data = np.arange(48).reshape(2, 2, 3, 4)
-    layer = viewer.add_image(data, name="test_4d_image")
+    viewer.add_image(data, name="test_4d_image")
 
     # Export as CSV
     csv_path = tmp_path / "test_4d.csv"
@@ -1038,7 +1037,7 @@ def test_writer_widget_csv_coordinates_consistency_2d(
 
     # Create 2D image with known pattern
     data = np.array([[10, 20], [30, 40]])
-    layer = viewer.add_image(data, name="test_pattern")
+    viewer.add_image(data, name="test_pattern")
 
     # Export as CSV
     csv_path = tmp_path / "test_pattern.csv"

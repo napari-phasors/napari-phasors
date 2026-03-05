@@ -1,3 +1,4 @@
+import contextlib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -104,10 +105,8 @@ class CalibrationWidget(QWidget):
             )
 
             for layer in image_layers:
-                try:
+                with contextlib.suppress(TypeError, ValueError):
                     layer.events.name.disconnect(self._populate_comboboxes)
-                except (TypeError, ValueError):
-                    pass
                 layer.events.name.connect(self._populate_comboboxes)
 
         finally:

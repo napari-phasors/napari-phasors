@@ -21,7 +21,7 @@ def test_selection_widget_initialization_values(make_napari_viewer):
 
     # Test initial attribute values
     assert widget._current_selection_id == "None"
-    assert widget.selection_id == None
+    assert widget.selection_id is None
     assert widget._phasors_selected_layer is None
 
     # Test mode combobox initialization
@@ -70,7 +70,7 @@ def test_selection_widget_with_layer_data(make_napari_viewer):
 
     # Test initial attribute values
     assert widget._current_selection_id == "None"
-    assert widget.selection_id == None
+    assert widget.selection_id is None
     assert widget._phasors_selected_layer is None
 
     # Switch to manual selection mode to test manual selection functionality
@@ -107,7 +107,7 @@ def test_selection_id_property_getter(make_napari_viewer):
     widget = parent.selection_tab
 
     # Test with "None" selected
-    assert widget.selection_id == None
+    assert widget.selection_id is None
 
     # Test with empty combobox
     widget.selection_input_widget.phasor_selection_id_combobox.clear()
@@ -352,13 +352,13 @@ def test_circular_cursor_widget_initialization(make_napari_viewer):
     assert widget.clear_all_button.text() == 'Clear All'
     assert widget.calculate_button.text() == 'Calculate'
     assert widget.autoupdate_check.text() == 'Autoupdate'
-    assert widget.autoupdate_check.isChecked() == False  # Default is off
+    assert not widget.autoupdate_check.isChecked()  # Default is off
 
     # Test internal state
     assert widget._cursors == []
     assert widget._dragging_cursor is None
     assert widget._drag_offset == (0, 0)  # Initialized to (0, 0) not None
-    assert widget._autoupdate_enabled == False  # Default is off
+    assert not widget._autoupdate_enabled  # Default is off
 
 
 def test_circular_cursor_add_cursor(make_napari_viewer):
@@ -584,9 +584,9 @@ def test_circular_cursor_autoupdate_checkbox(make_napari_viewer):
     widget = parent.selection_tab.circular_cursor_widget
 
     # Initially autoupdate should be disabled
-    assert widget.autoupdate_check.isChecked() == False
-    assert widget._autoupdate_enabled == False
-    assert widget.calculate_button.isEnabled() == True
+    assert not widget.autoupdate_check.isChecked()
+    assert not widget._autoupdate_enabled
+    assert widget.calculate_button.isEnabled()
 
     # Add a cursor (should not create labels layer without autoupdate)
     widget._add_cursor()
@@ -595,18 +595,16 @@ def test_circular_cursor_autoupdate_checkbox(make_napari_viewer):
 
     # Enable autoupdate
     widget.autoupdate_check.setChecked(True)
-    assert widget._autoupdate_enabled == True
-    assert widget.calculate_button.isEnabled() == False  # Should be disabled
+    assert widget._autoupdate_enabled
+    assert not widget.calculate_button.isEnabled()  # Should be disabled
 
     # Labels layer should be created immediately when autoupdate is enabled
     assert expected_layer_name in [layer.name for layer in viewer.layers]
 
     # Disable autoupdate
     widget.autoupdate_check.setChecked(False)
-    assert widget._autoupdate_enabled == False
-    assert (
-        widget.calculate_button.isEnabled() == True
-    )  # Should be enabled again
+    assert not widget._autoupdate_enabled
+    assert widget.calculate_button.isEnabled()  # Should be enabled again
 
 
 def test_circular_cursor_calculate_button(make_napari_viewer):
@@ -671,7 +669,7 @@ def test_circular_cursor_count_and_percentage_columns(make_napari_viewer):
     assert "." in percentage_text or percentage_text.isdigit()
 
     # Explicitly update statistics and verify values remain valid
-    initial_count = int(count_text)
+    int(count_text)
     widget._update_cursor_statistics()
 
     new_count_text = count_label.text()
@@ -688,13 +686,12 @@ def test_circular_cursor_statistics_update_on_change(make_napari_viewer):
     widget = parent.selection_tab.circular_cursor_widget
 
     # Ensure autoupdate is off
-    assert widget._autoupdate_enabled == False
+    assert not widget._autoupdate_enabled
 
     # Add a cursor
     widget._add_cursor(g=0.5, s=0.5, radius=0.1)
 
     # Get initial statistics
-    from qtpy.QtWidgets import QLabel
 
     count_label = widget.cursor_table.cellWidget(0, 4)
     initial_count = count_label.text()
@@ -1111,11 +1108,13 @@ def test_circular_cursor_empty_metadata_handling(make_napari_viewer):
     intensity_image_layer = create_image_layer_with_phasors()
 
     # Ensure no circular cursors in metadata
-    if "settings" in intensity_image_layer.metadata:
-        if "selections" in intensity_image_layer.metadata["settings"]:
-            intensity_image_layer.metadata["settings"]["selections"].pop(
-                "circular_cursors", None
-            )
+    if (
+        "settings" in intensity_image_layer.metadata
+        and "selections" in intensity_image_layer.metadata["settings"]
+    ):
+        intensity_image_layer.metadata["settings"]["selections"].pop(
+            "circular_cursors", None
+        )
 
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -1168,7 +1167,7 @@ def test_automatic_clustering_widget_initialization(make_napari_viewer):
     assert hasattr(widget, 'clear_button')
     assert widget.apply_button.text() == "Apply Clustering"
     assert widget.clear_button.text() == "Clear Clusters"
-    assert widget.clear_button.isEnabled() == False  # Initially disabled
+    assert not widget.clear_button.isEnabled()  # Initially disabled
 
     # Test internal state
     assert widget._clusters == []
@@ -1238,7 +1237,7 @@ def test_automatic_clustering_apply_gmm(make_napari_viewer):
     assert widget.cluster_table.rowCount() == 3
 
     # Clear button should be enabled
-    assert widget.clear_button.isEnabled() == True
+    assert widget.clear_button.isEnabled()
 
     # Check that labels layer was created
     layer_name = f"Cluster Selection: {intensity_image_layer.name}"
@@ -1308,7 +1307,7 @@ def test_automatic_clustering_clear_clusters(make_napari_viewer):
     # Should have no clusters
     assert len(widget._clusters) == 0
     assert len(widget._ellipse_patches) == 0
-    assert widget.clear_button.isEnabled() == False
+    assert not widget.clear_button.isEnabled()
     assert widget.cluster_table.rowCount() == 0  # Table should be empty
 
 
@@ -1695,7 +1694,7 @@ def test_automatic_clustering_remove_cluster(make_napari_viewer):
     assert len(widget._clusters) == 0
     assert widget.cluster_table.rowCount() == 0
     assert len(widget._ellipse_patches) == 0
-    assert widget.clear_button.isEnabled() == False
+    assert not widget.clear_button.isEnabled()
 
 
 def test_automatic_clustering_count_and_percentage(make_napari_viewer):
@@ -1743,7 +1742,7 @@ def test_circular_cursor_drag_no_autoupdate(make_napari_viewer):
     widget = parent.selection_tab.circular_cursor_widget
 
     # Ensure autoupdate is off
-    assert widget._autoupdate_enabled == False
+    assert not widget._autoupdate_enabled
 
     # Add a cursor and create labels
     widget._add_cursor()
@@ -1752,7 +1751,7 @@ def test_circular_cursor_drag_no_autoupdate(make_napari_viewer):
     # Get initial labels layer
     layer_name = f"Cursor Selection: {intensity_image_layer.name}"
     labels_layer = viewer.layers[layer_name]
-    initial_data = labels_layer.data.copy()
+    labels_layer.data.copy()
 
     # Simulate dragging
     widget._dragging_cursor = 0
@@ -1784,7 +1783,7 @@ def test_circular_cursor_drag_with_autoupdate(make_napari_viewer):
 
     # Enable autoupdate
     widget.autoupdate_check.setChecked(True)
-    assert widget._autoupdate_enabled == True
+    assert widget._autoupdate_enabled
 
     # Add a cursor (labels should be created immediately with autoupdate)
     widget._add_cursor(g=0.5, s=0.3, radius=0.2)
@@ -1792,7 +1791,7 @@ def test_circular_cursor_drag_with_autoupdate(make_napari_viewer):
     # Get labels layer
     layer_name = f"Cursor Selection: {intensity_image_layer.name}"
     labels_layer = viewer.layers[layer_name]
-    initial_nonzero = np.count_nonzero(labels_layer.data)
+    np.count_nonzero(labels_layer.data)
 
     # Simulate dragging to a different position
     widget._dragging_cursor = 0
