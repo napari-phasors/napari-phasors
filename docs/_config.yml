@@ -1,0 +1,55 @@
+# Book settings
+# Learn more at https://jupyterbook.org/customize/config.html
+
+title: napari-phasors
+author: Bruno Pannunzio, Marcelo Leomil Zoccoler, Bruno Schuty, Leonel Malacrida
+logo: logo.jpg
+
+# Force re-execution of notebooks on each build.
+# See https://jupyterbook.org/content/execute.html
+execute:
+  execute_notebooks: "off"
+
+# Define the name of the latex output file for PDF builds
+latex:
+  latex_documents:
+    targetname: book.tex
+
+# Add a bibtex file so that we can create citations
+bibtex_bibfiles:
+  - references.bib
+
+# Information about where the book exists on the web
+repository:
+  url: https://github.com/napari-phasors/napari-phasors
+  path_to_book: docs
+  branch: main
+
+# Add GitHub buttons to your book
+html:
+  use_issues_button: true
+  use_repository_button: true
+
+sphinx:
+  config:
+    autosummary_generate: true
+    autodoc_member_order: bysource
+    intersphinx_mapping:
+      python:
+        - "https://docs.python.org/3"
+        - null
+      numpy:
+        - "https://numpy.org/doc/stable/"
+        - null
+      napari:
+        - "https://napari.org/stable/"
+        - null
+      phasorpy:
+        - "https://www.phasorpy.org/docs/stable/"
+        - null
+  extra_extensions:
+    - sphinx.ext.autosummary
+    - sphinx.ext.autodoc
+    - sphinx.ext.napoleon
+    - sphinx.ext.intersphinx
+    - sphinx.ext.viewcode
