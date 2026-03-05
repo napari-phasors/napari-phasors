@@ -1,3 +1,4 @@
+import contextlib
 from unittest.mock import patch
 
 import numpy as np
@@ -24,8 +25,10 @@ from napari_phasors.plotter import PlotterWidget
 from napari_phasors.selection_tab import SelectionWidget
 
 
-def create_image_layer_with_phasors(harmonic=[1, 2, 3]):
+def create_image_layer_with_phasors(harmonic=None):
     """Create an intensity image layer with phasors for testing."""
+    if harmonic is None:
+        harmonic = [1, 2, 3]
     time_constants = [0.1, 1, 2, 3, 4, 5, 10]
     raw_flim_data = make_raw_flim_data(time_constants=time_constants)
     harmonic = harmonic
@@ -116,12 +119,8 @@ def test_phasor_plotter_initialization_values(make_napari_viewer):
     assert plotter.harmonic == 1
     assert plotter.plot_type == 'HISTOGRAM2D'
     assert plotter.histogram_colormap == 'turbo'
-    assert (
-        plotter.toggle_semi_circle == True
-    )  # Should default to semi-circle mode
-    assert (
-        plotter.white_background == True
-    )  # Should default to white background
+    assert plotter.toggle_semi_circle  # Should default to semi-circle mode
+    assert plotter.white_background  # Should default to white background
 
     # Test plot type combobox items
     plot_types = []
@@ -294,15 +293,13 @@ def test_adding_removing_layers_updates_plot(make_napari_viewer):
         # Check values were not reset to defaults when new layer was added
         assert plotter.plot_type == 'SCATTER'
         assert plotter.histogram_colormap == 'viridis'
-        assert plotter.toggle_semi_circle == False
-        assert plotter.white_background == False
+        assert not plotter.toggle_semi_circle
+        assert not plotter.white_background
         assert (
-            plotter.plotter_inputs_widget.semi_circle_checkbox.isChecked()
-            == False
+            not plotter.plotter_inputs_widget.semi_circle_checkbox.isChecked()
         )
         assert (
-            plotter.plotter_inputs_widget.white_background_checkbox.isChecked()
-            == False
+            not plotter.plotter_inputs_widget.white_background_checkbox.isChecked()
         )
 
         # Check that the combobox has both layers with phasor features
@@ -343,8 +340,8 @@ def test_layer_settings_persistence_across_layer_switches(make_napari_viewer):
     )
     assert plotter.plot_type == 'SCATTER'
     assert plotter.histogram_colormap == 'viridis'
-    assert plotter.toggle_semi_circle == False
-    assert plotter.white_background == False
+    assert not plotter.toggle_semi_circle
+    assert not plotter.white_background
 
     # Switch back to layer_1 (should restore settings)
     plotter.image_layer_with_phasor_features_combobox.setCurrentText(
@@ -352,8 +349,8 @@ def test_layer_settings_persistence_across_layer_switches(make_napari_viewer):
     )
     assert plotter.plot_type == 'SCATTER'
     assert plotter.histogram_colormap == 'viridis'
-    assert plotter.toggle_semi_circle == False
-    assert plotter.white_background == False
+    assert not plotter.toggle_semi_circle
+    assert not plotter.white_background
 
     plotter.deleteLater()
 
@@ -377,12 +374,12 @@ def test_layer_settings_initialization_in_metadata(make_napari_viewer):
 
     # Check default values
     assert layer.metadata['settings']['harmonic'] == 1
-    assert layer.metadata['settings']['semi_circle'] == True
-    assert layer.metadata['settings']['white_background'] == True
+    assert layer.metadata['settings']['semi_circle']
+    assert layer.metadata['settings']['white_background']
     assert layer.metadata['settings']['plot_type'] == 'HISTOGRAM2D'
     assert layer.metadata['settings']['colormap'] == 'turbo'
     assert layer.metadata['settings']['number_of_bins'] == 150
-    assert layer.metadata['settings']['log_scale'] == False
+    assert not layer.metadata['settings']['log_scale']
 
     plotter.deleteLater()
 
@@ -405,8 +402,8 @@ def test_layer_settings_update_in_metadata(make_napari_viewer):
     assert layer.metadata['settings']['harmonic'] == 2
     assert layer.metadata['settings']['plot_type'] == 'SCATTER'
     assert layer.metadata['settings']['colormap'] == 'viridis'
-    assert layer.metadata['settings']['semi_circle'] == False
-    assert layer.metadata['settings']['white_background'] == False
+    assert not layer.metadata['settings']['semi_circle']
+    assert not layer.metadata['settings']['white_background']
 
     plotter.deleteLater()
 
@@ -428,8 +425,8 @@ def test_adding_layer_without_settings_initializes_defaults(
     # Verify settings were initialized with defaults
     assert 'settings' in layer.metadata
     assert layer.metadata['settings']['harmonic'] == 1
-    assert layer.metadata['settings']['semi_circle'] == True
-    assert layer.metadata['settings']['white_background'] == True
+    assert layer.metadata['settings']['semi_circle']
+    assert layer.metadata['settings']['white_background']
     assert layer.metadata['settings']['plot_type'] == 'HISTOGRAM2D'
 
     plotter.deleteLater()
@@ -460,15 +457,15 @@ def test_modifying_settings_updates_metadata_correctly(make_napari_viewer):
 
     # Test log scale update
     plotter.plotter_inputs_widget.log_scale_checkbox.setChecked(True)
-    assert layer.metadata['settings']['log_scale'] == True
+    assert layer.metadata['settings']['log_scale']
 
     # Test semi circle update
     plotter.plotter_inputs_widget.semi_circle_checkbox.setChecked(False)
-    assert layer.metadata['settings']['semi_circle'] == False
+    assert not layer.metadata['settings']['semi_circle']
 
     # Test white background update
     plotter.plotter_inputs_widget.white_background_checkbox.setChecked(False)
-    assert layer.metadata['settings']['white_background'] == False
+    assert not layer.metadata['settings']['white_background']
 
     plotter.deleteLater()
 
@@ -529,18 +526,13 @@ def test_phasor_plotter_property_setters(make_napari_viewer):
 
     # Test white_background setter
     plotter.white_background = True
-    assert plotter.white_background == True
-    assert (
-        plotter.plotter_inputs_widget.white_background_checkbox.isChecked()
-        == True
-    )
+    assert plotter.white_background
+    assert plotter.plotter_inputs_widget.white_background_checkbox.isChecked()
 
     # Test toggle_semi_circle setter
     plotter.toggle_semi_circle = False
-    assert plotter.toggle_semi_circle == False
-    assert (
-        plotter.plotter_inputs_widget.semi_circle_checkbox.isChecked() == False
-    )
+    assert not plotter.toggle_semi_circle
+    assert not plotter.plotter_inputs_widget.semi_circle_checkbox.isChecked()
 
 
 def test_phasor_plotter_layer_management(make_napari_viewer):
@@ -584,10 +576,8 @@ def test_phasor_plotter_semicircle_checkbox(make_napari_viewer):
     plotter = PlotterWidget(viewer)
 
     # Initially semicircle should be enabled (default)
-    assert plotter.toggle_semi_circle == True
-    assert (
-        plotter.plotter_inputs_widget.semi_circle_checkbox.isChecked() == True
-    )
+    assert plotter.toggle_semi_circle
+    assert plotter.plotter_inputs_widget.semi_circle_checkbox.isChecked()
 
     # Get initial axes limits (semicircle mode)
     initial_ylim = plotter.canvas_widget.axes.get_ylim()
@@ -789,7 +779,7 @@ def test_on_image_layer_changed_prevents_recursion(
         plotter.deleteLater()
 
     # Verify guard flag is still True (not reset by early return)
-    assert plotter._in_on_image_layer_changed == True
+    assert plotter._in_on_image_layer_changed
 
 
 def test_on_image_layer_changed_with_empty_layer_name(
@@ -901,16 +891,14 @@ def test_on_image_layer_changed_guard_flag_cleanup(
     with patch.object(
         plotter, 'plot', side_effect=Exception("Test exception")
     ):
-        try:
+        with contextlib.suppress(Exception):
             plotter.on_image_layer_changed()
-        except Exception:
-            pass  # We expect the exception
         plotter.deleteLater()
 
     # Verify guard flag is cleaned up even after exception
     assert (
         not hasattr(plotter, '_in_on_image_layer_changed')
-        or plotter._in_on_image_layer_changed == False
+        or not plotter._in_on_image_layer_changed
     )
 
 
@@ -937,7 +925,6 @@ def test_on_image_layer_changed_multiple_calls(
 
 def test_phasor_plotter_tab_changed_functionality(make_napari_viewer):
     """Test tab change functionality and artist visibility management."""
-    from unittest.mock import Mock, patch
 
     viewer = make_napari_viewer()
     intensity_image_layer = create_image_layer_with_phasors()
@@ -1082,185 +1069,6 @@ def test_phasor_plotter_tab_changed_with_different_tabs(make_napari_viewer):
     ):
 
         # Test each tab index
-        tab_names = [
-            "Plot Settings",
-            "Calibration",
-            "Filter",
-            "Selection",
-            "Components",
-            "Lifetime",
-            "FRET",
-        ]
-
-        for i in range(plotter.tab_widget.count()):
-            mock_hide_all.reset_mock()
-            mock_show_tab.reset_mock()
-
-            plotter._on_tab_changed(i)
-
-            # Should always hide all artists first
-            mock_hide_all.assert_called_once()
-
-            # Should show artists for the current tab
-            expected_tab = plotter.tab_widget.widget(i)
-            mock_show_tab.assert_called_once_with(expected_tab)
-
-
-def test_phasor_plotter_tab_changed_functionality(make_napari_viewer):
-    """Test tab change functionality and artist visibility management."""
-
-    viewer = make_napari_viewer()
-    intensity_image_layer = create_image_layer_with_phasors()
-    viewer.add_layer(intensity_image_layer)
-    plotter = PlotterWidget(viewer)
-
-    # Mock the tab-specific visibility methods
-    with (
-        patch.object(plotter, '_hide_all_tab_artists') as mock_hide_all,
-        patch.object(plotter, '_show_tab_artists') as mock_show_tab,
-        patch.object(
-            plotter.canvas_widget.figure.canvas, 'draw_idle'
-        ) as mock_draw,
-    ):
-
-        # Test tab change to components tab (index 4)
-        components_tab_index = 4
-        plotter._on_tab_changed(components_tab_index)
-
-        # Verify methods were called
-        mock_hide_all.assert_called_once()
-        mock_show_tab.assert_called_once_with(plotter.components_tab)
-        mock_draw.assert_called_once()
-
-        # Reset mocks
-        mock_hide_all.reset_mock()
-        mock_show_tab.reset_mock()
-        mock_draw.reset_mock()
-
-        # Test tab change to FRET tab (index 6)
-        fret_tab_index = 6
-        plotter._on_tab_changed(fret_tab_index)
-
-        mock_hide_all.assert_called_once()
-        mock_show_tab.assert_called_once_with(plotter.fret_tab)
-        mock_draw.assert_called_once()
-
-
-def test_phasor_plotter_hide_and_show_tab_artists(make_napari_viewer):
-    """Test hiding and showing tab-specific artists."""
-    viewer = make_napari_viewer()
-    intensity_image_layer = create_image_layer_with_phasors()
-    viewer.add_layer(intensity_image_layer)
-    plotter = PlotterWidget(viewer)
-
-    # Mock the tab-specific visibility methods
-    with (
-        patch.object(
-            plotter, '_set_components_visibility'
-        ) as mock_components_vis,
-        patch.object(plotter, '_set_fret_visibility') as mock_fret_vis,
-    ):
-
-        # Test _hide_all_tab_artists
-        plotter._hide_all_tab_artists()
-
-        # Should call visibility methods with False
-        mock_components_vis.assert_called_with(False)
-        mock_fret_vis.assert_called_with(False)
-
-        # Reset mocks
-        mock_components_vis.reset_mock()
-        mock_fret_vis.reset_mock()
-
-        # Test _show_tab_artists with components tab
-        plotter._show_tab_artists(plotter.components_tab)
-        mock_components_vis.assert_called_once_with(True)
-        mock_fret_vis.assert_not_called()
-
-        # Reset mocks
-        mock_components_vis.reset_mock()
-        mock_fret_vis.reset_mock()
-
-        # Test _show_tab_artists with FRET tab
-        plotter._show_tab_artists(plotter.fret_tab)
-        mock_fret_vis.assert_called_once_with(True)
-        mock_components_vis.assert_not_called()
-
-        # Test _show_tab_artists with non-specific tab (should not call any visibility methods)
-        mock_components_vis.reset_mock()
-        mock_fret_vis.reset_mock()
-
-        plotter._show_tab_artists(plotter.settings_tab)
-        mock_components_vis.assert_not_called()
-        mock_fret_vis.assert_not_called()
-
-
-def test_phasor_plotter_tab_specific_visibility_methods(make_napari_viewer):
-    """Test the tab-specific visibility methods."""
-    viewer = make_napari_viewer()
-    intensity_image_layer = create_image_layer_with_phasors()
-    viewer.add_layer(intensity_image_layer)
-    plotter = PlotterWidget(viewer)
-
-    # Test _set_components_visibility
-    with patch.object(
-        plotter.components_tab, 'set_artists_visible'
-    ) as mock_components_artists:
-        plotter._set_components_visibility(True)
-        mock_components_artists.assert_called_once_with(True)
-
-        mock_components_artists.reset_mock()
-        plotter._set_components_visibility(False)
-        mock_components_artists.assert_called_once_with(False)
-
-    # Test _set_fret_visibility
-    with patch.object(
-        plotter.fret_tab, 'set_artists_visible'
-    ) as mock_fret_artists:
-        plotter._set_fret_visibility(True)
-        mock_fret_artists.assert_called_once_with(True)
-
-        mock_fret_artists.reset_mock()
-        plotter._set_fret_visibility(False)
-        mock_fret_artists.assert_called_once_with(False)
-
-
-def test_phasor_plotter_tab_widget_signal_connection(make_napari_viewer):
-    """Test that tab widget currentChanged signal is properly connected."""
-    viewer = make_napari_viewer()
-
-    with patch.object(PlotterWidget, '_on_tab_changed') as mock_tab_changed:
-        plotter = PlotterWidget(viewer)
-
-        # Simulate tab change by emitting the signal directly
-        plotter.tab_widget.setCurrentIndex(2)  # Change to filter tab
-
-        # The signal should trigger the method
-        mock_tab_changed.assert_called_with(2)
-
-
-def test_phasor_plotter_tab_changed_with_different_tabs(make_napari_viewer):
-    """Test tab changes with different tab indices."""
-    viewer = make_napari_viewer()
-    intensity_image_layer = create_image_layer_with_phasors()
-    viewer.add_layer(intensity_image_layer)
-    plotter = PlotterWidget(viewer)
-
-    with (
-        patch.object(plotter, '_hide_all_tab_artists') as mock_hide_all,
-        patch.object(plotter, '_show_tab_artists') as mock_show_tab,
-    ):
-
-        # Test each tab index
-        tab_names = [
-            "Plot Settings",
-            "Calibration",
-            "Filter",
-            "Selection",
-            "Components",
-            "Lifetime",
-            "FRET",
-        ]
 
         for i in range(plotter.tab_widget.count()):
             mock_hide_all.reset_mock()
@@ -1335,10 +1143,10 @@ def test_phasor_plotter_set_visibility_methods_without_tabs(
     try:
         plotter._set_components_visibility(True)
         plotter._set_components_visibility(False)
-    except AttributeError:
-        assert (
-            False
-        ), "_set_components_visibility should handle missing components_tab gracefully"
+    except AttributeError as err:
+        raise AssertionError(
+            "_set_components_visibility should handle missing components_tab gracefully"
+        ) from err
 
     # Restore components_tab
     plotter.components_tab = original_components_tab
@@ -1351,10 +1159,10 @@ def test_phasor_plotter_set_visibility_methods_without_tabs(
     try:
         plotter._set_fret_visibility(True)
         plotter._set_fret_visibility(False)
-    except AttributeError:
-        assert (
-            False
-        ), "_set_fret_visibility should handle missing fret_tab gracefully"
+    except AttributeError as err:
+        raise AssertionError(
+            "_set_fret_visibility should handle missing fret_tab gracefully"
+        ) from err
 
     # Restore fret_tab
     plotter.fret_tab = original_fret_tab
@@ -1379,7 +1187,7 @@ def test_phasor_plotter_visibility_methods_error_handling(make_napari_viewer):
         # Should not crash if set_artists_visible raises an exception
         try:
             plotter._set_components_visibility(True)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             # If the method doesn't handle the exception, the test will catch it
             # In a real implementation, you might want to handle this gracefully
             assert "Mock error in set_artists_visible" in str(e)
@@ -1392,7 +1200,7 @@ def test_phasor_plotter_visibility_methods_error_handling(make_napari_viewer):
         # Should not crash if set_artists_visible raises an exception
         try:
             plotter._set_fret_visibility(False)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             # If the method doesn't handle the exception, the test will catch it
             # In a real implementation, you might want to handle this gracefully
             assert "Mock error in set_artists_visible" in str(e)
@@ -1421,9 +1229,9 @@ def test_phasor_plotter_visibility_methods_called_by_hide_show_artists(
 
         # Verify all calls were with False
         for call in mock_comp_vis.call_args_list:
-            assert call[0][0] == False
+            assert not call[0][0]
         for call in mock_fret_vis.call_args_list:
-            assert call[0][0] == False
+            assert not call[0][0]
 
     # Test that _show_tab_artists calls the correct visibility method for components tab
     with (
@@ -1445,39 +1253,6 @@ def test_phasor_plotter_visibility_methods_called_by_hide_show_artists(
         plotter._show_tab_artists(plotter.fret_tab)
 
         mock_comp_vis.assert_not_called()
-        mock_fret_vis.assert_called_once_with(True)
-
-
-def test_phasor_plotter_visibility_methods_integration_with_tab_changes(
-    make_napari_viewer,
-):
-    """Test visibility methods integration with tab changes."""
-    viewer = make_napari_viewer()
-    plotter = PlotterWidget(viewer)
-
-    # Add an image layer with phasors
-    intensity_image_layer = create_image_layer_with_phasors()
-    viewer.add_layer(intensity_image_layer)
-
-    # Test switching to components tab
-    components_idx = plotter.tab_widget.indexOf(plotter.components_tab)
-    plotter.tab_widget.setCurrentIndex(components_idx)
-
-    # Components should be visible
-    with patch.object(
-        plotter.components_tab, 'set_artists_visible'
-    ) as mock_comp_vis:
-        plotter._show_tab_artists(plotter.components_tab)
-        mock_comp_vis.assert_called_once_with(True)
-
-    # Test switching to FRET tab
-    fret_idx = plotter.tab_widget.indexOf(plotter.fret_tab)
-    plotter.tab_widget.setCurrentIndex(fret_idx)
-
-    with patch.object(
-        plotter.fret_tab, 'set_artists_visible'
-    ) as mock_fret_vis:
-        plotter._show_tab_artists(plotter.fret_tab)
         mock_fret_vis.assert_called_once_with(True)
 
 
@@ -1796,7 +1571,7 @@ def test_toolbar_visibility_on_mode_change_within_selection_tab(
         # Should call _set_selection_visibility(True) to show toolbar
         assert mock_vis.call_count >= 1
         # Last call should be True
-        assert mock_vis.call_args_list[-1][0][0] == True
+        assert mock_vis.call_args_list[-1][0][0]
 
     # Reset mock
     with patch.object(plotter, '_set_selection_visibility') as mock_vis:
@@ -1806,7 +1581,7 @@ def test_toolbar_visibility_on_mode_change_within_selection_tab(
         # Should call _set_selection_visibility(False) to hide toolbar
         assert mock_vis.call_count >= 1
         # Last call should be False
-        assert mock_vis.call_args_list[-1][0][0] == False
+        assert not mock_vis.call_args_list[-1][0][0]
 
 
 def test_circular_cursor_and_manual_selection_visibility_coordination(
@@ -1882,10 +1657,10 @@ def test_phasor_plotter_visibility_methods_integration_with_tab_changes(
         calls_fret = mock_fret_vis.call_args_list
 
         # The last component call should be True (show components)
-        assert calls_comp[-1][0][0] == True
+        assert calls_comp[-1][0][0]
         # All fret calls should be False (hide fret)
         for call in calls_fret:
-            assert call[0][0] == False
+            assert not call[0][0]
 
         # Reset mocks
         mock_comp_vis.reset_mock()
@@ -1904,9 +1679,9 @@ def test_phasor_plotter_visibility_methods_integration_with_tab_changes(
 
         # All component calls should be False (hide components)
         for call in calls_comp:
-            assert call[0][0] == False
+            assert not call[0][0]
         # The last FRET call should be True (show FRET)
-        assert calls_fret[-1][0][0] == True
+        assert calls_fret[-1][0][0]
 
 
 def test_canvas_cleared_when_no_layer_selected(make_napari_viewer):
@@ -1925,8 +1700,8 @@ def test_canvas_cleared_when_no_layer_selected(make_napari_viewer):
     assert plotter.colorbar is not None  # Should have colorbar for histogram
 
     # Store reference to semicircle/polar plot artists before clearing
-    initial_semicircle_artists = len(plotter.semi_circle_plot_artist_list)
-    initial_polar_artists = len(plotter.polar_plot_artist_list)
+    len(plotter.semi_circle_plot_artist_list)
+    len(plotter.polar_plot_artist_list)
 
     # Deselect all layers (simulate no layer selected)
     plotter.image_layers_checkable_combobox.setCheckedItems([])
@@ -1973,7 +1748,7 @@ def test_canvas_cleared_when_no_layer_selected(make_napari_viewer):
     with (
         patch.object(plotter, '_set_components_visibility') as mock_comp_vis,
         patch.object(plotter, '_set_fret_visibility') as mock_fret_vis,
-        patch.object(plotter, '_set_selection_visibility') as mock_sel_vis,
+        patch.object(plotter, '_set_selection_visibility'),
     ):
         # This was already called during on_image_layer_changed, but verify the method works
         plotter._hide_all_tab_artists()

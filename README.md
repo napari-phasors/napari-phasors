@@ -219,34 +219,20 @@ the coverage at least stays the same before you submit a pull request.
 
 ### Pre-commit Hooks
 
-This project uses [pre-commit](https://pre-commit.com/) to run **black**
-and **isort** automatically on every commit. To set it up:
+This project uses [pre-commit](https://pre-commit.com/) to run **black**,
+**isort**, and **ruff** automatically on every commit. To set it up:
 
 ```bash
 pip install pre-commit
 pre-commit install
 ```
 
-From now on, every `git commit` will auto-format your code before the
-commit goes through. You can also run the hooks manually on all files:
+From now on, every `git commit` will auto-format and lint your code before
+the commit goes through. You can also run the hooks manually on all files:
 
 ```bash
 pre-commit run --all-files
 ```
-
-#### Ruff
-
-The project also has a [ruff](https://docs.astral.sh/ruff/) configuration in
-`pyproject.toml`. Ruff is **not** enforced in pre-commit yet because the
-existing codebase has ~280 pre-existing warnings that would block commits on
-unrelated files. You can run it manually to check your changes:
-
-```bash
-ruff check src/napari_phasors/ --config pyproject.toml
-```
-
-Once the legacy warnings are cleaned up, ruff will be added to the
-pre-commit hooks. Incremental lint fixes in PRs are welcome.
 
 ## License
 

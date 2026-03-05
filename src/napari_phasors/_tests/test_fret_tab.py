@@ -335,7 +335,7 @@ def test_calculate_fret_efficiency_with_layer(make_napari_viewer):
     widget.calculate_fret_efficiency_button.click()
 
     # Check that a FRET layer was added
-    fret_layer_name = f"FRET efficiency: test_layer"
+    fret_layer_name = "FRET efficiency: test_layer"
     assert fret_layer_name in [layer.name for layer in viewer.layers]
     assert widget.fret_layer is not None
 
@@ -433,7 +433,7 @@ def test_colormap_events(make_napari_viewer):
     # Calculate FRET efficiency to create the FRET layer
     widget.calculate_fret_efficiency_button.click()
 
-    fret_layer_name = f"FRET efficiency: test_layer"
+    fret_layer_name = "FRET efficiency: test_layer"
     assert fret_layer_name in [layer.name for layer in viewer.layers]
 
     # Get the created FRET layer
@@ -531,7 +531,7 @@ def test_fret_widget_layer_replacement(make_napari_viewer):
     # Calculate FRET efficiency first time
     widget.calculate_fret_efficiency_button.click()
 
-    fret_layer_name = f"FRET efficiency: test_layer"
+    fret_layer_name = "FRET efficiency: test_layer"
     assert fret_layer_name in [layer.name for layer in viewer.layers]
 
     # Count layers before second calculation
@@ -737,7 +737,7 @@ def test_fret_efficiency_calculation_with_harmonics(make_napari_viewer):
     widget._on_harmonic_changed()
     widget.calculate_fret_efficiency_button.click()
 
-    fret_layer_name_h1 = f"FRET efficiency: test_layer"
+    fret_layer_name_h1 = "FRET efficiency: test_layer"
     assert fret_layer_name_h1 in [layer.name for layer in viewer.layers]
     fret_data_h1 = viewer.layers[fret_layer_name_h1].data.copy()
 
@@ -874,7 +874,7 @@ def test_calculate_fret_efficiency_invalid_inputs(
 
     assert len(viewer.layers) == initial_layer_count
 
-    fret_layer_name = f"FRET efficiency: test_layer"
+    fret_layer_name = "FRET efficiency: test_layer"
     assert fret_layer_name not in [layer.name for layer in viewer.layers]
 
     assert widget.fret_layer is None

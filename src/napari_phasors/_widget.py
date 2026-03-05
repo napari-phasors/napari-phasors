@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 from matplotlib.backends.backend_qt5agg import (
     FigureCanvasQTAgg as FigureCanvas,
 )
@@ -245,7 +244,7 @@ class AdvancedOptionsWidget(QWidget):
             self.figure.tight_layout()
             self.canvas.draw()
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             show_error(f"Error updating signal plot: {str(e)}")
 
     def _get_signal_data(self):
@@ -562,7 +561,7 @@ class FbdWidget(AdvancedOptionsWidget):
         try:
             signal = signal_from_fbd(self.path, **options)
             return signal
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             show_error(f"Error reading FBD signal: {str(e)}")
             return None
 
@@ -645,7 +644,7 @@ class PtuWidget(AdvancedOptionsWidget):
         try:
             signal = signal_from_ptu(self.path, **options)
             return signal
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             show_error(f"Error reading PTU signal: {str(e)}")
             return None
 
@@ -682,7 +681,7 @@ class LsmWidget(AdvancedOptionsWidget):
 
             with tifffile.TiffFile(path) as tif:
                 return tif.is_lsm
-        except Exception:
+        except Exception:  # noqa: BLE001
             return False
 
     def initUI(self):
@@ -718,7 +717,7 @@ class LsmWidget(AdvancedOptionsWidget):
 
                 signal = tifffile.imread(self.path)
                 return signal
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             show_error(
                 f"Error reading {'LSM' if self._is_lsm else 'TIFF'} signal: {str(e)}"
             )
@@ -768,7 +767,7 @@ class LsmWidget(AdvancedOptionsWidget):
             self.figure.tight_layout()
             self.canvas.draw()
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             show_error(f"Error updating signal plot: {str(e)}")
 
 
@@ -822,7 +821,7 @@ class SdtWidget(AdvancedOptionsWidget):
         try:
             signal = signal_from_sdt(self.path, **options)
             return signal
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             show_error(f"Error reading SDT signal: {str(e)}")
             return None
 
@@ -859,7 +858,7 @@ class OmeTifWidget(AdvancedOptionsWidget):
                 else:
                     self.max_harmonic = int(harmonics)
 
-            if "description" in attrs.keys():
+            if "description" in attrs:
                 description = json.loads(attrs["description"])
                 if (
                     len(json.dumps(description)) > 512 * 512
@@ -885,7 +884,7 @@ class OmeTifWidget(AdvancedOptionsWidget):
                         elif 'frequency' in attrs:
                             self.frequency = attrs['frequency']
 
-        except Exception as e:
+        except Exception:  # noqa: BLE001
             pass
 
     def initUI(self):
@@ -1022,7 +1021,7 @@ class OmeTifWidget(AdvancedOptionsWidget):
             self.figure.tight_layout()
             self.canvas.draw()
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             show_error(f"Error updating signal plot: {str(e)}")
 
     def _on_click(self, path, reader_options, harmonics):
@@ -1036,7 +1035,7 @@ class OmeTifWidget(AdvancedOptionsWidget):
                         name=layer[1]["name"],
                         metadata=layer[1]["metadata"],
                     )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             show_error(f"Error during phasor transformation: {str(e)}")
 
 
@@ -1280,7 +1279,7 @@ class WriterWidget(QWidget):
                         current_step=self.viewer.dims.current_step,
                     )
                 show_info(f"Exported {export_layer.name} to {final_path}")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 show_error(f"Error exporting {layer_name}: {str(e)}")
         else:
             # Multiple layers export
@@ -1315,7 +1314,7 @@ class WriterWidget(QWidget):
                         )
 
                     exported_count += 1
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
                     show_error(f"Error exporting {layer_name}: {str(e)}")
 
             if exported_count > 0:

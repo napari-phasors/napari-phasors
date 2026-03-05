@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
-from typing import TYPE_CHECKING, Any, List, Optional, Sequence, Tuple, Union
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -19,7 +20,7 @@ from phasorpy.io import phasor_to_ometiff
 
 if TYPE_CHECKING:
     DataType = Union[Any, Sequence[Any]]
-    FullLayerData = Tuple[DataType, dict, str]
+    FullLayerData = tuple[DataType, dict, str]
 
 
 def _convert_numpy_types(obj):
@@ -58,7 +59,7 @@ def _convert_numpy_types(obj):
     return obj
 
 
-def write_ome_tiff(path: str, image_layer: Any) -> List[str]:
+def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
     """Save image layer with phasor coordinates as 'OME-TIFF'.
 
     For layers with phasor metadata, saves mean intensity and phasor coordinates.
@@ -171,7 +172,7 @@ def export_layer_as_image(
     path: str,
     image_layer: Image,
     include_colorbar: bool = True,
-    current_step: Optional[Sequence[int]] = None,
+    current_step: Sequence[int] | None = None,
 ) -> None:
     """Export an image layer as an image file using its colormap and contrast limits.
 

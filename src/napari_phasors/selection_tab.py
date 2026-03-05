@@ -1,3 +1,4 @@
+import contextlib
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -211,9 +212,10 @@ class SelectionWidget(QWidget):
 
                 # Only manage layers belonging to the current image layer
                 if source_layer == layer.name:
-                    if selection_type == 'circular_cursor':
-                        viewer_layer.visible = not show_manual
-                    elif selection_type == 'automatic_clustering':
+                    if (
+                        selection_type == 'circular_cursor'
+                        or selection_type == 'automatic_clustering'
+                    ):
                         viewer_layer.visible = not show_manual
                     elif selection_type == 'manual':
                         viewer_layer.visible = show_manual
@@ -336,12 +338,10 @@ class SelectionWidget(QWidget):
 
     def _connect_show_overlay_signal(self):
         """Ensure show_color_overlay_signal is connected only to the current layer's visibility."""
-        try:
+        with contextlib.suppress(TypeError, RuntimeError):
             self.parent_widget.canvas_widget.show_color_overlay_signal.disconnect(
                 self._on_show_color_overlay
             )
-        except (TypeError, RuntimeError):
-            pass
         self.parent_widget.canvas_widget.show_color_overlay_signal.connect(
             self._on_show_color_overlay
         )
@@ -581,9 +581,7 @@ class SelectionWidget(QWidget):
             if (
                 candidate_name in combobox_selections
                 and candidate_name not in used_selections
-            ):
-                return candidate_name
-            elif candidate_name not in combobox_selections:
+            ) or candidate_name not in combobox_selections:
                 return candidate_name
             counter += 1
 
@@ -675,7 +673,9 @@ class SelectionWidget(QWidget):
             selection_splits = [None] * len(selected_layers)
 
         # Apply selection to all selected layers
-        for layer, layer_selection in zip(selected_layers, selection_splits):
+        for layer, layer_selection in zip(
+            selected_layers, selection_splits, strict=False
+        ):
             if (
                 "settings" in layer.metadata
                 and "selections" in layer.metadata["settings"]
@@ -1133,7 +1133,7 @@ class AutomaticClusteringWidget(QWidget):
                 # Create labels layer
                 self._create_or_update_labels_layer(layer, selection_map)
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"Error applying clustering: {e}")
             import traceback
 
@@ -1244,10 +1244,8 @@ class AutomaticClusteringWidget(QWidget):
 
         # Remove ellipse patch
         if cluster_idx < len(self._ellipse_patches):
-            try:
+            with contextlib.suppress(ValueError):
                 self._ellipse_patches[cluster_idx].remove()
-            except ValueError:
-                pass
             self._ellipse_patches.pop(cluster_idx)
 
         # Remove cluster data
@@ -1510,10 +1508,8 @@ class AutomaticClusteringWidget(QWidget):
         """Clear all clusters and their visual representations."""
         # Remove ellipse patches from canvas
         for patch in self._ellipse_patches:
-            try:
+            with contextlib.suppress(ValueError):
                 patch.remove()
-            except ValueError:
-                pass
 
         self._ellipse_patches.clear()
 
@@ -1534,7 +1530,7 @@ class AutomaticClusteringWidget(QWidget):
 
     def _clear_all_labels_layers(self):
         """Remove all cluster selection labels layers."""
-        for layer_name, labels_layer in list(self._label_layers.items()):
+        for _layer_name, labels_layer in list(self._label_layers.items()):
             try:
                 if labels_layer in self.viewer.layers:
                     self.viewer.layers.remove(labels_layer)
@@ -1545,10 +1541,8 @@ class AutomaticClusteringWidget(QWidget):
     def clear_all_patches(self):
         """Clear all patches from the canvas (called when switching modes)."""
         for patch in self._ellipse_patches:
-            try:
+            with contextlib.suppress(ValueError):
                 patch.remove()
-            except ValueError:
-                pass
         self._ellipse_patches.clear()
 
         if self.parent_widget is not None:
@@ -1652,7 +1646,7 @@ class AutomaticClusteringWidget(QWidget):
                 1.0,
             )
 
-        for layer_name, labels_layer in self._label_layers.items():
+        for _layer_name, labels_layer in self._label_layers.items():
             if labels_layer in self.viewer.layers:
                 labels_layer.colormap = DirectLabelColormap(
                     color_dict=color_dict, name="cluster_colors"
@@ -1936,10 +1930,8 @@ class CircularCursorWidget(QWidget):
 
         # Remove patch from canvas
         if self._cursors[cursor_idx]['patch'] is not None:
-            try:
+            with contextlib.suppress(ValueError):
                 self._cursors[cursor_idx]['patch'].remove()
-            except ValueError:
-                pass
 
         # Remove from data
         self._cursors.pop(cursor_idx)
@@ -2059,10 +2051,8 @@ class CircularCursorWidget(QWidget):
 
         # Remove old patch if exists
         if cursor['patch'] is not None:
-            try:
+            with contextlib.suppress(ValueError):
                 cursor['patch'].remove()
-            except ValueError:
-                pass
             cursor['patch'] = None
 
         # Only create new patch if harmonics match
@@ -2092,10 +2082,8 @@ class CircularCursorWidget(QWidget):
         """Clear all cursors."""
         for cursor in self._cursors:
             if cursor['patch'] is not None:
-                try:
+                with contextlib.suppress(ValueError):
                     cursor['patch'].remove()
-                except ValueError:
-                    pass
 
         self._cursors.clear()
         self.cursor_table.setRowCount(0)
@@ -2109,10 +2097,8 @@ class CircularCursorWidget(QWidget):
         """Clear all patches from the canvas (called when switching modes)."""
         for cursor in self._cursors:
             if cursor['patch'] is not None:
-                try:
+                with contextlib.suppress(ValueError):
                     cursor['patch'].remove()
-                except ValueError:
-                    pass
                 cursor['patch'] = None
 
         if self.parent_widget is not None:
@@ -2213,10 +2199,8 @@ class CircularCursorWidget(QWidget):
         """Callback when image layer changes - clear and restore circular cursors."""
         for cursor in self._cursors:
             if cursor['patch'] is not None:
-                try:
+                with contextlib.suppress(ValueError):
                     cursor['patch'].remove()
-                except ValueError:
-                    pass
                 cursor['patch'] = None
 
         self._cursors.clear()
@@ -2534,7 +2518,7 @@ class CircularCursorWidget(QWidget):
 
         # Update table with statistics
         table_row = 0
-        for cursor_idx, cursor in current_harmonic_cursors:
+        for cursor_idx, _cursor in current_harmonic_cursors:
             count = cursor_pixel_counts[cursor_idx]
             percentage = (
                 (count / total_valid_pixels * 100)

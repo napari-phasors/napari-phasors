@@ -624,7 +624,7 @@ class LifetimeWidget(QWidget):
                     )
                 except (AttributeError, RuntimeError, TypeError):
                     pass
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     show_warning(
                         f"Failed to disconnect lifetime layer events for "
                         f"'{getattr(layer, 'name', 'unknown layer')}': {exc}"
@@ -712,7 +712,7 @@ class LifetimeWidget(QWidget):
             )
 
         for count, bin_start, bin_end in zip(
-            self.counts, self.bin_edges[:-1], self.bin_edges[1:]
+            self.counts, self.bin_edges[:-1], self.bin_edges[1:], strict=False
         ):
             bin_center = (bin_start + bin_end) / 2
             color = cmap(norm(bin_center))
@@ -774,7 +774,7 @@ class LifetimeWidget(QWidget):
                         layer.events.contrast_limits.disconnect(
                             self._on_colormap_changed
                         )
-                    except Exception:
+                    except Exception:  # noqa: BLE001
                         pass
 
             self.lifetime_data = None

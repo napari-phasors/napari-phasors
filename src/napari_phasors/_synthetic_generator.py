@@ -6,7 +6,7 @@ from phasorpy.phasor import phasor_from_signal
 def make_raw_flim_data(
     n_time_bins=1000,
     shape=(2, 5),
-    time_constants=[0.01, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50],
+    time_constants=None,
     laser_frequency=40.0,
 ):
     """Generate a synthetic FLIM data with exponential decay for each pixel.
@@ -27,6 +27,8 @@ def make_raw_flim_data(
     raw_flim_data : np.ndarray
         A synthetic FLIM data with exponential decay for each pixel. The shape of the array is (n_time_bins, shape[0], shape[1]).
     """
+    if time_constants is None:
+        time_constants = [0.01, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50]
     n_pixels = np.prod(shape)
     # Ensure time_constants length matches the number of samples by repeating the whole list
     time_constants = np.tile(

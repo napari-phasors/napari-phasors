@@ -134,7 +134,7 @@ def test_filter_widget_initialization_values(make_napari_viewer):
     scroll_areas = filter_widget.findChildren(QScrollArea)
     assert len(scroll_areas) == 1
     scroll_area = scroll_areas[0]
-    assert scroll_area.widgetResizable() == True
+    assert scroll_area.widgetResizable()
 
     # Test initial visibility of filter widgets
     assert filter_widget.median_filter_widget.isHidden()
@@ -259,19 +259,6 @@ def create_image_layer_with_incompatible_harmonics():
     """Create an image layer with incompatible harmonics for wavelet filtering."""
     layer = create_image_layer_with_phasors()
 
-    phasor_features = layer.metadata['phasor_features_labels_layer']
-
-    num_pixels = len(phasor_features.features['harmonic'])
-    incompatible_harmonics = np.random.choice([1, 3, 5], size=num_pixels)
-    phasor_features.features['harmonic'] = incompatible_harmonics
-
-    return layer
-
-
-def create_image_layer_with_incompatible_harmonics():
-    """Create an image layer with incompatible harmonics for wavelet filtering."""
-    layer = create_image_layer_with_phasors()
-
     # Update harmonics in the new array-based metadata structure
     # Incompatible harmonics are non-consecutive (e.g., [1, 3, 5] instead of [1, 2])
     layer.metadata['harmonics'] = [1, 3, 5]
@@ -375,7 +362,7 @@ def test_apply_button_with_median_filter(make_napari_viewer):
         patch(
             'napari_phasors.filter_tab.apply_filter_and_threshold'
         ) as mock_apply,
-        patch.object(parent, 'plot') as mock_plot,
+        patch.object(parent, 'plot'),
     ):
         filter_widget.apply_button_clicked()
 

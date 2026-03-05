@@ -21,13 +21,8 @@ repos:
       - id: isort
         args: ["--settings-path", "pyproject.toml"]
 
-  # NOTE: ruff is configured in pyproject.toml but intentionally NOT included
-  # as a pre-commit hook yet. The existing codebase has ~280 pre-existing
-  # warnings that would block commits on unrelated files. Once those are
-  # cleaned up, uncomment the block below to enforce ruff on every commit.
-  #
-  # - repo: https://github.com/astral-sh/ruff-pre-commit
-  #   rev: v0.8.6
-  #   hooks:
-  #     - id: ruff
-  #       args: ["--config", "pyproject.toml", "--fix"]
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.4
+    hooks:
+      - id: ruff
+        args: ["--config", "pyproject.toml", "--fix"]
