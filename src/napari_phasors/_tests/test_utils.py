@@ -28,50 +28,48 @@ def test_validate_harmonics_for_wavelet():
     """Test validate_harmonics_for_wavelet function."""
     # Test compatible harmonics (each has double or half)
     compatible_harmonics_1 = [1, 2]  # 2 = 1*2
-    assert validate_harmonics_for_wavelet(compatible_harmonics_1) == True
+    assert validate_harmonics_for_wavelet(compatible_harmonics_1)
 
     compatible_harmonics_2 = [2, 4]  # 4 = 2*2
-    assert validate_harmonics_for_wavelet(compatible_harmonics_2) == True
+    assert validate_harmonics_for_wavelet(compatible_harmonics_2)
 
     compatible_harmonics_3 = [1, 2, 4]  # 2 = 1*2, 4 = 2*2
-    assert validate_harmonics_for_wavelet(compatible_harmonics_3) == True
+    assert validate_harmonics_for_wavelet(compatible_harmonics_3)
 
     compatible_harmonics_4 = [2, 1, 4]  # Same as above, different order
-    assert validate_harmonics_for_wavelet(compatible_harmonics_4) == True
+    assert validate_harmonics_for_wavelet(compatible_harmonics_4)
 
     compatible_harmonics_5 = [0.5, 1, 2]  # 1 = 0.5*2, 2 = 1*2
-    assert validate_harmonics_for_wavelet(compatible_harmonics_5) == True
+    assert validate_harmonics_for_wavelet(compatible_harmonics_5)
 
     # Test incompatible harmonics (some don't have double or half)
     incompatible_harmonics_1 = [
         1,
         3,
     ]  # 3 has no double/half relationship with 1
-    assert validate_harmonics_for_wavelet(incompatible_harmonics_1) == False
+    assert not validate_harmonics_for_wavelet(incompatible_harmonics_1)
 
     incompatible_harmonics_2 = [1, 3, 5]  # None have double/half relationships
-    assert validate_harmonics_for_wavelet(incompatible_harmonics_2) == False
+    assert not validate_harmonics_for_wavelet(incompatible_harmonics_2)
 
     incompatible_harmonics_3 = [1, 2, 5]  # 1,2 are compatible but 5 is not
-    assert validate_harmonics_for_wavelet(incompatible_harmonics_3) == False
+    assert not validate_harmonics_for_wavelet(incompatible_harmonics_3)
 
     # Test single harmonic (incompatible by definition)
     single_harmonic = [1]
-    assert validate_harmonics_for_wavelet(single_harmonic) == False
+    assert not validate_harmonics_for_wavelet(single_harmonic)
 
     # Test empty array
     empty_harmonics = []
-    assert (
-        validate_harmonics_for_wavelet(empty_harmonics) == True
-    )  # Vacuously true
+    assert validate_harmonics_for_wavelet(empty_harmonics)  # Vacuously true
 
     # Test numpy array input
     numpy_harmonics = np.array([1, 2, 4])
-    assert validate_harmonics_for_wavelet(numpy_harmonics) == True
+    assert validate_harmonics_for_wavelet(numpy_harmonics)
 
     # Test with duplicates
     harmonics_with_duplicates = [1, 1, 2, 2]
-    assert validate_harmonics_for_wavelet(harmonics_with_duplicates) == True
+    assert validate_harmonics_for_wavelet(harmonics_with_duplicates)
 
 
 def test_apply_filter_and_threshold_median(make_napari_viewer):

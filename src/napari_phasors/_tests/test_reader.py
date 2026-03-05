@@ -1,5 +1,4 @@
 import json
-import sys
 
 import numpy as np
 from phasorpy.io import (
@@ -315,7 +314,7 @@ def test_reader_ometif_metadata():
     # Test that summed_signal is present and is a list
     _, _, _, attrs = phasor_from_ometiff(ometif_file, harmonic='all')
     signal_data = None
-    if "description" in attrs.keys():
+    if "description" in attrs:
         description = json.loads(attrs["description"])
         if len(json.dumps(description)) > 512 * 512:  # Threshold: 256 KB
             raise ValueError("Description dictionary is too large.")

@@ -279,7 +279,7 @@ def test_import_with_calibration(make_napari_viewer):
     plotter._copy_metadata_from_layer("layer2", ['calibration_tab'])
 
     # Verify calibration settings were imported
-    assert layer1.metadata['settings'].get('calibrated') == True
+    assert layer1.metadata['settings'].get('calibrated')
     assert layer1.metadata['settings'].get('calibration_phase') == 0.5
     assert layer1.metadata['settings'].get('calibration_modulation') == 0.9
 
@@ -504,7 +504,7 @@ def test_show_import_dialog_all_options(make_napari_viewer):
         mock_dialog_class.return_value = mock_dialog_instance
 
         # Mock the layout to avoid type errors
-        with patch('napari_phasors.plotter.QVBoxLayout') as mock_layout:
+        with patch('napari_phasors.plotter.QVBoxLayout'):
             result = plotter._show_import_dialog()
 
             # Should return empty list when dialog is rejected
@@ -521,10 +521,10 @@ def test_show_import_dialog_default_all_checked(make_napari_viewer):
 
     with (
         patch('napari_phasors.plotter.QDialog') as mock_dialog,
-        patch('napari_phasors.plotter.QVBoxLayout') as mock_layout,
-        patch('napari_phasors.plotter.QLabel') as mock_label,
+        patch('napari_phasors.plotter.QVBoxLayout'),
+        patch('napari_phasors.plotter.QLabel'),
         patch('napari_phasors.plotter.QCheckBox') as mock_checkbox,
-        patch('napari_phasors.plotter.QDialogButtonBox') as mock_buttonbox,
+        patch('napari_phasors.plotter.QDialogButtonBox'),
     ):
 
         mock_dialog_instance = Mock()
@@ -572,7 +572,7 @@ def test_initialize_plot_settings_in_metadata(make_napari_viewer):
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
 
-    plotter = PlotterWidget(viewer)
+    PlotterWidget(viewer)
 
     # Settings should be initialized
     assert 'settings' in layer.metadata
@@ -593,8 +593,8 @@ def test_restore_plot_settings_from_metadata(make_napari_viewer):
     assert plotter.harmonic == 2
     assert plotter.plot_type == 'SCATTER'
     assert plotter.histogram_colormap == 'viridis'
-    assert plotter.toggle_semi_circle == False
-    assert plotter.white_background == False
+    assert not plotter.toggle_semi_circle
+    assert not plotter.white_background
 
 
 def test_update_setting_in_metadata(make_napari_viewer):

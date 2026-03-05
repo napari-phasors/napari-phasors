@@ -103,10 +103,10 @@ def test_lifetime_widget_initialization_values(make_napari_viewer):
     scroll_areas = lifetime_widget.findChildren(QScrollArea)
     assert len(scroll_areas) == 1
     scroll_area = scroll_areas[0]
-    assert scroll_area.widgetResizable() == True
+    assert scroll_area.widgetResizable()
 
     # Test histogram widget initially hidden
-    assert lifetime_widget.histogram_widget.isHidden() == True
+    assert lifetime_widget.histogram_widget.isHidden()
 
 
 def test_lifetime_widget_histogram_styling(make_napari_viewer):
@@ -208,7 +208,7 @@ def test_lifetime_widget_plot_histogram_no_data(make_napari_viewer):
 
     # Should hide histogram widget and return early
     lifetime_widget.plot_lifetime_histogram()
-    assert lifetime_widget.histogram_widget.isHidden() == True
+    assert lifetime_widget.histogram_widget.isHidden()
 
 
 def test_lifetime_widget_ui_layout(make_napari_viewer):
@@ -661,9 +661,7 @@ def test_lifetime_widget_no_recursive_updates_when_restoring_settings(
     )
 
     # Mock the update method to check it's not called during restoration
-    with patch.object(
-        lifetime_widget, '_update_lifetime_setting_in_metadata'
-    ) as mock_update:
+    with patch.object(lifetime_widget, '_update_lifetime_setting_in_metadata'):
         # Switch to another layer and back (triggers restoration)
         layer_2 = create_image_layer_with_phasors()
         viewer.add_layer(layer_2)
@@ -793,7 +791,7 @@ def test_lifetime_widget_image_layer_changed_no_layer(make_napari_viewer):
     lifetime_widget._on_image_layer_changed()
 
     # Should hide histogram
-    assert lifetime_widget.histogram_widget.isHidden() == True
+    assert lifetime_widget.histogram_widget.isHidden()
 
 
 def test_lifetime_widget_colormap_changed_callback(make_napari_viewer):
@@ -962,7 +960,7 @@ def test_lifetime_widget_full_workflow_with_real_calculations(
     parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
 
     # Set frequency
-    lifetime_widget.frequency_input.setText(str("80"))
+    lifetime_widget.frequency_input.setText("80")
 
     # Select lifetime type
     lifetime_widget.lifetime_type_combobox.setCurrentText(
@@ -987,10 +985,7 @@ def test_lifetime_widget_full_workflow_with_real_calculations(
     harmonics = np.atleast_1d(harmonics)
     if len(harmonics) > 1 and G_image.ndim > 2:
         harmonic_idx = np.where(harmonics == harmonic)[0]
-        if len(harmonic_idx) == 0:
-            harmonic_idx = 0
-        else:
-            harmonic_idx = harmonic_idx[0]
+        harmonic_idx = 0 if len(harmonic_idx) == 0 else harmonic_idx[0]
         real = G_image[harmonic_idx]
         imag = S_image[harmonic_idx]
     else:

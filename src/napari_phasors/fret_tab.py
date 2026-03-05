@@ -1,3 +1,5 @@
+import contextlib
+
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.collections import LineCollection
@@ -399,24 +401,18 @@ class FretWidget(QWidget):
     def clear_artists(self):
         """Clear (remove) all artists created by this widget."""
         if self.current_donor_line is not None:
-            try:
+            with contextlib.suppress(ValueError):
                 self.current_donor_line.remove()
-            except ValueError:
-                pass
             self.current_donor_line = None
 
         if self.current_donor_circle is not None:
-            try:
+            with contextlib.suppress(ValueError):
                 self.current_donor_circle.remove()
-            except ValueError:
-                pass
             self.current_donor_circle = None
 
         if self.current_background_circle is not None:
-            try:
+            with contextlib.suppress(ValueError):
                 self.current_background_circle.remove()
-            except ValueError:
-                pass
             self.current_background_circle = None
 
         if self.parent_widget is not None:
@@ -652,12 +648,10 @@ class FretWidget(QWidget):
 
             for layer in self.viewer.layers:
                 if isinstance(layer, Image):
-                    try:
+                    with contextlib.suppress(TypeError, ValueError):
                         layer.events.name.disconnect(
                             self._update_background_combobox
                         )
-                    except (TypeError, ValueError):
-                        pass
                     layer.events.name.connect(self._update_background_combobox)
 
         finally:
@@ -693,12 +687,10 @@ class FretWidget(QWidget):
 
             for layer in self.viewer.layers:
                 if isinstance(layer, Image):
-                    try:
+                    with contextlib.suppress(TypeError, ValueError):
                         layer.events.name.disconnect(
                             self._update_donor_lifetime_combobox
                         )
-                    except (TypeError, ValueError):
-                        pass
                     layer.events.name.connect(
                         self._update_donor_lifetime_combobox
                     )
@@ -772,7 +764,7 @@ class FretWidget(QWidget):
                     positions_by_harmonic[harmonic].append(
                         (center_real, center_imag)
                     )
-                except Exception:
+                except Exception:  # noqa: BLE001
                     continue
 
         if not positions_by_harmonic:
@@ -913,7 +905,7 @@ class FretWidget(QWidget):
 
                 lifetimes.append(float(lifetime))
 
-            except Exception:
+            except Exception:  # noqa: BLE001
                 continue
 
         if not lifetimes:
@@ -944,24 +936,18 @@ class FretWidget(QWidget):
         """Plot the donor trajectory with current parameters."""
         try:
             if self.current_donor_line is not None:
-                try:
+                with contextlib.suppress(ValueError):
                     self.current_donor_line.remove()
-                except ValueError:
-                    pass
                 self.current_donor_line = None
 
             if self.current_donor_circle is not None:
-                try:
+                with contextlib.suppress(ValueError):
                     self.current_donor_circle.remove()
-                except ValueError:
-                    pass
                 self.current_donor_circle = None
 
             if self.current_background_circle is not None:
-                try:
+                with contextlib.suppress(ValueError):
                     self.current_background_circle.remove()
-                except ValueError:
-                    pass
                 self.current_background_circle = None
 
             if not (
@@ -1054,7 +1040,7 @@ class FretWidget(QWidget):
 
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             show_error(f"Error drawing line: {str(e)}")
 
     def _draw_colormap_trajectory(
@@ -1128,11 +1114,11 @@ class FretWidget(QWidget):
         colormap_name = getattr(new_colormap, 'name', 'custom')
         colormap_colors = getattr(new_colormap, 'colors', None)
 
-        if colormap_colors is not None:
-            if hasattr(colormap_colors, 'tolist'):
-                colormap_colors = colormap_colors.tolist()
-            elif isinstance(colormap_colors, np.ndarray):
-                colormap_colors = colormap_colors.tolist()
+        if colormap_colors is not None and (
+            hasattr(colormap_colors, 'tolist')
+            or isinstance(colormap_colors, np.ndarray)
+        ):
+            colormap_colors = colormap_colors.tolist()
 
         self._update_fret_setting_in_metadata(
             'colormap_settings.colormap_name', colormap_name
@@ -1168,9 +1154,9 @@ class FretWidget(QWidget):
 
         # Prepare for metadata
         contrast_limits = new_contrast_limits
-        if hasattr(contrast_limits, 'tolist'):
-            contrast_limits = contrast_limits.tolist()
-        elif isinstance(contrast_limits, np.ndarray):
+        if hasattr(contrast_limits, 'tolist') or isinstance(
+            contrast_limits, np.ndarray
+        ):
             contrast_limits = contrast_limits.tolist()
 
         self._update_fret_setting_in_metadata(
@@ -1446,7 +1432,7 @@ class FretWidget(QWidget):
 
                 self.plot_donor_trajectory()
 
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 print(f"Error applying saved colormap settings: {e}")
                 try:
                     self.fret_layer.events.colormap.connect(
@@ -1455,7 +1441,7 @@ class FretWidget(QWidget):
                     self.fret_layer.events.contrast_limits.connect(
                         self._on_contrast_limits_changed
                     )
-                except Exception:
+                except Exception:  # noqa: BLE001
                     pass
 
     def _reconnect_existing_fret_layer(self, layer_name):
@@ -1479,24 +1465,18 @@ class FretWidget(QWidget):
     def _on_image_layer_changed(self):
         """Callback whenever the image layer with phasor features changes."""
         if self.current_donor_line is not None:
-            try:
+            with contextlib.suppress(ValueError):
                 self.current_donor_line.remove()
-            except ValueError:
-                pass
             self.current_donor_line = None
 
         if self.current_donor_circle is not None:
-            try:
+            with contextlib.suppress(ValueError):
                 self.current_donor_circle.remove()
-            except ValueError:
-                pass
             self.current_donor_circle = None
 
         if self.current_background_circle is not None:
-            try:
+            with contextlib.suppress(ValueError):
                 self.current_background_circle.remove()
-            except ValueError:
-                pass
             self.current_background_circle = None
 
         # Disconnect events from all FRET layers
@@ -1507,7 +1487,7 @@ class FretWidget(QWidget):
                     layer.events.contrast_limits.disconnect(
                         self._on_contrast_limits_changed
                     )
-                except Exception:
+                except Exception:  # noqa: BLE001
                     pass
 
         self.fret_layer = None
@@ -1584,7 +1564,7 @@ class FretWidget(QWidget):
                     layer.events.contrast_limits.disconnect(
                         self._on_contrast_limits_changed
                     )
-                except Exception:
+                except Exception:  # noqa: BLE001
                     pass
         self.fret_layers = []
 
@@ -1747,21 +1727,20 @@ class FretWidget(QWidget):
         if (
             not hasattr(self, '_saved_colormap_name')
             or self._updating_settings
-        ):
-            if self.fret_layer is not None:
-                self._update_fret_setting_in_metadata(
-                    'colormap_settings.colormap_name',
-                    self.fret_layer.colormap.name,
-                )
-                self._update_fret_setting_in_metadata(
-                    'colormap_settings.colormap_colors', None
-                )
-                self._update_fret_setting_in_metadata(
-                    'colormap_settings.contrast_limits',
-                    self.fret_layer.contrast_limits,
-                )
-                self._update_fret_setting_in_metadata(
-                    'colormap_settings.colormap_changed', False
-                )
+        ) and self.fret_layer is not None:
+            self._update_fret_setting_in_metadata(
+                'colormap_settings.colormap_name',
+                self.fret_layer.colormap.name,
+            )
+            self._update_fret_setting_in_metadata(
+                'colormap_settings.colormap_colors', None
+            )
+            self._update_fret_setting_in_metadata(
+                'colormap_settings.contrast_limits',
+                self.fret_layer.contrast_limits,
+            )
+            self._update_fret_setting_in_metadata(
+                'colormap_settings.colormap_changed', False
+            )
 
         self.plot_donor_trajectory()

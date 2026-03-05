@@ -1,3 +1,4 @@
+import contextlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -7,7 +8,6 @@ import numpy as np
 import vispy.color
 from matplotlib.collections import LineCollection
 from matplotlib.colors import LinearSegmentedColormap, ListedColormap
-from napari.experimental import link_layers
 from napari.layers import Image
 from napari.utils.colormaps import AVAILABLE_COLORMAPS, Colormap
 from napari.utils.notifications import show_error, show_info, show_warning
@@ -409,17 +409,13 @@ class ComponentsWidget(QWidget):
                 self.analysis_type_combo.setCurrentIndex(index)
 
         if self.component_line is not None:
-            try:
+            with contextlib.suppress(ValueError, AttributeError):
                 self.component_line.remove()
-            except (ValueError, AttributeError):
-                pass
             self.component_line = None
 
         if self.component_polygon is not None:
-            try:
+            with contextlib.suppress(ValueError, AttributeError):
                 self.component_polygon.remove()
-            except (ValueError, AttributeError):
-                pass
             self.component_polygon = None
 
         self._update_component_visibility()
@@ -478,7 +474,7 @@ class ComponentsWidget(QWidget):
                 return 3
 
             return 2 * num_harmonics + 1
-        except Exception:
+        except Exception:  # noqa: BLE001
             return 3
 
     def _update_button_states(self):
@@ -494,17 +490,13 @@ class ComponentsWidget(QWidget):
         """Clear all component visualizations and input fields."""
         for comp in self.components:
             if comp.dot is not None:
-                try:
+                with contextlib.suppress(ValueError, AttributeError):
                     comp.dot.remove()
-                except (ValueError, AttributeError):
-                    pass
                 comp.dot = None
 
             if comp.text is not None:
-                try:
+                with contextlib.suppress(ValueError, AttributeError):
                     comp.text.remove()
-                except (ValueError, AttributeError):
-                    pass
                 comp.text = None
 
             comp.g_edit.clear()
@@ -514,17 +506,13 @@ class ComponentsWidget(QWidget):
                 comp.lifetime_edit.clear()
 
         if self.component_line is not None:
-            try:
+            with contextlib.suppress(ValueError, AttributeError):
                 self.component_line.remove()
-            except (ValueError, AttributeError):
-                pass
             self.component_line = None
 
         if self.component_polygon is not None:
-            try:
+            with contextlib.suppress(ValueError, AttributeError):
                 self.component_polygon.remove()
-            except (ValueError, AttributeError):
-                pass
             self.component_polygon = None
 
         self._update_components_setting_in_metadata('components', {})
@@ -630,9 +618,7 @@ class ComponentsWidget(QWidget):
                 settings['components'], dict
             ):
                 if settings['components']:
-                    max_idx = max(
-                        int(k) for k in settings['components'].keys()
-                    )
+                    max_idx = max(int(k) for k in settings['components'])
                 else:
                     max_idx = -1
 
@@ -735,7 +721,7 @@ class ComponentsWidget(QWidget):
 
             self._update_component_visibility()
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             show_error(
                 f"Error restoring component settings from metadata: {str(e)}"
             )
@@ -787,9 +773,7 @@ class ComponentsWidget(QWidget):
                 settings['components'], dict
             ):
                 if settings['components']:
-                    max_idx = max(
-                        int(k) for k in settings['components'].keys()
-                    )
+                    max_idx = max(int(k) for k in settings['components'])
                 else:
                     max_idx = -1
 
@@ -907,7 +891,7 @@ class ComponentsWidget(QWidget):
                         harmonics_in_metadata = set()
                         for comp_data in settings['components'].values():
                             gs_harmonics = comp_data.get('gs_harmonics', {})
-                            for harmonic_key in gs_harmonics.keys():
+                            for harmonic_key in gs_harmonics:
                                 harmonics_in_metadata.add(int(harmonic_key))
 
                         if len(harmonics_in_metadata) >= required_harmonics:
@@ -930,7 +914,7 @@ class ComponentsWidget(QWidget):
 
             self._update_component_visibility()
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             show_error(
                 f"Error restoring component settings from metadata: {str(e)}"
             )
@@ -974,12 +958,10 @@ class ComponentsWidget(QWidget):
             if fraction_layer is None:
                 continue
 
-            try:
+            with contextlib.suppress(Exception):
                 fraction_layer.events.colormap.disconnect(
                     self._on_colormap_changed
                 )
-            except Exception:
-                pass
 
             try:
                 if colormap_colors is not None:
@@ -1008,14 +990,13 @@ class ComponentsWidget(QWidget):
         if (
             len(settings.get('components', {})) == 2
             and self.analysis_type == "Linear Projection"
-        ):
-            if self.comp1_fractions_layer is not None:
-                self.fractions_colormap = (
-                    self.comp1_fractions_layer.colormap.colors
-                )
-                self.colormap_contrast_limits = (
-                    self.comp1_fractions_layer.contrast_limits
-                )
+        ) and self.comp1_fractions_layer is not None:
+            self.fractions_colormap = (
+                self.comp1_fractions_layer.colormap.colors
+            )
+            self.colormap_contrast_limits = (
+                self.comp1_fractions_layer.contrast_limits
+            )
 
         self._update_component_colors()
         self.draw_line_between_components()
@@ -1212,17 +1193,13 @@ class ComponentsWidget(QWidget):
             hasattr(self, 'component_polygon')
             and self.component_polygon is not None
         ):
-            try:
+            with contextlib.suppress(ValueError, AttributeError):
                 self.component_polygon.remove()
-            except (ValueError, AttributeError):
-                pass
             self.component_polygon = None
 
         if self.component_line is not None:
-            try:
+            with contextlib.suppress(ValueError, AttributeError):
                 self.component_line.remove()
-            except (ValueError, AttributeError):
-                pass
             self.component_line = None
 
         if self.parent_widget is not None:
@@ -1461,7 +1438,7 @@ class ComponentsWidget(QWidget):
 
                 self.draw_line_between_components()
 
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 print(f"Error applying saved colormap settings: {e}")
                 try:
                     self.comp1_fractions_layer.events.colormap.connect(
@@ -1470,7 +1447,7 @@ class ComponentsWidget(QWidget):
                     self.comp1_fractions_layer.events.contrast_limits.connect(
                         self._on_contrast_limits_changed
                     )
-                except Exception:
+                except Exception:  # noqa: BLE001
                     pass
 
     def get_all_artists(self):
@@ -1533,9 +1510,7 @@ class ComponentsWidget(QWidget):
             len(active_components) == 2
             and self.show_colormap_line
             and self.fractions_colormap is not None
-        ):
-            self._update_component_colors()
-        elif len(active_components) > 2:
+        ) or len(active_components) > 2:
             self._update_component_colors()
         else:
             for comp in self.components:
@@ -1575,10 +1550,8 @@ class ComponentsWidget(QWidget):
         )
 
         if isinstance(self.component_line, LineCollection):
-            try:
+            with contextlib.suppress(Exception):
                 self.component_line.set_linewidths([self.line_width])
-            except Exception:
-                pass
 
             if self.parent_widget is not None:
                 self.parent_widget.canvas_widget.canvas.draw_idle()
@@ -1597,9 +1570,10 @@ class ComponentsWidget(QWidget):
         if hasattr(self, 'line_alpha_value_label'):
             self.line_alpha_value_label.setText(f"{self.line_alpha:.2f}")
 
-        if self.component_line is not None:
-            if hasattr(self.component_line, 'set_alpha'):
-                self.component_line.set_alpha(self.line_alpha)
+        if self.component_line is not None and hasattr(
+            self.component_line, 'set_alpha'
+        ):
+            self.component_line.set_alpha(self.line_alpha)
 
         for comp in self.components:
             if comp.dot is not None:
@@ -1656,33 +1630,32 @@ class ComponentsWidget(QWidget):
         except (AttributeError, TypeError):
             has_freq = False
 
-        for i, comp in enumerate(self.components):
-            if comp is not None:
-                if (
-                    hasattr(comp, 'ui_elements')
-                    and 'lifetime_label' in comp.ui_elements
-                ):
-                    comp.ui_elements['lifetime_label'].setVisible(has_freq)
+        for _i, comp in enumerate(self.components):
+            if comp is not None and (
+                hasattr(comp, 'ui_elements')
+                and 'lifetime_label' in comp.ui_elements
+            ):
+                comp.ui_elements['lifetime_label'].setVisible(has_freq)
 
-                    if comp.lifetime_edit is not None:
-                        comp.lifetime_edit.setVisible(has_freq)
+                if comp.lifetime_edit is not None:
+                    comp.lifetime_edit.setVisible(has_freq)
 
-                        from qtpy.QtWidgets import QSizePolicy
+                    from qtpy.QtWidgets import QSizePolicy
 
-                        if has_freq:
-                            comp.lifetime_edit.setSizePolicy(
-                                QSizePolicy.Expanding, QSizePolicy.Fixed
-                            )
-                            comp.ui_elements['lifetime_label'].setSizePolicy(
-                                QSizePolicy.Fixed, QSizePolicy.Fixed
-                            )
-                        else:
-                            comp.lifetime_edit.setSizePolicy(
-                                QSizePolicy.Ignored, QSizePolicy.Ignored
-                            )
-                            comp.ui_elements['lifetime_label'].setSizePolicy(
-                                QSizePolicy.Ignored, QSizePolicy.Ignored
-                            )
+                    if has_freq:
+                        comp.lifetime_edit.setSizePolicy(
+                            QSizePolicy.Expanding, QSizePolicy.Fixed
+                        )
+                        comp.ui_elements['lifetime_label'].setSizePolicy(
+                            QSizePolicy.Fixed, QSizePolicy.Fixed
+                        )
+                    else:
+                        comp.lifetime_edit.setSizePolicy(
+                            QSizePolicy.Ignored, QSizePolicy.Ignored
+                        )
+                        comp.ui_elements['lifetime_label'].setSizePolicy(
+                            QSizePolicy.Ignored, QSizePolicy.Ignored
+                        )
 
         if has_freq:
             for i, comp in enumerate(self.components):
@@ -1961,7 +1934,7 @@ class ComponentsWidget(QWidget):
             else:
                 color = self.component_colors[idx % len(self.component_colors)]
 
-        except Exception:
+        except Exception:  # noqa: BLE001
             color = self.component_colors[idx % len(self.component_colors)]
 
         ax = self.parent_widget.canvas_widget.figure.gca()
@@ -2031,7 +2004,7 @@ class ComponentsWidget(QWidget):
             components_data = settings.get('components', {})
             harmonic_key = str(harmonic)
 
-            sorted_indices = sorted([int(k) for k in components_data.keys()])
+            sorted_indices = sorted([int(k) for k in components_data])
 
             for idx in sorted_indices:
                 idx_str = str(idx)
@@ -2175,7 +2148,7 @@ class ComponentsWidget(QWidget):
                 max_color_rgba = cmap(1.0)
                 max_color_hex = mcolors.to_hex(max_color_rgba)
                 colors.append(max_color_hex)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 colors.append(
                     self.component_colors[i % len(self.component_colors)]
                 )
@@ -2251,7 +2224,7 @@ class ComponentsWidget(QWidget):
                                 if 'green' in colormap_name.lower():
                                     colors.append('green')
                                 else:
-                                    if hasattr(cmap, '__call__'):
+                                    if callable(cmap):
                                         max_color = cmap(1.0)
                                     elif (
                                         hasattr(cmap, 'colors')
@@ -2262,7 +2235,7 @@ class ComponentsWidget(QWidget):
                                         mpl_cmap = plt.get_cmap(str(cmap))
                                         max_color = mpl_cmap(1.0)
                                     colors.append(max_color)
-                            except Exception:
+                            except Exception:  # noqa: BLE001
                                 default_colors = (
                                     self._get_default_colormap_max_colors(2)
                                 )
@@ -2305,7 +2278,7 @@ class ComponentsWidget(QWidget):
                         if 'green' in colormap_name.lower():
                             colors.append('green')
                         else:
-                            if hasattr(cmap, '__call__'):
+                            if callable(cmap):
 
                                 max_color = cmap(1.0)
                             elif (
@@ -2317,7 +2290,7 @@ class ComponentsWidget(QWidget):
                                 mpl_cmap = plt.get_cmap(str(cmap))
                                 max_color = mpl_cmap(1.0)
                             colors.append(max_color)
-                    except Exception:
+                    except Exception:  # noqa: BLE001
                         default_colors = self._get_default_colormap_max_colors(
                             max_idx
                         )
@@ -2390,17 +2363,13 @@ class ComponentsWidget(QWidget):
             return
 
         if self.component_line is not None:
-            try:
+            with contextlib.suppress(ValueError, AttributeError):
                 self.component_line.remove()
-            except (ValueError, AttributeError):
-                pass
             self.component_line = None
 
         if self.component_polygon is not None:
-            try:
+            with contextlib.suppress(ValueError, AttributeError):
                 self.component_polygon.remove()
-            except (ValueError, AttributeError):
-                pass
             self.component_polygon = None
 
         try:
@@ -2449,16 +2418,12 @@ class ComponentsWidget(QWidget):
                 self._draw_colormap_line(ax, ox1, oy1, ox2, oy2)
                 self._update_component_colors()
                 if hasattr(self.component_line, "set_capstyle"):
-                    try:
+                    with contextlib.suppress(Exception):
                         self.component_line.set_capstyle('butt')
-                    except Exception:
-                        pass
 
                 if hasattr(self.component_line, 'set_zorder'):
-                    try:
+                    with contextlib.suppress(Exception):
                         self.component_line.set_zorder(10)
-                    except Exception:
-                        pass
             else:
                 self.component_line = ax.plot(
                     [ox1, ox2],
@@ -2469,10 +2434,8 @@ class ComponentsWidget(QWidget):
                     zorder=10,
                 )[0]
                 if hasattr(self.component_line, "set_solid_capstyle"):
-                    try:
+                    with contextlib.suppress(Exception):
                         self.component_line.set_solid_capstyle('butt')
-                    except Exception:
-                        pass
 
                 self._update_component_colors()
 
@@ -2486,7 +2449,7 @@ class ComponentsWidget(QWidget):
             )
             self.set_artists_visible(components_tab_is_active)
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             show_error(f"Error drawing line/polygon: {str(e)}")
 
     def _draw_colormap_line(self, ax, x1, y1, x2, y2):
@@ -2560,19 +2523,15 @@ class ComponentsWidget(QWidget):
         lc.set_alpha(self.line_alpha)
 
         if hasattr(lc, "set_capstyle"):
-            try:
+            with contextlib.suppress(Exception):
                 lc.set_capstyle('butt')
-            except Exception:
-                pass
         self.component_line = ax.add_collection(lc)
 
     def _update_polygon(self):
         """Update polygon for multi-component visualization."""
         if self.component_polygon is not None:
-            try:
+            with contextlib.suppress(ValueError, AttributeError):
                 self.component_polygon.remove()
-            except (ValueError, AttributeError):
-                pass
             self.component_polygon = None
 
         active_components = [
@@ -2630,11 +2589,11 @@ class ComponentsWidget(QWidget):
             colormap_colors = None
         else:
             colormap_colors = layer.colormap.colors
-            if colormap_colors is not None:
-                if hasattr(colormap_colors, 'tolist'):
-                    colormap_colors = colormap_colors.tolist()
-                elif isinstance(colormap_colors, np.ndarray):
-                    colormap_colors = colormap_colors.tolist()
+            if colormap_colors is not None and (
+                hasattr(colormap_colors, 'tolist')
+                or isinstance(colormap_colors, np.ndarray)
+            ):
+                colormap_colors = colormap_colors.tolist()
 
         current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
         self._update_component_colormap(
@@ -2670,9 +2629,9 @@ class ComponentsWidget(QWidget):
             return
 
         contrast_limits = layer.contrast_limits
-        if hasattr(contrast_limits, 'tolist'):
-            contrast_limits = contrast_limits.tolist()
-        elif isinstance(contrast_limits, np.ndarray):
+        if hasattr(contrast_limits, 'tolist') or isinstance(
+            contrast_limits, np.ndarray
+        ):
             contrast_limits = contrast_limits.tolist()
         else:
             contrast_limits = list(contrast_limits)
@@ -2728,8 +2687,8 @@ class ComponentsWidget(QWidget):
                 # Check if layer name matches pattern for this component
                 # Pattern: "{component_name} fractions: {source_layer}" or "{component_name} fraction: {source_layer}"
                 if layer_name.startswith(
-                    f"{name} fractions: "
-                ) or layer_name.startswith(f"{name} fraction: "):
+                    (f"{name} fractions: ", f"{name} fraction: ")
+                ):
                     return i
 
         return None
@@ -2795,13 +2754,13 @@ class ComponentsWidget(QWidget):
         try:
             plt.get_cmap(colormap_name)
             return True
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
 
         try:
             vispy.color.get_colormap(colormap_name)
             return True
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
 
         try:
@@ -2809,7 +2768,7 @@ class ComponentsWidget(QWidget):
 
             if colormap_name in AVAILABLE_COLORMAPS:
                 return True
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
 
         return False
@@ -2848,19 +2807,15 @@ class ComponentsWidget(QWidget):
                     self.parent_widget.canvas_widget.toolbar.mode
                     == 'zoom rect'
                 ):
-                    try:
+                    with contextlib.suppress(Exception):
                         self.parent_widget.canvas_widget.toolbar.release_zoom(
                             event
                         )
-                    except Exception:
-                        pass
                 if self.parent_widget.canvas_widget.toolbar.mode == 'pan/zoom':
-                    try:
+                    with contextlib.suppress(Exception):
                         self.parent_widget.canvas_widget.toolbar.release_pan(
                             event
                         )
-                    except Exception:
-                        pass
                 self.parent_widget.canvas_widget._on_escape(None)
                 self.dragging_label_idx = comp.idx
                 return
@@ -2870,19 +2825,15 @@ class ComponentsWidget(QWidget):
                     self.parent_widget.canvas_widget.toolbar.mode
                     == 'zoom rect'
                 ):
-                    try:
+                    with contextlib.suppress(Exception):
                         self.parent_widget.canvas_widget.toolbar.release_zoom(
                             event
                         )
-                    except Exception:
-                        pass
                 if self.parent_widget.canvas_widget.toolbar.mode == 'pan/zoom':
-                    try:
+                    with contextlib.suppress(Exception):
                         self.parent_widget.canvas_widget.toolbar.release_pan(
                             event
                         )
-                    except Exception:
-                        pass
                 self.parent_widget.canvas_widget._on_escape(None)
                 self.dragging_component_idx = comp.idx
                 return
@@ -2955,7 +2906,7 @@ class ComponentsWidget(QWidget):
         if self.current_image_layer_name:
             # Check if layer still exists (defensive check for cleanup/teardown)
             if self.current_image_layer_name not in self.viewer.layers:
-                return sorted(list(harmonics))
+                return sorted(harmonics)
 
             layer = self.viewer.layers[self.current_image_layer_name]
             if (
@@ -2968,10 +2919,10 @@ class ComponentsWidget(QWidget):
 
                 for comp_data in components_data.values():
                     gs_harmonics = comp_data.get('gs_harmonics', {})
-                    for harmonic_str in gs_harmonics.keys():
+                    for harmonic_str in gs_harmonics:
                         harmonics.add(int(harmonic_str))
 
-        return sorted(list(harmonics))
+        return sorted(harmonics)
 
     def _get_available_harmonics(self):
         """Get available harmonics from the phasor data."""
@@ -3024,7 +2975,7 @@ class ComponentsWidget(QWidget):
                     mpl_cmap = plt.get_cmap(inverted_name)
                     colors = mpl_cmap(np.linspace(0, 1, 256))
                     return Colormap(colors=colors, name=inverted_name)
-                except Exception:
+                except Exception:  # noqa: BLE001
                     if inverted_name in AVAILABLE_COLORMAPS:
                         return inverted_name
 
@@ -3040,7 +2991,7 @@ class ComponentsWidget(QWidget):
                 return Colormap(
                     colors=inverted_colors, name=f"inverted_{base_name}"
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
 
         if colormap_colors is not None:
@@ -3100,12 +3051,14 @@ class ComponentsWidget(QWidget):
 
             settings = layer.metadata['settings']['component_analysis']
 
-            if 'components' in settings and len(settings['components']) > 0:
-                if '0' in settings['components']:
-                    comp1_name = (
-                        settings['components']['0'].get('name')
-                        or "Component 1"
-                    )
+            if (
+                'components' in settings
+                and len(settings['components']) > 0
+                and '0' in settings['components']
+            ):
+                comp1_name = (
+                    settings['components']['0'].get('name') or "Component 1"
+                )
 
         comp1_fractions_layer_name = f"{comp1_name} fractions: {layer_name}"
 
@@ -3137,17 +3090,13 @@ class ComponentsWidget(QWidget):
                     comp.text = None
 
         if self.component_line is not None:
-            try:
+            with contextlib.suppress(ValueError, AttributeError):
                 self.component_line.remove()
-            except (ValueError, AttributeError):
-                pass
             self.component_line = None
 
         if self.component_polygon is not None:
-            try:
+            with contextlib.suppress(ValueError, AttributeError):
                 self.component_polygon.remove()
-            except (ValueError, AttributeError):
-                pass
             self.component_polygon = None
 
         if self.comp1_fractions_layer is not None:
@@ -3158,7 +3107,7 @@ class ComponentsWidget(QWidget):
                 self.comp1_fractions_layer.events.contrast_limits.disconnect(
                     self._on_contrast_limits_changed
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
 
         self.comp1_fractions_layer = None
@@ -3515,11 +3464,11 @@ class ComponentsWidget(QWidget):
                     colormap_colors = (
                         self.comp1_fractions_layer.colormap.colors
                     )
-                    if colormap_colors is not None:
-                        if hasattr(colormap_colors, 'tolist'):
-                            colormap_colors = colormap_colors.tolist()
-                        elif isinstance(colormap_colors, np.ndarray):
-                            colormap_colors = colormap_colors.tolist()
+                    if colormap_colors is not None and (
+                        hasattr(colormap_colors, 'tolist')
+                        or isinstance(colormap_colors, np.ndarray)
+                    ):
+                        colormap_colors = colormap_colors.tolist()
                     comp_data['gs_harmonics'][harmonic_key][
                         'colormap_name'
                     ] = colormap_name
@@ -3719,7 +3668,7 @@ class ComponentsWidget(QWidget):
             self.fraction_layers.clear()
 
             for i, (fraction, name) in enumerate(
-                zip(fractions, component_names)
+                zip(fractions, component_names, strict=False)
             ):
                 fraction_layer_name = f"{name} fraction: {layer.name}"
 
@@ -3771,12 +3720,10 @@ class ComponentsWidget(QWidget):
                     else:
                         colormap = 'viridis'
 
-                try:
+                with contextlib.suppress(KeyError):
                     self.viewer.layers.remove(
                         self.viewer.layers[fraction_layer_name]
                     )
-                except KeyError:
-                    pass
                 new_layer = self.viewer.add_image(
                     fraction,
                     name=fraction_layer_name,
@@ -3789,52 +3736,54 @@ class ComponentsWidget(QWidget):
                 self.fraction_layers.append(new_layer)
                 new_layer.events.colormap.connect(self._on_colormap_changed)
 
-                if not self._updating_settings:
-                    if idx_str in settings['components']:
-                        comp_data = settings['components'][idx_str]
-                        if harmonic_key not in comp_data['gs_harmonics']:
-                            comp_data['gs_harmonics'][harmonic_key] = {}
+                if (
+                    not self._updating_settings
+                    and idx_str in settings['components']
+                ):
+                    comp_data = settings['components'][idx_str]
+                    if harmonic_key not in comp_data['gs_harmonics']:
+                        comp_data['gs_harmonics'][harmonic_key] = {}
 
-                        colormap_name = getattr(
-                            new_layer.colormap, 'name', 'custom'
-                        )
-                        is_standard_colormap = False
+                    colormap_name = getattr(
+                        new_layer.colormap, 'name', 'custom'
+                    )
+                    is_standard_colormap = False
+                    try:
+                        plt.get_cmap(colormap_name)
+                        is_standard_colormap = True
+                    except Exception:  # noqa: BLE001
                         try:
-                            plt.get_cmap(colormap_name)
+                            vispy.color.get_colormap(colormap_name)
                             is_standard_colormap = True
-                        except Exception:
-                            try:
-                                vispy.color.get_colormap(colormap_name)
-                                is_standard_colormap = True
-                            except Exception:
-                                is_standard_colormap = False
+                        except Exception:  # noqa: BLE001
+                            is_standard_colormap = False
 
-                        if is_standard_colormap:
-                            comp_data['gs_harmonics'][harmonic_key][
-                                'colormap_name'
-                            ] = colormap_name
-                            comp_data['gs_harmonics'][harmonic_key][
-                                'colormap_colors'
-                            ] = None
-                        else:
-                            colormap_colors = new_layer.colormap.colors
-                            if colormap_colors is not None:
-                                if hasattr(colormap_colors, 'tolist'):
-                                    colormap_colors = colormap_colors.tolist()
-                                elif isinstance(colormap_colors, np.ndarray):
-                                    colormap_colors = colormap_colors.tolist()
-                            comp_data['gs_harmonics'][harmonic_key][
-                                'colormap_name'
-                            ] = None
-                            comp_data['gs_harmonics'][harmonic_key][
-                                'colormap_colors'
-                            ] = colormap_colors
-
+                    if is_standard_colormap:
                         comp_data['gs_harmonics'][harmonic_key][
-                            'contrast_limits'
-                        ] = list(new_layer.contrast_limits)
+                            'colormap_name'
+                        ] = colormap_name
+                        comp_data['gs_harmonics'][harmonic_key][
+                            'colormap_colors'
+                        ] = None
+                    else:
+                        colormap_colors = new_layer.colormap.colors
+                        if colormap_colors is not None and (
+                            hasattr(colormap_colors, 'tolist')
+                            or isinstance(colormap_colors, np.ndarray)
+                        ):
+                            colormap_colors = colormap_colors.tolist()
+                        comp_data['gs_harmonics'][harmonic_key][
+                            'colormap_name'
+                        ] = None
+                        comp_data['gs_harmonics'][harmonic_key][
+                            'colormap_colors'
+                        ] = colormap_colors
+
+                    comp_data['gs_harmonics'][harmonic_key][
+                        'contrast_limits'
+                    ] = list(new_layer.contrast_limits)
 
             self._update_component_colors()
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             show_error(f"Analysis failed: {str(e)}")

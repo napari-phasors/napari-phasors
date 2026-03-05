@@ -505,7 +505,7 @@ def update_frequency_in_metadata(
     frequency: float,
 ):
     """Update the frequency in the layer metadata."""
-    if "settings" not in image_layer.metadata.keys():
+    if "settings" not in image_layer.metadata:
         image_layer.metadata["settings"] = {}
     image_layer.metadata["settings"]["frequency"] = frequency
 
