@@ -121,9 +121,8 @@ class MaskAssignmentDialog(QDialog):
         layout.addWidget(button_box)
 
     def _on_apply_all_changed(self, text):
-        """Automatically set all per-layer combos when a non-None mask is selected."""
-        if text != "None":
-            self._apply_to_all()
+        """Automatically set all per-layer combos when a mask is selected."""
+        self._apply_to_all()
 
     def _apply_to_all(self):
         """Set all combos to the same mask layer."""
@@ -2476,7 +2475,7 @@ class PlotterWidget(QWidget):
         ]
         if assigned:
             self.mask_assign_button.setText(
-                f"Assign Masks... ({len(assigned)}/{len(selected)} masked)"
+                f"({len(assigned)}/{len(selected)} layers masked)"
             )
         else:
             self.mask_assign_button.setText("Assign Masks...")
