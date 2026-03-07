@@ -23,10 +23,13 @@ from qtpy.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QTabWidget,
     QVBoxLayout,
@@ -40,6 +43,104 @@ from .filter_tab import FilterWidget
 from .fret_tab import FretWidget
 from .lifetime_tab import LifetimeWidget
 from .selection_tab import SelectionWidget
+
+
+class MaskAssignmentDialog(QDialog):
+    """Dialog to assign a mask layer to each selected image layer.
+
+    Parameters
+    ----------
+    image_layer_names : list of str
+        Names of the selected image layers.
+    mask_layer_names : list of str
+        Names of available mask layers (Labels/Shapes).
+    current_assignments : dict, optional
+        Current mapping of image layer name -> mask layer name.
+    parent : QWidget, optional
+        Parent widget.
+    """
+
+    def __init__(
+        self,
+        image_layer_names,
+        mask_layer_names,
+        current_assignments=None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Assign Mask Layers")
+        self.setMinimumWidth(400)
+
+        if current_assignments is None:
+            current_assignments = {}
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Assign a mask layer to each image layer:"))
+
+        # Scrollable form for assignments
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        form_widget = QWidget()
+        form_layout = QFormLayout(form_widget)
+        form_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+
+        self._combos = {}  # image_layer_name -> QComboBox
+        mask_options = ["None"] + list(mask_layer_names)
+
+        for name in image_layer_names:
+            combo = QComboBox()
+            combo.addItems(mask_options)
+            current = current_assignments.get(name, "None")
+            if current in mask_options:
+                combo.setCurrentText(current)
+            else:
+                combo.setCurrentText("None")
+            self._combos[name] = combo
+            form_layout.addRow(QLabel(name), combo)
+
+        scroll.setWidget(form_widget)
+        layout.addWidget(scroll)
+
+        # Apply same mask to all
+        apply_all_layout = QHBoxLayout()
+        apply_all_layout.addWidget(QLabel("Set all to:"))
+        self._apply_all_combo = QComboBox()
+        self._apply_all_combo.addItems(mask_options)
+        self._apply_all_combo.currentTextChanged.connect(
+            self._on_apply_all_changed
+        )
+        apply_all_layout.addWidget(self._apply_all_combo, 1)
+        layout.addLayout(apply_all_layout)
+
+        # OK / Cancel
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def _on_apply_all_changed(self, text):
+        """Automatically set all per-layer combos when a mask is selected."""
+        self._apply_to_all()
+
+    def _apply_to_all(self):
+        """Set all combos to the same mask layer."""
+        mask = self._apply_all_combo.currentText()
+        for combo in self._combos.values():
+            combo.setCurrentText(mask)
+
+    def get_assignments(self):
+        """Return the mask assignments as a dict.
+
+        Returns
+        -------
+        dict
+            Mapping of image layer name -> mask layer name.
+        """
+        return {
+            name: combo.currentText() for name, combo in self._combos.items()
+        }
 
 
 class _ListWidgetCompatWrapper:
@@ -134,7 +235,12 @@ class PlotterWidget(QWidget):
         super().__init__()
         self.viewer = napari_viewer
 
+        self.setWindowTitle("Phasor Plot")
+        self.setObjectName("Phasor Plot")
+
         self.setLayout(QVBoxLayout())
+        self.layout().setContentsMargins(0, 0, 0, 0)
+        self.layout().setSpacing(2)
 
         # Initialize data attributes
         self._g_array = None
@@ -162,7 +268,11 @@ class PlotterWidget(QWidget):
         # Create top widget for canvas
         canvas_container = QWidget()
         canvas_container.setLayout(QVBoxLayout())
-        self.layout().addWidget(canvas_container)
+        canvas_container.layout().setContentsMargins(0, 0, 0, 0)
+        canvas_container.layout().setSpacing(0)
+        self.layout().addWidget(
+            canvas_container, 1
+        )  # stretch factor 1 to prioritize canvas
 
         # Load canvas widget (fixed at the top)
         self.canvas_widget = CanvasWidget(
@@ -170,6 +280,9 @@ class PlotterWidget(QWidget):
         )
         self.canvas_widget.axes.set_aspect(1, adjustable='box')
         self.canvas_widget.setMinimumSize(300, 300)
+        self.canvas_widget.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Expanding
+        )
         self.set_axes_labels()
         canvas_container.layout().addWidget(self.canvas_widget)
 
@@ -198,7 +311,14 @@ class PlotterWidget(QWidget):
         # Create bottom widget for controls
         controls_container = QWidget()
         controls_container.setLayout(QVBoxLayout())
-        self.layout().addWidget(controls_container)
+        controls_container.layout().setContentsMargins(10, 10, 10, 10)
+        controls_container.layout().setSpacing(3)
+        controls_container.setMaximumHeight(
+            170
+        )  # Prevent controls from growing too large
+        self.layout().addWidget(
+            controls_container, 0
+        )  # stretch factor 0 to keep fixed size
 
         # Add checkable combobox for multi-layer selection
         image_layer_layout = QHBoxLayout()
@@ -206,7 +326,6 @@ class PlotterWidget(QWidget):
         image_layer_layout.setSpacing(5)  # Reduce spacing between widgets
         image_layer_layout.addWidget(QLabel("Image Layers:"))
         self.image_layers_checkable_combobox = CheckableComboBox()
-        self.image_layers_checkable_combobox.setMaximumHeight(25)
         self.image_layers_checkable_combobox.setToolTip(
             "Select one or more layers to plot. Check multiple layers to merge their phasor data.\n"
             "Click 'Set as primary' next to a layer name to change the primary layer.\n"
@@ -259,10 +378,12 @@ class PlotterWidget(QWidget):
         self.harmonic_spinbox = QSpinBox()
         self.harmonic_spinbox.setMinimum(1)
         self.harmonic_spinbox.setValue(1)
-        self.harmonic_spinbox.setMaximumHeight(25)
         harmonics_and_mask_container.addWidget(self.harmonic_spinbox, 1)
 
-        # Mask label and combobox
+        # Per-layer mask assignments: {image_layer_name: mask_layer_name}
+        self._mask_assignments = {}
+
+        # Mask label and combobox (shown when 0-1 layers selected)
         self.mask_layer_label = QLabel("Mask Layer:")
         harmonics_and_mask_container.addWidget(self.mask_layer_label)
         self.mask_layer_combobox = QComboBox()
@@ -271,8 +392,18 @@ class PlotterWidget(QWidget):
             "Selecting 'None' will disable masking."
         )
         self.mask_layer_combobox.addItem("None")
-        self.mask_layer_combobox.setMaximumHeight(25)
         harmonics_and_mask_container.addWidget(self.mask_layer_combobox, 1)
+
+        # Mask assign button (shown when >1 layers selected)
+        self.mask_assign_button = QPushButton("Assign Masks...")
+        self.mask_assign_button.setToolTip(
+            "Assign different mask layers to each selected image layer."
+        )
+        self.mask_assign_button.clicked.connect(
+            self._open_mask_assignment_dialog
+        )
+        self.mask_assign_button.setVisible(False)
+        harmonics_and_mask_container.addWidget(self.mask_assign_button, 1)
 
         controls_container.layout().addLayout(harmonics_and_mask_container)
 
@@ -285,11 +416,9 @@ class PlotterWidget(QWidget):
         import_buttons_layout.addWidget(import_label)
 
         self.import_from_layer_button = QPushButton("Layer")
-        self.import_from_layer_button.setMaximumHeight(25)
         import_buttons_layout.addWidget(self.import_from_layer_button)
 
         self.import_from_file_button = QPushButton("OME-TIFF File")
-        self.import_from_file_button.setMaximumHeight(25)
         import_buttons_layout.addWidget(self.import_from_file_button)
 
         import_buttons_widget = QWidget()
@@ -307,8 +436,8 @@ class PlotterWidget(QWidget):
         # Add the analysis widget to the viewer with a delay to ensure correct ordering
         QTimer.singleShot(20, self._add_analysis_dock_widget)
 
-        canvas_container.setMinimumHeight(300)
-        controls_container.setMinimumHeight(100)
+        # Canvas minimum is already set by canvas_widget.setMinimumSize(300, 300)
+        # Controls container will size to its content
 
         # Add a flag to prevent recursive calls
         self._updating_plot = False
@@ -361,6 +490,10 @@ class PlotterWidget(QWidget):
         # When selection changes, only update the plot
         self.image_layers_checkable_combobox.selectionChanged.connect(
             self._on_selection_changed
+        )
+        # Update mask UI mode when selection changes (combobox vs button)
+        self.image_layers_checkable_combobox.selectionChanged.connect(
+            self._update_mask_ui_mode
         )
         # Update all frequency widgets from layer metadata if primary layer changes
         self.image_layers_checkable_combobox.primaryLayerChanged.connect(
@@ -1803,15 +1936,38 @@ class PlotterWidget(QWidget):
                     mask_layer_combobox_current_text
                 )
 
+            # Clean up mask assignments for deleted mask layers or removed image layers
+            current_selected = (
+                self.image_layers_checkable_combobox.checkedItems()
+            )
+            self._mask_assignments = {
+                k: v
+                for k, v in self._mask_assignments.items()
+                if k in current_selected and v in mask_layer_names
+            }
+
             self.image_layers_checkable_combobox.blockSignals(False)
             self.mask_layer_combobox.blockSignals(False)
 
             # Update display text after unblocking signals
             self.image_layers_checkable_combobox._update_display_text()
 
+            # Update mask UI mode (combobox vs button)
+            self._update_mask_ui_mode()
+
             # If mask layer was deleted, trigger the cleanup
             if mask_layer_was_deleted:
-                self._on_mask_layer_changed("None")
+                # Re-apply current mask assignments (deleted ones already removed above)
+                selected_layers = self.get_selected_layers()
+                if selected_layers and len(current_selected) > 1:
+                    # Multi-layer mode: re-apply per-layer assignments
+                    all_assignments = {
+                        name: self._mask_assignments.get(name, "None")
+                        for name in current_selected
+                    }
+                    self._apply_mask_assignments(all_assignments)
+                else:
+                    self._on_mask_layer_changed("None")
 
             # Connect layer name change events (disconnect first to avoid duplicates)
             for layer_name in layer_names + mask_layer_names:
@@ -1920,9 +2076,12 @@ class PlotterWidget(QWidget):
                 max_harmonic = int(np.max(self._harmonics_array))
                 self.harmonic_spinbox.setRange(min_harmonic, max_harmonic)
 
+            # Reset masks
+            self._mask_assignments.clear()
             self.mask_layer_combobox.blockSignals(True)
             self.mask_layer_combobox.setCurrentText("None")
             self.mask_layer_combobox.blockSignals(False)
+            self._update_mask_ui_mode()
 
             self._initialize_plot_settings_in_metadata(layer)
 
@@ -2016,9 +2175,12 @@ class PlotterWidget(QWidget):
                 max_harmonic = int(np.max(self._harmonics_array))
                 self.harmonic_spinbox.setRange(min_harmonic, max_harmonic)
 
+            # Reset masks
+            self._mask_assignments.clear()
             self.mask_layer_combobox.blockSignals(True)
             self.mask_layer_combobox.setCurrentText("None")
             self.mask_layer_combobox.blockSignals(False)
+            self._update_mask_ui_mode()
 
             self._initialize_plot_settings_in_metadata(layer)
             self._restore_plot_settings_from_metadata()
@@ -2206,20 +2368,24 @@ class PlotterWidget(QWidget):
             image_layer.metadata['S'] = np.where(mask_invalid, np.nan, s_array)
 
     def _on_mask_layer_changed(self, text):
-        """Handle changes to the mask layer combo box."""
+        """Handle changes to the mask layer combo box (single-layer mode)."""
         selected_layers = self.get_selected_layers()
         if not selected_layers:
             return
 
+        # In single-layer mode, apply the same mask to all selected layers
+        # and update the assignments dict accordingly
         for image_layer in selected_layers:
             self._restore_original_phasor_data(image_layer)
 
             if text == "None":
                 if 'mask' in image_layer.metadata:
                     del image_layer.metadata['mask']
+                self._mask_assignments.pop(image_layer.name, None)
             else:
                 mask_layer = self.viewer.layers[text]
                 self._apply_mask_to_phasor_data(mask_layer, image_layer)
+                self._mask_assignments[image_layer.name] = text
 
         if hasattr(self, 'filter_tab'):
             self.filter_tab._on_image_layer_changed()
@@ -2236,16 +2402,32 @@ class PlotterWidget(QWidget):
 
     def _on_mask_data_changed(self, event):
         """Handle changes to the mask layer data."""
-        if self.mask_layer_combobox.currentText() != event.source.name:
-            return
+        mask_name = event.source.name
 
+        # Check if this mask is relevant: either the combobox selection
+        # (single-layer mode) or any per-layer assignment (multi-layer mode)
         selected_layers = self.get_selected_layers()
         if not selected_layers:
             return
 
+        if len(selected_layers) <= 1:
+            # Single-layer mode: use combobox
+            if self.mask_layer_combobox.currentText() != mask_name:
+                return
+            affected_layers = selected_layers
+        else:
+            # Multi-layer mode: only affect layers assigned to this mask
+            affected_layers = [
+                layer
+                for layer in selected_layers
+                if self._mask_assignments.get(layer.name) == mask_name
+            ]
+            if not affected_layers:
+                return
+
         mask_layer = event.source
 
-        for image_layer in selected_layers:
+        for image_layer in affected_layers:
             self._restore_original_phasor_data(image_layer)
             self._apply_mask_to_phasor_data(mask_layer, image_layer)
 
@@ -2261,6 +2443,122 @@ class PlotterWidget(QWidget):
                 self.filter_tab.apply_button_clicked()
 
         self.refresh_current_plot()
+
+    def _update_mask_ui_mode(self):
+        """Switch between single combobox and assign-masks button based on selection count."""
+        selected = self.get_selected_layer_names()
+        if len(selected) > 1:
+            # Multi-layer mode: show button, hide combobox
+            self.mask_layer_label.setVisible(False)
+            self.mask_layer_combobox.setVisible(False)
+            self.mask_assign_button.setVisible(True)
+            self._update_mask_assign_button_text()
+        else:
+            # Single-layer mode: show combobox, hide button
+            self.mask_layer_label.setVisible(True)
+            self.mask_layer_combobox.setVisible(True)
+            self.mask_assign_button.setVisible(False)
+            # Sync the combobox with current assignment for the single selected layer
+            if selected:
+                current_mask = self._mask_assignments.get(selected[0], "None")
+                self.mask_layer_combobox.blockSignals(True)
+                self.mask_layer_combobox.setCurrentText(current_mask)
+                self.mask_layer_combobox.blockSignals(False)
+
+    def _update_mask_assign_button_text(self):
+        """Update the mask assign button text to show assignment summary."""
+        selected = self.get_selected_layer_names()
+        assigned = [
+            name
+            for name in selected
+            if self._mask_assignments.get(name, "None") != "None"
+        ]
+        if assigned:
+            self.mask_assign_button.setText(
+                f"({len(assigned)}/{len(selected)} layers masked)"
+            )
+        else:
+            self.mask_assign_button.setText("Assign Masks...")
+
+    def _open_mask_assignment_dialog(self):
+        """Open the mask assignment dialog for multi-layer mode."""
+        selected_names = self.get_selected_layer_names()
+        if not selected_names:
+            return
+
+        mask_layer_names = [
+            layer.name
+            for layer in self.viewer.layers
+            if isinstance(layer, (Labels, Shapes))
+        ]
+
+        dialog = MaskAssignmentDialog(
+            image_layer_names=selected_names,
+            mask_layer_names=mask_layer_names,
+            current_assignments=self._mask_assignments,
+            parent=self,
+        )
+
+        if dialog.exec_() == QDialog.Accepted:
+            new_assignments = dialog.get_assignments()
+            self._apply_mask_assignments(new_assignments)
+
+    def _apply_mask_assignments(self, assignments):
+        """Apply per-layer mask assignments.
+
+        Parameters
+        ----------
+        assignments : dict
+            Mapping of image layer name -> mask layer name (or "None").
+        """
+        self._mask_assignments = {
+            k: v for k, v in assignments.items() if v != "None"
+        }
+
+        selected_layers = self.get_selected_layers()
+        for image_layer in selected_layers:
+            self._restore_original_phasor_data(image_layer)
+            mask_name = assignments.get(image_layer.name, "None")
+
+            if mask_name == "None":
+                if 'mask' in image_layer.metadata:
+                    del image_layer.metadata['mask']
+            else:
+                mask_layer = self.viewer.layers[mask_name]
+                self._apply_mask_to_phasor_data(mask_layer, image_layer)
+
+        if hasattr(self, 'filter_tab'):
+            self.filter_tab._on_image_layer_changed()
+            if selected_layers:
+                first_layer = selected_layers[0]
+                if (
+                    first_layer.metadata['settings'].get('filter', None)
+                    is not None
+                    and first_layer.metadata['settings'].get('threshold', None)
+                    is not None
+                ):
+                    self.filter_tab.apply_button_clicked()
+
+        self._update_mask_assign_button_text()
+        self.plot()
+
+    def get_mask_for_layer(self, layer_name):
+        """Get the mask layer name assigned to a specific image layer.
+
+        Parameters
+        ----------
+        layer_name : str
+            Name of the image layer.
+
+        Returns
+        -------
+        str
+            Name of the assigned mask layer, or "None".
+        """
+        selected = self.get_selected_layer_names()
+        if len(selected) <= 1:
+            return self.mask_layer_combobox.currentText()
+        return self._mask_assignments.get(layer_name, "None")
 
     def refresh_phasor_data(self):
         """Reload phasor data from the current layer metadata and replot."""

@@ -1348,6 +1348,229 @@ def test_phasor_plotter_restore_original_phasor_data(make_napari_viewer):
     )
 
 
+def test_mask_ui_switches_to_button_when_multiple_layers_selected(
+    make_napari_viewer,
+):
+    """Test that selecting multiple layers switches mask UI from combobox to button."""
+    viewer = make_napari_viewer()
+    layer1 = create_image_layer_with_phasors()
+    layer2 = create_image_layer_with_phasors()
+    viewer.add_layer(layer1)
+    viewer.add_layer(layer2)
+    plotter = PlotterWidget(viewer)
+
+    # With only one layer selected (default primary), combobox should be visible.
+    # Use not isHidden() because the plotter is not rendered in a window during tests,
+    # so isVisible() would be False for all widgets regardless of their setVisible() state.
+    plotter.image_layers_checkable_combobox.setCheckedItems([layer1.name])
+    assert not plotter.mask_layer_combobox.isHidden()
+    assert not plotter.mask_layer_label.isHidden()
+    assert plotter.mask_assign_button.isHidden()
+
+    # Select both layers - should switch to button mode
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [layer1.name, layer2.name]
+    )
+    assert plotter.mask_layer_combobox.isHidden()
+    assert plotter.mask_layer_label.isHidden()
+    assert not plotter.mask_assign_button.isHidden()
+
+    # Back to single selection - should revert to combobox mode
+    plotter.image_layers_checkable_combobox.setCheckedItems([layer1.name])
+    assert not plotter.mask_layer_combobox.isHidden()
+    assert plotter.mask_assign_button.isHidden()
+
+
+def test_mask_assignment_dialog_get_assignments(make_napari_viewer):
+    """Test that MaskAssignmentDialog returns correct per-layer assignments."""
+    from napari_phasors.plotter import MaskAssignmentDialog
+
+    image_names = ["layer_A", "layer_B", "layer_C"]
+    mask_names = ["mask_1", "mask_2"]
+    current = {"layer_A": "mask_1", "layer_C": "mask_2"}
+
+    dialog = MaskAssignmentDialog(
+        image_layer_names=image_names,
+        mask_layer_names=mask_names,
+        current_assignments=current,
+        parent=None,
+    )
+
+    # Initial assignments should reflect current_assignments
+    assignments = dialog.get_assignments()
+    assert assignments["layer_A"] == "mask_1"
+    assert assignments["layer_B"] == "None"
+    assert assignments["layer_C"] == "mask_2"
+
+
+def test_mask_assignment_dialog_apply_all(make_napari_viewer):
+    """Test that 'Set all to' applies the same mask to every layer in the dialog."""
+    from napari_phasors.plotter import MaskAssignmentDialog
+
+    image_names = ["layer_A", "layer_B"]
+    mask_names = ["mask_1", "mask_2"]
+
+    dialog = MaskAssignmentDialog(
+        image_layer_names=image_names,
+        mask_layer_names=mask_names,
+        parent=None,
+    )
+
+    # Trigger apply-all by changing the combo
+    dialog._apply_all_combo.setCurrentText("mask_2")
+
+    assignments = dialog.get_assignments()
+    assert assignments["layer_A"] == "mask_2"
+    assert assignments["layer_B"] == "mask_2"
+
+
+def test_apply_mask_assignments_different_masks_per_layer(make_napari_viewer):
+    """Test that _apply_mask_assignments applies distinct masks to each layer."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    layer1 = create_image_layer_with_phasors()
+    layer2 = create_image_layer_with_phasors()
+    viewer.add_layer(layer1)
+    viewer.add_layer(layer2)
+
+    # Select both layers
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [layer1.name, layer2.name]
+    )
+
+    # Build matching mask shapes from each layer's G data
+    def make_mask(layer, fill_row_half):
+        G = layer.metadata["G"]
+        shape = G.shape[1:] if G.ndim == 3 else G.shape
+        mask = np.zeros(shape, dtype=int)
+        if fill_row_half:
+            mask[shape[0] // 2 :, :] = 1  # bottom half
+        else:
+            mask[: shape[0] // 2, :] = 1  # top half
+        return mask
+
+    mask_data_1 = make_mask(layer1, fill_row_half=True)
+    mask_data_2 = make_mask(layer2, fill_row_half=False)
+
+    labels_layer1 = viewer.add_labels(mask_data_1, name="mask_bottom")
+    labels_layer2 = viewer.add_labels(mask_data_2, name="mask_top")
+
+    # Apply different masks to each layer
+    assignments = {
+        layer1.name: labels_layer1.name,
+        layer2.name: labels_layer2.name,
+    }
+    plotter._apply_mask_assignments(assignments)
+
+    # Both layers should now have masks stored
+    assert 'mask' in layer1.metadata
+    assert 'mask' in layer2.metadata
+
+    # layer1 mask covers bottom half, so top half pixels should be NaN
+    g1 = layer1.metadata["G"]
+    if g1.ndim == 3:
+        g1 = g1[0]
+    assert np.isnan(g1[: g1.shape[0] // 2, :]).all()  # top half is NaN
+    assert not np.isnan(g1[g1.shape[0] // 2 :, :]).all()  # bottom half kept
+
+    # layer2 mask covers top half, so bottom half pixels should be NaN
+    g2 = layer2.metadata["G"]
+    if g2.ndim == 3:
+        g2 = g2[0]
+    assert np.isnan(g2[g2.shape[0] // 2 :, :]).all()  # bottom half is NaN
+    assert not np.isnan(g2[: g2.shape[0] // 2, :]).all()  # top half kept
+
+    # _mask_assignments should only contain non-None entries
+    assert plotter._mask_assignments[layer1.name] == labels_layer1.name
+    assert plotter._mask_assignments[layer2.name] == labels_layer2.name
+
+
+def test_apply_mask_assignments_none_removes_mask(make_napari_viewer):
+    """Test that assigning 'None' removes an existing mask from a layer."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    plotter.image_layers_checkable_combobox.setCheckedItems([layer.name])
+
+    G = layer.metadata["G"]
+    shape = G.shape[1:] if G.ndim == 3 else G.shape
+    mask_data = np.ones(shape, dtype=int)
+    labels_layer = viewer.add_labels(mask_data, name="full_mask")
+
+    # First apply a mask
+    plotter._apply_mask_to_phasor_data(labels_layer, layer)
+    assert 'mask' in layer.metadata
+
+    # Now assign None to remove it
+    plotter._apply_mask_assignments({layer.name: "None"})
+
+    assert 'mask' not in layer.metadata
+
+
+def test_get_mask_for_layer_multi_mode(make_napari_viewer):
+    """Test get_mask_for_layer returns per-layer assignment when multiple layers selected."""
+    viewer = make_napari_viewer()
+    layer1 = create_image_layer_with_phasors()
+    layer2 = create_image_layer_with_phasors()
+    viewer.add_layer(layer1)
+    viewer.add_layer(layer2)
+    plotter = PlotterWidget(viewer)
+
+    G = layer1.metadata["G"]
+    shape = G.shape[1:] if G.ndim == 3 else G.shape
+    mask_data = np.ones(shape, dtype=int)
+    labels_layer = viewer.add_labels(mask_data, name="my_mask")
+
+    # Select both layers so we're in multi mode
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [layer1.name, layer2.name]
+    )
+
+    # Assign mask only to layer1
+    plotter._mask_assignments = {layer1.name: labels_layer.name}
+
+    assert plotter.get_mask_for_layer(layer1.name) == labels_layer.name
+    assert plotter.get_mask_for_layer(layer2.name) == "None"
+
+
+def test_mask_assign_button_text_updates_with_count(make_napari_viewer):
+    """Test that the assign button text shows how many layers have masks assigned."""
+    viewer = make_napari_viewer()
+    layer1 = create_image_layer_with_phasors()
+    layer2 = create_image_layer_with_phasors()
+    viewer.add_layer(layer1)
+    viewer.add_layer(layer2)
+    plotter = PlotterWidget(viewer)
+
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [layer1.name, layer2.name]
+    )
+
+    # No masks assigned yet
+    plotter._mask_assignments = {}
+    plotter._update_mask_assign_button_text()
+    assert plotter.mask_assign_button.text() == "Assign Masks..."
+
+    # One mask assigned
+    G = layer1.metadata["G"]
+    shape = G.shape[1:] if G.ndim == 3 else G.shape
+    labels_layer = viewer.add_labels(np.ones(shape, dtype=int), name="m")
+    plotter._mask_assignments = {layer1.name: labels_layer.name}
+    plotter._update_mask_assign_button_text()
+    assert "1/2" in plotter.mask_assign_button.text()
+
+    # Both masks assigned
+    plotter._mask_assignments = {
+        layer1.name: labels_layer.name,
+        layer2.name: labels_layer.name,
+    }
+    plotter._update_mask_assign_button_text()
+    assert "2/2" in plotter.mask_assign_button.text()
+
+
 def test_toolbar_visibility_based_on_selection_mode(make_napari_viewer):
     """Test that toolbar visibility is controlled by selection mode."""
     viewer = make_napari_viewer()
