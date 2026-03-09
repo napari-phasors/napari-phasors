@@ -20,7 +20,11 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from ._utils import HistogramWidget, update_frequency_in_metadata
+from ._utils import (
+    HistogramWidget,
+    ResponsiveFormContainer,
+    update_frequency_in_metadata,
+)
 
 if TYPE_CHECKING:
     import napari
@@ -62,7 +66,7 @@ class LifetimeWidget(QWidget):
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         # Create content widget for scroll area
         content_widget = QWidget()
@@ -77,14 +81,15 @@ class LifetimeWidget(QWidget):
         main_widget_layout.setStretch(0, 1)
 
         # Frequency input
-        self.main_layout.addWidget(QLabel("Frequency: "))
+        freq_label = QLabel("Frequency (MHz):")
         self.frequency_input = QLineEdit()
         self.frequency_input.setValidator(QDoubleValidator())
-        self.main_layout.addWidget(self.frequency_input)
 
         # Add combobox to select lifetime type
-        self.main_layout.addWidget(QLabel("Select lifetime to display: "))
-        lifetime_type_layout = QHBoxLayout()
+        type_label = QLabel("Lifetime type:")
+        lifetime_type_widget = QWidget()
+        lifetime_type_layout = QHBoxLayout(lifetime_type_widget)
+        lifetime_type_layout.setContentsMargins(0, 0, 0, 0)
         self.lifetime_type_combobox = QComboBox()
         self.lifetime_type_combobox.addItems(
             [
@@ -107,7 +112,11 @@ class LifetimeWidget(QWidget):
         )
         lifetime_type_layout.addWidget(self.calculate_lifetime_button)
 
-        self.main_layout.addLayout(lifetime_type_layout)
+        # Responsive form container (switches to 2 columns when wide enough)
+        self._responsive_form = ResponsiveFormContainer(width_threshold=450)
+        self._responsive_form.add_row(freq_label, self.frequency_input)
+        self._responsive_form.add_row(type_label, lifetime_type_widget)
+        self.main_layout.addWidget(self._responsive_form)
 
         # Connect signals
         self.lifetime_type_combobox.currentTextChanged.connect(
@@ -117,9 +126,9 @@ class LifetimeWidget(QWidget):
             self._on_frequency_changed
         )
 
-        # Add histogram widget with built-in range slider
+        # Histogram widget with built-in range slider
         # NOTE: The widget is created here but NOT added to this tab's layout.
-        # PlotterWidget wraps it in a HistogramDockWidget for a detachable window.
+        # PlotterWidget wraps it in a HistogramDockWidget and docks it separately.
         self.histogram_widget = HistogramWidget(
             xlabel="Lifetime (ns)",
             ylabel="Pixel count",

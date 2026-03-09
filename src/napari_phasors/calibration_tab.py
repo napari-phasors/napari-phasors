@@ -8,6 +8,7 @@ from napari.utils.notifications import show_error, show_info
 from phasorpy.lifetime import phasor_from_lifetime, polar_from_reference_phasor
 from phasorpy.phasor import phasor_center, phasor_transform
 from qtpy import uic
+from qtpy.QtCore import Qt
 from qtpy.QtWidgets import QMessageBox, QScrollArea, QVBoxLayout, QWidget
 
 from ._utils import apply_filter_and_threshold
@@ -55,6 +56,7 @@ class CalibrationWidget(QWidget):
         # Create scroll area and add calibration widget to it
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll_area.setWidget(self.calibration_widget)
 
         mainLayout = QVBoxLayout()

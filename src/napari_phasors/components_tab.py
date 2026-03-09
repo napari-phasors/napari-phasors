@@ -148,6 +148,7 @@ class ComponentsWidget(QWidget):
         # Scroll area
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         root_layout.addWidget(scroll_area)
 
         # Content widget inside scroll area
@@ -218,7 +219,7 @@ class ComponentsWidget(QWidget):
         layout.addLayout(comp_management_layout)
 
         # Calculate button
-        self.calculate_button = QPushButton("Run Analysis")
+        self.calculate_button = QPushButton("Run Component Analysis")
         self.calculate_button.clicked.connect(self._run_analysis)
         self.calculate_button.setToolTip(
             "Run the selected analysis type on the defined components."
@@ -249,14 +250,6 @@ class ComponentsWidget(QWidget):
         buttons_row.addStretch()
         layout.addLayout(buttons_row)
 
-        # Calculate button
-        self.calculate_button = QPushButton("Run Analysis")
-        self.calculate_button.clicked.connect(self._run_analysis)
-        self.calculate_button.setToolTip(
-            "Run the selected analysis type on the defined components."
-        )
-        layout.addWidget(self.calculate_button)
-
         # Component selector combobox (will be inserted into the histogram dock widget)
         self.histogram_component_combobox = QComboBox()
         self.histogram_component_combobox.setToolTip(
@@ -266,9 +259,9 @@ class ComponentsWidget(QWidget):
             self._on_histogram_component_changed
         )
 
-        # Histogram widget (created here but displayed in a detachable dock)
+        # Histogram widget (created here but displayed in a separate dock)
         # NOTE: The widget is created here but NOT added to this tab's layout.
-        # PlotterWidget wraps it in a HistogramDockWidget for a detachable window.
+        # PlotterWidget wraps it in a HistogramDockWidget and docks it separately.
         self.histogram_widget = HistogramWidget(
             xlabel="Fraction",
             ylabel="Pixel count",
@@ -1177,7 +1170,7 @@ class ComponentsWidget(QWidget):
         if analysis_type == "Linear Projection":
             self.calculate_button.setText("Display Component Fraction Images")
         else:
-            self.calculate_button.setText("Run Multi-Component Analysis")
+            self.calculate_button.setText("Run Component Analysis")
 
         self.draw_line_between_components()
 

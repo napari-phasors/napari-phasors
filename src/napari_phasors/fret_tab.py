@@ -17,7 +17,6 @@ from qtpy.QtGui import QDoubleValidator
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QFormLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -33,6 +32,7 @@ from qtpy.QtWidgets import (
 from ._utils import (
     CheckableComboBox,
     HistogramWidget,
+    ResponsiveFormContainer,
     update_frequency_in_metadata,
 )
 
@@ -90,16 +90,14 @@ class FretWidget(QWidget):
         # Create the scroll area and the content widget
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         content_widget = QWidget()
         layout = QVBoxLayout(content_widget)
 
-        # Use a compact form layout for essentials
-        form = QFormLayout()
-        # Let fields grow by default but still shrink when needed
-        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        # Use a responsive form container (switches to 2 columns when wide)
+        self._responsive_form = ResponsiveFormContainer(width_threshold=500)
 
         # Frequency
-        freq_row = QHBoxLayout()
         self.frequency_input = QLineEdit()
         self.frequency_input.setPlaceholderText("Frequency (MHz)")
         self.frequency_input.setValidator(QDoubleValidator())
@@ -110,11 +108,11 @@ class FretWidget(QWidget):
         self.frequency_input.setToolTip(
             "Enter the laser pulse or modulation frequency in MHz"
         )
-        freq_row.addWidget(self.frequency_input)
-        form.addRow("Frequency (MHz):", freq_row)
+        self._responsive_form.add_row(
+            QLabel("Frequency (MHz):"), self.frequency_input
+        )
 
         # Donor lifetime source selector
-        donor_source_row = QHBoxLayout()
         self.donor_source_selector = QComboBox()
         self.donor_source_selector.addItems(["Manual", "From layer(s)"])
         self.donor_source_selector.setMinimumContentsLength(8)
@@ -130,8 +128,9 @@ class FretWidget(QWidget):
         self.donor_source_selector.setToolTip(
             "Select whether to input donor lifetime manually or derive it from a layer"
         )
-        donor_source_row.addWidget(self.donor_source_selector)
-        form.addRow("Donor lifetime source:", donor_source_row)
+        self._responsive_form.add_row(
+            QLabel("Donor lifetime source:"), self.donor_source_selector
+        )
 
         # Donor lifetime stacked input
         self.donor_stack = QStackedWidget()
@@ -191,10 +190,12 @@ class FretWidget(QWidget):
 
         # Dynamic donor label that changes based on mode
         self.donor_label = QLabel("Donor lifetime (ns):")
-        form.addRow(self.donor_label, self.donor_stack)
+        self._responsive_form.add_row(self.donor_label, self.donor_stack)
 
         # Donor Background slider
-        background_slider_layout = QHBoxLayout()
+        background_slider_widget = QWidget()
+        background_slider_layout = QHBoxLayout(background_slider_widget)
+        background_slider_layout.setContentsMargins(0, 0, 0, 0)
         self.background_slider = QSlider(Qt.Horizontal)
         self.background_slider.setMinimum(0)
         self.background_slider.setMaximum(100)
@@ -212,10 +213,11 @@ class FretWidget(QWidget):
         self.background_label = QLabel("0.10")
         self.background_label.setAlignment(Qt.AlignCenter)
         background_slider_layout.addWidget(self.background_label)
-        form.addRow("Donor Background:", background_slider_layout)
+        self._responsive_form.add_row(
+            QLabel("Donor Background:"), background_slider_widget
+        )
 
         # Background position source selector
-        bg_source_row = QHBoxLayout()
         self.bg_source_selector = QComboBox()
         self.bg_source_selector.addItems(["Manual", "From layer(s)"])
         self.bg_source_selector.setMinimumContentsLength(8)
@@ -228,8 +230,9 @@ class FretWidget(QWidget):
         self.bg_source_selector.setToolTip(
             "Select whether to input background position manually or derive it from a layer"
         )
-        bg_source_row.addWidget(self.bg_source_selector)
-        form.addRow("Background source:", bg_source_row)
+        self._responsive_form.add_row(
+            QLabel("Background source:"), self.bg_source_selector
+        )
 
         # Background stacked input
         self.bg_stack = QStackedWidget()
@@ -283,10 +286,14 @@ class FretWidget(QWidget):
 
         # Dynamic background label that changes based on mode
         self.background_position_label = QLabel("Background position:")
-        form.addRow(self.background_position_label, self.bg_stack)
+        self._responsive_form.add_row(
+            self.background_position_label, self.bg_stack
+        )
 
         # Proportion of Donors Fretting slider and label
-        fretting_layout = QHBoxLayout()
+        fretting_widget = QWidget()
+        fretting_layout = QHBoxLayout(fretting_widget)
+        fretting_layout.setContentsMargins(0, 0, 0, 0)
         self.fretting_slider = QSlider(Qt.Horizontal)
         self.fretting_slider.setMinimum(0)
         self.fretting_slider.setMaximum(100)
@@ -304,10 +311,12 @@ class FretWidget(QWidget):
         self.fretting_label = QLabel("1.00")
         self.fretting_label.setAlignment(Qt.AlignCenter)
         fretting_layout.addWidget(self.fretting_label)
-        form.addRow("Proportion fretting:", fretting_layout)
+        self._responsive_form.add_row(
+            QLabel("Proportion fretting:"), fretting_widget
+        )
 
-        # Add form to root layout
-        layout.addLayout(form)
+        # Add responsive form to root layout
+        layout.addWidget(self._responsive_form)
 
         # Colormap over trajectory checkbox
         self.colormap_checkbox = QCheckBox(
@@ -330,7 +339,7 @@ class FretWidget(QWidget):
 
         # FRET efficiency histogram
         # NOTE: The widget is created here but NOT added to this tab's layout.
-        # PlotterWidget wraps it in a HistogramDockWidget for a detachable window.
+        # PlotterWidget wraps it in a HistogramDockWidget and docks it separately.
         self.histogram_widget = HistogramWidget(
             xlabel="FRET efficiency",
             ylabel="Pixel count",

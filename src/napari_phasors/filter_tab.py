@@ -199,6 +199,7 @@ class FilterWidget(QWidget):
         # Set scroll area
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll_area.setWidget(scroll_content)
         layout.addWidget(scroll_area)
 
