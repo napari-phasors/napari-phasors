@@ -1,0 +1,94 @@
+name: Build standalone installers
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build-installer:
+    name: Build installer (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            post_install: post_install.sh
+          - os: macos-14
+            platform: macos
+            post_install: post_install.sh
+          - os: windows-latest
+            platform: windows
+            post_install: post_install.bat
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Miniforge
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-version: latest
+          conda-remove-defaults: "true"
+
+      - name: Install constructor
+        shell: bash -el {0}
+        run: |
+          conda install -y constructor
+
+      - name: Determine version
+        id: version
+        shell: bash -el {0}
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            VERSION="${{ github.event.release.tag_name }}"
+            VERSION="${VERSION#v}"
+          else
+            VERSION="dev"
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Generate construct.yaml and build
+        shell: bash -el {0}
+        run: |
+          cd installer
+          cat > construct.yaml <<'ENDOFYAML'
+          name: napari-phasors
+          version: VERSION_PLACEHOLDER
+          channels:
+            - conda-forge
+          conda_default_channels:
+            - conda-forge
+          specs:
+            - python=3.12
+            - napari
+            - pyqt
+            - pip
+          post_install: POST_INSTALL_PLACEHOLDER
+          license_file: ../LICENSE
+          ENDOFYAML
+          sed -i.bak 's/^          //' construct.yaml
+          sed -i.bak "s/VERSION_PLACEHOLDER/${{ steps.version.outputs.version }}/" construct.yaml
+          sed -i.bak "s/POST_INSTALL_PLACEHOLDER/${{ matrix.post_install }}/" construct.yaml
+          echo "=== construct.yaml ==="
+          cat construct.yaml
+          echo "=== Building ==="
+          constructor .
+
+      - name: List outputs
+        shell: bash -el {0}
+        run: ls -la installer/napari-phasors-*
+
+      - name: Upload installer as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.platform }}
+          path: installer/napari-phasors-*
+          if-no-files-found: error
+
+      - name: Upload to GitHub Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: installer/napari-phasors-*

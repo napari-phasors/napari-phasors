@@ -37,27 +37,33 @@ available at **[https://napari-phasors.readthedocs.io](https://napari-phasors.re
 
 ## Installation
 
-You can install `napari-phasors` via [pip]. Follow these steps from a
-terminal.
+There are several ways to install napari-phasors:
 
-We recommend using `miniforge` whenever possible. Click
-[here](https://conda-forge.org/download/) to choose the right download option for your OS.
-**If you do not use `miniforge`, but rather Anaconda or Miniconda, replace
-the `mamba` term whenever you see it below with `conda`.**
+### Easiest: napari's plugin manager
 
-Create a conda environment with napari by typing :
+If you already have [napari](https://napari.org) installed, go to
+**Plugins → Install/Uninstall Plugins...**, search for **napari-phasors**,
+and click **Install**.
+
+### Standalone installer (no Python required)
+
+Pre-built installers for Windows, macOS, and Linux are available on the
+[Releases](https://github.com/napari-phasors/napari-phasors/releases) page.
+Download and run — no Python installation needed.
+
+### Using conda + pip
+
+We recommend using [miniforge](https://conda-forge.org/download/). If you
+use Anaconda or Miniconda, replace `mamba` with `conda`.
 
     mamba create -y -n napari-phasors-env napari pyqt6 python=3.14 # or 3.12 or 3.13
 
 Activate the environment :
 
     mamba activate napari-phasors-env
-
-Install `napari-phasors` via [pip] :
-
     pip install napari-phasors
 
-Alternatively, install latest development version with :
+### Development version
 
     pip install git+https://github.com/napari-phasors/napari-phasors.git
 
