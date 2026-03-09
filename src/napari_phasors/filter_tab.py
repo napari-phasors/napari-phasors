@@ -333,7 +333,10 @@ class FilterWidget(QWidget):
         is_valid = validate_harmonics_for_wavelet(harmonics)
 
         if not is_valid:
-            harmonics_str = ", ".join(map(str, sorted(harmonics)))
+            harmonics_iter = (
+                harmonics if hasattr(harmonics, '__iter__') else [harmonics]
+            )
+            harmonics_str = ", ".join(map(str, sorted(harmonics_iter)))
             self.harmonic_warning_label.setText(
                 f"Warning: Harmonics [{harmonics_str}] are not compatible "
                 f"for Wavelet filtering.\n Each harmonic must have a "
