@@ -36,7 +36,11 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from ._utils import CheckableComboBox, update_frequency_in_metadata
+from ._utils import (
+    CheckableComboBox,
+    HistogramDockWidget,
+    update_frequency_in_metadata,
+)
 from .calibration_tab import CalibrationWidget
 from .components_tab import ComponentsWidget
 from .filter_tab import FilterWidget
@@ -585,6 +589,33 @@ class PlotterWidget(QWidget):
                 self.analysis_widget, name="Phasor Analysis", area="right"
             )
 
+            # Add detachable histogram dock widgets
+            if hasattr(self, 'lifetime_histogram_dock_widget'):
+                self._lifetime_hist_dock = self.viewer.window.add_dock_widget(
+                    self.lifetime_histogram_dock_widget,
+                    name="Lifetime Histogram",
+                    area="right",
+                )
+                self._lifetime_hist_dock.setVisible(False)
+
+            if hasattr(self, 'fret_histogram_dock_widget'):
+                self._fret_hist_dock = self.viewer.window.add_dock_widget(
+                    self.fret_histogram_dock_widget,
+                    name="FRET Histogram",
+                    area="right",
+                )
+                self._fret_hist_dock.setVisible(False)
+
+            if hasattr(self, 'components_histogram_dock_widget'):
+                self._components_hist_dock = (
+                    self.viewer.window.add_dock_widget(
+                        self.components_histogram_dock_widget,
+                        name="Components Histogram",
+                        area="right",
+                    )
+                )
+                self._components_hist_dock.setVisible(False)
+
     def get_selected_layer_names(self):
         """Get the names of all selected (checked) layers.
 
@@ -1119,6 +1150,9 @@ class PlotterWidget(QWidget):
 
         self._show_tab_artists(current_tab)
 
+        # Show/hide detachable histogram dock widgets
+        self._update_histogram_dock_visibility(current_tab)
+
         # Update filter histogram if switching to filter tab and it needs updating
         if hasattr(self, 'filter_tab') and current_tab == self.filter_tab:
             self.filter_tab._update_histogram_if_needed()
@@ -1194,6 +1228,19 @@ class PlotterWidget(QWidget):
         """Set visibility of FRET tab artists."""
         if hasattr(self, 'fret_tab'):
             self.fret_tab.set_artists_visible(visible)
+
+    def _update_histogram_dock_visibility(self, current_tab):
+        """Show the histogram dock for the active tab, hide others."""
+        is_lifetime = current_tab == getattr(self, 'lifetime_tab', None)
+        is_fret = current_tab == getattr(self, 'fret_tab', None)
+        is_components = current_tab == getattr(self, 'components_tab', None)
+
+        if hasattr(self, '_lifetime_hist_dock'):
+            self._lifetime_hist_dock.setVisible(is_lifetime)
+        if hasattr(self, '_fret_hist_dock'):
+            self._fret_hist_dock.setVisible(is_fret)
+        if hasattr(self, '_components_hist_dock'):
+            self._components_hist_dock.setVisible(is_components)
 
     def _on_semi_circle_changed(self, state):
         """Callback for semi circle checkbox change."""
@@ -1331,10 +1378,33 @@ class PlotterWidget(QWidget):
         self.components_tab = ComponentsWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.components_tab, "Components")
 
+        # Wrap the histogram in a detachable dock widget
+        self.components_histogram_dock_widget = HistogramDockWidget(
+            self.components_tab.histogram_widget,
+            title="Components Histogram & Statistics",
+        )
+
+        # Insert component selector combobox at the top of the dock widget
+        dock_layout = self.components_histogram_dock_widget.layout()
+        component_selector = QWidget()
+        selector_layout = QHBoxLayout(component_selector)
+        selector_layout.setContentsMargins(4, 4, 4, 0)
+        selector_layout.addWidget(QLabel("Component:"))
+        selector_layout.addWidget(
+            self.components_tab.histogram_component_combobox, 1
+        )
+        dock_layout.insertWidget(0, component_selector)
+
     def _create_lifetime_tab(self):
         """Create the Lifetime tab."""
         self.lifetime_tab = LifetimeWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.lifetime_tab, "Lifetime")
+
+        # Wrap the histogram in a detachable dock widget
+        self.lifetime_histogram_dock_widget = HistogramDockWidget(
+            self.lifetime_tab.histogram_widget,
+            title="Lifetime Histogram & Statistics",
+        )
 
         self.lifetime_tab.frequency_input.editingFinished.connect(
             lambda: self._broadcast_frequency_value_across_tabs(
@@ -1346,6 +1416,13 @@ class PlotterWidget(QWidget):
         """Create the FRET tab."""
         self.fret_tab = FretWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.fret_tab, "FRET")
+
+        # Wrap the histogram in a detachable dock widget
+        self.fret_histogram_dock_widget = HistogramDockWidget(
+            self.fret_tab.histogram_widget,
+            title="FRET Histogram & Statistics",
+        )
+
         self.fret_tab.frequency_input.editingFinished.connect(
             lambda: self._broadcast_frequency_value_across_tabs(
                 self.fret_tab.frequency_input.text()
