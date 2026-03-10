@@ -237,6 +237,11 @@ class LifetimeWidget(QWidget):
         finally:
             self._updating_settings = False
 
+    def update_layout(self, width: int):
+        """Adapt the form layout to the given available width."""
+        if hasattr(self, '_responsive_form'):
+            self._responsive_form.notify_width(width)
+
     def _on_frequency_changed(self):
         """Handle frequency input changes."""
         frequency_text = self.frequency_input.text().strip()

@@ -369,6 +369,11 @@ class FretWidget(QWidget):
         self._update_background_combobox()
         self._update_donor_lifetime_combobox()
 
+    def update_layout(self, width: int):
+        """Adapt the form layout to the given available width."""
+        if hasattr(self, '_responsive_form'):
+            self._responsive_form.notify_width(width)
+
     def _on_donor_source_changed(self, index: int):
         """Switch donor lifetime input mode (Manual | From layer)."""
         if hasattr(self, 'donor_stack'):

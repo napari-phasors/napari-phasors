@@ -21,6 +21,7 @@ from qtpy.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -132,6 +133,9 @@ class ComponentsWidget(QWidget):
         # Drag state
         self.dragging_component_idx = None
         self.dragging_label_idx = None
+
+        # Track narrow / wide state for component rows (must be set before setup_ui)
+        self._component_narrow = False
 
         self.setup_ui()
         self._update_lifetime_inputs_visibility()
@@ -285,62 +289,50 @@ class ComponentsWidget(QWidget):
 
     def _add_component_ui(self, idx):
         """Add UI elements for a component."""
-        # Single component layout with all elements in one row
-        comp_layout = QHBoxLayout()
-
-        # Component number label
+        # Component widgets
         number_label = QLabel(f"{idx + 1}.")
         number_label.setStyleSheet("font-weight: bold;")
         number_label.setMinimumWidth(20)
-        comp_layout.addWidget(number_label)
 
-        # Component name
         name_edit = QLineEdit()
         name_edit.setPlaceholderText("Component name (optional)")
         name_edit.setMaximumWidth(150)
         name_edit.setToolTip("Enter a name for this component (optional).")
-        comp_layout.addWidget(name_edit)
 
-        # Select button
         select_button = QPushButton("Select")
         select_button.setMaximumWidth(70)
         select_button.setToolTip(
             "Click here and then click on the phasor plot to select the component location."
         )
-        comp_layout.addWidget(select_button)
 
-        # G coordinate
-        comp_layout.addWidget(QLabel("G:"))
+        g_label = QLabel("G:")
         g_edit = QLineEdit()
         g_edit.setPlaceholderText("Real coordinate")
         g_edit.setMaximumWidth(100)
         g_edit.setToolTip("Edit the G (real) coordinate of the component.")
-        comp_layout.addWidget(g_edit)
 
-        # S coordinate
-        comp_layout.addWidget(QLabel("S:"))
+        s_label = QLabel("S:")
         s_edit = QLineEdit()
         s_edit.setPlaceholderText("Imaginary coordinate")
         s_edit.setMaximumWidth(100)
         s_edit.setToolTip(
             "Edit the S (imaginary) coordinate of the component."
         )
-        comp_layout.addWidget(s_edit)
 
-        # Lifetime input
         lifetime_label = QLabel("τ:")
         lifetime_edit = QLineEdit()
         lifetime_edit.setPlaceholderText("Lifetime (ns)")
         lifetime_edit.setMaximumWidth(80)
         lifetime_edit.setToolTip("Edit the lifetime (in ns) of the component.")
-        comp_layout.addWidget(lifetime_label)
-        comp_layout.addWidget(lifetime_edit)
 
-        # Add stretch to push everything to the left
-        comp_layout.addStretch()
+        # Row container with a responsive QGridLayout
+        row_widget = QWidget()
+        row_grid = QGridLayout(row_widget)
+        row_grid.setContentsMargins(0, 0, 0, 0)
+        row_grid.setSpacing(4)
 
-        # Add layout to components section
-        self.components_layout.addLayout(comp_layout)
+        # Add row container to components list
+        self.components_layout.addWidget(row_widget)
 
         # Create component state
         comp = ComponentState(
@@ -359,6 +351,17 @@ class ComponentsWidget(QWidget):
         while len(self.components) <= idx:
             self.components.append(None)
         self.components[idx] = comp
+
+        comp.ui_elements = {
+            'row_widget': row_widget,
+            'row_grid': row_grid,
+            'g_label': g_label,
+            's_label': s_label,
+            'lifetime_label': lifetime_label,
+        }
+
+        # Apply initial layout
+        self._relayout_component_row(comp, self._component_narrow)
 
         # Connect signals
         name_edit.textChanged.connect(
@@ -381,10 +384,56 @@ class ComponentsWidget(QWidget):
         )
         select_button.clicked.connect(lambda: self._select_component(idx))
 
-        comp.ui_elements = {
-            'comp_layout': comp_layout,
-            'lifetime_label': lifetime_label,
-        }
+    def _relayout_component_row(self, comp, narrow: bool):
+        """Rearrange component row widgets for narrow or wide display."""
+        grid = comp.ui_elements['row_grid']
+        g_label = comp.ui_elements['g_label']
+        s_label = comp.ui_elements['s_label']
+        lifetime_label = comp.ui_elements['lifetime_label']
+
+        # Detach all widgets from grid without deleting them
+        while grid.count():
+            item = grid.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+
+        if narrow:
+            # Row 0: number | name | select
+            grid.addWidget(comp.number_label, 0, 0)
+            grid.addWidget(comp.name_edit, 0, 1)
+            grid.addWidget(comp.select_button, 0, 2)
+            # Row 1: G label | g_edit | S label | s_edit
+            grid.addWidget(g_label, 1, 0)
+            grid.addWidget(comp.g_edit, 1, 1)
+            grid.addWidget(s_label, 1, 2)
+            grid.addWidget(comp.s_edit, 1, 3)
+            # Row 2: τ label | lifetime_edit
+            grid.addWidget(lifetime_label, 2, 0)
+            grid.addWidget(comp.lifetime_edit, 2, 1)
+        else:
+            # Single row: number | name | select | G | g_edit | S | s_edit | τ | lifetime_edit
+            grid.addWidget(comp.number_label, 0, 0)
+            grid.addWidget(comp.name_edit, 0, 1)
+            grid.addWidget(comp.select_button, 0, 2)
+            grid.addWidget(g_label, 0, 3)
+            grid.addWidget(comp.g_edit, 0, 4)
+            grid.addWidget(s_label, 0, 5)
+            grid.addWidget(comp.s_edit, 0, 6)
+            grid.addWidget(lifetime_label, 0, 7)
+            grid.addWidget(comp.lifetime_edit, 0, 8)
+
+    COMPONENT_ROW_THRESHOLD = 450
+
+    def update_layout(self, width: int):
+        """Adapt component rows to the given available width."""
+        narrow = width < self.COMPONENT_ROW_THRESHOLD
+        if narrow == self._component_narrow:
+            return
+        self._component_narrow = narrow
+        for comp in self.components:
+            if comp is not None and hasattr(comp, 'ui_elements'):
+                self._relayout_component_row(comp, narrow)
 
     def _add_component(self):
         """Add a new component (up to maximum allowed based on harmonics)."""
@@ -419,12 +468,10 @@ class ComponentsWidget(QWidget):
                 comp.text.remove()
 
             if hasattr(comp, 'ui_elements'):
-                comp_layout = comp.ui_elements['comp_layout']
-                while comp_layout.count():
-                    item = comp_layout.takeAt(0)
-                    if item.widget():
-                        item.widget().deleteLater()
-                self.components_layout.removeItem(comp_layout)
+                row_widget = comp.ui_elements.get('row_widget')
+                if row_widget is not None:
+                    row_widget.setParent(None)
+                    row_widget.deleteLater()
 
         self.components.pop()
 
@@ -670,12 +717,10 @@ class ComponentsWidget(QWidget):
                             comp.text = None
 
                         if hasattr(comp, 'ui_elements'):
-                            comp_layout = comp.ui_elements['comp_layout']
-                            while comp_layout.count():
-                                item = comp_layout.takeAt(0)
-                                if item.widget():
-                                    item.widget().deleteLater()
-                            self.components_layout.removeItem(comp_layout)
+                            row_widget = comp.ui_elements.get('row_widget')
+                            if row_widget is not None:
+                                row_widget.setParent(None)
+                                row_widget.deleteLater()
 
                     self.components.pop()
 
@@ -825,12 +870,10 @@ class ComponentsWidget(QWidget):
                             comp.text = None
 
                         if hasattr(comp, 'ui_elements'):
-                            comp_layout = comp.ui_elements['comp_layout']
-                            while comp_layout.count():
-                                item = comp_layout.takeAt(0)
-                                if item.widget():
-                                    item.widget().deleteLater()
-                            self.components_layout.removeItem(comp_layout)
+                            row_widget = comp.ui_elements.get('row_widget')
+                            if row_widget is not None:
+                                row_widget.setParent(None)
+                                row_widget.deleteLater()
 
                     self.components.pop()
 
@@ -2060,11 +2103,9 @@ class ComponentsWidget(QWidget):
         """Update visibility of component controls."""
         for _, comp in enumerate(self.components):
             if comp is not None and hasattr(comp, 'ui_elements'):
-                comp_layout = comp.ui_elements['comp_layout']
-                for j in range(comp_layout.count()):
-                    item = comp_layout.itemAt(j)
-                    if item.widget():
-                        item.widget().setVisible(True)
+                row_widget = comp.ui_elements.get('row_widget')
+                if row_widget is not None:
+                    row_widget.setVisible(True)
 
     def _select_component(self, idx: int):
         """Activate selection mode for a component to pick its location."""

@@ -23,6 +23,7 @@ from qtpy.QtWidgets import (
 from superqt import QRangeSlider
 
 from ._utils import (
+    ResponsiveFormContainer,
     apply_filter_and_threshold,
     threshold_li,
     threshold_otsu,
@@ -109,16 +110,41 @@ class FilterWidget(QWidget):
         scroll_content = QWidget()
         scroll_layout = QVBoxLayout(scroll_content)
 
-        # Filter method selection
-        filter_method_layout = QHBoxLayout()
-        filter_method_layout.addWidget(QLabel("Filter Method:"))
+        # Responsive top section: Filter Method and Threshold Method appear
+        # side-by-side when the widget is wide enough (≥500 px).
+        self._responsive_form = ResponsiveFormContainer(width_threshold=500)
+
+        # Filter method row
         self.filter_method_combobox = QComboBox()
         self.filter_method_combobox.addItems(["None", "Median", "Wavelet"])
         self.filter_method_combobox.setCurrentText("None")
-        filter_method_layout.addWidget(self.filter_method_combobox)
-        scroll_layout.addLayout(filter_method_layout)
+        self._responsive_form.add_row(
+            QLabel("Filter Method:"), self.filter_method_combobox
+        )
 
-        # Create containers for filter-specific parameters
+        # Threshold method + log scale row
+        self.threshold_method_combobox = QComboBox()
+        self.threshold_method_combobox.addItems(
+            ["None", "Manual", "Otsu", "Li", "Yen"]
+        )
+        self.threshold_method_combobox.setCurrentText("None")
+        self.log_scale_checkbox = QCheckBox("Log Scale")
+        self.log_scale_checkbox.setChecked(False)
+        self.log_scale_checkbox.stateChanged.connect(self.on_log_scale_changed)
+        _threshold_row_widget = QWidget()
+        _threshold_row_layout = QHBoxLayout(_threshold_row_widget)
+        _threshold_row_layout.setContentsMargins(0, 0, 0, 0)
+        _threshold_row_layout.addWidget(self.threshold_method_combobox)
+        _threshold_row_layout.addSpacing(8)
+        _threshold_row_layout.addWidget(self.log_scale_checkbox)
+        _threshold_row_layout.addStretch()
+        self._responsive_form.add_row(
+            QLabel("Threshold Method:"), _threshold_row_widget
+        )
+
+        scroll_layout.addWidget(self._responsive_form)
+
+        # Filter parameter sub-widgets (conditionally visible, always full width)
         self.median_filter_widget = QWidget()
         self.setup_median_filter_ui()
         scroll_layout.addWidget(self.median_filter_widget)
@@ -130,26 +156,6 @@ class FilterWidget(QWidget):
         # Initially hide filter parameter widgets
         self.median_filter_widget.setVisible(False)
         self.wavelet_filter_widget.setVisible(False)
-
-        # Threshold method selection
-        threshold_method_layout = QHBoxLayout()
-        threshold_method_layout.addWidget(QLabel("Threshold Method:"))
-        self.threshold_method_combobox = QComboBox()
-        self.threshold_method_combobox.addItems(
-            ["None", "Manual", "Otsu", "Li", "Yen"]
-        )
-        self.threshold_method_combobox.setCurrentText("None")
-        threshold_method_layout.addWidget(self.threshold_method_combobox)
-
-        # Add log scale checkbox to the same line as threshold method
-        threshold_method_layout.addSpacing(10)
-        self.log_scale_checkbox = QCheckBox("Log Scale")
-        self.log_scale_checkbox.setChecked(False)
-        self.log_scale_checkbox.stateChanged.connect(self.on_log_scale_changed)
-        threshold_method_layout.addWidget(self.log_scale_checkbox)
-        threshold_method_layout.addStretch()
-
-        scroll_layout.addLayout(threshold_method_layout)
 
         # Threshold range slider with min/max edits
         theshold_slider_layout = QHBoxLayout()
@@ -232,6 +238,11 @@ class FilterWidget(QWidget):
 
         # Initialize UI state
         self.on_filter_method_changed()
+
+    def update_layout(self, width: int):
+        """Adapt the form layout to the given available width."""
+        if hasattr(self, '_responsive_form'):
+            self._responsive_form.notify_width(width)
 
     def setup_median_filter_ui(self):
         """Setup UI elements for median filter."""

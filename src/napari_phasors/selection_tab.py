@@ -30,7 +30,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from ._utils import colormap_to_dict
+from ._utils import ResponsiveFormContainer, colormap_to_dict
 
 
 class SelectionWidget(QWidget):
@@ -159,6 +159,12 @@ class SelectionWidget(QWidget):
             self._on_selection_mode_changed
         )
 
+    def update_layout(self, width: int):
+        """Adapt the layout of the currently visible sub-widget to the given width."""
+        current_index = self.stacked_widget.currentIndex()
+        if current_index == 1:
+            self.automatic_clustering_widget.update_layout(width)
+
     def on_harmonic_changed(self):
         """Callback when harmonic spinbox is changed."""
         # Only update cursor visibility for the currently active mode
@@ -242,6 +248,9 @@ class SelectionWidget(QWidget):
             if self.parent_widget is not None:
                 self.parent_widget.plot(selection_id_data=None)
             self._manage_labels_layer_visibility(show_manual=False)
+            # Apply current width to the newly visible sub-widget
+            if self.parent_widget is not None:
+                self.update_layout(self.parent_widget.analysis_widget.width())
         else:  # Circular cursor mode
             # Deactivate any active selection tools before hiding toolbar
             if self.parent_widget is not None:
@@ -939,24 +948,28 @@ class AutomaticClusteringWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 5, 0, 0)
 
-        # Clustering method selection
-        method_layout = QHBoxLayout()
-        method_layout.addWidget(QLabel("Clustering Method:"))
+        # Responsive top section: Clustering Method and Number of Clusters
+        # appear side-by-side when the widget is wide enough (≥500 px).
+        self._responsive_form = ResponsiveFormContainer(width_threshold=500)
+
         self.clustering_method_combobox = QComboBox()
         self.clustering_method_combobox.addItems(
             ["GMM (Gaussian Mixture Model)"]
         )
-        method_layout.addWidget(self.clustering_method_combobox, 1)
-        layout.addLayout(method_layout)
+        self._responsive_form.add_row(
+            QLabel("Clustering Method:"),
+            self.clustering_method_combobox,
+        )
 
-        # Number of clusters selection
-        clusters_layout = QHBoxLayout()
-        clusters_layout.addWidget(QLabel("Number of Clusters:"))
         self.num_clusters_spinbox = QSpinBox()
         self.num_clusters_spinbox.setRange(2, 100)
         self.num_clusters_spinbox.setValue(2)
-        clusters_layout.addWidget(self.num_clusters_spinbox, 1)
-        layout.addLayout(clusters_layout)
+        self._responsive_form.add_row(
+            QLabel("Number of Clusters:"),
+            self.num_clusters_spinbox,
+        )
+
+        layout.addWidget(self._responsive_form)
 
         # Apply clustering button
         self.apply_button = QPushButton("Apply Clustering")
@@ -1007,6 +1020,11 @@ class AutomaticClusteringWidget(QWidget):
         layout.addWidget(self.clear_button)
 
         layout.addStretch()
+
+    def update_layout(self, width: int):
+        """Adapt the form layout to the given available width."""
+        if hasattr(self, '_responsive_form'):
+            self._responsive_form.notify_width(width)
 
     def _apply_clustering(self):
         """Apply automatic clustering using the selected method."""

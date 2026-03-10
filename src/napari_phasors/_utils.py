@@ -46,7 +46,6 @@ from qtpy.QtWidgets import (
     QLineEdit,
     QMenu,
     QPushButton,
-    QScrollArea,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionButton,
@@ -699,12 +698,17 @@ class CheckableComboBox(QComboBox):
     selectionChanged = Signal()
     primaryLayerChanged = Signal(str)  # Emits the new primary layer name
 
-    def __init__(self, parent=None, enable_primary_layer=True):
+    def __init__(
+        self,
+        parent=None,
+        enable_primary_layer=True,
+        placeholder="Select Layers...",
+    ):
         super().__init__(parent)
         self.setModel(QStandardItemModel(self))
         self.setEditable(True)
         self.lineEdit().setReadOnly(True)
-        self.lineEdit().setPlaceholderText("Select Layers...")
+        self.lineEdit().setPlaceholderText(placeholder)
 
         self._enable_primary_layer = enable_primary_layer
 
@@ -1538,11 +1542,6 @@ class HistogramWidget(QWidget):
 
         controls_layout.addStretch()
 
-        self.export_csv_button = QPushButton("Export Table CSV")
-        self.export_csv_button.setMinimumWidth(140)
-        self.export_csv_button.clicked.connect(self._export_table_csv)
-        controls_layout.addWidget(self.export_csv_button)
-
         self.save_png_button = QPushButton("Save Histogram as PNG")
         self.save_png_button.setMinimumWidth(180)
         self.save_png_button.clicked.connect(self._save_histogram_png)
@@ -1550,8 +1549,9 @@ class HistogramWidget(QWidget):
 
         layout.addLayout(controls_layout)
 
-        # Start hidden
-        self.hide()
+        # Buttons are disabled until data is loaded
+        self._settings_button.setEnabled(False)
+        self.save_png_button.setEnabled(False)
 
     def set_range(
         self, min_val: float, max_val: float, *, slider_max: float = None
@@ -1632,15 +1632,6 @@ class HistogramWidget(QWidget):
         hi_s = int(hi * self.range_factor)
         self.range_slider.setValue((lo_s, hi_s))
         self.rangeChanged.emit(lo, hi)
-
-    def _export_table_csv(self):
-        """Export statistics table to CSV - delegates to dock widget."""
-        parent = self.parent()
-        while parent is not None:
-            if hasattr(parent, '_export_table_csv_impl'):
-                parent._export_table_csv_impl()
-                return
-            parent = parent.parent()
 
     def _save_histogram_png(self):
         """Save the histogram as a high-DPI PNG image."""
@@ -1724,6 +1715,7 @@ class HistogramWidget(QWidget):
 
         if len(valid) == 0:
             self.ax.clear()
+            self._style_axes()
             self.ax.text(
                 0.5,
                 0.5,
@@ -1732,7 +1724,10 @@ class HistogramWidget(QWidget):
                 ha="center",
             )
             self.fig.canvas.draw_idle()
+            self._settings_button.setEnabled(False)
+            self.save_png_button.setEnabled(False)
             self.show()
+            self.dataChanged.emit()
             return
 
         self._datasets = {"Layer": valid}
@@ -1745,6 +1740,8 @@ class HistogramWidget(QWidget):
         self._counts_per_dataset = {"Layer": self.counts}
 
         self._render()
+        self._settings_button.setEnabled(True)
+        self.save_png_button.setEnabled(True)
         self.show()
         self.dataChanged.emit()
 
@@ -1770,6 +1767,7 @@ class HistogramWidget(QWidget):
 
         if not self._datasets:
             self.ax.clear()
+            self._style_axes()
             self.ax.text(
                 0.5,
                 0.5,
@@ -1778,7 +1776,10 @@ class HistogramWidget(QWidget):
                 ha="center",
             )
             self.fig.canvas.draw_idle()
+            self._settings_button.setEnabled(False)
+            self.save_png_button.setEnabled(False)
             self.show()
+            self.dataChanged.emit()
             return
 
         all_valid = np.concatenate(list(self._datasets.values()))
@@ -1797,6 +1798,8 @@ class HistogramWidget(QWidget):
         self._previous_dataset_count = current_count
 
         self._render()
+        self._settings_button.setEnabled(True)
+        self.save_png_button.setEnabled(True)
         self.show()
         self.dataChanged.emit()
 
@@ -1820,7 +1823,7 @@ class HistogramWidget(QWidget):
             self._render()
 
     def clear(self) -> None:
-        """Clear the histogram and hide the widget."""
+        """Clear the histogram data and show empty axes with disabled buttons."""
         self.counts = None
         self.bin_edges = None
         self.bin_centers = None
@@ -1829,8 +1832,10 @@ class HistogramWidget(QWidget):
         self._raw_valid_data = None
         self._previous_dataset_count = 0
         self.ax.clear()
+        self._style_axes()
         self.fig.canvas.draw_idle()
-        self.hide()
+        self._settings_button.setEnabled(False)
+        self.save_png_button.setEnabled(False)
         self.dataChanged.emit()
 
     @property
@@ -2285,7 +2290,13 @@ class CollapsibleSection(QWidget):
         Parent widget.
     """
 
-    def __init__(self, title="Section", initially_collapsed=True, parent=None):
+    def __init__(
+        self,
+        title="Section",
+        initially_collapsed=True,
+        text_color="grey",
+        parent=None,
+    ):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -2294,8 +2305,8 @@ class CollapsibleSection(QWidget):
         # Clickable header with disclosure triangle
         self._toggle_button = QPushButton()
         self._toggle_button.setStyleSheet(
-            "QPushButton { text-align: left; border: none; padding: 4px; "
-            "font-weight: bold; color: grey; }"
+            f"QPushButton {{ text-align: left; border: none; padding: 4px; "
+            f"font-weight: bold; color: {text_color}; }}"
         )
         self._toggle_button.setCheckable(True)
         self._toggle_button.setChecked(not initially_collapsed)
@@ -2589,6 +2600,17 @@ class ResponsiveFormContainer(QWidget):
             self._current_columns = new_cols
             self._relayout()
 
+    def notify_width(self, width: int):
+        """Force a layout update for the given available width.
+
+        Can be called externally when the widget's own resizeEvent is not
+        sufficient (e.g. on initialisation or tab-switch).
+        """
+        new_cols = 2 if width >= self._width_threshold else 1
+        if new_cols != self._current_columns:
+            self._current_columns = new_cols
+            self._relayout()
+
     def _relayout(self):
         """Remove all items from the grid and re-add with the current column mode."""
         # Detach all widgets without deleting them
@@ -2634,19 +2656,17 @@ class ResponsiveFormContainer(QWidget):
 
 
 class HistogramDockWidget(QWidget):
-    """Dockable container that wraps a :class:`HistogramWidget` with
-    collapsible statistics tables underneath.
+    """Dockable container that wraps a :class:`HistogramWidget`.
 
-    This widget is intended to be added as a separate napari dock widget
-    so that it can be detached into its own window.
+    Statistics tables live in a separate :class:`StatisticsDockWidget`
+    linked via :meth:`link_statistics_dock`.
 
     Parameters
     ----------
     histogram_widget : HistogramWidget
-        The histogram widget to wrap.  Ownership is transferred to this
-        container (Qt reparents the widget).
+        The histogram widget to wrap.
     title : str, optional
-        Human-readable title, by default ``"Histogram & Statistics"``.
+        Human-readable title, by default ``"Histogram"``.
     parent : QWidget, optional
         Parent widget.
     """
@@ -2654,49 +2674,87 @@ class HistogramDockWidget(QWidget):
     def __init__(
         self,
         histogram_widget: "HistogramWidget",
-        title: str = "Histogram & Statistics",
+        title: str = "Histogram",
+        parent: QWidget = None,
+    ):
+        super().__init__(parent)
+        self._title = title
+        self.histogram_widget = histogram_widget
+        self._stats_dock = None
+
+        self.setMinimumHeight(150)
+        self.setMinimumWidth(300)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(2)
+        layout.addWidget(histogram_widget, 1)
+
+    def link_statistics_dock(self, stats_dock_widget):
+        """Link a StatisticsDockWidget to delegate CSV export.
+
+        Parameters
+        ----------
+        stats_dock_widget : StatisticsDockWidget
+            The statistics widget for this histogram.
+        """
+        self._stats_dock = stats_dock_widget
+
+
+class StatisticsDockWidget(QWidget):
+    """Standalone dockable statistics table widget.
+
+    Wraps Layer Statistics and Group Statistics collapsible sections,
+    driven by data from a linked :class:`HistogramWidget`.
+
+    Parameters
+    ----------
+    histogram_widget : HistogramWidget
+        The histogram widget whose data drives the tables.
+    title : str, optional
+        Human-readable title, by default ``"Statistics"``.
+    parent : QWidget, optional
+        Parent widget.
+    """
+
+    def __init__(
+        self,
+        histogram_widget: "HistogramWidget",
+        title: str = "Statistics",
         parent: QWidget = None,
     ):
         super().__init__(parent)
         self._title = title
         self.histogram_widget = histogram_widget
 
-        self.setMinimumHeight(300)
         self.setMinimumWidth(300)
 
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-
-        content_widget = QWidget()
-        layout = QVBoxLayout(content_widget)
-        layout.setContentsMargins(4, 4, 4, 4)
-
-        layout.addWidget(histogram_widget)
+        main_layout.setContentsMargins(4, 4, 4, 4)
+        main_layout.setSpacing(2)
 
         self.layer_stats_section = CollapsibleSection(
-            "Layer Statistics", initially_collapsed=True
+            "Layer Statistics", initially_collapsed=False, text_color="white"
         )
         self.layer_stats_table = StatisticsTableWidget()
         self.layer_stats_section.add_widget(self.layer_stats_table)
-        layout.addWidget(self.layer_stats_section)
+        main_layout.addWidget(self.layer_stats_section)
 
         self.group_stats_section = CollapsibleSection(
-            "Group Statistics", initially_collapsed=True
+            "Group Statistics", initially_collapsed=False, text_color="white"
         )
         self.group_stats_table = StatisticsTableWidget()
         self.group_stats_section.add_widget(self.group_stats_table)
-        layout.addWidget(self.group_stats_section)
+        main_layout.addWidget(self.group_stats_section)
         self.group_stats_section.setVisible(False)
 
-        layout.addStretch()
+        self.export_csv_button = QPushButton("Export Table as CSV")
+        self.export_csv_button.setMinimumWidth(140)
+        self.export_csv_button.setEnabled(False)
+        self.export_csv_button.clicked.connect(self._export_table_csv_impl)
+        main_layout.addWidget(self.export_csv_button)
 
-        scroll_area.setWidget(content_widget)
-        main_layout.addWidget(scroll_area)
+        main_layout.addStretch()
 
         histogram_widget.dataChanged.connect(self._update_statistics)
 
@@ -2735,6 +2793,8 @@ class HistogramDockWidget(QWidget):
         else:
             self.layer_stats_section.setVisible(False)
             self.group_stats_section.setVisible(False)
+
+        self.export_csv_button.setEnabled(has_multi or has_single)
 
     def _export_table_csv_impl(self):
         """Export the visible statistics table(s) to CSV file(s)."""
