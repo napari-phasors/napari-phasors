@@ -16,15 +16,12 @@ from qtpy.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
-from ._utils import (
-    HistogramWidget,
-    ResponsiveFormContainer,
-    update_frequency_in_metadata,
-)
+from ._utils import HistogramWidget, update_frequency_in_metadata
 
 if TYPE_CHECKING:
     import napari
@@ -81,15 +78,16 @@ class LifetimeWidget(QWidget):
         main_widget_layout.setStretch(0, 1)
 
         # Frequency input
-        freq_label = QLabel("Frequency (MHz):")
+        frequency_layout = QHBoxLayout()
+        frequency_layout.addWidget(QLabel("Frequency (MHz): "))
         self.frequency_input = QLineEdit()
         self.frequency_input.setValidator(QDoubleValidator())
+        frequency_layout.addWidget(self.frequency_input)
+        self.main_layout.addLayout(frequency_layout)
 
         # Add combobox to select lifetime type
-        type_label = QLabel("Lifetime type:")
-        lifetime_type_widget = QWidget()
-        lifetime_type_layout = QHBoxLayout(lifetime_type_widget)
-        lifetime_type_layout.setContentsMargins(0, 0, 0, 0)
+        lifetime_type_layout = QHBoxLayout()
+        lifetime_type_layout.addWidget(QLabel("Select lifetime to display: "))
         self.lifetime_type_combobox = QComboBox()
         self.lifetime_type_combobox.addItems(
             [
@@ -101,22 +99,20 @@ class LifetimeWidget(QWidget):
         self.lifetime_type_combobox.setCurrentText("Apparent Phase Lifetime")
         lifetime_type_layout.addWidget(self.lifetime_type_combobox)
 
-        # Add Calculate button (replaces refresh button)
-        self.calculate_lifetime_button = QPushButton("Calculate")
-        self.calculate_lifetime_button.setMaximumWidth(80)
+        # Add Calculate button in its own row
+        self.calculate_lifetime_button = QPushButton("Calculate Lifetime")
+        self.calculate_lifetime_button.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed
+        )
         self.calculate_lifetime_button.setToolTip(
             "Calculate and display lifetime values for the selected layers"
         )
         self.calculate_lifetime_button.clicked.connect(
             self._on_calculate_lifetime_clicked
         )
-        lifetime_type_layout.addWidget(self.calculate_lifetime_button)
 
-        # Responsive form container (switches to 2 columns when wide enough)
-        self._responsive_form = ResponsiveFormContainer(width_threshold=450)
-        self._responsive_form.add_row(freq_label, self.frequency_input)
-        self._responsive_form.add_row(type_label, lifetime_type_widget)
-        self.main_layout.addWidget(self._responsive_form)
+        self.main_layout.addLayout(lifetime_type_layout)
+        self.main_layout.addWidget(self.calculate_lifetime_button)
 
         # Connect signals
         self.lifetime_type_combobox.currentTextChanged.connect(
@@ -126,7 +122,6 @@ class LifetimeWidget(QWidget):
             self._on_frequency_changed
         )
 
-        # Histogram widget with built-in range slider
         # NOTE: The widget is created here but NOT added to this tab's layout.
         # PlotterWidget wraps it in a HistogramDockWidget and docks it separately.
         self.histogram_widget = HistogramWidget(
@@ -236,11 +231,6 @@ class LifetimeWidget(QWidget):
 
         finally:
             self._updating_settings = False
-
-    def update_layout(self, width: int):
-        """Adapt the form layout to the given available width."""
-        if hasattr(self, '_responsive_form'):
-            self._responsive_form.notify_width(width)
 
     def _on_frequency_changed(self):
         """Handle frequency input changes."""

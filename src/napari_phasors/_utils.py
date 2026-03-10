@@ -1163,11 +1163,19 @@ class HistogramSettingsDialog(QDialog):
 
         # Populate groups from existing assignments
         if group_assignments and layer_labels:
-            # Infer groups from assignments
+            # Infer groups from assignments and keep explicitly configured
+            # groups (name/color) even if currently empty.
             groups_seen = {}
             for label, gid in group_assignments.items():
                 groups_seen.setdefault(gid, []).append(label)
-            for gid in sorted(groups_seen):
+
+            configured_groups = set(groups_seen.keys())
+            if group_names:
+                configured_groups.update(group_names.keys())
+            if group_colors:
+                configured_groups.update(group_colors.keys())
+
+            for gid in sorted(configured_groups):
                 default_c = default_tab10[(gid - 1) % len(default_tab10)][:3]
                 gc = (
                     group_colors[gid]
@@ -1182,7 +1190,7 @@ class HistogramSettingsDialog(QDialog):
                 self._add_group_row(
                     name=gname,
                     color=gc,
-                    checked_layers=groups_seen[gid],
+                    checked_layers=groups_seen.get(gid, []),
                 )
         else:
             # Start with one empty group
@@ -1190,7 +1198,7 @@ class HistogramSettingsDialog(QDialog):
             self._add_group_row(
                 name="Group 1",
                 color=gc,
-                checked_layers=layer_labels or [],
+                checked_layers=[],
             )
 
         # Add group button
@@ -1347,14 +1355,13 @@ class HistogramSettingsDialog(QDialog):
 
         Groups are numbered starting from 1 in the order they appear.
         A layer that is checked in multiple groups is assigned to the
-        first group that contains it.
+        last group that contains it (later rows take precedence).
         """
         assignments = {}
         for gid_zero, row in enumerate(self._group_row_data):
             gid = gid_zero + 1
             for layer in row["layer_combo"].checkedItems():
-                if layer not in assignments:
-                    assignments[layer] = gid
+                assignments[layer] = gid
         return assignments
 
     def get_group_names(self) -> dict:

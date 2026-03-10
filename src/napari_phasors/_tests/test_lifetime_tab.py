@@ -106,8 +106,15 @@ def test_lifetime_widget_initialization_values(make_napari_viewer):
     scroll_area = scroll_areas[0]
     assert scroll_area.widgetResizable()
 
-    # Test histogram widget initially hidden
-    assert lifetime_widget.histogram_widget.isHidden()
+    # Histogram widget is now hosted in the shared dock stack.
+    assert (
+        parent.lifetime_histogram_dock_widget.histogram_widget
+        is lifetime_widget.histogram_widget
+    )
+    assert (
+        parent._histogram_stack.indexOf(parent.lifetime_histogram_dock_widget)
+        >= 0
+    )
 
 
 def test_lifetime_widget_histogram_styling(make_napari_viewer):
@@ -201,9 +208,11 @@ def test_lifetime_widget_plot_histogram_no_data(make_napari_viewer):
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.lifetime_tab
 
-    # Should hide histogram widget and return early
+    # No data should leave the histogram empty with controls disabled.
     lifetime_widget.plot_lifetime_histogram()
-    assert lifetime_widget.histogram_widget.isHidden()
+    assert lifetime_widget.histogram_widget.counts is None
+    assert not lifetime_widget.histogram_widget._settings_button.isEnabled()
+    assert not lifetime_widget.histogram_widget.save_png_button.isEnabled()
 
 
 def test_lifetime_widget_ui_layout(make_napari_viewer):
@@ -789,8 +798,12 @@ def test_lifetime_widget_image_layer_changed_no_layer(make_napari_viewer):
 
     lifetime_widget._on_image_layer_changed()
 
-    # Should hide histogram
-    assert lifetime_widget.histogram_widget.isHidden()
+    # Histogram should be reset when no layer is selected.
+    assert lifetime_widget.lifetime_data is None
+    assert lifetime_widget.lifetime_data_original is None
+    assert lifetime_widget.histogram_widget.counts is None
+    assert not lifetime_widget.histogram_widget._settings_button.isEnabled()
+    assert not lifetime_widget.histogram_widget.save_png_button.isEnabled()
 
 
 def test_lifetime_widget_colormap_changed_callback(make_napari_viewer):

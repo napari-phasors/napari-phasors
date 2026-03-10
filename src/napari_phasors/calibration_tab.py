@@ -1,4 +1,5 @@
 import contextlib
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -6,31 +7,13 @@ from napari.layers import Image
 from napari.utils.notifications import show_error, show_info
 from phasorpy.lifetime import phasor_from_lifetime, polar_from_reference_phasor
 from phasorpy.phasor import phasor_center, phasor_transform
-from qtpy.QtCore import Qt
-from qtpy.QtWidgets import (
-    QComboBox,
-    QLabel,
-    QLineEdit,
-    QMessageBox,
-    QPushButton,
-    QScrollArea,
-    QVBoxLayout,
-    QWidget,
-)
+from qtpy import uic
+from qtpy.QtWidgets import QMessageBox, QScrollArea, QVBoxLayout, QWidget
 
-from ._utils import ResponsiveFormContainer, apply_filter_and_threshold
+from ._utils import apply_filter_and_threshold
 
 if TYPE_CHECKING:
     import napari
-
-
-class _CalibWidgetHolder:
-    """Plain namespace that holds the named child widgets of CalibrationWidget.
-
-    This preserves the ``self.calibration_widget.<name>`` API used by the
-    rest of the codebase without requiring the widgets to live in a shared
-    parent QWidget.
-    """
 
 
 class CalibrationWidget(QWidget):
@@ -42,32 +25,11 @@ class CalibrationWidget(QWidget):
         self.viewer = viewer
         self.parent_widget = parent
 
-        # Build named widget holder so existing code using
-        # self.calibration_widget.<name> continues to work.
-        self.calibration_widget = _CalibWidgetHolder()
-        self.calibration_widget.calibration_layer_combobox = QComboBox()
-        self.calibration_widget.frequency_input = QLineEdit()
-        self.calibration_widget.lifetime_line_edit_widget = QLineEdit()
-        self.calibration_widget.calibrate_push_button = QPushButton(
-            "Calibrate"
-        )
-
-        # Responsive form layout
-        self._responsive_form = ResponsiveFormContainer(width_threshold=450)
-        self._responsive_form.add_row(
-            QLabel("Calibration Layer:"),
-            self.calibration_widget.calibration_layer_combobox,
-        )
-        self._responsive_form.add_row(
-            QLabel("Frequency (MHz):"),
-            self.calibration_widget.frequency_input,
-        )
-        self._responsive_form.add_row(
-            QLabel("Lifetime (ns):"),
-            self.calibration_widget.lifetime_line_edit_widget,
-        )
-        self._responsive_form.add_full_span_widget(
-            self.calibration_widget.calibrate_push_button
+        # Creates and empty widget
+        self.calibration_widget = QWidget()
+        uic.loadUi(
+            Path(__file__).parent / "ui/calibration_widget.ui",
+            self.calibration_widget,
         )
 
         # Connect callbacks
@@ -90,26 +52,14 @@ class CalibrationWidget(QWidget):
         # Populate combobox
         self._populate_comboboxes()
 
-        # Wrap form in scroll area
-        content_widget = QWidget()
-        content_layout = QVBoxLayout(content_widget)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.addWidget(self._responsive_form)
-        content_layout.addStretch()
-
+        # Create scroll area and add calibration widget to it
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll_area.setWidget(content_widget)
+        scroll_area.setWidget(self.calibration_widget)
 
         mainLayout = QVBoxLayout()
         mainLayout.addWidget(scroll_area)
         self.setLayout(mainLayout)
-
-    def update_layout(self, width: int):
-        """Adapt the form layout to the given available width."""
-        if hasattr(self, '_responsive_form'):
-            self._responsive_form.notify_width(width)
 
     def _populate_comboboxes(self, event=None):
         """Populate calibration layer combobox with image layers."""
@@ -252,10 +202,14 @@ class CalibrationWidget(QWidget):
                 f'The calibration layer "{calibration_name}" is already calibrated.\n\n'
                 'Would you like to use the uncalibrated data as reference?\n\n'
                 'Yes: Use original uncalibrated data\n'
-                'No: Use current calibrated data',
-                QMessageBox.Yes | QMessageBox.No,
+                'No: Use current calibrated data\n'
+                'Cancel: Abort calibration',
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
                 QMessageBox.Yes,
             )
+
+            if reply == QMessageBox.Cancel:
+                return False
 
             if reply == QMessageBox.Yes:
                 calibration_was_calibrated = True
