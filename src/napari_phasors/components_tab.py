@@ -3857,6 +3857,7 @@ class ComponentsWidget(QWidget):
 
         except Exception as e:  # noqa: BLE001
             show_error(f"Analysis failed: {str(e)}")
+<<<<<<< HEAD
 
     def _get_fraction_layers_for_component(self, component_name):
         """Get all fraction layers in the viewer for a given component name.
@@ -4104,3 +4105,11 @@ class ComponentsWidget(QWidget):
                 )
 
         event.accept()
+
+# Fix for #202 – cursors visibility when components tab is active
+def set_cursors_visible(self):
+    try:
+        self.viewer.cursor = QtCore.Qt.ArrowCursor
+    except AttributeError:
+        pass
+
