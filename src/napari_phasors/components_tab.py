@@ -2707,8 +2707,21 @@ class ComponentsWidget(QWidget):
 
         self.draw_line_between_components()
 
-        # Refresh histogram if contrast limits changed
-        self.update_component_histogram()
+        # Refresh histogram only when the changed layer belongs to the
+        # currently selected histogram component.
+        selected_component = ""
+        if hasattr(self, 'histogram_component_combobox'):
+            selected_component = (
+                self.histogram_component_combobox.currentText().strip()
+            )
+
+        comp = self.components[comp_idx]
+        changed_component = (
+            comp.name_edit.text().strip() or f"Component {comp_idx + 1}"
+        )
+
+        if selected_component == changed_component:
+            self.update_component_histogram()
 
     def _find_component_index_for_layer(self, layer):
         """Find which component index a layer belongs to based on its name."""
@@ -3414,7 +3427,15 @@ class ComponentsWidget(QWidget):
         harmonic_key = str(current_harmonic)
 
         comp1_colormap = 'PiYG'
-        contrast_limits = (0, 1)
+        valid_fraction = fraction_comp1[np.isfinite(fraction_comp1)]
+        if valid_fraction.size > 0:
+            frac_min = float(np.min(valid_fraction))
+            frac_max = float(np.max(valid_fraction))
+            if frac_max <= frac_min:
+                frac_max = frac_min + 0.01
+            contrast_limits = (frac_min, frac_max)
+        else:
+            contrast_limits = (0, 1)
 
         if '0' in settings.get('components', {}):
             comp_data = settings['components']['0']
@@ -3469,6 +3490,9 @@ class ComponentsWidget(QWidget):
 
         self.comp1_fractions_layer = self.viewer.add_layer(
             comp1_selected_fractions_layer
+        )
+        self.comp1_fractions_layer.metadata['fraction_data_original'] = (
+            fraction_comp1.copy()
         )
 
         self.fractions_colormap = self.comp1_fractions_layer.colormap.colors
@@ -3710,7 +3734,15 @@ class ComponentsWidget(QWidget):
                 fraction_layer_name = f"{name} fraction: {layer.name}"
 
                 colormap = None
-                contrast_limits = (0, 1)
+                valid_fraction = fraction[np.isfinite(fraction)]
+                if valid_fraction.size > 0:
+                    frac_min = float(np.min(valid_fraction))
+                    frac_max = float(np.max(valid_fraction))
+                    if frac_max <= frac_min:
+                        frac_max = frac_min + 0.01
+                    contrast_limits = (frac_min, frac_max)
+                else:
+                    contrast_limits = (0, 1)
                 idx_str = str(i)
 
                 if (
@@ -3767,6 +3799,7 @@ class ComponentsWidget(QWidget):
                     scale=layer.scale,
                     colormap=colormap,
                 )
+                new_layer.metadata['fraction_data_original'] = fraction.copy()
 
                 new_layer.contrast_limits = contrast_limits
 
@@ -3941,8 +3974,8 @@ class ComponentsWidget(QWidget):
     def _on_fraction_range_changed(self, min_val, max_val):
         """Handle range slider changes on the fraction histogram.
 
-        Clips the fraction data to the specified range and updates layers
-        and histogram accordingly.
+        Clips fraction layers to the specified range and refreshes the
+        histogram accordingly.
         """
         selected_text = self.histogram_component_combobox.currentText()
         if not selected_text:
@@ -3955,10 +3988,30 @@ class ComponentsWidget(QWidget):
             return
 
         clipped_data = {}
-        for img_name, fl in fraction_layers_map.items():
-            data = fl.data
-            clipped = np.clip(data, min_val, max_val)
-            clipped_data[img_name] = clipped
+        self._updating_linked_layers = True
+        try:
+            for img_name, fl in fraction_layers_map.items():
+                # Use original (unclipped) values when available so expanding the
+                # slider range can restore previous data.
+                original = fl.metadata.get('fraction_data_original', fl.data)
+                clipped = np.clip(original, min_val, max_val)
+                fl.data = clipped
+
+                current_limits = np.asarray(fl.contrast_limits, dtype=float)
+                target_limits = np.asarray([min_val, max_val], dtype=float)
+                if not np.allclose(current_limits, target_limits):
+                    fl.contrast_limits = [min_val, max_val]
+
+                clipped_data[img_name] = clipped
+        finally:
+            self._updating_linked_layers = False
+
+        self.colormap_contrast_limits = [min_val, max_val]
+        first_layer = next(iter(fraction_layers_map.values()))
+        self.histogram_widget.update_colormap(
+            colormap_colors=first_layer.colormap.colors,
+            contrast_limits=[min_val, max_val],
+        )
 
         if len(clipped_data) > 1:
             self.histogram_widget.update_multi_data(clipped_data)
@@ -3988,6 +4041,47 @@ class ComponentsWidget(QWidget):
             colormap_colors=colormap_colors,
             contrast_limits=contrast_limits,
         )
+
+        # Ensure the range slider uses the full original data extent.
+        # Without this, the default slider span (0..100 with factor=1000)
+        # limits the max to 0.1 and causes max values to snap/reset.
+        original_arrays = []
+        for fl in fraction_layers_map.values():
+            original = fl.metadata.get('fraction_data_original', fl.data)
+            valid = np.asarray(original, dtype=float)
+            valid = valid[np.isfinite(valid)]
+            if valid.size > 0:
+                original_arrays.append(valid)
+
+        if original_arrays:
+            pooled = np.concatenate(original_arrays)
+            data_min = float(np.min(pooled))
+            data_max = float(np.max(pooled))
+            if data_max <= data_min:
+                data_max = data_min + 0.01
+
+            # Keep the current active display range from the layer, but ensure
+            # slider bounds span the full data extent.
+            range_min = float(contrast_limits[0])
+            range_max = float(contrast_limits[1])
+            range_min = max(data_min, min(range_min, data_max))
+            range_max = max(data_min, min(range_max, data_max))
+            if range_max <= range_min:
+                range_min = data_min
+                range_max = data_max
+
+            self.colormap_contrast_limits = [range_min, range_max]
+            self.histogram_widget.update_colormap(
+                colormap_colors=colormap_colors,
+                contrast_limits=[range_min, range_max],
+            )
+
+            self.histogram_widget.set_range(
+                range_min,
+                range_max,
+                slider_min=data_min,
+                slider_max=data_max,
+            )
 
         if len(fraction_layers_map) > 1:
             per_layer_data = {

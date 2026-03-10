@@ -552,7 +552,7 @@ class PlotterWidget(QWidget):
 
         self._bins_timer = QTimer()
         self._bins_timer.setSingleShot(True)
-        self._bins_timer.setInterval(500)  # 300ms delay
+        self._bins_timer.setInterval(500)  # 500ms delay
         self._bins_timer.timeout.connect(self._process_bins_change)
 
         # Create Settings tab

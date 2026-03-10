@@ -39,7 +39,6 @@ from qtpy.QtWidgets import (
     QComboBox,
     QDialog,
     QFileDialog,
-    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -55,7 +54,6 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from scipy.ndimage import gaussian_filter1d
 from superqt import QRangeSlider
 
 if TYPE_CHECKING:
@@ -532,6 +530,52 @@ def update_frequency_in_metadata(
     if "settings" not in image_layer.metadata:
         image_layer.metadata["settings"] = {}
     image_layer.metadata["settings"]["frequency"] = frequency
+
+
+def gaussian_filter1d(
+    data,
+    sigma,
+    axis=-1,
+    mode="reflect",
+    truncate=4.0,
+    **kwargs,
+):
+    """Implementation of 1D Gaussian filtering using NumPy.
+    This is a simplified approximation of scipy.ndimage.gaussian_filter1d
+    that supports the subset of behavior needed by this plugin.
+    """
+    # Backward-compatibility for SciPy-style keyword argument name.
+    if "input" in kwargs:
+        data = kwargs.pop("input")
+    if kwargs:
+        unexpected = ", ".join(sorted(kwargs.keys()))
+        raise TypeError(f"Unexpected keyword argument(s): {unexpected}")
+
+    data = np.asarray(data, dtype=float)
+    # Determine kernel radius from sigma and truncate (same convention as SciPy)
+    radius = int(truncate * float(sigma) + 0.5)
+    if radius <= 0:
+        return input.copy()
+    x = np.arange(-radius, radius + 1, dtype=float)
+    kernel = np.exp(-(x**2) / (2.0 * float(sigma) ** 2))
+    kernel /= kernel.sum()
+    # Only a basic "reflect" behavior is approximated; other modes default to this.
+    if mode != "reflect":
+        warnings.warn(
+            f"gaussian_filter1d fallback only approximates 'reflect' mode; "
+            f"got mode={mode!r}. Using 'reflect' instead.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+    def _convolve_1d(arr_1d):
+        # Reflect padding at the boundaries
+        left = arr_1d[1 : radius + 1][::-1] if arr_1d.size > 1 else arr_1d
+        right = arr_1d[-radius - 1 : -1][::-1] if arr_1d.size > 1 else arr_1d
+        padded = np.concatenate([left, arr_1d, right])
+        return np.convolve(padded, kernel, mode="valid")
+
+    return np.apply_along_axis(_convolve_1d, axis, data)
 
 
 class _PrimaryLayerDelegate(QStyledItemDelegate):
@@ -1421,6 +1465,9 @@ class HistogramWidget(QWidget):
     range_factor : int, optional
         Multiplicative factor to convert float range values to integer
         slider positions, by default 1000.
+    exclude_nonpositive : bool, optional
+        If ``True``, values ``<= 0`` are removed before histogramming.
+        If ``False`` (default), only NaN/Inf values are removed.
     parent : QWidget, optional
         Parent widget.
     """
@@ -1440,6 +1487,7 @@ class HistogramWidget(QWidget):
         range_slider_enabled: bool = False,
         range_label_prefix: str = "Range",
         range_factor: int = 1000,
+        exclude_nonpositive: bool = False,
         parent: QWidget = None,
     ):
         super().__init__(parent)
@@ -1447,6 +1495,7 @@ class HistogramWidget(QWidget):
         self.ylabel = ylabel
         self.bins = bins
         self.default_colormap_name = default_colormap_name
+        self._exclude_nonpositive = exclude_nonpositive
 
         # Histogram state
         self.counts = None
@@ -1560,8 +1609,21 @@ class HistogramWidget(QWidget):
         self._settings_button.setEnabled(False)
         self.save_png_button.setEnabled(False)
 
+    def _filter_valid_values(self, data: np.ndarray) -> np.ndarray:
+        """Return finite values, optionally excluding non-positive entries."""
+        flat = np.asarray(data, dtype=float).ravel()
+        valid = flat[np.isfinite(flat)]
+        if self._exclude_nonpositive:
+            valid = valid[valid > 0]
+        return valid
+
     def set_range(
-        self, min_val: float, max_val: float, *, slider_max: float = None
+        self,
+        min_val: float,
+        max_val: float,
+        *,
+        slider_min: float = None,
+        slider_max: float = None,
     ) -> None:
         """Programmatically set the range slider position.
 
@@ -1571,21 +1633,48 @@ class HistogramWidget(QWidget):
             Minimum value.
         max_val : float
             Maximum value.
+        slider_min : float, optional
+            If given, update the slider's minimum to
+            ``int(slider_min * range_factor)``.
         slider_max : float, optional
             If given, also update the slider's maximum to
             ``int(slider_max * range_factor)``.
         """
         if not self._range_slider_enabled:
             return
+        slider_min_i = self.range_slider.minimum()
+        slider_max_i = self.range_slider.maximum()
+
+        if slider_min is not None:
+            slider_min_i = int(slider_min * self.range_factor)
         if slider_max is not None:
-            self.range_slider.setRange(0, int(slider_max * self.range_factor))
+            slider_max_i = int(slider_max * self.range_factor)
+
+        if slider_max_i <= slider_min_i:
+            slider_max_i = slider_min_i + 1
+
+        if slider_min is not None or slider_max is not None:
+            self.range_slider.setRange(slider_min_i, slider_max_i)
+
+        slider_min_i = self.range_slider.minimum()
+        slider_max_i = self.range_slider.maximum()
+
         min_s = int(min_val * self.range_factor)
         max_s = int(max_val * self.range_factor)
+        min_s = max(slider_min_i, min(min_s, slider_max_i))
+        max_s = max(slider_min_i, min(max_s, slider_max_i))
+        if max_s <= min_s:
+            max_s = min(slider_max_i, min_s + 1)
+            if max_s <= min_s:
+                min_s = max(slider_min_i, max_s - 1)
+
         self.range_slider.setValue((min_s, max_s))
-        self.range_min_edit.setText(f"{min_val:.2f}")
-        self.range_max_edit.setText(f"{max_val:.2f}")
+        min_out = min_s / self.range_factor
+        max_out = max_s / self.range_factor
+        self.range_min_edit.setText(f"{min_out:.2f}")
+        self.range_max_edit.setText(f"{max_out:.2f}")
         self.range_label.setText(
-            f"{self._range_label_prefix}: {min_val:.2f} - {max_val:.2f}"
+            f"{self._range_label_prefix}: {min_out:.2f} - {max_out:.2f}"
         )
 
     def get_range(self) -> tuple:
@@ -1615,6 +1704,8 @@ class HistogramWidget(QWidget):
         self.rangeChanged.emit(lo / self.range_factor, hi / self.range_factor)
 
     def _on_range_min_edit(self):
+        if not self._range_slider_enabled:
+            return
         try:
             lo = float(self.range_min_edit.text())
             hi = float(self.range_max_edit.text())
@@ -1622,12 +1713,25 @@ class HistogramWidget(QWidget):
             return
         if lo >= hi:
             hi = lo + 0.01
+
+        slider_min_i = self.range_slider.minimum()
+        slider_max_i = self.range_slider.maximum()
         lo_s = int(lo * self.range_factor)
         hi_s = int(hi * self.range_factor)
+        lo_s = max(slider_min_i, min(lo_s, slider_max_i))
+        hi_s = max(slider_min_i, min(hi_s, slider_max_i))
+        if hi_s <= lo_s:
+            hi_s = min(slider_max_i, lo_s + 1)
+            if hi_s <= lo_s:
+                lo_s = max(slider_min_i, hi_s - 1)
+
         self.range_slider.setValue((lo_s, hi_s))
-        self.rangeChanged.emit(lo, hi)
+        lo_out, hi_out = self.get_range()
+        self.rangeChanged.emit(lo_out, hi_out)
 
     def _on_range_max_edit(self):
+        if not self._range_slider_enabled:
+            return
         try:
             lo = float(self.range_min_edit.text())
             hi = float(self.range_max_edit.text())
@@ -1635,10 +1739,19 @@ class HistogramWidget(QWidget):
             return
         if hi <= lo:
             lo = hi - 0.01 if hi > 0.01 else 0.0
+
+        slider_min_i = self.range_slider.minimum()
+        slider_max_i = self.range_slider.maximum()
         lo_s = int(lo * self.range_factor)
         hi_s = int(hi * self.range_factor)
+        lo_s = max(slider_min_i, min(lo_s, slider_max_i))
+        hi_s = max(slider_min_i, min(hi_s, slider_max_i))
+        if hi_s <= lo_s:
+            lo_s = max(slider_min_i, hi_s - 1)
+
         self.range_slider.setValue((lo_s, hi_s))
-        self.rangeChanged.emit(lo, hi)
+        lo_out, hi_out = self.get_range()
+        self.rangeChanged.emit(lo_out, hi_out)
 
     def _save_histogram_png(self):
         """Save the histogram as a high-DPI PNG image."""
@@ -1708,17 +1821,17 @@ class HistogramWidget(QWidget):
     def update_data(self, data: np.ndarray) -> None:
         """Compute histogram from *data* and render.
 
-        Values that are NaN, non-positive, or non-finite are excluded
-        before computing the histogram.  This is the single-dataset
-        entry point; multi-layer features are disabled.
+        NaN/Inf values are always excluded. Non-positive values are
+        excluded only when ``exclude_nonpositive=True`` was passed to
+        the constructor. This is the single-dataset entry point;
+        multi-layer features are disabled.
 
         Parameters
         ----------
         data : np.ndarray
             Scalar data array (any shape – will be flattened internally).
         """
-        flat = np.asarray(data).ravel()
-        valid = flat[~np.isnan(flat) & (flat > 0) & np.isfinite(flat)]
+        valid = self._filter_valid_values(data)
 
         if len(valid) == 0:
             self.ax.clear()
@@ -1767,8 +1880,7 @@ class HistogramWidget(QWidget):
         """
         self._datasets = {}
         for label, data in datasets.items():
-            flat = np.asarray(data).ravel()
-            valid = flat[~np.isnan(flat) & (flat > 0) & np.isfinite(flat)]
+            valid = self._filter_valid_values(data)
             if len(valid) > 0:
                 self._datasets[label] = valid
 
@@ -2485,10 +2597,11 @@ class StatisticsTableWidget(QTableWidget):
             else:
                 mean_val = median_val = com_val = std_val = float("nan")
 
+            # Columns: [Name, Center of Mass, Mean, Median, Std Dev]
             self.setItem(row, 0, QTableWidgetItem(str(name)))
-            self.setItem(row, 1, QTableWidgetItem(f"{mean_val:.4f}"))
-            self.setItem(row, 2, QTableWidgetItem(f"{median_val:.4f}"))
-            self.setItem(row, 3, QTableWidgetItem(f"{com_val:.4f}"))
+            self.setItem(row, 1, QTableWidgetItem(f"{com_val:.4f}"))
+            self.setItem(row, 2, QTableWidgetItem(f"{mean_val:.4f}"))
+            self.setItem(row, 3, QTableWidgetItem(f"{median_val:.4f}"))
             self.setItem(row, 4, QTableWidgetItem(f"{std_val:.4f}"))
 
     def update_group_statistics(
@@ -2528,138 +2641,6 @@ class StatisticsTableWidget(QTableWidget):
             pooled_datasets[name] = pooled
 
         self.update_statistics(pooled_datasets, bin_centers, bin_edges)
-
-
-class ResponsiveFormContainer(QWidget):
-    """Container that arranges form rows in 1 or 2 columns based on width.
-
-    Each *row* is a pair of ``(label_widget, field_widget)`` or a single
-    *full-span* widget.  When the container's width is below
-    ``width_threshold`` the rows are stacked vertically (single column).
-    When it is at or above the threshold the rows are arranged in a
-    two-column grid so that two label–field pairs sit side by side.
-
-    Usage::
-
-        form = ResponsiveFormContainer(width_threshold=450)
-        form.add_row(QLabel("Frequency:"), frequency_input)
-        form.add_row(QLabel("Type:"), type_combobox)
-        form.add_full_span_widget(calculate_button)
-
-    Parameters
-    ----------
-    width_threshold : int, optional
-        Width in pixels at which to switch from 1 to 2 columns.
-        Default is 450.
-    parent : QWidget, optional
-        Parent widget.
-    """
-
-    def __init__(self, width_threshold: int = 450, parent: QWidget = None):
-        super().__init__(parent)
-        self._width_threshold = width_threshold
-        self._rows = []  # list of (label_widget | None, field_widget)
-        self._current_columns = 1
-        self._grid = QGridLayout(self)
-        self._grid.setContentsMargins(0, 0, 0, 0)
-        self._grid.setSpacing(4)
-
-    # -- public API ----------------------------------------------------------
-
-    @property
-    def width_threshold(self) -> int:
-        return self._width_threshold
-
-    @width_threshold.setter
-    def width_threshold(self, value: int):
-        self._width_threshold = value
-        self._relayout()
-
-    def add_row(self, label_widget: QWidget, field_widget: QWidget):
-        """Add a label + field pair."""
-        self._rows.append((label_widget, field_widget))
-        self._relayout()
-
-    def add_full_span_widget(self, widget: QWidget):
-        """Add a widget that always takes the full width."""
-        self._rows.append((None, widget))
-        self._relayout()
-
-    def add_layout_as_row(self, label_widget: QWidget, layout):
-        """Add a label + layout pair (wraps the layout in a QWidget)."""
-        wrapper = QWidget()
-        wrapper.setLayout(layout)
-        self.add_row(label_widget, wrapper)
-
-    def add_full_span_layout(self, layout):
-        """Add a layout that always takes the full width."""
-        wrapper = QWidget()
-        wrapper.setLayout(layout)
-        self.add_full_span_widget(wrapper)
-
-    # -- layout logic --------------------------------------------------------
-
-    def resizeEvent(self, event):
-        """Re-evaluate column count when width changes."""
-        super().resizeEvent(event)
-        new_cols = 2 if self.width() >= self._width_threshold else 1
-        if new_cols != self._current_columns:
-            self._current_columns = new_cols
-            self._relayout()
-
-    def notify_width(self, width: int):
-        """Force a layout update for the given available width.
-
-        Can be called externally when the widget's own resizeEvent is not
-        sufficient (e.g. on initialisation or tab-switch).
-        """
-        new_cols = 2 if width >= self._width_threshold else 1
-        if new_cols != self._current_columns:
-            self._current_columns = new_cols
-            self._relayout()
-
-    def _relayout(self):
-        """Remove all items from the grid and re-add with the current column mode."""
-        # Detach all widgets without deleting them
-        while self._grid.count():
-            item = self._grid.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.setParent(None)
-
-        cols = self._current_columns
-        # Each "logical column" is 2 grid columns: label col + field col
-        # So 1 column mode uses grid cols 0-1, 2 column mode uses 0-1 and 2-3
-        grid_row = 0
-        col_pair = 0  # 0 or 1 (which logical column we're filling)
-
-        for label_w, field_w in self._rows:
-            if label_w is None:
-                # Full-span widget: finish current row if partially filled
-                if col_pair != 0:
-                    grid_row += 1
-                    col_pair = 0
-                self._grid.addWidget(field_w, grid_row, 0, 1, cols * 2)
-                field_w.setParent(self)
-                field_w.show()
-                grid_row += 1
-            else:
-                base_col = col_pair * 2
-                label_w.setParent(self)
-                field_w.setParent(self)
-                self._grid.addWidget(label_w, grid_row, base_col)
-                self._grid.addWidget(field_w, grid_row, base_col + 1)
-                label_w.show()
-                field_w.show()
-                col_pair += 1
-                if col_pair >= cols:
-                    grid_row += 1
-                    col_pair = 0
-
-        # Make field columns stretch equally
-        for c in range(cols):
-            self._grid.setColumnStretch(c * 2, 0)  # label: no stretch
-            self._grid.setColumnStretch(c * 2 + 1, 1)  # field: stretch
 
 
 class HistogramDockWidget(QWidget):

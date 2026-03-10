@@ -20,7 +20,8 @@ def test_histogram_widget_update_data_and_clear():
     assert widget.bin_edges is not None
     assert widget.bin_centers is not None
     assert len(widget.counts) == 8
-    assert np.all(widget._raw_valid_data > 0)
+    assert 0.0 in widget._raw_valid_data
+    assert -1.0 in widget._raw_valid_data
     assert np.all(np.isfinite(widget._raw_valid_data))
     assert widget._settings_button.isEnabled()
     assert widget.save_png_button.isEnabled()
@@ -34,6 +35,25 @@ def test_histogram_widget_update_data_and_clear():
     assert widget._raw_valid_data is None
     assert not widget._settings_button.isEnabled()
     assert not widget.save_png_button.isEnabled()
+
+
+def test_histogram_widget_default_filter_keeps_zero():
+    """Default filtering should keep zero values (drop only NaN/Inf)."""
+    widget = HistogramWidget(bins=5)
+    widget.update_data(np.array([0.0, 0.25, np.nan, np.inf]))
+
+    assert widget.counts is not None
+    assert np.any(np.isclose(widget._raw_valid_data, 0.0))
+
+
+def test_histogram_widget_exclude_nonpositive_option():
+    """Optional non-positive filtering should preserve old behavior."""
+    widget = HistogramWidget(bins=5, exclude_nonpositive=True)
+    widget.update_data(np.array([-1.0, 0.0, 0.25, np.nan, np.inf]))
+
+    assert widget.counts is not None
+    assert np.all(widget._raw_valid_data > 0)
+    assert np.allclose(widget._raw_valid_data, np.array([0.25]))
 
 
 def test_histogram_widget_update_multi_data_autosd():

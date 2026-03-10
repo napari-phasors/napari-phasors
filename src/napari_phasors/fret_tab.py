@@ -1522,7 +1522,10 @@ class FretWidget(QWidget):
             if data_max <= data_min:
                 data_max = data_min + 0.01
             self.histogram_widget.set_range(
-                data_min, data_max, slider_max=data_max
+                data_min,
+                data_max,
+                slider_min=data_min,
+                slider_max=data_max,
             )
 
         self.histogram_widget.update_colormap(
