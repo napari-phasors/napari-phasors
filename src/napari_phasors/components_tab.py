@@ -4113,3 +4113,10 @@ def set_cursors_visible(self):
     except AttributeError:
         pass
 
+# Fix for #202 – cursors visibility when components tab is active
+def set_cursors_visible(self):
+    try:
+        self.viewer.cursor = QtCore.Qt.ArrowCursor
+    except AttributeError:
+        pass
+
