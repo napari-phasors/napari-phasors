@@ -2669,3 +2669,14 @@ class CircularCursorWidget(QWidget):
                 self._update_cursor_statistics()
             self._dragging_cursor = None
             self._drag_offset = (0, 0)
+
+    def closeEvent(self, event):
+        """Clean up signal connections before closing."""
+        # Disconnect parent widget signal if present
+        if hasattr(self, 'parent_widget') and self.parent_widget:
+            with contextlib.suppress(ValueError, AttributeError):
+                self.parent_widget.canvas_widget.show_color_overlay_signal.disconnect(
+                    self._on_show_color_overlay
+                )
+
+        event.accept()

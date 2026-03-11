@@ -30,7 +30,11 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from ._utils import CheckableComboBox, update_frequency_in_metadata
+from ._utils import (
+    CheckableComboBox,
+    HistogramWidget,
+    update_frequency_in_metadata,
+)
 
 
 class FretWidget(QWidget):
@@ -323,6 +327,22 @@ class FretWidget(QWidget):
             self.calculate_fret_efficiency
         )
         layout.addWidget(self.calculate_fret_efficiency_button)
+
+        # NOTE: The widget is created here but NOT added to this tab's layout.
+        # PlotterWidget wraps it in a HistogramDockWidget and docks it separately.
+        self.histogram_widget = HistogramWidget(
+            xlabel="FRET efficiency",
+            ylabel="Pixel count",
+            bins=150,
+            default_colormap_name="viridis",
+            range_slider_enabled=True,
+            range_label_prefix="FRET efficiency range",
+            range_factor=1000,
+            parent=self,
+        )
+
+        # Connect range-slider signal
+        self.histogram_widget.rangeChanged.connect(self._on_fret_range_changed)
 
         layout.addStretch()
 
@@ -1110,6 +1130,12 @@ class FretWidget(QWidget):
         self.fret_colormap = new_colormap.colors
         self.colormap_contrast_limits = source_layer.contrast_limits
 
+        # Update histogram colormap
+        self.histogram_widget.update_colormap(
+            colormap_colors=self.fret_colormap,
+            contrast_limits=list(self.colormap_contrast_limits),
+        )
+
         # Extract colormap info for metadata
         colormap_name = getattr(new_colormap, 'name', 'custom')
         colormap_colors = getattr(new_colormap, 'colors', None)
@@ -1151,6 +1177,12 @@ class FretWidget(QWidget):
 
         # Update stored values
         self.colormap_contrast_limits = new_contrast_limits
+
+        # Update histogram colormap
+        self.histogram_widget.update_colormap(
+            colormap_colors=self.fret_colormap,
+            contrast_limits=list(self.colormap_contrast_limits),
+        )
 
         # Prepare for metadata
         contrast_limits = new_contrast_limits
@@ -1462,6 +1494,92 @@ class FretWidget(QWidget):
                 self.fret_colormap = self.fret_layer.colormap.colors
                 self.colormap_contrast_limits = self.fret_layer.contrast_limits
 
+    def _update_fret_histogram(self):
+        """Update the FRET efficiency histogram from all selected FRET layers."""
+        if not self.fret_layers:
+            self.histogram_widget.hide()
+            return
+
+        per_layer = {}
+        all_data = []
+        for layer in self.fret_layers:
+            if layer in self.viewer.layers:
+                data = layer.data.ravel()
+                all_data.append(data)
+                per_layer[layer.name] = data
+
+        if not all_data:
+            self.histogram_widget.hide()
+            return
+
+        merged = np.concatenate(all_data)
+
+        # Update range slider to match data extent
+        valid = merged[~np.isnan(merged) & np.isfinite(merged)]
+        if len(valid) > 0:
+            data_min = float(np.min(valid))
+            data_max = float(np.max(valid))
+            if data_max <= data_min:
+                data_max = data_min + 0.01
+            self.histogram_widget.set_range(
+                data_min,
+                data_max,
+                slider_min=data_min,
+                slider_max=data_max,
+            )
+
+        self.histogram_widget.update_colormap(
+            colormap_colors=self.fret_colormap,
+            contrast_limits=(
+                list(self.colormap_contrast_limits)
+                if self.colormap_contrast_limits is not None
+                else None
+            ),
+        )
+        if len(per_layer) > 1:
+            self.histogram_widget.update_multi_data(per_layer)
+        else:
+            self.histogram_widget.update_data(merged)
+
+    def _on_fret_range_changed(self, min_val, max_val):
+        """Handle range slider changes – clip FRET layers and update histogram."""
+        self._updating_linked_layers = True
+        try:
+            for layer in self.fret_layers:
+                if layer not in self.viewer.layers:
+                    continue
+                # Re-read the original (unclipped) data from 'fret_data' if
+                # stored, otherwise use what the layer already has.
+                original = layer.metadata.get('fret_data_original', layer.data)
+                clipped = np.clip(original, min_val, max_val)
+                layer.data = clipped
+                layer.contrast_limits = [min_val, max_val]
+
+            self.colormap_contrast_limits = [min_val, max_val]
+        finally:
+            self._updating_linked_layers = False
+
+        # Refresh histogram with clipped data
+        per_layer = {}
+        all_data = []
+        for layer in self.fret_layers:
+            if layer in self.viewer.layers:
+                data = layer.data.ravel()
+                all_data.append(data)
+                per_layer[layer.name] = data
+        if all_data:
+            merged = np.concatenate(all_data)
+            self.histogram_widget.update_colormap(
+                colormap_colors=self.fret_colormap,
+                contrast_limits=[min_val, max_val],
+            )
+            if len(per_layer) > 1:
+                self.histogram_widget.update_multi_data(per_layer)
+            else:
+                self.histogram_widget.update_data(merged)
+
+        self.plot_donor_trajectory()
+
     def _on_image_layer_changed(self):
         """Callback whenever the image layer with phasor features changes."""
         if self.current_donor_line is not None:
@@ -1494,6 +1612,8 @@ class FretWidget(QWidget):
         self.fret_layers = []
         self.fret_colormap = None
         self.colormap_contrast_limits = None
+
+        self.histogram_widget.clear()
 
         layer_name = self.parent_widget.get_primary_layer_name()
 
@@ -1702,6 +1822,9 @@ class FretWidget(QWidget):
 
             fret_layer = self.viewer.add_layer(selected_fret_layer)
 
+            # Store original unclipped data for range slider support
+            fret_layer.metadata['fret_data_original'] = fret_efficiency.copy()
+
             # Add to list of FRET layers and connect events
             self.fret_layers.append(fret_layer)
             fret_layer.events.colormap.connect(self._on_colormap_changed)
@@ -1743,4 +1866,27 @@ class FretWidget(QWidget):
                 'colormap_settings.colormap_changed', False
             )
 
+        self._update_fret_histogram()
         self.plot_donor_trajectory()
+
+    def closeEvent(self, event):
+        """Clean up signal connections before closing."""
+        # Disconnect viewer events
+        with contextlib.suppress(ValueError, AttributeError):
+            self.viewer.layers.events.inserted.disconnect(
+                self._on_layer_changed
+            )
+        with contextlib.suppress(ValueError, AttributeError):
+            self.viewer.layers.events.removed.disconnect(
+                self._on_layer_changed
+            )
+
+        # Disconnect all layer name change events
+        with contextlib.suppress(ValueError, AttributeError):
+            for layer in self.viewer.layers:
+                with contextlib.suppress(TypeError, ValueError):
+                    layer.events.name.disconnect(
+                        self._update_background_combobox
+                    )
+
+        event.accept()
