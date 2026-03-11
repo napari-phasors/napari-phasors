@@ -35,8 +35,13 @@ if TYPE_CHECKING:
     import napari
 
 
-class LifetimeWidget(QWidget):
-    """Widget to plot lifetime values."""
+class PhasorMappingWidget(QWidget):
+    """Widget to calculate and display phasor mapping outputs.
+
+    Supports lifetime-derived outputs and direct phasor outputs:
+    Apparent Phase Lifetime, Apparent Modulation Lifetime,
+    Normal Lifetime, Phase, and Modulation.
+    """
 
     outputTypeChanged = Signal(str)
 
@@ -358,6 +363,31 @@ class LifetimeWidget(QWidget):
             self._set_histogram_density_visible(pw, True)
             pw.canvas_widget.figure.canvas.draw_idle()
 
+    def _get_phasor_mapping_settings(self, layer, create: bool = False):
+        """Return mapping settings, migrating legacy metadata when needed."""
+        if 'settings' not in layer.metadata:
+            if not create:
+                return None
+            layer.metadata['settings'] = {}
+
+        settings_container = layer.metadata['settings']
+        mapping_settings = settings_container.get('phasor_mapping')
+        legacy_settings = settings_container.get('lifetime')
+
+        if mapping_settings is None and legacy_settings is not None:
+            mapping_settings = legacy_settings.copy()
+            settings_container['phasor_mapping'] = mapping_settings
+
+        if mapping_settings is None and create:
+            mapping_settings = self._get_default_lifetime_settings()
+            settings_container['phasor_mapping'] = mapping_settings
+
+        # Keep legacy key populated for backward compatibility.
+        if mapping_settings is not None:
+            settings_container['lifetime'] = mapping_settings
+
+        return mapping_settings
+
     def _update_lifetime_setting_in_metadata(self, key, value):
         """Update a specific lifetime setting in the current layer's metadata."""
         if self._updating_settings:
@@ -366,30 +396,21 @@ class LifetimeWidget(QWidget):
         layer_name = self.parent_widget.get_primary_layer_name()
         if layer_name:
             layer = self.viewer.layers[layer_name]
-            if 'settings' not in layer.metadata:
-                layer.metadata['settings'] = {}
-            if 'lifetime' not in layer.metadata['settings']:
-                layer.metadata['settings'][
-                    'lifetime'
-                ] = self._get_default_lifetime_settings()
-            layer.metadata['settings']['lifetime'][key] = value
+            mapping_settings = self._get_phasor_mapping_settings(
+                layer, create=True
+            )
+            mapping_settings[key] = value
             if key == 'output_type':
                 if value in {
                     "Apparent Phase Lifetime",
                     "Apparent Modulation Lifetime",
                     "Normal Lifetime",
                 }:
-                    layer.metadata['settings']['lifetime'][
-                        'lifetime_type'
-                    ] = value
+                    mapping_settings['lifetime_type'] = value
             elif key == 'range_min':
-                layer.metadata['settings']['lifetime'][
-                    'lifetime_range_min'
-                ] = value
+                mapping_settings['lifetime_range_min'] = value
             elif key == 'range_max':
-                layer.metadata['settings']['lifetime'][
-                    'lifetime_range_max'
-                ] = value
+                mapping_settings['lifetime_range_max'] = value
 
     def _restore_lifetime_settings_from_metadata(self):
         """Restore all lifetime settings from the current layer's metadata."""
@@ -420,10 +441,8 @@ class LifetimeWidget(QWidget):
             finally:
                 self._updating_settings = False
 
-        if (
-            'settings' not in layer.metadata
-            or 'lifetime' not in layer.metadata['settings']
-        ):
+        settings = self._get_phasor_mapping_settings(layer, create=False)
+        if settings is None:
             self._updating_settings = True
             try:
                 self.output_mode_combobox.setCurrentText('Lifetime')
@@ -449,8 +468,6 @@ class LifetimeWidget(QWidget):
 
         self._updating_settings = True
         try:
-            settings = layer.metadata['settings']['lifetime']
-
             output_type = settings.get('output_type') or settings.get(
                 'lifetime_type',
                 'Apparent Phase Lifetime',
@@ -808,7 +825,7 @@ class LifetimeWidget(QWidget):
         for layer in self.metric_layers:
             if layer in self.viewer.layers:
                 with contextlib.suppress(
-                    AttributeError, RuntimeError, TypeError
+                    AttributeError, RuntimeError, TypeError, ValueError
                 ):
                     layer.events.colormap.disconnect(self._on_colormap_changed)
                     layer.events.contrast_limits.disconnect(
@@ -1038,11 +1055,8 @@ class LifetimeWidget(QWidget):
             return
 
         layer = self.viewer.layers[layer_name]
-        if (
-            'settings' in layer.metadata
-            and 'lifetime' in layer.metadata['settings']
-        ):
-            settings = layer.metadata['settings']['lifetime']
+        settings = self._get_phasor_mapping_settings(layer, create=False)
+        if settings is not None:
 
             min_key = (
                 'range_min'

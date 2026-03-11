@@ -96,7 +96,7 @@ def test_phasor_plotter_initialization_values(make_napari_viewer):
     assert hasattr(plotter, 'filter_tab')
     assert hasattr(plotter, 'selection_tab')
     assert hasattr(plotter, 'components_tab')
-    assert hasattr(plotter, 'lifetime_tab')
+    assert hasattr(plotter, 'phasor_mapping_tab')
     assert hasattr(plotter, 'fret_tab')
 
     # Test filter_tab and selection_tab are proper widgets

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
 import numpy as np
+import scipy
 from matplotlib.backends.backend_qt5agg import (
     FigureCanvasQTAgg as FigureCanvas,
 )
@@ -530,53 +531,6 @@ def update_frequency_in_metadata(
     if "settings" not in image_layer.metadata:
         image_layer.metadata["settings"] = {}
     image_layer.metadata["settings"]["frequency"] = frequency
-
-
-def gaussian_filter1d(
-    data,
-    sigma,
-    axis=-1,
-    mode="reflect",
-    truncate=4.0,
-    **kwargs,
-):
-    """Implementation of 1D Gaussian filtering using NumPy.
-    This is a simplified approximation of scipy.ndimage.gaussian_filter1d
-    that supports the subset of behavior needed by this plugin.
-    """
-    # Backward-compatibility for SciPy-style keyword argument name.
-    if "input" in kwargs:
-        data = kwargs.pop("input")
-    if kwargs:
-        unexpected = ", ".join(sorted(kwargs.keys()))
-        raise TypeError(f"Unexpected keyword argument(s): {unexpected}")
-
-    data = np.asarray(data, dtype=float)
-    # Determine kernel radius from sigma and truncate (same convention as SciPy)
-    radius = int(truncate * float(sigma) + 0.5)
-    if radius <= 0 or float(sigma) <= 0:
-        return data.copy()
-    x = np.arange(-radius, radius + 1, dtype=float)
-    kernel = np.exp(-(x**2) / (2.0 * float(sigma) ** 2))
-    kernel /= kernel.sum()
-    # Only a basic "reflect" behavior is approximated; other modes default to this.
-    if mode != "reflect":
-        warnings.warn(
-            f"gaussian_filter1d fallback only approximates 'reflect' mode; "
-            f"got mode={mode!r}. Using 'reflect' instead.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-
-    def _convolve_1d(arr_1d):
-        # Pad exactly ``radius`` samples on each side so 'valid' convolution
-        # returns an array with the original length.
-        if arr_1d.size <= 1:
-            return arr_1d.astype(float, copy=True)
-        padded = np.pad(arr_1d, pad_width=radius, mode="reflect")
-        return np.convolve(padded, kernel, mode="valid")
-
-    return np.apply_along_axis(_convolve_1d, axis, data)
 
 
 class _PrimaryLayerDelegate(QStyledItemDelegate):
@@ -2080,7 +2034,9 @@ class HistogramWidget(QWidget):
         y_fine : np.ndarray
         """
         if self._smooth_curves:
-            y_smooth = gaussian_filter1d(y.astype(float), sigma=sigma)
+            y_smooth = scipy.ndimage.gaussian_filter1d(
+                y.astype(float), sigma=sigma
+            )
             x_fine = np.linspace(
                 self.bin_centers[0],
                 self.bin_centers[-1],
