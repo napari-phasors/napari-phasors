@@ -9,6 +9,7 @@ from phasorpy.lifetime import (
     phasor_to_apparent_lifetime,
     phasor_to_normal_lifetime,
 )
+from phasorpy.phasor import phasor_to_polar
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QComboBox,
@@ -25,11 +26,11 @@ from napari_phasors._utils import HistogramWidget
 from napari_phasors.plotter import PlotterWidget
 
 
-def test_lifetime_widget_initialization_values(make_napari_viewer):
+def test_phasor_mapping_widget_initialization_values(make_napari_viewer):
     """Test the initialization of the Lifetime Widget."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
-    lifetime_widget = parent.lifetime_tab
+    lifetime_widget = parent.phasor_mapping_tab
 
     # Basic widget structure tests
     assert lifetime_widget.viewer == viewer
@@ -108,21 +109,23 @@ def test_lifetime_widget_initialization_values(make_napari_viewer):
 
     # Histogram widget is now hosted in the shared dock stack.
     assert (
-        parent.lifetime_histogram_dock_widget.histogram_widget
+        parent.phasor_map_histogram_dock_widget.histogram_widget
         is lifetime_widget.histogram_widget
     )
     assert (
-        parent._histogram_stack.indexOf(parent.lifetime_histogram_dock_widget)
+        parent._histogram_stack.indexOf(
+            parent.phasor_map_histogram_dock_widget
+        )
         >= 0
     )
 
 
-def test_lifetime_widget_histogram_styling(make_napari_viewer):
+def test_phasor_mapping_widget_histogram_styling(make_napari_viewer):
     """Test that histogram styling is applied correctly."""
     viewer = make_napari_viewer()
 
     parent = PlotterWidget(viewer)
-    lifetime_widget = parent.lifetime_tab
+    lifetime_widget = parent.phasor_mapping_tab
 
     # Check axes styling via the HistogramWidget
     assert lifetime_widget.histogram_widget.ax.patch.get_alpha() == 0
@@ -140,11 +143,11 @@ def test_lifetime_widget_histogram_styling(make_napari_viewer):
     assert lifetime_widget.histogram_widget.ax.get_xlabel() == "Lifetime (ns)"
 
 
-def test_lifetime_widget_frequency_input_validation(make_napari_viewer):
+def test_phasor_mapping_widget_frequency_input_validation(make_napari_viewer):
     """Test frequency input validation."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
-    lifetime_widget = parent.lifetime_tab
+    lifetime_widget = parent.phasor_mapping_tab
 
     # Test that frequency input has double validator
     validator = lifetime_widget.frequency_input.validator()
@@ -155,11 +158,11 @@ def test_lifetime_widget_frequency_input_validation(make_napari_viewer):
     assert lifetime_widget.frequency_input.text() == "80.0"
 
 
-def test_lifetime_widget_slider_drag_state(make_napari_viewer):
+def test_phasor_mapping_widget_slider_drag_state(make_napari_viewer):
     """Test slider drag state tracking."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
-    lifetime_widget = parent.lifetime_tab
+    lifetime_widget = parent.phasor_mapping_tab
 
     # Initially not being dragged
     assert lifetime_widget.histogram_widget._slider_being_dragged is False
@@ -173,11 +176,11 @@ def test_lifetime_widget_slider_drag_state(make_napari_viewer):
     assert lifetime_widget.histogram_widget._slider_being_dragged is False
 
 
-def test_lifetime_widget_range_label_update(make_napari_viewer):
+def test_phasor_mapping_widget_range_label_update(make_napari_viewer):
     """Test lifetime range label update."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
-    lifetime_widget = parent.lifetime_tab
+    lifetime_widget = parent.phasor_mapping_tab
 
     # Test label update
     test_value = (25000, 75000)  # Represents 25.0 - 75.0 ns with factor 1000
@@ -191,22 +194,24 @@ def test_lifetime_widget_range_label_update(make_napari_viewer):
     assert lifetime_widget.lifetime_max_edit.text() == "75.00"
 
 
-def test_lifetime_widget_calculate_lifetimes_no_layer(make_napari_viewer):
+def test_phasor_mapping_widget_calculate_lifetimes_no_layer(
+    make_napari_viewer,
+):
     """Test calculate_lifetimes when no layer is available."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
-    lifetime_widget = parent.lifetime_tab
+    lifetime_widget = parent.phasor_mapping_tab
 
     # Should return early without error
     lifetime_widget.calculate_lifetimes()
     assert lifetime_widget.lifetime_data_original is None
 
 
-def test_lifetime_widget_plot_histogram_no_data(make_napari_viewer):
+def test_phasor_mapping_widget_plot_histogram_no_data(make_napari_viewer):
     """Test plotting histogram when no data is available."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
-    lifetime_widget = parent.lifetime_tab
+    lifetime_widget = parent.phasor_mapping_tab
 
     # No data should leave the histogram empty with controls disabled.
     lifetime_widget.plot_lifetime_histogram()
@@ -215,11 +220,11 @@ def test_lifetime_widget_plot_histogram_no_data(make_napari_viewer):
     assert not lifetime_widget.histogram_widget.save_png_button.isEnabled()
 
 
-def test_lifetime_widget_ui_layout(make_napari_viewer):
+def test_phasor_mapping_widget_ui_layout(make_napari_viewer):
     """Test the UI layout structure."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
-    lifetime_widget = parent.lifetime_tab
+    lifetime_widget = parent.phasor_mapping_tab
 
     # Check main layout
     main_layout = lifetime_widget.layout()
@@ -234,11 +239,11 @@ def test_lifetime_widget_ui_layout(make_napari_viewer):
     assert len(h_layouts) >= 1  # At least one for the min/max edit controls
 
 
-def test_lifetime_widget_canvas_properties(make_napari_viewer):
+def test_phasor_mapping_widget_canvas_properties(make_napari_viewer):
     """Test canvas and figure properties."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
-    lifetime_widget = parent.lifetime_tab
+    lifetime_widget = parent.phasor_mapping_tab
 
     # Check figure size
     assert lifetime_widget.histogram_widget.fig.get_figwidth() == 8
@@ -258,26 +263,28 @@ def test_lifetime_widget_canvas_properties(make_napari_viewer):
     assert canvas.height() == 150  # Fixed height as set in setup_ui
 
 
-def test_lifetime_widget_type_changed_no_frequency(make_napari_viewer):
+def test_phasor_mapping_widget_type_changed_no_frequency(make_napari_viewer):
     """Test behavior when Calculate is clicked but no frequency is set."""
     viewer = make_napari_viewer()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
 
     parent = PlotterWidget(viewer)
-    lifetime_widget = parent.lifetime_tab
+    lifetime_widget = parent.phasor_mapping_tab
 
     # Set a lifetime type but don't set frequency
     lifetime_widget.lifetime_type_combobox.setCurrentText(
         "Apparent Phase Lifetime"
     )
 
-    with patch('napari_phasors.lifetime_tab.show_warning') as mock_warning:
+    with patch(
+        'napari_phasors.phasor_mapping_tab.show_warning'
+    ) as mock_warning:
         lifetime_widget._on_calculate_lifetime_clicked()
         mock_warning.assert_called_once_with("Enter frequency")
 
 
-def test_lifetime_widget_settings_initialization_in_metadata(
+def test_phasor_mapping_widget_settings_initialization_in_metadata(
     make_napari_viewer,
 ):
     """Test that lifetime settings are only initialized when analysis is performed."""
@@ -285,7 +292,7 @@ def test_lifetime_widget_settings_initialization_in_metadata(
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
     parent = PlotterWidget(viewer)
-    lifetime_widget = parent.lifetime_tab
+    lifetime_widget = parent.phasor_mapping_tab
 
     # Select the layer
     parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
@@ -325,13 +332,13 @@ def test_lifetime_widget_settings_initialization_in_metadata(
     parent.deleteLater()
 
 
-def test_lifetime_widget_settings_update_in_metadata(make_napari_viewer):
+def test_phasor_mapping_widget_settings_update_in_metadata(make_napari_viewer):
     """Test that changing settings updates layer metadata."""
     viewer = make_napari_viewer()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
     parent = PlotterWidget(viewer)
-    lifetime_widget = parent.lifetime_tab
+    lifetime_widget = parent.phasor_mapping_tab
 
     # Set frequency
     lifetime_widget.frequency_input.setText("80.0")
@@ -357,13 +364,13 @@ def test_lifetime_widget_settings_update_in_metadata(make_napari_viewer):
     parent.deleteLater()
 
 
-def test_lifetime_widget_settings_persistence_across_layer_switches(
+def test_phasor_mapping_widget_settings_persistence_across_layer_switches(
     make_napari_viewer,
 ):
     """Test that settings persist when switching between layers."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
-    lifetime_widget = parent.lifetime_tab
+    lifetime_widget = parent.phasor_mapping_tab
 
     # Create two layers
     layer_1 = create_image_layer_with_phasors()
@@ -434,13 +441,13 @@ def test_lifetime_widget_settings_persistence_across_layer_switches(
     parent.deleteLater()
 
 
-def test_lifetime_widget_adding_layer_without_settings_initializes_defaults(
+def test_phasor_mapping_widget_adding_layer_without_settings_initializes_defaults(
     make_napari_viewer,
 ):
     """Test that adding a layer without lifetime settings doesn't auto-initialize metadata."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
-    lifetime_widget = parent.lifetime_tab
+    lifetime_widget = parent.phasor_mapping_tab
 
     # Create a layer and remove lifetime settings if they exist
     layer = create_image_layer_with_phasors()
@@ -487,13 +494,13 @@ def test_lifetime_widget_adding_layer_without_settings_initializes_defaults(
     parent.deleteLater()
 
 
-def test_lifetime_widget_settings_restored_after_recalculation(
+def test_phasor_mapping_widget_settings_restored_after_recalculation(
     make_napari_viewer,
 ):
     """Test that lifetime range settings are restored after recalculating lifetimes."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
-    lifetime_widget = parent.lifetime_tab
+    lifetime_widget = parent.phasor_mapping_tab
 
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
@@ -561,13 +568,13 @@ def test_lifetime_widget_settings_restored_after_recalculation(
     parent.deleteLater()
 
 
-def test_lifetime_widget_adding_removing_layers_updates_settings(
+def test_phasor_mapping_widget_adding_removing_layers_updates_settings(
     make_napari_viewer,
 ):
     """Test that adding/removing layers properly manages settings."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
-    lifetime_widget = parent.lifetime_tab
+    lifetime_widget = parent.phasor_mapping_tab
 
     # Add first layer with settings
     layer_1 = create_image_layer_with_phasors()
@@ -621,13 +628,13 @@ def test_lifetime_widget_adding_removing_layers_updates_settings(
     parent.deleteLater()
 
 
-def test_lifetime_widget_frequency_saved_on_lifetime_type_change(
+def test_phasor_mapping_widget_frequency_saved_on_lifetime_type_change(
     make_napari_viewer,
 ):
     """Test that frequency is saved to metadata when Calculate is clicked."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
-    lifetime_widget = parent.lifetime_tab
+    lifetime_widget = parent.phasor_mapping_tab
 
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
@@ -650,13 +657,13 @@ def test_lifetime_widget_frequency_saved_on_lifetime_type_change(
     parent.deleteLater()
 
 
-def test_lifetime_widget_no_recursive_updates_when_restoring_settings(
+def test_phasor_mapping_widget_no_recursive_updates_when_restoring_settings(
     make_napari_viewer,
 ):
     """Test that restoring settings doesn't trigger recursive updates."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
-    lifetime_widget = parent.lifetime_tab
+    lifetime_widget = parent.phasor_mapping_tab
 
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
@@ -695,11 +702,11 @@ def test_lifetime_widget_no_recursive_updates_when_restoring_settings(
     parent.deleteLater()
 
 
-def test_lifetime_widget_slider_range_update(make_napari_viewer):
+def test_phasor_mapping_widget_slider_range_update(make_napari_viewer):
     """Test updating slider range based on lifetime data."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
-    lifetime_widget = parent.lifetime_tab
+    lifetime_widget = parent.phasor_mapping_tab
 
     # Create mock lifetime data
     lifetime_widget.lifetime_data_original = np.array(
@@ -724,11 +731,13 @@ def test_lifetime_widget_slider_range_update(make_napari_viewer):
     )  # (1.0 * 1000, 5.0 * 1000)
 
 
-def test_lifetime_widget_slider_range_update_no_valid_data(make_napari_viewer):
+def test_phasor_mapping_widget_slider_range_update_no_valid_data(
+    make_napari_viewer,
+):
     """Test updating slider range when no valid data exists."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
-    lifetime_widget = parent.lifetime_tab
+    lifetime_widget = parent.phasor_mapping_tab
 
     # Create data with only invalid values
     lifetime_widget.lifetime_data_original = np.array([np.nan, 0, np.inf, -1])
@@ -742,11 +751,11 @@ def test_lifetime_widget_slider_range_update_no_valid_data(make_napari_viewer):
     assert lifetime_widget.lifetime_range_slider.maximum() == 10000
 
 
-def test_lifetime_widget_min_max_edit_callbacks(make_napari_viewer):
+def test_phasor_mapping_widget_min_max_edit_callbacks(make_napari_viewer):
     """Test manual entry of min/max values."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
-    lifetime_widget = parent.lifetime_tab
+    lifetime_widget = parent.phasor_mapping_tab
 
     # Set some initial max lifetime for validation
     lifetime_widget.max_lifetime = 10.0
@@ -768,7 +777,9 @@ def test_lifetime_widget_min_max_edit_callbacks(make_napari_viewer):
         mock_range_changed.assert_called_once()
 
 
-def test_lifetime_widget_image_layer_changed_with_settings(make_napari_viewer):
+def test_phasor_mapping_widget_image_layer_changed_with_settings(
+    make_napari_viewer,
+):
     """Test behavior when image layer changes and has frequency settings."""
     viewer = make_napari_viewer()
     intensity_image_layer = create_image_layer_with_phasors()
@@ -776,7 +787,7 @@ def test_lifetime_widget_image_layer_changed_with_settings(make_napari_viewer):
     viewer.add_layer(intensity_image_layer)
 
     parent = PlotterWidget(viewer)
-    lifetime_widget = parent.lifetime_tab
+    lifetime_widget = parent.phasor_mapping_tab
 
     # Mock the harmonic value
     parent.harmonic = 1
@@ -787,11 +798,13 @@ def test_lifetime_widget_image_layer_changed_with_settings(make_napari_viewer):
     assert lifetime_widget.frequency_input.text() == "80.0"
 
 
-def test_lifetime_widget_image_layer_changed_no_layer(make_napari_viewer):
+def test_phasor_mapping_widget_image_layer_changed_no_layer(
+    make_napari_viewer,
+):
     """Test behavior when no layer is selected."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
-    lifetime_widget = parent.lifetime_tab
+    lifetime_widget = parent.phasor_mapping_tab
 
     # Mock empty layer name
     parent.image_layer_with_phasor_features_combobox.setCurrentText("")
@@ -806,11 +819,11 @@ def test_lifetime_widget_image_layer_changed_no_layer(make_napari_viewer):
     assert not lifetime_widget.histogram_widget.save_png_button.isEnabled()
 
 
-def test_lifetime_widget_colormap_changed_callback(make_napari_viewer):
+def test_phasor_mapping_widget_colormap_changed_callback(make_napari_viewer):
     """Test colormap change callback."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
-    lifetime_widget = parent.lifetime_tab
+    lifetime_widget = parent.phasor_mapping_tab
 
     # Create mock event and layer
     mock_layer = MagicMock()
@@ -852,13 +865,13 @@ def test_lifetime_widget_colormap_changed_callback(make_napari_viewer):
     lifetime_widget._updating_contrast_limits = False
 
 
-def test_lifetime_widget_calculate_lifetimes_with_real_data(
+def test_phasor_mapping_widget_calculate_lifetimes_with_real_data(
     make_napari_viewer,
 ):
     """Test calculating different lifetime types with real phasor data and compare with expected values."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
-    lifetime_widget = parent.lifetime_tab
+    lifetime_widget = parent.phasor_mapping_tab
 
     # Set up test data
     parent.harmonic = 1
@@ -956,13 +969,13 @@ def test_lifetime_widget_calculate_lifetimes_with_real_data(
     )
 
 
-def test_lifetime_widget_full_workflow_with_real_calculations(
+def test_phasor_mapping_widget_full_workflow_with_real_calculations(
     make_napari_viewer,
 ):
     """Test the complete workflow with real lifetime calculations and layer creation."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
-    lifetime_widget = parent.lifetime_tab
+    lifetime_widget = parent.phasor_mapping_tab
 
     # Create and add synthetic layer
     layer = create_image_layer_with_phasors()
@@ -1063,11 +1076,13 @@ def test_lifetime_widget_full_workflow_with_real_calculations(
     assert "Normal Lifetime" in normal_lifetime_layer.name
 
 
-def test_lifetime_widget_range_clipping_with_real_data(make_napari_viewer):
+def test_phasor_mapping_widget_range_clipping_with_real_data(
+    make_napari_viewer,
+):
     """Test range clipping functionality with real calculated lifetime data and slider interaction."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
-    lifetime_widget = parent.lifetime_tab
+    lifetime_widget = parent.phasor_mapping_tab
 
     # Create and add real layer with phasor data
     layer = create_image_layer_with_phasors()
@@ -1248,13 +1263,13 @@ def test_lifetime_widget_range_clipping_with_real_data(make_napari_viewer):
         mock_update_data.assert_called_once()
 
 
-def test_lifetime_widget_different_harmonics_and_frequencies(
+def test_phasor_mapping_widget_different_harmonics_and_frequencies(
     make_napari_viewer,
 ):
     """Test lifetime calculations with different harmonic and frequency combinations."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
-    lifetime_widget = parent.lifetime_tab
+    lifetime_widget = parent.phasor_mapping_tab
 
     # Test data - 2x2 arrays
     real_values = np.array([[0.6, 0.7], [0.8, 0.5]])[np.newaxis, :, :]
@@ -1323,3 +1338,177 @@ def test_lifetime_widget_different_harmonics_and_frequencies(
 
         # Clean up layer for next iteration
         viewer.layers.remove(layer)
+
+
+def test_phasor_mapping_widget_output_mode_updates_button_text(
+    make_napari_viewer,
+):
+    """Button text should reflect the selected mapping parameter."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    assert (
+        mapping_widget.calculate_lifetime_button.text()
+        == "Display Lifetime Map"
+    )
+
+    mapping_widget.output_mode_combobox.setCurrentText("Phase")
+    assert (
+        mapping_widget.calculate_lifetime_button.text() == "Display Phase Map"
+    )
+
+    mapping_widget.output_mode_combobox.setCurrentText("Modulation")
+    assert (
+        mapping_widget.calculate_lifetime_button.text()
+        == "Display Modulation Map"
+    )
+
+
+def test_phasor_mapping_widget_phase_modulation_calculation(
+    make_napari_viewer,
+):
+    """Phase and modulation outputs should match phasor_to_polar values."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+
+    metadata = layer.metadata
+    g_array = metadata["G"]
+    s_array = metadata["S"]
+    harmonics = np.atleast_1d(metadata.get("harmonics", [parent.harmonic]))
+    harmonic_index = int(np.where(harmonics == parent.harmonic)[0][0])
+    real = g_array[harmonic_index]
+    imag = s_array[harmonic_index]
+    expected_phase, expected_modulation = phasor_to_polar(real, imag)
+
+    mapping_widget.output_mode_combobox.setCurrentText("Phase")
+    mapping_widget.calculate_output_data()
+    np.testing.assert_allclose(
+        mapping_widget.current_metric_data_original,
+        expected_phase.flatten(),
+        rtol=1e-6,
+        atol=1e-6,
+    )
+
+    mapping_widget.output_mode_combobox.setCurrentText("Modulation")
+    mapping_widget.calculate_output_data()
+    np.testing.assert_allclose(
+        mapping_widget.current_metric_data_original,
+        expected_modulation.flatten(),
+        rtol=1e-6,
+        atol=1e-6,
+    )
+
+    assert "derived_data" in layer.metadata
+    assert "Phase" in layer.metadata["derived_data"]
+    assert "Modulation" in layer.metadata["derived_data"]
+
+
+def test_phasor_mapping_widget_phase_modulation_layer_display(
+    make_napari_viewer,
+):
+    """Display action should create/update phase and modulation map layers."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+
+    mapping_widget.output_mode_combobox.setCurrentText("Phase")
+    mapping_widget.colormap_combobox.setCurrentText("viridis")
+    mapping_widget._on_calculate_lifetime_clicked()
+
+    phase_layer_name = f"Phase: {layer.name}"
+    assert phase_layer_name in viewer.layers
+    phase_layer = viewer.layers[phase_layer_name]
+    assert phase_layer.colormap.name == "viridis"
+
+    mapping_widget.output_mode_combobox.setCurrentText("Modulation")
+    mapping_widget.colormap_combobox.setCurrentText("plasma")
+    mapping_widget._on_calculate_lifetime_clicked()
+
+    modulation_layer_name = f"Modulation: {layer.name}"
+    assert modulation_layer_name in viewer.layers
+    modulation_layer = viewer.layers[modulation_layer_name]
+    assert modulation_layer.colormap.name == "plasma"
+
+
+def test_phasor_mapping_histogram_overlay_checkbox_lifecycle(
+    make_napari_viewer,
+):
+    """Phase/Modulation overlay should be created and cleared via checkbox."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    parent.on_image_layer_changed()
+
+    # Start with Phase mode and no overlay.
+    mapping_widget.output_mode_combobox.setCurrentText("Phase")
+    mapping_widget._on_calculate_lifetime_clicked()
+    assert mapping_widget._overlay_imshow is None
+
+    hist_artist = parent.canvas_widget.artists["HISTOGRAM2D"]
+    histogram_img = hist_artist._mpl_artists.get("histogram_image")
+    assert histogram_img is not None
+    assert histogram_img.get_visible()
+
+    # Enabling 2D colormap should create overlay and hide base density image.
+    mapping_widget.apply_2d_colormap_checkbox.setChecked(True)
+    assert mapping_widget._overlay_imshow is not None
+    assert not histogram_img.get_visible()
+
+    # Switch output type to Modulation: overlay should remain active.
+    mapping_widget.output_mode_combobox.setCurrentText("Modulation")
+    mapping_widget._on_calculate_lifetime_clicked()
+    assert mapping_widget._overlay_imshow is not None
+    assert not histogram_img.get_visible()
+
+    # Turning the checkbox off should clear overlay and show density image.
+    mapping_widget.apply_2d_colormap_checkbox.setChecked(False)
+    assert mapping_widget._overlay_imshow is None
+    assert histogram_img.get_visible()
+
+
+def test_phasor_mapping_histogram_overlay_tab_visibility_lifecycle(
+    make_napari_viewer,
+):
+    """Overlay should clear when tab is hidden and reapply when shown again."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    parent.on_image_layer_changed()
+
+    mapping_widget.output_mode_combobox.setCurrentText("Phase")
+    mapping_widget._on_calculate_lifetime_clicked()
+    mapping_widget.apply_2d_colormap_checkbox.setChecked(True)
+    assert mapping_widget._overlay_imshow is not None
+
+    hist_artist = parent.canvas_widget.artists["HISTOGRAM2D"]
+    histogram_img = hist_artist._mpl_artists.get("histogram_image")
+    assert histogram_img is not None
+    assert not histogram_img.get_visible()
+
+    # Simulate leaving the tab: overlay should be removed and base density restored.
+    mapping_widget.on_tab_visibility_changed(False)
+    assert mapping_widget._overlay_imshow is None
+    assert histogram_img.get_visible()
+
+    # Simulate returning to tab: overlay should be reapplied.
+    mapping_widget.on_tab_visibility_changed(True)
+    assert mapping_widget._overlay_imshow is not None
+    assert not histogram_img.get_visible()

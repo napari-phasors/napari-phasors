@@ -48,7 +48,7 @@ from .calibration_tab import CalibrationWidget
 from .components_tab import ComponentsWidget
 from .filter_tab import FilterWidget
 from .fret_tab import FretWidget
-from .lifetime_tab import LifetimeWidget
+from .phasor_mapping_tab import PhasorMappingWidget
 from .selection_tab import SelectionWidget
 
 
@@ -216,8 +216,8 @@ class PlotterWidget(QWidget):
         The selection tab for cursor-based analysis.
     components_tab : QWidget
         The Components tab for component analysis.
-    lifetime_tab : QWidget
-        The Lifetime tab for lifetime analysis.
+    phasor_mapping_tab : QWidget
+        The Phasor Mapping tab for phasor mapping analysis.
     fret_tab : QWidget
         The FRET tab for FRET analysis.
     plotter_inputs_widget : QWidget
@@ -585,7 +585,7 @@ class PlotterWidget(QWidget):
         self._create_filter_tab()
         self._create_selection_tab()
         self._create_components_tab()
-        self._create_lifetime_tab()
+        self._create_phasor_mapping_tab()
         self._create_fret_tab()
 
         # Connect napari signals when new layer is inseted or removed
@@ -1001,7 +1001,11 @@ class PlotterWidget(QWidget):
                 "filter_tab",
                 ["threshold", "filter"],
             ),
-            ("Lifetime", "lifetime_tab", "lifetime"),
+            (
+                "Phasor Mapping",
+                "phasor_mapping_tab",
+                ["phasor_mapping", "lifetime"],
+            ),
             ("FRET", "fret_tab", "fret"),
             ("Components", "components_tab", "component_analysis"),
             ("Selection", "selection_tab", "selections"),
@@ -1062,11 +1066,18 @@ class PlotterWidget(QWidget):
                 "settings_tab",
                 "calibration_tab",
                 "filter_tab",
-                "lifetime_tab",
+                "phasor_mapping_tab",
                 "fret_tab",
                 "components_tab",
                 "selection_tab",
             ]
+
+        # Backward compatibility: legacy selections may still use "lifetime_tab".
+        if (
+            "lifetime_tab" in selected_tabs
+            and "phasor_mapping_tab" not in selected_tabs
+        ):
+            selected_tabs = [*selected_tabs, "phasor_mapping_tab"]
 
         # Restore plot settings first if selected
         if "settings_tab" in selected_tabs:
@@ -1082,8 +1093,10 @@ class PlotterWidget(QWidget):
             self, 'components_tab'
         ):
             self.components_tab._on_image_layer_changed()
-        if "lifetime_tab" in selected_tabs and hasattr(self, 'lifetime_tab'):
-            self.lifetime_tab._on_image_layer_changed()
+        if "phasor_mapping_tab" in selected_tabs and hasattr(
+            self, 'phasor_mapping_tab'
+        ):
+            self.phasor_mapping_tab._on_image_layer_changed()
         if "fret_tab" in selected_tabs and hasattr(self, 'fret_tab'):
             self.fret_tab._on_image_layer_changed()
         if "selection_tab" in selected_tabs and hasattr(self, 'selection_tab'):
@@ -1295,6 +1308,11 @@ class PlotterWidget(QWidget):
         """Handle tab change events to show/hide tab-specific lines."""
         current_tab = self.tab_widget.widget(index)
 
+        if hasattr(self, 'phasor_mapping_tab'):
+            self.phasor_mapping_tab.on_tab_visibility_changed(
+                current_tab == self.phasor_mapping_tab
+            )
+
         self._hide_all_tab_artists()
 
         self._show_tab_artists(current_tab)
@@ -1388,11 +1406,16 @@ class PlotterWidget(QWidget):
         Selection) the empty placeholder page is shown with an informative
         message.
         """
-        if current_tab == getattr(self, 'lifetime_tab', None):
-            hist_idx = getattr(self, '_lifetime_hist_page_idx', 0)
-            stats_idx = getattr(self, '_lifetime_stats_page_idx', 0)
-            hist_title = "Lifetime Histogram"
-            stats_title = "Lifetime Statistics"
+        if current_tab == getattr(self, 'phasor_mapping_tab', None):
+            hist_idx = getattr(self, '_phasor_map_hist_page_idx', 0)
+            stats_idx = getattr(self, '_phasor_map_stats_page_idx', 0)
+            output_display = "Lifetime"
+            with contextlib.suppress(AttributeError, RuntimeError):
+                output_display = (
+                    self.phasor_mapping_tab.get_selected_output_display_name()
+                )
+            hist_title = f"{output_display} Histogram"
+            stats_title = f"{output_display} Statistics"
         elif current_tab == getattr(self, 'fret_tab', None):
             hist_idx = getattr(self, '_fret_hist_page_idx', 0)
             stats_idx = getattr(self, '_fret_stats_page_idx', 0)
@@ -1650,35 +1673,40 @@ class PlotterWidget(QWidget):
             self.components_statistics_dock_widget
         )
 
-    def _create_lifetime_tab(self):
-        """Create the Lifetime tab."""
-        self.lifetime_tab = LifetimeWidget(self.viewer, parent=self)
-        self.tab_widget.addTab(self.lifetime_tab, "Lifetime")
+    def _create_phasor_mapping_tab(self):
+        """Create the Phasor Mapping tab."""
+        self.phasor_mapping_tab = PhasorMappingWidget(self.viewer, parent=self)
+        self.tab_widget.addTab(self.phasor_mapping_tab, "Phasor Mapping")
 
         # Wrap the histogram in a HistogramDockWidget and add to shared stack
-        self.lifetime_histogram_dock_widget = HistogramDockWidget(
-            self.lifetime_tab.histogram_widget,
-            title="Lifetime Histogram & Statistics",
+        self.phasor_map_histogram_dock_widget = HistogramDockWidget(
+            self.phasor_mapping_tab.histogram_widget,
+            title="Output Histogram & Statistics",
         )
 
-        self._lifetime_hist_page_idx = self._histogram_stack.addWidget(
-            self.lifetime_histogram_dock_widget
+        self._phasor_map_hist_page_idx = self._histogram_stack.addWidget(
+            self.phasor_map_histogram_dock_widget
         )
 
         # Create the matching statistics dock and link it
-        self.lifetime_statistics_dock_widget = StatisticsDockWidget(
-            self.lifetime_tab.histogram_widget,
-            title="Lifetime Statistics",
+        self.phasor_map_statistics_dock_widget = StatisticsDockWidget(
+            self.phasor_mapping_tab.histogram_widget,
+            title="Output Statistics",
         )
-        self._lifetime_stats_page_idx = self._statistics_stack.addWidget(
-            self.lifetime_statistics_dock_widget
+        self._phasor_map_stats_page_idx = self._statistics_stack.addWidget(
+            self.phasor_map_statistics_dock_widget
         )
-        self.lifetime_histogram_dock_widget.link_statistics_dock(
-            self.lifetime_statistics_dock_widget
+        self.phasor_map_histogram_dock_widget.link_statistics_dock(
+            self.phasor_map_statistics_dock_widget
         )
-        self.lifetime_tab.frequency_input.editingFinished.connect(
+        self.phasor_mapping_tab.frequency_input.editingFinished.connect(
             lambda: self._broadcast_frequency_value_across_tabs(
-                self.lifetime_tab.frequency_input.text()
+                self.phasor_mapping_tab.frequency_input.text()
+            )
+        )
+        self.phasor_mapping_tab.outputTypeChanged.connect(
+            lambda _: self._update_histogram_dock_visibility(
+                self.tab_widget.currentWidget()
             )
         )
 
@@ -1996,7 +2024,7 @@ class PlotterWidget(QWidget):
         self.calibration_tab.calibration_widget.frequency_input.blockSignals(
             True
         )
-        self.lifetime_tab.frequency_input.blockSignals(True)
+        self.phasor_mapping_tab.frequency_input.blockSignals(True)
         self.fret_tab.frequency_input.blockSignals(True)
 
         try:
@@ -2012,13 +2040,13 @@ class PlotterWidget(QWidget):
             pass
 
         self.calibration_tab.calibration_widget.frequency_input.setText(value)
-        self.lifetime_tab.frequency_input.setText(value)
+        self.phasor_mapping_tab.frequency_input.setText(value)
         self.fret_tab.frequency_input.setText(value)
 
         self.calibration_tab.calibration_widget.frequency_input.blockSignals(
             False
         )
-        self.lifetime_tab.frequency_input.blockSignals(False)
+        self.phasor_mapping_tab.frequency_input.blockSignals(False)
         self.fret_tab.frequency_input.blockSignals(False)
 
         self.components_tab._update_lifetime_inputs_visibility()
@@ -2460,8 +2488,8 @@ class PlotterWidget(QWidget):
             if hasattr(self, 'selection_tab'):
                 self.selection_tab._on_image_layer_changed()
 
-            if hasattr(self, 'lifetime_tab'):
-                self.lifetime_tab._on_image_layer_changed()
+            if hasattr(self, 'phasor_mapping_tab'):
+                self.phasor_mapping_tab._on_image_layer_changed()
 
             if hasattr(self, 'components_tab'):
                 self.components_tab._on_image_layer_changed()
@@ -2556,8 +2584,8 @@ class PlotterWidget(QWidget):
             if hasattr(self, 'selection_tab'):
                 self.selection_tab._on_image_layer_changed()
 
-            if hasattr(self, 'lifetime_tab'):
-                self.lifetime_tab._on_image_layer_changed()
+            if hasattr(self, 'phasor_mapping_tab'):
+                self.phasor_mapping_tab._on_image_layer_changed()
 
             if hasattr(self, 'components_tab'):
                 self.components_tab._on_image_layer_changed()
@@ -3584,6 +3612,13 @@ class PlotterWidget(QWidget):
                 self.plot_type, x_data, y_data, selection_id_data
             )
 
+            if (
+                hasattr(self, 'phasor_mapping_tab')
+                and selection_id_data is None
+                and self.tab_widget.currentWidget() is self.phasor_mapping_tab
+            ):
+                self.phasor_mapping_tab.reapply_if_active()
+
             # If the user has set a custom zoom, always restore it after
             # plotting — biaplotter resets the axes limits in its data setter.
             if self._user_axes_limits is not None:
@@ -3708,7 +3743,7 @@ class PlotterWidget(QWidget):
             'filter_tab',
             'selection_tab',
             'components_tab',
-            'lifetime_tab',
+            'phasor_mapping_tab',
             'fret_tab',
         ):
             tab = getattr(self, tab_name, None)
