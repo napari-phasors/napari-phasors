@@ -4,7 +4,10 @@ napari-phasors provides several export options for saving your analysis results.
 
 ## OME-TIF export
 
-The average intensity image and phasor coordinates can be exported as OME-TIF files. These files are compatible with both napari-phasors and PhasorPy, allowing you to reload the data with all analysis settings preserved.
+The average intensity image and phasor coordinates can be exported as OME-TIF
+files. These files are compatible with both napari-phasors and PhasorPy,
+allowing you to reload the data with all analysis settings preserved.
+Multiple layers can be selected and exported simultaneously in a single operation.
 
 ## CSV export
 

@@ -5,13 +5,14 @@
 napari-phasors is a comprehensive plugin, based on the [phasorpy](https://www.phasorpy.org/) library, that provides a complete workflow for phasor analysis in [napari](https://napari.org). It includes widgets for:
 
 - **Reading** various FLIM and hyperspectral file formats (`.fbd`, `.sdt`, `.ptu`, `.ome.tif`)
-- **Phasor analysis** on multiple layers simultaneously
+- **Phasor analysis** on multiple layers simultaneously, with mask support for region-of-interest restriction
 - **Calibration** using reference images with known lifetimes
 - **Component analysis** for multi-component systems
-- **FRET analysis** with donor trajectory visualization
+- **Phasor Mapping** — colormap apparent/normal lifetime, phasor phase, and phasor modulation per pixel, with an interactive 1D histogram and statistics table
+- **FRET analysis** with donor trajectory visualization and multi-layer donor/background source selection
 - **Filtering** with median, wavelet, and automatic thresholding (Otsu, Li, Yen)
 - **Selections** via manual drawing, circular cursors, and automatic clustering
-- **Exporting** results as OME-TIF or CSV
+- **Exporting** results as OME-TIF or CSV (multiple layers simultaneously)
 
 ## Quick start
 

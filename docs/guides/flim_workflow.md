@@ -39,6 +39,14 @@ Use the **Filter** tab to apply median or wavelet filters, and set automatic thr
 
 Use the **Selection** tab to identify regions in phasor space using circular cursors, manual drawing, or automatic clustering. See {doc}`selections` for details.
 
-## 7. Export results
+## 7. Analyze phasor outputs
 
-Export your phasor coordinates, selections, and analysis results as OME-TIF or CSV. See {doc}`exporting` for details.
+Use the **Phasor Mapping** tab to colormap each pixel by its apparent lifetime,
+phasor phase, or phasor modulation. An interactive 1D histogram and statistics
+table update automatically. See {doc}`phasor_mapping` for details.
+
+## 8. Export results
+
+Export your phasor coordinates, selections, and analysis results as OME-TIF or
+CSV. Multiple layers can be exported simultaneously. See {doc}`exporting` for
+details.
