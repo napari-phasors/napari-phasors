@@ -272,7 +272,9 @@ def test_lifetime_widget_type_changed_no_frequency(make_napari_viewer):
         "Apparent Phase Lifetime"
     )
 
-    with patch('napari_phasors.lifetime_tab.show_warning') as mock_warning:
+    with patch(
+        'napari_phasors.phasor_mapping_tab.show_warning'
+    ) as mock_warning:
         lifetime_widget._on_calculate_lifetime_clicked()
         mock_warning.assert_called_once_with("Enter frequency")
 

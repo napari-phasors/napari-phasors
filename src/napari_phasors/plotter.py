@@ -48,7 +48,7 @@ from .calibration_tab import CalibrationWidget
 from .components_tab import ComponentsWidget
 from .filter_tab import FilterWidget
 from .fret_tab import FretWidget
-from .lifetime_tab import LifetimeWidget
+from .phasor_mapping_tab import LifetimeWidget
 from .selection_tab import SelectionWidget
 
 
@@ -1295,6 +1295,11 @@ class PlotterWidget(QWidget):
         """Handle tab change events to show/hide tab-specific lines."""
         current_tab = self.tab_widget.widget(index)
 
+        if hasattr(self, 'lifetime_tab'):
+            self.lifetime_tab.on_tab_visibility_changed(
+                current_tab == self.lifetime_tab
+            )
+
         self._hide_all_tab_artists()
 
         self._show_tab_artists(current_tab)
@@ -1391,8 +1396,13 @@ class PlotterWidget(QWidget):
         if current_tab == getattr(self, 'lifetime_tab', None):
             hist_idx = getattr(self, '_lifetime_hist_page_idx', 0)
             stats_idx = getattr(self, '_lifetime_stats_page_idx', 0)
-            hist_title = "Lifetime Histogram"
-            stats_title = "Lifetime Statistics"
+            output_display = "Lifetime"
+            with contextlib.suppress(AttributeError, RuntimeError):
+                output_display = (
+                    self.lifetime_tab.get_selected_output_display_name()
+                )
+            hist_title = f"{output_display} Histogram"
+            stats_title = f"{output_display} Statistics"
         elif current_tab == getattr(self, 'fret_tab', None):
             hist_idx = getattr(self, '_fret_hist_page_idx', 0)
             stats_idx = getattr(self, '_fret_stats_page_idx', 0)
@@ -1653,12 +1663,12 @@ class PlotterWidget(QWidget):
     def _create_lifetime_tab(self):
         """Create the Lifetime tab."""
         self.lifetime_tab = LifetimeWidget(self.viewer, parent=self)
-        self.tab_widget.addTab(self.lifetime_tab, "Lifetime")
+        self.tab_widget.addTab(self.lifetime_tab, "Phasor Mapping")
 
         # Wrap the histogram in a HistogramDockWidget and add to shared stack
         self.lifetime_histogram_dock_widget = HistogramDockWidget(
             self.lifetime_tab.histogram_widget,
-            title="Lifetime Histogram & Statistics",
+            title="Output Histogram & Statistics",
         )
 
         self._lifetime_hist_page_idx = self._histogram_stack.addWidget(
@@ -1668,7 +1678,7 @@ class PlotterWidget(QWidget):
         # Create the matching statistics dock and link it
         self.lifetime_statistics_dock_widget = StatisticsDockWidget(
             self.lifetime_tab.histogram_widget,
-            title="Lifetime Statistics",
+            title="Output Statistics",
         )
         self._lifetime_stats_page_idx = self._statistics_stack.addWidget(
             self.lifetime_statistics_dock_widget
@@ -1679,6 +1689,11 @@ class PlotterWidget(QWidget):
         self.lifetime_tab.frequency_input.editingFinished.connect(
             lambda: self._broadcast_frequency_value_across_tabs(
                 self.lifetime_tab.frequency_input.text()
+            )
+        )
+        self.lifetime_tab.outputTypeChanged.connect(
+            lambda _: self._update_histogram_dock_visibility(
+                self.tab_widget.currentWidget()
             )
         )
 
@@ -3583,6 +3598,9 @@ class PlotterWidget(QWidget):
             self._set_active_artist_and_plot(
                 self.plot_type, x_data, y_data, selection_id_data
             )
+
+            if hasattr(self, 'lifetime_tab') and selection_id_data is None:
+                self.lifetime_tab.reapply_if_active()
 
             # If the user has set a custom zoom, always restore it after
             # plotting — biaplotter resets the axes limits in its data setter.
