@@ -42,6 +42,7 @@ from ._utils import (
     HistogramDockWidget,
     HistogramWidget,
     StatisticsDockWidget,
+    apply_filter_and_threshold,
     update_frequency_in_metadata,
 )
 from .calibration_tab import CalibrationWidget
@@ -1126,6 +1127,100 @@ class PlotterWidget(QWidget):
             )
             layer.metadata["calibration_applied"] = True
 
+    def _get_import_settings_groups(self):
+        """Return the settings keys controlled by each importable tab."""
+        return {
+            "settings_tab": [
+                "harmonic",
+                "semi_circle",
+                "white_background",
+                "plot_type",
+                "colormap",
+                "number_of_bins",
+                "log_scale",
+            ],
+            "calibration_tab": [
+                "calibrated",
+                "calibration_phase",
+                "calibration_modulation",
+            ],
+            "filter_tab": [
+                "filter",
+                "threshold",
+                "threshold_upper",
+                "threshold_method",
+            ],
+            "phasor_mapping_tab": ["phasor_mapping", "lifetime"],
+            "fret_tab": ["fret"],
+            "components_tab": ["component_analysis"],
+            "selection_tab": ["selections"],
+        }
+
+    def _merge_imported_settings(
+        self, current_settings, source_settings, selected_tabs
+    ):
+        """Merge only the settings groups selected for import."""
+        merged_settings = copy.deepcopy(current_settings or {})
+        source_settings = source_settings or {}
+
+        for tab_name, keys in self._get_import_settings_groups().items():
+            if tab_name not in selected_tabs:
+                continue
+
+            for key in keys:
+                merged_settings.pop(key, None)
+
+            for key in keys:
+                if key in source_settings:
+                    merged_settings[key] = copy.deepcopy(source_settings[key])
+
+        return merged_settings
+
+    def _prepare_layer_for_import(self, layer, selected_tabs):
+        """Prepare the target layer before applying imported analyses."""
+        settings = layer.metadata.get("settings", {})
+
+        if "calibration_tab" in selected_tabs and settings.get(
+            "calibrated", False
+        ):
+            self.calibration_tab._uncalibrate_layer(layer.name)
+
+        if "calibration_tab" in selected_tabs:
+            layer.metadata.pop("calibration_applied", None)
+
+    def _apply_imported_filter_if_needed(self, layer):
+        """Apply imported filter and threshold settings to a layer."""
+        settings = layer.metadata.get("settings", {})
+        filter_settings = settings.get("filter") or {}
+        filter_method = filter_settings.get("method")
+        harmonics = (
+            layer.metadata.get("harmonics")
+            if filter_method == "wavelet"
+            else None
+        )
+
+        apply_filter_and_threshold(
+            layer,
+            threshold=settings.get("threshold"),
+            threshold_upper=settings.get("threshold_upper"),
+            threshold_method=settings.get("threshold_method"),
+            filter_method=filter_method,
+            size=filter_settings.get("size"),
+            repeat=filter_settings.get("repeat"),
+            sigma=filter_settings.get("sigma"),
+            levels=filter_settings.get("levels"),
+            harmonics=harmonics,
+        )
+
+    def _apply_imported_analyses(self, layer, selected_tabs):
+        """Apply imported analysis settings that affect layer data."""
+        if "calibration_tab" in selected_tabs:
+            self._apply_calibration_if_needed()
+
+        if "filter_tab" in selected_tabs:
+            self._apply_imported_filter_if_needed(layer)
+            self.refresh_phasor_data()
+
     def _import_settings_from_layer(self):
         """Import all settings and analyses from another layer, with selection dialog."""
         dialog = QDialog(self)
@@ -1235,24 +1330,35 @@ class PlotterWidget(QWidget):
                 notifications.WarningNotification("No layer selected")
                 return
             current_layer = self.viewer.layers[current_layer_name]
-            import copy
+            source_settings = copy.deepcopy(
+                source_layer.metadata.get('settings', {})
+            )
+            current_settings = copy.deepcopy(
+                current_layer.metadata.get('settings', {})
+            )
 
-            if "frequency" in selected_tabs:
-                if (
-                    'settings' in source_layer.metadata
-                    and 'frequency' in source_layer.metadata['settings']
-                ):
-                    freq_val = source_layer.metadata['settings']['frequency']
-                    update_frequency_in_metadata(current_layer, freq_val)
-                    self._broadcast_frequency_value_across_tabs(str(freq_val))
-                selected_tabs = [
-                    tab for tab in selected_tabs if tab != "frequency"
-                ]
+            selected_analysis_tabs = [
+                tab for tab in selected_tabs if tab != "frequency"
+            ]
 
-            if 'settings' in source_layer.metadata:
-                current_layer.metadata['settings'] = copy.deepcopy(
-                    source_layer.metadata['settings']
-                )
+            self._prepare_layer_for_import(
+                current_layer, selected_analysis_tabs
+            )
+
+            current_layer.metadata['settings'] = self._merge_imported_settings(
+                current_settings,
+                source_settings,
+                selected_analysis_tabs,
+            )
+
+            if "frequency" in selected_tabs and 'frequency' in source_settings:
+                freq_val = source_settings['frequency']
+                update_frequency_in_metadata(current_layer, freq_val)
+                self._broadcast_frequency_value_across_tabs(str(freq_val))
+
+            self._apply_imported_analyses(
+                current_layer, selected_analysis_tabs
+            )
 
             self._restore_plot_settings_from_metadata()
             self._restore_all_tab_analyses(selected_tabs)
@@ -1273,19 +1379,28 @@ class PlotterWidget(QWidget):
             notifications.WarningNotification("No layer selected")
             return
         current_layer = self.viewer.layers[current_layer_name]
-        if 'settings' not in current_layer.metadata:
-            current_layer.metadata['settings'] = {}
+        current_settings = copy.deepcopy(
+            current_layer.metadata.get('settings', {})
+        )
+        selected_analysis_tabs = [
+            tab for tab in selected_tabs if tab != "frequency"
+        ]
 
-        current_layer.metadata['settings'] = copy.deepcopy(settings)
+        self._prepare_layer_for_import(current_layer, selected_analysis_tabs)
+
+        current_layer.metadata['settings'] = self._merge_imported_settings(
+            current_settings,
+            settings,
+            selected_analysis_tabs,
+        )
 
         if 'frequency' in selected_tabs and 'frequency' in settings:
             update_frequency_in_metadata(current_layer, settings['frequency'])
             self._broadcast_frequency_value_across_tabs(
                 str(settings['frequency'])
             )
-            selected_tabs = [
-                tab for tab in selected_tabs if tab != "frequency"
-            ]
+
+        self._apply_imported_analyses(current_layer, selected_analysis_tabs)
 
         self._restore_plot_settings_from_metadata()
         self._restore_all_tab_analyses(selected_tabs)
