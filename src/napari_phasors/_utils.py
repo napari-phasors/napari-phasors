@@ -2444,7 +2444,7 @@ class CollapsibleSection(QWidget):
 
     def _update_button_text(self):
         """Update the button text with a disclosure triangle."""
-        arrow = "\u25BC" if self._toggle_button.isChecked() else "\u25B6"
+        arrow = "\u25bc" if self._toggle_button.isChecked() else "\u25b6"
         self._toggle_button.setText(f"{arrow} {self._title}")
 
     def _on_toggle(self):
