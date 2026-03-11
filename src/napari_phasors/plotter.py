@@ -16,7 +16,7 @@ from napari.layers import Image, Labels, Shapes
 from napari.utils import colormaps, notifications
 from phasorpy.lifetime import phasor_from_lifetime
 from qtpy import uic
-from qtpy.QtCore import QEvent, Qt, QTimer
+from qtpy.QtCore import Qt, QTimer
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -475,7 +475,6 @@ class PlotterWidget(QWidget):
         self.analysis_widget = QWidget()
         self.analysis_widget.setLayout(QVBoxLayout())
         self.analysis_widget.layout().addWidget(self.tab_widget)
-        self.analysis_widget.installEventFilter(self)
 
         # Create a shared histogram container using a QStackedWidget.
         # Page 0 is an empty placeholder; pages 1-3 hold
@@ -1292,18 +1291,6 @@ class PlotterWidget(QWidget):
         self._restore_all_tab_analyses(selected_tabs)
         self.plot()
 
-    def eventFilter(self, obj, event):
-        """Notify the active tab when the analysis widget is resized."""
-        if obj is self.analysis_widget and event.type() == QEvent.Resize:
-            self._notify_current_tab_width()
-        return super().eventFilter(obj, event)
-
-    def _notify_current_tab_width(self):
-        """Call update_layout on the currently visible tab with the analysis widget width."""
-        current_tab = self.tab_widget.currentWidget()
-        if current_tab is not None and hasattr(current_tab, 'update_layout'):
-            current_tab.update_layout(self.analysis_widget.width())
-
     def _on_tab_changed(self, index):
         """Handle tab change events to show/hide tab-specific lines."""
         current_tab = self.tab_widget.widget(index)
@@ -1325,9 +1312,6 @@ class PlotterWidget(QWidget):
             self.filter_tab._update_histogram_if_needed()
 
         self.canvas_widget.figure.canvas.draw_idle()
-
-        # Notify the new tab about its current available width
-        self._notify_current_tab_width()
 
     def _hide_all_tab_artists(self):
         """Hide all tab-specific artists."""
