@@ -1543,10 +1543,9 @@ class PlotterWidget(QWidget):
         """Process bins change after debounce timer expires."""
         self.refresh_current_plot()
 
-    def _on_log_scale_changed(self, state):
-        """Callback for log scale change."""
-        self._update_setting_in_metadata('log_scale', bool(state))
-        if not self._updating_settings and self.plot_type == 'HISTOGRAM2D':
+    def _refresh_plot_safely_for_log_scale(self):
+        """Refresh plot while suppressing known log-normalization warning."""
+        if self.plot_type == 'HISTOGRAM2D' and self.histogram_log_scale:
             with warnings.catch_warnings():
                 warnings.filterwarnings(
                     "ignore",
@@ -1554,6 +1553,15 @@ class PlotterWidget(QWidget):
                     category=UserWarning,
                 )
                 self.refresh_current_plot()
+            return
+
+        self.refresh_current_plot()
+
+    def _on_log_scale_changed(self, state):
+        """Callback for log scale change."""
+        self._update_setting_in_metadata('log_scale', bool(state))
+        if not self._updating_settings and self.plot_type == 'HISTOGRAM2D':
+            self._refresh_plot_safely_for_log_scale()
 
     def _on_white_background_changed(self, state):
         """Callback for white background checkbox change."""
@@ -1568,7 +1576,7 @@ class PlotterWidget(QWidget):
                 self._update_polar_plot(self.canvas_widget.axes, visible=True)
 
             self.canvas_widget.figure.canvas.draw_idle()
-            self.plot()
+            self._refresh_plot_safely_for_log_scale()
 
     def on_white_background_changed(self):
         """Callback function when the white background checkbox is toggled."""
@@ -1579,7 +1587,7 @@ class PlotterWidget(QWidget):
             self._update_polar_plot(self.canvas_widget.axes, visible=True)
         self.canvas_widget.figure.canvas.draw_idle()
 
-        self.plot()
+        self._refresh_plot_safely_for_log_scale()
 
     @property
     def white_background(self):
@@ -1597,7 +1605,7 @@ class PlotterWidget(QWidget):
         """Sets the white background value from the white background checkbox."""
         self.plotter_inputs_widget.white_background_checkbox.setChecked(value)
         self.set_axes_labels()
-        self.plot()
+        self._refresh_plot_safely_for_log_scale()
 
     def _create_calibration_tab(self):
         """Create the Calibration tab."""
