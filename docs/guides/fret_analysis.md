@@ -8,10 +8,14 @@ FRET analysis in phasor space uses the donor fluorophore's position on the phaso
 
 ## Workflow
 
-1. **Set the donor lifetime**: Either enter it manually or select a donor layer to compute it automatically
-2. **Set the background position** (optional): Specify a background position to correct for autofluorescence
-3. **Configure the frequency**: The laser frequency used in the experiment
-4. **Visualize the trajectory**: The donor trajectory is drawn on the phasor plot showing the path from 0% to 100% FRET efficiency
+1. **Set the donor lifetime**: Enter it manually, or select one or more donor
+   layers from the **Donor Source** drop-down — the lifetime is computed
+   automatically from the average phasor position of the selected layers.
+2. **Set the background position** (optional): Select a background layer or
+   enter coordinates manually to correct for autofluorescence.
+3. **Configure the frequency**: The laser frequency used in the experiment.
+4. **Visualize the trajectory**: The donor trajectory is drawn on the phasor
+   plot showing the path from 0 % to 100 % FRET efficiency.
 
 ## Donor lifetime types
 
