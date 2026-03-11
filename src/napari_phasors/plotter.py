@@ -1544,18 +1544,19 @@ class PlotterWidget(QWidget):
         self.refresh_current_plot()
 
     def _refresh_plot_safely_for_log_scale(self):
-        """Refresh plot while suppressing known log-normalization warning."""
-        if self.plot_type == 'HISTOGRAM2D' and self.histogram_log_scale:
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore",
-                    message="Log normalization applied to color indices*",
-                    category=UserWarning,
-                )
-                self.refresh_current_plot()
-            return
+        """Refresh plot while suppressing known log-normalization warning.
 
-        self.refresh_current_plot()
+        The warning can also be emitted during transitions when toggling
+        log scale off (artist state updates happen within a refresh cycle),
+        so we filter it unconditionally for this refresh path.
+        """
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="Log normalization applied to color indices*",
+                category=UserWarning,
+            )
+            self.refresh_current_plot()
 
     def _on_log_scale_changed(self, state):
         """Callback for log scale change."""
