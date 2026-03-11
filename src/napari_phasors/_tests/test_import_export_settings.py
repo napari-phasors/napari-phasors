@@ -1,6 +1,8 @@
 import json
 from unittest.mock import Mock, patch
 
+import numpy as np
+
 from napari_phasors._synthetic_generator import make_raw_flim_data
 from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
 from napari_phasors.plotter import PlotterWidget
@@ -264,7 +266,7 @@ def test_import_frequency_only(make_napari_viewer):
 
 
 def test_import_with_calibration(make_napari_viewer):
-    """Test importing calibration settings."""
+    """Test importing calibration settings applies the phasor transform."""
     viewer = make_napari_viewer()
     layer1 = create_image_layer_with_phasors()
     layer2 = create_layer_with_custom_settings()
@@ -274,6 +276,10 @@ def test_import_with_calibration(make_napari_viewer):
     viewer.add_layer(layer2)
 
     plotter = PlotterWidget(viewer)
+    plotter.image_layer_with_phasor_features_combobox.setCurrentText("layer1")
+
+    g_original_before = layer1.metadata['G_original'].copy()
+    s_original_before = layer1.metadata['S_original'].copy()
 
     # Import calibration settings
     plotter._copy_metadata_from_layer("layer2", ['calibration_tab'])
@@ -282,6 +288,46 @@ def test_import_with_calibration(make_napari_viewer):
     assert layer1.metadata['settings'].get('calibrated')
     assert layer1.metadata['settings'].get('calibration_phase') == 0.5
     assert layer1.metadata['settings'].get('calibration_modulation') == 0.9
+    assert not np.allclose(layer1.metadata['G_original'], g_original_before)
+    assert not np.allclose(layer1.metadata['S_original'], s_original_before)
+
+
+def test_import_with_filter_applies_threshold_and_filter(make_napari_viewer):
+    """Test importing filter settings applies them to the target layer."""
+    viewer = make_napari_viewer()
+    layer1 = create_image_layer_with_phasors()
+    layer2 = create_image_layer_with_phasors()
+    layer1.name = "layer1"
+    layer2.name = "layer2"
+
+    threshold_value = float(np.nanmax(layer1.metadata['original_mean']) * 0.9)
+    layer2.metadata['settings'] = {
+        'filter': {
+            'method': 'median',
+            'size': 3,
+            'repeat': 1,
+        },
+        'threshold': threshold_value,
+        'threshold_upper': None,
+        'threshold_method': 'Manual',
+    }
+
+    viewer.add_layer(layer1)
+    viewer.add_layer(layer2)
+
+    plotter = PlotterWidget(viewer)
+    plotter.image_layer_with_phasor_features_combobox.setCurrentText("layer1")
+
+    g_before = layer1.metadata['G'].copy()
+    data_before = layer1.data.copy()
+
+    plotter._copy_metadata_from_layer("layer2", ['filter_tab'])
+
+    assert layer1.metadata['settings']['filter']['method'] == 'median'
+    assert layer1.metadata['settings']['threshold'] == threshold_value
+    assert np.isnan(layer1.data).any()
+    assert not np.allclose(layer1.metadata['G'], g_before, equal_nan=True)
+    assert not np.allclose(layer1.data, data_before, equal_nan=True)
 
 
 def test_import_from_file_button_exists(make_napari_viewer):
