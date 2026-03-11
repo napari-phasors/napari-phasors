@@ -3,10 +3,11 @@
 [![License BSD-3](https://img.shields.io/pypi/l/napari-phasors.svg?color=green)](https://github.com/napari-phasors/napari-phasors/raw/main/LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/napari-phasors.svg?color=green)](https://pypi.org/project/napari-phasors)
 [![Python Version](https://img.shields.io/pypi/pyversions/napari-phasors.svg?color=green)](https://python.org)
-[![tests](https://github.com/napari-phasors/napari-phasors/workflows/tests/badge.svg)](https://github.com/napari-phasors/napari-phasors/actions)
+[![tests](https://github.com/napari-phasors/napari-phasors/actions/workflows/run-tests.yml/badge.svg?branch=main)](https://github.com/napari-phasors/napari-phasors/actions/workflows/run-tests.yml)
 [![codecov](https://codecov.io/gh/napari-phasors/napari-phasors/branch/main/graph/badge.svg)](https://codecov.io/gh/napari-phasors/napari-phasors)
 [![napari hub](https://img.shields.io/endpoint?url=https://api.napari-hub.org/shields/napari-phasors)](https://napari-hub.org/plugins/napari-phasors)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.14647626.svg)](https://doi.org/10.5281/zenodo.14647626)
+[![Documentation Status](https://readthedocs.org/projects/napari-phasors/badge/?version=latest)](https://napari-phasors.readthedocs.io/en/latest/?badge=latest)
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.14647626-blue.svg)](https://doi.org/10.5281/zenodo.14647626)
 
 A comprehensive plugin for phasor analysis in napari. Based on the
 [phasorpy](https://www.phasorpy.org/) library.
