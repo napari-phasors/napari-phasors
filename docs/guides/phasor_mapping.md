@@ -106,4 +106,10 @@ Right-clicking on the table provides **Copy**, **Copy with Headers**, and
    multiple layers loaded to compare their distributions side-by-side.
 8. Use **Export Table as CSV** to save the statistics for further analysis.
 
+The GIF below shows the **Lifetime** workflow.
+
 ![lifetimes](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/lifetime.gif)
+
+The GIF below shows the **Phase** and **Modulation** color mapping workflow.
+
+![phase_modulation](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/phase%20modulation.gif)
