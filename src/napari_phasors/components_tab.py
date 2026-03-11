@@ -32,6 +32,8 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from ._utils import HistogramWidget
+
 if TYPE_CHECKING:
     import napari
 
@@ -146,6 +148,7 @@ class ComponentsWidget(QWidget):
         # Scroll area
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         root_layout.addWidget(scroll_area)
 
         # Content widget inside scroll area
@@ -216,7 +219,7 @@ class ComponentsWidget(QWidget):
         layout.addLayout(comp_management_layout)
 
         # Calculate button
-        self.calculate_button = QPushButton("Run Analysis")
+        self.calculate_button = QPushButton("Run Component Analysis")
         self.calculate_button.clicked.connect(self._run_analysis)
         self.calculate_button.setToolTip(
             "Run the selected analysis type on the defined components."
@@ -246,6 +249,31 @@ class ComponentsWidget(QWidget):
 
         buttons_row.addStretch()
         layout.addLayout(buttons_row)
+
+        # Component selector combobox (will be inserted into the histogram dock widget)
+        self.histogram_component_combobox = QComboBox()
+        self.histogram_component_combobox.setToolTip(
+            "Select which component's fraction data to display in the histogram."
+        )
+        self.histogram_component_combobox.currentIndexChanged.connect(
+            self._on_histogram_component_changed
+        )
+
+        # NOTE: The widget is created here but NOT added to this tab's layout.
+        # PlotterWidget wraps it in a HistogramDockWidget and docks it separately.
+        self.histogram_widget = HistogramWidget(
+            xlabel="Fraction",
+            ylabel="Pixel count",
+            bins=150,
+            default_colormap_name="PiYG",
+            range_slider_enabled=True,
+            range_label_prefix="Fraction range",
+            range_factor=1000,
+            parent=self,
+        )
+        self.histogram_widget.rangeChanged.connect(
+            self._on_fraction_range_changed
+        )
 
         layout.addStretch()
         self.setLayout(root_layout)
@@ -2610,6 +2638,9 @@ class ComponentsWidget(QWidget):
         self._update_component_colors()
         self.draw_line_between_components()
 
+        # Refresh histogram if the changed layer is the currently displayed one
+        self.update_component_histogram()
+
     def _on_contrast_limits_changed(self, event):
         """Handle changes to contrast limits of any fraction layer."""
         layer = event.source
@@ -2675,6 +2706,22 @@ class ComponentsWidget(QWidget):
         )
 
         self.draw_line_between_components()
+
+        # Refresh histogram only when the changed layer belongs to the
+        # currently selected histogram component.
+        selected_component = ""
+        if hasattr(self, 'histogram_component_combobox'):
+            selected_component = (
+                self.histogram_component_combobox.currentText().strip()
+            )
+
+        comp = self.components[comp_idx]
+        changed_component = (
+            comp.name_edit.text().strip() or f"Component {comp_idx + 1}"
+        )
+
+        if selected_component == changed_component:
+            self.update_component_histogram()
 
     def _find_component_index_for_layer(self, layer):
         """Find which component index a layer belongs to based on its name."""
@@ -3320,6 +3367,9 @@ class ComponentsWidget(QWidget):
         else:
             self._run_component_fit()
 
+        self._update_histogram_combobox()
+        self.update_component_histogram()
+
     def _run_linear_projection(self):
         """Run linear projection for 2-component analysis on all selected layers."""
         selected_layers = self.parent_widget.get_selected_layers()
@@ -3377,7 +3427,15 @@ class ComponentsWidget(QWidget):
         harmonic_key = str(current_harmonic)
 
         comp1_colormap = 'PiYG'
-        contrast_limits = (0, 1)
+        valid_fraction = fraction_comp1[np.isfinite(fraction_comp1)]
+        if valid_fraction.size > 0:
+            frac_min = float(np.min(valid_fraction))
+            frac_max = float(np.max(valid_fraction))
+            if frac_max <= frac_min:
+                frac_max = frac_min + 0.01
+            contrast_limits = (frac_min, frac_max)
+        else:
+            contrast_limits = (0, 1)
 
         if '0' in settings.get('components', {}):
             comp_data = settings['components']['0']
@@ -3432,6 +3490,9 @@ class ComponentsWidget(QWidget):
 
         self.comp1_fractions_layer = self.viewer.add_layer(
             comp1_selected_fractions_layer
+        )
+        self.comp1_fractions_layer.metadata['fraction_data_original'] = (
+            fraction_comp1.copy()
         )
 
         self.fractions_colormap = self.comp1_fractions_layer.colormap.colors
@@ -3673,7 +3734,15 @@ class ComponentsWidget(QWidget):
                 fraction_layer_name = f"{name} fraction: {layer.name}"
 
                 colormap = None
-                contrast_limits = (0, 1)
+                valid_fraction = fraction[np.isfinite(fraction)]
+                if valid_fraction.size > 0:
+                    frac_min = float(np.min(valid_fraction))
+                    frac_max = float(np.max(valid_fraction))
+                    if frac_max <= frac_min:
+                        frac_max = frac_min + 0.01
+                    contrast_limits = (frac_min, frac_max)
+                else:
+                    contrast_limits = (0, 1)
                 idx_str = str(i)
 
                 if (
@@ -3730,6 +3799,7 @@ class ComponentsWidget(QWidget):
                     scale=layer.scale,
                     colormap=colormap,
                 )
+                new_layer.metadata['fraction_data_original'] = fraction.copy()
 
                 new_layer.contrast_limits = contrast_limits
 
@@ -3787,3 +3857,250 @@ class ComponentsWidget(QWidget):
 
         except Exception as e:  # noqa: BLE001
             show_error(f"Analysis failed: {str(e)}")
+
+    def _get_fraction_layers_for_component(self, component_name):
+        """Get all fraction layers in the viewer for a given component name.
+
+        Searches the viewer for fraction layers matching the component name
+        pattern, regardless of which image layer they belong to.
+
+        Parameters
+        ----------
+        component_name : str
+            The component display name to search for.
+
+        Returns
+        -------
+        dict
+            ``{image_layer_name: napari.layers.Image}`` mapping each source
+            image layer name to its fraction layer.
+        """
+        result = {}
+        # Linear projection: "<comp_name> fractions: <layer_name>"
+        # Component fit:     "<comp_name> fraction: <layer_name>"
+        for layer in self.viewer.layers:
+            if not isinstance(layer, Image):
+                continue
+            name = layer.name
+            for sep in (" fractions: ", " fraction: "):
+                if name.startswith(component_name + sep):
+                    img_layer_name = name[len(component_name) + len(sep) :]
+                    result[img_layer_name] = layer
+                    break
+        return result
+
+    def _get_component_names_from_fraction_layers(self):
+        """Discover unique component names from fraction layers in the viewer.
+
+        Uses custom names from metadata if available, otherwise falls back
+        to names extracted from layer names.
+
+        Returns
+        -------
+        list of str
+            Unique component names found in the viewer's fraction layers.
+        """
+        layer_based_names = {}
+        for layer in self.viewer.layers:
+            if not isinstance(layer, Image):
+                continue
+            for sep in (" fractions: ", " fraction: "):
+                idx = layer.name.find(sep)
+                if idx != -1:
+                    comp_name = layer.name[:idx]
+                    if comp_name.startswith("Component "):
+                        try:
+                            comp_idx = int(comp_name.split(" ")[1]) - 1
+                            layer_based_names[comp_idx] = comp_name
+                        except (ValueError, IndexError):
+                            layer_based_names[comp_name] = comp_name
+                    else:
+                        layer_based_names[comp_name] = comp_name
+                    break
+
+        if not layer_based_names:
+            return []
+
+        layer_name = (
+            self.parent_widget.get_primary_layer_name()
+            if self.parent_widget
+            else None
+        )
+        if layer_name and layer_name in self.viewer.layers:
+            layer = self.viewer.layers[layer_name]
+            settings = layer.metadata.get('settings', {}).get(
+                'component_analysis', {}
+            )
+            components_data = settings.get('components', {})
+
+            for idx_str, comp_data in components_data.items():
+                try:
+                    idx = int(idx_str)
+                    custom_name = comp_data.get('name')
+                    if custom_name and idx in layer_based_names:
+                        del layer_based_names[idx]
+                        layer_based_names[custom_name] = custom_name
+                except (ValueError, KeyError):
+                    continue
+
+        seen = set()
+        result = []
+        for name in layer_based_names.values():
+            if name not in seen:
+                seen.add(name)
+                result.append(name)
+        return result
+
+    def _update_histogram_combobox(self):
+        """Populate the histogram component combobox with available fraction layers."""
+        current_text = self.histogram_component_combobox.currentText()
+        self.histogram_component_combobox.blockSignals(True)
+        self.histogram_component_combobox.clear()
+
+        comp_names = self._get_component_names_from_fraction_layers()
+        for comp_name in comp_names:
+            self.histogram_component_combobox.addItem(comp_name)
+
+        idx = self.histogram_component_combobox.findText(current_text)
+        if idx >= 0:
+            self.histogram_component_combobox.setCurrentIndex(idx)
+
+        self.histogram_component_combobox.blockSignals(False)
+
+    def _on_histogram_component_changed(self, index):
+        """Handle change of the selected component in the histogram combobox."""
+        self.update_component_histogram()
+
+    def _on_fraction_range_changed(self, min_val, max_val):
+        """Handle range slider changes on the fraction histogram.
+
+        Clips fraction layers to the specified range and refreshes the
+        histogram accordingly.
+        """
+        selected_text = self.histogram_component_combobox.currentText()
+        if not selected_text:
+            return
+
+        fraction_layers_map = self._get_fraction_layers_for_component(
+            selected_text
+        )
+        if not fraction_layers_map:
+            return
+
+        clipped_data = {}
+        self._updating_linked_layers = True
+        try:
+            for img_name, fl in fraction_layers_map.items():
+                # Use original (unclipped) values when available so expanding the
+                # slider range can restore previous data.
+                original = fl.metadata.get('fraction_data_original', fl.data)
+                clipped = np.clip(original, min_val, max_val)
+                fl.data = clipped
+
+                current_limits = np.asarray(fl.contrast_limits, dtype=float)
+                target_limits = np.asarray([min_val, max_val], dtype=float)
+                if not np.allclose(current_limits, target_limits):
+                    fl.contrast_limits = [min_val, max_val]
+
+                clipped_data[img_name] = clipped
+        finally:
+            self._updating_linked_layers = False
+
+        self.colormap_contrast_limits = [min_val, max_val]
+        first_layer = next(iter(fraction_layers_map.values()))
+        self.histogram_widget.update_colormap(
+            colormap_colors=first_layer.colormap.colors,
+            contrast_limits=[min_val, max_val],
+        )
+
+        if len(clipped_data) > 1:
+            self.histogram_widget.update_multi_data(clipped_data)
+        else:
+            first_data = next(iter(clipped_data.values()))
+            self.histogram_widget.update_data(first_data)
+
+    def update_component_histogram(self):
+        """Update the histogram with the fraction data of the selected component."""
+        selected_text = self.histogram_component_combobox.currentText()
+        if not selected_text:
+            self.histogram_widget.hide()
+            return
+
+        fraction_layers_map = self._get_fraction_layers_for_component(
+            selected_text
+        )
+        if not fraction_layers_map:
+            self.histogram_widget.hide()
+            return
+
+        first_layer = next(iter(fraction_layers_map.values()))
+        colormap_colors = first_layer.colormap.colors
+        contrast_limits = list(first_layer.contrast_limits)
+
+        self.histogram_widget.update_colormap(
+            colormap_colors=colormap_colors,
+            contrast_limits=contrast_limits,
+        )
+
+        # Ensure the range slider uses the full original data extent.
+        # Without this, the default slider span (0..100 with factor=1000)
+        # limits the max to 0.1 and causes max values to snap/reset.
+        original_arrays = []
+        for fl in fraction_layers_map.values():
+            original = fl.metadata.get('fraction_data_original', fl.data)
+            valid = np.asarray(original, dtype=float)
+            valid = valid[np.isfinite(valid)]
+            if valid.size > 0:
+                original_arrays.append(valid)
+
+        if original_arrays:
+            pooled = np.concatenate(original_arrays)
+            data_min = float(np.min(pooled))
+            data_max = float(np.max(pooled))
+            if data_max <= data_min:
+                data_max = data_min + 0.01
+
+            # Keep the current active display range from the layer, but ensure
+            # slider bounds span the full data extent.
+            range_min = float(contrast_limits[0])
+            range_max = float(contrast_limits[1])
+            range_min = max(data_min, min(range_min, data_max))
+            range_max = max(data_min, min(range_max, data_max))
+            if range_max <= range_min:
+                range_min = data_min
+                range_max = data_max
+
+            self.colormap_contrast_limits = [range_min, range_max]
+            self.histogram_widget.update_colormap(
+                colormap_colors=colormap_colors,
+                contrast_limits=[range_min, range_max],
+            )
+
+            self.histogram_widget.set_range(
+                range_min,
+                range_max,
+                slider_min=data_min,
+                slider_max=data_max,
+            )
+
+        if len(fraction_layers_map) > 1:
+            per_layer_data = {
+                img_name: fl.data
+                for img_name, fl in fraction_layers_map.items()
+            }
+            self.histogram_widget.update_multi_data(per_layer_data)
+        else:
+            self.histogram_widget.update_data(first_layer.data)
+
+        self.histogram_widget.show()
+
+    def closeEvent(self, event):
+        """Clean up signal connections before closing."""
+        # Disconnect parent widget signal if present
+        if hasattr(self, 'parent_widget') and self.parent_widget:
+            with contextlib.suppress(ValueError, AttributeError):
+                self.parent_widget.harmonic_spinbox.valueChanged.disconnect(
+                    self._on_harmonic_changed
+                )
+
+        event.accept()

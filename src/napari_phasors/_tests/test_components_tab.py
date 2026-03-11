@@ -802,3 +802,56 @@ def test_components_widget_scroll_area_exists(make_napari_viewer):
     # The layout should contain a scroll area
     assert comp_widget.layout() is not None
     assert comp_widget.layout().count() > 0
+
+
+def test_components_fraction_range_updates_layer_and_is_reversible(
+    make_napari_viewer,
+):
+    """Range slider should clip fraction layer data from original values."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(parent.components_tab)
+    comp_widget.analysis_type_combo.setCurrentText("Linear Projection")
+
+    comp_widget.components[0].g_edit.setText("0.2")
+    comp_widget.components[0].s_edit.setText("0.1")
+    comp_widget._on_component_coords_changed(0)
+    comp_widget.components[1].g_edit.setText("0.8")
+    comp_widget.components[1].s_edit.setText("0.5")
+    comp_widget._on_component_coords_changed(1)
+    comp_widget._run_analysis()
+
+    comp_name = comp_widget.components[0].name_edit.text().strip()
+    if not comp_name:
+        comp_name = "Component 1"
+    comp_widget.histogram_component_combobox.setCurrentText(comp_name)
+
+    fraction_layer = comp_widget.comp1_fractions_layer
+    original_data = fraction_layer.data.copy()
+
+    min_val, max_val = 0.2, 0.8
+    comp_widget._on_fraction_range_changed(min_val, max_val)
+
+    np.testing.assert_allclose(
+        fraction_layer.data,
+        np.clip(original_data, min_val, max_val),
+        rtol=1e-6,
+        atol=1e-9,
+        equal_nan=True,
+    )
+    assert tuple(fraction_layer.contrast_limits) == (min_val, max_val)
+
+    # Expanding the range should restore values from original data, not from
+    # the already-clipped layer data.
+    comp_widget._on_fraction_range_changed(0.0, 1.0)
+    np.testing.assert_allclose(
+        fraction_layer.data,
+        np.clip(original_data, 0.0, 1.0),
+        rtol=1e-6,
+        atol=1e-9,
+        equal_nan=True,
+    )

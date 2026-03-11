@@ -21,7 +21,7 @@ from qtpy.QtWidgets import (
 from superqt import QRangeSlider
 
 from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
-from napari_phasors.lifetime_tab import LifetimeWidget
+from napari_phasors._utils import HistogramWidget
 from napari_phasors.plotter import PlotterWidget
 
 
@@ -47,11 +47,12 @@ def test_lifetime_widget_initialization_values(make_napari_viewer):
     assert lifetime_widget.colormap_contrast_limits is None
     assert lifetime_widget.lifetime_type is None
     assert lifetime_widget.lifetime_range_factor == 1000
-    assert lifetime_widget._slider_being_dragged is False
+    assert lifetime_widget.histogram_widget._slider_being_dragged is False
 
-    # Test histogram figure initialization
-    assert isinstance(lifetime_widget.hist_fig, Figure)
-    assert lifetime_widget.hist_ax is not None
+    # Test histogram widget initialization
+    assert isinstance(lifetime_widget.histogram_widget, HistogramWidget)
+    assert isinstance(lifetime_widget.histogram_widget.fig, Figure)
+    assert lifetime_widget.histogram_widget.ax is not None
 
     # Test UI components
     assert hasattr(lifetime_widget, 'frequency_input')
@@ -105,37 +106,38 @@ def test_lifetime_widget_initialization_values(make_napari_viewer):
     scroll_area = scroll_areas[0]
     assert scroll_area.widgetResizable()
 
-    # Test histogram widget initially hidden
-    assert lifetime_widget.histogram_widget.isHidden()
+    # Histogram widget is now hosted in the shared dock stack.
+    assert (
+        parent.lifetime_histogram_dock_widget.histogram_widget
+        is lifetime_widget.histogram_widget
+    )
+    assert (
+        parent._histogram_stack.indexOf(parent.lifetime_histogram_dock_widget)
+        >= 0
+    )
 
 
 def test_lifetime_widget_histogram_styling(make_napari_viewer):
     """Test that histogram styling is applied correctly."""
     viewer = make_napari_viewer()
 
-    # Test that style_histogram_axes method exists and is called
-    with patch.object(LifetimeWidget, 'style_histogram_axes') as mock_style:
-        parent = PlotterWidget(viewer)
-        lifetime_widget = parent.lifetime_tab
-        mock_style.assert_called_once()
-
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.lifetime_tab
 
-    # Check axes styling
-    assert lifetime_widget.hist_ax.patch.get_alpha() == 0
-    assert lifetime_widget.hist_fig.patch.get_alpha() == 0
+    # Check axes styling via the HistogramWidget
+    assert lifetime_widget.histogram_widget.ax.patch.get_alpha() == 0
+    assert lifetime_widget.histogram_widget.fig.patch.get_alpha() == 0
 
     # Check spine colors - use numpy.allclose for RGBA comparison
     grey_rgba = mcolors.to_rgba('grey')
 
-    for spine in lifetime_widget.hist_ax.spines.values():
+    for spine in lifetime_widget.histogram_widget.ax.spines.values():
         np.testing.assert_array_almost_equal(spine.get_edgecolor(), grey_rgba)
         assert spine.get_linewidth() == 1
 
     # Check labels
-    assert lifetime_widget.hist_ax.get_ylabel() == "Pixel count"
-    assert lifetime_widget.hist_ax.get_xlabel() == "Lifetime (ns)"
+    assert lifetime_widget.histogram_widget.ax.get_ylabel() == "Pixel count"
+    assert lifetime_widget.histogram_widget.ax.get_xlabel() == "Lifetime (ns)"
 
 
 def test_lifetime_widget_frequency_input_validation(make_napari_viewer):
@@ -160,15 +162,15 @@ def test_lifetime_widget_slider_drag_state(make_napari_viewer):
     lifetime_widget = parent.lifetime_tab
 
     # Initially not being dragged
-    assert lifetime_widget._slider_being_dragged is False
+    assert lifetime_widget.histogram_widget._slider_being_dragged is False
 
     # Simulate slider press
-    lifetime_widget._on_slider_pressed()
-    assert lifetime_widget._slider_being_dragged is True
+    lifetime_widget.histogram_widget._on_slider_pressed()
+    assert lifetime_widget.histogram_widget._slider_being_dragged is True
 
     # Simulate slider release
-    lifetime_widget._on_slider_released()
-    assert lifetime_widget._slider_being_dragged is False
+    lifetime_widget.histogram_widget._on_slider_released()
+    assert lifetime_widget.histogram_widget._slider_being_dragged is False
 
 
 def test_lifetime_widget_range_label_update(make_napari_viewer):
@@ -179,7 +181,7 @@ def test_lifetime_widget_range_label_update(make_napari_viewer):
 
     # Test label update
     test_value = (25000, 75000)  # Represents 25.0 - 75.0 ns with factor 1000
-    lifetime_widget._on_lifetime_range_label_update(test_value)
+    lifetime_widget.histogram_widget._on_range_label_update(test_value)
 
     assert (
         lifetime_widget.lifetime_range_label.text()
@@ -206,9 +208,11 @@ def test_lifetime_widget_plot_histogram_no_data(make_napari_viewer):
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.lifetime_tab
 
-    # Should hide histogram widget and return early
+    # No data should leave the histogram empty with controls disabled.
     lifetime_widget.plot_lifetime_histogram()
-    assert lifetime_widget.histogram_widget.isHidden()
+    assert lifetime_widget.histogram_widget.counts is None
+    assert not lifetime_widget.histogram_widget._settings_button.isEnabled()
+    assert not lifetime_widget.histogram_widget.save_png_button.isEnabled()
 
 
 def test_lifetime_widget_ui_layout(make_napari_viewer):
@@ -237,16 +241,20 @@ def test_lifetime_widget_canvas_properties(make_napari_viewer):
     lifetime_widget = parent.lifetime_tab
 
     # Check figure size
-    assert lifetime_widget.hist_fig.get_figwidth() == 8
-    assert lifetime_widget.hist_fig.get_figheight() == 4
+    assert lifetime_widget.histogram_widget.fig.get_figwidth() == 8
+    assert lifetime_widget.histogram_widget.fig.get_figheight() == 4
 
     # Check that constrained_layout is used
-    assert lifetime_widget.hist_fig.get_constrained_layout()
+    assert lifetime_widget.histogram_widget.fig.get_constrained_layout()
 
     canvas_widgets = lifetime_widget.findChildren(FigureCanvasQTAgg)
-    assert len(canvas_widgets) == 1
+    # The histogram canvas now lives in the detachable dock widget,
+    # not inside the lifetime tab itself.
+    assert len(canvas_widgets) == 0
 
-    canvas = canvas_widgets[0]
+    # Access the canvas through the histogram widget directly
+    canvas = lifetime_widget.histogram_widget.fig.canvas
+    assert isinstance(canvas, FigureCanvasQTAgg)
     assert canvas.height() == 150  # Fixed height as set in setup_ui
 
 
@@ -750,13 +758,13 @@ def test_lifetime_widget_min_max_edit_callbacks(make_napari_viewer):
     with patch.object(
         lifetime_widget, '_on_lifetime_range_changed'
     ) as mock_range_changed:
-        lifetime_widget._on_lifetime_min_edit()
+        lifetime_widget.histogram_widget._on_range_min_edit()
         mock_range_changed.assert_called_once()
 
     with patch.object(
         lifetime_widget, '_on_lifetime_range_changed'
     ) as mock_range_changed:
-        lifetime_widget._on_lifetime_max_edit()
+        lifetime_widget.histogram_widget._on_range_max_edit()
         mock_range_changed.assert_called_once()
 
 
@@ -790,8 +798,12 @@ def test_lifetime_widget_image_layer_changed_no_layer(make_napari_viewer):
 
     lifetime_widget._on_image_layer_changed()
 
-    # Should hide histogram
-    assert lifetime_widget.histogram_widget.isHidden()
+    # Histogram should be reset when no layer is selected.
+    assert lifetime_widget.lifetime_data is None
+    assert lifetime_widget.lifetime_data_original is None
+    assert lifetime_widget.histogram_widget.counts is None
+    assert not lifetime_widget.histogram_widget._settings_button.isEnabled()
+    assert not lifetime_widget.histogram_widget.save_png_button.isEnabled()
 
 
 def test_lifetime_widget_colormap_changed_callback(make_napari_viewer):
@@ -812,8 +824,8 @@ def test_lifetime_widget_colormap_changed_callback(make_napari_viewer):
     lifetime_widget.colormap_contrast_limits = (0.0, 10.0)
 
     with patch.object(
-        lifetime_widget, '_update_lifetime_histogram'
-    ) as mock_update_hist:
+        lifetime_widget.histogram_widget, 'update_colormap'
+    ) as mock_update_cmap:
         lifetime_widget._on_colormap_changed(mock_event)
 
         # Check that attributes are updated
@@ -822,19 +834,19 @@ def test_lifetime_widget_colormap_changed_callback(make_napari_viewer):
         )
         assert lifetime_widget.colormap_contrast_limits == (1.0, 5.0)
 
-        # Check that only histogram update is called (no slider update)
-        mock_update_hist.assert_called_once()
+        # Check that histogram colormap update is called
+        mock_update_cmap.assert_called_once()
 
     # Test that the method skips execution when _updating_contrast_limits is True
     lifetime_widget._updating_contrast_limits = True
 
     with patch.object(
-        lifetime_widget, '_update_lifetime_histogram'
-    ) as mock_update_hist:
+        lifetime_widget.histogram_widget, 'update_colormap'
+    ) as mock_update_cmap:
         lifetime_widget._on_colormap_changed(mock_event)
 
         # Should not be called when flag is set
-        mock_update_hist.assert_not_called()
+        mock_update_cmap.assert_not_called()
 
     # Reset flag
     lifetime_widget._updating_contrast_limits = False
@@ -1200,11 +1212,11 @@ def test_lifetime_widget_range_clipping_with_real_data(make_napari_viewer):
     assert abs(contrast_limits_full[1] - max_lifetime) < 0.01
 
     # Test slider drag state during range changes
-    assert lifetime_widget._slider_being_dragged is False
+    assert lifetime_widget.histogram_widget._slider_being_dragged is False
 
     # Simulate slider being dragged
-    lifetime_widget._on_slider_pressed()
-    assert lifetime_widget._slider_being_dragged is True
+    lifetime_widget.histogram_widget._on_slider_pressed()
+    assert lifetime_widget.histogram_widget._slider_being_dragged is True
 
     # Change range while dragging
     lifetime_widget.lifetime_range_slider.setValue((min_slider, max_slider))
@@ -1221,19 +1233,19 @@ def test_lifetime_widget_range_clipping_with_real_data(make_napari_viewer):
     )
 
     # Release slider
-    lifetime_widget._on_slider_released()
-    assert lifetime_widget._slider_being_dragged is False
+    lifetime_widget.histogram_widget._on_slider_released()
+    assert lifetime_widget.histogram_widget._slider_being_dragged is False
 
     # Test histogram update after clipping
     with patch.object(
-        lifetime_widget, '_update_lifetime_histogram'
-    ) as mock_update_hist:
-        mock_update_hist.reset_mock()  # Reset any previous calls
+        lifetime_widget.histogram_widget, 'update_data'
+    ) as mock_update_data:
+        mock_update_data.reset_mock()  # Reset any previous calls
         lifetime_widget.lifetime_range_slider.setValue(
             (min_slider, max_slider)
         )
         lifetime_widget._on_lifetime_range_changed((min_slider, max_slider))
-        mock_update_hist.assert_called_once()
+        mock_update_data.assert_called_once()
 
 
 def test_lifetime_widget_different_harmonics_and_frequencies(

@@ -16,7 +16,7 @@ from napari.layers import Image, Labels, Shapes
 from napari.utils import colormaps, notifications
 from phasorpy.lifetime import phasor_from_lifetime
 from qtpy import uic
-from qtpy.QtCore import Qt, QTimer
+from qtpy.QtCore import QEvent, Qt, QTimer
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -31,12 +31,19 @@ from qtpy.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSpinBox,
+    QStackedWidget,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from ._utils import CheckableComboBox, update_frequency_in_metadata
+from ._utils import (
+    CheckableComboBox,
+    HistogramDockWidget,
+    HistogramWidget,
+    StatisticsDockWidget,
+    update_frequency_in_metadata,
+)
 from .calibration_tab import CalibrationWidget
 from .components_tab import ComponentsWidget
 from .filter_tab import FilterWidget
@@ -314,7 +321,7 @@ class PlotterWidget(QWidget):
         controls_container.layout().setContentsMargins(10, 10, 10, 10)
         controls_container.layout().setSpacing(3)
         controls_container.setMaximumHeight(
-            170
+            220
         )  # Prevent controls from growing too large
         self.layout().addWidget(
             controls_container, 0
@@ -425,6 +432,42 @@ class PlotterWidget(QWidget):
         import_buttons_widget.setLayout(import_buttons_layout)
         controls_container.layout().addWidget(import_buttons_widget)
 
+        # Dynamic buttons to re-open closed dock widgets
+        dock_buttons_layout = QHBoxLayout()
+        dock_buttons_layout.setContentsMargins(0, 0, 0, 0)
+        dock_buttons_layout.setSpacing(5)
+
+        self.show_analysis_button = QPushButton("Show Analysis Tabs")
+        self.show_analysis_button.setToolTip(
+            "Re-open the Phasor Analysis dock"
+        )
+        self.show_analysis_button.setVisible(False)
+        self.show_analysis_button.clicked.connect(self._show_analysis_dock)
+        dock_buttons_layout.addWidget(self.show_analysis_button)
+
+        self.show_histogram_button = QPushButton("Show Histogram")
+        self.show_histogram_button.setToolTip("Re-open the Histogram dock")
+        self.show_histogram_button.setVisible(False)
+        self.show_histogram_button.clicked.connect(self._show_histogram_dock)
+        dock_buttons_layout.addWidget(self.show_histogram_button)
+
+        self.show_statistics_button = QPushButton("Show Statistics Table")
+        self.show_statistics_button.setToolTip("Re-open the Statistics dock")
+        self.show_statistics_button.setVisible(False)
+        self.show_statistics_button.clicked.connect(self._show_statistics_dock)
+        dock_buttons_layout.addWidget(self.show_statistics_button)
+
+        self._dock_buttons_widget = QWidget()
+        self._dock_buttons_widget.setLayout(dock_buttons_layout)
+        self._dock_buttons_widget.setVisible(False)
+        controls_container.layout().addWidget(self._dock_buttons_widget)
+
+        # Timer that polls dock visibility — reliable for both the hide and
+        # close-X buttons (the latter destroys the dock without emitting signals).
+        self._dock_check_timer = QTimer(self)
+        self._dock_check_timer.timeout.connect(self._check_dock_visibility)
+        self._dock_check_timer.start(500)
+
         # Create tab widget
         self.tab_widget = QTabWidget()
 
@@ -432,9 +475,76 @@ class PlotterWidget(QWidget):
         self.analysis_widget = QWidget()
         self.analysis_widget.setLayout(QVBoxLayout())
         self.analysis_widget.layout().addWidget(self.tab_widget)
+        self.analysis_widget.installEventFilter(self)
 
-        # Add the analysis widget to the viewer with a delay to ensure correct ordering
-        QTimer.singleShot(20, self._add_analysis_dock_widget)
+        # Create a shared histogram container using a QStackedWidget.
+        # Page 0 is an empty placeholder; pages 1-3 hold
+        # Lifetime / FRET / Components histogram dock widgets.
+        self._histogram_stack = QStackedWidget()
+        # Empty placeholder page: a HistogramWidget with no data (buttons disabled)
+        self._histogram_empty_widget = HistogramWidget()
+        self._histogram_stack.addWidget(
+            self._histogram_empty_widget
+        )  # index 0
+        self._histogram_stack.setCurrentIndex(0)
+
+        # Statistics stacked widget (mirrors the histogram stack structure)
+        self._statistics_stack = QStackedWidget()
+        # Empty placeholder page: a StatisticsDockWidget driven by a dummy HistogramWidget
+        self._stats_empty_hist_widget = HistogramWidget()
+        self._statistics_empty_widget = StatisticsDockWidget(
+            self._stats_empty_hist_widget
+        )
+        self._statistics_stack.addWidget(
+            self._statistics_empty_widget
+        )  # index 0
+        self._statistics_stack.setCurrentIndex(0)
+
+        # Wrapper for the statistics dock
+        self.statistics_container = QWidget()
+        self.statistics_container.setLayout(QVBoxLayout())
+        self.statistics_container.layout().setContentsMargins(0, 0, 0, 0)
+        self._statistics_title_label = QLabel("Statistics")
+        self._statistics_title_label.setStyleSheet(
+            "font-weight: bold; font-size: 13px; padding: 4px 0px;"
+        )
+        self._statistics_title_label.setAlignment(Qt.AlignCenter)
+        self.statistics_container.layout().addWidget(
+            self._statistics_title_label
+        )
+        self.statistics_container.layout().addWidget(self._statistics_stack)
+        self.statistics_container.setMinimumWidth(300)
+
+        # Wrapper so the dock widget gets a nice title
+        self.histogram_container = QWidget()
+        self.histogram_container.setLayout(QVBoxLayout())
+        self.histogram_container.layout().setContentsMargins(0, 0, 0, 0)
+        # Dynamic title label that updates based on the active tab
+        self._histogram_title_label = QLabel("Histogram")
+        self._histogram_title_label.setStyleSheet(
+            "font-weight: bold; font-size: 13px; padding: 4px 0px;"
+        )
+        self._histogram_title_label.setAlignment(Qt.AlignCenter)
+        self.histogram_container.layout().addWidget(
+            self._histogram_title_label
+        )
+        self.histogram_container.layout().addWidget(self._histogram_stack)
+        # Prevent the histogram from being shrunk below a usable size
+        self.histogram_container.setMinimumWidth(350)
+
+        # Add the analysis widget to the viewer with a delay to ensure
+        # correct dock ordering. Use owned timers so teardown can cancel them.
+        self._analysis_dock_init_timer = QTimer(self)
+        self._analysis_dock_init_timer.setSingleShot(True)
+        self._analysis_dock_init_timer.timeout.connect(
+            self._add_analysis_dock_widget
+        )
+
+        self._dock_resize_timer = QTimer(self)
+        self._dock_resize_timer.setSingleShot(True)
+        self._dock_resize_timer.timeout.connect(self._resize_initial_docks)
+
+        self._analysis_dock_init_timer.start(20)
 
         # Canvas minimum is already set by canvas_widget.setMinimumSize(300, 300)
         # Controls container will size to its content
@@ -444,16 +554,16 @@ class PlotterWidget(QWidget):
         self._updating_settings = False
 
         # Debounce timers for expensive operations
-        self._layer_selection_timer = QTimer()
+        self._layer_selection_timer = QTimer(self)
         self._layer_selection_timer.setSingleShot(True)
         self._layer_selection_timer.setInterval(300)  # 300ms delay
         self._layer_selection_timer.timeout.connect(
             self._process_layer_selection_change
         )
 
-        self._bins_timer = QTimer()
+        self._bins_timer = QTimer(self)
         self._bins_timer.setSingleShot(True)
-        self._bins_timer.setInterval(300)  # 300ms delay
+        self._bins_timer.setInterval(500)  # 500ms delay
         self._bins_timer.timeout.connect(self._process_bins_change)
 
         # Create Settings tab
@@ -575,14 +685,72 @@ class PlotterWidget(QWidget):
         self._set_selection_visibility(False)
 
     def _add_analysis_dock_widget(self):
-        """Add the analysis widget to the viewer as a dock widget."""
+        """Add the analysis widget and histogram container to the viewer.
+
+        The histogram container (QStackedWidget) is docked at the bottom.
+        The analysis tab widget is then split to its right so they sit
+        side-by-side, each taking roughly half the bottom width.
+        """
         if (
             hasattr(self.viewer, 'window')
             and self.viewer.window is not None
             and hasattr(self.viewer.window, '_qt_window')
         ):
-            self.viewer.window.add_dock_widget(
-                self.analysis_widget, name="Phasor Analysis", area="right"
+            qt_window = self.viewer.window._qt_window
+
+            # Dock order: statistics (left) | histogram (middle) | analysis (right)
+
+            # Statistics dock — leftmost
+            self._statistics_dock = self.viewer.window.add_dock_widget(
+                self.statistics_container,
+                name="Statistics",
+                area="bottom",
+            )
+
+            # Histogram dock — middle
+            self._histogram_dock = self.viewer.window.add_dock_widget(
+                self.histogram_container,
+                name="Histogram",
+                area="bottom",
+            )
+
+            # Analysis dock — rightmost
+            self._analysis_dock = self.viewer.window.add_dock_widget(
+                self.analysis_widget,
+                name="Phasor Analysis",
+                area="bottom",
+            )
+            self._docks_initialized = True
+
+            # Arrange side-by-side: statistics | histogram | analysis
+            qt_window.splitDockWidget(
+                self._statistics_dock,
+                self._histogram_dock,
+                Qt.Horizontal,
+            )
+            qt_window.splitDockWidget(
+                self._histogram_dock,
+                self._analysis_dock,
+                Qt.Horizontal,
+            )
+
+            # Defer resizeDocks so it runs after Qt has applied the splits.
+            self._dock_resize_timer.start(200)
+
+    def _resize_initial_docks(self):
+        """Resize docks after delayed split has been applied."""
+        if not getattr(self, '_docks_initialized', False):
+            return
+        with contextlib.suppress(AttributeError, RuntimeError):
+            qt_window = self.viewer.window._qt_window
+            qt_window.resizeDocks(
+                [
+                    self._statistics_dock,
+                    self._histogram_dock,
+                    self._analysis_dock,
+                ],
+                [300, 500, 500],
+                Qt.Horizontal,
             )
 
     def get_selected_layer_names(self):
@@ -1111,6 +1279,18 @@ class PlotterWidget(QWidget):
         self._restore_all_tab_analyses(selected_tabs)
         self.plot()
 
+    def eventFilter(self, obj, event):
+        """Notify the active tab when the analysis widget is resized."""
+        if obj is self.analysis_widget and event.type() == QEvent.Resize:
+            self._notify_current_tab_width()
+        return super().eventFilter(obj, event)
+
+    def _notify_current_tab_width(self):
+        """Call update_layout on the currently visible tab with the analysis widget width."""
+        current_tab = self.tab_widget.currentWidget()
+        if current_tab is not None and hasattr(current_tab, 'update_layout'):
+            current_tab.update_layout(self.analysis_widget.width())
+
     def _on_tab_changed(self, index):
         """Handle tab change events to show/hide tab-specific lines."""
         current_tab = self.tab_widget.widget(index)
@@ -1119,11 +1299,17 @@ class PlotterWidget(QWidget):
 
         self._show_tab_artists(current_tab)
 
+        # Show/hide histogram dock widgets based on active tab
+        self._update_histogram_dock_visibility(current_tab)
+
         # Update filter histogram if switching to filter tab and it needs updating
         if hasattr(self, 'filter_tab') and current_tab == self.filter_tab:
             self.filter_tab._update_histogram_if_needed()
 
         self.canvas_widget.figure.canvas.draw_idle()
+
+        # Notify the new tab about its current available width
+        self._notify_current_tab_width()
 
     def _hide_all_tab_artists(self):
         """Hide all tab-specific artists."""
@@ -1194,6 +1380,106 @@ class PlotterWidget(QWidget):
         """Set visibility of FRET tab artists."""
         if hasattr(self, 'fret_tab'):
             self.fret_tab.set_artists_visible(visible)
+
+    def _update_histogram_dock_visibility(self, current_tab):
+        """Switch the shared histogram and statistics stacks to the active tab.
+
+        For tabs without a histogram (Plot Settings, Calibration, Filter,
+        Selection) the empty placeholder page is shown with an informative
+        message.
+        """
+        if current_tab == getattr(self, 'lifetime_tab', None):
+            hist_idx = getattr(self, '_lifetime_hist_page_idx', 0)
+            stats_idx = getattr(self, '_lifetime_stats_page_idx', 0)
+            hist_title = "Lifetime Histogram"
+            stats_title = "Lifetime Statistics"
+        elif current_tab == getattr(self, 'fret_tab', None):
+            hist_idx = getattr(self, '_fret_hist_page_idx', 0)
+            stats_idx = getattr(self, '_fret_stats_page_idx', 0)
+            hist_title = "FRET Histogram"
+            stats_title = "FRET Statistics"
+        elif current_tab == getattr(self, 'components_tab', None):
+            hist_idx = getattr(self, '_components_hist_page_idx', 0)
+            stats_idx = getattr(self, '_components_stats_page_idx', 0)
+            hist_title = "Components Histogram"
+            stats_title = "Components Statistics"
+        else:
+            hist_idx = 0
+            stats_idx = 0
+            hist_title = "Histogram"
+            stats_title = "Statistics"
+        self._histogram_stack.setCurrentIndex(hist_idx)
+        self._statistics_stack.setCurrentIndex(stats_idx)
+        if hasattr(self, '_histogram_title_label'):
+            self._histogram_title_label.setText(hist_title)
+        if hasattr(self, '_statistics_title_label'):
+            self._statistics_title_label.setText(stats_title)
+
+    def _check_dock_visibility(self):
+        """Poll dock state and show/hide the re-open buttons accordingly.
+
+        Runs every 500 ms via a QTimer so it correctly detects both the
+        'hide' button (which emits visibilityChanged) and the 'close X'
+        button (which destroys the dock without emitting any signal).
+        """
+        if not getattr(self, '_docks_initialized', False):
+            return
+
+        def _is_hidden(attr):
+            try:
+                return not getattr(self, attr).isVisible()
+            except (AttributeError, RuntimeError):
+                return True
+
+        analysis_hidden = _is_hidden('_analysis_dock')
+        histogram_hidden = _is_hidden('_histogram_dock')
+        statistics_hidden = _is_hidden('_statistics_dock')
+
+        self.show_analysis_button.setVisible(analysis_hidden)
+        self.show_histogram_button.setVisible(histogram_hidden)
+        self.show_statistics_button.setVisible(statistics_hidden)
+        self._dock_buttons_widget.setVisible(
+            analysis_hidden or histogram_hidden or statistics_hidden
+        )
+
+    def _show_statistics_dock(self):
+        """Make the statistics dock widget visible, re-adding it if it was closed."""
+        if not hasattr(self, '_statistics_dock'):
+            return
+        try:
+            self._statistics_dock.setVisible(True)
+        except RuntimeError:
+            self._statistics_dock = self.viewer.window.add_dock_widget(
+                self.statistics_container,
+                name="Statistics",
+                area="bottom",
+            )
+
+    def _show_analysis_dock(self):
+        """Make the analysis dock widget visible, re-adding it if it was closed."""
+        if not hasattr(self, '_analysis_dock'):
+            return
+        try:
+            self._analysis_dock.setVisible(True)
+        except RuntimeError:
+            self._analysis_dock = self.viewer.window.add_dock_widget(
+                self.analysis_widget,
+                name="Phasor Analysis",
+                area="bottom",
+            )
+
+    def _show_histogram_dock(self):
+        """Make the histogram dock widget visible, re-adding it if it was closed."""
+        if not hasattr(self, '_histogram_dock'):
+            return
+        try:
+            self._histogram_dock.setVisible(True)
+        except RuntimeError:
+            self._histogram_dock = self.viewer.window.add_dock_widget(
+                self.histogram_container,
+                name="Histogram",
+                area="bottom",
+            )
 
     def _on_semi_circle_changed(self, state):
         """Callback for semi circle checkbox change."""
@@ -1331,11 +1617,65 @@ class PlotterWidget(QWidget):
         self.components_tab = ComponentsWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.components_tab, "Components")
 
+        # Wrap the histogram in a HistogramDockWidget and add to shared stack
+        self.components_histogram_dock_widget = HistogramDockWidget(
+            self.components_tab.histogram_widget,
+            title="Components Histogram & Statistics",
+        )
+
+        # Insert component selector combobox at the top of the dock widget
+        dock_layout = self.components_histogram_dock_widget.layout()
+        component_selector = QWidget()
+        selector_layout = QHBoxLayout(component_selector)
+        selector_layout.setContentsMargins(4, 4, 4, 0)
+        selector_layout.addWidget(QLabel("Component:"))
+        selector_layout.addWidget(
+            self.components_tab.histogram_component_combobox, 1
+        )
+        dock_layout.insertWidget(0, component_selector)
+
+        self._components_hist_page_idx = self._histogram_stack.addWidget(
+            self.components_histogram_dock_widget
+        )
+
+        # Create the matching statistics dock and link it
+        self.components_statistics_dock_widget = StatisticsDockWidget(
+            self.components_tab.histogram_widget,
+            title="Components Statistics",
+        )
+        self._components_stats_page_idx = self._statistics_stack.addWidget(
+            self.components_statistics_dock_widget
+        )
+        self.components_histogram_dock_widget.link_statistics_dock(
+            self.components_statistics_dock_widget
+        )
+
     def _create_lifetime_tab(self):
         """Create the Lifetime tab."""
         self.lifetime_tab = LifetimeWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.lifetime_tab, "Lifetime")
 
+        # Wrap the histogram in a HistogramDockWidget and add to shared stack
+        self.lifetime_histogram_dock_widget = HistogramDockWidget(
+            self.lifetime_tab.histogram_widget,
+            title="Lifetime Histogram & Statistics",
+        )
+
+        self._lifetime_hist_page_idx = self._histogram_stack.addWidget(
+            self.lifetime_histogram_dock_widget
+        )
+
+        # Create the matching statistics dock and link it
+        self.lifetime_statistics_dock_widget = StatisticsDockWidget(
+            self.lifetime_tab.histogram_widget,
+            title="Lifetime Statistics",
+        )
+        self._lifetime_stats_page_idx = self._statistics_stack.addWidget(
+            self.lifetime_statistics_dock_widget
+        )
+        self.lifetime_histogram_dock_widget.link_statistics_dock(
+            self.lifetime_statistics_dock_widget
+        )
         self.lifetime_tab.frequency_input.editingFinished.connect(
             lambda: self._broadcast_frequency_value_across_tabs(
                 self.lifetime_tab.frequency_input.text()
@@ -1346,6 +1686,28 @@ class PlotterWidget(QWidget):
         """Create the FRET tab."""
         self.fret_tab = FretWidget(self.viewer, parent=self)
         self.tab_widget.addTab(self.fret_tab, "FRET")
+
+        # Wrap the histogram in a HistogramDockWidget and add to shared stack
+        self.fret_histogram_dock_widget = HistogramDockWidget(
+            self.fret_tab.histogram_widget,
+            title="FRET Histogram & Statistics",
+        )
+        self._fret_hist_page_idx = self._histogram_stack.addWidget(
+            self.fret_histogram_dock_widget
+        )
+
+        # Create the matching statistics dock and link it
+        self.fret_statistics_dock_widget = StatisticsDockWidget(
+            self.fret_tab.histogram_widget,
+            title="FRET Statistics",
+        )
+        self._fret_stats_page_idx = self._statistics_stack.addWidget(
+            self.fret_statistics_dock_widget
+        )
+        self.fret_histogram_dock_widget.link_statistics_dock(
+            self.fret_statistics_dock_widget
+        )
+
         self.fret_tab.frequency_input.editingFinished.connect(
             lambda: self._broadcast_frequency_value_across_tabs(
                 self.fret_tab.frequency_input.text()
@@ -3299,3 +3661,59 @@ class PlotterWidget(QWidget):
         tick_labels = self.colorbar.ax.get_yticklabels()
         for tick_label in tick_labels:
             tick_label.set_color(color)
+
+    def closeEvent(self, event):
+        """Clean up signal connections and child widgets before closing."""
+        # Stop background timers first.
+        with contextlib.suppress(AttributeError):
+            self._dock_check_timer.stop()
+        with contextlib.suppress(AttributeError):
+            self._analysis_dock_init_timer.stop()
+        with contextlib.suppress(AttributeError):
+            self._dock_resize_timer.stop()
+        with contextlib.suppress(AttributeError):
+            self._layer_selection_timer.stop()
+        with contextlib.suppress(AttributeError):
+            self._bins_timer.stop()
+
+        # Disconnect viewer layer events owned by this widget.
+        with contextlib.suppress(TypeError, ValueError, AttributeError):
+            self.viewer.layers.events.inserted.disconnect(
+                self.reset_layer_choices
+            )
+        with contextlib.suppress(TypeError, ValueError, AttributeError):
+            self.viewer.layers.events.removed.disconnect(
+                self.reset_layer_choices
+            )
+
+        # Disconnect combobox-driven callbacks.
+        combo = getattr(self, 'image_layers_checkable_combobox', None)
+        if combo is not None:
+            with contextlib.suppress(TypeError, ValueError, AttributeError):
+                combo.primaryLayerChanged.disconnect(
+                    self._on_primary_layer_changed
+                )
+            with contextlib.suppress(TypeError, ValueError, AttributeError):
+                combo.selectionChanged.disconnect(self._on_selection_changed)
+            with contextlib.suppress(TypeError, ValueError, AttributeError):
+                combo.selectionChanged.disconnect(self._update_mask_ui_mode)
+            with contextlib.suppress(TypeError, ValueError, AttributeError):
+                combo.primaryLayerChanged.disconnect(
+                    self._sync_frequency_inputs_from_metadata
+                )
+
+        # Ensure child tabs run their own cleanup.
+        for tab_name in (
+            'calibration_tab',
+            'filter_tab',
+            'selection_tab',
+            'components_tab',
+            'lifetime_tab',
+            'fret_tab',
+        ):
+            tab = getattr(self, tab_name, None)
+            if tab is not None:
+                with contextlib.suppress(Exception):
+                    tab.close()
+
+        super().closeEvent(event)

@@ -1,11 +1,7 @@
+import contextlib
 from typing import TYPE_CHECKING
 
-import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.backends.backend_qt5agg import (
-    FigureCanvasQTAgg as FigureCanvas,
-)
-from matplotlib.colors import LinearSegmentedColormap
 from napari.layers import Image
 from napari.utils.notifications import show_error, show_warning
 from phasorpy.lifetime import (
@@ -21,12 +17,12 @@ from qtpy.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
-from superqt import QRangeSlider
 
-from ._utils import update_frequency_in_metadata
+from ._utils import HistogramWidget, update_frequency_in_metadata
 
 if TYPE_CHECKING:
     import napari
@@ -42,6 +38,8 @@ class LifetimeWidget(QWidget):
         self.frequency = None
         self.lifetime_data = None
         self.lifetime_data_original = None  # Store original unclipped data
+        self.per_layer_lifetime_data = {}  # {layer_name: data}
+        self.per_layer_lifetime_data_original = {}  # {layer_name: data}
         self.lifetime_layer = (
             None  # Reference to first layer for backward compatibility
         )
@@ -51,16 +49,9 @@ class LifetimeWidget(QWidget):
         self.lifetime_colormap = None
         self.colormap_contrast_limits = None
         self.lifetime_type = None
-        self.hist_fig, self.hist_ax = plt.subplots(
-            figsize=(8, 4), constrained_layout=True
-        )
-        self.counts = None
-        self.bin_edges = None
-        self.bin_centers = None
         self.lifetime_range_factor = (
             1000  # Factor to convert to integer for slider
         )
-        self._slider_being_dragged = False  # Track drag state
         self._updating_contrast_limits = (
             False  # Flag to track contrast limits updates
         )
@@ -69,14 +60,11 @@ class LifetimeWidget(QWidget):
             False  # Flag to prevent recursive layer updates
         )
 
-        # Style the histogram axes and figure initially
-        self.style_histogram_axes()
-
         # Create scroll area
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         # Create content widget for scroll area
         content_widget = QWidget()
@@ -91,14 +79,16 @@ class LifetimeWidget(QWidget):
         main_widget_layout.setStretch(0, 1)
 
         # Frequency input
-        self.main_layout.addWidget(QLabel("Frequency: "))
+        frequency_layout = QHBoxLayout()
+        frequency_layout.addWidget(QLabel("Frequency (MHz): "))
         self.frequency_input = QLineEdit()
         self.frequency_input.setValidator(QDoubleValidator())
-        self.main_layout.addWidget(self.frequency_input)
+        frequency_layout.addWidget(self.frequency_input)
+        self.main_layout.addLayout(frequency_layout)
 
         # Add combobox to select lifetime type
-        self.main_layout.addWidget(QLabel("Select lifetime to display: "))
         lifetime_type_layout = QHBoxLayout()
+        lifetime_type_layout.addWidget(QLabel("Select lifetime to display: "))
         self.lifetime_type_combobox = QComboBox()
         self.lifetime_type_combobox.addItems(
             [
@@ -110,18 +100,20 @@ class LifetimeWidget(QWidget):
         self.lifetime_type_combobox.setCurrentText("Apparent Phase Lifetime")
         lifetime_type_layout.addWidget(self.lifetime_type_combobox)
 
-        # Add Calculate button (replaces refresh button)
-        self.calculate_lifetime_button = QPushButton("Calculate")
-        self.calculate_lifetime_button.setMaximumWidth(80)
+        # Add Calculate button in its own row
+        self.calculate_lifetime_button = QPushButton("Calculate Lifetime")
+        self.calculate_lifetime_button.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed
+        )
         self.calculate_lifetime_button.setToolTip(
             "Calculate and display lifetime values for the selected layers"
         )
         self.calculate_lifetime_button.clicked.connect(
             self._on_calculate_lifetime_clicked
         )
-        lifetime_type_layout.addWidget(self.calculate_lifetime_button)
 
         self.main_layout.addLayout(lifetime_type_layout)
+        self.main_layout.addWidget(self.calculate_lifetime_button)
 
         # Connect signals
         self.lifetime_type_combobox.currentTextChanged.connect(
@@ -131,62 +123,30 @@ class LifetimeWidget(QWidget):
             self._on_frequency_changed
         )
 
-        # Add lifetime range slider
-        self.lifetime_range_label = QLabel("Lifetime range (ns): 0.0 - 100.0")
-        self.main_layout.addWidget(self.lifetime_range_label)
-
-        # Add line edits for manual entry
-        lifetime_range_edit_layout = QHBoxLayout()
-        self.lifetime_min_edit = QLineEdit("0.0")
-        self.lifetime_max_edit = QLineEdit("100.0")
-        self.lifetime_min_edit.setValidator(QDoubleValidator())
-        self.lifetime_max_edit.setValidator(QDoubleValidator())
-        lifetime_range_edit_layout.addWidget(QLabel("Min:"))
-        lifetime_range_edit_layout.addWidget(self.lifetime_min_edit)
-        lifetime_range_edit_layout.addWidget(QLabel("Max:"))
-        lifetime_range_edit_layout.addWidget(self.lifetime_max_edit)
-        self.main_layout.addLayout(lifetime_range_edit_layout)
-
-        self.lifetime_range_slider = QRangeSlider(Qt.Orientation.Horizontal)
-        self.lifetime_range_slider.setRange(0, 100)
-        self.lifetime_range_slider.setValue((0, 100))
-        self.lifetime_range_slider.setBarMovesAllHandles(False)
-
-        # Connect to valueChanged for label updates only
-        self.lifetime_range_slider.valueChanged.connect(
-            self._on_lifetime_range_label_update
-        )
-        # Connect to mouse events for histogram updates
-        self.lifetime_range_slider.sliderPressed.connect(
-            self._on_slider_pressed
-        )
-        self.lifetime_range_slider.sliderReleased.connect(
-            self._on_slider_released
-        )
-        self.main_layout.addWidget(self.lifetime_range_slider)
-
-        # Connect line edits to update slider
-        self.lifetime_min_edit.editingFinished.connect(
-            self._on_lifetime_min_edit
-        )
-        self.lifetime_max_edit.editingFinished.connect(
-            self._on_lifetime_max_edit
+        # NOTE: The widget is created here but NOT added to this tab's layout.
+        # PlotterWidget wraps it in a HistogramDockWidget and docks it separately.
+        self.histogram_widget = HistogramWidget(
+            xlabel="Lifetime (ns)",
+            ylabel="Pixel count",
+            bins=150,
+            default_colormap_name="plasma",
+            range_slider_enabled=True,
+            range_label_prefix="Lifetime range (ns)",
+            range_factor=self.lifetime_range_factor,
+            parent=self,
         )
 
-        # Add histogram widget
-        self.histogram_widget = QWidget(self)
-        self.histogram_layout = QVBoxLayout(self.histogram_widget)
+        # Convenience aliases so the rest of the class (and tests) can
+        # keep referring to the same attribute names.
+        self.lifetime_range_slider = self.histogram_widget.range_slider
+        self.lifetime_range_label = self.histogram_widget.range_label
+        self.lifetime_min_edit = self.histogram_widget.range_min_edit
+        self.lifetime_max_edit = self.histogram_widget.range_max_edit
 
-        # Embed the Matplotlib figure into the widget with fixed size
-        canvas = FigureCanvas(self.hist_fig)
-        canvas.setFixedHeight(150)
-        canvas.setSizePolicy(
-            canvas.sizePolicy().Expanding, canvas.sizePolicy().Fixed
+        # Connect the histogram widget's rangeChanged signal
+        self.histogram_widget.rangeChanged.connect(
+            self._on_range_changed_from_histogram
         )
-        self.histogram_layout.addWidget(canvas)
-
-        self.main_layout.addWidget(self.histogram_widget)
-        self.histogram_widget.hide()
 
     def _get_default_lifetime_settings(self):
         """Get default settings dictionary for lifetime parameters."""
@@ -297,50 +257,11 @@ class LifetimeWidget(QWidget):
                 self.frequency = None
                 self.histogram_widget.hide()
 
-    def style_histogram_axes(self):
-        """Apply consistent styling to the histogram axes and figure."""
-        self.hist_ax.patch.set_alpha(0)
-        self.hist_fig.patch.set_alpha(0)
-        for spine in self.hist_ax.spines.values():
-            spine.set_color('grey')
-            spine.set_linewidth(1)
-        self.hist_ax.set_ylabel("Pixel count", fontsize=6, color='grey')
-        self.hist_ax.set_xlabel("Lifetime (ns)", fontsize=6, color='grey')
-        self.hist_ax.tick_params(
-            axis='x', which='major', labelsize=7, colors='grey'
-        )
-        self.hist_ax.tick_params(
-            axis='x', which='minor', labelsize=7, colors='grey'
-        )
-        self.hist_ax.tick_params(
-            axis='y', which='major', labelsize=7, colors='grey'
-        )
-        self.hist_ax.tick_params(
-            axis='y', which='minor', labelsize=7, colors='grey'
-        )
-
-    def _on_slider_pressed(self):
-        """Called when slider is pressed."""
-        self._slider_being_dragged = True
-
-    def _on_slider_released(self):
-        """Called when slider is released."""
-        self._slider_being_dragged = False
-
-        value = self.lifetime_range_slider.value()
-        self._on_lifetime_range_changed(value)
-
-    def _on_lifetime_range_label_update(self, value):
-        """Update only the label while dragging, not the histogram."""
-        min_val, max_val = value
-        min_lifetime = min_val / self.lifetime_range_factor
-        max_lifetime = max_val / self.lifetime_range_factor
-        self.lifetime_range_label.setText(
-            f"Lifetime range (ns): {min_lifetime:.2f} - {max_lifetime:.2f}"
-        )
-
-        self.lifetime_min_edit.setText(f"{min_lifetime:.2f}")
-        self.lifetime_max_edit.setText(f"{max_lifetime:.2f}")
+    def _on_range_changed_from_histogram(self, min_float, max_float):
+        """Bridge between HistogramWidget.rangeChanged and the lifetime logic."""
+        min_val = int(min_float * self.lifetime_range_factor)
+        max_val = int(max_float * self.lifetime_range_factor)
+        self._on_lifetime_range_changed((min_val, max_val))
 
     def _on_lifetime_range_changed(self, value):
         """Callback when lifetime range slider changes - updates all lifetime layers."""
@@ -416,6 +337,7 @@ class LifetimeWidget(QWidget):
             return
 
         all_lifetime_data = []
+        per_layer_data = {}
 
         for layer in selected_layers:
             g_array = layer.metadata.get("G")
@@ -473,6 +395,7 @@ class LifetimeWidget(QWidget):
             ] = lifetime_values
 
             all_lifetime_data.append(lifetime_values)
+            per_layer_data[layer.name] = lifetime_values
 
         if not all_lifetime_data:
             return
@@ -482,6 +405,12 @@ class LifetimeWidget(QWidget):
         )
         self.lifetime_data_original = merged_lifetime
         self.lifetime_data = self.lifetime_data_original.copy()
+        self.per_layer_lifetime_data_original = {
+            k: v.copy() for k, v in per_layer_data.items()
+        }
+        self.per_layer_lifetime_data = {
+            k: v.copy() for k, v in per_layer_data.items()
+        }
         self._update_lifetime_range_slider()
 
     def _update_lifetime_range_slider(self):
@@ -539,40 +468,6 @@ class LifetimeWidget(QWidget):
         self.lifetime_min_edit.setText(f"{self.min_lifetime:.2f}")
         self.lifetime_max_edit.setText(f"{self.max_lifetime:.2f}")
 
-    def _on_lifetime_min_edit(self):
-        min_val = float(self.lifetime_min_edit.text())
-        max_val = float(self.lifetime_max_edit.text())
-
-        min_val = max(0.0, min(min_val, self.max_lifetime or 0))
-        max_val = max(0.0, min(max_val, self.max_lifetime or 0))
-
-        # Ensure min < max with small epsilon
-        if min_val >= max_val:
-            max_val = min_val + 0.01
-
-        min_slider = int(min_val * self.lifetime_range_factor)
-        max_slider = int(max_val * self.lifetime_range_factor)
-        self.lifetime_range_slider.setValue((min_slider, max_slider))
-        if not self._updating_settings:
-            self._on_lifetime_range_changed((min_slider, max_slider))
-
-    def _on_lifetime_max_edit(self):
-        min_val = float(self.lifetime_min_edit.text())
-        max_val = float(self.lifetime_max_edit.text())
-
-        min_val = max(0.0, min(min_val, self.max_lifetime or 0))
-        max_val = max(0.0, min(max_val, self.max_lifetime or 0))
-
-        # Ensure min < max with small epsilon
-        if max_val <= min_val:
-            min_val = max_val - 0.01 if max_val > 0.01 else 0.0
-
-        min_slider = int(min_val * self.lifetime_range_factor)
-        max_slider = int(max_val * self.lifetime_range_factor)
-        self.lifetime_range_slider.setValue((min_slider, max_slider))
-        if not self._updating_settings:
-            self._on_lifetime_range_changed((min_slider, max_slider))
-
     def plot_lifetime_histogram(self):
         """Plot the histogram of the merged lifetime data from all selected layers."""
         if self.lifetime_data is None:
@@ -585,29 +480,19 @@ class LifetimeWidget(QWidget):
             self.histogram_widget.hide()
             return
 
-        flattened_data = self.lifetime_data.flatten()
-        flattened_data = flattened_data[~np.isnan(flattened_data)]
-        flattened_data = flattened_data[flattened_data > 0]
-        flattened_data = flattened_data[np.isfinite(flattened_data)]
-
-        if len(flattened_data) == 0:
-            self.hist_ax.clear()
-            self.hist_ax.text(
-                0.5,
-                0.5,
-                'No valid data',
-                transform=self.hist_ax.transAxes,
-                ha='center',
+        self.histogram_widget.update_colormap(
+            colormap_colors=self.lifetime_colormap,
+            contrast_limits=self.colormap_contrast_limits,
+        )
+        if (
+            self.per_layer_lifetime_data
+            and len(self.per_layer_lifetime_data) > 1
+        ):
+            self.histogram_widget.update_multi_data(
+                self.per_layer_lifetime_data
             )
-            self.hist_fig.canvas.draw_idle()
-            self.histogram_widget.show()
-            return
-
-        self.counts, self.bin_edges = np.histogram(flattened_data, bins=300)
-        self.bin_centers = (self.bin_edges[:-1] + self.bin_edges[1:]) / 2
-
-        self._update_lifetime_histogram()
-        self.histogram_widget.show()
+        else:
+            self.histogram_widget.update_data(self.lifetime_data)
 
     def create_lifetime_layer(self):
         """Create or update lifetime layers for all selected layers."""
@@ -679,51 +564,6 @@ class LifetimeWidget(QWidget):
                 self.lifetime_colormap = lifetime_layer.colormap.colors
                 self.colormap_contrast_limits = lifetime_layer.contrast_limits
 
-    def _update_lifetime_histogram(self):
-        """Update the histogram plot with the current histogram values."""
-        self.hist_ax.clear()
-        self.hist_ax.plot(self.bin_centers, self.counts, color='none', alpha=0)
-
-        if (
-            self.lifetime_colormap is None
-            or self.colormap_contrast_limits is None
-        ):
-            cmap = plt.cm.plasma
-            norm = plt.Normalize(
-                vmin=(
-                    np.min(self.bin_centers)
-                    if len(self.bin_centers) > 0
-                    else 0
-                ),
-                vmax=(
-                    np.max(self.bin_centers)
-                    if len(self.bin_centers) > 0
-                    else 1
-                ),
-            )
-        else:
-            # Create the colormap by linear combination of the napari cmap
-            cmap = LinearSegmentedColormap.from_list(
-                'custom_cmap', self.lifetime_colormap
-            )
-            norm = plt.Normalize(
-                vmin=self.colormap_contrast_limits[0],
-                vmax=self.colormap_contrast_limits[1],
-            )
-
-        for count, bin_start, bin_end in zip(
-            self.counts, self.bin_edges[:-1], self.bin_edges[1:], strict=False
-        ):
-            bin_center = (bin_start + bin_end) / 2
-            color = cmap(norm(bin_center))
-            self.hist_ax.fill_between(
-                [bin_start, bin_end], 0, count, color=color, alpha=0.7
-            )
-
-        self.style_histogram_axes()
-
-        self.hist_fig.canvas.draw_idle()
-
     def _on_colormap_changed(self, event):
         """Callback whenever the colormap or contrast limits change on any lifetime layer - sync all layers."""
         if getattr(self, '_updating_contrast_limits', False) or getattr(
@@ -749,7 +589,10 @@ class LifetimeWidget(QWidget):
         finally:
             self._updating_linked_layers = False
 
-        self._update_lifetime_histogram()
+        self.histogram_widget.update_colormap(
+            colormap_colors=self.lifetime_colormap,
+            contrast_limits=self.colormap_contrast_limits,
+        )
 
     def _on_image_layer_changed(self):
         """Callback whenever the image layer with phasor features changes.
@@ -779,12 +622,12 @@ class LifetimeWidget(QWidget):
 
             self.lifetime_data = None
             self.lifetime_data_original = None
+            self.per_layer_lifetime_data = {}
+            self.per_layer_lifetime_data_original = {}
             self.lifetime_layer = None
             self.lifetime_layers = []
 
-            self.hist_ax.clear()
-            self.hist_fig.canvas.draw_idle()
-            self.histogram_widget.hide()
+            self.histogram_widget.clear()
 
     def _on_calculate_lifetime_clicked(self):
         """Callback when Calculate button is clicked.
@@ -889,4 +732,22 @@ class LifetimeWidget(QWidget):
             self.lifetime_data = np.clip(
                 self.lifetime_data_original, min_lifetime, max_lifetime
             )
+            # Also clip per-layer data for multi-layer histogram modes
+            for name, orig in self.per_layer_lifetime_data_original.items():
+                self.per_layer_lifetime_data[name] = np.clip(
+                    orig, min_lifetime, max_lifetime
+                )
             self.plot_lifetime_histogram()
+
+    def closeEvent(self, event):
+        """Clean up signal connections before closing."""
+        # Disconnect all lifetime layer events
+        for layer in self.lifetime_layers:
+            with contextlib.suppress(ValueError, AttributeError):
+                layer.events.colormap.disconnect(self._on_colormap_changed)
+            with contextlib.suppress(ValueError, AttributeError):
+                layer.events.contrast_limits.disconnect(
+                    self._on_contrast_limits_changed
+                )
+
+        event.accept()
