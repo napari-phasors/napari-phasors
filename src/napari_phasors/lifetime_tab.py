@@ -1,3 +1,4 @@
+import contextlib
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -737,3 +738,16 @@ class LifetimeWidget(QWidget):
                     orig, min_lifetime, max_lifetime
                 )
             self.plot_lifetime_histogram()
+
+    def closeEvent(self, event):
+        """Clean up signal connections before closing."""
+        # Disconnect all lifetime layer events
+        for layer in self.lifetime_layers:
+            with contextlib.suppress(ValueError, AttributeError):
+                layer.events.colormap.disconnect(self._on_colormap_changed)
+            with contextlib.suppress(ValueError, AttributeError):
+                layer.events.contrast_limits.disconnect(
+                    self._on_contrast_limits_changed
+                )
+
+        event.accept()

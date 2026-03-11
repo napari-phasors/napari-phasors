@@ -532,8 +532,19 @@ class PlotterWidget(QWidget):
         # Prevent the histogram from being shrunk below a usable size
         self.histogram_container.setMinimumWidth(350)
 
-        # Add the analysis widget to the viewer with a delay to ensure correct ordering
-        QTimer.singleShot(20, self._add_analysis_dock_widget)
+        # Add the analysis widget to the viewer with a delay to ensure
+        # correct dock ordering. Use owned timers so teardown can cancel them.
+        self._analysis_dock_init_timer = QTimer(self)
+        self._analysis_dock_init_timer.setSingleShot(True)
+        self._analysis_dock_init_timer.timeout.connect(
+            self._add_analysis_dock_widget
+        )
+
+        self._dock_resize_timer = QTimer(self)
+        self._dock_resize_timer.setSingleShot(True)
+        self._dock_resize_timer.timeout.connect(self._resize_initial_docks)
+
+        self._analysis_dock_init_timer.start(20)
 
         # Canvas minimum is already set by canvas_widget.setMinimumSize(300, 300)
         # Controls container will size to its content
@@ -543,14 +554,14 @@ class PlotterWidget(QWidget):
         self._updating_settings = False
 
         # Debounce timers for expensive operations
-        self._layer_selection_timer = QTimer()
+        self._layer_selection_timer = QTimer(self)
         self._layer_selection_timer.setSingleShot(True)
         self._layer_selection_timer.setInterval(300)  # 300ms delay
         self._layer_selection_timer.timeout.connect(
             self._process_layer_selection_change
         )
 
-        self._bins_timer = QTimer()
+        self._bins_timer = QTimer(self)
         self._bins_timer.setSingleShot(True)
         self._bins_timer.setInterval(500)  # 500ms delay
         self._bins_timer.timeout.connect(self._process_bins_change)
@@ -724,19 +735,23 @@ class PlotterWidget(QWidget):
             )
 
             # Defer resizeDocks so it runs after Qt has applied the splits.
-            def _resize():
-                with contextlib.suppress(RuntimeError):
-                    qt_window.resizeDocks(
-                        [
-                            self._statistics_dock,
-                            self._histogram_dock,
-                            self._analysis_dock,
-                        ],
-                        [300, 500, 500],
-                        Qt.Horizontal,
-                    )
+            self._dock_resize_timer.start(200)
 
-            QTimer.singleShot(200, _resize)
+    def _resize_initial_docks(self):
+        """Resize docks after delayed split has been applied."""
+        if not getattr(self, '_docks_initialized', False):
+            return
+        with contextlib.suppress(AttributeError, RuntimeError):
+            qt_window = self.viewer.window._qt_window
+            qt_window.resizeDocks(
+                [
+                    self._statistics_dock,
+                    self._histogram_dock,
+                    self._analysis_dock,
+                ],
+                [300, 500, 500],
+                Qt.Horizontal,
+            )
 
     def get_selected_layer_names(self):
         """Get the names of all selected (checked) layers.
@@ -3646,3 +3661,59 @@ class PlotterWidget(QWidget):
         tick_labels = self.colorbar.ax.get_yticklabels()
         for tick_label in tick_labels:
             tick_label.set_color(color)
+
+    def closeEvent(self, event):
+        """Clean up signal connections and child widgets before closing."""
+        # Stop background timers first.
+        with contextlib.suppress(AttributeError):
+            self._dock_check_timer.stop()
+        with contextlib.suppress(AttributeError):
+            self._analysis_dock_init_timer.stop()
+        with contextlib.suppress(AttributeError):
+            self._dock_resize_timer.stop()
+        with contextlib.suppress(AttributeError):
+            self._layer_selection_timer.stop()
+        with contextlib.suppress(AttributeError):
+            self._bins_timer.stop()
+
+        # Disconnect viewer layer events owned by this widget.
+        with contextlib.suppress(TypeError, ValueError, AttributeError):
+            self.viewer.layers.events.inserted.disconnect(
+                self.reset_layer_choices
+            )
+        with contextlib.suppress(TypeError, ValueError, AttributeError):
+            self.viewer.layers.events.removed.disconnect(
+                self.reset_layer_choices
+            )
+
+        # Disconnect combobox-driven callbacks.
+        combo = getattr(self, 'image_layers_checkable_combobox', None)
+        if combo is not None:
+            with contextlib.suppress(TypeError, ValueError, AttributeError):
+                combo.primaryLayerChanged.disconnect(
+                    self._on_primary_layer_changed
+                )
+            with contextlib.suppress(TypeError, ValueError, AttributeError):
+                combo.selectionChanged.disconnect(self._on_selection_changed)
+            with contextlib.suppress(TypeError, ValueError, AttributeError):
+                combo.selectionChanged.disconnect(self._update_mask_ui_mode)
+            with contextlib.suppress(TypeError, ValueError, AttributeError):
+                combo.primaryLayerChanged.disconnect(
+                    self._sync_frequency_inputs_from_metadata
+                )
+
+        # Ensure child tabs run their own cleanup.
+        for tab_name in (
+            'calibration_tab',
+            'filter_tab',
+            'selection_tab',
+            'components_tab',
+            'lifetime_tab',
+            'fret_tab',
+        ):
+            tab = getattr(self, tab_name, None)
+            if tab is not None:
+                with contextlib.suppress(Exception):
+                    tab.close()
+
+        super().closeEvent(event)

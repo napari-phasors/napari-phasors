@@ -1,3 +1,4 @@
+import contextlib
 from math import ceil, log10
 
 import matplotlib.pyplot as plt
@@ -1029,3 +1030,16 @@ class FilterWidget(QWidget):
 
             if not self._updating_threshold:
                 self.threshold_method_combobox.setCurrentText("Manual")
+
+    def closeEvent(self, event):
+        """Clean up signal connections before closing."""
+        # Disconnect parent widget signal if present
+        if hasattr(self, 'parent_widget') and hasattr(
+            self.parent_widget, 'image_layer_with_phasor_features_combobox'
+        ):
+            with contextlib.suppress(ValueError, AttributeError):
+                self.parent_widget.image_layer_with_phasor_features_combobox.currentIndexChanged.disconnect(
+                    self._on_image_layer_changed
+                )
+
+        event.accept()

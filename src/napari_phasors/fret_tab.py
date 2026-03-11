@@ -1868,3 +1868,25 @@ class FretWidget(QWidget):
 
         self._update_fret_histogram()
         self.plot_donor_trajectory()
+
+    def closeEvent(self, event):
+        """Clean up signal connections before closing."""
+        # Disconnect viewer events
+        with contextlib.suppress(ValueError, AttributeError):
+            self.viewer.layers.events.inserted.disconnect(
+                self._on_layer_changed
+            )
+        with contextlib.suppress(ValueError, AttributeError):
+            self.viewer.layers.events.removed.disconnect(
+                self._on_layer_changed
+            )
+
+        # Disconnect all layer name change events
+        with contextlib.suppress(ValueError, AttributeError):
+            for layer in self.viewer.layers:
+                with contextlib.suppress(TypeError, ValueError):
+                    layer.events.name.disconnect(
+                        self._update_background_combobox
+                    )
+
+        event.accept()

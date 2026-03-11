@@ -4093,3 +4093,14 @@ class ComponentsWidget(QWidget):
             self.histogram_widget.update_data(first_layer.data)
 
         self.histogram_widget.show()
+
+    def closeEvent(self, event):
+        """Clean up signal connections before closing."""
+        # Disconnect parent widget signal if present
+        if hasattr(self, 'parent_widget') and self.parent_widget:
+            with contextlib.suppress(ValueError, AttributeError):
+                self.parent_widget.harmonic_spinbox.valueChanged.disconnect(
+                    self._on_harmonic_changed
+                )
+
+        event.accept()
