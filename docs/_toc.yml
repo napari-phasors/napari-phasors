@@ -15,6 +15,7 @@ parts:
   - file: guides/calibration
   - file: guides/filtering_thresholding
   - file: guides/selections
+  - file: guides/phasor_mapping
   - file: guides/fret_analysis
   - file: guides/exporting
 - caption: API Reference
