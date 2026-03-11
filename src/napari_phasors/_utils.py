@@ -554,8 +554,8 @@ def gaussian_filter1d(
     data = np.asarray(data, dtype=float)
     # Determine kernel radius from sigma and truncate (same convention as SciPy)
     radius = int(truncate * float(sigma) + 0.5)
-    if radius <= 0:
-        return input.copy()
+    if radius <= 0 or float(sigma) <= 0:
+        return data.copy()
     x = np.arange(-radius, radius + 1, dtype=float)
     kernel = np.exp(-(x**2) / (2.0 * float(sigma) ** 2))
     kernel /= kernel.sum()
@@ -569,10 +569,11 @@ def gaussian_filter1d(
         )
 
     def _convolve_1d(arr_1d):
-        # Reflect padding at the boundaries
-        left = arr_1d[1 : radius + 1][::-1] if arr_1d.size > 1 else arr_1d
-        right = arr_1d[-radius - 1 : -1][::-1] if arr_1d.size > 1 else arr_1d
-        padded = np.concatenate([left, arr_1d, right])
+        # Pad exactly ``radius`` samples on each side so 'valid' convolution
+        # returns an array with the original length.
+        if arr_1d.size <= 1:
+            return arr_1d.astype(float, copy=True)
+        padded = np.pad(arr_1d, pad_width=radius, mode="reflect")
         return np.convolve(padded, kernel, mode="valid")
 
     return np.apply_along_axis(_convolve_1d, axis, data)

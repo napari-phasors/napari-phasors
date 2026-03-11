@@ -8,9 +8,10 @@ from napari_phasors._utils import (
 )
 
 
-def test_histogram_widget_update_data_and_clear():
+def test_histogram_widget_update_data_and_clear(qtbot):
     """HistogramWidget should compute bins and reset cleanly."""
     widget = HistogramWidget(bins=8)
+    qtbot.addWidget(widget)
 
     # Include invalid values to verify filtering behavior.
     data = np.array([1.0, 2.0, 3.0, np.nan, np.inf, -1.0, 0.0])
@@ -37,18 +38,20 @@ def test_histogram_widget_update_data_and_clear():
     assert not widget.save_png_button.isEnabled()
 
 
-def test_histogram_widget_default_filter_keeps_zero():
+def test_histogram_widget_default_filter_keeps_zero(qtbot):
     """Default filtering should keep zero values (drop only NaN/Inf)."""
     widget = HistogramWidget(bins=5)
+    qtbot.addWidget(widget)
     widget.update_data(np.array([0.0, 0.25, np.nan, np.inf]))
 
     assert widget.counts is not None
     assert np.any(np.isclose(widget._raw_valid_data, 0.0))
 
 
-def test_histogram_widget_exclude_nonpositive_option():
+def test_histogram_widget_exclude_nonpositive_option(qtbot):
     """Optional non-positive filtering should preserve old behavior."""
     widget = HistogramWidget(bins=5, exclude_nonpositive=True)
+    qtbot.addWidget(widget)
     widget.update_data(np.array([-1.0, 0.0, 0.25, np.nan, np.inf]))
 
     assert widget.counts is not None
@@ -56,9 +59,10 @@ def test_histogram_widget_exclude_nonpositive_option():
     assert np.allclose(widget._raw_valid_data, np.array([0.25]))
 
 
-def test_histogram_widget_update_multi_data_autosd():
+def test_histogram_widget_update_multi_data_autosd(qtbot):
     """Multi-dataset updates should auto-enable SD shading when needed."""
     widget = HistogramWidget(bins=10)
+    qtbot.addWidget(widget)
 
     datasets = {
         "Layer A": np.array([1, 2, 3, 4], dtype=float),
@@ -71,9 +75,10 @@ def test_histogram_widget_update_multi_data_autosd():
     assert widget._show_sd is True
 
 
-def test_statistics_table_widget_populates_rows():
+def test_statistics_table_widget_populates_rows(qtbot):
     """StatisticsTableWidget should populate rows for each dataset."""
     table = StatisticsTableWidget()
+    qtbot.addWidget(table)
 
     datasets = {
         "Layer A": np.array([1.0, 2.0, 3.0]),
@@ -92,10 +97,12 @@ def test_statistics_table_widget_populates_rows():
     assert row_names == {"Layer A", "Layer B"}
 
 
-def test_statistics_dock_widget_updates_for_single_and_grouped_data():
+def test_statistics_dock_widget_updates_for_single_and_grouped_data(qtbot):
     """StatisticsDockWidget should toggle sections by histogram mode/data."""
     histogram_widget = HistogramWidget(bins=12)
+    qtbot.addWidget(histogram_widget)
     stats_dock = StatisticsDockWidget(histogram_widget)
+    qtbot.addWidget(stats_dock)
 
     histogram_widget.update_data(np.array([1.0, 2.0, 3.0, 4.0]))
     assert not stats_dock.layer_stats_section.isHidden()
@@ -118,11 +125,14 @@ def test_statistics_dock_widget_updates_for_single_and_grouped_data():
     assert stats_dock.group_stats_table.rowCount() == 2
 
 
-def test_histogram_dock_widget_links_statistics_dock():
+def test_histogram_dock_widget_links_statistics_dock(qtbot):
     """HistogramDockWidget should store a linked statistics dock."""
     histogram_widget = HistogramWidget()
+    qtbot.addWidget(histogram_widget)
     hist_dock = HistogramDockWidget(histogram_widget)
+    qtbot.addWidget(hist_dock)
     stats_dock = StatisticsDockWidget(histogram_widget)
+    qtbot.addWidget(stats_dock)
 
     hist_dock.link_statistics_dock(stats_dock)
 
