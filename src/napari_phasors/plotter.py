@@ -632,6 +632,17 @@ class PlotterWidget(QWidget):
         self.plotter_inputs_widget.white_background_checkbox.stateChanged.connect(
             self._on_white_background_changed
         )
+
+        self.plotter_inputs_widget.marker_size_spinbox.valueChanged.connect(
+            self._on_marker_size_changed
+        )
+        self.plotter_inputs_widget.marker_color_button.clicked.connect(
+            self._on_marker_color_clicked
+        )
+        self.plotter_inputs_widget.marker_alpha_spinbox.valueChanged.connect(
+            self._on_marker_alpha_changed
+        )
+
         self.import_from_layer_button.clicked.connect(
             self._import_settings_from_layer
         )
@@ -665,6 +676,10 @@ class PlotterWidget(QWidget):
         # Start with the histogram2d plot type
         self.plot_type = 'HISTOGRAM2D'
         self._current_plot_type = 'HISTOGRAM2D'
+
+        # Initialize the dynamic UI elements
+        self._on_plot_type_changed()
+        self._update_scatter_colormap()
 
         # Connect only the initial active artist
         self._connect_active_artist_signals()
@@ -839,6 +854,9 @@ class PlotterWidget(QWidget):
             'colormap': self.histogram_colormap,
             'number_of_bins': self.histogram_bins,
             'log_scale': self.histogram_log_scale,
+            'marker_size': 50,
+            'marker_alpha': 0.5,
+            'marker_color': '#1f77b4',
         }
 
     def _initialize_plot_settings_in_metadata(self, layer):
@@ -953,6 +971,24 @@ class PlotterWidget(QWidget):
                 self.plotter_inputs_widget.log_scale_checkbox.setChecked(
                     settings['log_scale']
                 )
+
+            if 'marker_size' in settings:
+                self.plotter_inputs_widget.marker_size_spinbox.setValue(
+                    settings['marker_size']
+                )
+
+            if 'marker_alpha' in settings:
+                self.plotter_inputs_widget.marker_alpha_spinbox.setValue(
+                    settings['marker_alpha']
+                )
+
+            if 'marker_color' in settings:
+                color = settings['marker_color']
+                self._marker_color = color
+                self.plotter_inputs_widget.marker_color_button.setStyleSheet(
+                    f"background-color: {color};"
+                )
+                self._update_scatter_colormap()
 
         finally:
             self._updating_settings = False
@@ -1138,6 +1174,9 @@ class PlotterWidget(QWidget):
                 "colormap",
                 "number_of_bins",
                 "log_scale",
+                "marker_size",
+                "marker_alpha",
+                "marker_color",
             ],
             "calibration_tab": [
                 "calibrated",
@@ -1628,12 +1667,70 @@ class PlotterWidget(QWidget):
         )
         self._update_setting_in_metadata('plot_type', new_plot_type)
 
+        is_scatter = new_plot_type == 'SCATTER'
+        self.plotter_inputs_widget.label_3.setVisible(not is_scatter)
+        self.plotter_inputs_widget.colormap_combobox.setVisible(not is_scatter)
+        self.plotter_inputs_widget.label_4.setVisible(not is_scatter)
+        self.plotter_inputs_widget.number_of_bins_spinbox.setVisible(
+            not is_scatter
+        )
+        self.plotter_inputs_widget.label_7.setVisible(not is_scatter)
+        self.plotter_inputs_widget.log_scale_checkbox.setVisible(
+            not is_scatter
+        )
+
+        self.plotter_inputs_widget.label_marker_size.setVisible(is_scatter)
+        self.plotter_inputs_widget.marker_size_spinbox.setVisible(is_scatter)
+        self.plotter_inputs_widget.label_marker_color.setVisible(is_scatter)
+        self.plotter_inputs_widget.marker_color_button.setVisible(is_scatter)
+        self.plotter_inputs_widget.label_marker_alpha.setVisible(is_scatter)
+        self.plotter_inputs_widget.marker_alpha_spinbox.setVisible(is_scatter)
+
         if not self._updating_settings:
             old_plot_type = getattr(self, '_current_plot_type', None)
             if new_plot_type != old_plot_type:
                 self._current_plot_type = new_plot_type
                 self._connect_active_artist_signals()
                 self.switch_plot_type(new_plot_type)
+
+    def _on_marker_size_changed(self, value):
+        self._update_setting_in_metadata('marker_size', value)
+        if not self._updating_settings and self.plot_type == 'SCATTER':
+            self.canvas_widget.artists['SCATTER'].size = value
+            self.canvas_widget.figure.canvas.draw_idle()
+
+    def _on_marker_alpha_changed(self, value):
+        self._update_setting_in_metadata('marker_alpha', value)
+        if not self._updating_settings and self.plot_type == 'SCATTER':
+            self.canvas_widget.artists['SCATTER'].alpha = value
+            self.canvas_widget.figure.canvas.draw_idle()
+
+    def _on_marker_color_clicked(self):
+        from qtpy.QtWidgets import QColorDialog
+
+        color = QColorDialog.getColor(parent=self)
+        if color.isValid():
+            hex_color = color.name()
+            self.plotter_inputs_widget.marker_color_button.setStyleSheet(
+                f"background-color: {hex_color};"
+            )
+            self._marker_color = hex_color
+            self._update_setting_in_metadata('marker_color', hex_color)
+            if not self._updating_settings:
+                self._update_scatter_colormap()
+
+    def _update_scatter_colormap(self):
+        from matplotlib.colors import ListedColormap
+
+        current_color = getattr(self, '_marker_color', '#1f77b4')
+
+        new_cmap = ListedColormap([current_color])
+
+        self.canvas_widget.artists['SCATTER'].overlay_colormap = new_cmap
+        self.canvas_widget.artists['SCATTER']._colorize(
+            self.canvas_widget.artists['SCATTER'].color_indices
+        )
+        self.canvas_widget.figure.canvas.draw_idle()
 
     def _on_colormap_changed(self):
         """Callback for colormap change."""
@@ -3567,10 +3664,23 @@ class PlotterWidget(QWidget):
         plot_data = np.column_stack((x_data, y_data))
         self.canvas_widget.artists['SCATTER'].data = plot_data
 
+        # Setting data causes biaplotter to reset size and alpha to default values
+        # Re-apply the user's chosen size and alpha
+        self.canvas_widget.artists['SCATTER'].size = (
+            self.plotter_inputs_widget.marker_size_spinbox.value()
+        )
+        self.canvas_widget.artists['SCATTER'].alpha = (
+            self.plotter_inputs_widget.marker_alpha_spinbox.value()
+        )
+
         # Only update color_indices if changed
         target_color_indices = (
             selection_id_data if selection_id_data is not None else 0
         )
+        if isinstance(target_color_indices, np.ndarray):
+            target_color_indices = target_color_indices.astype(int)
+        else:
+            target_color_indices = int(target_color_indices)
 
         # For arrays, use array_equal; for scalars, use direct comparison
         indices_changed = False

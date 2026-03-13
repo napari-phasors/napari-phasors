@@ -114,6 +114,9 @@ def test_phasor_plotter_initialization_values(make_napari_viewer):
     assert hasattr(plotter.plotter_inputs_widget, 'semi_circle_checkbox')
     assert hasattr(plotter.plotter_inputs_widget, 'white_background_checkbox')
     assert hasattr(plotter.plotter_inputs_widget, 'log_scale_checkbox')
+    assert hasattr(plotter.plotter_inputs_widget, 'marker_size_spinbox')
+    assert hasattr(plotter.plotter_inputs_widget, 'marker_alpha_spinbox')
+    assert hasattr(plotter.plotter_inputs_widget, 'marker_color_button')
 
     # Test default property values
     assert plotter.harmonic == 1
@@ -371,6 +374,9 @@ def test_layer_settings_initialization_in_metadata(make_napari_viewer):
     assert 'colormap' in layer.metadata['settings']
     assert 'number_of_bins' in layer.metadata['settings']
     assert 'log_scale' in layer.metadata['settings']
+    assert 'marker_size' in layer.metadata['settings']
+    assert 'marker_alpha' in layer.metadata['settings']
+    assert 'marker_color' in layer.metadata['settings']
 
     # Check default values
     assert layer.metadata['settings']['harmonic'] == 1
@@ -378,8 +384,12 @@ def test_layer_settings_initialization_in_metadata(make_napari_viewer):
     assert layer.metadata['settings']['white_background']
     assert layer.metadata['settings']['plot_type'] == 'HISTOGRAM2D'
     assert layer.metadata['settings']['colormap'] == 'turbo'
+    assert plotter.plotter_inputs_widget.marker_size_spinbox.value() == 50
     assert layer.metadata['settings']['number_of_bins'] == 150
     assert not layer.metadata['settings']['log_scale']
+    assert layer.metadata['settings']['marker_size'] == 50
+    assert layer.metadata['settings']['marker_alpha'] == 0.5
+    assert layer.metadata['settings']['marker_color'] == '#1f77b4'
 
     plotter.deleteLater()
 
@@ -466,6 +476,48 @@ def test_modifying_settings_updates_metadata_correctly(make_napari_viewer):
     # Test white background update
     plotter.plotter_inputs_widget.white_background_checkbox.setChecked(False)
     assert not layer.metadata['settings']['white_background']
+
+    # Test marker size update
+    plotter.plotter_inputs_widget.marker_size_spinbox.setValue(30)
+    assert layer.metadata['settings']['marker_size'] == 30
+
+    # Test marker alpha update
+    plotter.plotter_inputs_widget.marker_alpha_spinbox.setValue(0.8)
+    assert layer.metadata['settings']['marker_alpha'] == 0.8
+
+    # Test marker color update
+    plotter._marker_color = '#ff0000'
+    plotter._update_setting_in_metadata('marker_color', '#ff0000')
+    assert layer.metadata['settings']['marker_color'] == '#ff0000'
+
+    plotter.deleteLater()
+
+
+def test_plot_type_ui_toggles(make_napari_viewer):
+    """Test that switching plot types hides and shows correct inputs."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    # Initial is HISTOGRAM2D
+    assert plotter.plot_type == 'HISTOGRAM2D'
+    assert not plotter.plotter_inputs_widget.colormap_combobox.isHidden()
+    assert not plotter.plotter_inputs_widget.number_of_bins_spinbox.isHidden()
+    assert not plotter.plotter_inputs_widget.log_scale_checkbox.isHidden()
+
+    assert plotter.plotter_inputs_widget.marker_size_spinbox.isHidden()
+    assert plotter.plotter_inputs_widget.marker_alpha_spinbox.isHidden()
+    assert plotter.plotter_inputs_widget.marker_color_button.isHidden()
+
+    # Change to SCATTER
+    plotter.plotter_inputs_widget.plot_type_combobox.setCurrentText('SCATTER')
+
+    assert plotter.plotter_inputs_widget.colormap_combobox.isHidden()
+    assert plotter.plotter_inputs_widget.number_of_bins_spinbox.isHidden()
+    assert plotter.plotter_inputs_widget.log_scale_checkbox.isHidden()
+
+    assert not plotter.plotter_inputs_widget.marker_size_spinbox.isHidden()
+    assert not plotter.plotter_inputs_widget.marker_alpha_spinbox.isHidden()
+    assert not plotter.plotter_inputs_widget.marker_color_button.isHidden()
 
     plotter.deleteLater()
 
