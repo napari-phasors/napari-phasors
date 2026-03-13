@@ -151,8 +151,8 @@ def test_phasor_plotter_initialization_values(make_napari_viewer):
     # TODO: Test specific limits?
     xlim = plotter.canvas_widget.axes.get_xlim()
     ylim = plotter.canvas_widget.axes.get_ylim()
-    assert xlim[0] < 0 and xlim[1] > 1
-    assert ylim[0] < 0 and ylim[1] > 0.6
+    assert xlim[0] == -0.1 and xlim[1] == 1.1
+    assert ylim[0] == -0.1 and ylim[1] == 0.6
 
 
 def test_phasor_plotter_initialization_plot_not_called(make_napari_viewer):
