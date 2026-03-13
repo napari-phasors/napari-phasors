@@ -2180,9 +2180,20 @@ class PlotterWidget(QWidget):
             self.canvas_widget.figure.canvas.draw_idle()
             return
         if self.toggle_semi_circle:
-            circle_plot_limits = [0, 1, 0, 0.6]  # xmin, xmax, ymin, ymax
-        else:
-            circle_plot_limits = [-1, 1, -1, 1]  # xmin, xmax, ymin, ymax
+            self.canvas_widget.axes.set_xlim([-0.1, 1.1])
+            self.canvas_widget.axes.set_ylim([-0.1, 0.6])
+
+            if (
+                hasattr(self.canvas_widget, 'toolbar')
+                and self.canvas_widget.toolbar
+            ):
+                self.canvas_widget.toolbar.update()
+                self.canvas_widget.toolbar.push_current()
+
+            self.canvas_widget.figure.canvas.draw_idle()
+            return
+
+        circle_plot_limits = [-1, 1, -1, 1]  # xmin, xmax, ymin, ymax
         if self.canvas_widget.artists['HISTOGRAM2D'].histogram is not None:
             x_edges = self.canvas_widget.artists['HISTOGRAM2D'].histogram[1]
             y_edges = self.canvas_widget.artists['HISTOGRAM2D'].histogram[2]
