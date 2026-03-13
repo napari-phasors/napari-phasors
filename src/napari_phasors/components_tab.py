@@ -2639,7 +2639,26 @@ class ComponentsWidget(QWidget):
         self.draw_line_between_components()
 
         # Refresh histogram if the changed layer is the currently displayed one
-        self.update_component_histogram()
+        selected_component = ""
+        if hasattr(self, 'histogram_component_combobox'):
+            selected_component = (
+                self.histogram_component_combobox.currentText().strip()
+            )
+
+        comp = self.components[comp_idx]
+        changed_component = (
+            comp.name_edit.text().strip() or f"Component {comp_idx + 1}"
+        )
+
+        if (
+            selected_component == changed_component
+            and hasattr(self, 'histogram_widget')
+            and self.histogram_widget is not None
+        ):
+            self.histogram_widget.update_colormap(
+                colormap_colors=layer.colormap.colors,
+                contrast_limits=list(layer.contrast_limits),
+            )
 
     def _on_contrast_limits_changed(self, event):
         """Handle changes to contrast limits of any fraction layer."""
@@ -2720,8 +2739,15 @@ class ComponentsWidget(QWidget):
             comp.name_edit.text().strip() or f"Component {comp_idx + 1}"
         )
 
-        if selected_component == changed_component:
-            self.update_component_histogram()
+        if (
+            selected_component == changed_component
+            and hasattr(self, 'histogram_widget')
+            and self.histogram_widget is not None
+        ):
+            self.histogram_widget.update_colormap(
+                colormap_colors=layer.colormap.colors,
+                contrast_limits=contrast_limits,
+            )
 
     def _find_component_index_for_layer(self, layer):
         """Find which component index a layer belongs to based on its name."""
