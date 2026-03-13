@@ -3831,6 +3831,9 @@ class ComponentsWidget(QWidget):
 
                 self.fraction_layers.append(new_layer)
                 new_layer.events.colormap.connect(self._on_colormap_changed)
+                new_layer.events.contrast_limits.connect(
+                    self._on_contrast_limits_changed
+                )
 
                 if (
                     not self._updating_settings
