@@ -2,12 +2,15 @@ import contextlib
 from math import ceil, log10
 
 import numpy as np
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import (
+    FigureCanvasQTAgg as FigureCanvas,
+)
 from matplotlib.figure import Figure
-from napari.utils.notifications import show_error
+from napari.utils.notifications import show_error, show_info
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
+    QApplication,
     QComboBox,
     QDoubleSpinBox,
     QHBoxLayout,
@@ -24,6 +27,7 @@ from superqt import QRangeSlider, QToggleSwitch
 
 from ._utils import (
     apply_filter_and_threshold,
+    show_activity_progress,
     threshold_li,
     threshold_otsu,
     threshold_yen,
@@ -917,7 +921,13 @@ class FilterWidget(QWidget):
         )
 
         # Apply filter and threshold to each selected layer
+        pbr = show_activity_progress(
+            desc="Applying filter...", total=len(selected_layers)
+        )
         for layer in selected_layers:
+            pbr.set_description(f"Filtering {layer.name}...")
+            pbr.update(1)
+            QApplication.processEvents()
             filter_method = None
             size = None
             repeat = None
@@ -957,6 +967,8 @@ class FilterWidget(QWidget):
                 harmonics=harmonics,
             )
 
+        pbr.close()
+        show_info("Filter applied")
         if self.parent_widget is not None:
             self.parent_widget.refresh_phasor_data()
 
