@@ -35,91 +35,120 @@
        </rect>
       </property>
       <layout class="QGridLayout" name="gridLayout_2">
-       <item row="1" column="1">
-        <widget class="QComboBox" name="plot_type_combobox"/>
-       </item>
-       <item row="3" column="1">
-        <widget class="QSpinBox" name="number_of_bins_spinbox">
-         <property name="minimum">
-          <number>1</number>
-         </property>
-         <property name="maximum">
-          <number>10000</number>
-         </property>
-         <property name="value">
-          <number>150</number>
-         </property>
+       <item row="0" column="0">
+        <widget class="QLabel" name="label_5">
+         <property name="text"><string>Universal Semi-Circle / Full Polar Plot:</string></property>
         </widget>
        </item>
-       <item row="3" column="0">
-        <widget class="QLabel" name="label_4">
-         <property name="text">
-          <string>Number of bins:</string>
-         </property>
+       <item row="0" column="1">
+        <widget class="QCheckBox" name="semi_circle_checkbox"/>
+       </item>
+
+       <item row="1" column="0">
+        <widget class="QLabel" name="label_6">
+         <property name="text"><string>White Background:</string></property>
+        </widget>
+       </item>
+       <item row="1" column="1">
+        <widget class="QCheckBox" name="white_background_checkbox">
+         <property name="checked"><bool>true</bool></property>
+        </widget>
+       </item>
+
+       <item row="2" column="0">
+        <widget class="QLabel" name="label_2">
+         <property name="text"><string>Plot Type:</string></property>
         </widget>
        </item>
        <item row="2" column="1">
+        <widget class="QComboBox" name="plot_type_combobox"/>
+       </item>
+
+       <!-- Histogram Elements -->
+       <item row="3" column="0">
+        <widget class="QLabel" name="label_3">
+         <property name="text"><string>Colormap:</string></property>
+        </widget>
+       </item>
+       <item row="3" column="1">
         <widget class="QComboBox" name="colormap_combobox"/>
        </item>
-       <item row="0" column="1">
-        <widget class="QCheckBox" name="semi_circle_checkbox">
-         <property name="text">
-          <string/>
-         </property>
-        </widget>
-       </item>
+
        <item row="4" column="0">
-        <widget class="QLabel" name="label_7">
-         <property name="text">
-          <string>Colors in Log Scale:</string>
-         </property>
-        </widget>
-       </item>
-       <item row="2" column="0">
-        <widget class="QLabel" name="label_3">
-         <property name="text">
-          <string>Colormap:</string>
-         </property>
-        </widget>
-       </item>
-       <item row="1" column="0">
-        <widget class="QLabel" name="label_2">
-         <property name="text">
-          <string>Plot Type:</string>
-         </property>
-        </widget>
-       </item>
-       <item row="0" column="0">
-        <widget class="QLabel" name="label_5">
-         <property name="text">
-          <string>Universal Semi-Circle / Full Polar Plot:</string>
-         </property>
-        </widget>
-       </item>
-       <item row="5" column="0">
-        <widget class="QLabel" name="label_6">
-         <property name="text">
-          <string>White Background:</string>
-         </property>
-        </widget>
-       </item>
-       <item row="5" column="1">
-        <widget class="QCheckBox" name="white_background_checkbox">
-         <property name="text">
-          <string/>
-         </property>
-         <property name="checked">
-          <bool>true</bool>
-         </property>
+        <widget class="QLabel" name="label_4">
+         <property name="text"><string>Number of bins:</string></property>
         </widget>
        </item>
        <item row="4" column="1">
-        <widget class="QCheckBox" name="log_scale_checkbox">
-         <property name="text">
-          <string/>
+        <widget class="QSpinBox" name="number_of_bins_spinbox">
+         <property name="minimum"><number>1</number></property>
+         <property name="maximum"><number>10000</number></property>
+         <property name="value"><number>150</number></property>
+        </widget>
+       </item>
+
+       <item row="5" column="0">
+        <widget class="QLabel" name="label_7">
+         <property name="text"><string>Colors in Log Scale:</string></property>
+        </widget>
+       </item>
+       <item row="5" column="1">
+        <widget class="QCheckBox" name="log_scale_checkbox"/>
+       </item>
+
+       <!-- Scatter Plot Elements -->
+       <item row="6" column="0">
+        <widget class="QLabel" name="label_marker_size">
+         <property name="text"><string>Marker Size:</string></property>
+        </widget>
+       </item>
+       <item row="6" column="1">
+        <widget class="QSpinBox" name="marker_size_spinbox">
+         <property name="value"><number>50</number></property>
+         <property name="minimum"><number>1</number></property>
+         <property name="maximum"><number>1000</number></property>
+         <property name="keyboardTracking"><bool>false</bool></property>
+        </widget>
+       </item>
+
+       <item row="7" column="0">
+        <widget class="QLabel" name="label_marker_color">
+         <property name="text"><string>Marker Color:</string></property>
+        </widget>
+       </item>
+       <item row="7" column="1">
+        <widget class="QPushButton" name="marker_color_button">
+         <property name="text"><string/></property>
+         <property name="minimumSize">
+          <size>
+           <width>20</width>
+           <height>20</height>
+          </size>
+         </property>
+         <property name="maximumSize">
+          <size>
+           <width>20</width>
+           <height>20</height>
+          </size>
          </property>
         </widget>
        </item>
+
+       <item row="8" column="0">
+        <widget class="QLabel" name="label_marker_alpha">
+         <property name="text"><string>Alpha:</string></property>
+        </widget>
+       </item>
+       <item row="8" column="1">
+        <widget class="QDoubleSpinBox" name="marker_alpha_spinbox">
+         <property name="minimum"><double>0.01</double></property>
+         <property name="maximum"><double>1.0</double></property>
+         <property name="singleStep"><double>0.1</double></property>
+         <property name="value"><double>0.5</double></property>
+         <property name="keyboardTracking"><bool>false</bool></property>
+        </widget>
+       </item>
+
       </layout>
      </widget>
     </widget>
