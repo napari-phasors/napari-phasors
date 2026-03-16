@@ -8,7 +8,7 @@ license = { file = "LICENSE" }
 authors = [
     { name = "Bruno Pannunzio", email = "bpannunzio@pasteur.edu.uy" },
     { name = "Marcelo Leomil Zoccoler", email = "marzoccoler@gmail.com" },
-    { name = "Joaquín Rivero", email = "[EMAIL_ADDRESS]" },
+    { name = "Joaquín Rivero" },
     { name = "Bruno Schuty", email = "schutyb@schutyb.com" },
     { name = "Leonel Malacrida", email = "lmalacrida@pasteur.edu.uy" },
     ]
