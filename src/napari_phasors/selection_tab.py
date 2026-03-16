@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Circle, Ellipse
 from napari.layers import Labels
-from napari.utils import DirectLabelColormap
+from napari.utils import DirectLabelColormap, progress
 from phasorpy.cluster import phasor_cluster_gmm
 from phasorpy.cursor import (
     mask_from_circular_cursor,
@@ -1108,7 +1108,9 @@ class AutomaticClusteringWidget(QWidget):
             self._populate_cluster_table()
 
             # Step 4: Apply the same cluster parameters to each layer
-            for layer_info in layer_data:
+            for layer_info in progress(
+                layer_data, desc="Applying clusters..."
+            ):
                 layer = layer_info['layer']
                 g = layer_info['g']
                 s = layer_info['s']
@@ -2353,7 +2355,7 @@ class CircularCursorWidget(QWidget):
         ] = cursor_params
 
         # Apply selection to each selected layer
-        for layer in selected_layers:
+        for layer in progress(selected_layers, desc="Applying selection..."):
             # Get phasor data for this specific layer
             g_array = layer.metadata.get('G')
             s_array = layer.metadata.get('S')
