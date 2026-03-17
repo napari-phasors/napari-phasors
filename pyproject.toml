@@ -3,11 +3,12 @@ name = "napari-phasors"
 dynamic = ["version"]
 description = "A simple plugin to use phasor analysis"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 license = { file = "LICENSE" }
 authors = [
     { name = "Bruno Pannunzio", email = "bpannunzio@pasteur.edu.uy" },
     { name = "Marcelo Leomil Zoccoler", email = "marzoccoler@gmail.com" },
+    { name = "Joaquín Rivero", email = "jrivero94@outlook.com" },
     { name = "Bruno Schuty", email = "schutyb@schutyb.com" },
     { name = "Leonel Malacrida", email = "lmalacrida@pasteur.edu.uy" },
     ]
@@ -93,7 +94,7 @@ fallback_version = "0.0.0"
 
 [tool.black]
 line-length = 79
-target-version = ["py312"]
+target-version = ["py312", "py313"]
 skip-string-normalization = true
 
 [tool.isort]

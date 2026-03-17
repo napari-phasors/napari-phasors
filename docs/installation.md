@@ -13,7 +13,7 @@ If you use Anaconda or Miniconda, replace `mamba` with `conda`.
 Create an environment with napari:
 
 ```bash
-mamba create -y -n napari-phasors-env napari pyqt python=3.12
+mamba create -y -n napari-phasors-env napari pyqt python=3.12 # or 3.13
 mamba activate napari-phasors-env
 ```
 
