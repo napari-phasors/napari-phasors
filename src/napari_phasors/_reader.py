@@ -313,6 +313,168 @@ def raw_file_reader(
     return layers
 
 
+def raw_file_stack_reader(
+    paths: list[str],
+    reader_options: dict | None = None,
+    harmonics: Union[int, Sequence[int], None] = None,
+) -> list[tuple]:
+    """Read multiple raw data files and stack them into a 3D volume.
+
+    Each file is treated as one spatial slice along the new first axis.
+    All files must share the same extension and produce layers with
+    identical spatial dimensions.
+
+    Parameters
+    ----------
+    paths : list of str
+        Ordered list of file paths (one per slice).
+    reader_options : dict, optional
+        Reader options forwarded to each single-file reader call.
+    harmonics : Union[int, Sequence[int], None], optional
+        Harmonics to compute.  Defaults to ``[1, 2]``.
+
+    Returns
+    -------
+    layer_data : list of tuples
+        Napari layer-data tuples with 3D arrays (stack, Y, X).
+
+    Raises
+    ------
+    ValueError
+        If files have mismatched extensions or spatial shapes.
+    """
+    if not paths:
+        show_error("No files provided for stacking.")
+        return []
+
+    # Validate consistent extensions
+    extensions = set()
+    for p in paths:
+        _, ext = _get_filename_extension(p)
+        extensions.add(ext)
+    if len(extensions) > 1:
+        show_error(
+            f"All files must share the same extension, got: {extensions}"
+        )
+        return []
+
+    # Read each file individually
+    per_file_layers: list[list[tuple]] = []
+    for p in paths:
+        layers = raw_file_reader(
+            p, reader_options=reader_options, harmonics=harmonics
+        )
+        per_file_layers.append(layers)
+
+    # Determine how many channels the first file produced
+    n_channels = len(per_file_layers[0])
+
+    # Verify every file produced the same number of channels
+    for idx, file_layers in enumerate(per_file_layers):
+        if len(file_layers) != n_channels:
+            show_error(
+                f"File {paths[idx]} produced {len(file_layers)} channel(s) "
+                f"but the first file produced {n_channels}. "
+                "All files must have the same number of channels."
+            )
+            return []
+
+    # Stack per-channel across files
+    stacked_layers = []
+    for ch in range(n_channels):
+        # Collect arrays for this channel across all files
+        means = []
+        g_arrays = []
+        s_arrays = []
+        g_orig_arrays = []
+        s_orig_arrays = []
+        summed_signals = []
+
+        ref_shape = per_file_layers[0][ch][0].shape
+        for file_idx, file_layers in enumerate(per_file_layers):
+            data, kwargs = file_layers[ch]
+            if data.shape != ref_shape:
+                show_error(
+                    f"Spatial shape mismatch: file {paths[file_idx]} has "
+                    f"shape {data.shape} but expected {ref_shape}."
+                )
+                return []
+
+            means.append(data)
+
+            meta = kwargs["metadata"]
+            g_arrays.append(meta["G"])
+            s_arrays.append(meta["S"])
+            g_orig_arrays.append(meta["G_original"])
+            s_orig_arrays.append(meta["S_original"])
+
+            sig = meta.get("summed_signal")
+            if sig is not None:
+                if isinstance(sig, list):
+                    sig = np.array(sig)
+                summed_signals.append(sig)
+
+        # Stack along new axis 0 → (n_files, Y, X)
+        stacked_mean = np.stack(means, axis=0)
+
+        # G and S may have shape (n_harmonics, Y, X) or (Y, X)
+        # We stack along a new axis: if 3D → (n_harmonics, n_files, Y, X)
+        #                            if 2D → (n_files, Y, X)
+        g_sample = g_arrays[0]
+        if g_sample.ndim >= 3:
+            # (n_harmonics, Y, X) → stack each harmonic's slices
+            stacked_g = np.stack(g_arrays, axis=1)
+            stacked_s = np.stack(s_arrays, axis=1)
+            stacked_g_orig = np.stack(g_orig_arrays, axis=1)
+            stacked_s_orig = np.stack(s_orig_arrays, axis=1)
+        else:
+            stacked_g = np.stack(g_arrays, axis=0)
+            stacked_s = np.stack(s_arrays, axis=0)
+            stacked_g_orig = np.stack(g_orig_arrays, axis=0)
+            stacked_s_orig = np.stack(s_orig_arrays, axis=0)
+
+        # Build metadata from the first file's channel metadata
+        first_meta = per_file_layers[0][ch][1]["metadata"]
+        first_kwargs = per_file_layers[0][ch][1]
+
+        # Use a descriptive stack name
+        common_dir = os.path.dirname(paths[0])
+        dir_name = os.path.basename(common_dir) or "stack"
+        channel_suffix = first_kwargs["name"].split("Intensity Image")[-1]
+        stack_name = f"{dir_name} Stack Intensity Image{channel_suffix}"
+
+        stack_meta = {
+            "original_mean": stacked_mean.copy(),
+            "settings": first_meta.get("settings", {}),
+            "summed_signal": (
+                [
+                    s.tolist() if hasattr(s, 'tolist') else s
+                    for s in summed_signals
+                ]
+                if summed_signals
+                else None
+            ),
+            "G": stacked_g,
+            "S": stacked_s,
+            "G_original": stacked_g_orig,
+            "S_original": stacked_s_orig,
+            "harmonics": first_meta.get("harmonics"),
+            "stack_files": [os.path.basename(p) for p in paths],
+        }
+
+        add_kwargs = {"name": stack_name, "metadata": stack_meta}
+
+        # Preserve colormap / blending if set
+        if "colormap" in first_kwargs:
+            add_kwargs["colormap"] = first_kwargs["colormap"]
+        if "blending" in first_kwargs:
+            add_kwargs["blending"] = first_kwargs["blending"]
+
+        stacked_layers.append((stacked_mean, add_kwargs))
+
+    return stacked_layers
+
+
 def processed_file_reader(
     path: str,
     reader_options: dict[str, str] | None = None,
