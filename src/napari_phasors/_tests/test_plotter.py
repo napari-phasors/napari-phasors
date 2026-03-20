@@ -2097,3 +2097,167 @@ def test_artist_data_cleared_when_no_layer_selected(make_napari_viewer):
         # Verify _remove_artists was called on both artists
         mock_hist_remove.assert_called_once()
         mock_scatter_remove.assert_called_once()
+
+
+def test_import_settings_filter_applies_to_all_selected_layers(
+    make_napari_viewer,
+):
+    """Test that the import settings filter button applies to all selected layers."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    # Create three identical layers and add them to the viewer
+    layer_a = create_image_layer_with_phasors()
+    layer_b = create_image_layer_with_phasors()
+    layer_c = create_image_layer_with_phasors()
+    viewer.add_layer(layer_a)
+    viewer.add_layer(layer_b)
+    viewer.add_layer(layer_c)
+
+    # Select all three layers
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [layer_a.name, layer_b.name, layer_c.name]
+    )
+
+    # Build a minimal settings dict that represents an active filter
+    imported_settings = {
+        "filter": {"method": "median", "size": 3, "repeat": 1},
+        "threshold": 1.0,
+        "threshold_upper": None,
+        "threshold_method": "Manual",
+    }
+
+    # Apply imported settings (the buggy code only touched the primary layer)
+    plotter._apply_imported_settings(
+        imported_settings, selected_tabs=["filter_tab"]
+    )
+
+    # All three layers must have the filter settings in their metadata
+    for layer in (layer_a, layer_b, layer_c):
+        settings = layer.metadata.get("settings", {})
+        assert (
+            "filter" in settings
+        ), f"{layer.name}: 'filter' key missing from settings after import"
+        assert (
+            settings["filter"].get("method") == "median"
+        ), f"{layer.name}: filter method not saved after import"
+        assert (
+            settings.get("threshold") == 1.0
+        ), f"{layer.name}: threshold not saved after import"
+
+    plotter.deleteLater()
+
+
+def test_apply_calibration_if_needed_applies_to_all_selected_layers(
+    make_napari_viewer,
+):
+    """Test that the apply calibration if needed button applies to all selected layers."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    layer_a = create_image_layer_with_phasors()
+    layer_b = create_image_layer_with_phasors()
+    viewer.add_layer(layer_a)
+    viewer.add_layer(layer_b)
+
+    # Select both layers
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [layer_a.name, layer_b.name]
+    )
+
+    # Inject fake calibration parameters into both layers so the helper
+    # believes they need calibration applied.
+    for layer in (layer_a, layer_b):
+        layer.metadata.setdefault("settings", {}).update(
+            {
+                "calibrated": True,
+                "calibration_phase": [0.0],
+                "calibration_modulation": [1.0],
+            }
+        )
+        # calibration_applied is intentionally absent / False
+        layer.metadata.pop("calibration_applied", None)
+
+    # Patch the actual phasor transformation so the test stays fast & pure
+    transformed_layers = []
+
+    def _fake_transform(layer_name, phi_zero, mod_zero):
+        transformed_layers.append(layer_name)
+        # Mark as applied so the guard inside the loop works correctly
+        viewer.layers[layer_name].metadata["calibration_applied"] = True
+
+    with patch.object(
+        plotter.calibration_tab,
+        "_apply_phasor_transformation",
+        side_effect=_fake_transform,
+    ):
+        plotter._apply_calibration_if_needed()
+
+    # Both layers must have been transformed — not just the primary one
+    assert layer_a.name in transformed_layers, (
+        "layer_a was not calibrated "
+        "(only primary layer was affected — bug regression)"
+    )
+    assert layer_b.name in transformed_layers, (
+        "layer_b was not calibrated "
+        "(only primary layer was affected — bug regression)"
+    )
+
+    plotter.deleteLater()
+
+
+def test_copy_metadata_from_layer_applies_to_all_selected_layers(
+    make_napari_viewer,
+):
+    """Test that the copy metadata from layer button applies to all selected layers."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    # Source layer whose settings we want to copy
+    source_layer = create_image_layer_with_phasors()
+    # Target layers — all are selected in the combobox
+    layer_b = create_image_layer_with_phasors()
+    layer_c = create_image_layer_with_phasors()
+
+    for lyr in (source_layer, layer_b, layer_c):
+        viewer.add_layer(lyr)
+
+    # Pre-configure the source layer with specific settings we can assert on
+    source_layer.metadata.setdefault("settings", {}).update(
+        {
+            "filter": {"method": "median", "size": 5, "repeat": 2},
+            "threshold": 10.0,
+            "threshold_upper": None,
+            "threshold_method": "Manual",
+        }
+    )
+
+    # Select only the target layers (source is NOT selected)
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [layer_b.name, layer_c.name]
+    )
+
+    # Import filter settings from the source layer
+    plotter._copy_metadata_from_layer(
+        source_layer.name, selected_tabs=["filter_tab"]
+    )
+
+    # Both target layers must now carry the filter settings
+    for layer in (layer_b, layer_c):
+        settings = layer.metadata.get("settings", {})
+        assert "filter" in settings, (
+            f"{layer.name}: 'filter' key missing — "
+            "settings were not copied to this layer"
+        )
+        assert settings["filter"].get("size") == 5, (
+            f"{layer.name}: filter size not copied "
+            "(only primary layer was affected — bug regression)"
+        )
+        assert (
+            settings.get("threshold") == 10.0
+        ), f"{layer.name}: threshold not copied from source layer"
+
+    # Source layer's own settings must remain unchanged
+    assert source_layer.metadata["settings"]["filter"]["size"] == 5
+
+    plotter.deleteLater()
