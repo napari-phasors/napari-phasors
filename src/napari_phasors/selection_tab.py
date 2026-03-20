@@ -503,11 +503,7 @@ class SelectionWidget(QWidget):
                     "manual_selections"
                 ][selection_id]
             else:
-                spatial_shape = (
-                    layer.data.shape[:2]
-                    if layer.data.ndim >= 2
-                    else layer.data.shape
-                )
+                spatial_shape = layer.data.shape
                 selection_map = np.zeros(spatial_shape, dtype=np.uint32)
 
             # Get valid pixels for this layer
@@ -529,7 +525,7 @@ class SelectionWidget(QWidget):
                 else:
                     harmonic_idx = 0
 
-                if g_array.ndim == 3:
+                if g_array.ndim > layer.data.ndim:
                     g = g_array[harmonic_idx]
                     s = s_array[harmonic_idx]
                 else:
@@ -646,7 +642,7 @@ class SelectionWidget(QWidget):
                     else:
                         harmonic_idx = 0
 
-                    if g_array.ndim == 3:
+                    if g_array.ndim > layer.data.ndim:
                         g = g_array[harmonic_idx]
                         s = s_array[harmonic_idx]
                     else:
@@ -691,11 +687,7 @@ class SelectionWidget(QWidget):
                 ][self.selection_id].copy()
             else:
                 # Get spatial shape for this specific layer
-                spatial_shape = (
-                    layer.data.shape[:2]
-                    if layer.data.ndim >= 2
-                    else layer.data.shape
-                )
+                spatial_shape = layer.data.shape
                 selection_map = np.zeros(spatial_shape, dtype=np.uint32)
 
             selection_map_flat = selection_map.ravel()
@@ -721,7 +713,7 @@ class SelectionWidget(QWidget):
             else:
                 harmonic_idx = 0
 
-            if g_array.ndim == 3:
+            if g_array.ndim > layer.data.ndim:
                 g = g_array[harmonic_idx]
                 s = s_array[harmonic_idx]
             else:
@@ -769,11 +761,7 @@ class SelectionWidget(QWidget):
 
         # Create selection layer for each selected layer
         for layer in selected_layers:
-            spatial_shape = (
-                layer.data.shape[:2]
-                if layer.data.ndim >= 2
-                else layer.data.shape
-            )
+            spatial_shape = layer.data.shape
 
             # Get selection map from metadata if it exists, otherwise create empty
             if (
@@ -1034,8 +1022,8 @@ class AutomaticClusteringWidget(QWidget):
             if g_array is None or s_array is None:
                 continue
 
-            # Extract correct harmonic if arrays are 3D
-            if g_array.ndim == 3:
+            # Extract correct harmonic if arrays have extra dimension
+            if g_array.ndim > layer.data.ndim:
                 harmonic = self.parent_widget.harmonic
                 # Harmonic numbering starts at 1, but array indexing starts at 0
                 g = g_array[harmonic - 1]
@@ -1044,11 +1032,7 @@ class AutomaticClusteringWidget(QWidget):
                 g = g_array
                 s = s_array
 
-            spatial_shape = (
-                layer.data.shape[:2]
-                if layer.data.ndim >= 2
-                else layer.data.shape
-            )
+            spatial_shape = layer.data.shape
 
             # Collect data for merging
             g_list.append(g.ravel())
@@ -1284,7 +1268,7 @@ class AutomaticClusteringWidget(QWidget):
                 continue
 
             # Extract correct harmonic if arrays are 3D
-            if g_array.ndim == 3:
+            if g_array.ndim > layer.data.ndim:
                 harmonics_array = layer.metadata.get('harmonics')
                 if harmonics_array is not None:
                     harmonics_array = np.atleast_1d(harmonics_array)
@@ -1302,11 +1286,7 @@ class AutomaticClusteringWidget(QWidget):
                 g = g_array
                 s = s_array
 
-            spatial_shape = (
-                layer.data.shape[:2]
-                if layer.data.ndim >= 2
-                else layer.data.shape
-            )
+            spatial_shape = layer.data.shape
 
             # Create selection map
             selection_map = np.zeros(spatial_shape, dtype=np.uint32)
@@ -1363,7 +1343,7 @@ class AutomaticClusteringWidget(QWidget):
             else:
                 harmonic_idx = 0
 
-            if g_array.ndim == 3:
+            if g_array.ndim > layer.data.ndim:
                 g = g_array[harmonic_idx]
                 s = s_array[harmonic_idx]
             else:
@@ -1412,7 +1392,7 @@ class AutomaticClusteringWidget(QWidget):
                 else:
                     harmonic_idx = 0
 
-                if g_array.ndim == 3:
+                if g_array.ndim > layer.data.ndim:
                     g = g_array[harmonic_idx]
                     s = s_array[harmonic_idx]
                 else:
@@ -2375,18 +2355,14 @@ class CircularCursorWidget(QWidget):
             else:
                 harmonic_idx = 0
 
-            if g_array.ndim == 3:
+            if g_array.ndim > layer.data.ndim:
                 g = g_array[harmonic_idx]
                 s = s_array[harmonic_idx]
             else:
                 g = g_array
                 s = s_array
 
-            spatial_shape = (
-                layer.data.shape[:2]
-                if layer.data.ndim >= 2
-                else layer.data.shape
-            )
+            spatial_shape = layer.data.shape
 
             # Create selection map
             selection_map = np.zeros(spatial_shape, dtype=np.uint32)
@@ -2444,7 +2420,7 @@ class CircularCursorWidget(QWidget):
             else:
                 harmonic_idx = 0
 
-            if g_array.ndim == 3:
+            if g_array.ndim > layer.data.ndim:
                 g = g_array[harmonic_idx]
                 s = s_array[harmonic_idx]
             else:
@@ -2496,7 +2472,7 @@ class CircularCursorWidget(QWidget):
                 else:
                     harmonic_idx = 0
 
-                if g_array.ndim == 3:
+                if g_array.ndim > layer.data.ndim:
                     g = g_array[harmonic_idx]
                     s = s_array[harmonic_idx]
                 else:

@@ -768,7 +768,7 @@ class FretWidget(QWidget):
                         continue
                     harmonic_idx = harmonic_idx[0]
 
-                    if g_array.ndim >= 3:
+                    if g_array.ndim > background_layer.data.ndim:
                         real = g_array[harmonic_idx]
                         imag = s_array[harmonic_idx]
                     else:
@@ -896,7 +896,7 @@ class FretWidget(QWidget):
 
                 harmonic_idx = harmonic_idx[0]
 
-                if g_array.ndim == 3:
+                if g_array.ndim > donor_layer.data.ndim:
                     real = g_array[harmonic_idx]
                     imag = s_array[harmonic_idx]
                 else:

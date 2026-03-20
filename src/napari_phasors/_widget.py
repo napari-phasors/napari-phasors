@@ -7,6 +7,7 @@ This module contains widgets to:
 
 """
 
+import glob
 import os
 from typing import TYPE_CHECKING
 
@@ -35,8 +36,13 @@ from qtpy.QtWidgets import (
 )
 from superqt import QRangeSlider
 
-from ._reader import _get_filename_extension, napari_get_reader
-from ._utils import CheckableComboBox
+from ._reader import (
+    _get_filename_extension,
+    napari_get_reader,
+    raw_file_reader,
+    raw_file_stack_reader,
+)
+from ._utils import CheckableComboBox, FileOrderDialog, natural_sort_key
 from ._writer import export_layer_as_csv, export_layer_as_image, write_ome_tiff
 
 if TYPE_CHECKING:
@@ -59,7 +65,11 @@ class PhasorTransform(QWidget):
         self.search_button.clicked.connect(self._open_file_dialog)
         self.main_layout.addWidget(self.search_button)
 
-        self.main_layout.addWidget(QLabel("Path to the selected file: "))
+        self.multi_file_button = QPushButton("Open 3D stack")
+        self.multi_file_button.clicked.connect(self._open_multi_file_dialog)
+        self.main_layout.addWidget(self.multi_file_button)
+
+        self.main_layout.addWidget(QLabel("Path to the selected file(s): "))
 
         self.save_path = QLineEdit()
         self.save_path.setReadOnly(True)
@@ -90,13 +100,126 @@ class PhasorTransform(QWidget):
             self.save_path.setText(selected_file)
             _, extension = _get_filename_extension(selected_file)
             if extension in self.reader_options:
-                for i in reversed(range(self.dynamic_widget_layout.count())):
-                    widget = self.dynamic_widget_layout.takeAt(i).widget()
-                    widget.deleteLater()
+                self._clear_dynamic_widgets()
 
                 create_widget_class = self.reader_options[extension]
                 new_widget = create_widget_class(self.viewer, selected_file)
                 self.dynamic_widget_layout.addWidget(new_widget)
+
+    def _open_multi_file_dialog(self):
+        """Open one dialog to select either a file or a directory."""
+        file_paths = []
+
+        supported_extensions = (
+            "*.ome.tif",
+            "*.tif",
+            "*.lsm",
+            "*.ptu",
+            "*.fbd",
+            "*.sdt",
+        )
+
+        dialog = QFileDialog(self, "Select file or directory for 3D stack")
+        dialog.setFileMode(QFileDialog.Directory)
+        dialog.setOption(QFileDialog.ShowDirsOnly, False)
+        dialog.setNameFilter(
+            "Supported files (" + " ".join(supported_extensions) + ")"
+        )
+
+        if not dialog.exec_():
+            return
+
+        selected_entries = dialog.selectedFiles()
+        if not selected_entries:
+            return
+
+        for entry in selected_entries:
+            if os.path.isdir(entry):
+                for ext in supported_extensions:
+                    file_paths.extend(glob.glob(os.path.join(entry, ext)))
+            elif os.path.isfile(entry):
+                file_paths.append(entry)
+
+        # Remove duplicates while preserving order
+        file_paths = list(dict.fromkeys(file_paths))
+
+        if not file_paths:
+            show_error("No supported files found in the selection.")
+            return
+
+        # Validate all files share the same extension
+        extension_set = set()
+        for p in file_paths:
+            _, ext = _get_filename_extension(p)
+            extension_set.add(ext)
+
+        normalised = set(extension_set)
+        if len(normalised) > 1:
+            show_error(
+                "All selected files must have the same extension. "
+                f"Found: {extension_set}"
+            )
+            return
+
+        common_ext = normalised.pop()
+        if common_ext not in self.reader_options:
+            show_error(f"Extension {common_ext} is not supported.")
+            return
+
+        # Auto-sort with natural sort
+        file_paths = sorted(file_paths, key=natural_sort_key)
+
+        estimated_shape = _estimate_result_shape(file_paths)
+        default_axis_labels = None
+        if estimated_shape is not None:
+            default_axis_labels = _default_axis_labels(len(estimated_shape))
+
+        initial_z_spacing = None
+        if len(file_paths) == 1:
+            initial_z_spacing = _try_get_z_spacing_from_ome_tiff(file_paths[0])
+
+        # Show reorder dialog with z-spacing control
+        dialog = FileOrderDialog(
+            file_paths,
+            parent=self,
+            initial_z_spacing=initial_z_spacing,
+            estimated_shape=estimated_shape,
+            initial_axis_labels=default_axis_labels,
+        )
+        if dialog.exec_() != FileOrderDialog.Accepted:
+            return
+        file_paths = dialog.get_ordered_paths()
+        z_spacing = dialog.get_z_spacing()
+        axis_order = dialog.get_axis_order()
+        axis_labels = dialog.get_axis_labels()
+
+        # Update the path display
+        self.save_path.setText(
+            f"{len(file_paths)} file(s) selected (first: "
+            f"{os.path.basename(file_paths[0])}, z spacing: {z_spacing})"
+        )
+
+        # Clear old dynamic widgets and create the sub-widget
+        self._clear_dynamic_widgets()
+
+        create_widget_class = self.reader_options[common_ext]
+        # Create the sub-widget using the first file for preview,
+        # but store the full list for stacking.
+        new_widget = create_widget_class(self.viewer, file_paths[0])
+        new_widget._multi_file_paths = file_paths
+        new_widget._stack_z_spacing = z_spacing
+        new_widget._stack_axis_order = axis_order
+        new_widget._stack_axis_labels = axis_labels
+        if hasattr(new_widget, '_update_signal_plot'):
+            new_widget._update_signal_plot()
+        self.dynamic_widget_layout.addWidget(new_widget)
+
+    def _clear_dynamic_widgets(self):
+        """Remove all widgets from the dynamic widget layout."""
+        for i in reversed(range(self.dynamic_widget_layout.count())):
+            widget = self.dynamic_widget_layout.takeAt(i).widget()
+            if widget is not None:
+                widget.deleteLater()
 
 
 class AdvancedOptionsWidget(QWidget):
@@ -137,6 +260,8 @@ class AdvancedOptionsWidget(QWidget):
         self.ax.title.set_color('grey')
         self.ax.title.set_fontsize(10)
         self.initUI()
+        self._add_shape_preview_widget()
+        self._update_shape_preview()
 
     def initUI(self):
         """Initialize the user interface."""
@@ -144,6 +269,64 @@ class AdvancedOptionsWidget(QWidget):
         self.setLayout(self.mainLayout)
 
         self.mainLayout.addWidget(self.canvas)
+
+    def _add_shape_preview_widget(self):
+        """Add a label showing estimated output shape for current options."""
+        self.shape_preview_label = QLabel("Estimated output shape: N/A")
+        self.mainLayout.addWidget(self.shape_preview_label)
+
+    def _update_shape_preview(self):
+        """Update estimated output shape when reader options change."""
+        if not hasattr(self, 'shape_preview_label'):
+            return
+
+        n_files = len(getattr(self, '_multi_file_paths', []) or [self.path])
+        shape = _estimate_output_shape_from_options(
+            self.path,
+            self.reader_options,
+            self.harmonics,
+            n_files=n_files,
+        )
+
+        axis_order = getattr(self, '_stack_axis_order', None)
+        if (
+            shape is not None
+            and axis_order is not None
+            and len(axis_order) == len(shape)
+            and sorted(axis_order) == list(range(len(shape)))
+        ):
+            shape = tuple(shape[i] for i in axis_order)
+
+        shape_text = str(tuple(shape)) if shape is not None else "N/A"
+        self.shape_preview_label.setText(
+            f"Estimated output shape: {shape_text}"
+        )
+
+    def _get_preview_signal_data(self):
+        """Return preview signal, averaging across selected stack files."""
+        multi_paths = getattr(self, '_multi_file_paths', None)
+        if not multi_paths or len(multi_paths) <= 1:
+            return self._get_signal_data()
+
+        original_path = self.path
+        signals = []
+        try:
+            for path in multi_paths:
+                self.path = path
+                signal = self._get_signal_data()
+                if signal is None:
+                    continue
+                signals.append(np.asarray(signal))
+        finally:
+            self.path = original_path
+
+        if not signals:
+            return None
+
+        try:
+            return np.mean(np.stack(signals, axis=0), axis=0)
+        except ValueError:
+            return signals[0]
 
     def _update_signal_plot(self):
         """Update the signal plot based on current parameters."""
@@ -165,7 +348,7 @@ class AdvancedOptionsWidget(QWidget):
                 for channel_idx in range(self.all_channels):
                     original_channel = self.reader_options.get("channel")
                     self.reader_options["channel"] = channel_idx
-                    signal = self._get_signal_data()
+                    signal = self._get_preview_signal_data()
                     self.reader_options["channel"] = original_channel
 
                     if signal is None:
@@ -194,7 +377,7 @@ class AdvancedOptionsWidget(QWidget):
                 )
                 title = 'Signal Preview'
             else:
-                signal = self._get_signal_data()
+                signal = self._get_preview_signal_data()
                 if signal is None:
                     return
 
@@ -243,6 +426,7 @@ class AdvancedOptionsWidget(QWidget):
 
             self.figure.tight_layout()
             self.canvas.draw()
+            self._update_shape_preview()
 
         except Exception as e:  # noqa: BLE001
             show_error(f"Error updating signal plot: {str(e)}")
@@ -474,6 +658,7 @@ class AdvancedOptionsWidget(QWidget):
     def _on_frames_combobox_changed(self, index):
         """Callback whenever the frames combobox changes."""
         self.reader_options["frame"] = index - 1
+        self._update_shape_preview()
 
     def _on_channels_combobox_changed(self, index):
         """Callback whenever the channels combobox changes."""
@@ -484,16 +669,217 @@ class AdvancedOptionsWidget(QWidget):
             self.reader_options["channel"] = None
         else:
             self.reader_options["channel"] = index - 1
+        self._update_shape_preview()
 
     def _on_click(self, path, reader_options, harmonics):
-        """Callback whenever the calculate phasor button is clicked."""
-        reader = napari_get_reader(
-            path, reader_options=reader_options, harmonics=harmonics
-        )
-        for layer in reader(path):
-            self.viewer.add_image(
-                layer[0], name=layer[1]["name"], metadata=layer[1]["metadata"]
+        """Callback whenever the calculate phasor button is clicked.
+
+        If ``_multi_file_paths`` is set, all files are stacked into a
+        single 3D layer via :func:`raw_file_stack_reader`.
+        """
+        multi_paths = getattr(self, '_multi_file_paths', None)
+        z_spacing = getattr(self, '_stack_z_spacing', None)
+        axis_order = getattr(self, '_stack_axis_order', None)
+        axis_labels = getattr(self, '_stack_axis_labels', None)
+        if multi_paths and len(multi_paths) > 1:
+            layers = raw_file_stack_reader(
+                multi_paths,
+                reader_options=reader_options,
+                harmonics=harmonics,
             )
+            for layer in layers:
+                add_kw = dict(layer[1].items())
+                layer_data = self._apply_axis_transform(
+                    add_kw, layer[0], axis_order, axis_labels
+                )
+                self._set_layer_z_scale(add_kw, layer_data, z_spacing)
+                self.viewer.add_image(
+                    layer_data,
+                    name=add_kw.pop("name"),
+                    metadata=add_kw.pop("metadata"),
+                    **add_kw,
+                )
+        else:
+            reader = napari_get_reader(
+                path, reader_options=reader_options, harmonics=harmonics
+            )
+            for layer in reader(path):
+                add_kw = dict(layer[1].items())
+                layer_data = self._apply_axis_transform(
+                    add_kw, layer[0], axis_order, axis_labels
+                )
+                self._set_layer_z_scale(add_kw, layer_data, z_spacing)
+                self.viewer.add_image(
+                    layer_data,
+                    name=add_kw.pop("name"),
+                    metadata=add_kw.pop("metadata"),
+                    **add_kw,
+                )
+
+    @staticmethod
+    def _apply_axis_transform(add_kwargs, data, axis_order, axis_labels):
+        """Apply optional axis reordering and axis labels to data/metadata."""
+        transformed = data
+        valid_order = (
+            axis_order is not None
+            and hasattr(data, 'ndim')
+            and len(axis_order) == data.ndim
+            and sorted(axis_order) == list(range(data.ndim))
+        )
+
+        if valid_order and tuple(axis_order) != tuple(range(data.ndim)):
+            transformed = np.transpose(data, axes=axis_order)
+
+            metadata = add_kwargs.get("metadata", {})
+            for key in (
+                "original_mean",
+                "G",
+                "S",
+                "G_original",
+                "S_original",
+                "mask",
+            ):
+                arr = metadata.get(key)
+                if arr is None or not hasattr(arr, 'ndim'):
+                    continue
+                if arr.ndim == data.ndim:
+                    metadata[key] = np.transpose(arr, axes=axis_order)
+                elif arr.ndim == data.ndim + 1:
+                    metadata[key] = np.transpose(
+                        arr, axes=(0,) + tuple(i + 1 for i in axis_order)
+                    )
+
+        if axis_labels is not None and len(axis_labels) == transformed.ndim:
+            add_kwargs["axis_labels"] = tuple(axis_labels)
+
+        return transformed
+
+    @staticmethod
+    def _set_layer_z_scale(add_kwargs, data, z_spacing):
+        """Set first-axis scale to z-spacing for 3D+ data."""
+        if z_spacing is None:
+            return
+        if not hasattr(data, 'ndim') or data.ndim < 3:
+            return
+
+        try:
+            z_value = float(z_spacing)
+        except (TypeError, ValueError):
+            return
+
+        if z_value <= 0:
+            return
+
+        existing_scale = add_kwargs.get("scale")
+        if existing_scale is None:
+            scale = [1.0] * data.ndim
+        else:
+            scale = list(existing_scale)
+            if len(scale) < data.ndim:
+                scale.extend([1.0] * (data.ndim - len(scale)))
+            elif len(scale) > data.ndim:
+                scale = scale[: data.ndim]
+
+        scale[0] = z_value
+        add_kwargs["scale"] = tuple(scale)
+
+
+def _try_get_z_spacing_from_ome_tiff(path):
+    """Try to read z spacing from OME-TIFF metadata.
+
+    Returns ``None`` if unavailable.
+    """
+    _, extension = _get_filename_extension(path)
+    if extension != ".ome.tif":
+        return None
+
+    try:
+        import tifffile
+
+        with tifffile.TiffFile(path) as tif:
+            ome_xml = tif.ome_metadata
+            if not ome_xml:
+                return None
+
+            ome_dict = tifffile.xml2dict(ome_xml)
+            ome_root = ome_dict.get("OME", {})
+            images = ome_root.get("Image", [])
+            if isinstance(images, dict):
+                images = [images]
+
+            if not images:
+                return None
+
+            pixels = images[0].get("Pixels", {})
+            z_value = pixels.get("@PhysicalSizeZ")
+            if z_value is None:
+                z_value = pixels.get("PhysicalSizeZ")
+
+            if isinstance(z_value, dict):
+                z_value = z_value.get("#text")
+            if z_value is None:
+                return None
+
+            return float(z_value)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _default_axis_labels(ndim):
+    """Return default axis labels for a given dimensionality."""
+    if ndim == 2:
+        return ["Y", "X"]
+    if ndim == 3:
+        return ["Z", "Y", "X"]
+    if ndim == 4:
+        return ["T", "Z", "Y", "X"]
+
+    labels = []
+    for i in range(ndim):
+        labels.append(f"Axis {i}")
+    return labels
+
+
+def _estimate_result_shape(file_paths):
+    """Estimate output shape from first file and number of selected files."""
+    if not file_paths:
+        return None
+
+    try:
+        layers = raw_file_reader(
+            file_paths[0], reader_options=None, harmonics=[1]
+        )
+        if not layers:
+            return None
+        base_shape = tuple(np.shape(layers[0][0]))
+        if len(file_paths) > 1:
+            return (len(file_paths),) + base_shape
+        return base_shape
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _estimate_output_shape_from_options(
+    path,
+    reader_options,
+    harmonics,
+    n_files=1,
+):
+    """Estimate output shape with current reader options and harmonics."""
+    try:
+        layers = raw_file_reader(
+            path,
+            reader_options=reader_options,
+            harmonics=harmonics if harmonics else [1],
+        )
+        if not layers:
+            return None
+        base_shape = tuple(np.shape(layers[0][0]))
+        if n_files > 1:
+            return (n_files,) + base_shape
+        return base_shape
+    except Exception:  # noqa: BLE001
+        return None
 
 
 class FbdWidget(AdvancedOptionsWidget):
@@ -726,7 +1112,7 @@ class LsmWidget(AdvancedOptionsWidget):
     def _update_signal_plot(self):
         """Update the signal plot for LSM/TIFF files (spectral data)."""
         try:
-            signal = self._get_signal_data()
+            signal = self._get_preview_signal_data()
             if signal is None:
                 return
 
@@ -766,6 +1152,7 @@ class LsmWidget(AdvancedOptionsWidget):
 
             self.figure.tight_layout()
             self.canvas.draw()
+            self._update_shape_preview()
 
         except Exception as e:  # noqa: BLE001
             show_error(f"Error updating signal plot: {str(e)}")
@@ -983,7 +1370,7 @@ class OmeTifWidget(AdvancedOptionsWidget):
     def _update_signal_plot(self):
         """Update the signal plot for OME-TIFF files."""
         try:
-            signal = self._get_signal_data()
+            signal = self._get_preview_signal_data()
 
             if signal is None:
                 return
@@ -1020,6 +1407,7 @@ class OmeTifWidget(AdvancedOptionsWidget):
 
             self.figure.tight_layout()
             self.canvas.draw()
+            self._update_shape_preview()
 
         except Exception as e:  # noqa: BLE001
             show_error(f"Error updating signal plot: {str(e)}")

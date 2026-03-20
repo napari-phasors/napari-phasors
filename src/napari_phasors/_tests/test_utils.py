@@ -135,6 +135,47 @@ def test_apply_filter_and_threshold_median(make_napari_viewer):
     assert intensity_image_layer.metadata["settings"]["threshold"] == threshold
 
 
+def test_apply_filter_and_threshold_median_3d_xy_slices(make_napari_viewer):
+    """Median filtering on 3D data should run per-XY slice (skip Z axis)."""
+    raw_flim_data = make_raw_flim_data(shape=(3, 5, 5))
+    harmonic = [1, 2]
+    intensity_image_layer = make_intensity_layer_with_phasors(
+        raw_flim_data, harmonic=harmonic
+    )
+    original_mean = intensity_image_layer.metadata['original_mean'].copy()
+    original_g = intensity_image_layer.metadata['G'].copy()
+    original_s = intensity_image_layer.metadata['S'].copy()
+
+    viewer = make_napari_viewer()
+    viewer.add_layer(intensity_image_layer)
+
+    apply_filter_and_threshold(
+        intensity_image_layer,
+        filter_method="median",
+        size=3,
+        repeat=1,
+    )
+
+    filtered_mean, expected_g, expected_s = phasor_filter_median(
+        original_mean,
+        original_g,
+        original_s,
+        repeat=1,
+        size=3,
+        skip_axis=(0,),
+    )
+
+    assert np.allclose(
+        intensity_image_layer.data, filtered_mean, equal_nan=True
+    )
+    assert np.allclose(
+        intensity_image_layer.metadata['G'], expected_g, equal_nan=True
+    )
+    assert np.allclose(
+        intensity_image_layer.metadata['S'], expected_s, equal_nan=True
+    )
+
+
 def test_apply_filter_and_threshold_with_upper_threshold(make_napari_viewer):
     """Test apply_filter_and_threshold function with both lower and upper thresholds."""
     raw_flim_data = make_raw_flim_data(shape=(5, 5))

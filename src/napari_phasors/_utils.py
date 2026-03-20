@@ -3,6 +3,7 @@ This module contains utility functions used by other modules.
 
 """
 
+import os
 import warnings
 from typing import TYPE_CHECKING
 
@@ -34,6 +35,7 @@ from qtpy.QtGui import (
     QStandardItemModel,
 )
 from qtpy.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
     QColorDialog,
@@ -44,6 +46,8 @@ from qtpy.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMenu,
     QPushButton,
     QStyle,
@@ -373,12 +377,16 @@ def _apply_filter_and_threshold_to_phasor_arrays(
         (mean, real, imag) filtered and thresholded arrays
     """
     if filter_method == "median" and repeat is not None and repeat > 0:
+        # Filter each XY slice independently. For ndim>2, all leading axes are
+        # treated as slice/index axes and therefore skipped by the median filter.
+        skip_axis = tuple(range(mean.ndim - 2)) if mean.ndim > 2 else None
         mean, real, imag = phasor_filter_median(
             mean,
             real,
             imag,
             repeat=repeat,
             size=size if size is not None else 3,
+            skip_axis=skip_axis,
         )
     elif filter_method == "wavelet" and validate_harmonics_for_wavelet(
         harmonics
@@ -2789,3 +2797,280 @@ class StatisticsDockWidget(QWidget):
                     item = table.item(row, col)
                     row_data.append(item.text() if item else '')
                 writer.writerow(row_data)
+
+
+def natural_sort_key(path):
+    """Generate a sort key for natural (human-friendly) ordering.
+
+    Splits the basename into text and numeric parts so that e.g.
+    ``img2.tif`` sorts before ``img10.tif``.
+
+    Parameters
+    ----------
+    path : str
+        File path.
+
+    Returns
+    -------
+    list
+        A list of strings and integers used as a sort key.
+    """
+    import re
+
+    basename = os.path.basename(path)
+    return [
+        int(part) if part.isdigit() else part.lower()
+        for part in re.split(r'(\d+)', basename)
+    ]
+
+
+class FileOrderDialog(QDialog):
+    """Dialog that lets the user review and reorder a list of files.
+
+    The files are shown in a drag-and-drop list (internal move). The user can
+    also use *Move Up* / *Move Down* buttons for keyboard-friendly control.
+    Pressing *OK* returns the reordered list via :meth:`get_ordered_paths`.
+
+    Parameters
+    ----------
+    file_paths : list of str
+        The initial (auto-sorted) list of file paths.
+    parent : QWidget, optional
+        Parent widget.
+    """
+
+    def __init__(
+        self,
+        file_paths,
+        parent=None,
+        initial_z_spacing=None,
+        estimated_shape=None,
+        initial_axis_labels=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Reorder Files for 3D Stack")
+        self.setMinimumWidth(500)
+        self.setMinimumHeight(400)
+
+        self._paths = list(file_paths)
+        self._estimated_shape = estimated_shape
+        self._axis_labels_default = list(initial_axis_labels or [])
+        self._axis_order = None
+        self._axis_combos = []
+
+        layout = QVBoxLayout(self)
+
+        info_label = QLabel(
+            "Files will be stacked in the order shown below "
+            "(top = first slice). Drag and drop to reorder."
+        )
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
+
+        self.file_list = QListWidget()
+        self.file_list.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.file_list.setDragEnabled(True)
+        self.file_list.setAcceptDrops(True)
+        self.file_list.viewport().setAcceptDrops(True)
+        self.file_list.setDropIndicatorShown(True)
+        self.file_list.setDragDropMode(QAbstractItemView.InternalMove)
+        self.file_list.setDefaultDropAction(Qt.MoveAction)
+        self._populate_list()
+        layout.addWidget(self.file_list)
+
+        shape_text = (
+            str(tuple(self._estimated_shape))
+            if self._estimated_shape is not None
+            else "Unavailable"
+        )
+        self.shape_label = QLabel(f"Estimated output shape: {shape_text}")
+        self.shape_label.setToolTip(
+            "Estimated layer shape after reading. This can vary with reader "
+            "options selected later."
+        )
+        layout.addWidget(self.shape_label)
+
+        if (
+            self._estimated_shape is not None
+            and len(self._estimated_shape) >= 2
+        ):
+            ndim = len(self._estimated_shape)
+            if len(self._axis_labels_default) != ndim:
+                self._axis_labels_default = [f"Axis {i}" for i in range(ndim)]
+
+            self._axis_order = list(range(ndim))
+
+            layout.addWidget(QLabel("Axis order (output <- input):"))
+            for out_axis in range(ndim):
+                row_layout = QHBoxLayout()
+                out_name = self._axis_labels_default[out_axis]
+                row_layout.addWidget(QLabel(f"Output {out_name}:"))
+
+                combo = QComboBox()
+                for in_axis in range(ndim):
+                    in_name = self._axis_labels_default[in_axis]
+                    combo.addItem(f"Input {in_axis} ({in_name})", in_axis)
+                combo.setCurrentIndex(out_axis)
+                combo.currentIndexChanged.connect(
+                    lambda idx, pos=out_axis: self._on_axis_combo_changed(
+                        pos, idx
+                    )
+                )
+                self._axis_combos.append(combo)
+                row_layout.addWidget(combo)
+                row_layout.addStretch()
+                layout.addLayout(row_layout)
+
+            labels_layout = QHBoxLayout()
+            labels_layout.addWidget(QLabel("Axis labels (comma-separated):"))
+            self.axis_labels_edit = QLineEdit(
+                ",".join(self._axis_labels_default)
+            )
+            self.axis_labels_edit.setToolTip(
+                "Names applied to output axes after optional reordering."
+            )
+            labels_layout.addWidget(self.axis_labels_edit)
+            layout.addLayout(labels_layout)
+        else:
+            self.axis_labels_edit = None
+
+        spacing_layout = QHBoxLayout()
+        spacing_layout.addWidget(QLabel("Z spacing between slices:"))
+        self.z_spacing_edit = QLineEdit()
+        self.z_spacing_edit.setValidator(QDoubleValidator(0.0, 1e12, 8))
+        self.z_spacing_edit.setToolTip(
+            "Spacing for the first (Z) axis of the generated 3D image layer."
+        )
+        default_spacing = (
+            1.0 if initial_z_spacing is None else initial_z_spacing
+        )
+        self.z_spacing_edit.setText(str(default_spacing))
+        spacing_layout.addWidget(self.z_spacing_edit)
+        spacing_layout.addStretch()
+        layout.addLayout(spacing_layout)
+
+        btn_layout = QHBoxLayout()
+
+        self.move_up_btn = QPushButton("▲ Move Up")
+        self.move_up_btn.clicked.connect(self._move_up)
+        btn_layout.addWidget(self.move_up_btn)
+
+        self.move_down_btn = QPushButton("▼ Move Down")
+        self.move_down_btn.clicked.connect(self._move_down)
+        btn_layout.addWidget(self.move_down_btn)
+
+        btn_layout.addStretch()
+
+        self.ok_btn = QPushButton("OK")
+        self.ok_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(self.ok_btn)
+
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(self.cancel_btn)
+
+        layout.addLayout(btn_layout)
+
+    def _on_axis_combo_changed(self, changed_pos, combo_index):
+        """Keep axis mapping a valid permutation by swapping duplicates."""
+        if self._axis_order is None:
+            return
+
+        selected_input = int(combo_index)
+        old_input = self._axis_order[changed_pos]
+        if selected_input == old_input:
+            return
+
+        if selected_input in self._axis_order:
+            other_pos = self._axis_order.index(selected_input)
+            self._axis_order[other_pos] = old_input
+
+            other_combo = self._axis_combos[other_pos]
+            other_combo.blockSignals(True)
+            other_combo.setCurrentIndex(old_input)
+            other_combo.blockSignals(False)
+
+        self._axis_order[changed_pos] = selected_input
+
+    def _populate_list(self):
+        """Fill the list widget with the current path order."""
+        self.file_list.clear()
+        for path in self._paths:
+            item = QListWidgetItem(os.path.basename(path))
+            item.setToolTip(path)
+            item.setData(Qt.UserRole, path)
+            item.setFlags(
+                Qt.ItemIsSelectable
+                | Qt.ItemIsEnabled
+                | Qt.ItemIsDragEnabled
+                | Qt.ItemIsDropEnabled
+            )
+            self.file_list.addItem(item)
+
+    def _sync_paths_from_list(self):
+        """Update internal path list from current list order."""
+        ordered = []
+        for row in range(self.file_list.count()):
+            item = self.file_list.item(row)
+            if item is None:
+                continue
+            path = item.data(Qt.UserRole) or item.toolTip()
+            if path:
+                ordered.append(path)
+        self._paths = ordered
+
+    def _move_up(self):
+        """Move the selected file up by one position."""
+        row = self.file_list.currentRow()
+        if row <= 0:
+            return
+        item = self.file_list.takeItem(row)
+        self.file_list.insertItem(row - 1, item)
+        self.file_list.setCurrentRow(row - 1)
+        self._sync_paths_from_list()
+
+    def _move_down(self):
+        """Move the selected file down by one position."""
+        row = self.file_list.currentRow()
+        if row < 0 or row >= self.file_list.count() - 1:
+            return
+        item = self.file_list.takeItem(row)
+        self.file_list.insertItem(row + 1, item)
+        self.file_list.setCurrentRow(row + 1)
+        self._sync_paths_from_list()
+
+    def get_ordered_paths(self):
+        """Return the paths in the user-specified order.
+
+        Returns
+        -------
+        list of str
+            Ordered file paths.
+        """
+        self._sync_paths_from_list()
+        return list(self._paths)
+
+    def get_axis_order(self):
+        """Return axis permutation (output axes -> input axes)."""
+        if self._axis_order is None:
+            return None
+        return tuple(self._axis_order)
+
+    def get_axis_labels(self):
+        """Return output axis labels entered by the user."""
+        if self.axis_labels_edit is None or self._axis_order is None:
+            return None
+
+        parts = [p.strip() for p in self.axis_labels_edit.text().split(',')]
+        if len(parts) != len(self._axis_order) or any(not p for p in parts):
+            return tuple(self._axis_labels_default)
+        return tuple(parts)
+
+    def get_z_spacing(self):
+        """Return the Z spacing entered by the user."""
+        text = self.z_spacing_edit.text().strip()
+        try:
+            value = float(text)
+        except ValueError:
+            return 1.0
+        return value if value > 0 else 1.0
