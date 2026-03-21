@@ -20,6 +20,8 @@ from napari.utils.colormaps.colormap_utils import CYMRGB, MAGENTA_GREEN
 from napari.utils.notifications import show_error
 from phasorpy.phasor import phasor_from_signal
 
+from ._utils import show_activity_progress
+
 extension_mapping = {
     "raw": {
         ".ptu": lambda path, reader_options: _parse_and_call_io_function(
@@ -199,6 +201,17 @@ def raw_file_reader(
     layers = []
     iter_axis = iter_index_mapping[file_extension]
 
+    # Determine the number of steps for the progress bar
+    if iter_axis is not None and iter_axis in raw_data.dims:
+        iter_axis_index = raw_data.dims.index(iter_axis)
+        n_steps = raw_data.shape[iter_axis_index]
+    else:
+        n_steps = len(harmonics) if isinstance(harmonics, list) else 1
+
+    pbr = show_activity_progress(
+        desc=f"Reading {filename}...", total=n_steps + 1
+    )
+
     if iter_axis is None or iter_axis not in raw_data.dims:
         # Handle files without iteration axis or when keepdims=False squeezed it out
         if file_extension == ".tif":
@@ -217,6 +230,8 @@ def raw_file_reader(
                 i for i in range(len(raw_data.shape)) if i != axis
             )
 
+        pbr.set_description("Summing signal...")
+        pbr.update(1)
         summed_signal = np.sum(raw_data, axis=axes_to_sum)
 
         if hasattr(summed_signal, 'values'):
@@ -226,9 +241,12 @@ def raw_file_reader(
         if file_extension not in [".lsm", ".tif"]:
             settings['channel'] = 0
 
+        pbr.set_description("Computing phasor transform...")
         mean_intensity_image, G_image, S_image = phasor_from_signal(
             raw_data, axis=axis, harmonic=harmonics
         )
+        pbr.update(n_steps)
+        pbr.close()
         channel_suffix = (
             " Intensity Image"
             if iter_axis is None
@@ -255,7 +273,10 @@ def raw_file_reader(
     else:
         # Handle multi-channel files with iteration axis
         iter_axis_index = raw_data.dims.index(iter_axis)
-        for channel in range(raw_data.shape[iter_axis_index]):
+        n_channels = raw_data.shape[iter_axis_index]
+        for channel in range(n_channels):
+            pbr.set_description(f"Channel {channel + 1}/{n_channels}")
+            pbr.update(1)
             channel_data = raw_data.sel(C=channel)
             histogram_axis = channel_data.dims.index("H")
 
@@ -298,6 +319,7 @@ def raw_file_reader(
                 },
             }
             layers.append((mean_intensity_image, add_kwargs))
+        pbr.close()
     # Set colormaps if multichannel image
     if len(layers) == 2:
         # add colormaps MAGENTA_GREEN
@@ -347,10 +369,12 @@ def processed_file_reader(
     if harmonics is None:
         harmonics = 'all'
     filename, file_extension = _get_filename_extension(path)
+    pbr = show_activity_progress(desc=f"Loading {filename}...", total=3)
     reader_options = reader_options or {"harmonic": harmonics}
     mean_intensity_image, real, imag, attrs = extension_mapping["processed"][
         file_extension
     ](path, reader_options)
+    pbr.update(1)
     if "description" in attrs:
         # HTML-unescape the description to handle tifffile HTML encoding
         description_str = html.unescape(attrs["description"])
@@ -400,6 +424,8 @@ def processed_file_reader(
         threshold_upper_value = settings["threshold_upper"]
 
     if should_apply_processing:
+        pbr.set_description("Applying filters...")
+        pbr.update(1)
         from ._utils import _apply_filter_and_threshold_to_phasor_arrays
 
         mean_intensity_image, real, imag = (
@@ -443,6 +469,7 @@ def processed_file_reader(
     }
 
     layers.append((mean_intensity_image, add_kwargs))
+    pbr.close()
     return layers
 
 
