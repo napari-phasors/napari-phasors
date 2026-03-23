@@ -83,7 +83,9 @@ class PhasorTransform(QWidget):
             ".ptu": PtuWidget,
             ".lsm": LsmWidget,
             ".tif": LsmWidget,
+            ".tiff": LsmWidget,
             ".ome.tif": OmeTifWidget,
+            ".ome.tiff": OmeTifWidget,
             ".sdt": SdtWidget,
         }
 
@@ -93,7 +95,7 @@ class PhasorTransform(QWidget):
         dialog = QFileDialog(self, "Select Export Location", options=options)
         dialog.setFileMode(QFileDialog.AnyFile)
         dialog.setNameFilter(
-            "All files (*.tif *.ome.tif *.ptu *.fbd *.sdt *.lsm)"
+            "All files (*.tif *.tiff *.ome.tif *.ome.tiff *.ptu *.fbd *.sdt *.lsm)"
         )
         if dialog.exec_():
             selected_file = dialog.selectedFiles()[0]

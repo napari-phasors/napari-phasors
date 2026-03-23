@@ -56,6 +56,12 @@ extension_mapping = {
             {},
             reader_options,
         ),
+        ".tiff": lambda path, reader_options: _parse_and_call_io_function(
+            path,
+            tifffile.imread,
+            {},
+            reader_options,
+        ),
         # ".flif": lambda path: io.read_flif(path),
         # ".bh": lambda path: io.read_bh(path),
         # ".bhz": lambda path: io.read_bhz(path),
@@ -63,6 +69,9 @@ extension_mapping = {
     },
     "processed": {
         ".ome.tif": lambda path, reader_options: _parse_and_call_io_function(
+            path, io.phasor_from_ometiff, {}, reader_options
+        ),
+        ".ome.tiff": lambda path, reader_options: _parse_and_call_io_function(
             path, io.phasor_from_ometiff, {}, reader_options
         ),
         # ".b64": lambda path: io.read_b64(path),
@@ -82,6 +91,7 @@ iter_index_mapping = {
     ".fbd": "C",
     ".lsm": None,
     ".tif": None,
+    ".tiff": None,
     '.sdt': "C",
 }
 """This dictionary contains the mapping for the axis to iterate over
@@ -201,7 +211,7 @@ def raw_file_reader(
 
     if iter_axis is None or iter_axis not in raw_data.dims:
         # Handle files without iteration axis or when keepdims=False squeezed it out
-        if file_extension == ".tif":
+        if file_extension in [".tif", ".tiff"]:
             axis = 0
         elif iter_axis is None:
             # Hyperspectral files - find "C" dimension
@@ -210,7 +220,7 @@ def raw_file_reader(
             # FLIM files without "C" dimension (single channel)
             axis = raw_data.dims.index("H")
 
-        if file_extension in [".lsm", ".tif"]:
+        if file_extension in [".lsm", ".tif", ".tiff"]:
             axes_to_sum = tuple(range(1, len(raw_data.shape)))
         else:
             axes_to_sum = tuple(
@@ -223,7 +233,7 @@ def raw_file_reader(
             summed_signal = summed_signal.values
 
         # Only set channel for files that actually have channels (FLIM files)
-        if file_extension not in [".lsm", ".tif"]:
+        if file_extension not in [".lsm", ".tif", ".tiff"]:
             settings['channel'] = 0
 
         mean_intensity_image, G_image, S_image = phasor_from_signal(

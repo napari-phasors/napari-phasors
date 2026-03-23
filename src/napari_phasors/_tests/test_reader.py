@@ -296,6 +296,18 @@ def test_reader_ometif():
     assert list(harmonics) == [1, 2]
 
 
+def test_reader_ometiff_extension():
+    """Test .ome.tiff extension maps to processed reader."""
+    reader = napari_get_reader("test_file.ome.tiff")
+    assert callable(reader)
+
+
+def test_reader_tiff_extension():
+    """Test .tiff extension maps to raw reader."""
+    reader = napari_get_reader("test_file.tiff")
+    assert callable(reader)
+
+
 def test_reader_ometif_metadata():
     """Test reading OME-TIFF file and verify metadata settings"""
     ometif_file = get_test_file_path("test_file.ome.tif")
