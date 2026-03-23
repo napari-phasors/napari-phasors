@@ -1,3 +1,5 @@
+import csv
+
 import numpy as np
 
 from napari_phasors._utils import (
@@ -26,6 +28,7 @@ def test_histogram_widget_update_data_and_clear(qtbot):
     assert np.all(np.isfinite(widget._raw_valid_data))
     assert widget._settings_button.isEnabled()
     assert widget.save_png_button.isEnabled()
+    assert widget.save_csv_button.isEnabled()
 
     widget.clear()
 
@@ -36,6 +39,64 @@ def test_histogram_widget_update_data_and_clear(qtbot):
     assert widget._raw_valid_data is None
     assert not widget._settings_button.isEnabled()
     assert not widget.save_png_button.isEnabled()
+    assert not widget.save_csv_button.isEnabled()
+
+
+def test_histogram_widget_save_csv(qtbot, tmp_path, monkeypatch):
+    """HistogramWidget should export CSV accurately in all modes."""
+    from qtpy.QtWidgets import QFileDialog
+
+    widget = HistogramWidget(bins=2)
+    qtbot.addWidget(widget)
+
+    # Put some data
+    data1 = np.array([1.0, 1.0, 2.0])
+    data2 = np.array([1.0, 2.0, 2.0])
+
+    csv_file = tmp_path / "test.csv"
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        lambda *args, **kwargs: (str(csv_file), ""),
+    )
+
+    # 1. Test Merged (default) mode with multiple datasets
+    widget.update_multi_data({"Layer 1": data1, "Layer 2": data2})
+    widget._display_mode = "Merged"
+    widget._save_histogram_csv()
+
+    assert csv_file.exists()
+
+    with open(csv_file, newline='') as f:
+        reader = csv.reader(f)
+        rows = list(reader)
+
+    assert rows[0] == ['Bin Center', 'Mean Counts', 'Std Counts']
+    assert len(rows) == 3  # Header + 2 bins
+
+    # 2. Test Grouped mode
+    widget._display_mode = "Grouped"
+    widget._group_assignments = {"Layer 1": 1, "Layer 2": 1}
+    widget._group_names = {1: "MyGroup"}
+    widget._save_histogram_csv()
+
+    with open(csv_file, newline='') as f:
+        reader = csv.reader(f)
+        rows = list(reader)
+
+    assert rows[0] == ['Bin Center', 'MyGroup Mean', 'MyGroup Std']
+    assert len(rows) == 3
+
+    # 3. Test Individual mode
+    widget._display_mode = "Individual layers"
+    widget._save_histogram_csv()
+
+    with open(csv_file, newline='') as f:
+        reader = csv.reader(f)
+        rows = list(reader)
+
+    assert rows[0] == ['Bin Center', 'Layer 1', 'Layer 2']
+    assert len(rows) == 3
 
 
 def test_histogram_widget_default_filter_keeps_zero(qtbot):
