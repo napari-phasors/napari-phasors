@@ -1558,11 +1558,17 @@ class HistogramWidget(QWidget):
         self.save_png_button.clicked.connect(self._save_histogram_png)
         controls_layout.addWidget(self.save_png_button)
 
+        self.save_csv_button = QPushButton("Save Histogram as CSV")
+        self.save_csv_button.setMinimumWidth(180)
+        self.save_csv_button.clicked.connect(self._save_histogram_csv)
+        controls_layout.addWidget(self.save_csv_button)
+
         layout.addLayout(controls_layout)
 
         # Buttons are disabled until data is loaded
         self._settings_button.setEnabled(False)
         self.save_png_button.setEnabled(False)
+        self.save_csv_button.setEnabled(False)
 
     def _filter_valid_values(self, data: np.ndarray) -> np.ndarray:
         """Return finite values, optionally excluding non-positive entries."""
@@ -1738,6 +1744,116 @@ class HistogramWidget(QWidget):
         self._style_axes(export_mode=False)
         self.fig.canvas.draw_idle()
 
+    def _save_histogram_csv(self):
+        """Save the histogram data as a CSV file."""
+        if self.counts is None or self.bin_centers is None:
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Histogram as CSV",
+            "",
+            "CSV Files (*.csv)",
+        )
+
+        if not file_path:
+            return
+
+        if not file_path.endswith('.csv'):
+            file_path += '.csv'
+
+        import csv
+
+        try:
+            with open(file_path, mode='w', newline='') as file:
+                writer = csv.writer(file)
+                n_datasets = len(self._counts_per_dataset)
+
+                if self._display_mode == "Individual layers":
+                    # Export individual counts per dataset aligned on the same bins
+                    header = ['Bin Center'] + list(
+                        self._counts_per_dataset.keys()
+                    )
+                    writer.writerow(header)
+                    for i in range(len(self.bin_centers)):
+                        row = [self.bin_centers[i]]
+                        for label in self._counts_per_dataset:
+                            row.append(self._counts_per_dataset[label][i])
+                        writer.writerow(row)
+
+                elif self._display_mode == "Grouped":
+                    # Export grouped means and stdevs
+                    groups = {}
+                    for label, counts in self._counts_per_dataset.items():
+                        g = self._group_assignments.get(label, 1)
+                        groups.setdefault(g, []).append((label, counts))
+
+                    header = ['Bin Center']
+                    group_stats = {}
+
+                    for group_id, members in sorted(groups.items()):
+                        group_label = self._group_names.get(
+                            group_id, f"Group {group_id}"
+                        )
+                        header.append(f"{group_label} Mean")
+                        if len(members) > 1:
+                            header.append(f"{group_label} Std")
+
+                        all_counts = np.array(
+                            [c for _, c in members], dtype=float
+                        )
+                        mean_c = np.mean(all_counts, axis=0)
+                        std_c = (
+                            np.std(all_counts, axis=0, ddof=1)
+                            if len(members) > 1
+                            else None
+                        )
+                        group_stats[group_id] = (mean_c, std_c)
+
+                    writer.writerow(header)
+
+                    for i in range(len(self.bin_centers)):
+                        row = [self.bin_centers[i]]
+                        for _group_id, (mean_c, std_c) in sorted(
+                            group_stats.items()
+                        ):
+                            row.append(mean_c[i])
+                            if std_c is not None:
+                                row.append(std_c[i])
+                        writer.writerow(row)
+
+                else:
+                    # Merged mode
+                    if n_datasets > 1:
+                        all_counts = np.array(
+                            list(self._counts_per_dataset.values()),
+                            dtype=float,
+                        )
+                        mean_counts = np.mean(all_counts, axis=0)
+                        std_counts = np.std(all_counts, axis=0, ddof=1)
+
+                        writer.writerow(
+                            ['Bin Center', 'Mean Counts', 'Std Counts']
+                        )
+                        for i in range(len(self.bin_centers)):
+                            writer.writerow(
+                                [
+                                    self.bin_centers[i],
+                                    mean_counts[i],
+                                    std_counts[i],
+                                ]
+                            )
+                    else:
+                        writer.writerow(['Bin Center', 'Counts'])
+                        for i in range(len(self.bin_centers)):
+                            writer.writerow(
+                                [self.bin_centers[i], self.counts[i]]
+                            )
+        except (OSError, csv.Error) as e:
+            from napari.utils.notifications import show_error
+
+            show_error(f"Error saving CSV: {str(e)}")
+
     def _open_settings_dialog(self):
         """Open the histogram settings dialog."""
         layer_labels = list(self._datasets.keys()) if self._datasets else None
@@ -1801,6 +1917,7 @@ class HistogramWidget(QWidget):
             self.fig.canvas.draw_idle()
             self._settings_button.setEnabled(False)
             self.save_png_button.setEnabled(False)
+            self.save_csv_button.setEnabled(False)
             self.show()
             self.dataChanged.emit()
             return
@@ -1817,6 +1934,7 @@ class HistogramWidget(QWidget):
         self._render()
         self._settings_button.setEnabled(True)
         self.save_png_button.setEnabled(True)
+        self.save_csv_button.setEnabled(True)
         self.show()
         self.dataChanged.emit()
 
@@ -1852,6 +1970,7 @@ class HistogramWidget(QWidget):
             self.fig.canvas.draw_idle()
             self._settings_button.setEnabled(False)
             self.save_png_button.setEnabled(False)
+            self.save_csv_button.setEnabled(False)
             self.show()
             self.dataChanged.emit()
             return
@@ -1874,6 +1993,7 @@ class HistogramWidget(QWidget):
         self._render()
         self._settings_button.setEnabled(True)
         self.save_png_button.setEnabled(True)
+        self.save_csv_button.setEnabled(True)
         self.show()
         self.dataChanged.emit()
 
@@ -1910,6 +2030,7 @@ class HistogramWidget(QWidget):
         self.fig.canvas.draw_idle()
         self._settings_button.setEnabled(False)
         self.save_png_button.setEnabled(False)
+        self.save_csv_button.setEnabled(False)
         self.dataChanged.emit()
 
     @property
