@@ -8,6 +8,7 @@ This module contains widgets to:
 """
 
 import glob
+import json
 import os
 from typing import TYPE_CHECKING
 
@@ -172,9 +173,6 @@ class PhasorTransform(QWidget):
         file_paths = sorted(file_paths, key=natural_sort_key)
 
         estimated_shape = _estimate_result_shape(file_paths)
-        default_axis_labels = None
-        if estimated_shape is not None:
-            default_axis_labels = _default_axis_labels(len(estimated_shape))
 
         initial_z_spacing = None
         if len(file_paths) == 1:
@@ -186,19 +184,16 @@ class PhasorTransform(QWidget):
             parent=self,
             initial_z_spacing=initial_z_spacing,
             estimated_shape=estimated_shape,
-            initial_axis_labels=default_axis_labels,
         )
         if dialog.exec_() != FileOrderDialog.Accepted:
             return
         file_paths = dialog.get_ordered_paths()
         z_spacing = dialog.get_z_spacing()
-        axis_order = dialog.get_axis_order()
-        axis_labels = dialog.get_axis_labels()
 
         # Update the path display
         self.save_path.setText(
             f"{len(file_paths)} file(s) selected (first: "
-            f"{os.path.basename(file_paths[0])}, z spacing: {z_spacing})"
+            f"{os.path.basename(file_paths[0])}, z spacing: {z_spacing} um)"
         )
 
         # Clear old dynamic widgets and create the sub-widget
@@ -210,8 +205,6 @@ class PhasorTransform(QWidget):
         new_widget = create_widget_class(self.viewer, file_paths[0])
         new_widget._multi_file_paths = file_paths
         new_widget._stack_z_spacing = z_spacing
-        new_widget._stack_axis_order = axis_order
-        new_widget._stack_axis_labels = axis_labels
         if hasattr(new_widget, '_update_signal_plot'):
             new_widget._update_signal_plot()
         self.dynamic_widget_layout.addWidget(new_widget)
@@ -232,6 +225,8 @@ class AdvancedOptionsWidget(QWidget):
         super().__init__()
         self.viewer = viewer
         self.path = path
+        self._stack_z_spacing_layout = None
+        self._stack_z_spacing_edit = None
         self.reader_options = {}
         if not hasattr(self, 'harmonics'):
             self.harmonics = [1]
@@ -333,6 +328,7 @@ class AdvancedOptionsWidget(QWidget):
     def _update_signal_plot(self):
         """Update the signal plot based on current parameters."""
         try:
+            self._sync_stack_z_spacing_widget_visibility()
             self.ax.clear()
             plot_all_channels = (
                 hasattr(self, 'channels')
@@ -432,6 +428,61 @@ class AdvancedOptionsWidget(QWidget):
 
         except Exception as e:  # noqa: BLE001
             show_error(f"Error updating signal plot: {str(e)}")
+
+    def _sync_stack_z_spacing_widget_visibility(self):
+        """Show a z-spacing editor only for stacked multi-file imports."""
+        is_stack_mode = len(getattr(self, '_multi_file_paths', []) or []) > 1
+
+        if is_stack_mode and self._stack_z_spacing_layout is None:
+            z_layout = QHBoxLayout()
+            z_layout.addWidget(QLabel("Z spacing (um): "))
+
+            self._stack_z_spacing_edit = QLineEdit()
+            self._stack_z_spacing_edit.setValidator(
+                QDoubleValidator(0.0, 1e12, 8)
+            )
+            initial = getattr(self, '_stack_z_spacing', None)
+            if initial is None:
+                initial = 1.0
+            self._stack_z_spacing_edit.setText(str(initial))
+            self._stack_z_spacing_edit.setToolTip(
+                "Spacing along Z in micrometers (um)."
+            )
+            self._stack_z_spacing_edit.editingFinished.connect(
+                self._on_stack_z_spacing_changed
+            )
+
+            z_layout.addWidget(self._stack_z_spacing_edit)
+            z_layout.addStretch()
+
+            self.mainLayout.addLayout(z_layout)
+            self._stack_z_spacing_layout = z_layout
+
+        if not is_stack_mode and self._stack_z_spacing_layout is not None:
+            while self._stack_z_spacing_layout.count():
+                item = self._stack_z_spacing_layout.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+            self._stack_z_spacing_layout = None
+            self._stack_z_spacing_edit = None
+
+    def _on_stack_z_spacing_changed(self):
+        """Validate and store z-spacing value edited in stack mode."""
+        if self._stack_z_spacing_edit is None:
+            return
+
+        text = self._stack_z_spacing_edit.text().strip()
+        try:
+            value = float(text)
+        except ValueError:
+            value = 1.0
+
+        if value <= 0:
+            value = 1.0
+
+        self._stack_z_spacing = value
+        self._stack_z_spacing_edit.setText(str(value))
 
     def _get_signal_data(self):
         """Get signal data based on file type and current parameters.
@@ -680,6 +731,7 @@ class AdvancedOptionsWidget(QWidget):
         single 3D layer via :func:`raw_file_stack_reader`.
         """
         multi_paths = getattr(self, '_multi_file_paths', None)
+        self._on_stack_z_spacing_changed()
         z_spacing = getattr(self, '_stack_z_spacing', None)
         axis_order = getattr(self, '_stack_axis_order', None)
         axis_labels = getattr(self, '_stack_axis_labels', None)
@@ -800,28 +852,43 @@ def _try_get_z_spacing_from_ome_tiff(path):
 
         with tifffile.TiffFile(path) as tif:
             ome_xml = tif.ome_metadata
-            if not ome_xml:
+            if ome_xml:
+                ome_dict = tifffile.xml2dict(ome_xml)
+                ome_root = ome_dict.get("OME", {})
+                images = ome_root.get("Image", [])
+                if isinstance(images, dict):
+                    images = [images]
+
+                if images:
+                    pixels = images[0].get("Pixels", {})
+                    z_value = pixels.get("@PhysicalSizeZ")
+                    if z_value is None:
+                        z_value = pixels.get("PhysicalSizeZ")
+
+                    if isinstance(z_value, dict):
+                        z_value = z_value.get("#text")
+                    if z_value is not None:
+                        return float(z_value)
+
+            # Fallback to napari-phasors settings embedded in description.
+            if not tif.pages:
+                return None
+            description = tif.pages[0].description
+            if not description:
                 return None
 
-            ome_dict = tifffile.xml2dict(ome_xml)
-            ome_root = ome_dict.get("OME", {})
-            images = ome_root.get("Image", [])
-            if isinstance(images, dict):
-                images = [images]
+            description_dict = json.loads(description)
+            settings_blob = description_dict.get("napari_phasors_settings")
+            if isinstance(settings_blob, str):
+                settings = json.loads(settings_blob)
+            elif isinstance(settings_blob, dict):
+                settings = settings_blob
+            else:
+                settings = {}
 
-            if not images:
-                return None
-
-            pixels = images[0].get("Pixels", {})
-            z_value = pixels.get("@PhysicalSizeZ")
+            z_value = settings.get("z_spacing_um")
             if z_value is None:
-                z_value = pixels.get("PhysicalSizeZ")
-
-            if isinstance(z_value, dict):
-                z_value = z_value.get("#text")
-            if z_value is None:
                 return None
-
             return float(z_value)
     except Exception:  # noqa: BLE001
         return None

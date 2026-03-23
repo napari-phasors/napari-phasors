@@ -2966,7 +2966,6 @@ class FileOrderDialog(QDialog):
         parent=None,
         initial_z_spacing=None,
         estimated_shape=None,
-        initial_axis_labels=None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Reorder Files for 3D Stack")
@@ -2975,9 +2974,6 @@ class FileOrderDialog(QDialog):
 
         self._paths = list(file_paths)
         self._estimated_shape = estimated_shape
-        self._axis_labels_default = list(initial_axis_labels or [])
-        self._axis_order = None
-        self._axis_combos = []
 
         layout = QVBoxLayout(self)
 
@@ -3011,56 +3007,12 @@ class FileOrderDialog(QDialog):
         )
         layout.addWidget(self.shape_label)
 
-        if (
-            self._estimated_shape is not None
-            and len(self._estimated_shape) >= 2
-        ):
-            ndim = len(self._estimated_shape)
-            if len(self._axis_labels_default) != ndim:
-                self._axis_labels_default = [f"Axis {i}" for i in range(ndim)]
-
-            self._axis_order = list(range(ndim))
-
-            layout.addWidget(QLabel("Axis order (output <- input):"))
-            for out_axis in range(ndim):
-                row_layout = QHBoxLayout()
-                out_name = self._axis_labels_default[out_axis]
-                row_layout.addWidget(QLabel(f"Output {out_name}:"))
-
-                combo = QComboBox()
-                for in_axis in range(ndim):
-                    in_name = self._axis_labels_default[in_axis]
-                    combo.addItem(f"Input {in_axis} ({in_name})", in_axis)
-                combo.setCurrentIndex(out_axis)
-                combo.currentIndexChanged.connect(
-                    lambda idx, pos=out_axis: self._on_axis_combo_changed(
-                        pos, idx
-                    )
-                )
-                self._axis_combos.append(combo)
-                row_layout.addWidget(combo)
-                row_layout.addStretch()
-                layout.addLayout(row_layout)
-
-            labels_layout = QHBoxLayout()
-            labels_layout.addWidget(QLabel("Axis labels (comma-separated):"))
-            self.axis_labels_edit = QLineEdit(
-                ",".join(self._axis_labels_default)
-            )
-            self.axis_labels_edit.setToolTip(
-                "Names applied to output axes after optional reordering."
-            )
-            labels_layout.addWidget(self.axis_labels_edit)
-            layout.addLayout(labels_layout)
-        else:
-            self.axis_labels_edit = None
-
         spacing_layout = QHBoxLayout()
-        spacing_layout.addWidget(QLabel("Z spacing between slices:"))
+        spacing_layout.addWidget(QLabel("Z spacing between slices (um):"))
         self.z_spacing_edit = QLineEdit()
         self.z_spacing_edit.setValidator(QDoubleValidator(0.0, 1e12, 8))
         self.z_spacing_edit.setToolTip(
-            "Spacing for the first (Z) axis of the generated 3D image layer."
+            "Spacing for the first (Z) axis in micrometers (um). "
         )
         default_spacing = (
             1.0 if initial_z_spacing is None else initial_z_spacing
@@ -3091,27 +3043,6 @@ class FileOrderDialog(QDialog):
         btn_layout.addWidget(self.cancel_btn)
 
         layout.addLayout(btn_layout)
-
-    def _on_axis_combo_changed(self, changed_pos, combo_index):
-        """Keep axis mapping a valid permutation by swapping duplicates."""
-        if self._axis_order is None:
-            return
-
-        selected_input = int(combo_index)
-        old_input = self._axis_order[changed_pos]
-        if selected_input == old_input:
-            return
-
-        if selected_input in self._axis_order:
-            other_pos = self._axis_order.index(selected_input)
-            self._axis_order[other_pos] = old_input
-
-            other_combo = self._axis_combos[other_pos]
-            other_combo.blockSignals(True)
-            other_combo.setCurrentIndex(old_input)
-            other_combo.blockSignals(False)
-
-        self._axis_order[changed_pos] = selected_input
 
     def _populate_list(self):
         """Fill the list widget with the current path order."""
@@ -3172,20 +3103,12 @@ class FileOrderDialog(QDialog):
         return list(self._paths)
 
     def get_axis_order(self):
-        """Return axis permutation (output axes -> input axes)."""
-        if self._axis_order is None:
-            return None
-        return tuple(self._axis_order)
+        """Axis reordering is not configurable in this dialog."""
+        return None
 
     def get_axis_labels(self):
-        """Return output axis labels entered by the user."""
-        if self.axis_labels_edit is None or self._axis_order is None:
-            return None
-
-        parts = [p.strip() for p in self.axis_labels_edit.text().split(',')]
-        if len(parts) != len(self._axis_order) or any(not p for p in parts):
-            return tuple(self._axis_labels_default)
-        return tuple(parts)
+        """Axis labels are not configurable in this dialog."""
+        return None
 
     def get_z_spacing(self):
         """Return the Z spacing entered by the user."""
