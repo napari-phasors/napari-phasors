@@ -3,7 +3,7 @@ name = "napari-phasors"
 dynamic = ["version"]
 description = "A simple plugin to use phasor analysis"
 readme = "README.md"
-requires-python = ">=3.12,<3.14"
+requires-python = ">=3.12"
 license = { file = "LICENSE" }
 authors = [
     { name = "Bruno Pannunzio", email = "bpannunzio@pasteur.edu.uy" },
