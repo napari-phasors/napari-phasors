@@ -5,6 +5,7 @@ import numpy as np
 from matplotlib.collections import LineCollection
 from matplotlib.colors import LinearSegmentedColormap
 from napari.layers import Image
+from napari.utils import progress
 from napari.utils.notifications import show_error, show_warning
 from phasorpy.lifetime import (
     phasor_from_fret_donor,
@@ -746,7 +747,9 @@ class FretWidget(QWidget):
         # Collect phasor centers per harmonic across all selected layers
         positions_by_harmonic = {}  # harmonic -> list of (real, imag)
 
-        for background_layer_name in selected_layer_names:
+        for background_layer_name in progress(
+            selected_layer_names, desc="Computing background..."
+        ):
             try:
                 background_layer = self.viewer.layers[background_layer_name]
                 g_array = background_layer.metadata.get("G")
@@ -877,7 +880,9 @@ class FretWidget(QWidget):
             )
 
         lifetimes = []
-        for donor_layer_name in selected_layer_names:
+        for donor_layer_name in progress(
+            selected_layer_names, desc="Computing donor lifetime..."
+        ):
             try:
                 donor_layer = self.viewer.layers[donor_layer_name]
                 g_array = donor_layer.metadata.get("G")
@@ -1754,7 +1759,9 @@ class FretWidget(QWidget):
             )
 
         # Process each selected layer
-        for layer in selected_layers:
+        for layer in progress(
+            selected_layers, desc="Computing FRET efficiency..."
+        ):
             # Retrieve arrays from metadata
             g_array = layer.metadata.get("G")
             s_array = layer.metadata.get("S")

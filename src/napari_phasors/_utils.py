@@ -15,6 +15,7 @@ from matplotlib.backends.backend_qt5agg import (
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.patches import Polygon as MplPolygon
 from napari.layers import Image
+from napari.utils import progress as _napari_progress
 from phasorpy.filter import (
     phasor_filter_median,
     phasor_filter_pawflim,
@@ -59,6 +60,34 @@ from superqt import QRangeSlider
 
 if TYPE_CHECKING:
     import napari
+
+
+def show_activity_progress(desc="Processing...", total=0, **kwargs):
+    """Create a napari progress bar that shows in the activity dock.
+
+    For operations running on the main thread (like file readers), the
+    progress bar appears as animated blue dots in the status bar. For
+    widget operations that call ``QApplication.processEvents()`` between
+    steps, the full progress bar is visible in the activity dock.
+
+    Parameters
+    ----------
+    desc : str
+        Description shown in the progress bar.
+    total : int
+        Number of steps. Use 0 for indeterminate.
+
+    Returns
+    -------
+    progress
+        A napari progress bar instance.
+    """
+    pbr = _napari_progress(desc=desc, total=total, **kwargs)
+    # Force the UI to process the new progress bar
+    app = QApplication.instance()
+    if app:
+        app.processEvents()
+    return pbr
 
 
 def threshold_otsu(data, nbins=256):
