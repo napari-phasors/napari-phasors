@@ -234,7 +234,7 @@ def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
             harmonic=harmonics,
             description=description,
             dims=dims,
-            metadata=metadata_dict if metadata_dict else None,
+            metadata=metadata_dict,
         )
     else:
         # Export without phasor data - just save the raw image data
