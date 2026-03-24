@@ -145,6 +145,49 @@ def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
     if not path.endswith(".ome.tif"):
         path += ".ome.tif"
 
+    dims = None
+    if isinstance(image_layer, Image):
+        labels = getattr(image_layer, 'axis_labels', None)
+        if labels is not None and len(labels) == data.ndim:
+            dims = "".join(str(label).upper()[0] for label in labels)
+            if not dims.endswith(("YX", "YXS")):
+                dims = None
+
+    if not dims:
+        if data.ndim == 2:
+            dims = "YX"
+        elif data.ndim == 3:
+            dims = "ZYX"
+        elif data.ndim == 4:
+            dims = "TZYX"
+        else:
+            dims = "TZCYX"[-data.ndim :] if data.ndim <= 5 else None
+
+    metadata_dict = {}
+
+    if z_spacing_um is not None:
+        metadata_dict['PhysicalSizeZ'] = z_spacing_um
+        metadata_dict['PhysicalSizeZUnit'] = 'µm'
+
+    if isinstance(image_layer, Image):
+        scale = getattr(image_layer, 'scale', None)
+        if scale is not None:
+            y_idx, x_idx = -2, -1
+            labels = getattr(image_layer, 'axis_labels', None)
+            if labels is not None:
+                for i, label in enumerate(labels):
+                    if str(label).lower() == 'y':
+                        y_idx = i
+                    if str(label).lower() == 'x':
+                        x_idx = i
+
+            if len(scale) > abs(y_idx) and scale[y_idx] > 0:
+                metadata_dict['PhysicalSizeY'] = float(scale[y_idx])
+                metadata_dict['PhysicalSizeYUnit'] = 'µm'
+            if len(scale) > abs(x_idx) and scale[x_idx] > 0:
+                metadata_dict['PhysicalSizeX'] = float(scale[x_idx])
+                metadata_dict['PhysicalSizeXUnit'] = 'µm'
+
     if has_phasor_data:
         # Export with phasor data
         mean = metadata["original_mean"]
@@ -182,6 +225,7 @@ def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
         description = json.dumps(
             {"napari_phasors_settings": json.dumps(settings)}
         )
+
         phasor_to_ometiff(
             path,
             mean,
@@ -189,6 +233,8 @@ def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
             S,
             harmonic=harmonics,
             description=description,
+            dims=dims,
+            metadata=metadata_dict if metadata_dict else None,
         )
     else:
         # Export without phasor data - just save the raw image data
@@ -207,11 +253,13 @@ def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
             {"napari_phasors_settings": json.dumps(settings)}
         )
 
-        # Write as OME-TIFF with minimal metadata
+        if dims:
+            metadata_dict['axes'] = dims
+
         tifffile.imwrite(
             path,
             data,
-            metadata={'axes': 'YX' if data.ndim == 2 else None},
+            metadata=metadata_dict if metadata_dict else None,
             description=description,
         )
 

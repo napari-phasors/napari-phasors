@@ -614,6 +614,27 @@ def processed_file_reader(
         },
     }
 
+    if "dims" in attrs:
+        add_kwargs["axis_labels"] = tuple(attrs["dims"])
+    elif "axes" in attrs:
+        add_kwargs["axis_labels"] = tuple(attrs["axes"])
+
+    z_spacing_um = settings.get("z_spacing_um")
+    if z_spacing_um is not None and mean_intensity_image.ndim >= 3:
+        try:
+            z_idx = 0
+            if "axis_labels" in add_kwargs:
+                labels = [
+                    str(label).upper() for label in add_kwargs["axis_labels"]
+                ]
+                if 'Z' in labels:
+                    z_idx = labels.index('Z')
+            scale = [1.0] * mean_intensity_image.ndim
+            scale[z_idx] = float(z_spacing_um)
+            add_kwargs["scale"] = tuple(scale)
+        except (ValueError, TypeError):
+            pass
+
     layers.append((mean_intensity_image, add_kwargs))
     return layers
 

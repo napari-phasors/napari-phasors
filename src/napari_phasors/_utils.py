@@ -3007,6 +3007,32 @@ class FileOrderDialog(QDialog):
         )
         layout.addWidget(self.shape_label)
 
+        # Default axis labels
+        def_labels = []
+        if self._estimated_shape is not None:
+            ndim = len(self._estimated_shape)
+            if ndim == 2:
+                def_labels = ["Y", "X"]
+            elif ndim == 3:
+                def_labels = ["Z", "Y", "X"]
+            elif ndim == 4:
+                def_labels = ["T", "Z", "Y", "X"]
+            else:
+                def_labels = [f"Axis {i}" for i in range(ndim)]
+
+        labels_layout = QHBoxLayout()
+        labels_layout.addWidget(QLabel("Axis labels (comma separated):"))
+        self.axis_labels_edit = QLineEdit()
+        self.axis_labels_edit.setText(
+            ", ".join(def_labels) if def_labels else ""
+        )
+        self.axis_labels_edit.setToolTip(
+            "Comma-separated labels for each axis."
+        )
+        labels_layout.addWidget(self.axis_labels_edit)
+        labels_layout.addStretch()
+        layout.addLayout(labels_layout)
+
         spacing_layout = QHBoxLayout()
         spacing_layout.addWidget(QLabel("Z spacing between slices (um):"))
         self.z_spacing_edit = QLineEdit()
@@ -3107,8 +3133,13 @@ class FileOrderDialog(QDialog):
         return None
 
     def get_axis_labels(self):
-        """Axis labels are not configurable in this dialog."""
-        return None
+        """Return the axis labels entered by the user."""
+        if not hasattr(self, 'axis_labels_edit'):
+            return None
+        text = self.axis_labels_edit.text().strip()
+        if not text:
+            return None
+        return [lbl.strip() for lbl in text.split(",") if lbl.strip()]
 
     def get_z_spacing(self):
         """Return the Z spacing entered by the user."""

@@ -40,7 +40,6 @@ from superqt import QRangeSlider
 from ._reader import (
     _get_filename_extension,
     napari_get_reader,
-    raw_file_reader,
     raw_file_stack_reader,
 )
 from ._utils import CheckableComboBox, FileOrderDialog, natural_sort_key
@@ -122,26 +121,22 @@ class PhasorTransform(QWidget):
             "*.sdt",
         )
 
-        dialog = QFileDialog(self, "Select file or directory for 3D stack")
-        dialog.setFileMode(QFileDialog.Directory)
-        dialog.setOption(QFileDialog.ShowDirsOnly, False)
-        dialog.setNameFilter(
-            "Supported files (" + " ".join(supported_extensions) + ")"
+        selected_entries, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Select files for 3D stack",
+            "",
+            "Supported files (" + " ".join(supported_extensions) + ")",
         )
 
-        if not dialog.exec_():
-            return
-
-        selected_entries = dialog.selectedFiles()
         if not selected_entries:
             return
 
         for entry in selected_entries:
-            if os.path.isdir(entry):
+            if os.path.isfile(entry):
+                file_paths.append(entry)
+            elif os.path.isdir(entry):
                 for ext in supported_extensions:
                     file_paths.extend(glob.glob(os.path.join(entry, ext)))
-            elif os.path.isfile(entry):
-                file_paths.append(entry)
 
         # Remove duplicates while preserving order
         file_paths = list(dict.fromkeys(file_paths))
@@ -189,6 +184,12 @@ class PhasorTransform(QWidget):
             return
         file_paths = dialog.get_ordered_paths()
         z_spacing = dialog.get_z_spacing()
+        if hasattr(dialog, 'get_axis_order'):
+            axis_order = dialog.get_axis_order()
+            axis_labels = dialog.get_axis_labels()
+        else:
+            axis_order = None
+            axis_labels = None
 
         # Update the path display
         self.save_path.setText(
@@ -205,6 +206,8 @@ class PhasorTransform(QWidget):
         new_widget = create_widget_class(self.viewer, file_paths[0])
         new_widget._multi_file_paths = file_paths
         new_widget._stack_z_spacing = z_spacing
+        new_widget._stack_axis_order = axis_order
+        new_widget._stack_axis_labels = axis_labels
         if hasattr(new_widget, '_update_signal_plot'):
             new_widget._update_signal_plot()
         self.dynamic_widget_layout.addWidget(new_widget)
@@ -270,6 +273,13 @@ class AdvancedOptionsWidget(QWidget):
     def _add_shape_preview_widget(self):
         """Add a label showing estimated output shape for current options."""
         self.shape_preview_label = QLabel("Estimated output shape: N/A")
+        if hasattr(self, 'btn'):
+            btn_index = self.mainLayout.indexOf(self.btn)
+            if btn_index >= 0:
+                self.mainLayout.insertWidget(
+                    btn_index, self.shape_preview_label
+                )
+                return
         self.mainLayout.addWidget(self.shape_preview_label)
 
     def _update_shape_preview(self):
@@ -286,6 +296,7 @@ class AdvancedOptionsWidget(QWidget):
         )
 
         axis_order = getattr(self, '_stack_axis_order', None)
+        axis_labels = getattr(self, '_stack_axis_labels', None)
         if (
             shape is not None
             and axis_order is not None
@@ -295,6 +306,20 @@ class AdvancedOptionsWidget(QWidget):
             shape = tuple(shape[i] for i in axis_order)
 
         shape_text = str(tuple(shape)) if shape is not None else "N/A"
+        if (
+            axis_labels is not None
+            and shape is not None
+            and len(axis_labels) == len(shape)
+        ):
+            shape_text += f" ({', '.join(axis_labels)})"
+        elif shape is not None:
+            if len(shape) == 2:
+                shape_text += " (Y, X)"
+            elif len(shape) == 3:
+                shape_text += " (Z, Y, X)"
+            elif len(shape) == 4:
+                shape_text += " (T, Z, Y, X)"
+
         self.shape_preview_label.setText(
             f"Estimated output shape: {shape_text}"
         )
@@ -352,14 +377,12 @@ class AdvancedOptionsWidget(QWidget):
                     if signal is None:
                         continue
 
-                    if channel_idx == 0:
-                        self.max_harmonic = signal.shape[-1] // 2
+                    channel_signal = self._collapse_signal_for_plot(signal)
+                    if channel_signal is None or channel_signal.size == 0:
+                        continue
 
-                    if len(signal.shape) > 1:
-                        axes_to_sum = tuple(range(len(signal.shape) - 1))
-                        channel_signal = np.sum(signal, axis=axes_to_sum)
-                    else:
-                        channel_signal = signal
+                    if channel_idx == 0:
+                        self.max_harmonic = channel_signal.shape[0] // 2
 
                     self.ax.plot(
                         channel_signal,
@@ -379,13 +402,11 @@ class AdvancedOptionsWidget(QWidget):
                 if signal is None:
                     return
 
-                self.max_harmonic = signal.shape[-1] // 2
+                summed_signal = self._collapse_signal_for_plot(signal)
+                if summed_signal is None or summed_signal.size == 0:
+                    return
 
-                if len(signal.shape) > 1:
-                    axes_to_sum = tuple(range(len(signal.shape) - 1))
-                    summed_signal = np.sum(signal, axis=axes_to_sum)
-                else:
-                    summed_signal = signal
+                self.max_harmonic = summed_signal.shape[0] // 2
                 self.ax.plot(summed_signal, color='white')
                 legend = self.ax.get_legend()
                 if legend:
@@ -429,6 +450,62 @@ class AdvancedOptionsWidget(QWidget):
         except Exception as e:  # noqa: BLE001
             show_error(f"Error updating signal plot: {str(e)}")
 
+    @staticmethod
+    def _choose_signal_axis(shape, axis_labels=None):
+        """Return the axis index corresponding to histogram/spectral bins."""
+        ndim = len(shape)
+        if ndim == 0:
+            return 0
+
+        if axis_labels is not None and len(axis_labels) == ndim:
+            labels = [str(label).strip().upper() for label in axis_labels]
+
+            # Prefer explicit histogram/time/spectral labels.
+            for candidates in (
+                {"H", "HIST", "HISTOGRAM"},
+                {"C", "CHANNEL", "CHANNELS", "L", "WL", "W"},
+                {"T", "TIME"},
+            ):
+                for idx, label in enumerate(labels):
+                    if label in candidates or any(
+                        token in label
+                        for token in ("HIST", "SPECT", "WAVEL", "LAMBDA")
+                    ):
+                        return idx
+
+            # Avoid spatial axes if possible.
+            non_spatial = [
+                idx
+                for idx, label in enumerate(labels)
+                if label not in {"Z", "Y", "X"}
+            ]
+            if non_spatial:
+                return non_spatial[-1]
+
+        # Fallback to last axis, preserving previous behavior.
+        return ndim - 1
+
+    @classmethod
+    def _collapse_signal_for_plot(cls, signal):
+        """Collapse any signal array to a 1-D profile for plotting.
+
+        The profile is computed along histogram/spectral axis while summing all
+        remaining axes (e.g., Z/Y/X or stack axes).
+        """
+        axis_labels = None
+        if hasattr(signal, "dims"):
+            axis_labels = tuple(signal.dims)
+
+        array = np.asarray(signal)
+        if array.ndim == 0:
+            return np.array([float(array)])
+        if array.ndim == 1:
+            return array
+
+        signal_axis = cls._choose_signal_axis(array.shape, axis_labels)
+        axes_to_sum = tuple(i for i in range(array.ndim) if i != signal_axis)
+        return np.sum(array, axis=axes_to_sum)
+
     def _sync_stack_z_spacing_widget_visibility(self):
         """Show a z-spacing editor only for stacked multi-file imports."""
         is_stack_mode = len(getattr(self, '_multi_file_paths', []) or []) > 1
@@ -455,7 +532,15 @@ class AdvancedOptionsWidget(QWidget):
             z_layout.addWidget(self._stack_z_spacing_edit)
             z_layout.addStretch()
 
-            self.mainLayout.addLayout(z_layout)
+            inserted = False
+            if hasattr(self, 'shape_preview_label'):
+                idx = self.mainLayout.indexOf(self.shape_preview_label)
+                if idx >= 0:
+                    self.mainLayout.insertLayout(idx, z_layout)
+                    inserted = True
+
+            if not inserted:
+                self.mainLayout.addLayout(z_layout)
             self._stack_z_spacing_layout = z_layout
 
         if not is_stack_mode and self._stack_z_spacing_layout is not None:
@@ -915,9 +1000,13 @@ def _estimate_result_shape(file_paths):
         return None
 
     try:
-        layers = raw_file_reader(
+        reader = napari_get_reader(
             file_paths[0], reader_options=None, harmonics=[1]
         )
+        if reader is None:
+            return None
+
+        layers = reader(file_paths[0])
         if not layers:
             return None
         base_shape = tuple(np.shape(layers[0][0]))
@@ -936,11 +1025,15 @@ def _estimate_output_shape_from_options(
 ):
     """Estimate output shape with current reader options and harmonics."""
     try:
-        layers = raw_file_reader(
+        reader = napari_get_reader(
             path,
             reader_options=reader_options,
             harmonics=harmonics if harmonics else [1],
         )
+        if reader is None:
+            return None
+
+        layers = reader(path)
         if not layers:
             return None
         base_shape = tuple(np.shape(layers[0][0]))
@@ -1185,18 +1278,16 @@ class LsmWidget(AdvancedOptionsWidget):
             if signal is None:
                 return
 
-            if signal.shape[0] > 0:
-                self.max_harmonic = signal.shape[0] // 2
+            summed_signal = self._collapse_signal_for_plot(signal)
+            if summed_signal is None or summed_signal.size == 0:
+                return
+
+            if summed_signal.shape[0] > 0:
+                self.max_harmonic = summed_signal.shape[0] // 2
 
             self._update_harmonic_slider()
 
             self.ax.clear()
-
-            if len(signal.shape) > 1:
-                axes_to_sum = tuple(range(1, len(signal.shape)))
-                summed_signal = np.sum(signal, axis=axes_to_sum)
-            else:
-                summed_signal = signal
 
             self.ax.plot(summed_signal, color='white')
 
@@ -1443,10 +1534,14 @@ class OmeTifWidget(AdvancedOptionsWidget):
 
             if signal is None:
                 return
+
+            signal_1d = self._collapse_signal_for_plot(signal)
+            if signal_1d is None or signal_1d.size == 0:
+                return
             self._update_harmonic_slider()
 
             self.ax.clear()
-            self.ax.plot(signal, color='white')
+            self.ax.plot(signal_1d, color='white')
 
             if hasattr(self, 'channels') and self.channels is not None:
                 channel_num = int(self.channels.currentText())
@@ -1484,14 +1579,7 @@ class OmeTifWidget(AdvancedOptionsWidget):
     def _on_click(self, path, reader_options, harmonics):
         """Execute the phasor transformation."""
         try:
-            reader = napari_get_reader(path, reader_options, harmonics)
-            if reader:
-                for layer in reader(path):
-                    self.viewer.add_image(
-                        layer[0],
-                        name=layer[1]["name"],
-                        metadata=layer[1]["metadata"],
-                    )
+            super()._on_click(path, reader_options, harmonics)
         except Exception as e:  # noqa: BLE001
             show_error(f"Error during phasor transformation: {str(e)}")
 
