@@ -354,6 +354,35 @@ def test_phasor_transform_ome_tif_widget(make_napari_viewer):
     assert list(viewer.layers[0].metadata["harmonics"]) == [2]
 
 
+def test_phasor_transform_ome_tif_preserves_axis_kwargs(make_napari_viewer):
+    """OME-TIFF loaded from widget should preserve reader axis kwargs."""
+    viewer = make_napari_viewer()
+    test_file_path = get_test_file_path("test_file.ome.tif")
+
+    reader = napari_get_reader(test_file_path, harmonics=[1])
+    assert reader is not None
+    expected_layer_data = reader(test_file_path)[0]
+    expected_data, expected_kwargs = expected_layer_data
+
+    widget = OmeTifWidget(viewer, path=test_file_path)
+    widget.harmonic_slider.setValue((1, 1))
+    widget.btn.click()
+
+    assert len(viewer.layers) == 1
+    loaded_layer = viewer.layers[0]
+    assert loaded_layer.data.shape == expected_data.shape
+
+    if "axis_labels" in expected_kwargs:
+        assert tuple(loaded_layer.axis_labels) == tuple(
+            expected_kwargs["axis_labels"]
+        )
+
+    if "scale" in expected_kwargs:
+        np.testing.assert_allclose(
+            loaded_layer.scale, expected_kwargs["scale"]
+        )
+
+
 def test_harmonic_range_slider_functionality(make_napari_viewer):
     """Test QRangeSlider functionality for harmonics in all widget types."""
     viewer = make_napari_viewer()

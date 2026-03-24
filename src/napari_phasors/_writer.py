@@ -59,6 +59,50 @@ def _convert_numpy_types(obj):
     return obj
 
 
+def _extract_z_spacing_um(
+    image_layer: Any,
+    data: np.ndarray,
+    metadata: dict,
+) -> float | None:
+    """Return z-spacing in micrometers when a Z axis is present."""
+    if not hasattr(data, 'ndim') or data.ndim < 3:
+        return None
+
+    z_axis = None
+    axis_labels = getattr(image_layer, 'axis_labels', None)
+    if axis_labels is not None:
+        for idx, label in enumerate(axis_labels):
+            if str(label).strip().lower() == 'z':
+                z_axis = idx
+                break
+
+    if z_axis is None:
+        if data.ndim == 3 or metadata.get("stack_files"):
+            z_axis = 0
+        else:
+            return None
+
+    scale = getattr(image_layer, 'scale', None)
+    if scale is not None and len(scale) > z_axis:
+        try:
+            value = float(scale[z_axis])
+            if value > 0:
+                return value
+        except (TypeError, ValueError):
+            pass
+
+    settings = metadata.get("settings", {})
+    fallback = settings.get("z_spacing_um")
+    if fallback is None:
+        return None
+
+    try:
+        value = float(fallback)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
 def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
     """Save image layer with phasor coordinates as 'OME-TIFF'.
 
@@ -88,6 +132,8 @@ def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
         metadata = image_layer[0][1]["metadata"]
         data = image_layer[0][0]
 
+    z_spacing_um = _extract_z_spacing_um(image_layer, data, metadata)
+
     # Check if layer has phasor data
     has_phasor_data = (
         "original_mean" in metadata
@@ -98,6 +144,49 @@ def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
 
     if not path.endswith(".ome.tif"):
         path += ".ome.tif"
+
+    dims = None
+    if isinstance(image_layer, Image):
+        labels = getattr(image_layer, 'axis_labels', None)
+        if labels is not None and len(labels) == data.ndim:
+            dims = "".join(str(label).upper()[0] for label in labels)
+            if not dims.endswith(("YX", "YXS")):
+                dims = None
+
+    if not dims:
+        if data.ndim == 2:
+            dims = "YX"
+        elif data.ndim == 3:
+            dims = "ZYX"
+        elif data.ndim == 4:
+            dims = "TZYX"
+        else:
+            dims = "TZCYX"[-data.ndim :] if data.ndim <= 5 else None
+
+    metadata_dict = {}
+
+    if z_spacing_um is not None:
+        metadata_dict['PhysicalSizeZ'] = z_spacing_um
+        metadata_dict['PhysicalSizeZUnit'] = 'µm'
+
+    if isinstance(image_layer, Image):
+        scale = getattr(image_layer, 'scale', None)
+        if scale is not None:
+            y_idx, x_idx = -2, -1
+            labels = getattr(image_layer, 'axis_labels', None)
+            if labels is not None:
+                for i, label in enumerate(labels):
+                    if str(label).lower() == 'y':
+                        y_idx = i
+                    if str(label).lower() == 'x':
+                        x_idx = i
+
+            if len(scale) > abs(y_idx) and scale[y_idx] > 0:
+                metadata_dict['PhysicalSizeY'] = float(scale[y_idx])
+                metadata_dict['PhysicalSizeYUnit'] = 'µm'
+            if len(scale) > abs(x_idx) and scale[x_idx] > 0:
+                metadata_dict['PhysicalSizeX'] = float(scale[x_idx])
+                metadata_dict['PhysicalSizeXUnit'] = 'µm'
 
     if has_phasor_data:
         # Export with phasor data
@@ -114,6 +203,8 @@ def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
             settings["summed_signal"] = (
                 summed.tolist() if hasattr(summed, 'tolist') else summed
             )
+        if z_spacing_um is not None:
+            settings["z_spacing_um"] = z_spacing_um
 
         # Convert NumPy arrays in selections to lists for JSON serialization
         if "selections" in settings:
@@ -134,6 +225,7 @@ def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
         description = json.dumps(
             {"napari_phasors_settings": json.dumps(settings)}
         )
+
         phasor_to_ometiff(
             path,
             mean,
@@ -141,6 +233,8 @@ def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
             S,
             harmonic=harmonics,
             description=description,
+            dims=dims,
+            metadata=metadata_dict,
         )
     else:
         # Export without phasor data - just save the raw image data
@@ -150,6 +244,8 @@ def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
         settings = {}
         if "settings" in metadata:
             settings = metadata["settings"].copy()
+        if z_spacing_um is not None:
+            settings["z_spacing_um"] = z_spacing_um
 
         settings["version"] = str(importlib.metadata.version('napari-phasors'))
         settings = _convert_numpy_types(settings)
@@ -157,11 +253,13 @@ def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
             {"napari_phasors_settings": json.dumps(settings)}
         )
 
-        # Write as OME-TIFF with minimal metadata
+        if dims:
+            metadata_dict['axes'] = dims
+
         tifffile.imwrite(
             path,
             data,
-            metadata={'axes': 'YX' if data.ndim == 2 else None},
+            metadata=metadata_dict if metadata_dict else None,
             description=description,
         )
 

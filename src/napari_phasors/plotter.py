@@ -2986,8 +2986,8 @@ class PlotterWidget(QWidget):
         g_array = image_layer.metadata['G']
         s_array = image_layer.metadata['S']
 
-        if g_array.ndim == 3:
-            mask_invalid_expanded = mask_invalid[np.newaxis, :, :]
+        if g_array.ndim > image_layer.data.ndim:
+            mask_invalid_expanded = mask_invalid[np.newaxis, ...]
             image_layer.metadata['G'] = np.where(
                 mask_invalid_expanded, np.nan, g_array
             )
@@ -3270,7 +3270,7 @@ class PlotterWidget(QWidget):
             return None
 
         shape = self._g_array.shape
-        if self._g_array.ndim == 3:
+        if self._harmonics_array is not None:
             return shape[1:]
         return shape
 
@@ -3311,7 +3311,7 @@ class PlotterWidget(QWidget):
                 return None, None, None
             return None, None
 
-        if self._g_array.ndim == 3:
+        if self._harmonics_array is not None:
             g = self._g_array[harmonic_idx]
             s = self._s_array[harmonic_idx]
         else:
@@ -3382,7 +3382,7 @@ class PlotterWidget(QWidget):
             else:
                 harmonic_idx = 0
 
-            if g_array.ndim == 3:
+            if g_array.ndim > layer.data.ndim:
                 g = g_array[harmonic_idx]
                 s = s_array[harmonic_idx]
             else:

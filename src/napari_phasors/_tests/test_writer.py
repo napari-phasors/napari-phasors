@@ -320,3 +320,45 @@ def test_write_ometif_without_phasor_data(tmp_path):
 
             description = json.loads(tif.pages[0].description)
             assert "napari_phasors_settings" in description
+
+
+def test_write_ometif_saves_z_spacing_for_3d_layer(tmp_path):
+    """Save z-spacing metadata only when a Z axis is present."""
+    import json
+
+    import tifffile
+    from napari.layers import Image
+
+    data = np.random.random((4, 10, 12))
+    layer = Image(data, name="z_stack")
+    layer.scale = (2.75, 1.0, 1.0)
+    layer.metadata = {"settings": {}}
+
+    filepath = os.path.join(tmp_path, "test_z_spacing_3d.ome.tif")
+    write_ome_tiff(filepath, layer)
+
+    with tifffile.TiffFile(filepath) as tif:
+        description = json.loads(tif.pages[0].description)
+        settings = json.loads(description["napari_phasors_settings"])
+        assert settings["z_spacing_um"] == 2.75
+
+
+def test_write_ometif_does_not_save_z_spacing_for_2d_layer(tmp_path):
+    """Do not save z-spacing metadata for 2D layers."""
+    import json
+
+    import tifffile
+    from napari.layers import Image
+
+    data = np.random.random((10, 12))
+    layer = Image(data, name="image_2d")
+    layer.scale = (3.5, 1.0)
+    layer.metadata = {"settings": {}}
+
+    filepath = os.path.join(tmp_path, "test_z_spacing_2d.ome.tif")
+    write_ome_tiff(filepath, layer)
+
+    with tifffile.TiffFile(filepath) as tif:
+        description = json.loads(tif.pages[0].description)
+        settings = json.loads(description["napari_phasors_settings"])
+        assert "z_spacing_um" not in settings
