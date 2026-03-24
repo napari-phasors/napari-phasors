@@ -16,7 +16,7 @@ from napari.layers import Image, Labels, Shapes
 from napari.utils import colormaps, notifications
 from phasorpy.lifetime import phasor_from_lifetime
 from qtpy import uic
-from qtpy.QtCore import Qt, QTimer
+from qtpy.QtCore import QEvent, Qt, QTimer
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -274,12 +274,14 @@ class PlotterWidget(QWidget):
         self._user_axes_limits = None
 
         # Create top widget for canvas
-        canvas_container = QWidget()
-        canvas_container.setLayout(QVBoxLayout())
-        canvas_container.layout().setContentsMargins(0, 0, 0, 0)
-        canvas_container.layout().setSpacing(0)
+        self.canvas_container = QWidget()
+        self.canvas_container.setLayout(QVBoxLayout())
+        self.canvas_container.layout().setContentsMargins(0, 0, 0, 0)
+        self.canvas_container.layout().setSpacing(0)
+        self.canvas_container.layout().setAlignment(Qt.AlignCenter)
+        self.canvas_container.installEventFilter(self)
         self.layout().addWidget(
-            canvas_container, 1
+            self.canvas_container, 1
         )  # stretch factor 1 to prioritize canvas
 
         # Load canvas widget (fixed at the top)
@@ -287,12 +289,12 @@ class PlotterWidget(QWidget):
             napari_viewer, highlight_enabled=False
         )
         self.canvas_widget.axes.set_aspect(1, adjustable='box')
-        self.canvas_widget.setMinimumSize(300, 300)
+        self.canvas_widget.setMinimumSize(0, 0)
         self.canvas_widget.setSizePolicy(
             QSizePolicy.Expanding, QSizePolicy.Expanding
         )
         self.set_axes_labels()
-        canvas_container.layout().addWidget(self.canvas_widget)
+        self.canvas_container.layout().addWidget(self.canvas_widget)
 
         # Monkey-patch biaplotter's _is_click_inside_axes to handle None xdata/ydata
         # This fixes a bug where clicking outside the axes causes a TypeError
@@ -317,15 +319,16 @@ class PlotterWidget(QWidget):
         )
 
         # Create bottom widget for controls
-        controls_container = QWidget()
-        controls_container.setLayout(QVBoxLayout())
-        controls_container.layout().setContentsMargins(10, 10, 10, 10)
-        controls_container.layout().setSpacing(3)
-        controls_container.setMaximumHeight(
-            220
-        )  # Prevent controls from growing too large
+        self.controls_container = QWidget()
+        self.controls_container.setLayout(QVBoxLayout())
+        self.controls_container.layout().setContentsMargins(10, 10, 10, 10)
+        self.controls_container.layout().setSpacing(3)
+        self.controls_container.setSizePolicy(
+            QSizePolicy.Preferred, QSizePolicy.Maximum
+        )
+        self.controls_container.installEventFilter(self)
         self.layout().addWidget(
-            controls_container, 0
+            self.controls_container, 0
         )  # stretch factor 0 to keep fixed size
 
         # Add checkable combobox for multi-layer selection
@@ -370,7 +373,7 @@ class PlotterWidget(QWidget):
 
         image_layer_widget = QWidget()
         image_layer_widget.setLayout(image_layer_layout)
-        controls_container.layout().addWidget(image_layer_widget)
+        self.controls_container.layout().addWidget(image_layer_widget)
 
         # Create a horizontal box for harmonic and mask controls
         harmonics_and_mask_container = QHBoxLayout()
@@ -413,7 +416,9 @@ class PlotterWidget(QWidget):
         self.mask_assign_button.setVisible(False)
         harmonics_and_mask_container.addWidget(self.mask_assign_button, 1)
 
-        controls_container.layout().addLayout(harmonics_and_mask_container)
+        self.controls_container.layout().addLayout(
+            harmonics_and_mask_container
+        )
 
         # Add import buttons below harmonic spinbox
         import_buttons_layout = QHBoxLayout()
@@ -431,7 +436,7 @@ class PlotterWidget(QWidget):
 
         import_buttons_widget = QWidget()
         import_buttons_widget.setLayout(import_buttons_layout)
-        controls_container.layout().addWidget(import_buttons_widget)
+        self.controls_container.layout().addWidget(import_buttons_widget)
 
         # Dynamic buttons to re-open closed dock widgets
         dock_buttons_layout = QHBoxLayout()
@@ -461,7 +466,7 @@ class PlotterWidget(QWidget):
         self._dock_buttons_widget = QWidget()
         self._dock_buttons_widget.setLayout(dock_buttons_layout)
         self._dock_buttons_widget.setVisible(False)
-        controls_container.layout().addWidget(self._dock_buttons_widget)
+        self.controls_container.layout().addWidget(self._dock_buttons_widget)
 
         # Timer that polls dock visibility — reliable for both the hide and
         # close-X buttons (the latter destroys the dock without emitting signals).
@@ -546,8 +551,9 @@ class PlotterWidget(QWidget):
 
         self._analysis_dock_init_timer.start(20)
 
-        # Canvas minimum is already set by canvas_widget.setMinimumSize(300, 300)
-        # Controls container will size to its content
+        # Keep controls at their natural height and expand the canvas to the
+        # largest square that fits in the remaining space.
+        self._resize_canvas_to_available_space()
 
         # Add a flag to prevent recursive calls
         self._updating_plot = False
@@ -702,27 +708,16 @@ class PlotterWidget(QWidget):
     def _add_analysis_dock_widget(self):
         """Add the analysis widget and histogram container to the viewer.
 
-        The histogram container (QStackedWidget) is docked at the bottom.
-        The analysis tab widget is then split to its right so they sit
-        side-by-side, each taking roughly half the bottom width.
+        Histogram and statistics use separate dock widgets that are tabified
+        together in the same bottom area, alongside the analysis dock.
         """
         if (
             hasattr(self.viewer, 'window')
             and self.viewer.window is not None
             and hasattr(self.viewer.window, '_qt_window')
         ):
-            qt_window = self.viewer.window._qt_window
-
-            # Dock order: statistics (left) | histogram (middle) | analysis (right)
-
-            # Statistics dock — leftmost
-            self._statistics_dock = self.viewer.window.add_dock_widget(
-                self.statistics_container,
-                name="Statistics",
-                area="bottom",
-            )
-
-            # Histogram dock — middle
+            # Create histogram and analysis first, then split them.
+            # Create statistics after that and tabify only with histogram.
             self._histogram_dock = self.viewer.window.add_dock_widget(
                 self.histogram_container,
                 name="Histogram",
@@ -735,19 +730,15 @@ class PlotterWidget(QWidget):
                 name="Phasor Analysis",
                 area="bottom",
             )
+
+            self._statistics_dock = self.viewer.window.add_dock_widget(
+                self.statistics_container,
+                name="Statistics",
+                area="bottom",
+            )
             self._docks_initialized = True
 
-            # Arrange side-by-side: statistics | histogram | analysis
-            qt_window.splitDockWidget(
-                self._statistics_dock,
-                self._histogram_dock,
-                Qt.Horizontal,
-            )
-            qt_window.splitDockWidget(
-                self._histogram_dock,
-                self._analysis_dock,
-                Qt.Horizontal,
-            )
+            self._enforce_bottom_dock_layout()
 
             # Defer resizeDocks so it runs after Qt has applied the splits.
             self._dock_resize_timer.start(200)
@@ -760,13 +751,73 @@ class PlotterWidget(QWidget):
             qt_window = self.viewer.window._qt_window
             qt_window.resizeDocks(
                 [
-                    self._statistics_dock,
                     self._histogram_dock,
                     self._analysis_dock,
                 ],
-                [300, 500, 500],
+                [600, 500],
                 Qt.Horizontal,
             )
+
+    def _tabify_histogram_and_statistics_docks(self):
+        """Tabify the histogram and statistics docks in the bottom area."""
+        if not hasattr(self, '_histogram_dock') or not hasattr(
+            self, '_statistics_dock'
+        ):
+            return
+        with contextlib.suppress(AttributeError, RuntimeError):
+            qt_window = self.viewer.window._qt_window
+            qt_window.tabifyDockWidget(
+                self._histogram_dock,
+                self._statistics_dock,
+            )
+            self._histogram_dock.raise_()
+
+    def _enforce_bottom_dock_layout(self):
+        """Keep analysis separate and tabify only histogram/statistics."""
+        if not all(
+            hasattr(self, name)
+            for name in (
+                '_histogram_dock',
+                '_statistics_dock',
+                '_analysis_dock',
+            )
+        ):
+            return
+
+        with contextlib.suppress(AttributeError, RuntimeError):
+            qt_window = self.viewer.window._qt_window
+            qt_window.splitDockWidget(
+                self._histogram_dock,
+                self._analysis_dock,
+                Qt.Horizontal,
+            )
+        self._tabify_histogram_and_statistics_docks()
+
+    def eventFilter(self, obj, event):
+        """Recompute square canvas size when relevant containers resize."""
+        watched = {
+            getattr(self, 'canvas_container', None),
+            getattr(self, 'controls_container', None),
+        }
+        if obj in watched and event.type() in {QEvent.Resize, QEvent.Show}:
+            QTimer.singleShot(0, self._resize_canvas_to_available_space)
+        return super().eventFilter(obj, event)
+
+    def resizeEvent(self, event):
+        """Keep the phasor canvas square while maximizing available area."""
+        super().resizeEvent(event)
+        self._resize_canvas_to_available_space()
+
+    def _resize_canvas_to_available_space(self):
+        """Resize canvas to the largest square fitting the top container."""
+        if not hasattr(self, 'canvas_container') or not hasattr(
+            self, 'canvas_widget'
+        ):
+            return
+        available_w = self.canvas_container.width()
+        available_h = self.canvas_container.height()
+        side = max(min(available_w, available_h), 1)
+        self.canvas_widget.setFixedSize(side, side)
 
     def get_selected_layer_names(self):
         """Get the names of all selected (checked) layers.
@@ -1629,7 +1680,7 @@ class PlotterWidget(QWidget):
         )
 
     def _show_statistics_dock(self):
-        """Make the statistics dock widget visible, re-adding it if it was closed."""
+        """Make the statistics dock visible, re-adding it if closed."""
         if not hasattr(self, '_statistics_dock'):
             return
         try:
@@ -1640,6 +1691,9 @@ class PlotterWidget(QWidget):
                 name="Statistics",
                 area="bottom",
             )
+        self._enforce_bottom_dock_layout()
+        with contextlib.suppress(AttributeError, RuntimeError):
+            self._statistics_dock.raise_()
 
     def _show_analysis_dock(self):
         """Make the analysis dock widget visible, re-adding it if it was closed."""
@@ -1653,9 +1707,12 @@ class PlotterWidget(QWidget):
                 name="Phasor Analysis",
                 area="bottom",
             )
+        self._enforce_bottom_dock_layout()
+        with contextlib.suppress(AttributeError, RuntimeError):
+            self._analysis_dock.raise_()
 
     def _show_histogram_dock(self):
-        """Make the histogram dock widget visible, re-adding it if it was closed."""
+        """Make the histogram dock visible, re-adding it if closed."""
         if not hasattr(self, '_histogram_dock'):
             return
         try:
@@ -1666,6 +1723,9 @@ class PlotterWidget(QWidget):
                 name="Histogram",
                 area="bottom",
             )
+        self._enforce_bottom_dock_layout()
+        with contextlib.suppress(AttributeError, RuntimeError):
+            self._histogram_dock.raise_()
 
     def _on_semi_circle_changed(self, state):
         """Callback for semi circle checkbox change."""
