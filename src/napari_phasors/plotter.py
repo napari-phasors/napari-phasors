@@ -5,6 +5,7 @@ import math
 import warnings
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import numpy as np
 from biaplotter.plotter import CanvasWidget
@@ -27,6 +28,7 @@ from qtpy.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -39,10 +41,14 @@ from qtpy.QtWidgets import (
 
 from ._utils import (
     CheckableComboBox,
+    ColormapLegendHandler,
+    ColormapLegendProxy,
     HistogramDockWidget,
     HistogramWidget,
     StatisticsDockWidget,
     apply_filter_and_threshold,
+    populate_colormap_combobox,
+    resolve_colormap_by_name,
     update_frequency_in_metadata,
 )
 from .calibration_tab import CalibrationWidget
@@ -179,10 +185,476 @@ class _ListWidgetCompatWrapper:
     def currentTextChanged(self):
         """Return the selectionChanged signal for compatibility.
 
-        Note: This doesn't pass the text as argument like the original signal,
-        but connected slots should handle being called without arguments.
+        Note: This is emitted on selection changes, not strictly on text edit.
         """
         return self._plotter.image_layers_checkable_combobox.selectionChanged
+
+
+class ContourLayerSettingsDialog(QDialog):
+    """Dialog for contour multi-layer display and grouping settings."""
+
+    DISPLAY_MODES = ("Merged", "Individual layers", "Grouped")
+    COLOR_MODES = ("Colormap", "Solid Color")
+    MAX_GROUPS = 10
+
+    def __init__(
+        self,
+        *,
+        display_mode="Merged",
+        merged_colormap="turbo",
+        merged_style="colormap",
+        merged_color=None,
+        show_legend=True,
+        grouped_color_mode="Use colormap",
+        layer_labels=None,
+        group_assignments=None,
+        layer_colors=None,
+        group_colors=None,
+        group_names=None,
+        layer_styles=None,
+        group_styles=None,
+        available_colormaps=None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Contour Layer Settings")
+        self.setMinimumWidth(550)
+
+        self._layer_labels = list(layer_labels or [])
+        self._group_row_data = []
+        self._available_colormaps = list(available_colormaps or [])
+        if not self._available_colormaps:
+            self._available_colormaps = list(colormaps.ALL_COLORMAPS.keys())
+
+        group_assignments = dict(group_assignments or {})
+        layer_colors = dict(layer_colors or {})
+        group_colors = dict(group_colors or {})
+        group_names = dict(group_names or {})
+        layer_styles = dict(layer_styles or {})
+        group_styles = dict(group_styles or {})
+
+        root = QVBoxLayout(self)
+
+        # Display mode
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(QLabel("Multi-layer display mode:"))
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(list(self.DISPLAY_MODES))
+        self.mode_combo.setCurrentText(display_mode)
+        mode_layout.addWidget(self.mode_combo)
+        root.addLayout(mode_layout)
+
+        default_tab10 = plt.cm.tab10.colors
+
+        # Merged mode style
+        self._merged_colormap_layout = QHBoxLayout()
+        self._merged_colormap_label = QLabel("Merged contour colormap:")
+        self._merged_colormap_combo = QComboBox()
+        self._populate_colormap_combobox(
+            self._merged_colormap_combo, selected=merged_colormap
+        )
+        if merged_style == "solid":
+            self._merged_colormap_combo.setCurrentIndex(0)
+        self._merged_colormap_combo.currentTextChanged.connect(
+            self._on_merged_colormap_changed
+        )
+        self._merged_color_btn = QPushButton()
+        self._merged_color_btn.setFixedSize(24, 24)
+        if merged_color is None:
+            merged_color = default_tab10[0]
+        self._set_btn_color(self._merged_color_btn, merged_color)
+        self._merged_color_btn.clicked.connect(
+            lambda checked=False, b=self._merged_color_btn: self._pick_color(b)
+        )
+        self._merged_colormap_layout.addWidget(self._merged_colormap_label)
+        self._merged_colormap_layout.addWidget(self._merged_colormap_combo)
+        self._merged_colormap_layout.addWidget(self._merged_color_btn)
+        root.addLayout(self._merged_colormap_layout)
+
+        self._show_legend_checkbox = QCheckBox("Show legend")
+        self._show_legend_checkbox.setChecked(bool(show_legend))
+        root.addWidget(self._show_legend_checkbox)
+
+        # Track the current style mode (colormap or solid)
+        self._current_merged_style = merged_style
+
+        # Per-layer colors section
+        self._layer_section = QWidget()
+        layer_section_layout = QVBoxLayout(self._layer_section)
+        layer_section_layout.setContentsMargins(0, 0, 0, 0)
+        layer_section_layout.addWidget(QLabel("Individual layer styles:"))
+        self._layer_color_buttons = {}
+        self._layer_style_widgets = {}
+        for i, label in enumerate(self._layer_labels):
+            row = QHBoxLayout()
+            row.addWidget(QLabel(label))
+
+            cmap_combo = QComboBox()
+            self._populate_colormap_combobox(
+                cmap_combo, selected=merged_colormap
+            )
+            cmap_combo.currentTextChanged.connect(
+                lambda text, layer_name=label, combo=cmap_combo, btn=None: self._on_layer_colormap_changed(
+                    layer_name, text, combo
+                )
+            )
+            row.addWidget(cmap_combo)
+
+            btn = QPushButton()
+            btn.setFixedSize(24, 24)
+            color = layer_colors.get(
+                label, default_tab10[i % len(default_tab10)]
+            )
+            self._set_btn_color(btn, color)
+            btn.clicked.connect(
+                lambda checked=False, b=btn: self._pick_color(b)
+            )
+            row.addWidget(btn)
+            row.addStretch(1)
+            layer_section_layout.addLayout(row)
+
+            row_style = dict(layer_styles.get(label, {}))
+            row_cmap = row_style.get("colormap", merged_colormap)
+            if row_cmap in self._available_colormaps:
+                cmap_combo.setCurrentText(row_cmap)
+            elif row_style.get("mode") == "solid":
+                cmap_combo.setCurrentIndex(0)
+
+            self._layer_color_buttons[label] = btn
+            self._layer_style_widgets[label] = {
+                "cmap_combo": cmap_combo,
+                "color_btn": btn,
+            }
+
+        root.addWidget(self._layer_section)
+
+        # Group section
+        self._group_section = QWidget()
+        group_layout = QVBoxLayout(self._group_section)
+        group_layout.setContentsMargins(0, 0, 0, 0)
+        group_layout.addWidget(QLabel("Grouped styles:"))
+
+        self._group_rows_widget = QWidget()
+        self._group_rows_layout = QVBoxLayout(self._group_rows_widget)
+        self._group_rows_layout.setContentsMargins(0, 0, 0, 0)
+        self._group_rows_layout.setSpacing(4)
+        group_layout.addWidget(self._group_rows_widget)
+
+        if group_assignments and self._layer_labels:
+            grouped = {}
+            for name in self._layer_labels:
+                gid = int(group_assignments.get(name, 1))
+                grouped.setdefault(gid, []).append(name)
+            for gid in sorted(grouped):
+                self._add_group_row(
+                    name=group_names.get(gid, f"Group {gid}"),
+                    color=group_colors.get(
+                        gid, default_tab10[(gid - 1) % len(default_tab10)]
+                    ),
+                    checked_layers=grouped[gid],
+                    style=group_styles.get(gid, {}).get(
+                        "mode",
+                        (
+                            "solid"
+                            if grouped_color_mode == "Use custom colors"
+                            else "colormap"
+                        ),
+                    ),
+                    colormap_name=group_styles.get(gid, {}).get(
+                        "colormap", merged_colormap
+                    ),
+                )
+        elif self._layer_labels:
+            self._add_group_row(
+                name="Group 1",
+                checked_layers=list(self._layer_labels),
+                style=(
+                    "solid"
+                    if grouped_color_mode == "Use custom colors"
+                    else "colormap"
+                ),
+                colormap_name=merged_colormap,
+            )
+
+        add_group_btn = QPushButton("+ Add Group")
+        add_group_btn.setMaximumWidth(120)
+        add_group_btn.clicked.connect(self._on_add_group)
+        group_layout.addWidget(add_group_btn)
+        root.addWidget(self._group_section)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+        self.mode_combo.currentTextChanged.connect(self._update_ui_for_mode)
+        self._update_ui_for_mode(self.mode_combo.currentText())
+
+    @staticmethod
+    def _set_btn_color(btn, color):
+        r, g, b = color[:3]
+        btn._color = (float(r), float(g), float(b))
+        btn.setStyleSheet(
+            f"background-color: rgb({int(r*255)}, {int(g*255)}, {int(b*255)});"
+        )
+
+    def _pick_color(self, btn):
+        from qtpy.QtWidgets import QColorDialog
+
+        r, g, b = btn._color
+        initial = QColorDialog().currentColor()
+        initial.setRgbF(r, g, b)
+        chosen = QColorDialog.getColor(initial, self)
+        if chosen.isValid():
+            self._set_btn_color(btn, chosen.getRgbF()[:3])
+
+    def _on_merged_colormap_changed(self, text):
+        """Handle colormap selection in merged mode, including 'Select color...'."""
+        if text == "Select color...":
+            self._pick_color(self._merged_color_btn)
+            self._current_merged_style = "solid"
+            self._merged_colormap_combo.blockSignals(True)
+            self._merged_colormap_combo.setCurrentIndex(0)
+            self._merged_colormap_combo.blockSignals(False)
+        else:
+            self._current_merged_style = "colormap"
+        self._update_custom_color_visibility()
+
+    def _on_layer_colormap_changed(self, layer_name, text, combo):
+        """Handle colormap selection for individual layers, including 'Select color...'."""
+        if text == "Select color...":
+            btn = self._layer_color_buttons.get(layer_name)
+            if btn:
+                self._pick_color(btn)
+            combo.blockSignals(True)
+            combo.setCurrentIndex(0)
+            combo.blockSignals(False)
+        self._update_custom_color_visibility()
+
+    def _on_group_colormap_changed(self, group_idx, text, combo):
+        """Handle colormap selection for groups, including 'Select color...'."""
+        if text == "Select color...":
+            if group_idx < len(self._group_row_data):
+                btn = self._group_row_data[group_idx]["color_btn"]
+                self._pick_color(btn)
+            combo.blockSignals(True)
+            combo.setCurrentIndex(0)
+            combo.blockSignals(False)
+        self._update_custom_color_visibility()
+
+    def _update_ui_for_mode(self, mode):
+        is_individual = mode == "Individual layers"
+        is_grouped = mode == "Grouped"
+        is_merged = mode == "Merged"
+        self._merged_colormap_label.setVisible(is_merged)
+        self._merged_colormap_combo.setVisible(is_merged)
+        self._layer_section.setVisible(is_individual)
+        self._group_section.setVisible(is_grouped)
+        self._update_custom_color_visibility()
+
+    def _update_custom_color_visibility(self):
+        mode = self.mode_combo.currentText()
+        is_individual = mode == "Individual layers"
+        is_grouped = mode == "Grouped"
+        is_merged = mode == "Merged"
+
+        self._merged_color_btn.setVisible(
+            is_merged
+            and self._merged_colormap_combo.currentText() == "Select color..."
+        )
+
+        for layer_name in self._layer_labels:
+            self._update_layer_style_row(layer_name, visible=is_individual)
+
+        for row_data in self._group_row_data:
+            cmap_combo = row_data["cmap_combo"]
+            color_btn = row_data["color_btn"]
+            cmap_combo.setVisible(is_grouped)
+            color_btn.setVisible(
+                is_grouped and cmap_combo.currentText() == "Select color..."
+            )
+
+    def _update_layer_style_row(self, layer_name, visible=True):
+        row = self._layer_style_widgets.get(layer_name)
+        if row is None:
+            return
+        row["cmap_combo"].setVisible(visible)
+        row["color_btn"].setVisible(
+            visible and row["cmap_combo"].currentText() == "Select color..."
+        )
+
+    def _populate_colormap_combobox(self, combo, selected=None):
+        populate_colormap_combobox(
+            combo,
+            include_select_color=True,
+            selected=selected,
+            available_colormaps=self._available_colormaps,
+        )
+
+    def _add_group_row(
+        self,
+        name="Group",
+        color=None,
+        checked_layers=None,
+        style="colormap",
+        colormap_name="turbo",
+    ):
+        default_tab10 = plt.cm.tab10.colors
+        idx = len(self._group_row_data)
+        if color is None:
+            color = default_tab10[idx % len(default_tab10)]
+
+        row_widget = QWidget()
+        row_layout = QHBoxLayout(row_widget)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(4)
+
+        name_edit = QLineEdit(name)
+        name_edit.setMaximumWidth(120)
+        row_layout.addWidget(name_edit)
+
+        cmap_combo = QComboBox()
+        self._populate_colormap_combobox(cmap_combo, selected=colormap_name)
+        if style == "solid":
+            cmap_combo.setCurrentIndex(0)
+        cmap_combo.currentTextChanged.connect(
+            lambda text, idx=idx, combo=cmap_combo: self._on_group_colormap_changed(
+                idx, text, combo
+            )
+        )
+        row_layout.addWidget(cmap_combo)
+
+        color_btn = QPushButton()
+        color_btn.setFixedSize(24, 24)
+        self._set_btn_color(color_btn, color)
+        color_btn.clicked.connect(
+            lambda checked=False, b=color_btn: self._pick_color(b)
+        )
+        row_layout.addWidget(color_btn)
+
+        layer_combo = CheckableComboBox(
+            placeholder="Select layers...",
+            parent=self,
+            enable_primary_layer=False,
+        )
+        layer_combo.addItems(self._layer_labels)
+        if checked_layers:
+            layer_combo.setCheckedItems(checked_layers)
+        else:
+            # Explicitly call _update_display_text to show placeholder
+            layer_combo._update_display_text()
+        row_layout.addWidget(layer_combo, 1)
+
+        remove_btn = QPushButton("-")
+        remove_btn.setFixedSize(24, 24)
+        remove_btn.setToolTip("Remove this group")
+        remove_btn.clicked.connect(lambda: self._on_remove_group(row_widget))
+        row_layout.addWidget(remove_btn)
+
+        self._group_rows_layout.addWidget(row_widget)
+        self._group_row_data.append(
+            {
+                "container": row_widget,
+                "name_edit": name_edit,
+                "cmap_combo": cmap_combo,
+                "color_btn": color_btn,
+                "layer_combo": layer_combo,
+            }
+        )
+        self._update_custom_color_visibility()
+
+    def _on_add_group(self):
+        if len(self._group_row_data) >= self.MAX_GROUPS:
+            return
+        self._add_group_row(name=f"Group {len(self._group_row_data) + 1}")
+
+    def _on_remove_group(self, row_widget):
+        if len(self._group_row_data) <= 1:
+            return
+        idx = None
+        for i, data in enumerate(self._group_row_data):
+            if data["container"] is row_widget:
+                idx = i
+                break
+        if idx is None:
+            return
+        row = self._group_row_data.pop(idx)
+        row["container"].setParent(None)
+
+    def get_display_mode(self):
+        return self.mode_combo.currentText()
+
+    def get_individual_color_mode(self):
+        # Always use colormap mode (style selector removed)
+        return "Use colormap"
+
+    def get_grouped_color_mode(self):
+        # Always use colormap mode (style selector removed)
+        return "Use colormap"
+
+    def get_merged_colormap(self):
+        return self._merged_colormap_combo.currentText()
+
+    def get_merged_style(self):
+        return self._current_merged_style
+
+    def get_merged_color(self):
+        return self._merged_color_btn._color
+
+    def get_show_legend(self):
+        return self._show_legend_checkbox.isChecked()
+
+    def get_layer_styles(self):
+        styles = {}
+        for name, row in self._layer_style_widgets.items():
+            selected = row["cmap_combo"].currentText()
+            is_solid = selected == "Select color..."
+            styles[name] = {
+                "mode": "solid" if is_solid else "colormap",
+                "colormap": selected,
+                "color": row["color_btn"]._color,
+            }
+        return styles
+
+    def get_group_styles(self):
+        styles = {}
+        for gid, row in enumerate(self._group_row_data, start=1):
+            selected = row["cmap_combo"].currentText()
+            is_solid = selected == "Select color..."
+            styles[gid] = {
+                "mode": "solid" if is_solid else "colormap",
+                "colormap": selected,
+                "color": row["color_btn"]._color,
+            }
+        return styles
+
+    def get_layer_colors(self):
+        return {
+            name: style["color"]
+            for name, style in self.get_layer_styles().items()
+        }
+
+    def get_group_assignments(self):
+        assignments = {}
+        for gid, row in enumerate(self._group_row_data, start=1):
+            for layer_name in row["layer_combo"].checkedItems():
+                assignments[layer_name] = gid
+        return assignments
+
+    def get_group_names(self):
+        names = {}
+        for gid, row in enumerate(self._group_row_data, start=1):
+            text = row["name_edit"].text().strip()
+            names[gid] = text if text else f"Group {gid}"
+        return names
+
+    def get_group_colors(self):
+        return {
+            gid: style["color"]
+            for gid, style in self.get_group_styles().items()
+        }
 
 
 class PlotterWidget(QWidget):
@@ -598,6 +1070,16 @@ class PlotterWidget(QWidget):
         self.viewer.layers.events.inserted.connect(self.reset_layer_choices)
         self.viewer.layers.events.removed.connect(self.reset_layer_choices)
 
+        # Set contour single-layer defaults before wiring UI signals.
+        # Combo-box population can emit callbacks during initialization.
+        self._histogram_style = "colormap"
+        self._histogram_colormap_name = "turbo"
+        self._histogram_color = (0.1216, 0.4667, 0.7059)
+        self._single_contour_style = "colormap"
+        self._single_contour_colormap = "turbo"
+        self._single_contour_color = (0.1216, 0.4667, 0.7059)
+        self._preserve_plot_type_on_restore = False
+
         # Connect callbacks
         # When primary layer changes, update all tab UIs (but don't run analyses)
         self.image_layers_checkable_combobox.primaryLayerChanged.connect(
@@ -648,6 +1130,95 @@ class PlotterWidget(QWidget):
         self.plotter_inputs_widget.marker_alpha_spinbox.valueChanged.connect(
             self._on_marker_alpha_changed
         )
+        self.plotter_inputs_widget.contour_levels_spinbox.valueChanged.connect(
+            self._on_contour_levels_changed
+        )
+        self.plotter_inputs_widget.contour_linewidth_spinbox.valueChanged.connect(
+            self._on_contour_linewidth_changed
+        )
+
+        contour_settings_parent = self.plotter_inputs_widget.findChild(
+            QWidget, "scrollAreaWidgetContents"
+        )
+        contour_settings_layout = contour_settings_parent.layout()
+
+        self.plotter_inputs_widget.colormap_combobox.setParent(None)
+        self._colormap_row_widget = QWidget()
+        self._colormap_row_layout = QHBoxLayout(self._colormap_row_widget)
+        self._colormap_row_layout.setContentsMargins(0, 0, 0, 0)
+        self._colormap_row_layout.setSpacing(4)
+        self._colormap_row_layout.addWidget(
+            self.plotter_inputs_widget.colormap_combobox, 1
+        )
+        self.plotter_inputs_widget.contour_single_color_button = QPushButton()
+        combo_h = (
+            self.plotter_inputs_widget.colormap_combobox.sizeHint().height()
+        )
+        self.plotter_inputs_widget.contour_single_color_button.setFixedSize(
+            combo_h, combo_h
+        )
+        self.plotter_inputs_widget.contour_single_color_button.setToolTip(
+            "Choose solid contour color"
+        )
+        self.plotter_inputs_widget.contour_single_color_button.clicked.connect(
+            self._on_single_contour_color_clicked
+        )
+        self.plotter_inputs_widget.contour_single_color_button.setVisible(
+            False
+        )
+        self._colormap_row_layout.addWidget(
+            self.plotter_inputs_widget.contour_single_color_button
+        )
+        self._colormap_row_widget.setMinimumHeight(combo_h)
+        self._colormap_row_widget.setMaximumHeight(combo_h)
+        contour_settings_layout.addWidget(self._colormap_row_widget, 3, 1)
+
+        contour_row = 3
+        widgets_to_shift = []
+        for i in range(contour_settings_layout.count()):
+            item = contour_settings_layout.itemAt(i)
+            widget = item.widget()
+            if widget is None:
+                continue
+            row, col, row_span, col_span = (
+                contour_settings_layout.getItemPosition(i)
+            )
+            if row >= contour_row:
+                widgets_to_shift.append((widget, row, col, row_span, col_span))
+
+        # Shift bottom-up to avoid overlap while re-inserting.
+        for widget, row, col, row_span, col_span in sorted(
+            widgets_to_shift, key=lambda x: x[1], reverse=True
+        ):
+            contour_settings_layout.removeWidget(widget)
+            contour_settings_layout.addWidget(
+                widget,
+                row + 1,
+                col,
+                row_span,
+                col_span,
+            )
+
+        self.plotter_inputs_widget.label_contour_layer_settings = QLabel(
+            "Multi-layer contour display:"
+        )
+        self.plotter_inputs_widget.contour_layer_settings_button = QPushButton(
+            "Configure Multi-Layer Display..."
+        )
+        self.plotter_inputs_widget.contour_layer_settings_button.clicked.connect(
+            self._on_contour_layer_settings_clicked
+        )
+        contour_settings_layout.addWidget(
+            self.plotter_inputs_widget.label_contour_layer_settings,
+            contour_row,
+            0,
+        )
+        contour_settings_layout.addWidget(
+            self.plotter_inputs_widget.contour_layer_settings_button,
+            contour_row,
+            1,
+        )
+        self._plotter_settings_layout = contour_settings_layout
 
         self.import_from_layer_button.clicked.connect(
             self._import_settings_from_layer
@@ -658,18 +1229,30 @@ class PlotterWidget(QWidget):
 
         # Populate plot type combobox
         self.plotter_inputs_widget.plot_type_combobox.addItems(
-            ['HISTOGRAM2D', 'SCATTER']
+            ['HISTOGRAM2D', 'SCATTER', 'CONTOUR']
         )
 
-        # Populate colormap combobox
-        self.plotter_inputs_widget.colormap_combobox.addItems(
-            list(colormaps.ALL_COLORMAPS.keys())
+        # Populate colormap combobox with swatches.
+        self._populate_main_colormap_combobox(
+            selected=self._single_contour_colormap,
         )
         self.histogram_colormap = "turbo"
 
         # Initialize attributes
         self.polar_plot_artist_list = []
         self.semi_circle_plot_artist_list = []
+        self._contour_collections = []
+        self._contour_display_mode = "Merged"
+        self._contour_layer_colors = {}
+        self._contour_group_assignments = {}
+        self._contour_group_colors = {}
+        self._contour_group_names = {}
+        self._contour_multi_layer_colormap = "turbo"
+        self._contour_merged_style = "colormap"
+        self._contour_merged_color = (0.1216, 0.4667, 0.7059)
+        self._contour_layer_styles = {}
+        self._contour_group_styles = {}
+        self._contour_show_legend = False
         self.toggle_semi_circle = True
         self.colorbar = None
         self._colormap = self.canvas_widget.artists[
@@ -685,6 +1268,7 @@ class PlotterWidget(QWidget):
 
         # Initialize the dynamic UI elements
         self._on_plot_type_changed()
+        self._update_contour_controls_visibility()
         self._update_scatter_colormap()
 
         # Connect only the initial active artist
@@ -903,11 +1487,29 @@ class PlotterWidget(QWidget):
             'white_background': self.white_background,
             'plot_type': self.plot_type,
             'colormap': self.histogram_colormap,
+            'histogram_style': self._histogram_style,
+            'histogram_color': self._histogram_color,
             'number_of_bins': self.histogram_bins,
             'log_scale': self.histogram_log_scale,
             'marker_size': 50,
             'marker_alpha': 0.5,
             'marker_color': '#1f77b4',
+            'contour_levels': 7,
+            'contour_linewidth': 1.5,
+            'contour_display_mode': "Merged",
+            'contour_layer_colors': {},
+            'contour_group_assignments': {},
+            'contour_group_colors': {},
+            'contour_group_names': {},
+            'contour_multi_layer_colormap': self.histogram_colormap,
+            'contour_merged_style': 'colormap',
+            'contour_merged_color': (0.1216, 0.4667, 0.7059),
+            'contour_layer_styles': {},
+            'contour_group_styles': {},
+            'contour_show_legend': False,
+            'contour_single_style': 'colormap',
+            'contour_single_colormap': self.histogram_colormap,
+            'contour_single_color': (0.1216, 0.4667, 0.7059),
         }
 
     def _initialize_plot_settings_in_metadata(self, layer):
@@ -1000,7 +1602,10 @@ class PlotterWidget(QWidget):
                 self.toggle_semi_circle = settings['semi_circle']
 
             # Only restore if explicitly set in metadata
-            if 'plot_type' in settings:
+            if (
+                'plot_type' in settings
+                and not self._preserve_plot_type_on_restore
+            ):
                 self.plotter_inputs_widget.plot_type_combobox.setCurrentText(
                     settings['plot_type']
                 )
@@ -1033,6 +1638,93 @@ class PlotterWidget(QWidget):
                     settings['marker_alpha']
                 )
 
+            if 'contour_levels' in settings:
+                self.plotter_inputs_widget.contour_levels_spinbox.setValue(
+                    settings['contour_levels']
+                )
+
+            if 'contour_linewidth' in settings:
+                self.plotter_inputs_widget.contour_linewidth_spinbox.setValue(
+                    settings['contour_linewidth']
+                )
+
+            self._contour_display_mode = settings.get(
+                'contour_display_mode', "Merged"
+            )
+            self._contour_layer_colors = settings.get(
+                'contour_layer_colors', {}
+            )
+            self._contour_group_assignments = settings.get(
+                'contour_group_assignments', {}
+            )
+            self._contour_group_colors = settings.get(
+                'contour_group_colors', {}
+            )
+            self._contour_group_names = settings.get('contour_group_names', {})
+            self._contour_multi_layer_colormap = settings.get(
+                'contour_multi_layer_colormap',
+                settings.get('colormap', self.histogram_colormap),
+            )
+            self._contour_merged_style = settings.get(
+                'contour_merged_style', 'colormap'
+            )
+            self._contour_merged_color = tuple(
+                settings.get('contour_merged_color', (0.1216, 0.4667, 0.7059))
+            )
+            self._contour_layer_styles = settings.get(
+                'contour_layer_styles',
+                {},
+            )
+            self._contour_group_styles = settings.get(
+                'contour_group_styles',
+                {},
+            )
+            self._contour_show_legend = bool(
+                settings.get('contour_show_legend', False)
+            )
+            self._single_contour_style = settings.get(
+                'contour_single_style', 'colormap'
+            )
+            self._single_contour_colormap = settings.get(
+                'contour_single_colormap', settings.get('colormap', 'turbo')
+            )
+            self._single_contour_color = tuple(
+                settings.get('contour_single_color', (0.1216, 0.4667, 0.7059))
+            )
+            self._histogram_colormap_name = settings.get('colormap', 'turbo')
+            self._histogram_style = settings.get('histogram_style', 'colormap')
+            self._histogram_color = tuple(
+                settings.get('histogram_color', (0.1216, 0.4667, 0.7059))
+            )
+            self._update_single_contour_color_button()
+
+            # Backward compatibility: convert legacy color settings to styles.
+            if not self._contour_layer_styles:
+                default_mode = 'colormap'
+                self._contour_layer_styles = {
+                    name: {
+                        'mode': default_mode,
+                        'colormap': self._contour_multi_layer_colormap,
+                        'color': tuple(color),
+                    }
+                    for name, color in (
+                        self._contour_layer_colors or {}
+                    ).items()
+                }
+
+            if not self._contour_group_styles:
+                default_mode = 'colormap'
+                self._contour_group_styles = {
+                    int(gid): {
+                        'mode': default_mode,
+                        'colormap': self._contour_multi_layer_colormap,
+                        'color': tuple(color),
+                    }
+                    for gid, color in (
+                        self._contour_group_colors or {}
+                    ).items()
+                }
+
             if 'marker_color' in settings:
                 color = settings['marker_color']
                 self._marker_color = color
@@ -1040,6 +1732,8 @@ class PlotterWidget(QWidget):
                     f"background-color: {color};"
                 )
                 self._update_scatter_colormap()
+
+            self._refresh_main_colormap_control_for_mode()
 
         finally:
             self._updating_settings = False
@@ -1221,11 +1915,29 @@ class PlotterWidget(QWidget):
                 "white_background",
                 "plot_type",
                 "colormap",
+                "histogram_style",
+                "histogram_color",
                 "number_of_bins",
                 "log_scale",
                 "marker_size",
                 "marker_alpha",
                 "marker_color",
+                "contour_levels",
+                "contour_linewidth",
+                "contour_display_mode",
+                "contour_layer_colors",
+                "contour_group_assignments",
+                "contour_group_colors",
+                "contour_group_names",
+                "contour_multi_layer_colormap",
+                "contour_merged_style",
+                "contour_merged_color",
+                "contour_layer_styles",
+                "contour_group_styles",
+                "contour_show_legend",
+                "contour_single_style",
+                "contour_single_colormap",
+                "contour_single_color",
             ],
             "calibration_tab": [
                 "calibrated",
@@ -1753,23 +2465,49 @@ class PlotterWidget(QWidget):
         self._update_setting_in_metadata('plot_type', new_plot_type)
 
         is_scatter = new_plot_type == 'SCATTER'
+        is_contour = new_plot_type == 'CONTOUR'
+
+        # Histogram/Contour shared elements
         self.plotter_inputs_widget.label_3.setVisible(not is_scatter)
-        self.plotter_inputs_widget.colormap_combobox.setVisible(not is_scatter)
+        self._colormap_row_widget.setVisible(not is_scatter)
         self.plotter_inputs_widget.label_4.setVisible(not is_scatter)
         self.plotter_inputs_widget.number_of_bins_spinbox.setVisible(
             not is_scatter
         )
-        self.plotter_inputs_widget.label_7.setVisible(not is_scatter)
+        show_log_controls = (not is_scatter) and (not is_contour)
+        self.plotter_inputs_widget.label_7.setVisible(show_log_controls)
         self.plotter_inputs_widget.log_scale_checkbox.setVisible(
-            not is_scatter
+            show_log_controls
         )
 
+        # Scatter plot elements
         self.plotter_inputs_widget.label_marker_size.setVisible(is_scatter)
         self.plotter_inputs_widget.marker_size_spinbox.setVisible(is_scatter)
         self.plotter_inputs_widget.label_marker_color.setVisible(is_scatter)
         self.plotter_inputs_widget.marker_color_button.setVisible(is_scatter)
         self.plotter_inputs_widget.label_marker_alpha.setVisible(is_scatter)
         self.plotter_inputs_widget.marker_alpha_spinbox.setVisible(is_scatter)
+
+        # Contour plot elements
+        self.plotter_inputs_widget.label_contour_levels.setVisible(is_contour)
+        self.plotter_inputs_widget.contour_levels_spinbox.setVisible(
+            is_contour
+        )
+        self.plotter_inputs_widget.label_contour_linewidth.setVisible(
+            is_contour
+        )
+        self.plotter_inputs_widget.contour_linewidth_spinbox.setVisible(
+            is_contour
+        )
+        self.plotter_inputs_widget.label_contour_layer_settings.setVisible(
+            is_contour
+        )
+        self.plotter_inputs_widget.contour_layer_settings_button.setVisible(
+            is_contour
+        )
+
+        self._update_contour_controls_visibility()
+        self._refresh_main_colormap_control_for_mode()
 
         if not self._updating_settings:
             old_plot_type = getattr(self, '_current_plot_type', None)
@@ -1789,6 +2527,310 @@ class PlotterWidget(QWidget):
         if not self._updating_settings and self.plot_type == 'SCATTER':
             self.canvas_widget.artists['SCATTER'].alpha = value
             self.canvas_widget.figure.canvas.draw_idle()
+
+    def _on_contour_levels_changed(self, value):
+        self._update_setting_in_metadata('contour_levels', value)
+        if not self._updating_settings and self.plot_type == 'CONTOUR':
+            self.plot()
+
+    def _on_contour_linewidth_changed(self, value):
+        self._update_setting_in_metadata('contour_linewidth', value)
+        if not self._updating_settings and self.plot_type == 'CONTOUR':
+            self.plot()
+
+    def _on_contour_layer_settings_clicked(self):
+        selected_names = self.get_selected_layer_names()
+        if len(selected_names) <= 1:
+            notifications.show_info(
+                "Contour layer settings are used when multiple layers are selected."
+            )
+            return
+
+        current_layer_colors = {
+            k: tuple(v)
+            for k, v in (self._contour_layer_colors or {}).items()
+            if k in selected_names
+        }
+        current_assignments = {
+            k: int(v)
+            for k, v in (self._contour_group_assignments or {}).items()
+            if k in selected_names
+        }
+        current_group_colors = {
+            int(k): tuple(v)
+            for k, v in (self._contour_group_colors or {}).items()
+        }
+        current_group_names = {
+            int(k): str(v)
+            for k, v in (self._contour_group_names or {}).items()
+        }
+        current_layer_styles = {
+            k: dict(v)
+            for k, v in (self._contour_layer_styles or {}).items()
+            if k in selected_names
+        }
+        current_group_styles = {
+            int(k): dict(v)
+            for k, v in (self._contour_group_styles or {}).items()
+        }
+
+        merged_colormap = self._contour_multi_layer_colormap
+        if not merged_colormap:
+            merged_colormap = (
+                self.plotter_inputs_widget.colormap_combobox.currentText()
+            )
+
+        dialog = ContourLayerSettingsDialog(
+            display_mode=self._contour_display_mode,
+            merged_colormap=merged_colormap,
+            merged_style=self._contour_merged_style,
+            merged_color=self._contour_merged_color,
+            show_legend=self._contour_show_legend,
+            layer_labels=selected_names,
+            group_assignments=current_assignments,
+            layer_colors=current_layer_colors,
+            group_colors=current_group_colors,
+            group_names=current_group_names,
+            layer_styles=current_layer_styles,
+            group_styles=current_group_styles,
+            available_colormaps=list(colormaps.ALL_COLORMAPS.keys()),
+            parent=self,
+        )
+
+        if dialog.exec_() != QDialog.Accepted:
+            return
+
+        self._contour_display_mode = dialog.get_display_mode()
+        self._contour_multi_layer_colormap = dialog.get_merged_colormap()
+        self._contour_merged_style = dialog.get_merged_style()
+        self._contour_merged_color = dialog.get_merged_color()
+        self._contour_show_legend = dialog.get_show_legend()
+        self._contour_layer_styles = dialog.get_layer_styles()
+        self._contour_group_styles = dialog.get_group_styles()
+        self._contour_layer_colors = dialog.get_layer_colors()
+        self._contour_group_assignments = dialog.get_group_assignments()
+        self._contour_group_colors = dialog.get_group_colors()
+        self._contour_group_names = dialog.get_group_names()
+
+        self._update_setting_in_metadata(
+            'contour_display_mode', self._contour_display_mode
+        )
+        self._update_setting_in_metadata(
+            'contour_multi_layer_colormap', self._contour_multi_layer_colormap
+        )
+        self._update_setting_in_metadata(
+            'contour_merged_style', self._contour_merged_style
+        )
+        self._update_setting_in_metadata(
+            'contour_merged_color', self._contour_merged_color
+        )
+        self._update_setting_in_metadata(
+            'contour_layer_colors', self._contour_layer_colors
+        )
+        self._update_setting_in_metadata(
+            'contour_group_assignments', self._contour_group_assignments
+        )
+        self._update_setting_in_metadata(
+            'contour_group_colors', self._contour_group_colors
+        )
+        self._update_setting_in_metadata(
+            'contour_group_names', self._contour_group_names
+        )
+        self._update_setting_in_metadata(
+            'contour_layer_styles', self._contour_layer_styles
+        )
+        self._update_setting_in_metadata(
+            'contour_group_styles', self._contour_group_styles
+        )
+        self._update_setting_in_metadata(
+            'contour_show_legend', self._contour_show_legend
+        )
+
+        if self.plot_type == 'CONTOUR':
+            self.plot()
+
+    def _update_single_contour_color_button(self):
+        if self.plot_type == 'HISTOGRAM2D':
+            rgb = self._normalize_rgb(self._histogram_color)
+        else:
+            rgb = self._normalize_rgb(self._single_contour_color)
+        self.plotter_inputs_widget.contour_single_color_button.setStyleSheet(
+            "background-color: rgb("
+            f"{int(rgb[0] * 255)}, {int(rgb[1] * 255)}, {int(rgb[2] * 255)}"
+            ");"
+        )
+
+    def _populate_main_colormap_combobox(
+        self, include_select_color=True, selected=None
+    ):
+        populate_colormap_combobox(
+            self.plotter_inputs_widget.colormap_combobox,
+            include_select_color=include_select_color,
+            selected=selected,
+        )
+
+    def _refresh_main_colormap_control_for_mode(self):
+        is_histogram = self.plot_type == 'HISTOGRAM2D'
+        is_contour = self.plot_type == 'CONTOUR'
+        single_layer = not self._has_multiple_selected_layers()
+        is_contour_single = is_contour and single_layer
+
+        include_select_color = is_histogram or is_contour_single
+        if is_histogram and self._histogram_style == 'solid':
+            selected = "Select color..."
+        elif is_histogram:
+            selected = self._histogram_colormap_name
+        elif is_contour_single and self._single_contour_style == 'solid':
+            selected = "Select color..."
+        elif is_contour_single:
+            selected = self._single_contour_colormap
+        else:
+            selected = self.histogram_colormap
+
+        self._populate_main_colormap_combobox(
+            include_select_color=include_select_color,
+            selected=selected,
+        )
+
+        self.plotter_inputs_widget.contour_single_color_button.setVisible(
+            (is_histogram and self._histogram_style == 'solid')
+            or (is_contour_single and self._single_contour_style == 'solid')
+        )
+        self._update_single_contour_color_button()
+
+    def _populate_main_colormap_combobox(
+        self, include_select_color=True, selected=None
+    ):
+        populate_colormap_combobox(
+            self.plotter_inputs_widget.colormap_combobox,
+            include_select_color=include_select_color,
+            selected=selected,
+        )
+
+    def _on_single_contour_color_clicked(self):
+        from qtpy.QtWidgets import QColorDialog
+
+        color = QColorDialog.getColor(parent=self)
+        if not color.isValid():
+            return
+
+        if self.plot_type == 'HISTOGRAM2D':
+            self._histogram_style = 'solid'
+            self._histogram_color = color.getRgbF()[:3]
+            self._update_setting_in_metadata(
+                'histogram_style', self._histogram_style
+            )
+            self._update_setting_in_metadata(
+                'histogram_color', self._histogram_color
+            )
+        else:
+            self._single_contour_style = 'solid'
+            self._single_contour_color = color.getRgbF()[:3]
+            self._update_setting_in_metadata(
+                'contour_single_style', self._single_contour_style
+            )
+            self._update_setting_in_metadata(
+                'contour_single_color', self._single_contour_color
+            )
+
+        self._update_single_contour_color_button()
+
+        if self.plot_type in ('CONTOUR', 'HISTOGRAM2D'):
+            self.plot()
+
+    def _has_multiple_selected_layers(self):
+        return len(self.get_selected_layer_names()) > 1
+
+    def _update_contour_controls_visibility(self):
+        is_scatter = (
+            self.plotter_inputs_widget.plot_type_combobox.currentText()
+            == 'SCATTER'
+        )
+        is_contour = (
+            self.plotter_inputs_widget.plot_type_combobox.currentText()
+            == 'CONTOUR'
+        )
+        has_multiple = self._has_multiple_selected_layers()
+
+        show_colormap = (not is_scatter) and not (is_contour and has_multiple)
+        self.plotter_inputs_widget.label_3.setVisible(show_colormap)
+        self._colormap_row_widget.setVisible(show_colormap)
+
+        show_multi_layer_contour_controls = is_contour and has_multiple
+        self._reflow_plot_settings_rows(show_multi_layer_contour_controls)
+        self.plotter_inputs_widget.label_contour_layer_settings.setVisible(
+            show_multi_layer_contour_controls
+        )
+        self.plotter_inputs_widget.contour_layer_settings_button.setVisible(
+            show_multi_layer_contour_controls
+        )
+        self._refresh_main_colormap_control_for_mode()
+
+    def _reflow_plot_settings_rows(self, show_multi_layer_contour_controls):
+        """Reposition rows to avoid empty spacing when contour row is hidden."""
+        layout = getattr(self, '_plotter_settings_layout', None)
+        if layout is None:
+            return
+
+        if show_multi_layer_contour_controls:
+            layout.addWidget(
+                self.plotter_inputs_widget.label_contour_layer_settings, 3, 0
+            )
+            layout.addWidget(
+                self.plotter_inputs_widget.contour_layer_settings_button, 3, 1
+            )
+        else:
+            # Keep out of visible rows so histogram/scatter rows stay compact.
+            layout.addWidget(
+                self.plotter_inputs_widget.label_contour_layer_settings, 99, 0
+            )
+            layout.addWidget(
+                self.plotter_inputs_widget.contour_layer_settings_button, 99, 1
+            )
+
+        row_shift = 1 if show_multi_layer_contour_controls else 0
+        row_pairs = [
+            (self.plotter_inputs_widget.label_3, self._colormap_row_widget, 3),
+            (
+                self.plotter_inputs_widget.label_4,
+                self.plotter_inputs_widget.number_of_bins_spinbox,
+                4,
+            ),
+            (
+                self.plotter_inputs_widget.label_7,
+                self.plotter_inputs_widget.log_scale_checkbox,
+                5,
+            ),
+            (
+                self.plotter_inputs_widget.label_marker_size,
+                self.plotter_inputs_widget.marker_size_spinbox,
+                6,
+            ),
+            (
+                self.plotter_inputs_widget.label_marker_color,
+                self.plotter_inputs_widget.marker_color_button,
+                7,
+            ),
+            (
+                self.plotter_inputs_widget.label_marker_alpha,
+                self.plotter_inputs_widget.marker_alpha_spinbox,
+                8,
+            ),
+            (
+                self.plotter_inputs_widget.label_contour_levels,
+                self.plotter_inputs_widget.contour_levels_spinbox,
+                9,
+            ),
+            (
+                self.plotter_inputs_widget.label_contour_linewidth,
+                self.plotter_inputs_widget.contour_linewidth_spinbox,
+                10,
+            ),
+        ]
+        for left_widget, right_widget, base_row in row_pairs:
+            target_row = base_row + row_shift
+            layout.addWidget(left_widget, target_row, 0)
+            layout.addWidget(right_widget, target_row, 1)
 
     def _on_marker_color_clicked(self):
         from qtpy.QtWidgets import QColorDialog
@@ -1820,8 +2862,67 @@ class PlotterWidget(QWidget):
     def _on_colormap_changed(self):
         """Callback for colormap change."""
         colormap = self.plotter_inputs_widget.colormap_combobox.currentText()
+        if self.plot_type == 'HISTOGRAM2D':
+            if colormap == "Select color...":
+                self._histogram_style = 'solid'
+                self._update_setting_in_metadata(
+                    'histogram_style', self._histogram_style
+                )
+                self.plotter_inputs_widget.contour_single_color_button.setVisible(
+                    True
+                )
+                self._update_single_contour_color_button()
+            else:
+                self._histogram_style = 'colormap'
+                self._histogram_colormap_name = colormap
+                self._update_setting_in_metadata(
+                    'histogram_style', self._histogram_style
+                )
+                self._update_setting_in_metadata(
+                    'colormap', self._histogram_colormap_name
+                )
+                self.plotter_inputs_widget.contour_single_color_button.setVisible(
+                    False
+                )
+
+            if not self._updating_settings:
+                self.refresh_current_plot()
+            return
+
+        if (
+            self.plot_type == 'CONTOUR'
+            and not self._has_multiple_selected_layers()
+        ):
+            if colormap == "Select color...":
+                self._single_contour_style = 'solid'
+                self._update_setting_in_metadata(
+                    'contour_single_style', self._single_contour_style
+                )
+                self.plotter_inputs_widget.contour_single_color_button.setVisible(
+                    True
+                )
+                self._update_single_contour_color_button()
+            else:
+                self._single_contour_style = 'colormap'
+                self._single_contour_colormap = colormap
+                self._update_setting_in_metadata(
+                    'contour_single_style', self._single_contour_style
+                )
+                self._update_setting_in_metadata(
+                    'contour_single_colormap', self._single_contour_colormap
+                )
+                self.plotter_inputs_widget.contour_single_color_button.setVisible(
+                    False
+                )
+
+            if not self._updating_settings:
+                self.refresh_current_plot()
+            return
+
         self._update_setting_in_metadata('colormap', colormap)
-        if not self._updating_settings and self.plot_type == 'HISTOGRAM2D':
+        if not self._updating_settings and (
+            self.plot_type == 'HISTOGRAM2D' or self.plot_type == 'CONTOUR'
+        ):
             self.refresh_current_plot()
 
     def _on_bins_changed(self, value):
@@ -1851,6 +2952,11 @@ class PlotterWidget(QWidget):
             warnings.filterwarnings(
                 "ignore",
                 message="Log normalization applied to color indices*",
+                category=UserWarning,
+            )
+            warnings.filterwarnings(
+                "ignore",
+                message="Attempt to set non-positive ylim on a log-scaled axis will be ignored*",
                 category=UserWarning,
             )
             self.refresh_current_plot()
@@ -2472,7 +3578,12 @@ class PlotterWidget(QWidget):
         str
             The colormap name.
         """
-        return self.plotter_inputs_widget.colormap_combobox.currentText()
+        value = self.plotter_inputs_widget.colormap_combobox.currentText()
+        if value == "Select color...":
+            if self.plot_type == 'HISTOGRAM2D':
+                return self._histogram_colormap_name
+            return self._single_contour_colormap
+        return value
 
     @histogram_colormap.setter
     def histogram_colormap(self, colormap: str):
@@ -2482,6 +3593,7 @@ class PlotterWidget(QWidget):
                 f"{colormap} is not a valid colormap. Setting to default colormap."
             )
             colormap = self._histogram_colormap.name
+        self._histogram_colormap_name = colormap
         self.plotter_inputs_widget.colormap_combobox.setCurrentText(colormap)
 
     @property
@@ -2524,7 +3636,7 @@ class PlotterWidget(QWidget):
     def _enforce_axes_aspect(self):
         """Ensure the axes aspect is set to 'box' after artist redraws."""
         self._redefine_axes_limits()
-        self.canvas_widget.active_artist.ax.set_aspect(1, adjustable='box')
+        self.canvas_widget.axes.set_aspect(1, adjustable='box')
         self.canvas_widget.figure.canvas.draw_idle()
 
     def _connect_selector_signals(self):
@@ -2645,6 +3757,7 @@ class PlotterWidget(QWidget):
 
             # Update mask UI mode (combobox vs button)
             self._update_mask_ui_mode()
+            self._update_contour_controls_visibility()
 
             # If mask layer was deleted, trigger the cleanup
             if mask_layer_was_deleted:
@@ -2773,6 +3886,7 @@ class PlotterWidget(QWidget):
             self.mask_layer_combobox.setCurrentText("None")
             self.mask_layer_combobox.blockSignals(False)
             self._update_mask_ui_mode()
+            self._update_contour_controls_visibility()
 
             self._initialize_plot_settings_in_metadata(layer)
 
@@ -2872,6 +3986,7 @@ class PlotterWidget(QWidget):
             self.mask_layer_combobox.setCurrentText("None")
             self.mask_layer_combobox.blockSignals(False)
             self._update_mask_ui_mode()
+            self._update_contour_controls_visibility()
 
             self._initialize_plot_settings_in_metadata(layer)
             self._restore_plot_settings_from_metadata()
@@ -2908,6 +4023,8 @@ class PlotterWidget(QWidget):
         Debounced to avoid excessive updates while user is still selecting.
         The actual processing happens in _process_layer_selection_change.
         """
+        self._preserve_plot_type_on_restore = self.plot_type == 'CONTOUR'
+        self._update_contour_controls_visibility()
         self._layer_selection_timer.stop()
         self._layer_selection_timer.start()
 
@@ -2923,9 +4040,13 @@ class PlotterWidget(QWidget):
         try:
             selected_layers = self.get_selected_layers()
             self._update_grid_view(selected_layers)
+            self._update_contour_controls_visibility()
 
             layer_name = self.get_primary_layer_name()
             if not layer_name:
+                if self.plot_type == 'CONTOUR':
+                    self._clear_contour_plot()
+                    self.canvas_widget.figure.canvas.draw_idle()
                 return
 
             if len(selected_layers) > 1:
@@ -2943,6 +4064,7 @@ class PlotterWidget(QWidget):
 
         finally:
             self._in_on_selection_changed = False
+            self._preserve_plot_type_on_restore = False
 
     def _update_grid_view(self, selected_layers):
         """Update napari grid view based on selected layers.
@@ -3740,9 +4862,11 @@ class PlotterWidget(QWidget):
             "S", color=text_color, fontweight='bold'
         )
 
-        self.canvas_widget.artists['SCATTER'].ax.tick_params(colors=text_color)
+        self.canvas_widget.artists['SCATTER'].ax.tick_params(
+            colors=text_color, which='both'
+        )
         self.canvas_widget.artists['HISTOGRAM2D'].ax.tick_params(
-            colors=text_color
+            colors=text_color, which='both'
         )
 
         for spine in self.canvas_widget.artists['SCATTER'].ax.spines.values():
@@ -3816,16 +4940,30 @@ class PlotterWidget(QWidget):
             histogram_artist.bins = self.histogram_bins
             self._last_histogram_bins = self.histogram_bins
 
-        if self._last_histogram_colormap != self.histogram_colormap:
-            selected_histogram_colormap = colormaps.ALL_COLORMAPS[
-                self.histogram_colormap
-            ]
-            selected_histogram_colormap = LinearSegmentedColormap.from_list(
-                self.histogram_colormap,
-                selected_histogram_colormap.colors,
-            )
+        histogram_is_solid = self._histogram_style == 'solid'
+        if histogram_is_solid:
+            cache_key = f"solid:{tuple(self._histogram_color)}"
+        else:
+            cache_key = self.histogram_colormap
+
+        if self._last_histogram_colormap != cache_key:
+            if histogram_is_solid:
+                selected_histogram_colormap = self._make_solid_contour_cmap(
+                    "histogram_solid",
+                    self._histogram_color,
+                )
+            else:
+                selected_histogram_colormap = colormaps.ALL_COLORMAPS[
+                    self.histogram_colormap
+                ]
+                selected_histogram_colormap = (
+                    LinearSegmentedColormap.from_list(
+                        self.histogram_colormap,
+                        selected_histogram_colormap.colors,
+                    )
+                )
             histogram_artist.histogram_colormap = selected_histogram_colormap
-            self._last_histogram_colormap = self.histogram_colormap
+            self._last_histogram_colormap = cache_key
             self._last_histogram_colormap_object = selected_histogram_colormap
         else:
             selected_histogram_colormap = self._last_histogram_colormap_object
@@ -3868,31 +5006,490 @@ class PlotterWidget(QWidget):
 
         self._update_colorbar(selected_histogram_colormap)
 
-    def _update_colorbar(self, colormap):
-        """Update or create colorbar for histogram plot."""
+    def _clear_contour_plot(self):
+        """Clear all contour collections from the plot."""
+        # Clear tracked collections
+        for c in getattr(self, '_contour_collections', []):
+            with contextlib.suppress(Exception):
+                c.remove()
+                # Fallback for older Matplotlib versions if remove fails
+            with contextlib.suppress(Exception):
+                if hasattr(c, 'collections'):
+                    for col in c.collections:
+                        col.remove()
+        self._contour_collections = []
+
+        # Cleanup ANY lingering contour elements in the axes using labels
+        ax = self.canvas_widget.axes
+        for artist in list(ax.collections):
+            if artist.get_label() == 'contour_plot_element':
+                with contextlib.suppress(Exception):
+                    artist.remove()
+
+        legend = ax.get_legend()
+        if legend is not None:
+            with contextlib.suppress(Exception):
+                legend.remove()
+
         self._remove_colorbar()
 
-        if self.plot_type == 'HISTOGRAM2D':
-            self.cax = self.canvas_widget.artists['HISTOGRAM2D'].ax.inset_axes(
-                [1.05, 0, 0.05, 1]
+    def _resolve_contour_colormap(self):
+        """Resolve selected colormap to a Matplotlib colormap object."""
+        cmap_name = self.plotter_inputs_widget.colormap_combobox.currentText()
+        if self._has_multiple_selected_layers():
+            cmap_name = (
+                self._contour_multi_layer_colormap
+                or self.plotter_inputs_widget.colormap_combobox.currentText()
             )
-            self.colorbar = Colorbar(
-                ax=self.cax,
-                cmap=colormap,
-                norm=self.canvas_widget.artists[
-                    'HISTOGRAM2D'
-                ]._get_normalization(
-                    self.canvas_widget.artists['HISTOGRAM2D'].histogram[0],
-                    is_overlay=False,
-                ),
+            if cmap_name == "Select color...":
+                # Sentinel entry for solid style; keep a valid fallback colormap.
+                cmap_name = "turbo"
+        elif cmap_name == "Select color...":
+            cmap_name = self._single_contour_colormap or "turbo"
+
+        return resolve_colormap_by_name(cmap_name)
+
+    def _get_selected_layer_feature_map(self):
+        """Return valid flattened G/S data for each selected layer."""
+        selected_layers = self.get_selected_layers()
+        if not selected_layers:
+            return {}
+
+        data_by_layer = {}
+        target_harmonic = self.harmonic
+
+        for layer in selected_layers:
+            g_array = layer.metadata.get("G")
+            s_array = layer.metadata.get("S")
+            harmonics_array = layer.metadata.get("harmonics")
+
+            if g_array is None or s_array is None:
+                continue
+
+            if harmonics_array is not None:
+                harmonics_array = np.atleast_1d(harmonics_array)
+                try:
+                    harmonic_idx = int(
+                        np.where(harmonics_array == target_harmonic)[0][0]
+                    )
+                except (IndexError, ValueError):
+                    continue
+            else:
+                harmonic_idx = 0
+
+            if g_array.ndim > layer.data.ndim:
+                g = g_array[harmonic_idx]
+                s = s_array[harmonic_idx]
+            else:
+                g = g_array
+                s = s_array
+
+            g_flat = g.ravel()
+            s_flat = s.ravel()
+            valid = (~np.isnan(g_flat)) & (~np.isnan(s_flat))
+            if not np.any(valid):
+                continue
+
+            data_by_layer[layer.name] = (g_flat[valid], s_flat[valid])
+
+        return data_by_layer
+
+    def _compute_contour_histogram(
+        self, x_data, y_data, bins, range_xlim, range_ylim
+    ):
+        h, xedges, yedges = np.histogram2d(
+            x_data, y_data, bins=bins, range=[range_xlim, range_ylim]
+        )
+        xcenters = xedges[:-1] + ((xedges[1] - xedges[0]) / 2.0)
+        ycenters = yedges[:-1] + ((yedges[1] - yedges[0]) / 2.0)
+
+        # Keep histogram in count-space; log handling is applied at contour() via norm='log'.
+        h = h.astype(float)
+        h[h <= 0] = np.nan
+
+        return h, xcenters, ycenters
+
+    @staticmethod
+    def _normalize_rgb(color):
+        arr = np.asarray(color, dtype=float)
+        if arr.max(initial=0) > 1.0:
+            arr = arr / 255.0
+        return tuple(arr[:3])
+
+    def _make_solid_contour_cmap(self, name, target_color):
+        """Create a subtle ramp for solid contour style.
+
+        Uses an off-white start so the lowest contour is still visible on
+        white backgrounds while preserving the selected hue progression.
+        """
+        target = np.asarray(self._normalize_rgb(target_color), dtype=float)
+
+        # Slightly below white with a tiny tint toward the target color.
+        # This keeps low levels visible on white backgrounds.
+        low_gray = 0.92
+        tint = 0.08
+        low_color = np.clip((1.0 - tint) * low_gray + tint * target, 0.0, 1.0)
+
+        return LinearSegmentedColormap.from_list(
+            name,
+            [tuple(low_color), tuple(target)],
+        )
+
+    def _sample_colors_from_cmap(self, cmap, n_colors):
+        if n_colors <= 1:
+            return [cmap(0.6)]
+        return [cmap(i / max(n_colors - 1, 1)) for i in range(n_colors)]
+
+    def _update_contour_plot(self, x_data, y_data, selection_id_data=None):
+        """Update or create the contour plot."""
+        ax = self.canvas_widget.axes
+        self._clear_contour_plot()
+
+        levels = self.plotter_inputs_widget.contour_levels_spinbox.value()
+        linewidths = (
+            self.plotter_inputs_widget.contour_linewidth_spinbox.value()
+        )
+        use_log_norm = True
+        cmap = self._resolve_contour_colormap()
+        if cmap is None:
+            return
+
+        bins = self.plotter_inputs_widget.number_of_bins_spinbox.value()
+
+        range_xlim = ax.get_xlim()
+        range_ylim = ax.get_ylim()
+
+        # Calculate aspect maintaining bins similar to histogram
+        aspect = (range_xlim[1] - range_xlim[0]) / (
+            range_ylim[1] - range_ylim[0]
+        )
+        if aspect > 1:
+            bins = (bins, max(int(bins / aspect), 1))
+        else:
+            bins = (max(int(bins * aspect), 1), bins)
+
+        layer_data = self._get_selected_layer_feature_map()
+        has_multiple_layers = len(layer_data) > 1
+        display_mode = (
+            self._contour_display_mode if has_multiple_layers else "Merged"
+        )
+
+        def _tag_contour_set(cs_obj, label):
+            with contextlib.suppress(Exception):
+                if hasattr(cs_obj, 'collections'):
+                    for col in cs_obj.collections:
+                        col.set_label('contour_plot_element')
+                else:
+                    cs_obj.set_label('contour_plot_element')
+                if label:
+                    cs_obj.collections[0].set_label(label)
+
+        if display_mode == "Merged" or not has_multiple_layers:
+            h, xedges, yedges = self._compute_contour_histogram(
+                x_data, y_data, bins, range_xlim, range_ylim
             )
-            self.set_colorbar_style(color="white")
+
+            merged_cmap = cmap
+            if has_multiple_layers:
+                if self._contour_merged_style == 'solid':
+                    merged_cmap = self._make_solid_contour_cmap(
+                        "merged_solid",
+                        self._contour_merged_color,
+                    )
+                else:
+                    resolved = resolve_colormap_by_name(
+                        self._contour_multi_layer_colormap
+                    )
+                    if resolved is not None:
+                        merged_cmap = resolved
+            else:
+                if self._single_contour_style == 'solid':
+                    merged_cmap = self._make_solid_contour_cmap(
+                        "single_solid",
+                        self._single_contour_color,
+                    )
+                else:
+                    single_name = (
+                        self._single_contour_colormap
+                        or self.plotter_inputs_widget.colormap_combobox.currentText()
+                    )
+                    resolved = resolve_colormap_by_name(single_name)
+                    if resolved is not None:
+                        merged_cmap = resolved
+
+            cs = ax.contour(
+                xedges,
+                yedges,
+                h.T,
+                levels=levels,
+                linewidths=linewidths,
+                cmap=merged_cmap,
+                norm='log' if use_log_norm else None,
+            )
+            _tag_contour_set(cs, None)
+            self._contour_collections.append(cs)
+            legend = ax.get_legend()
+            if legend is not None:
+                with contextlib.suppress(Exception):
+                    legend.remove()
+            return
+
+        # No colorbar for multi-series rendering; use legend instead.
+        self._remove_colorbar()
+
+        if display_mode == "Individual layers":
+            items = list(layer_data.items())
+            default_colors = self._sample_colors_from_cmap(cmap, len(items))
+            legend_handles = []
+            legend_labels = []
+
+            for idx, (name, (lx, ly)) in enumerate(items):
+                h, xedges, yedges = self._compute_contour_histogram(
+                    lx, ly, bins, range_xlim, range_ylim
+                )
+
+                style = self._contour_layer_styles.get(name, {})
+                style_mode = style.get("mode")
+                if style_mode not in ("colormap", "solid"):
+                    style_mode = "colormap"
+
+                if style_mode == "colormap":
+                    style_cmap_name = style.get(
+                        "colormap", self._contour_multi_layer_colormap
+                    )
+                    style_cmap = resolve_colormap_by_name(style_cmap_name)
+                    if style_cmap is None:
+                        style_cmap = cmap
+                    cs = ax.contour(
+                        xedges,
+                        yedges,
+                        h.T,
+                        levels=levels,
+                        linewidths=linewidths,
+                        cmap=style_cmap,
+                        norm='log' if use_log_norm else None,
+                    )
+                    legend_handles.append(
+                        ColormapLegendProxy(
+                            style_cmap,
+                            linewidths,
+                            style="categorical",
+                            n_colors=max(int(levels), 2),
+                        )
+                    )
+                else:
+                    custom = style.get(
+                        "color", self._contour_layer_colors.get(name)
+                    )
+                    if custom is None:
+                        custom = default_colors[idx]
+                    color = self._normalize_rgb(custom)
+                    solid_cmap = self._make_solid_contour_cmap(
+                        f"solid_{name}", color
+                    )
+                    cs = ax.contour(
+                        xedges,
+                        yedges,
+                        h.T,
+                        levels=levels,
+                        linewidths=linewidths,
+                        cmap=solid_cmap,
+                        norm='log' if use_log_norm else None,
+                    )
+                    legend_handles.append(
+                        ColormapLegendProxy(
+                            solid_cmap,
+                            linewidths,
+                            style="categorical",
+                            n_colors=max(int(levels), 2),
+                        )
+                    )
+
+                _tag_contour_set(cs, name)
+                self._contour_collections.append(cs)
+                legend_labels.append(name)
+
+            if self._contour_show_legend and legend_handles:
+                ax.legend(
+                    handles=legend_handles,
+                    labels=legend_labels,
+                    loc='upper right',
+                    frameon=False,
+                    handler_map={ColormapLegendProxy: ColormapLegendHandler()},
+                )
+            return
+
+        # Grouped mode
+        grouped_data = {}
+        for layer_name, (lx, ly) in layer_data.items():
+            gid = int(self._contour_group_assignments.get(layer_name, 1))
+            grouped_data.setdefault(gid, []).append((layer_name, lx, ly))
+
+        group_ids = sorted(grouped_data)
+        default_colors = self._sample_colors_from_cmap(cmap, len(group_ids))
+        legend_handles = []
+        legend_labels = []
+
+        for idx, gid in enumerate(group_ids):
+            group_label = self._contour_group_names.get(gid, f"Group {gid}")
+            style = self._contour_group_styles.get(gid, {})
+            style_mode = style.get("mode")
+            if style_mode not in ("colormap", "solid"):
+                style_mode = "colormap"
+
+            style_cmap = None
+            color = None
+            if style_mode == "colormap":
+                style_cmap_name = style.get(
+                    "colormap", self._contour_multi_layer_colormap
+                )
+                style_cmap = resolve_colormap_by_name(style_cmap_name)
+                if style_cmap is None:
+                    style_cmap = cmap
+                legend_handles.append(
+                    ColormapLegendProxy(
+                        style_cmap,
+                        linewidths,
+                        style="categorical",
+                        n_colors=max(int(levels), 2),
+                    )
+                )
+            else:
+                custom = style.get(
+                    "color", self._contour_group_colors.get(gid)
+                )
+                if custom is None:
+                    custom = default_colors[idx]
+                color = self._normalize_rgb(custom)
+                solid_cmap = self._make_solid_contour_cmap(
+                    f"solid_group_{gid}", color
+                )
+                legend_handles.append(
+                    ColormapLegendProxy(
+                        solid_cmap,
+                        linewidths,
+                        style="categorical",
+                        n_colors=max(int(levels), 2),
+                    )
+                )
+
+            for member_idx, (_layer_name, gx, gy) in enumerate(
+                grouped_data[gid]
+            ):
+                h, xedges, yedges = self._compute_contour_histogram(
+                    gx, gy, bins, range_xlim, range_ylim
+                )
+                if style_mode == "colormap":
+                    cs = ax.contour(
+                        xedges,
+                        yedges,
+                        h.T,
+                        levels=levels,
+                        linewidths=linewidths,
+                        cmap=style_cmap,
+                        norm='log' if use_log_norm else None,
+                    )
+                else:
+                    cs = ax.contour(
+                        xedges,
+                        yedges,
+                        h.T,
+                        levels=levels,
+                        linewidths=linewidths,
+                        cmap=solid_cmap,
+                        norm='log' if use_log_norm else None,
+                    )
+
+                _tag_contour_set(cs, group_label if member_idx == 0 else None)
+                self._contour_collections.append(cs)
+
+            legend_labels.append(group_label)
+
+        if self._contour_show_legend and legend_handles:
+            ax.legend(
+                handles=legend_handles,
+                labels=legend_labels,
+                loc='upper right',
+                frameon=False,
+                handler_map={ColormapLegendProxy: ColormapLegendHandler()},
+            )
+
+    def _update_colorbar(self, colormap=None, mappable=None):
+        """Update or create colorbar for the current plot."""
+        self._remove_colorbar()
+
+        # Determine which axes to use for inset
+        ax = self.canvas_widget.axes
+        self.cax = ax.inset_axes([1.05, 0, 0.05, 1])
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="Attempt to set non-positive ylim on a log-scaled axis will be ignored*",
+                category=UserWarning,
+            )
+            if mappable is not None:
+                # Use a specific formatter that allows non-decade log labels for contour levels
+                fmt = None
+
+                is_log = False
+                if (
+                    getattr(mappable, 'norm', None) == 'log'
+                    or getattr(mappable, 'norm', None)
+                    and isinstance(mappable.norm, LogNorm)
+                ):
+                    is_log = True
+
+                if is_log:
+                    fmt = ticker.LogFormatterSciNotation(labelOnlyBase=False)
+                    # If norm='log' was passed to contour, the norm's vmin/vmax might be None (or it might just be the string 'log'),
+                    # which makes Colorbar draw an empty box. We set them explicitly from the evaluated levels on the mappable.
+                    if getattr(mappable, 'norm', None) == 'log':
+                        levels = getattr(mappable, 'levels', [])
+                        valid_levels = [lv for lv in levels if lv > 0]
+                        if valid_levels:
+                            mappable.norm = LogNorm(
+                                vmin=min(valid_levels), vmax=max(valid_levels)
+                            )
+                    elif (
+                        getattr(mappable.norm, 'vmin', None) is None
+                        or getattr(mappable.norm, 'vmax', None) is None
+                    ):
+                        levels = getattr(mappable, 'levels', [])
+                        valid_levels = [lv for lv in levels if lv > 0]
+                        if valid_levels:
+                            mappable.norm.vmin = min(valid_levels)
+                            mappable.norm.vmax = max(valid_levels)
+
+                self.colorbar = Colorbar(
+                    ax=self.cax, mappable=mappable, format=fmt
+                )
+            elif self.plot_type == 'HISTOGRAM2D' and colormap is not None:
+                artist = self.canvas_widget.artists['HISTOGRAM2D']
+                norm = artist._get_normalization(
+                    artist.histogram[0], is_overlay=False
+                )
+                self.colorbar = Colorbar(ax=self.cax, cmap=colormap, norm=norm)
+
+        if self.colorbar is not None:
+            self.set_colorbar_style(
+                color=(
+                    "white"
+                    if self.plotter_inputs_widget.white_background_checkbox.isChecked()
+                    else "black"
+                )
+            )
 
     def _remove_colorbar(self):
         """Remove colorbar if it exists."""
         if self.colorbar is not None:
-            self.colorbar.remove()
+            with contextlib.suppress(Exception):
+                self.colorbar.remove()
             self.colorbar = None
+        if hasattr(self, 'cax') and self.cax is not None:
+            with contextlib.suppress(Exception):
+                self.cax.remove()
+            self.cax = None
 
     def _update_plot_elements(self):
         """Update common plot elements like semicircle, axes, etc."""
@@ -3905,6 +5502,9 @@ class PlotterWidget(QWidget):
     def plot(self, x_data=None, y_data=None, selection_id_data=None):
         """Plot the selected phasor features efficiently."""
         if not self.has_phasor_data():
+            if self.plot_type == 'CONTOUR':
+                self._clear_contour_plot()
+                self.canvas_widget.figure.canvas.draw_idle()
             return
 
         if getattr(self, '_updating_plot', False):
@@ -3979,36 +5579,68 @@ class PlotterWidget(QWidget):
             self.plotter_inputs_widget.plot_type_combobox.blockSignals(False)
             self._connect_active_artist_signals()
 
+        # Make sure biaplotter artists are hidden if switching to CONTOUR
+        current_active = getattr(self.canvas_widget, 'active_artist', None)
+
+        if plot_type == 'CONTOUR':
+            for _name, artist in getattr(
+                self.canvas_widget, 'artists', {}
+            ).items():
+                if hasattr(artist, 'visible'):
+                    artist.visible = False
+            self.canvas_widget.active_artist = None
+
+        else:
+            # Hide contour items when switching away
+            self._clear_contour_plot()
+            self.canvas_widget.figure.canvas.draw_idle()
+
         if plot_type == 'HISTOGRAM2D':
             self._update_histogram_plot(x_data, y_data, selection_id_data)
         elif plot_type == 'SCATTER':
             self._remove_colorbar()
             self._update_scatter_plot(x_data, y_data, selection_id_data)
+        elif plot_type == 'CONTOUR':
+            self._update_contour_plot(x_data, y_data, selection_id_data)
 
-        current_active = getattr(self.canvas_widget, 'active_artist', None)
-
-        if (
-            current_active != plot_type
-            and plot_type in self.canvas_widget.artists
+        if current_active != plot_type and plot_type in getattr(
+            self.canvas_widget, 'artists', {}
         ):
             self.canvas_widget.active_artist = plot_type
-        elif plot_type not in self.canvas_widget.artists:
+
+        if (
+            plot_type not in getattr(self.canvas_widget, 'artists', {})
+            and plot_type != 'CONTOUR'
+        ):
             return
 
         self._update_plot_elements()
 
     def set_colorbar_style(self, color="white"):
         """Set the colorbar style in the canvas widget."""
-        self.colorbar.ax.yaxis.set_tick_params(color=color)
+        # Color the ticks and their labels (both major and minor for log scale)
+        self.colorbar.ax.yaxis.set_tick_params(
+            color=color, labelcolor=color, which='both'
+        )
+        self.colorbar.ax.tick_params(axis='y', colors=color, which='both')
+
+        # Color the bounding box (outline)
         self.colorbar.outline.set_edgecolor(color)
-        if isinstance(self.colorbar.norm, LogNorm):
-            self.colorbar.ax.set_ylabel("Log10(Count)", color=color)
-        else:
-            self.colorbar.ax.set_ylabel("Count", color=color)
-        ticks = self.colorbar.ax.get_yticks()
-        self.colorbar.ax.yaxis.set_major_locator(ticker.FixedLocator(ticks))
-        tick_labels = self.colorbar.ax.get_yticklabels()
-        for tick_label in tick_labels:
+
+        # Ensure all spines are colored
+        for spine in self.colorbar.ax.spines.values():
+            spine.set_edgecolor(color)
+
+        # Set the label with correct color
+        label_text = (
+            "Log10(Count)"
+            if isinstance(self.colorbar.norm, LogNorm)
+            else "Count"
+        )
+        self.colorbar.set_label(label_text, color=color)
+
+        # Force update of tick labels (sometimes needed for older matplotlib)
+        for tick_label in self.colorbar.ax.get_yticklabels():
             tick_label.set_color(color)
 
     def closeEvent(self, event):

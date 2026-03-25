@@ -13,7 +13,9 @@ import scipy
 from matplotlib.backends.backend_qt5agg import (
     FigureCanvasQTAgg as FigureCanvas,
 )
+from matplotlib.collections import LineCollection
 from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.legend_handler import HandlerBase
 from matplotlib.patches import Polygon as MplPolygon
 from napari.layers import Image
 from phasorpy.filter import (
@@ -61,8 +63,154 @@ from qtpy.QtWidgets import (
 )
 from superqt import QRangeSlider
 
+
+def resolve_colormap_by_name(cmap_name):
+    """Resolve colormap name to a Matplotlib colormap object."""
+    if (
+        cmap_name == "Select color..."
+        or cmap_name is None
+        or not isinstance(cmap_name, str)
+    ):
+        return None
+
+    from matplotlib.colors import LinearSegmentedColormap
+    from napari.utils import colormaps as napari_colormaps
+
+    if cmap_name in napari_colormaps.ALL_COLORMAPS:
+        napari_cmap = napari_colormaps.ALL_COLORMAPS[cmap_name]
+        return LinearSegmentedColormap.from_list(cmap_name, napari_cmap.colors)
+
+    try:
+        return plt.get_cmap(cmap_name)
+    except (ValueError, TypeError):
+        return None
+
+
+def create_colormap_icon(cmap_name, width=72, height=14):
+    """Create a QIcon representing the colormap."""
+    pixmap = QPixmap(width, height)
+    pixmap.fill(Qt.transparent)
+
+    cmap = resolve_colormap_by_name(cmap_name)
+    if cmap is None:
+        return QIcon(pixmap)
+
+    painter = QPainter(pixmap)
+    try:
+        for x in range(width):
+            rgba = cmap(x / max(width - 1, 1))
+            painter.setPen(
+                QColor(
+                    int(max(0, min(255, rgba[0] * 255))),
+                    int(max(0, min(255, rgba[1] * 255))),
+                    int(max(0, min(255, rgba[2] * 255))),
+                    255,
+                )
+            )
+            painter.drawLine(x, 0, x, height - 1)
+    finally:
+        painter.end()
+
+    return QIcon(pixmap)
+
+
+def populate_colormap_combobox(
+    combo, include_select_color=True, selected=None, available_colormaps=None
+):
+    """Populate a QComboBox with colormap names and icons."""
+    from napari.utils import colormaps as napari_colormaps
+
+    if available_colormaps is None:
+        available_colormaps = list(napari_colormaps.ALL_COLORMAPS.keys())
+
+    was_blocked = combo.blockSignals(True)
+    try:
+        combo.clear()
+        if include_select_color:
+            combo.addItem("Select color...")
+
+        for cmap_name in available_colormaps:
+            combo.addItem(create_colormap_icon(cmap_name), cmap_name)
+
+        if selected is not None:
+            combo.setCurrentText(selected)
+        elif combo.count() > 0:
+            combo.setCurrentIndex(0)
+    finally:
+        combo.blockSignals(was_blocked)
+
+
 if TYPE_CHECKING:
     import napari
+
+
+class ColormapLegendProxy:
+    """Proxy handle for drawing colormap lines in legend entries.
+
+    Parameters
+    ----------
+    cmap : matplotlib.colors.Colormap
+        Colormap used to render the legend line.
+    linewidth : float
+        Line width for the legend sample.
+    style : {"full", "categorical"}
+        "full" draws a continuous gradient.
+        "categorical" draws discrete color blocks/segments.
+    n_colors : int
+        Number of color segments used in categorical mode.
+    """
+
+    def __init__(self, cmap, linewidth, style="full", n_colors=6):
+        self.cmap = cmap
+        self.linewidth = linewidth
+        self.style = style
+        self.n_colors = max(int(n_colors), 2)
+
+
+class ColormapLegendHandler(HandlerBase):
+    """Legend handler that renders continuous or categorical colormap lines."""
+
+    def create_artists(
+        self,
+        legend,
+        orig_handle,
+        xdescent,
+        ydescent,
+        width,
+        height,
+        fontsize,
+        trans,
+    ):
+        y = ydescent + (height * 0.5)
+
+        if getattr(orig_handle, "style", "full") == "categorical":
+            n_segments = max(int(getattr(orig_handle, "n_colors", 6)), 2)
+            x_edges = np.linspace(xdescent, xdescent + width, n_segments + 1)
+            segments = [
+                ((x_edges[i], y), (x_edges[i + 1], y))
+                for i in range(n_segments)
+            ]
+            color_positions = np.linspace(0.0, 1.0, n_segments)
+            colors = [orig_handle.cmap(p) for p in color_positions]
+            collection = LineCollection(
+                segments,
+                colors=colors,
+                linewidths=orig_handle.linewidth,
+                transform=trans,
+            )
+            return [collection]
+
+        n_segments = 24
+        x = np.linspace(xdescent, xdescent + width, n_segments)
+        segments = [((x[i], y), (x[i + 1], y)) for i in range(n_segments - 1)]
+        collection = LineCollection(
+            segments,
+            cmap=orig_handle.cmap,
+            linewidths=orig_handle.linewidth,
+            transform=trans,
+        )
+        collection.set_array(np.linspace(0.0, 1.0, n_segments - 1))
+        return [collection]
 
 
 def threshold_otsu(data, nbins=256):

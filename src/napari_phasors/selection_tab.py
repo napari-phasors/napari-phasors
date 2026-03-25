@@ -598,6 +598,9 @@ class SelectionWidget(QWidget):
         )
 
         if current_combobox_text == "None":
+            if manual_selection is None or not np.any(manual_selection):
+                return
+
             new_selection_id = self._get_next_available_selection_id()
 
             self._processing_initial_selection = True

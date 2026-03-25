@@ -14,7 +14,7 @@ from phasorpy.lifetime import (
 )
 from phasorpy.phasor import phasor_to_polar
 from qtpy.QtCore import Qt, Signal
-from qtpy.QtGui import QDoubleValidator
+from qtpy.QtGui import QColor, QDoubleValidator
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -29,7 +29,11 @@ from qtpy.QtWidgets import (
 )
 from scipy.stats import binned_statistic_2d
 
-from ._utils import HistogramWidget, update_frequency_in_metadata
+from ._utils import (
+    HistogramWidget,
+    populate_colormap_combobox,
+    update_frequency_in_metadata,
+)
 
 if TYPE_CHECKING:
     import napari
@@ -146,9 +150,20 @@ class PhasorMappingWidget(QWidget):
         colormap_layout.setContentsMargins(0, 0, 0, 0)
         colormap_layout.addWidget(QLabel("Colormap:"))
         self.colormap_combobox = QComboBox()
-        self.colormap_combobox.addItems(list(colormaps.ALL_COLORMAPS.keys()))
-        self.colormap_combobox.setCurrentText(self._phase_colormap_name)
+        populate_colormap_combobox(
+            self.colormap_combobox,
+            include_select_color=True,
+            selected=self._phase_colormap_name,
+        )
         colormap_layout.addWidget(self.colormap_combobox, 1)
+
+        self.custom_color_button = QPushButton()
+        self.custom_color_button.setFixedSize(22, 22)
+        self.custom_color_button.setToolTip("Select custom color")
+        self.custom_color_button.setVisible(False)
+        self.custom_color_button.clicked.connect(self._on_custom_color_clicked)
+        colormap_layout.addWidget(self.custom_color_button)
+
         self.main_layout.addWidget(self.colormap_widget)
 
         self.coloring_checkbox_widget = QWidget()
@@ -221,6 +236,59 @@ class PhasorMappingWidget(QWidget):
         )
         self._sync_mode_widgets()
         self._update_calculate_button_text()
+        self.update_apply_2d_text()
+
+        # Connect to plot type changes in the parent widget
+        if self.parent_widget is not None:
+            self.parent_widget.plotter_inputs_widget.plot_type_combobox.currentTextChanged.connect(
+                self.update_apply_2d_text
+            )
+
+    def update_apply_2d_text(self):
+        """Update the checkbox text based on the current plot type."""
+        plot_type = getattr(self.parent_widget, 'plot_type', 'HISTOGRAM2D')
+        if plot_type == 'SCATTER':
+            suffix = "Scatter plot"
+        elif plot_type == 'CONTOUR':
+            suffix = "Contour plot"
+        else:
+            suffix = "2D Histogram"
+        self.apply_2d_colormap_checkbox.setText(f"Apply colormap to {suffix}")
+
+    def _on_custom_color_clicked(self):
+        """Open a color dialog to select a custom color."""
+        from qtpy.QtWidgets import QColorDialog
+
+        current_color = QColor()
+        # Try to parse the current button color string
+        style = self.custom_color_button.styleSheet()
+        if "background-color: " in style:
+            try:
+                rgb_str = style.split("background-color: ")[1].split(";")[0]
+                if rgb_str.startswith("rgb("):
+                    r, g, b = map(int, rgb_str[4:-1].split(","))
+                    current_color.setRgb(r, g, b)
+            except (ValueError, IndexError):
+                pass
+
+        color = QColorDialog.getColor(
+            current_color, self, "Select Custom Color"
+        )
+        if color.isValid():
+            self._set_custom_color(color)
+            # Find which color name we are updating
+            # In 'solid' mode, we treat the color as a single-color colormap
+            # or we just apply it. For now, we'll store it as a name or similar.
+            # But the existing system uses colormap names.
+            # If "Select color..." is active, we need to handle it.
+            self._on_colormap_combobox_changed("Select color...")
+
+    def _set_custom_color(self, color):
+        """Set the custom color on the button and update internal state."""
+        self.custom_color_button.setStyleSheet(
+            f"background-color: {color.name()};"
+        )
+        self._custom_color = color
 
     def _update_calculate_button_text(self):
         mode = self.output_mode_combobox.currentText()
@@ -332,18 +400,35 @@ class PhasorMappingWidget(QWidget):
             )
 
     def _on_colormap_combobox_changed(self, name: str):
+        self.custom_color_button.setVisible(name == "Select color...")
         output_type = self._get_selected_output_type()
+
+        if name == "Select color..." and not hasattr(self, "_custom_color"):
+            # Set a default initial color if none exists
+            self._set_custom_color(QColor(255, 0, 0))  # Default to red
+
         if output_type == "Phase":
             self._phase_colormap_name = name
         elif output_type == "Modulation":
             self._modulation_colormap_name = name
+
         if (
             output_type in {"Phase", "Modulation"}
             and self.apply_2d_colormap_checkbox.isChecked()
         ):
+            # If "Select color...", create a temporary colormap from the custom color
+            actual_cmap_to_apply = name
+            if name == "Select color...":
+                color_name = self._custom_color.name()
+                # Create a simple colormap that is just this color everywhere
+                # We use a LinearSegmentedColormap which napari can handle
+                actual_cmap_to_apply = LinearSegmentedColormap.from_list(
+                    "custom", [color_name, color_name]
+                )
+
             for layer in self.metric_layers:
                 if layer in self.viewer.layers:
-                    layer.colormap = name
+                    layer.colormap = actual_cmap_to_apply
             self._apply_histogram_coloring(output_type)
 
     def _on_apply_2d_colormap_checkbox_changed(self, state):
@@ -361,6 +446,16 @@ class PhasorMappingWidget(QWidget):
         pw = self.parent_widget
         if pw is not None:
             self._set_histogram_density_visible(pw, True)
+            if getattr(pw, 'plot_type', None) == 'SCATTER':
+                pw.refresh_current_plot()
+            elif getattr(pw, 'plot_type', None) == 'CONTOUR':
+                contour_collections = getattr(pw, '_contour_collections', [])
+                for cs in contour_collections:
+                    if hasattr(cs, 'collections') and len(cs.collections) > 0:
+                        for col in cs.collections:
+                            col.set_visible(True)
+                    elif hasattr(cs, 'set_visible'):
+                        cs.set_visible(True)
             pw.canvas_widget.figure.canvas.draw_idle()
 
     def _get_phasor_mapping_settings(self, layer, create: bool = False):
@@ -1131,15 +1226,26 @@ class PhasorMappingWidget(QWidget):
         hist_artist = pw.canvas_widget.artists.get("HISTOGRAM2D")
         if hist_artist is None:
             return
+
+        if (
+            visible
+            and getattr(pw, 'plot_type', 'HISTOGRAM2D') != 'HISTOGRAM2D'
+        ):
+            return
+
         img = hist_artist._mpl_artists.get("histogram_image")
         if img is not None:
             img.set_visible(visible)
 
     def _remove_overlay(self):
-        if self._overlay_imshow is not None:
+        if getattr(self, '_overlay_imshow', None) is not None:
             with contextlib.suppress(ValueError, AttributeError):
                 self._overlay_imshow.remove()
             self._overlay_imshow = None
+        if getattr(self, '_overlay_clip_patch', None) is not None:
+            with contextlib.suppress(ValueError, AttributeError):
+                self._overlay_clip_patch.remove()
+            self._overlay_clip_patch = None
 
     def _get_clim_from_metric_layers(self):
         for layer in self.metric_layers:
@@ -1167,13 +1273,6 @@ class PhasorMappingWidget(QWidget):
         pw = self.parent_widget
         if pw is None:
             return
-        hist_artist = pw.canvas_widget.artists.get("HISTOGRAM2D")
-        if hist_artist is None:
-            return
-        histogram = hist_artist.histogram
-        if histogram is None:
-            return
-        H, x_edges, y_edges = histogram
 
         features = pw.get_merged_features()
         if features is None:
@@ -1186,6 +1285,139 @@ class PhasorMappingWidget(QWidget):
 
         values = phase if output_type == "Phase" else modulation
 
+        cmap_name = self.colormap_combobox.currentText()
+        if cmap_name == "Select color..." and hasattr(self, "_custom_color"):
+            color_name = self._custom_color.name()
+            cmap = LinearSegmentedColormap.from_list(
+                "custom", [color_name, color_name]
+            )
+        else:
+            cmap = self._napari_cmap_to_mpl(cmap_name)
+        vmin, vmax = self._get_clim_from_metric_layers()
+        if vmin is None or vmax is None:
+            with np.errstate(invalid='ignore'):
+                vmin = float(np.nanmin(values))
+                vmax = float(np.nanmax(values))
+
+        if pw.plot_type == 'SCATTER':
+            self._remove_overlay()
+            scatter_artist = pw.canvas_widget.artists.get("SCATTER")
+            if scatter_artist is not None:
+                sc = scatter_artist._mpl_artists.get("scatter")
+                if sc is not None:
+                    sc.set_array(values)
+                    sc.set_cmap(cmap)
+                    sc.set_clim(vmin, vmax)
+                    pw.canvas_widget.figure.canvas.draw_idle()
+            return
+
+        if pw.plot_type == 'CONTOUR':
+            ax = pw.canvas_widget.axes
+            range_xlim = ax.get_xlim()
+            range_ylim = ax.get_ylim()
+
+            x_fine = np.linspace(range_xlim[0], range_xlim[1], 500)
+            y_fine = np.linspace(range_ylim[0], range_ylim[1], 500)
+            X, Y = np.meshgrid(x_fine, y_fine)
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                p_grid, m_grid = phasor_to_polar(X, Y)
+
+            stat_display = p_grid if output_type == "Phase" else m_grid
+            extent = [
+                range_xlim[0],
+                range_xlim[1],
+                range_ylim[0],
+                range_ylim[1],
+            ]
+
+            import matplotlib.patches as mpatches
+            import matplotlib.path as mpath
+
+            # Get paths and hide contours first
+            contour_collections = getattr(pw, '_contour_collections', [])
+            min_paths = []
+            if contour_collections:
+                for cs in contour_collections:
+                    if hasattr(cs, 'collections') and len(cs.collections) > 0:
+                        # Matplotlib < 3.8: collections is a list of LineCollections per level
+                        for col in cs.collections:
+                            for p in col.get_paths():
+                                if (
+                                    p.vertices is not None
+                                    and len(p.vertices) > 0
+                                ):
+                                    vertices = p.vertices
+                                    codes = p.codes
+                                    if codes is None:
+                                        codes = np.full(
+                                            len(vertices), mpath.Path.LINETO
+                                        )
+                                        codes[0] = mpath.Path.MOVETO
+                                    min_paths.append((vertices, codes))
+                            col.set_visible(False)
+                    elif hasattr(cs, 'get_paths'):
+                        # Matplotlib >= 3.8: get_paths() returns a list of Paths, one per level
+                        for p in cs.get_paths():
+                            if p.vertices is not None and len(p.vertices) > 0:
+                                vertices = p.vertices
+                                codes = p.codes
+                                if codes is None:
+                                    codes = np.full(
+                                        len(vertices), mpath.Path.LINETO
+                                    )
+                                    codes[0] = mpath.Path.MOVETO
+                                min_paths.append((vertices, codes))
+                        cs.set_visible(False)
+
+            if not min_paths:
+                # If no contours found or they don't have paths, don't show the mesh overlay
+                self._remove_overlay()
+                self._set_histogram_density_visible(
+                    pw, pw.plot_type == 'HISTOGRAM2D'
+                )
+                pw.canvas_widget.figure.canvas.draw_idle()
+                return
+
+            self._remove_overlay()
+            self._set_histogram_density_visible(pw, False)
+
+            self._overlay_imshow = ax.imshow(
+                stat_display,
+                extent=extent,
+                origin="lower",
+                cmap=cmap,
+                vmin=vmin,
+                vmax=vmax,
+                interpolation="bilinear",
+                zorder=1.5,
+                alpha=1.0,
+                aspect="auto",
+            )
+
+            all_v = np.concatenate([v for v, c in min_paths])
+            all_c = np.concatenate([c for v, c in min_paths])
+            compound_path = mpath.Path(all_v, all_c)
+            patch = mpatches.PathPatch(
+                compound_path,
+                transform=ax.transData,
+                facecolor='none',
+                edgecolor='none',
+            )
+            ax.add_patch(patch)
+            self._overlay_imshow.set_clip_path(patch)
+            self._overlay_clip_patch = patch
+
+            ax.set_aspect(1, adjustable="box")
+            pw.canvas_widget.figure.canvas.draw_idle()
+            return
+
+        hist_artist = pw.canvas_widget.artists.get("HISTOGRAM2D")
+        if hist_artist is None or hist_artist.histogram is None:
+            return
+        H, x_edges, y_edges = hist_artist.histogram
+
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
             stat, _, _, _ = binned_statistic_2d(
@@ -1196,15 +1428,33 @@ class PhasorMappingWidget(QWidget):
                 bins=[x_edges, y_edges],
             )
 
-        stat[H == 0] = np.nan
+        mask = np.isnan(H) | (H <= 0)
+        zorder = 3
+        if pw.plot_type == 'CONTOUR':
+            zorder = 1.5
+            contour_collections = getattr(pw, '_contour_collections', [])
+            if contour_collections:
+                min_levels = []
+                for cs in contour_collections:
+                    if hasattr(cs, 'levels') and len(cs.levels) > 0:
+                        min_levels.append(cs.levels[0])
+                if min_levels:
+                    lowest_level = min(min_levels)
+                    mask = lowest_level > H
+
+        stat[mask] = np.nan
         stat_display = stat.T
         if np.all(np.isnan(stat_display)):
             return
 
-        cmap = self._napari_cmap_to_mpl(self.colormap_combobox.currentText())
-        vmin, vmax = self._get_clim_from_metric_layers()
-        if vmin is None or vmax is None:
-            with np.errstate(invalid='ignore'):
+        # Ensure vmin, vmax match the calculated stat range if none was available
+        with np.errstate(invalid='ignore'):
+            if (
+                vmin is None
+                or vmax is None
+                or not np.isfinite(vmin)
+                or not np.isfinite(vmax)
+            ):
                 vmin = float(np.nanmin(stat_display))
                 vmax = float(np.nanmax(stat_display))
 
@@ -1213,6 +1463,7 @@ class PhasorMappingWidget(QWidget):
 
         self._remove_overlay()
         self._set_histogram_density_visible(pw, False)
+
         self._overlay_imshow = ax.imshow(
             stat_display,
             extent=extent,
@@ -1221,7 +1472,7 @@ class PhasorMappingWidget(QWidget):
             vmin=vmin,
             vmax=vmax,
             interpolation="nearest",
-            zorder=3,
+            zorder=zorder,
             alpha=1.0,
             aspect="auto",
         )

@@ -149,6 +149,34 @@
         </widget>
        </item>
 
+       <!-- Contour Plot Elements -->
+       <item row="9" column="0">
+        <widget class="QLabel" name="label_contour_levels">
+         <property name="text"><string>Levels:</string></property>
+        </widget>
+       </item>
+       <item row="9" column="1">
+        <widget class="QSpinBox" name="contour_levels_spinbox">
+         <property name="minimum"><number>1</number></property>
+         <property name="maximum"><number>100</number></property>
+         <property name="value"><number>10</number></property>
+        </widget>
+       </item>
+
+       <item row="10" column="0">
+        <widget class="QLabel" name="label_contour_linewidth">
+         <property name="text"><string>Linewidth:</string></property>
+        </widget>
+       </item>
+       <item row="10" column="1">
+        <widget class="QDoubleSpinBox" name="contour_linewidth_spinbox">
+         <property name="minimum"><double>0.1</double></property>
+         <property name="maximum"><double>10.0</double></property>
+         <property name="singleStep"><double>0.5</double></property>
+         <property name="value"><double>1.0</double></property>
+        </widget>
+       </item>
+
       </layout>
      </widget>
     </widget>
