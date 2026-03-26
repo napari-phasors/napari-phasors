@@ -1265,7 +1265,9 @@ class PlotterWidget(QWidget):
         self._contour_layer_styles = {}
         self._contour_group_styles = {}
         self._contour_show_legend = False
-        self.toggle_semi_circle = True
+        self.toggle_semi_circle = (
+            True  # default: semicircle shown (toggle OFF)
+        )
         self.colorbar = None
         self._colormap = self.canvas_widget.artists[
             'HISTOGRAM2D'
@@ -2500,13 +2502,20 @@ class PlotterWidget(QWidget):
             self._histogram_dock.raise_()
 
     def _on_semi_circle_changed(self, checked):
-        """Callback for semi circle checkbox change."""
-        self._update_setting_in_metadata('semi_circle', bool(checked))
+        """Callback for semi circle checkbox change.
+
+        The toggle is a 'Full Polar Plot' toggle: ON means full circle,
+        OFF (default) means semicircle. Internally `toggle_semi_circle`
+        still means 'semicircle is active', so we invert the checkbox state.
+        """
+        # toggle_semi_circle==True means semicircle; checked==True means full circle
+        semicircle_active = not bool(checked)
+        self._update_setting_in_metadata('semi_circle', semicircle_active)
         if not self._updating_settings:
             # Clear user zoom so _redefine_axes_limits computes correct
             # default limits for the new mode and updates the toolbar home.
             self._user_axes_limits = None
-            self.toggle_semi_circle = bool(checked)
+            self.toggle_semi_circle = semicircle_active
 
     def _on_harmonic_changed(self, value):
         """Callback for harmonic spinbox change."""
@@ -3220,19 +3229,28 @@ class PlotterWidget(QWidget):
 
     @property
     def toggle_semi_circle(self):
-        """Gets the display semi circle value from the semi circle checkbox.
+        """Gets whether the semicircle (not full circle) is being displayed.
+
+        The UI toggle is a 'Full Polar Plot' toggle (ON = full circle,
+        OFF = semicircle). Internally, True means 'semicircle is active',
+        so we invert the checkbox state.
 
         Returns
         -------
         bool
-            The display semi circle value.
+            True if the semicircle is displayed, False if the full circle.
         """
-        return self.plotter_inputs_widget.semi_circle_checkbox.isChecked()
+        return not self.plotter_inputs_widget.semi_circle_checkbox.isChecked()
 
     @toggle_semi_circle.setter
     def toggle_semi_circle(self, value: bool):
-        """Sets the display semi circle value from the semi circle checkbox."""
-        self.plotter_inputs_widget.semi_circle_checkbox.setChecked(value)
+        """Sets whether the semicircle (True) or full circle (False) is shown.
+
+        The UI toggle is inverted: checkbox ON = full circle (value=False),
+        checkbox OFF = semicircle (value=True).
+        """
+        # Invert: checkbox ON means full circle (not semicircle)
+        self.plotter_inputs_widget.semi_circle_checkbox.setChecked(not value)
         if value:
             self._update_polar_plot(self.canvas_widget.axes, visible=False)
             self._update_semi_circle_plot(self.canvas_widget.axes)
