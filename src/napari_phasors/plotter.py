@@ -18,8 +18,8 @@ from napari.utils import colormaps, notifications
 from phasorpy.lifetime import phasor_from_lifetime
 from qtpy import uic
 from qtpy.QtCore import QEvent, Qt, QTimer
+from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -38,6 +38,7 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from superqt import QToggleSwitch
 
 from ._utils import (
     CheckableComboBox,
@@ -271,7 +272,8 @@ class ContourLayerSettingsDialog(QDialog):
         self._merged_colormap_layout.addWidget(self._merged_color_btn)
         root.addLayout(self._merged_colormap_layout)
 
-        self._show_legend_checkbox = QCheckBox("Show legend")
+        self._show_legend_checkbox = QToggleSwitch("Show legend")
+        self._show_legend_checkbox.onColor = QColor("#27ae60")  # Nice Green
         self._show_legend_checkbox.setChecked(bool(show_legend))
         root.addWidget(self._show_legend_checkbox)
 
@@ -1056,6 +1058,15 @@ class PlotterWidget(QWidget):
             Path(__file__).parent / "ui/plotter_inputs_widget.ui",
             self.plotter_inputs_widget,
         )
+        # Set toggle colors
+        for attr in [
+            'semi_circle_checkbox',
+            'white_background_checkbox',
+            'log_scale_checkbox',
+        ]:
+            getattr(self.plotter_inputs_widget, attr).onColor = QColor(
+                "#27ae60"
+            )
         self.settings_tab.layout().addWidget(self.plotter_inputs_widget)
         self.setMinimumSize(300, 400)
 
@@ -1102,7 +1113,7 @@ class PlotterWidget(QWidget):
         self.mask_layer_combobox.currentTextChanged.connect(
             self._on_mask_layer_changed
         )
-        self.plotter_inputs_widget.semi_circle_checkbox.stateChanged.connect(
+        self.plotter_inputs_widget.semi_circle_checkbox.toggled.connect(
             self._on_semi_circle_changed
         )
         self.harmonic_spinbox.valueChanged.connect(self._on_harmonic_changed)
@@ -1115,10 +1126,10 @@ class PlotterWidget(QWidget):
         self.plotter_inputs_widget.number_of_bins_spinbox.valueChanged.connect(
             self._on_bins_changed
         )
-        self.plotter_inputs_widget.log_scale_checkbox.stateChanged.connect(
+        self.plotter_inputs_widget.log_scale_checkbox.toggled.connect(
             self._on_log_scale_changed
         )
-        self.plotter_inputs_widget.white_background_checkbox.stateChanged.connect(
+        self.plotter_inputs_widget.white_background_checkbox.toggled.connect(
             self._on_white_background_changed
         )
 
@@ -1757,7 +1768,8 @@ class PlotterWidget(QWidget):
         # Frequency checkbox (always show if frequency exists in settings)
         frequency_cb = None
         if source_settings is not None and "frequency" in source_settings:
-            frequency_cb = QCheckBox("Frequency")
+            frequency_cb = QToggleSwitch("Frequency")
+            frequency_cb.onColor = QColor("#27ae60")  # Nice Green
             frequency_cb.setChecked(
                 default_checked is None
                 or "frequency"
@@ -1806,7 +1818,8 @@ class PlotterWidget(QWidget):
                 show_tab = settings_key in source_settings
 
             if show_tab:
-                cb = QCheckBox(label)
+                cb = QToggleSwitch(label)
+                cb.onColor = QColor("#27ae60")  # Nice Green
                 cb.setChecked(
                     default_checked is None
                     or attr
@@ -2440,14 +2453,14 @@ class PlotterWidget(QWidget):
         with contextlib.suppress(AttributeError, RuntimeError):
             self._histogram_dock.raise_()
 
-    def _on_semi_circle_changed(self, state):
+    def _on_semi_circle_changed(self, checked):
         """Callback for semi circle checkbox change."""
-        self._update_setting_in_metadata('semi_circle', bool(state))
+        self._update_setting_in_metadata('semi_circle', bool(checked))
         if not self._updating_settings:
             # Clear user zoom so _redefine_axes_limits computes correct
             # default limits for the new mode and updates the toolbar home.
             self._user_axes_limits = None
-            self.toggle_semi_circle = bool(state)
+            self.toggle_semi_circle = bool(checked)
 
     def _on_harmonic_changed(self, value):
         """Callback for harmonic spinbox change."""
@@ -2957,16 +2970,17 @@ class PlotterWidget(QWidget):
             )
             self.refresh_current_plot()
 
-    def _on_log_scale_changed(self, state):
+    def _on_log_scale_changed(self, checked):
         """Callback for log scale change."""
-        self._update_setting_in_metadata('log_scale', bool(state))
+        self._update_setting_in_metadata('log_scale', bool(checked))
         if not self._updating_settings and self.plot_type == 'HISTOGRAM2D':
             self._refresh_plot_safely_for_log_scale()
 
-    def _on_white_background_changed(self, state):
+    def _on_white_background_changed(self, checked):
         """Callback for white background checkbox change."""
-        self._update_setting_in_metadata('white_background', bool(state))
+        self._update_setting_in_metadata('white_background', bool(checked))
         if not self._updating_settings:
+            self.white_background = bool(checked)
             self.set_axes_labels()
             self._update_plot_bg_color()
 

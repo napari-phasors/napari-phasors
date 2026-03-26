@@ -15,7 +15,6 @@ from qtpy import uic
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
-    QCheckBox,
     QColorDialog,
     QComboBox,
     QDoubleSpinBox,
@@ -29,6 +28,7 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from superqt import QToggleSwitch
 
 from ._utils import colormap_to_dict
 
@@ -1780,9 +1780,10 @@ class CircularCursorWidget(QWidget):
         self.autoupdate_checkbox = QWidget()
         autoupdate_layout = QHBoxLayout(self.autoupdate_checkbox)
         autoupdate_layout.setContentsMargins(0, 0, 0, 0)
-        self.autoupdate_check = QCheckBox("Autoupdate")
+        self.autoupdate_check = QToggleSwitch("Autoupdate")
+        self.autoupdate_check.onColor = QColor("#27ae60")  # Nice Green
         self.autoupdate_check.setChecked(False)
-        self.autoupdate_check.stateChanged.connect(self._on_autoupdate_changed)
+        self.autoupdate_check.toggled.connect(self._on_autoupdate_changed)
         autoupdate_layout.addWidget(self.autoupdate_check)
         calculate_layout.addWidget(self.autoupdate_checkbox)
 
@@ -2253,7 +2254,7 @@ class CircularCursorWidget(QWidget):
         if self._cursors:
             self._apply_selection()
 
-    def _on_autoupdate_changed(self, state):
+    def _on_autoupdate_changed(self, checked):
         """Handle Autoupdate checkbox state change."""
         self._autoupdate_enabled = self.autoupdate_check.isChecked()
         # Enable/disable calculate button based on autoupdate state
