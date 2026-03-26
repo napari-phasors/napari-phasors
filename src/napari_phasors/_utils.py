@@ -86,6 +86,39 @@ def resolve_colormap_by_name(cmap_name):
         return None
 
 
+def create_napari_colormap_from_qcolor(color: QColor, name: str = "custom"):
+    """Create a napari Colormap ramp from black to the given QColor."""
+    from napari.utils import colormaps as napari_colormaps
+
+    r, g, b, a = color.getRgbF()
+    rgba = np.array([[0.0, 0.0, 0.0, a], [r, g, b, a]], dtype=np.float32)
+    return napari_colormaps.Colormap(colors=rgba, name=name)
+
+
+def create_mpl_colormap_from_qcolor(color: QColor, name: str = "custom"):
+    """Create a Matplotlib colormap ramp from black to the given QColor."""
+    return LinearSegmentedColormap.from_list(
+        name, [(0.0, 0.0, 0.0), color.name()]
+    )
+
+
+def resolve_napari_layer_colormap(
+    cmap_name,
+    *,
+    custom_color: QColor | None = None,
+    sentinel: str = "Select color...",
+):
+    """Resolve combobox selection to a napari layer-compatible colormap.
+
+    Returns either a valid colormap name string or a napari Colormap object.
+    """
+    if cmap_name != sentinel:
+        return cmap_name
+    if custom_color is None:
+        return None
+    return create_napari_colormap_from_qcolor(custom_color)
+
+
 def create_colormap_icon(cmap_name, width=72, height=14):
     """Create a QIcon representing the colormap."""
     pixmap = QPixmap(width, height)

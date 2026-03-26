@@ -2,11 +2,8 @@ import contextlib
 import warnings
 from typing import TYPE_CHECKING
 
-import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.colors import LinearSegmentedColormap
 from napari.layers import Image
-from napari.utils import colormaps
 from napari.utils.notifications import show_error, show_warning
 from phasorpy.lifetime import (
     phasor_to_apparent_lifetime,
@@ -31,7 +28,10 @@ from scipy.stats import binned_statistic_2d
 
 from ._utils import (
     HistogramWidget,
+    create_mpl_colormap_from_qcolor,
     populate_colormap_combobox,
+    resolve_colormap_by_name,
+    resolve_napari_layer_colormap,
     update_frequency_in_metadata,
 )
 
@@ -425,28 +425,15 @@ class PhasorMappingWidget(QWidget):
 
     def _resolve_layer_colormap(self, cmap_name: str):
         """Return a napari-compatible colormap value for image layers."""
-        if cmap_name != "Select color...":
-            return cmap_name
-
         if not hasattr(self, "_custom_color"):
             self._set_custom_color(QColor(255, 0, 0))
 
-        return self._create_napari_colormap_from_qcolor(self._custom_color)
-
-    @staticmethod
-    def _create_napari_colormap_from_qcolor(color: QColor):
-        """Create a napari Colormap ramp from black to the selected QColor."""
-        r, g, b, a = color.getRgbF()
-        rgba = np.array([[0.0, 0.0, 0.0, a], [r, g, b, a]], dtype=np.float32)
-        return colormaps.Colormap(colors=rgba, name="custom")
-
-    @staticmethod
-    def _create_mpl_colormap_from_qcolor(color: QColor):
-        """Create a Matplotlib colormap ramp from black to the selected QColor."""
-        color_name = color.name()
-        return LinearSegmentedColormap.from_list(
-            "custom", [(0.0, 0.0, 0.0), color_name]
+        resolved = resolve_napari_layer_colormap(
+            cmap_name,
+            custom_color=self._custom_color,
+            sentinel="Select color...",
         )
+        return cmap_name if resolved is None else resolved
 
     def _on_apply_2d_colormap_checkbox_changed(self, state):
         output_type = self._get_selected_output_type()
@@ -1276,16 +1263,6 @@ class PhasorMappingWidget(QWidget):
                     return float(vmin), float(vmax)
         return None, None
 
-    @staticmethod
-    def _napari_cmap_to_mpl(name: str):
-        if name in colormaps.ALL_COLORMAPS:
-            napari_cmap = colormaps.ALL_COLORMAPS[name]
-            return LinearSegmentedColormap.from_list(name, napari_cmap.colors)
-        try:
-            return plt.get_cmap(name)
-        except ValueError:
-            return plt.get_cmap("viridis")
-
     def _apply_histogram_coloring(self, output_type: str):
         if output_type not in {"Phase", "Modulation"}:
             return
@@ -1306,9 +1283,11 @@ class PhasorMappingWidget(QWidget):
 
         cmap_name = self.colormap_combobox.currentText()
         if cmap_name == "Select color..." and hasattr(self, "_custom_color"):
-            cmap = self._create_mpl_colormap_from_qcolor(self._custom_color)
+            cmap = create_mpl_colormap_from_qcolor(self._custom_color)
         else:
-            cmap = self._napari_cmap_to_mpl(cmap_name)
+            cmap = resolve_colormap_by_name(cmap_name)
+            if cmap is None:
+                cmap = resolve_colormap_by_name("viridis")
         vmin, vmax = self._get_clim_from_metric_layers()
         if vmin is None or vmax is None:
             with np.errstate(invalid='ignore'):
