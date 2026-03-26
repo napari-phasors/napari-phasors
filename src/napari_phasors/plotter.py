@@ -2699,15 +2699,6 @@ class PlotterWidget(QWidget):
         )
         self._update_single_contour_color_button()
 
-    def _populate_main_colormap_combobox(
-        self, include_select_color=True, selected=None
-    ):
-        populate_colormap_combobox(
-            self.plotter_inputs_widget.colormap_combobox,
-            include_select_color=include_select_color,
-            selected=selected,
-        )
-
     def _on_single_contour_color_clicked(self):
         from qtpy.QtWidgets import QColorDialog
 

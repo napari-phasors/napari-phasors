@@ -416,20 +416,37 @@ class PhasorMappingWidget(QWidget):
             output_type in {"Phase", "Modulation"}
             and self.apply_2d_colormap_checkbox.isChecked()
         ):
-            # If "Select color...", create a temporary colormap from the custom color
-            actual_cmap_to_apply = name
-            if name == "Select color...":
-                color_name = self._custom_color.name()
-                # Create a simple colormap that is just this color everywhere
-                # We use a LinearSegmentedColormap which napari can handle
-                actual_cmap_to_apply = LinearSegmentedColormap.from_list(
-                    "custom", [color_name, color_name]
-                )
+            actual_cmap_to_apply = self._resolve_layer_colormap(name)
 
             for layer in self.metric_layers:
                 if layer in self.viewer.layers:
                     layer.colormap = actual_cmap_to_apply
             self._apply_histogram_coloring(output_type)
+
+    def _resolve_layer_colormap(self, cmap_name: str):
+        """Return a napari-compatible colormap value for image layers."""
+        if cmap_name != "Select color...":
+            return cmap_name
+
+        if not hasattr(self, "_custom_color"):
+            self._set_custom_color(QColor(255, 0, 0))
+
+        return self._create_napari_colormap_from_qcolor(self._custom_color)
+
+    @staticmethod
+    def _create_napari_colormap_from_qcolor(color: QColor):
+        """Create a napari Colormap ramp from black to the selected QColor."""
+        r, g, b, a = color.getRgbF()
+        rgba = np.array([[0.0, 0.0, 0.0, a], [r, g, b, a]], dtype=np.float32)
+        return colormaps.Colormap(colors=rgba, name="custom")
+
+    @staticmethod
+    def _create_mpl_colormap_from_qcolor(color: QColor):
+        """Create a Matplotlib colormap ramp from black to the selected QColor."""
+        color_name = color.name()
+        return LinearSegmentedColormap.from_list(
+            "custom", [(0.0, 0.0, 0.0), color_name]
+        )
 
     def _on_apply_2d_colormap_checkbox_changed(self, state):
         output_type = self._get_selected_output_type()
@@ -913,7 +930,9 @@ class PhasorMappingWidget(QWidget):
 
         output_type = self._get_selected_output_type()
         if output_type in {"Phase", "Modulation"}:
-            cmap_name = self.colormap_combobox.currentText()
+            cmap_name = self._resolve_layer_colormap(
+                self.colormap_combobox.currentText()
+            )
         else:
             cmap_name = self._get_output_colormap_name(output_type)
 
@@ -1287,10 +1306,7 @@ class PhasorMappingWidget(QWidget):
 
         cmap_name = self.colormap_combobox.currentText()
         if cmap_name == "Select color..." and hasattr(self, "_custom_color"):
-            color_name = self._custom_color.name()
-            cmap = LinearSegmentedColormap.from_list(
-                "custom", [color_name, color_name]
-            )
+            cmap = self._create_mpl_colormap_from_qcolor(self._custom_color)
         else:
             cmap = self._napari_cmap_to_mpl(cmap_name)
         vmin, vmax = self._get_clim_from_metric_layers()

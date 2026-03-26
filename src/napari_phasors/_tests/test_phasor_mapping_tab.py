@@ -11,6 +11,7 @@ from phasorpy.lifetime import (
 )
 from phasorpy.phasor import phasor_to_polar
 from qtpy.QtCore import Qt
+from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -1472,6 +1473,50 @@ def test_phasor_mapping_widget_phase_modulation_layer_display(
     assert modulation_layer_name in viewer.layers
     modulation_layer = viewer.layers[modulation_layer_name]
     assert modulation_layer.colormap.name == "plasma"
+
+
+def test_phasor_mapping_widget_select_color_uses_napari_colormap(
+    make_napari_viewer,
+):
+    """Sentinel colormap entry should resolve to a real napari colormap."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+
+    mapping_widget.output_mode_combobox.setCurrentText("Phase")
+    mapping_widget._set_custom_color(QColor(12, 34, 56))
+    mapping_widget.colormap_combobox.setCurrentText("Select color...")
+    mapping_widget._on_calculate_lifetime_clicked()
+
+    phase_layer_name = f"Phase: {layer.name}"
+    assert phase_layer_name in viewer.layers
+    phase_layer = viewer.layers[phase_layer_name]
+
+    assert hasattr(phase_layer.colormap, "colors")
+    assert phase_layer.colormap.name != "Select color..."
+    expected = np.array([12 / 255, 34 / 255, 56 / 255], dtype=np.float32)
+    np.testing.assert_allclose(
+        phase_layer.colormap.colors[-1][:3], expected, atol=1e-3
+    )
+    np.testing.assert_allclose(
+        phase_layer.colormap.colors[0][:3], np.zeros(3), atol=1e-6
+    )
+
+    mapping_widget.apply_2d_colormap_checkbox.setChecked(True)
+    mapping_widget._set_custom_color(QColor(100, 50, 25))
+    mapping_widget._on_colormap_combobox_changed("Select color...")
+
+    updated_expected = np.array(
+        [100 / 255, 50 / 255, 25 / 255], dtype=np.float32
+    )
+    np.testing.assert_allclose(
+        phase_layer.colormap.colors[-1][:3], updated_expected, atol=1e-3
+    )
+    assert phase_layer.colormap.name != "Select color..."
 
 
 def test_phasor_mapping_histogram_overlay_checkbox_lifecycle(

@@ -538,6 +538,59 @@ def test_plot_type_ui_toggles(make_napari_viewer):
     plotter.deleteLater()
 
 
+def test_contour_plot_creates_and_cleans_collections(make_napari_viewer):
+    """Contour mode should create contour artists and clean them when mode changes."""
+    viewer = make_napari_viewer()
+    layer1 = create_image_layer_with_phasors()
+    layer2 = create_image_layer_with_phasors()
+    viewer.add_layer(layer1)
+    viewer.add_layer(layer2)
+    plotter = PlotterWidget(viewer)
+
+    def contour_artists_in_axes():
+        return [
+            artist
+            for artist in plotter.canvas_widget.axes.collections
+            if artist.get_label() == 'contour_plot_element'
+        ]
+
+    # Single-layer contour render with real phasor data.
+    plotter.image_layers_checkable_combobox.setCheckedItems([layer1.name])
+    plotter._process_layer_selection_change()
+    plotter.plot_type = 'CONTOUR'
+    plotter.plot()
+
+    assert len(plotter._contour_collections) > 0
+    assert len(contour_artists_in_axes()) > 0
+
+    # Multi-layer contour render should also succeed without exceptions.
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [layer1.name, layer2.name]
+    )
+    plotter._process_layer_selection_change()
+    plotter.plot_type = 'CONTOUR'
+    plotter.plot()
+
+    assert len(plotter._contour_collections) > 0
+    assert len(contour_artists_in_axes()) > 0
+
+    # Switching away from contour should remove tracked collections.
+    plotter.plot_type = 'SCATTER'
+    plotter.plot()
+
+    assert plotter._contour_collections == []
+    assert len(contour_artists_in_axes()) == 0
+
+    # Switching back recreates contour artists.
+    plotter.plot_type = 'CONTOUR'
+    plotter.plot()
+
+    assert len(plotter._contour_collections) > 0
+    assert len(contour_artists_in_axes()) > 0
+
+    plotter.deleteLater()
+
+
 def test_add_layer_without_phasor_features_does_not_trigger_plot_or_combobox(
     make_napari_viewer,
 ):
