@@ -5,7 +5,6 @@ from matplotlib.figure import Figure
 from napari.layers import Image
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QHBoxLayout,
@@ -16,7 +15,7 @@ from qtpy.QtWidgets import (
     QSpinBox,
     QVBoxLayout,
 )
-from superqt import QRangeSlider
+from superqt import QRangeSlider, QToggleSwitch
 
 from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
 from napari_phasors.filter_tab import FilterWidget
@@ -68,8 +67,8 @@ def test_filter_widget_initialization_values(make_napari_viewer):
 
     # Test log scale checkbox
     assert hasattr(filter_widget, 'log_scale_checkbox')
-    assert isinstance(filter_widget.log_scale_checkbox, QCheckBox)
-    assert filter_widget.log_scale_checkbox.text() == "Log Scale"
+    assert isinstance(filter_widget.log_scale_checkbox, QToggleSwitch)
+    assert filter_widget.log_scale_checkbox.text() == "Log Scale Histogram"
     assert (
         not filter_widget.log_scale_checkbox.isChecked()
     )  # Should start unchecked
