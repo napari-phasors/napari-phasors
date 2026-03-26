@@ -589,7 +589,7 @@ class FretWidget(QWidget):
 
         self._on_parameters_changed()
 
-    def _on_colormap_checkbox_changed(self, checked):
+    def _on_colormap_checkbox_changed(self, checked=None):
         """Handle colormap checkbox state change."""
         self.use_colormap = self.colormap_checkbox.isChecked()
 
