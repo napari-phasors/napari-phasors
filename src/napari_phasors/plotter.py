@@ -1414,6 +1414,52 @@ class PlotterWidget(QWidget):
         available_h = self.canvas_container.height()
         side = max(min(available_w, available_h), 1)
         self.canvas_widget.setFixedSize(side, side)
+        self._update_text_sizes_for_canvas(side)
+
+    @staticmethod
+    def _compute_font_size(side):
+        """Return a font size scaled linearly with canvas side length.
+
+        The mapping is anchored so that a 300 px canvas → 7 pt and an
+        800 px canvas → 14 pt, clamped to [6, 18].
+        """
+        fs = 7.0 + (side - 300) * (14.0 - 7.0) / (800.0 - 300.0)
+        return max(6.0, min(18.0, fs))
+
+    def _update_text_sizes_for_canvas(self, side):
+        """Update all matplotlib text sizes proportionally to canvas *side* (px).
+
+        Covers: axis labels, axis tick labels, semicircle lifetime tick labels,
+        and colorbar label + tick labels.
+        """
+        if not hasattr(self, 'canvas_widget'):
+            return
+
+        fs = self._compute_font_size(side)
+
+        # --- Axis labels & tick labels ---
+        for artist_name in ('SCATTER', 'HISTOGRAM2D'):
+            artist = self.canvas_widget.artists.get(artist_name)
+            if artist is None:
+                continue
+            ax = artist.ax
+            ax.xaxis.label.set_size(fs)
+            ax.yaxis.label.set_size(fs)
+            ax.tick_params(axis='both', which='both', labelsize=fs)
+
+        # --- Semicircle lifetime tick labels ---
+        for artist in getattr(self, 'semi_circle_plot_artist_list', []):
+            if hasattr(artist, 'set_fontsize'):
+                artist.set_fontsize(fs * 0.75)
+
+        # --- Colorbar label & tick labels ---
+        if getattr(self, 'colorbar', None) is not None:
+            self.colorbar.ax.yaxis.label.set_size(fs)
+            self.colorbar.ax.tick_params(axis='y', which='both', labelsize=fs)
+            for tick_label in self.colorbar.ax.get_yticklabels():
+                tick_label.set_fontsize(fs)
+
+        self.canvas_widget.figure.canvas.draw_idle()
 
     def get_selected_layer_names(self):
         """Get the names of all selected (checked) layers.
@@ -3371,11 +3417,17 @@ class PlotterWidget(QWidget):
 
             text_color = tick_color
 
+            side = (
+                self.canvas_widget.width()
+                if hasattr(self, 'canvas_widget')
+                else 300
+            )
+            label_fontsize = self._compute_font_size(side) * 0.75
             label = ax.text(
                 label_x,
                 label_y,
                 label_text,
-                fontsize=8,
+                fontsize=label_fontsize,
                 ha='center',
                 va='center',
                 color=text_color,
@@ -3479,7 +3531,7 @@ class PlotterWidget(QWidget):
             return
         if self.toggle_semi_circle:
             self.canvas_widget.axes.set_xlim([-0.1, 1.1])
-            self.canvas_widget.axes.set_ylim([-0.1, 0.6])
+            self.canvas_widget.axes.set_ylim([-0.1, 0.7])
 
             if (
                 hasattr(self.canvas_widget, 'toolbar')
@@ -4880,25 +4932,27 @@ class PlotterWidget(QWidget):
     def set_axes_labels(self):
         """Set the axes labels in the canvas widget."""
         text_color = "white"
+        side = getattr(self.canvas_widget, 'width', lambda: 300)()
+        fs = self._compute_font_size(side)
 
         self.canvas_widget.artists['SCATTER'].ax.set_xlabel(
-            "G", color=text_color, fontweight='bold'
+            "G", color=text_color, fontweight='bold', fontsize=fs
         )
         self.canvas_widget.artists['SCATTER'].ax.set_ylabel(
-            "S", color=text_color, fontweight='bold'
+            "S", color=text_color, fontweight='bold', fontsize=fs
         )
         self.canvas_widget.artists['HISTOGRAM2D'].ax.set_xlabel(
-            "G", color=text_color, fontweight='bold'
+            "G", color=text_color, fontweight='bold', fontsize=fs
         )
         self.canvas_widget.artists['HISTOGRAM2D'].ax.set_ylabel(
-            "S", color=text_color, fontweight='bold'
+            "S", color=text_color, fontweight='bold', fontsize=fs
         )
 
         self.canvas_widget.artists['SCATTER'].ax.tick_params(
-            colors=text_color, which='both'
+            colors=text_color, which='both', labelsize=fs
         )
         self.canvas_widget.artists['HISTOGRAM2D'].ax.tick_params(
-            colors=text_color, which='both'
+            colors=text_color, which='both', labelsize=fs
         )
 
         for spine in self.canvas_widget.artists['SCATTER'].ax.spines.values():
@@ -5652,11 +5706,16 @@ class PlotterWidget(QWidget):
 
     def set_colorbar_style(self, color="white"):
         """Set the colorbar style in the canvas widget."""
+        side = getattr(self.canvas_widget, 'width', lambda: 300)()
+        fs = self._compute_font_size(side)
+
         # Color the ticks and their labels (both major and minor for log scale)
         self.colorbar.ax.yaxis.set_tick_params(
             color=color, labelcolor=color, which='both'
         )
-        self.colorbar.ax.tick_params(axis='y', colors=color, which='both')
+        self.colorbar.ax.tick_params(
+            axis='y', colors=color, which='both', labelsize=fs
+        )
 
         # Color the bounding box (outline)
         self.colorbar.outline.set_edgecolor(color)
@@ -5665,17 +5724,18 @@ class PlotterWidget(QWidget):
         for spine in self.colorbar.ax.spines.values():
             spine.set_edgecolor(color)
 
-        # Set the label with correct color
+        # Set the label with correct color and scaled font size
         label_text = (
             "Log10(Count)"
             if isinstance(self.colorbar.norm, LogNorm)
             else "Count"
         )
-        self.colorbar.set_label(label_text, color=color)
+        self.colorbar.set_label(label_text, color=color, fontsize=fs)
 
         # Force update of tick labels (sometimes needed for older matplotlib)
         for tick_label in self.colorbar.ax.get_yticklabels():
             tick_label.set_color(color)
+            tick_label.set_fontsize(fs)
 
     def closeEvent(self, event):
         """Clean up signal connections and child widgets before closing."""
