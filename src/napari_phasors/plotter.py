@@ -5606,7 +5606,9 @@ class PlotterWidget(QWidget):
             ).items():
                 if hasattr(artist, 'visible'):
                     artist.visible = False
-            self.canvas_widget.active_artist = None
+            with contextlib.suppress(AttributeError, TypeError):
+                # Fallback for biaplotter < 0.4.2 which doesn't support None
+                self.canvas_widget.active_artist = None
 
         else:
             # Hide contour items when switching away
