@@ -1365,6 +1365,40 @@ def test_phasor_mapping_widget_output_mode_updates_button_text(
     )
 
 
+def test_phasor_mapping_widget_apply_2d_text_tracks_plot_type(
+    make_napari_viewer,
+):
+    """Checkbox text should follow the active plot artist type."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    assert (
+        mapping_widget.apply_2d_colormap_checkbox.text()
+        == "Apply colormap to 2D Histogram"
+    )
+
+    parent.plotter_inputs_widget.plot_type_combobox.setCurrentText('SCATTER')
+    assert (
+        mapping_widget.apply_2d_colormap_checkbox.text()
+        == "Apply colormap to Scatter plot"
+    )
+
+    parent.plotter_inputs_widget.plot_type_combobox.setCurrentText('CONTOUR')
+    assert (
+        mapping_widget.apply_2d_colormap_checkbox.text()
+        == "Apply colormap to Contour plot"
+    )
+
+    parent.plotter_inputs_widget.plot_type_combobox.setCurrentText(
+        'HISTOGRAM2D'
+    )
+    assert (
+        mapping_widget.apply_2d_colormap_checkbox.text()
+        == "Apply colormap to 2D Histogram"
+    )
+
+
 def test_phasor_mapping_widget_phase_modulation_calculation(
     make_napari_viewer,
 ):

@@ -713,6 +713,7 @@ class PlotterWidget(QWidget):
     def __init__(self, napari_viewer):
         """Initialize the PlotterWidget."""
         super().__init__()
+        self._is_closing = False
         self.viewer = napari_viewer
 
         self.setWindowTitle("Phasor Plot")
@@ -2742,6 +2743,8 @@ class PlotterWidget(QWidget):
         return len(self.get_selected_layer_names()) > 1
 
     def _update_contour_controls_visibility(self):
+        if self._is_closing or not self._has_plot_type_controls():
+            return
         is_scatter = (
             self.plotter_inputs_widget.plot_type_combobox.currentText()
             == 'SCATTER'
@@ -2939,6 +2942,8 @@ class PlotterWidget(QWidget):
 
     def _process_bins_change(self):
         """Process bins change after debounce timer expires."""
+        if self._is_closing or not self._has_plot_type_controls():
+            return
         self.refresh_current_plot()
 
     def _refresh_plot_safely_for_log_scale(self):
@@ -3562,12 +3567,30 @@ class PlotterWidget(QWidget):
         str
             The plot type.
         """
-        return self.plotter_inputs_widget.plot_type_combobox.currentText()
+        return self._get_plot_type_safe()
 
     @plot_type.setter
     def plot_type(self, value):
         """Sets the plot type from the plot type combobox."""
+        if self._is_closing or not self._has_plot_type_controls():
+            return
         self.plotter_inputs_widget.plot_type_combobox.setCurrentText(value)
+
+    def _has_plot_type_controls(self):
+        """Return True if the plot-type controls are valid Qt objects."""
+        try:
+            combo = self.plotter_inputs_widget.plot_type_combobox
+            combo.currentText()
+            return True
+        except (AttributeError, RuntimeError):
+            return False
+
+    def _get_plot_type_safe(self, default='HISTOGRAM2D'):
+        """Safely read plot type while controls may be tearing down."""
+        try:
+            return self.plotter_inputs_widget.plot_type_combobox.currentText()
+        except (AttributeError, RuntimeError):
+            return getattr(self, '_current_plot_type', default)
 
     @property
     def histogram_colormap(self):
@@ -4023,6 +4046,8 @@ class PlotterWidget(QWidget):
         Debounced to avoid excessive updates while user is still selecting.
         The actual processing happens in _process_layer_selection_change.
         """
+        if self._is_closing or not self._has_plot_type_controls():
+            return
         self._preserve_plot_type_on_restore = self.plot_type == 'CONTOUR'
         self._update_contour_controls_visibility()
         self._layer_selection_timer.stop()
@@ -4034,6 +4059,8 @@ class PlotterWidget(QWidget):
         Only updates the phasor plot. Tab UIs are not updated unless
         the primary layer changed (which triggers _on_primary_layer_changed).
         """
+        if self._is_closing or not self._has_plot_type_controls():
+            return
         if getattr(self, "_in_on_selection_changed", False):
             return
         self._in_on_selection_changed = True
@@ -5645,6 +5672,8 @@ class PlotterWidget(QWidget):
 
     def closeEvent(self, event):
         """Clean up signal connections and child widgets before closing."""
+        self._is_closing = True
+
         # Stop background timers first.
         with contextlib.suppress(AttributeError):
             self._dock_check_timer.stop()
@@ -5656,6 +5685,26 @@ class PlotterWidget(QWidget):
             self._layer_selection_timer.stop()
         with contextlib.suppress(AttributeError):
             self._bins_timer.stop()
+
+        # Disconnect timer callbacks to avoid queued invocations during teardown.
+        with contextlib.suppress(TypeError, ValueError, AttributeError):
+            self._dock_check_timer.timeout.disconnect(
+                self._check_dock_visibility
+            )
+        with contextlib.suppress(TypeError, ValueError, AttributeError):
+            self._analysis_dock_init_timer.timeout.disconnect(
+                self._add_analysis_dock_widget
+            )
+        with contextlib.suppress(TypeError, ValueError, AttributeError):
+            self._dock_resize_timer.timeout.disconnect(
+                self._resize_initial_docks
+            )
+        with contextlib.suppress(TypeError, ValueError, AttributeError):
+            self._layer_selection_timer.timeout.disconnect(
+                self._process_layer_selection_change
+            )
+        with contextlib.suppress(TypeError, ValueError, AttributeError):
+            self._bins_timer.timeout.disconnect(self._process_bins_change)
 
         # Disconnect viewer layer events owned by this widget.
         with contextlib.suppress(TypeError, ValueError, AttributeError):
