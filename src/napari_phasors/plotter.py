@@ -1145,6 +1145,14 @@ class PlotterWidget(QWidget):
 
     """
 
+    PLOT_TYPE_DISPLAY_NAMES = {
+        'HISTOGRAM2D': "Density Plot (2D Histogram)",
+        'SCATTER': "Dot Plot (Scatter)",
+        'CONTOUR': "Contour Plot",
+        'NONE': "None",
+    }
+    PLOT_TYPE_KEYS = {v: k for k, v in PLOT_TYPE_DISPLAY_NAMES.items()}
+
     def __init__(self, napari_viewer):
         """Initialize the PlotterWidget."""
         super().__init__()
@@ -1718,9 +1726,9 @@ class PlotterWidget(QWidget):
             self._import_settings_from_file
         )
 
-        # Populate plot type combobox
+        # Populate plot type combobox with display names
         self.plotter_inputs_widget.plot_type_combobox.addItems(
-            ['HISTOGRAM2D', 'SCATTER', 'CONTOUR']
+            list(self.PLOT_TYPE_DISPLAY_NAMES.values())
         )
 
         # Populate colormap combobox with swatches.
@@ -2215,8 +2223,13 @@ class PlotterWidget(QWidget):
                 'plot_type' in settings
                 and not self._preserve_plot_type_on_restore
             ):
+                plot_type_key = settings['plot_type']
+                # Map old metadata keys to display names if needed
+                display_name = self.PLOT_TYPE_DISPLAY_NAMES.get(
+                    plot_type_key, plot_type_key
+                )
                 self.plotter_inputs_widget.plot_type_combobox.setCurrentText(
-                    settings['plot_type']
+                    display_name
                 )
 
             # Only restore if explicitly set in metadata
@@ -3136,22 +3149,32 @@ class PlotterWidget(QWidget):
 
     def _on_plot_type_changed(self):
         """Callback for plot type change."""
-        new_plot_type = (
+        new_plot_type_display = (
             self.plotter_inputs_widget.plot_type_combobox.currentText()
+        )
+        new_plot_type = self.PLOT_TYPE_KEYS.get(
+            new_plot_type_display, 'HISTOGRAM2D'
         )
         self._update_setting_in_metadata('plot_type', new_plot_type)
 
         is_scatter = new_plot_type == 'SCATTER'
         is_contour = new_plot_type == 'CONTOUR'
+        is_none = new_plot_type == 'NONE'
 
-        # Histogram/Contour shared elements
-        self.plotter_inputs_widget.label_3.setVisible(not is_scatter)
-        self._colormap_row_widget.setVisible(not is_scatter)
-        self.plotter_inputs_widget.label_4.setVisible(not is_scatter)
-        self.plotter_inputs_widget.number_of_bins_spinbox.setVisible(
-            not is_scatter
+        # Histogram/Contour/None shared elements
+        self.plotter_inputs_widget.label_3.setVisible(
+            not is_scatter and not is_none
         )
-        show_log_controls = (not is_scatter) and (not is_contour)
+        self._colormap_row_widget.setVisible(not is_scatter and not is_none)
+        self.plotter_inputs_widget.label_4.setVisible(
+            not is_scatter and not is_none
+        )
+        self.plotter_inputs_widget.number_of_bins_spinbox.setVisible(
+            not is_scatter and not is_none
+        )
+        show_log_controls = (
+            (not is_scatter) and (not is_contour) and (not is_none)
+        )
         self.plotter_inputs_widget.label_7.setVisible(show_log_controls)
         self.plotter_inputs_widget.log_scale_checkbox.setVisible(
             show_log_controls
@@ -3773,17 +3796,17 @@ class PlotterWidget(QWidget):
     def _update_contour_controls_visibility(self):
         if self._is_closing or not self._has_plot_type_controls():
             return
-        is_scatter = (
-            self.plotter_inputs_widget.plot_type_combobox.currentText()
-            == 'SCATTER'
-        )
-        is_contour = (
-            self.plotter_inputs_widget.plot_type_combobox.currentText()
-            == 'CONTOUR'
-        )
+        plot_type = self.plot_type
+        is_scatter = plot_type == 'SCATTER'
+        is_contour = plot_type == 'CONTOUR'
+        is_none = plot_type == 'NONE'
         has_multiple = self._has_multiple_selected_layers()
 
-        show_colormap = (not is_scatter) and not (is_contour and has_multiple)
+        show_colormap = (
+            (not is_scatter)
+            and (not is_none)
+            and not (is_contour and has_multiple)
+        )
         self.plotter_inputs_widget.label_3.setVisible(show_colormap)
         self._colormap_row_widget.setVisible(show_colormap)
 
@@ -4622,7 +4645,10 @@ class PlotterWidget(QWidget):
         """Sets the plot type from the plot type combobox."""
         if self._is_closing or not self._has_plot_type_controls():
             return
-        self.plotter_inputs_widget.plot_type_combobox.setCurrentText(value)
+        display_name = self.PLOT_TYPE_DISPLAY_NAMES.get(value, value)
+        self.plotter_inputs_widget.plot_type_combobox.setCurrentText(
+            display_name
+        )
 
     def _has_plot_type_controls(self):
         """Return True if the plot-type controls are valid Qt objects."""
@@ -4636,7 +4662,8 @@ class PlotterWidget(QWidget):
     def _get_plot_type_safe(self, default='HISTOGRAM2D'):
         """Safely read plot type while controls may be tearing down."""
         try:
-            return self.plotter_inputs_widget.plot_type_combobox.currentText()
+            text = self.plotter_inputs_widget.plot_type_combobox.currentText()
+            return self.PLOT_TYPE_KEYS.get(text, text)
         except (AttributeError, RuntimeError):
             return getattr(self, '_current_plot_type', default)
 
@@ -6655,16 +6682,19 @@ class PlotterWidget(QWidget):
             return
         if plot_type != self.plot_type:
             self.plotter_inputs_widget.plot_type_combobox.blockSignals(True)
+            display_name = self.PLOT_TYPE_DISPLAY_NAMES.get(
+                plot_type, plot_type
+            )
             self.plotter_inputs_widget.plot_type_combobox.setCurrentText(
-                plot_type
+                display_name
             )
             self.plotter_inputs_widget.plot_type_combobox.blockSignals(False)
             self._connect_active_artist_signals()
 
-        # Make sure biaplotter artists are hidden if switching to CONTOUR
+        # Make sure biaplotter artists are hidden if switching to CONTOUR or NONE
         current_active = getattr(self.canvas_widget, 'active_artist', None)
 
-        if plot_type == 'CONTOUR':
+        if plot_type in ('CONTOUR', 'NONE'):
             for _name, artist in getattr(
                 self.canvas_widget, 'artists', {}
             ).items():
@@ -6674,8 +6704,8 @@ class PlotterWidget(QWidget):
                 # Fallback for biaplotter < 0.4.2 which doesn't support None
                 self.canvas_widget.active_artist = None
 
-        else:
-            # Hide contour items when switching away
+        if plot_type != 'CONTOUR':
+            # Hide contour items when switching away (including to NONE)
             self._clear_contour_plot()
             self.canvas_widget.figure.canvas.draw_idle()
 
@@ -6686,11 +6716,16 @@ class PlotterWidget(QWidget):
             self._update_scatter_plot(x_data, y_data, selection_id_data)
         elif plot_type == 'CONTOUR':
             self._update_contour_plot(x_data, y_data, selection_id_data)
+        elif plot_type == 'NONE':
+            self._remove_colorbar()
 
-        if current_active != plot_type and plot_type in getattr(
-            self.canvas_widget, 'artists', {}
-        ):
-            self.canvas_widget.active_artist = plot_type
+        if plot_type in getattr(self.canvas_widget, 'artists', {}):
+            if current_active != plot_type:
+                self.canvas_widget.active_artist = plot_type
+        else:
+            # For CONTOUR or NONE, we might want to unset active_artist in biaplotter
+            with contextlib.suppress(AttributeError, TypeError):
+                self.canvas_widget.active_artist = None
 
         if (
             plot_type not in getattr(self.canvas_widget, 'artists', {})

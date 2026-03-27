@@ -254,6 +254,8 @@ class PhasorMappingWidget(QWidget):
             suffix = "Scatter plot"
         elif plot_type == 'CONTOUR':
             suffix = "Contour plot"
+        elif plot_type == 'NONE':
+            suffix = "Plot"
         else:
             suffix = "2D Histogram"
         self.apply_2d_colormap_checkbox.setText(f"Apply colormap to {suffix}")
@@ -1270,7 +1272,7 @@ class PhasorMappingWidget(QWidget):
         if output_type not in {"Phase", "Modulation"}:
             return
         pw = self.parent_widget
-        if pw is None:
+        if pw is None or getattr(pw, 'plot_type', 'HISTOGRAM2D') == 'NONE':
             return
 
         features = pw.get_merged_features()
