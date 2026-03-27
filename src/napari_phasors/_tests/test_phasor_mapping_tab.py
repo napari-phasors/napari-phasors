@@ -1379,20 +1379,30 @@ def test_phasor_mapping_widget_apply_2d_text_tracks_plot_type(
         == "Apply colormap to 2D Histogram"
     )
 
-    parent.plotter_inputs_widget.plot_type_combobox.setCurrentText('SCATTER')
+    parent.plotter_inputs_widget.plot_type_combobox.setCurrentText(
+        "Dot Plot (Scatter)"
+    )
     assert (
         mapping_widget.apply_2d_colormap_checkbox.text()
         == "Apply colormap to Scatter plot"
     )
 
-    parent.plotter_inputs_widget.plot_type_combobox.setCurrentText('CONTOUR')
+    parent.plotter_inputs_widget.plot_type_combobox.setCurrentText(
+        "Contour Plot"
+    )
     assert (
         mapping_widget.apply_2d_colormap_checkbox.text()
         == "Apply colormap to Contour plot"
     )
 
+    parent.plotter_inputs_widget.plot_type_combobox.setCurrentText("None")
+    assert (
+        mapping_widget.apply_2d_colormap_checkbox.text()
+        == "Apply colormap to Plot"
+    )
+
     parent.plotter_inputs_widget.plot_type_combobox.setCurrentText(
-        'HISTOGRAM2D'
+        "Density Plot (2D Histogram)"
     )
     assert (
         mapping_widget.apply_2d_colormap_checkbox.text()

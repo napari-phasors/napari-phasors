@@ -134,7 +134,12 @@ def test_phasor_plotter_initialization_values(make_napari_viewer):
         plot_types.append(
             plotter.plotter_inputs_widget.plot_type_combobox.itemText(i)
         )
-    assert plot_types == ['HISTOGRAM2D', 'SCATTER', 'CONTOUR']
+    assert plot_types == [
+        "Density Plot (2D Histogram)",
+        "Dot Plot (Scatter)",
+        "Contour Plot",
+        "None",
+    ]
 
     # Test colormap combobox has items (should have all available colormaps)
     assert plotter.plotter_inputs_widget.colormap_combobox.count() > 0
@@ -455,7 +460,9 @@ def test_modifying_settings_updates_metadata_correctly(make_napari_viewer):
     assert layer.metadata['settings']['harmonic'] == 3
 
     # Test plot type update
-    plotter.plotter_inputs_widget.plot_type_combobox.setCurrentText('SCATTER')
+    plotter.plotter_inputs_widget.plot_type_combobox.setCurrentText(
+        "Dot Plot (Scatter)"
+    )
     assert layer.metadata['settings']['plot_type'] == 'SCATTER'
 
     # Test colormap update
@@ -510,7 +517,9 @@ def test_plot_type_ui_toggles(make_napari_viewer):
     assert plotter.plotter_inputs_widget.marker_color_button.isHidden()
 
     # Change to SCATTER
-    plotter.plotter_inputs_widget.plot_type_combobox.setCurrentText('SCATTER')
+    plotter.plotter_inputs_widget.plot_type_combobox.setCurrentText(
+        "Dot Plot (Scatter)"
+    )
 
     assert plotter._colormap_row_widget.isHidden()
     assert plotter.plotter_inputs_widget.number_of_bins_spinbox.isHidden()
@@ -521,7 +530,9 @@ def test_plot_type_ui_toggles(make_napari_viewer):
     assert not plotter.plotter_inputs_widget.marker_color_button.isHidden()
 
     # Change to CONTOUR
-    plotter.plotter_inputs_widget.plot_type_combobox.setCurrentText('CONTOUR')
+    plotter.plotter_inputs_widget.plot_type_combobox.setCurrentText(
+        "Contour Plot"
+    )
 
     assert not plotter._colormap_row_widget.isHidden()
     assert not plotter.plotter_inputs_widget.number_of_bins_spinbox.isHidden()
@@ -535,6 +546,20 @@ def test_plot_type_ui_toggles(make_napari_viewer):
     assert (
         not plotter.plotter_inputs_widget.contour_linewidth_spinbox.isHidden()
     )
+
+    # Change to None
+    plotter.plotter_inputs_widget.plot_type_combobox.setCurrentText("None")
+
+    assert plotter._colormap_row_widget.isHidden()
+    assert plotter.plotter_inputs_widget.number_of_bins_spinbox.isHidden()
+    assert plotter.plotter_inputs_widget.log_scale_checkbox.isHidden()
+
+    assert plotter.plotter_inputs_widget.marker_size_spinbox.isHidden()
+    assert plotter.plotter_inputs_widget.marker_alpha_spinbox.isHidden()
+    assert plotter.plotter_inputs_widget.marker_color_button.isHidden()
+
+    assert plotter.plotter_inputs_widget.contour_levels_spinbox.isHidden()
+    assert plotter.plotter_inputs_widget.contour_linewidth_spinbox.isHidden()
 
     plotter.deleteLater()
 
