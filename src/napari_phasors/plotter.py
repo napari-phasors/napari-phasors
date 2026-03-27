@@ -716,10 +716,15 @@ class PhasorCenterLayerSettingsDialog(QDialog):
         parent=None,
     ):
         super().__init__(parent)
-        self.setWindowTitle("Phasor Center Settings")
+        self._layer_labels = list(layer_labels or [])
+        single_layer = len(self._layer_labels) <= 1
+
+        if single_layer:
+            self.setWindowTitle("Phasor Center Settings")
+        else:
+            self.setWindowTitle("Phasor Center Settings (Multi-Layer)")
         self.setMinimumWidth(500)
 
-        self._layer_labels = list(layer_labels or [])
         self._group_row_data = []
 
         layer_colors = dict(layer_colors or {})
@@ -731,14 +736,17 @@ class PhasorCenterLayerSettingsDialog(QDialog):
 
         root = QVBoxLayout(self)
 
-        # Display mode
-        mode_layout = QHBoxLayout()
+        # Display mode — only meaningful when multiple layers are selected
+        self._mode_container = QWidget()
+        mode_layout = QHBoxLayout(self._mode_container)
+        mode_layout.setContentsMargins(0, 0, 0, 0)
         mode_layout.addWidget(QLabel("Multi-layer display mode:"))
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(list(self.DISPLAY_MODES))
         self.mode_combo.setCurrentText(display_mode)
         mode_layout.addWidget(self.mode_combo)
-        root.addLayout(mode_layout)
+        root.addWidget(self._mode_container)
+        self._mode_container.setVisible(not single_layer)
 
         # Center method
         method_layout = QHBoxLayout()
@@ -768,9 +776,12 @@ class PhasorCenterLayerSettingsDialog(QDialog):
         alpha_layout.addWidget(self._alpha_spinbox)
         root.addLayout(alpha_layout)
 
-        # Merged mode color
+        # Merged mode color (label differs for single vs multi layer)
         merged_color_layout = QHBoxLayout()
-        self._merged_color_label = QLabel("Merged center color:")
+        _color_label_text = (
+            "Center color:" if single_layer else "Merged center color:"
+        )
+        self._merged_color_label = QLabel(_color_label_text)
         merged_color_layout.addWidget(self._merged_color_label)
         self._merged_color_btn = QPushButton()
         self._merged_color_btn.setFixedSize(24, 24)
@@ -1668,7 +1679,7 @@ class PlotterWidget(QWidget):
         )
 
         self.plotter_inputs_widget.pc_configure_button = QPushButton(
-            "Configure..."
+            "Configure center display..."
         )
         self.plotter_inputs_widget.pc_configure_button.clicked.connect(
             self._on_phasor_center_configure_clicked
@@ -1883,7 +1894,7 @@ class PlotterWidget(QWidget):
         self._tabify_histogram_and_statistics_docks()
 
     def eventFilter(self, obj, event):
-        """Recompute square canvas size when relevant containers resize."""
+        """Recompute canvas size when relevant containers resize/show."""
         watched = {
             getattr(self, 'canvas_container', None),
             getattr(self, 'controls_container', None),
@@ -1893,21 +1904,58 @@ class PlotterWidget(QWidget):
         return super().eventFilter(obj, event)
 
     def resizeEvent(self, event):
-        """Keep the phasor canvas square while maximizing available area."""
+        """Keep canvas tightly fitted to available space on widget resize."""
         super().resizeEvent(event)
         self._resize_canvas_to_available_space()
 
+    def _get_canvas_target_ratio(self):
+        """Return desired canvas width/height ratio from current axes limits."""
+        if not hasattr(self, 'canvas_widget') or self.canvas_widget is None:
+            return 1.0
+
+        try:
+            x0, x1 = self.canvas_widget.axes.get_xlim()
+            y0, y1 = self.canvas_widget.axes.get_ylim()
+            x_span = abs(float(x1) - float(x0))
+            y_span = abs(float(y1) - float(y0))
+            if x_span > 0 and y_span > 0:
+                return max(0.1, min(10.0, x_span / y_span))
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            pass
+
+        # Fallbacks matching the default limits for semicircle/full-circle views.
+        return 1.5 if self.toggle_semi_circle else 1.0
+
     def _resize_canvas_to_available_space(self):
-        """Resize canvas to the largest square fitting the top container."""
+        """Resize canvas to the largest rectangle fitting the top container."""
         if not hasattr(self, 'canvas_container') or not hasattr(
             self, 'canvas_widget'
         ):
             return
         available_w = self.canvas_container.width()
         available_h = self.canvas_container.height()
-        side = max(min(available_w, available_h), 1)
-        self.canvas_widget.setFixedSize(side, side)
-        self._update_text_sizes_for_canvas(side)
+        if available_w <= 0 or available_h <= 0:
+            return
+
+        ratio = self._get_canvas_target_ratio()
+        container_ratio = available_w / available_h
+        if container_ratio >= ratio:
+            target_h = available_h
+            target_w = int(round(target_h * ratio))
+        else:
+            target_w = available_w
+            target_h = int(round(target_w / ratio))
+
+        target_w = max(int(target_w), 1)
+        target_h = max(int(target_h), 1)
+
+        if (
+            self.canvas_widget.width() != target_w
+            or self.canvas_widget.height() != target_h
+        ):
+            self.canvas_widget.setFixedSize(target_w, target_h)
+
+        self._update_text_sizes_for_canvas(min(target_w, target_h))
 
     @staticmethod
     def _compute_font_size(side):
@@ -2970,7 +3018,7 @@ class PlotterWidget(QWidget):
         else:
             hist_idx = 0
             if (
-                current_tab is self.plotter_inputs_widget
+                current_tab is self.settings_tab
                 and self._phasor_center_enabled
             ):
                 stats_idx = self._phasor_center_stats_page_idx
@@ -3294,10 +3342,15 @@ class PlotterWidget(QWidget):
             self._phasor_center_stats_widget.update_centers({})
             self._phasor_center_stats_widget.update_group_centers({})
             self.canvas_widget.figure.canvas.draw_idle()
-        # Switch statistics page if we're on the settings tab
+        # Switch statistics/histogram stack if we're on the settings tab
         current_tab = self.tab_widget.currentWidget()
-        if current_tab is self.plotter_inputs_widget:
+        if current_tab is self.settings_tab:
             self._update_histogram_dock_visibility(current_tab)
+            # When turning centers on, raise the statistics dock so the
+            # table tab becomes visible automatically
+            if self._phasor_center_enabled:
+                with contextlib.suppress(AttributeError, RuntimeError):
+                    self._statistics_dock.raise_()
 
     def _on_phasor_center_configure_clicked(self):
         """Open the PhasorCenterLayerSettingsDialog to configure all settings."""
@@ -3546,7 +3599,8 @@ class PlotterWidget(QWidget):
             self._phasor_center_artists.append(artist)
 
             phase, mod = phasor_to_polar(np.array([gc]), np.array([sc]))
-            stats_layer["Merged"] = (
+            stat_name = "Merged" if has_multiple else selected_layers[0].name
+            stats_layer[stat_name] = (
                 gc,
                 sc,
                 float(np.degrees(phase[0])),
@@ -4655,6 +4709,7 @@ class PlotterWidget(QWidget):
         """Ensure the axes aspect is set to 'box' after artist redraws."""
         self._redefine_axes_limits()
         self.canvas_widget.axes.set_aspect(1, adjustable='box')
+        self._resize_canvas_to_available_space()
         self.canvas_widget.figure.canvas.draw_idle()
 
     def _connect_selector_signals(self):
