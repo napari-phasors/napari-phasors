@@ -8,8 +8,8 @@ from matplotlib.backends.backend_qt5agg import (
 )
 from napari.utils.notifications import show_error
 from qtpy.QtCore import Qt
+from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QHBoxLayout,
@@ -21,7 +21,7 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from superqt import QRangeSlider
+from superqt import QRangeSlider, QToggleSwitch
 
 from ._utils import (
     apply_filter_and_threshold,
@@ -142,11 +142,12 @@ class FilterWidget(QWidget):
         self.threshold_method_combobox.setCurrentText("None")
         threshold_method_layout.addWidget(self.threshold_method_combobox)
 
-        # Add log scale checkbox to the same line as threshold method
+        # Add log scale toggle to the same line as threshold method
         threshold_method_layout.addSpacing(10)
-        self.log_scale_checkbox = QCheckBox("Log Scale")
+        self.log_scale_checkbox = QToggleSwitch("Log Scale Histogram")
+        self.log_scale_checkbox.onColor = QColor("#27ae60")  # Nice Green
         self.log_scale_checkbox.setChecked(False)
-        self.log_scale_checkbox.stateChanged.connect(self.on_log_scale_changed)
+        self.log_scale_checkbox.toggled.connect(self.on_log_scale_changed)
         threshold_method_layout.addWidget(self.log_scale_checkbox)
         threshold_method_layout.addStretch()
 
@@ -850,7 +851,7 @@ class FilterWidget(QWidget):
 
         self.hist_fig.canvas.draw_idle()
 
-    def on_log_scale_changed(self, state):
+    def on_log_scale_changed(self, checked):
         """Callback when log scale checkbox is toggled."""
         selected_layers = self.parent_widget.get_selected_layers()
         if not selected_layers:
@@ -873,7 +874,7 @@ class FilterWidget(QWidget):
             )
 
             # Set scale before styling to ensure proper tick formatting
-            if state == 2:
+            if checked:
                 self.hist_ax.set_yscale('log')
             else:
                 self.hist_ax.set_yscale('linear')

@@ -13,9 +13,8 @@ from phasorpy.lifetime import (
 )
 from phasorpy.phasor import phasor_center, phasor_nearest_neighbor
 from qtpy.QtCore import Qt
-from qtpy.QtGui import QDoubleValidator
+from qtpy.QtGui import QColor, QDoubleValidator
 from qtpy.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QFormLayout,
     QHBoxLayout,
@@ -29,6 +28,7 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from superqt import QToggleSwitch
 
 from ._utils import (
     CheckableComboBox,
@@ -309,12 +309,13 @@ class FretWidget(QWidget):
         # Add form to root layout
         layout.addLayout(form)
 
-        # Colormap over trajectory checkbox
-        self.colormap_checkbox = QCheckBox(
+        # Colormap over trajectory toggle
+        self.colormap_checkbox = QToggleSwitch(
             "Overlay colormap on donor trajectory"
         )
+        self.colormap_checkbox.onColor = QColor("#27ae60")  # Nice Green
         self.colormap_checkbox.setChecked(True)
-        self.colormap_checkbox.stateChanged.connect(
+        self.colormap_checkbox.toggled.connect(
             self._on_colormap_checkbox_changed
         )
         layout.addWidget(self.colormap_checkbox)
@@ -588,7 +589,7 @@ class FretWidget(QWidget):
 
         self._on_parameters_changed()
 
-    def _on_colormap_checkbox_changed(self):
+    def _on_colormap_checkbox_changed(self, checked=None):
         """Handle colormap checkbox state change."""
         self.use_colormap = self.colormap_checkbox.isChecked()
 

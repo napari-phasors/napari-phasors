@@ -569,7 +569,7 @@ def test_show_import_dialog_default_all_checked(make_napari_viewer):
         patch('napari_phasors.plotter.QDialog') as mock_dialog,
         patch('napari_phasors.plotter.QVBoxLayout'),
         patch('napari_phasors.plotter.QLabel'),
-        patch('napari_phasors.plotter.QCheckBox') as mock_checkbox,
+        patch('napari_phasors.plotter.QToggleSwitch') as mock_checkbox,
         patch('napari_phasors.plotter.QDialogButtonBox'),
     ):
 
@@ -598,7 +598,7 @@ def test_show_import_dialog_partial_selection(make_napari_viewer):
         patch('napari_phasors.plotter.QDialog') as mock_dialog,
         patch('napari_phasors.plotter.QVBoxLayout'),
         patch('napari_phasors.plotter.QLabel'),
-        patch('napari_phasors.plotter.QCheckBox'),
+        patch('napari_phasors.plotter.QToggleSwitch'),
         patch('napari_phasors.plotter.QDialogButtonBox'),
     ):
 

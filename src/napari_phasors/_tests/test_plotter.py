@@ -155,7 +155,7 @@ def test_phasor_plotter_initialization_values(make_napari_viewer):
     xlim = plotter.canvas_widget.axes.get_xlim()
     ylim = plotter.canvas_widget.axes.get_ylim()
     assert xlim[0] == -0.1 and xlim[1] == 1.1
-    assert ylim[0] == -0.1 and ylim[1] == 0.6
+    assert ylim[0] == -0.1 and ylim[1] == 0.7
 
 
 def test_phasor_plotter_initialization_plot_not_called(make_napari_viewer):
@@ -181,7 +181,7 @@ def test_phasor_plotter_initialization_plot_not_called(make_napari_viewer):
         mock_plot.assert_not_called()
         plotter.white_background = False
         mock_plot.assert_not_called()
-        plotter.plotter_inputs_widget.semi_circle_checkbox.setChecked(False)
+        plotter.plotter_inputs_widget.semi_circle_checkbox.setChecked(True)
         mock_plot.assert_not_called()
         plotter.plotter_inputs_widget.white_background_checkbox.setChecked(
             False
@@ -276,7 +276,7 @@ def test_adding_removing_layers_updates_plot(make_napari_viewer):
         mock_plot.assert_not_called()
         plotter.white_background = False
         mock_plot.assert_not_called()
-        plotter.plotter_inputs_widget.semi_circle_checkbox.setChecked(False)
+        plotter.plotter_inputs_widget.semi_circle_checkbox.setChecked(True)
         mock_plot.assert_not_called()
         plotter.plotter_inputs_widget.white_background_checkbox.setChecked(
             False
@@ -298,9 +298,7 @@ def test_adding_removing_layers_updates_plot(make_napari_viewer):
         assert plotter.histogram_colormap == 'viridis'
         assert not plotter.toggle_semi_circle
         assert not plotter.white_background
-        assert (
-            not plotter.plotter_inputs_widget.semi_circle_checkbox.isChecked()
-        )
+        assert plotter.plotter_inputs_widget.semi_circle_checkbox.isChecked()
         assert (
             not plotter.plotter_inputs_widget.white_background_checkbox.isChecked()
         )
@@ -470,7 +468,7 @@ def test_modifying_settings_updates_metadata_correctly(make_napari_viewer):
     assert layer.metadata['settings']['log_scale']
 
     # Test semi circle update
-    plotter.plotter_inputs_widget.semi_circle_checkbox.setChecked(False)
+    plotter.plotter_inputs_widget.semi_circle_checkbox.setChecked(True)
     assert not layer.metadata['settings']['semi_circle']
 
     # Test white background update
@@ -653,7 +651,7 @@ def test_phasor_plotter_property_setters(make_napari_viewer):
     # Test toggle_semi_circle setter
     plotter.toggle_semi_circle = False
     assert not plotter.toggle_semi_circle
-    assert not plotter.plotter_inputs_widget.semi_circle_checkbox.isChecked()
+    assert plotter.plotter_inputs_widget.semi_circle_checkbox.isChecked()
 
 
 def test_phasor_plotter_layer_management(make_napari_viewer):
@@ -698,7 +696,7 @@ def test_phasor_plotter_semicircle_checkbox(make_napari_viewer):
 
     # Initially semicircle should be enabled (default)
     assert plotter.toggle_semi_circle
-    assert plotter.plotter_inputs_widget.semi_circle_checkbox.isChecked()
+    assert not plotter.plotter_inputs_widget.semi_circle_checkbox.isChecked()
 
     # Get initial axes limits (semicircle mode)
     initial_ylim = plotter.canvas_widget.axes.get_ylim()
@@ -706,8 +704,8 @@ def test_phasor_plotter_semicircle_checkbox(make_napari_viewer):
     # Semicircle should have y-limits starting from 0 or slightly below
     assert initial_ylim[0] <= 0.1  # Small tolerance for padding
 
-    # Uncheck semicircle checkbox (should show full circle)
-    plotter.plotter_inputs_widget.semi_circle_checkbox.setChecked(False)
+    # Check full-circle toggle (should show full circle)
+    plotter.plotter_inputs_widget.semi_circle_checkbox.setChecked(True)
     plotter.toggle_semi_circle = False
 
     # Get new axes limits (full circle mode)
@@ -723,7 +721,7 @@ def test_phasor_plotter_semicircle_checkbox(make_napari_viewer):
     assert len(lines) > 0  # Should have polar plot lines
 
     # Toggle back to semicircle
-    plotter.plotter_inputs_widget.semi_circle_checkbox.setChecked(True)
+    plotter.plotter_inputs_widget.semi_circle_checkbox.setChecked(False)
     plotter.toggle_semi_circle = True
 
     # Should return to semicircle limits

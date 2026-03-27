@@ -5,6 +5,7 @@ import pytest
 from numpy.testing import assert_array_equal
 from phasorpy.lifetime import phasor_from_fret_donor
 from phasorpy.phasor import phasor_nearest_neighbor
+from superqt import QToggleSwitch
 
 from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
 from napari_phasors.plotter import PlotterWidget
@@ -62,6 +63,11 @@ def test_fret_widget_initialization(make_napari_viewer):
     # Test slider initial values
     assert widget.background_slider.value() == 10  # 0.1 * 100
     assert widget.fretting_slider.value() == 100  # 1.0 * 100
+    assert isinstance(widget.colormap_checkbox, QToggleSwitch)
+    assert (
+        widget.colormap_checkbox.text()
+        == "Overlay colormap on donor trajectory"
+    )
     assert widget.colormap_checkbox.isChecked() is True
 
     # Test dynamic labels show default text

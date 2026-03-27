@@ -13,7 +13,6 @@ from phasorpy.phasor import phasor_to_polar
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QColor, QDoubleValidator
 from qtpy.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLabel,
@@ -25,6 +24,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 from scipy.stats import binned_statistic_2d
+from superqt import QToggleSwitch
 
 from ._utils import (
     HistogramWidget,
@@ -169,9 +169,12 @@ class PhasorMappingWidget(QWidget):
         self.coloring_checkbox_widget = QWidget()
         coloring_checkbox_layout = QHBoxLayout(self.coloring_checkbox_widget)
         coloring_checkbox_layout.setContentsMargins(0, 0, 0, 0)
-        self.apply_2d_colormap_checkbox = QCheckBox(
+        self.apply_2d_colormap_checkbox = QToggleSwitch(
             "Apply colormap to 2D Histogram"
         )
+        self.apply_2d_colormap_checkbox.onColor = QColor(
+            "#27ae60"
+        )  # Nice Green
         coloring_checkbox_layout.addWidget(self.apply_2d_colormap_checkbox)
         coloring_checkbox_layout.addStretch(1)
         self.main_layout.addWidget(self.coloring_checkbox_widget)
@@ -200,7 +203,7 @@ class PhasorMappingWidget(QWidget):
         self.colormap_combobox.currentTextChanged.connect(
             self._on_colormap_combobox_changed
         )
-        self.apply_2d_colormap_checkbox.stateChanged.connect(
+        self.apply_2d_colormap_checkbox.toggled.connect(
             self._on_apply_2d_colormap_checkbox_changed
         )
         self.frequency_input.editingFinished.connect(
@@ -435,12 +438,12 @@ class PhasorMappingWidget(QWidget):
         )
         return cmap_name if resolved is None else resolved
 
-    def _on_apply_2d_colormap_checkbox_changed(self, state):
+    def _on_apply_2d_colormap_checkbox_changed(self, checked):
         output_type = self._get_selected_output_type()
         if output_type not in {"Phase", "Modulation"}:
             self._clear_2d_coloring()
             return
-        if state == Qt.Checked:
+        if checked:
             self._apply_histogram_coloring(output_type)
         else:
             self._clear_2d_coloring()

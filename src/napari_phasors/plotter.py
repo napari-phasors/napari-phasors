@@ -18,8 +18,8 @@ from napari.utils import colormaps, notifications
 from phasorpy.lifetime import phasor_from_lifetime
 from qtpy import uic
 from qtpy.QtCore import QEvent, Qt, QTimer
+from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -38,6 +38,7 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from superqt import QToggleSwitch
 
 from ._utils import (
     CheckableComboBox,
@@ -271,7 +272,8 @@ class ContourLayerSettingsDialog(QDialog):
         self._merged_colormap_layout.addWidget(self._merged_color_btn)
         root.addLayout(self._merged_colormap_layout)
 
-        self._show_legend_checkbox = QCheckBox("Show legend")
+        self._show_legend_checkbox = QToggleSwitch("Show legend")
+        self._show_legend_checkbox.onColor = QColor("#27ae60")  # Nice Green
         self._show_legend_checkbox.setChecked(bool(show_legend))
         root.addWidget(self._show_legend_checkbox)
 
@@ -1056,6 +1058,15 @@ class PlotterWidget(QWidget):
             Path(__file__).parent / "ui/plotter_inputs_widget.ui",
             self.plotter_inputs_widget,
         )
+        # Set toggle colors
+        for attr in [
+            'semi_circle_checkbox',
+            'white_background_checkbox',
+            'log_scale_checkbox',
+        ]:
+            getattr(self.plotter_inputs_widget, attr).onColor = QColor(
+                "#27ae60"
+            )
         self.settings_tab.layout().addWidget(self.plotter_inputs_widget)
         self.setMinimumSize(300, 400)
 
@@ -1102,7 +1113,7 @@ class PlotterWidget(QWidget):
         self.mask_layer_combobox.currentTextChanged.connect(
             self._on_mask_layer_changed
         )
-        self.plotter_inputs_widget.semi_circle_checkbox.stateChanged.connect(
+        self.plotter_inputs_widget.semi_circle_checkbox.toggled.connect(
             self._on_semi_circle_changed
         )
         self.harmonic_spinbox.valueChanged.connect(self._on_harmonic_changed)
@@ -1115,10 +1126,10 @@ class PlotterWidget(QWidget):
         self.plotter_inputs_widget.number_of_bins_spinbox.valueChanged.connect(
             self._on_bins_changed
         )
-        self.plotter_inputs_widget.log_scale_checkbox.stateChanged.connect(
+        self.plotter_inputs_widget.log_scale_checkbox.toggled.connect(
             self._on_log_scale_changed
         )
-        self.plotter_inputs_widget.white_background_checkbox.stateChanged.connect(
+        self.plotter_inputs_widget.white_background_checkbox.toggled.connect(
             self._on_white_background_changed
         )
 
@@ -1254,7 +1265,9 @@ class PlotterWidget(QWidget):
         self._contour_layer_styles = {}
         self._contour_group_styles = {}
         self._contour_show_legend = False
-        self.toggle_semi_circle = True
+        self.toggle_semi_circle = (
+            True  # default: semicircle shown (toggle OFF)
+        )
         self.colorbar = None
         self._colormap = self.canvas_widget.artists[
             'HISTOGRAM2D'
@@ -1403,6 +1416,52 @@ class PlotterWidget(QWidget):
         available_h = self.canvas_container.height()
         side = max(min(available_w, available_h), 1)
         self.canvas_widget.setFixedSize(side, side)
+        self._update_text_sizes_for_canvas(side)
+
+    @staticmethod
+    def _compute_font_size(side):
+        """Return a font size scaled linearly with canvas side length.
+
+        The mapping is anchored so that a 300 px canvas → 7 pt and an
+        800 px canvas → 14 pt, clamped to [6, 18].
+        """
+        fs = 7.0 + (side - 300) * (14.0 - 7.0) / (800.0 - 300.0)
+        return max(6.0, min(18.0, fs))
+
+    def _update_text_sizes_for_canvas(self, side):
+        """Update all matplotlib text sizes proportionally to canvas *side* (px).
+
+        Covers: axis labels, axis tick labels, semicircle lifetime tick labels,
+        and colorbar label + tick labels.
+        """
+        if not hasattr(self, 'canvas_widget'):
+            return
+
+        fs = self._compute_font_size(side)
+
+        # --- Axis labels & tick labels ---
+        for artist_name in ('SCATTER', 'HISTOGRAM2D'):
+            artist = self.canvas_widget.artists.get(artist_name)
+            if artist is None:
+                continue
+            ax = artist.ax
+            ax.xaxis.label.set_size(fs)
+            ax.yaxis.label.set_size(fs)
+            ax.tick_params(axis='both', which='both', labelsize=fs)
+
+        # --- Semicircle lifetime tick labels ---
+        for artist in getattr(self, 'semi_circle_plot_artist_list', []):
+            if hasattr(artist, 'set_fontsize'):
+                artist.set_fontsize(fs * 0.75)
+
+        # --- Colorbar label & tick labels ---
+        if getattr(self, 'colorbar', None) is not None:
+            self.colorbar.ax.yaxis.label.set_size(fs)
+            self.colorbar.ax.tick_params(axis='y', which='both', labelsize=fs)
+            for tick_label in self.colorbar.ax.get_yticklabels():
+                tick_label.set_fontsize(fs)
+
+        self.canvas_widget.figure.canvas.draw_idle()
 
     def get_selected_layer_names(self):
         """Get the names of all selected (checked) layers.
@@ -1757,7 +1816,8 @@ class PlotterWidget(QWidget):
         # Frequency checkbox (always show if frequency exists in settings)
         frequency_cb = None
         if source_settings is not None and "frequency" in source_settings:
-            frequency_cb = QCheckBox("Frequency")
+            frequency_cb = QToggleSwitch("Frequency")
+            frequency_cb.onColor = QColor("#27ae60")  # Nice Green
             frequency_cb.setChecked(
                 default_checked is None
                 or "frequency"
@@ -1806,7 +1866,8 @@ class PlotterWidget(QWidget):
                 show_tab = settings_key in source_settings
 
             if show_tab:
-                cb = QCheckBox(label)
+                cb = QToggleSwitch(label)
+                cb.onColor = QColor("#27ae60")  # Nice Green
                 cb.setChecked(
                     default_checked is None
                     or attr
@@ -2440,14 +2501,21 @@ class PlotterWidget(QWidget):
         with contextlib.suppress(AttributeError, RuntimeError):
             self._histogram_dock.raise_()
 
-    def _on_semi_circle_changed(self, state):
-        """Callback for semi circle checkbox change."""
-        self._update_setting_in_metadata('semi_circle', bool(state))
+    def _on_semi_circle_changed(self, checked):
+        """Callback for semi circle checkbox change.
+
+        The toggle is a 'Full Polar Plot' toggle: ON means full circle,
+        OFF (default) means semicircle. Internally `toggle_semi_circle`
+        still means 'semicircle is active', so we invert the checkbox state.
+        """
+        # toggle_semi_circle==True means semicircle; checked==True means full circle
+        semicircle_active = not bool(checked)
+        self._update_setting_in_metadata('semi_circle', semicircle_active)
         if not self._updating_settings:
             # Clear user zoom so _redefine_axes_limits computes correct
             # default limits for the new mode and updates the toolbar home.
             self._user_axes_limits = None
-            self.toggle_semi_circle = bool(state)
+            self.toggle_semi_circle = semicircle_active
 
     def _on_harmonic_changed(self, value):
         """Callback for harmonic spinbox change."""
@@ -2957,16 +3025,17 @@ class PlotterWidget(QWidget):
             )
             self.refresh_current_plot()
 
-    def _on_log_scale_changed(self, state):
+    def _on_log_scale_changed(self, checked):
         """Callback for log scale change."""
-        self._update_setting_in_metadata('log_scale', bool(state))
+        self._update_setting_in_metadata('log_scale', bool(checked))
         if not self._updating_settings and self.plot_type == 'HISTOGRAM2D':
             self._refresh_plot_safely_for_log_scale()
 
-    def _on_white_background_changed(self, state):
+    def _on_white_background_changed(self, checked):
         """Callback for white background checkbox change."""
-        self._update_setting_in_metadata('white_background', bool(state))
+        self._update_setting_in_metadata('white_background', bool(checked))
         if not self._updating_settings:
+            self.white_background = bool(checked)
             self.set_axes_labels()
             self._update_plot_bg_color()
 
@@ -3160,19 +3229,28 @@ class PlotterWidget(QWidget):
 
     @property
     def toggle_semi_circle(self):
-        """Gets the display semi circle value from the semi circle checkbox.
+        """Gets whether the semicircle (not full circle) is being displayed.
+
+        The UI toggle is a 'Full Polar Plot' toggle (ON = full circle,
+        OFF = semicircle). Internally, True means 'semicircle is active',
+        so we invert the checkbox state.
 
         Returns
         -------
         bool
-            The display semi circle value.
+            True if the semicircle is displayed, False if the full circle.
         """
-        return self.plotter_inputs_widget.semi_circle_checkbox.isChecked()
+        return not self.plotter_inputs_widget.semi_circle_checkbox.isChecked()
 
     @toggle_semi_circle.setter
     def toggle_semi_circle(self, value: bool):
-        """Sets the display semi circle value from the semi circle checkbox."""
-        self.plotter_inputs_widget.semi_circle_checkbox.setChecked(value)
+        """Sets whether the semicircle (True) or full circle (False) is shown.
+
+        The UI toggle is inverted: checkbox ON = full circle (value=False),
+        checkbox OFF = semicircle (value=True).
+        """
+        # Invert: checkbox ON means full circle (not semicircle)
+        self.plotter_inputs_widget.semi_circle_checkbox.setChecked(not value)
         if value:
             self._update_polar_plot(self.canvas_widget.axes, visible=False)
             self._update_semi_circle_plot(self.canvas_widget.axes)
@@ -3357,11 +3435,17 @@ class PlotterWidget(QWidget):
 
             text_color = tick_color
 
+            side = (
+                self.canvas_widget.width()
+                if hasattr(self, 'canvas_widget')
+                else 300
+            )
+            label_fontsize = self._compute_font_size(side) * 0.75
             label = ax.text(
                 label_x,
                 label_y,
                 label_text,
-                fontsize=8,
+                fontsize=label_fontsize,
                 ha='center',
                 va='center',
                 color=text_color,
@@ -3465,7 +3549,7 @@ class PlotterWidget(QWidget):
             return
         if self.toggle_semi_circle:
             self.canvas_widget.axes.set_xlim([-0.1, 1.1])
-            self.canvas_widget.axes.set_ylim([-0.1, 0.6])
+            self.canvas_widget.axes.set_ylim([-0.1, 0.7])
 
             if (
                 hasattr(self.canvas_widget, 'toolbar')
@@ -4866,25 +4950,27 @@ class PlotterWidget(QWidget):
     def set_axes_labels(self):
         """Set the axes labels in the canvas widget."""
         text_color = "white"
+        side = getattr(self.canvas_widget, 'width', lambda: 300)()
+        fs = self._compute_font_size(side)
 
         self.canvas_widget.artists['SCATTER'].ax.set_xlabel(
-            "G", color=text_color, fontweight='bold'
+            "G", color=text_color, fontweight='bold', fontsize=fs
         )
         self.canvas_widget.artists['SCATTER'].ax.set_ylabel(
-            "S", color=text_color, fontweight='bold'
+            "S", color=text_color, fontweight='bold', fontsize=fs
         )
         self.canvas_widget.artists['HISTOGRAM2D'].ax.set_xlabel(
-            "G", color=text_color, fontweight='bold'
+            "G", color=text_color, fontweight='bold', fontsize=fs
         )
         self.canvas_widget.artists['HISTOGRAM2D'].ax.set_ylabel(
-            "S", color=text_color, fontweight='bold'
+            "S", color=text_color, fontweight='bold', fontsize=fs
         )
 
         self.canvas_widget.artists['SCATTER'].ax.tick_params(
-            colors=text_color, which='both'
+            colors=text_color, which='both', labelsize=fs
         )
         self.canvas_widget.artists['HISTOGRAM2D'].ax.tick_params(
-            colors=text_color, which='both'
+            colors=text_color, which='both', labelsize=fs
         )
 
         for spine in self.canvas_widget.artists['SCATTER'].ax.spines.values():
@@ -5638,11 +5724,16 @@ class PlotterWidget(QWidget):
 
     def set_colorbar_style(self, color="white"):
         """Set the colorbar style in the canvas widget."""
+        side = getattr(self.canvas_widget, 'width', lambda: 300)()
+        fs = self._compute_font_size(side)
+
         # Color the ticks and their labels (both major and minor for log scale)
         self.colorbar.ax.yaxis.set_tick_params(
             color=color, labelcolor=color, which='both'
         )
-        self.colorbar.ax.tick_params(axis='y', colors=color, which='both')
+        self.colorbar.ax.tick_params(
+            axis='y', colors=color, which='both', labelsize=fs
+        )
 
         # Color the bounding box (outline)
         self.colorbar.outline.set_edgecolor(color)
@@ -5651,17 +5742,18 @@ class PlotterWidget(QWidget):
         for spine in self.colorbar.ax.spines.values():
             spine.set_edgecolor(color)
 
-        # Set the label with correct color
+        # Set the label with correct color and scaled font size
         label_text = (
             "Log10(Count)"
             if isinstance(self.colorbar.norm, LogNorm)
             else "Count"
         )
-        self.colorbar.set_label(label_text, color=color)
+        self.colorbar.set_label(label_text, color=color, fontsize=fs)
 
         # Force update of tick labels (sometimes needed for older matplotlib)
         for tick_label in self.colorbar.ax.get_yticklabels():
             tick_label.set_color(color)
+            tick_label.set_fontsize(fs)
 
     def closeEvent(self, event):
         """Clean up signal connections and child widgets before closing."""
