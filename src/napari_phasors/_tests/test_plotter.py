@@ -2405,3 +2405,188 @@ def test_phasor_center_integration_and_dock_logic(make_napari_viewer, qtbot):
     assert layer.metadata['settings']['phasor_center_enabled'] is False
 
     plotter.deleteLater()
+
+
+def _table_rows_by_name(table):
+    """Return table rows as ``{name: (g, s, phase, mod)}`` with float values."""
+    rows = {}
+    for row in range(table.rowCount()):
+        name = table.item(row, 0).text()
+        rows[name] = (
+            float(table.item(row, 1).text()),
+            float(table.item(row, 2).text()),
+            float(table.item(row, 3).text()),
+            float(table.item(row, 4).text()),
+        )
+    return rows
+
+
+def _set_layer_harmonic0_samples(layer, g_values, s_values, intensity_values):
+    """Overwrite harmonic-1 samples for deterministic center test cases."""
+    g_array = np.array(layer.metadata["G"], dtype=float, copy=True)
+    s_array = np.array(layer.metadata["S"], dtype=float, copy=True)
+    g_values = np.asarray(g_values, dtype=float)
+    s_values = np.asarray(s_values, dtype=float)
+    intensity_values = np.asarray(intensity_values, dtype=float)
+
+    if g_array.ndim > intensity_values.ndim:
+        g_array[0] = g_values
+        s_array[0] = s_values
+    else:
+        g_array = g_values
+        s_array = s_values
+
+    layer.metadata["G"] = g_array
+    layer.metadata["S"] = s_array
+    layer.data = intensity_values
+
+
+def test_phasor_center_multi_layer_merged_stats_name(make_napari_viewer):
+    """Multi-layer merged mode should produce a single 'Merged' row."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    layer1 = create_image_layer_with_phasors()
+    layer2 = create_image_layer_with_phasors()
+    viewer.add_layer(layer1)
+    viewer.add_layer(layer2)
+
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [layer1.name, layer2.name]
+    )
+    plotter._process_layer_selection_change()
+
+    plotter._phasor_center_display_mode = "Merged"
+    plotter.plotter_inputs_widget.phasor_center_checkbox.setChecked(True)
+    plotter._update_phasor_centers()
+
+    layer_table = plotter._phasor_center_stats_widget._layer_table
+    group_table = plotter._phasor_center_stats_widget._group_table
+
+    assert len(plotter._phasor_center_artists) == 1
+    assert layer_table.rowCount() == 1
+    assert layer_table.item(0, 0).text() == "Merged"
+    assert group_table.rowCount() == 0
+
+    plotter.deleteLater()
+
+
+def test_phasor_center_multi_layer_individual_stats(make_napari_viewer):
+    """Individual mode should create one center/stat row per selected layer."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    layer1 = create_image_layer_with_phasors()
+    layer2 = create_image_layer_with_phasors()
+    viewer.add_layer(layer1)
+    viewer.add_layer(layer2)
+
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [layer1.name, layer2.name]
+    )
+    plotter._process_layer_selection_change()
+
+    plotter._phasor_center_display_mode = "Individual layers"
+    plotter.plotter_inputs_widget.phasor_center_checkbox.setChecked(True)
+    plotter._update_phasor_centers()
+
+    layer_table = plotter._phasor_center_stats_widget._layer_table
+    group_table = plotter._phasor_center_stats_widget._group_table
+    rows = _table_rows_by_name(layer_table)
+
+    assert len(plotter._phasor_center_artists) == 2
+    assert set(rows) == {layer1.name, layer2.name}
+    assert group_table.rowCount() == 0
+
+    c1 = plotter._compute_single_center(layer1)
+    c2 = plotter._compute_single_center(layer2)
+    assert c1 is not None
+    assert c2 is not None
+    np.testing.assert_allclose(rows[layer1.name][:2], c1, atol=1e-6)
+    np.testing.assert_allclose(rows[layer2.name][:2], c2, atol=1e-6)
+
+    plotter.deleteLater()
+
+
+def test_phasor_center_grouped_median_uses_pooled_samples(make_napari_viewer):
+    """Grouped mode should use pooled samples with selected median method."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    layer1 = create_image_layer_with_phasors(harmonic=[1])
+    layer2 = create_image_layer_with_phasors(harmonic=[1])
+    viewer.add_layer(layer1)
+    viewer.add_layer(layer2)
+
+    shape = layer1.data.shape
+    g1 = np.zeros(shape, dtype=float)
+    s1 = np.zeros(shape, dtype=float)
+    m1 = np.ones(shape, dtype=float)
+
+    g2 = np.full(shape, np.nan, dtype=float)
+    s2 = np.full(shape, np.nan, dtype=float)
+    m2 = np.ones(shape, dtype=float)
+    g2[0, 0] = 1.0
+    s2[0, 0] = 1.0
+    g2[0, 1] = 1.0
+    s2[0, 1] = 1.0
+
+    _set_layer_harmonic0_samples(layer1, g1, s1, m1)
+    _set_layer_harmonic0_samples(layer2, g2, s2, m2)
+
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [layer1.name, layer2.name]
+    )
+    plotter._process_layer_selection_change()
+
+    plotter._phasor_center_method = "median"
+    plotter._phasor_center_display_mode = "Grouped"
+    plotter._phasor_center_group_assignments = {
+        layer1.name: 1,
+        layer2.name: 1,
+    }
+    plotter._phasor_center_group_names = {1: "All layers"}
+
+    plotter.plotter_inputs_widget.phasor_center_checkbox.setChecked(True)
+    plotter._update_phasor_centers()
+
+    layer_rows = _table_rows_by_name(
+        plotter._phasor_center_stats_widget._layer_table
+    )
+    group_rows = _table_rows_by_name(
+        plotter._phasor_center_stats_widget._group_table
+    )
+
+    assert len(plotter._phasor_center_artists) == 1
+    assert set(layer_rows) == {layer1.name, layer2.name}
+    assert set(group_rows) == {"All layers"}
+
+    s_layer1 = plotter._get_layer_phasor_samples(layer1)
+    s_layer2 = plotter._get_layer_phasor_samples(layer2)
+    assert s_layer1 is not None
+    assert s_layer2 is not None
+    pooled_mean = np.concatenate([s_layer1[0], s_layer2[0]])
+    pooled_g = np.concatenate([s_layer1[1], s_layer2[1]])
+    pooled_s = np.concatenate([s_layer1[2], s_layer2[2]])
+
+    pooled_center = plotter._compute_center_from_samples(
+        pooled_mean,
+        pooled_g,
+        pooled_s,
+    )
+    assert pooled_center is not None
+    np.testing.assert_allclose(
+        group_rows["All layers"][:2], pooled_center, atol=1e-6
+    )
+
+    c1 = plotter._compute_single_center(layer1)
+    c2 = plotter._compute_single_center(layer2)
+    assert c1 is not None
+    assert c2 is not None
+    arithmetic_mean = (
+        0.5 * (c1[0] + c2[0]),
+        0.5 * (c1[1] + c2[1]),
+    )
+    assert not np.allclose(pooled_center, arithmetic_mean, atol=1e-6)
+
+    plotter.deleteLater()

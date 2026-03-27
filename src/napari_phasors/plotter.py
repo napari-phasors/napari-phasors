@@ -1665,7 +1665,7 @@ class PlotterWidget(QWidget):
         )
         self._plotter_settings_layout = contour_settings_layout
 
-        # --- Phasor center controls ---
+        # Phasor center controls
         self.plotter_inputs_widget.label_phasor_center = QLabel(
             "Plot phasor centers:"
         )
@@ -3422,7 +3422,7 @@ class PlotterWidget(QWidget):
         if self._phasor_center_enabled:
             self._update_phasor_centers()
 
-    # Remaning methods for phasor center callbacks have been removed as settings are now in the dialog.
+    # Remaining methods for phasor center callbacks have been removed as settings are now in the dialog.
 
     def _update_phasor_center_controls_visibility(self):
         """Show/hide configure button based on toggle state."""
@@ -3436,19 +3436,8 @@ class PlotterWidget(QWidget):
                 artist.remove()
         self._phasor_center_artists.clear()
 
-    def _compute_single_center(self, layer):
-        """Compute phasor center for a single layer.
-
-        Parameters
-        ----------
-        layer : napari.layers.Image
-            Layer with phasor metadata.
-
-        Returns
-        -------
-        tuple or None
-            (g_center, s_center) scalars, or None on failure.
-        """
+    def _get_layer_phasor_samples(self, layer):
+        """Return flattened (intensity, G, S) arrays for one layer."""
         g_array = layer.metadata.get("G")
         s_array = layer.metadata.get("S")
         harmonics = layer.metadata.get("harmonics")
@@ -3473,28 +3462,40 @@ class PlotterWidget(QWidget):
             g = g_array
             s = s_array
 
-        # Use layer.data as intensity (mean)
-        mean_data = layer.data.copy().astype(float)
-        g_flat = g.ravel()
-        s_flat = s.ravel()
-        mean_flat = mean_data.ravel()
+        mean_data = layer.data
+        return mean_data.ravel(), g.ravel(), s.ravel()
 
-        # Remove NaN entries
-        valid = ~np.isnan(g_flat) & ~np.isnan(s_flat) & ~np.isnan(mean_flat)
-        if not np.any(valid):
-            return None
-
+    def _compute_center_from_samples(self, mean_flat, g_flat, s_flat):
+        """Compute (g, s) center from flattened sample arrays."""
         try:
             _mean_c, g_c, s_c = _phasor_center(
-                mean_flat[valid],
-                g_flat[valid],
-                s_flat[valid],
+                mean_flat,
+                g_flat,
+                s_flat,
                 method=self._phasor_center_method,
             )
+            return float(g_c), float(s_c)
         except Exception:  # noqa: BLE001
             return None
 
-        return float(g_c), float(s_c)
+    def _compute_single_center(self, layer):
+        """Compute phasor center for a single layer.
+
+        Parameters
+        ----------
+        layer : napari.layers.Image
+            Layer with phasor metadata.
+
+        Returns
+        -------
+        tuple or None
+            (g_center, s_center) scalars, or None on failure.
+        """
+        samples = self._get_layer_phasor_samples(layer)
+        if samples is None:
+            return None
+        mean_flat, g_flat, s_flat = samples
+        return self._compute_center_from_samples(mean_flat, g_flat, s_flat)
 
     def _update_phasor_centers(self):
         """Calculate and plot phasor center dots on the axes."""
@@ -3514,8 +3515,16 @@ class PlotterWidget(QWidget):
         )
 
         layer_centers = {}
+        layer_samples = {}
         for layer in selected_layers:
-            result = self._compute_single_center(layer)
+            samples = self._get_layer_phasor_samples(layer)
+            if samples is None:
+                continue
+            layer_samples[layer.name] = samples
+            mean_flat, g_flat, s_flat = samples
+            result = self._compute_center_from_samples(
+                mean_flat, g_flat, s_flat
+            )
             if result is not None:
                 layer_centers[layer.name] = result
 
@@ -3532,57 +3541,26 @@ class PlotterWidget(QWidget):
         stats_group = {}
 
         if display_mode == "Merged":
-            # Use merged G/S from all layers
-            features = self.get_merged_features()
-            if features is not None:
-                g_all, s_all = features
-                # Build mean from all selected layers' data
-                all_mean = []
-                for layer in selected_layers:
-                    m = layer.data.copy().astype(float).ravel()
-                    g_l = layer.metadata.get("G")
-                    s_l = layer.metadata.get("S")
-                    harmonics = layer.metadata.get("harmonics")
-                    if g_l is None or s_l is None:
-                        continue
-                    if harmonics is not None:
-                        harmonics = np.atleast_1d(harmonics)
-                        try:
-                            idx = int(
-                                np.where(harmonics == self.harmonic)[0][0]
-                            )
-                        except (IndexError, ValueError):
-                            continue
-                        if g_l.ndim > layer.data.ndim:
-                            g_l = g_l[idx]
-                            s_l = s_l[idx]
-                    g_f = g_l.ravel()
-                    s_f = s_l.ravel()
-                    valid = ~np.isnan(g_f) & ~np.isnan(s_f) & ~np.isnan(m)
-                    all_mean.append(m[valid])
+            pooled_mean = np.concatenate(
+                [samples[0] for samples in layer_samples.values()]
+            )
+            pooled_g = np.concatenate(
+                [samples[1] for samples in layer_samples.values()]
+            )
+            pooled_s = np.concatenate(
+                [samples[2] for samples in layer_samples.values()]
+            )
 
-                if all_mean:
-                    mean_merged = np.concatenate(all_mean)
-                    try:
-                        _mc, gc, sc = _phasor_center(
-                            mean_merged,
-                            g_all,
-                            s_all,
-                            method=self._phasor_center_method,
-                        )
-                        gc, sc = float(gc), float(sc)
-                    except Exception:  # noqa: BLE001
-                        gc, sc = float(np.nanmean(g_all)), float(
-                            np.nanmean(s_all)
-                        )
-                else:
-                    gc = float(np.nanmean(g_all))
-                    sc = float(np.nanmean(s_all))
+            center = self._compute_center_from_samples(
+                pooled_mean,
+                pooled_g,
+                pooled_s,
+            )
+            if center is not None:
+                gc, sc = center
             else:
-                # Fallback: average of per-layer centers
-                gs = list(layer_centers.values())
-                gc = float(np.mean([g for g, _ in gs]))
-                sc = float(np.mean([s for _, s in gs]))
+                gc = float(np.nanmean(pooled_g))
+                sc = float(np.nanmean(pooled_s))
 
             color = self._phasor_center_color
             artist = ax.scatter(
@@ -3646,11 +3624,32 @@ class PlotterWidget(QWidget):
                     gid, default_tab10[(gid - 1) % len(default_tab10)][:3]
                 )
                 members = grouped[gid]
-                gs = [layer_centers[n] for n in members if n in layer_centers]
-                if not gs:
+                member_samples = [
+                    layer_samples[n] for n in members if n in layer_samples
+                ]
+                if not member_samples:
                     continue
-                gc = float(np.mean([g for g, _ in gs]))
-                sc = float(np.mean([s for _, s in gs]))
+
+                pooled_mean = np.concatenate(
+                    [samples[0] for samples in member_samples]
+                )
+                pooled_g = np.concatenate(
+                    [samples[1] for samples in member_samples]
+                )
+                pooled_s = np.concatenate(
+                    [samples[2] for samples in member_samples]
+                )
+
+                center = self._compute_center_from_samples(
+                    pooled_mean,
+                    pooled_g,
+                    pooled_s,
+                )
+                if center is not None:
+                    gc, sc = center
+                else:
+                    gc = float(np.nanmean(pooled_g))
+                    sc = float(np.nanmean(pooled_s))
 
                 artist = ax.scatter(
                     [gc],
@@ -6623,10 +6622,6 @@ class PlotterWidget(QWidget):
                 self.canvas_widget.axes.set_xlim(xlim)
                 self.canvas_widget.axes.set_ylim(ylim)
                 self.canvas_widget.figure.canvas.draw_idle()
-
-            # Update phasor center dots if enabled
-            if self._phasor_center_enabled:
-                self._update_phasor_centers()
         finally:
             self._updating_plot = False
 
