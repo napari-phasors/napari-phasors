@@ -16,6 +16,8 @@ from matplotlib.patches import Circle, Patch
 from napari.layers import Image, Labels, Shapes
 from napari.utils import colormaps, notifications
 from phasorpy.lifetime import phasor_from_lifetime
+from phasorpy.phasor import phasor_center as _phasor_center
+from phasorpy.phasor import phasor_to_polar
 from qtpy import uic
 from qtpy.QtCore import QEvent, Qt, QTimer
 from qtpy.QtGui import QColor
@@ -23,6 +25,7 @@ from qtpy.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -42,11 +45,13 @@ from superqt import QToggleSwitch
 
 from ._utils import (
     CheckableComboBox,
+    CollapsibleSection,
     ColormapLegendHandler,
     ColormapLegendProxy,
     HistogramDockWidget,
     HistogramWidget,
     StatisticsDockWidget,
+    StatisticsTableWidget,
     apply_filter_and_threshold,
     populate_colormap_combobox,
     resolve_colormap_by_name,
@@ -659,6 +664,421 @@ class ContourLayerSettingsDialog(QDialog):
         }
 
 
+class PhasorCenterLayerSettingsDialog(QDialog):
+    """Dialog for phasor center multi-layer display and grouping settings.
+
+    Similar to ContourLayerSettingsDialog but uses only solid color pickers
+    (no colormap option). Allows configuring how phasor centers are displayed
+    when multiple layers are selected.
+
+    Parameters
+    ----------
+    display_mode : str
+        Current display mode: 'Merged', 'Individual layers', or 'Grouped'.
+    center_method : str
+        Center method: 'mean' or 'median'.
+    marker_size : int
+        Marker size for center dots.
+    alpha : float
+        Alpha (opacity) for center dots.
+    merged_color : tuple
+        RGB color tuple for merged mode.
+    layer_labels : list of str
+        Names of the selected layers.
+    layer_colors : dict
+        Per-layer color assignments.
+    group_assignments : dict
+        Layer-to-group mapping.
+    group_colors : dict
+        Per-group color assignments.
+    group_names : dict
+        Per-group display names.
+    parent : QWidget, optional
+        Parent widget.
+    """
+
+    DISPLAY_MODES = ("Merged", "Individual layers", "Grouped")
+    MAX_GROUPS = 10
+
+    def __init__(
+        self,
+        *,
+        display_mode="Merged",
+        center_method="mean",
+        marker_size=100,
+        alpha=0.8,
+        merged_color=None,
+        layer_labels=None,
+        layer_colors=None,
+        group_assignments=None,
+        group_colors=None,
+        group_names=None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Phasor Center Settings")
+        self.setMinimumWidth(500)
+
+        self._layer_labels = list(layer_labels or [])
+        self._group_row_data = []
+
+        layer_colors = dict(layer_colors or {})
+        group_assignments = dict(group_assignments or {})
+        group_colors = dict(group_colors or {})
+        group_names = dict(group_names or {})
+
+        default_tab10 = plt.cm.tab10.colors
+
+        root = QVBoxLayout(self)
+
+        # Display mode
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(QLabel("Multi-layer display mode:"))
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(list(self.DISPLAY_MODES))
+        self.mode_combo.setCurrentText(display_mode)
+        mode_layout.addWidget(self.mode_combo)
+        root.addLayout(mode_layout)
+
+        # Center method
+        method_layout = QHBoxLayout()
+        method_layout.addWidget(QLabel("Center method:"))
+        self._method_combo = QComboBox()
+        self._method_combo.addItems(["mean", "median"])
+        self._method_combo.setCurrentText(center_method)
+        method_layout.addWidget(self._method_combo)
+        root.addLayout(method_layout)
+
+        # Marker size
+        size_layout = QHBoxLayout()
+        size_layout.addWidget(QLabel("Marker size:"))
+        self._size_spinbox = QSpinBox()
+        self._size_spinbox.setRange(1, 1000)
+        self._size_spinbox.setValue(marker_size)
+        size_layout.addWidget(self._size_spinbox)
+        root.addLayout(size_layout)
+
+        # Alpha
+        alpha_layout = QHBoxLayout()
+        alpha_layout.addWidget(QLabel("Alpha:"))
+        self._alpha_spinbox = QDoubleSpinBox()
+        self._alpha_spinbox.setRange(0.01, 1.0)
+        self._alpha_spinbox.setSingleStep(0.1)
+        self._alpha_spinbox.setValue(alpha)
+        alpha_layout.addWidget(self._alpha_spinbox)
+        root.addLayout(alpha_layout)
+
+        # Merged mode color
+        merged_color_layout = QHBoxLayout()
+        self._merged_color_label = QLabel("Merged center color:")
+        merged_color_layout.addWidget(self._merged_color_label)
+        self._merged_color_btn = QPushButton()
+        self._merged_color_btn.setFixedSize(24, 24)
+        if merged_color is None:
+            merged_color = (1.0, 0.0, 0.0)
+        self._set_btn_color(self._merged_color_btn, merged_color)
+        self._merged_color_btn.clicked.connect(
+            lambda checked=False, b=self._merged_color_btn: self._pick_color(b)
+        )
+        merged_color_layout.addWidget(self._merged_color_btn)
+        merged_color_layout.addStretch(1)
+        root.addLayout(merged_color_layout)
+
+        # Per-layer colors section
+        self._layer_section = QWidget()
+        layer_section_layout = QVBoxLayout(self._layer_section)
+        layer_section_layout.setContentsMargins(0, 0, 0, 0)
+        layer_section_layout.addWidget(QLabel("Individual layer colors:"))
+        self._layer_color_buttons = {}
+        for i, label in enumerate(self._layer_labels):
+            row = QHBoxLayout()
+            row.addWidget(QLabel(label))
+            btn = QPushButton()
+            btn.setFixedSize(24, 24)
+            color = layer_colors.get(
+                label, default_tab10[i % len(default_tab10)]
+            )
+            self._set_btn_color(btn, color)
+            btn.clicked.connect(
+                lambda checked=False, b=btn: self._pick_color(b)
+            )
+            row.addWidget(btn)
+            row.addStretch(1)
+            layer_section_layout.addLayout(row)
+            self._layer_color_buttons[label] = btn
+        root.addWidget(self._layer_section)
+
+        # Group section
+        self._group_section = QWidget()
+        group_layout = QVBoxLayout(self._group_section)
+        group_layout.setContentsMargins(0, 0, 0, 0)
+        group_layout.addWidget(QLabel("Grouped colors:"))
+
+        self._group_rows_widget = QWidget()
+        self._group_rows_layout = QVBoxLayout(self._group_rows_widget)
+        self._group_rows_layout.setContentsMargins(0, 0, 0, 0)
+        self._group_rows_layout.setSpacing(4)
+        group_layout.addWidget(self._group_rows_widget)
+
+        if group_assignments and self._layer_labels:
+            grouped = {}
+            for name in self._layer_labels:
+                gid = int(group_assignments.get(name, 1))
+                grouped.setdefault(gid, []).append(name)
+            for gid in sorted(grouped):
+                self._add_group_row(
+                    name=group_names.get(gid, f"Group {gid}"),
+                    color=group_colors.get(
+                        gid, default_tab10[(gid - 1) % len(default_tab10)]
+                    ),
+                    checked_layers=grouped[gid],
+                )
+        elif self._layer_labels:
+            self._add_group_row(
+                name="Group 1",
+                checked_layers=list(self._layer_labels),
+            )
+
+        add_group_btn = QPushButton("+ Add Group")
+        add_group_btn.setMaximumWidth(120)
+        add_group_btn.clicked.connect(self._on_add_group)
+        group_layout.addWidget(add_group_btn)
+        root.addWidget(self._group_section)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+        self.mode_combo.currentTextChanged.connect(self._update_ui_for_mode)
+        self._update_ui_for_mode(self.mode_combo.currentText())
+
+    @staticmethod
+    def _set_btn_color(btn, color):
+        r, g, b = color[:3]
+        btn._color = (float(r), float(g), float(b))
+        btn.setStyleSheet(
+            f"background-color: rgb({int(r*255)}, {int(g*255)}, {int(b*255)});"
+        )
+
+    def _pick_color(self, btn):
+        from qtpy.QtWidgets import QColorDialog
+
+        r, g, b = btn._color
+        initial = QColorDialog().currentColor()
+        initial.setRgbF(r, g, b)
+        chosen = QColorDialog.getColor(initial, self)
+        if chosen.isValid():
+            self._set_btn_color(btn, chosen.getRgbF()[:3])
+
+    def _update_ui_for_mode(self, mode):
+        is_individual = mode == "Individual layers"
+        is_grouped = mode == "Grouped"
+        is_merged = mode == "Merged"
+        self._merged_color_label.setVisible(is_merged)
+        self._merged_color_btn.setVisible(is_merged)
+        self._layer_section.setVisible(is_individual)
+        self._group_section.setVisible(is_grouped)
+
+    def _add_group_row(self, name="Group", color=None, checked_layers=None):
+        default_tab10 = plt.cm.tab10.colors
+        idx = len(self._group_row_data)
+        if color is None:
+            color = default_tab10[idx % len(default_tab10)]
+
+        row_widget = QWidget()
+        row_layout = QHBoxLayout(row_widget)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(4)
+
+        name_edit = QLineEdit(name)
+        name_edit.setMaximumWidth(120)
+        row_layout.addWidget(name_edit)
+
+        color_btn = QPushButton()
+        color_btn.setFixedSize(24, 24)
+        self._set_btn_color(color_btn, color)
+        color_btn.clicked.connect(
+            lambda checked=False, b=color_btn: self._pick_color(b)
+        )
+        row_layout.addWidget(color_btn)
+
+        layer_combo = CheckableComboBox(
+            placeholder="Select layers...",
+            parent=self,
+            enable_primary_layer=False,
+        )
+        layer_combo.addItems(self._layer_labels)
+        if checked_layers:
+            layer_combo.setCheckedItems(checked_layers)
+        else:
+            layer_combo._update_display_text()
+        row_layout.addWidget(layer_combo, 1)
+
+        remove_btn = QPushButton("-")
+        remove_btn.setFixedSize(24, 24)
+        remove_btn.setToolTip("Remove this group")
+        remove_btn.clicked.connect(lambda: self._on_remove_group(row_widget))
+        row_layout.addWidget(remove_btn)
+
+        self._group_rows_layout.addWidget(row_widget)
+        self._group_row_data.append(
+            {
+                "container": row_widget,
+                "name_edit": name_edit,
+                "color_btn": color_btn,
+                "layer_combo": layer_combo,
+            }
+        )
+
+    def _on_add_group(self):
+        if len(self._group_row_data) >= self.MAX_GROUPS:
+            return
+        self._add_group_row(name=f"Group {len(self._group_row_data) + 1}")
+
+    def _on_remove_group(self, row_widget):
+        if len(self._group_row_data) <= 1:
+            return
+        idx = None
+        for i, data in enumerate(self._group_row_data):
+            if data["container"] is row_widget:
+                idx = i
+                break
+        if idx is None:
+            return
+        row = self._group_row_data.pop(idx)
+        row["container"].setParent(None)
+
+    def get_display_mode(self):
+        return self.mode_combo.currentText()
+
+    def get_center_method(self):
+        return self._method_combo.currentText()
+
+    def get_marker_size(self):
+        return self._size_spinbox.value()
+
+    def get_alpha(self):
+        return self._alpha_spinbox.value()
+
+    def get_merged_color(self):
+        return self._merged_color_btn._color
+
+    def get_layer_colors(self):
+        return {
+            name: btn._color for name, btn in self._layer_color_buttons.items()
+        }
+
+    def get_group_assignments(self):
+        assignments = {}
+        for gid, row in enumerate(self._group_row_data, start=1):
+            for layer_name in row["layer_combo"].checkedItems():
+                assignments[layer_name] = gid
+        return assignments
+
+    def get_group_names(self):
+        names = {}
+        for gid, row in enumerate(self._group_row_data, start=1):
+            text = row["name_edit"].text().strip()
+            names[gid] = text if text else f"Group {gid}"
+        return names
+
+    def get_group_colors(self):
+        return {
+            gid: row["color_btn"]._color
+            for gid, row in enumerate(self._group_row_data, start=1)
+        }
+
+
+class PhasorCenterStatisticsWidget(QWidget):
+    """Statistics widget showing phasor center G, S, Phase, and Modulation.
+
+    Displays computed phasor center coordinates in a table, replacing the
+    empty statistics placeholder when the Plot Settings tab is active and
+    phasor centers are enabled.
+
+    Parameters
+    ----------
+    parent : QWidget, optional
+        Parent widget.
+    """
+
+    COLUMNS = ["Name", "G (center)", "S (center)", "Phase (°)", "Modulation"]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumWidth(300)
+
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(4, 4, 4, 4)
+        main_layout.setSpacing(2)
+
+        self.layer_stats_section = CollapsibleSection(
+            "Layer Centers", initially_collapsed=False, text_color="white"
+        )
+        self._layer_table = StatisticsTableWidget()
+        self._layer_table.setColumnCount(len(self.COLUMNS))
+        self._layer_table.setHorizontalHeaderLabels(self.COLUMNS)
+        self.layer_stats_section.add_widget(self._layer_table)
+        main_layout.addWidget(self.layer_stats_section)
+
+        self.group_stats_section = CollapsibleSection(
+            "Group Centers", initially_collapsed=False, text_color="white"
+        )
+        self._group_table = StatisticsTableWidget()
+        self._group_table.setColumnCount(len(self.COLUMNS))
+        self._group_table.setHorizontalHeaderLabels(self.COLUMNS)
+        self.group_stats_section.add_widget(self._group_table)
+        main_layout.addWidget(self.group_stats_section)
+        self.group_stats_section.setVisible(False)
+
+        main_layout.addStretch()
+
+    def update_centers(self, centers):
+        """Update the layer centers table.
+
+        Parameters
+        ----------
+        centers : dict
+            ``{name: (g, s, phase_deg, modulation)}`` mapping.
+        """
+        self._update_table(self._layer_table, centers)
+        self.layer_stats_section.setVisible(bool(centers))
+
+    def update_group_centers(self, centers):
+        """Update the group centers table.
+
+        Parameters
+        ----------
+        centers : dict
+            ``{name: (g, s, phase_deg, modulation)}`` mapping.
+        """
+        self._update_table(self._group_table, centers)
+        self.group_stats_section.setVisible(bool(centers))
+
+    def _update_table(self, table, centers):
+        """Populate a table widget with center data.
+
+        Parameters
+        ----------
+        table : StatisticsTableWidget
+            The table to populate.
+        centers : dict
+            ``{name: (g, s, phase_deg, modulation)}`` mapping.
+        """
+        from qtpy.QtWidgets import QTableWidgetItem
+
+        table.setRowCount(len(centers))
+        for row, (name, (g, s, phase_deg, mod)) in enumerate(centers.items()):
+            table.setItem(row, 0, QTableWidgetItem(str(name)))
+            table.setItem(row, 1, QTableWidgetItem(f"{float(g):.6f}"))
+            table.setItem(row, 2, QTableWidgetItem(f"{float(s):.6f}"))
+            table.setItem(row, 3, QTableWidgetItem(f"{float(phase_deg):.4f}"))
+            table.setItem(row, 4, QTableWidgetItem(f"{float(mod):.6f}"))
+
+
 class PlotterWidget(QWidget):
     """A widget for plotting phasor features.
 
@@ -697,18 +1117,20 @@ class PlotterWidget(QWidget):
         The FRET tab for FRET analysis.
     plotter_inputs_widget : QWidget
         The main plotter inputs widget (in Settings tab). The widget contains:
-        - semi_circle_checkbox : QCheckBox
-            The checkbox for toggling the display of the semi-circle plot.
-        - white_background_checkbox : QCheckBox
-            The checkbox for toggling the white background in the plot.
+        - semi_circle_checkbox : QToggleSwitch
+            The toggle for the display of the semi-circle plot.
+        - white_background_checkbox : QToggleSwitch
+            The toggle for the white background in the plot.
         - plot_type_combobox : QComboBox
             The combobox for selecting the plot type.
         - colormap_combobox : QComboBox
             The combobox for selecting the histogram colormap.
         - number_of_bins_spinbox : QSpinBox
             The spinbox for selecting the number of bins in the histogram.
-        - log_scale_checkbox : QCheckBox
-            The checkbox for selecting the log scale in the histogram.
+        - log_scale_checkbox : QToggleSwitch
+            The toggle for selecting the log scale in the histogram.
+        - phasor_center_checkbox : QToggleSwitch
+            The toggle for plotting phasor centers.
 
     """
 
@@ -1232,6 +1654,129 @@ class PlotterWidget(QWidget):
         )
         self._plotter_settings_layout = contour_settings_layout
 
+        self.plotter_inputs_widget.label_phasor_center = QLabel(
+            "Plot phasor centers:"
+        )
+        self.plotter_inputs_widget.phasor_center_checkbox = QToggleSwitch()
+        self.plotter_inputs_widget.phasor_center_checkbox.setChecked(False)
+        self.plotter_inputs_widget.phasor_center_checkbox.onColor = QColor(
+            "#27ae60"
+        )
+        self.plotter_inputs_widget.phasor_center_checkbox.toggled.connect(
+            self._on_phasor_center_toggled
+        )
+
+        self.plotter_inputs_widget.label_pc_method = QLabel("Center method:")
+        self.plotter_inputs_widget.pc_method_combobox = QComboBox()
+        self.plotter_inputs_widget.pc_method_combobox.addItems(
+            ["mean", "median"]
+        )
+        self.plotter_inputs_widget.pc_method_combobox.currentTextChanged.connect(
+            self._on_phasor_center_method_changed
+        )
+
+        self.plotter_inputs_widget.label_pc_color = QLabel("Center color:")
+        self.plotter_inputs_widget.pc_color_button = QPushButton()
+        self.plotter_inputs_widget.pc_color_button.setFixedSize(24, 24)
+        self.plotter_inputs_widget.pc_color_button.setStyleSheet(
+            "background-color: rgb(255, 0, 0);"
+        )
+        self.plotter_inputs_widget.pc_color_button.clicked.connect(
+            self._on_phasor_center_color_clicked
+        )
+
+        self.plotter_inputs_widget.label_pc_size = QLabel("Center size:")
+        self.plotter_inputs_widget.pc_size_spinbox = QSpinBox()
+        self.plotter_inputs_widget.pc_size_spinbox.setRange(1, 1000)
+        self.plotter_inputs_widget.pc_size_spinbox.setValue(100)
+        self.plotter_inputs_widget.pc_size_spinbox.valueChanged.connect(
+            self._on_phasor_center_size_changed
+        )
+
+        self.plotter_inputs_widget.label_pc_alpha = QLabel("Center alpha:")
+        self.plotter_inputs_widget.pc_alpha_spinbox = QDoubleSpinBox()
+        self.plotter_inputs_widget.pc_alpha_spinbox.setRange(0.01, 1.0)
+        self.plotter_inputs_widget.pc_alpha_spinbox.setSingleStep(0.1)
+        self.plotter_inputs_widget.pc_alpha_spinbox.setValue(0.8)
+        self.plotter_inputs_widget.pc_alpha_spinbox.valueChanged.connect(
+            self._on_phasor_center_alpha_changed
+        )
+
+        # Multi-layer configure button
+        self.plotter_inputs_widget.label_pc_configure = QLabel(
+            "Multi-layer center display:"
+        )
+        self.plotter_inputs_widget.pc_configure_button = QPushButton(
+            "Configure Phasor Center..."
+        )
+        self.plotter_inputs_widget.pc_configure_button.clicked.connect(
+            self._on_phasor_center_configure_clicked
+        )
+
+        # Add phasor center rows to the layout (they start hidden)
+        # We use high row numbers; _reflow_plot_settings_rows handles placement.
+        pc_base_row = 20  # well below existing rows
+        contour_settings_layout.addWidget(
+            self.plotter_inputs_widget.label_phasor_center,
+            pc_base_row,
+            0,
+        )
+        contour_settings_layout.addWidget(
+            self.plotter_inputs_widget.phasor_center_checkbox,
+            pc_base_row,
+            1,
+        )
+        contour_settings_layout.addWidget(
+            self.plotter_inputs_widget.label_pc_configure,
+            pc_base_row + 1,
+            0,
+        )
+        contour_settings_layout.addWidget(
+            self.plotter_inputs_widget.pc_configure_button,
+            pc_base_row + 1,
+            1,
+        )
+        contour_settings_layout.addWidget(
+            self.plotter_inputs_widget.label_pc_method,
+            pc_base_row + 2,
+            0,
+        )
+        contour_settings_layout.addWidget(
+            self.plotter_inputs_widget.pc_method_combobox,
+            pc_base_row + 2,
+            1,
+        )
+        contour_settings_layout.addWidget(
+            self.plotter_inputs_widget.label_pc_color,
+            pc_base_row + 3,
+            0,
+        )
+        contour_settings_layout.addWidget(
+            self.plotter_inputs_widget.pc_color_button,
+            pc_base_row + 3,
+            1,
+        )
+        contour_settings_layout.addWidget(
+            self.plotter_inputs_widget.label_pc_size,
+            pc_base_row + 4,
+            0,
+        )
+        contour_settings_layout.addWidget(
+            self.plotter_inputs_widget.pc_size_spinbox,
+            pc_base_row + 4,
+            1,
+        )
+        contour_settings_layout.addWidget(
+            self.plotter_inputs_widget.label_pc_alpha,
+            pc_base_row + 5,
+            0,
+        )
+        contour_settings_layout.addWidget(
+            self.plotter_inputs_widget.pc_alpha_spinbox,
+            pc_base_row + 5,
+            1,
+        )
+
         self.import_from_layer_button.clicked.connect(
             self._import_settings_from_layer
         )
@@ -1265,6 +1810,20 @@ class PlotterWidget(QWidget):
         self._contour_layer_styles = {}
         self._contour_group_styles = {}
         self._contour_show_legend = False
+
+        # Phasor center state
+        self._phasor_center_enabled = False
+        self._phasor_center_method = "mean"
+        self._phasor_center_color = (1.0, 0.0, 0.0)
+        self._phasor_center_size = 100
+        self._phasor_center_alpha = 0.8
+        self._phasor_center_display_mode = "Merged"
+        self._phasor_center_layer_colors = {}
+        self._phasor_center_group_assignments = {}
+        self._phasor_center_group_colors = {}
+        self._phasor_center_group_names = {}
+        self._phasor_center_artists = []
+
         self.toggle_semi_circle = (
             True  # default: semicircle shown (toggle OFF)
         )
@@ -1302,6 +1861,15 @@ class PlotterWidget(QWidget):
         # Connect tab change signal
         self.tab_widget.currentChanged.connect(self._on_tab_changed)
         self._set_selection_visibility(False)
+
+        # Phasor center statistics widget
+        self._phasor_center_stats_widget = PhasorCenterStatisticsWidget()
+        self._phasor_center_stats_page_idx = self._statistics_stack.addWidget(
+            self._phasor_center_stats_widget
+        )
+
+        # Initialize phasor center UI visibility
+        self._update_phasor_center_controls_visibility()
 
     def _add_analysis_dock_widget(self):
         """Add the analysis widget and histogram container to the viewer.
@@ -1570,6 +2138,16 @@ class PlotterWidget(QWidget):
             'contour_single_style': 'colormap',
             'contour_single_colormap': self.histogram_colormap,
             'contour_single_color': (0.1216, 0.4667, 0.7059),
+            'phasor_center_enabled': False,
+            'phasor_center_method': 'mean',
+            'phasor_center_color': (1.0, 0.0, 0.0),
+            'phasor_center_size': 100,
+            'phasor_center_alpha': 0.8,
+            'phasor_center_display_mode': 'Merged',
+            'phasor_center_layer_colors': {},
+            'phasor_center_group_assignments': {},
+            'phasor_center_group_colors': {},
+            'phasor_center_group_names': {},
         }
 
     def _initialize_plot_settings_in_metadata(self, layer):
@@ -1795,6 +2373,68 @@ class PlotterWidget(QWidget):
 
             self._refresh_main_colormap_control_for_mode()
 
+            # Phasor center settings
+            self._phasor_center_enabled = settings.get(
+                'phasor_center_enabled', False
+            )
+            self._phasor_center_method = settings.get(
+                'phasor_center_method', 'mean'
+            )
+            self._phasor_center_color = tuple(
+                settings.get('phasor_center_color', (1.0, 0.0, 0.0))
+            )
+            self._phasor_center_size = settings.get('phasor_center_size', 100)
+            self._phasor_center_alpha = settings.get(
+                'phasor_center_alpha', 0.8
+            )
+            self._phasor_center_display_mode = settings.get(
+                'phasor_center_display_mode', 'Merged'
+            )
+            self._phasor_center_layer_colors = settings.get(
+                'phasor_center_layer_colors', {}
+            )
+            self._phasor_center_group_assignments = settings.get(
+                'phasor_center_group_assignments', {}
+            )
+            self._phasor_center_group_colors = settings.get(
+                'phasor_center_group_colors', {}
+            )
+            self._phasor_center_group_names = settings.get(
+                'phasor_center_group_names', {}
+            )
+
+            # Restore phasor center UI state
+            self.plotter_inputs_widget.phasor_center_checkbox.blockSignals(
+                True
+            )
+            self.plotter_inputs_widget.phasor_center_checkbox.setChecked(
+                self._phasor_center_enabled
+            )
+            self.plotter_inputs_widget.phasor_center_checkbox.blockSignals(
+                False
+            )
+            self.plotter_inputs_widget.pc_method_combobox.blockSignals(True)
+            self.plotter_inputs_widget.pc_method_combobox.setCurrentText(
+                self._phasor_center_method
+            )
+            self.plotter_inputs_widget.pc_method_combobox.blockSignals(False)
+            self.plotter_inputs_widget.pc_size_spinbox.blockSignals(True)
+            self.plotter_inputs_widget.pc_size_spinbox.setValue(
+                self._phasor_center_size
+            )
+            self.plotter_inputs_widget.pc_size_spinbox.blockSignals(False)
+            self.plotter_inputs_widget.pc_alpha_spinbox.blockSignals(True)
+            self.plotter_inputs_widget.pc_alpha_spinbox.setValue(
+                self._phasor_center_alpha
+            )
+            self.plotter_inputs_widget.pc_alpha_spinbox.blockSignals(False)
+            r, g, b = self._phasor_center_color[:3]
+            self.plotter_inputs_widget.pc_color_button.setStyleSheet(
+                f"background-color: rgb({int(r*255)}, {int(g*255)}, {int(b*255)});"
+            )
+
+            self._update_phasor_center_controls_visibility()
+
         finally:
             self._updating_settings = False
 
@@ -2000,6 +2640,16 @@ class PlotterWidget(QWidget):
                 "contour_single_style",
                 "contour_single_colormap",
                 "contour_single_color",
+                "phasor_center_enabled",
+                "phasor_center_method",
+                "phasor_center_color",
+                "phasor_center_size",
+                "phasor_center_alpha",
+                "phasor_center_display_mode",
+                "phasor_center_layer_colors",
+                "phasor_center_group_assignments",
+                "phasor_center_group_colors",
+                "phasor_center_group_names",
             ],
             "calibration_tab": [
                 "calibrated",
@@ -2341,6 +2991,7 @@ class PlotterWidget(QWidget):
             self.components_tab.clear_artists()
         if hasattr(self, 'fret_tab'):
             self.fret_tab.clear_artists()
+        self._clear_phasor_center_artists()
 
     def _show_tab_artists(self, current_tab):
         """Show artists for the specified tab."""
@@ -2416,9 +3067,16 @@ class PlotterWidget(QWidget):
             stats_title = "Components Statistics"
         else:
             hist_idx = 0
-            stats_idx = 0
+            if (
+                current_tab is self.plotter_inputs_widget
+                and self._phasor_center_enabled
+            ):
+                stats_idx = self._phasor_center_stats_page_idx
+                stats_title = "Phasor Center Statistics"
+            else:
+                stats_idx = 0
+                stats_title = "Statistics"
             hist_title = "Histogram"
-            stats_title = "Statistics"
         self._histogram_stack.setCurrentIndex(hist_idx)
         self._statistics_stack.setCurrentIndex(stats_idx)
         if hasattr(self, '_histogram_title_label'):
@@ -2718,6 +3376,442 @@ class PlotterWidget(QWidget):
         if self.plot_type == 'CONTOUR':
             self.plot()
 
+    # --- Phasor center callbacks and calculation ---
+
+    def _on_phasor_center_toggled(self, state):
+        """Handle the 'Plot phasor centers' checkbox toggle."""
+        self._phasor_center_enabled = bool(state)
+        self._update_setting_in_metadata(
+            'phasor_center_enabled', self._phasor_center_enabled
+        )
+        self._update_phasor_center_controls_visibility()
+        if self._phasor_center_enabled:
+            self._update_phasor_centers()
+        else:
+            self._clear_phasor_center_artists()
+            self._phasor_center_stats_widget.update_centers({})
+            self._phasor_center_stats_widget.update_group_centers({})
+            self.canvas_widget.figure.canvas.draw_idle()
+        # Switch statistics page if we're on the settings tab
+        current_tab = self.tab_widget.currentWidget()
+        if current_tab is self.plotter_inputs_widget:
+            self._update_histogram_dock_visibility(current_tab)
+
+    def _on_phasor_center_configure_clicked(self):
+        """Open the PhasorCenterLayerSettingsDialog for multi-layer mode."""
+        selected_names = self.get_selected_layer_names()
+        if len(selected_names) <= 1:
+            notifications.show_info(
+                "Phasor center layer settings are for multi-layer mode."
+            )
+            return
+
+        current_layer_colors = {
+            k: tuple(v)
+            for k, v in (self._phasor_center_layer_colors or {}).items()
+            if k in selected_names
+        }
+        current_assignments = {
+            k: int(v)
+            for k, v in (self._phasor_center_group_assignments or {}).items()
+            if k in selected_names
+        }
+        current_group_colors = {
+            int(k): tuple(v)
+            for k, v in (self._phasor_center_group_colors or {}).items()
+        }
+        current_group_names = {
+            int(k): str(v)
+            for k, v in (self._phasor_center_group_names or {}).items()
+        }
+
+        dialog = PhasorCenterLayerSettingsDialog(
+            display_mode=self._phasor_center_display_mode,
+            center_method=self._phasor_center_method,
+            marker_size=self._phasor_center_size,
+            alpha=self._phasor_center_alpha,
+            merged_color=self._phasor_center_color,
+            layer_labels=selected_names,
+            layer_colors=current_layer_colors,
+            group_assignments=current_assignments,
+            group_colors=current_group_colors,
+            group_names=current_group_names,
+            parent=self,
+        )
+
+        if dialog.exec_() != QDialog.Accepted:
+            return
+
+        self._phasor_center_display_mode = dialog.get_display_mode()
+        self._phasor_center_method = dialog.get_center_method()
+        self._phasor_center_size = dialog.get_marker_size()
+        self._phasor_center_alpha = dialog.get_alpha()
+        self._phasor_center_color = dialog.get_merged_color()
+        self._phasor_center_layer_colors = dialog.get_layer_colors()
+        self._phasor_center_group_assignments = dialog.get_group_assignments()
+        self._phasor_center_group_colors = dialog.get_group_colors()
+        self._phasor_center_group_names = dialog.get_group_names()
+
+        # Sync inline controls
+        self.plotter_inputs_widget.pc_method_combobox.blockSignals(True)
+        self.plotter_inputs_widget.pc_method_combobox.setCurrentText(
+            self._phasor_center_method
+        )
+        self.plotter_inputs_widget.pc_method_combobox.blockSignals(False)
+        self.plotter_inputs_widget.pc_size_spinbox.blockSignals(True)
+        self.plotter_inputs_widget.pc_size_spinbox.setValue(
+            self._phasor_center_size
+        )
+        self.plotter_inputs_widget.pc_size_spinbox.blockSignals(False)
+        self.plotter_inputs_widget.pc_alpha_spinbox.blockSignals(True)
+        self.plotter_inputs_widget.pc_alpha_spinbox.setValue(
+            self._phasor_center_alpha
+        )
+        self.plotter_inputs_widget.pc_alpha_spinbox.blockSignals(False)
+
+        # Save all to metadata
+        for key in (
+            'phasor_center_display_mode',
+            'phasor_center_method',
+            'phasor_center_size',
+            'phasor_center_alpha',
+            'phasor_center_color',
+            'phasor_center_layer_colors',
+            'phasor_center_group_assignments',
+            'phasor_center_group_colors',
+            'phasor_center_group_names',
+        ):
+            self._update_setting_in_metadata(key, getattr(self, f'_{key}'))
+
+        if self._phasor_center_enabled:
+            self._update_phasor_centers()
+
+    def _on_phasor_center_color_clicked(self):
+        """Open color picker for single-layer phasor center color."""
+        from qtpy.QtWidgets import QColorDialog
+
+        color = QColorDialog.getColor(parent=self)
+        if not color.isValid():
+            return
+        self._phasor_center_color = color.getRgbF()[:3]
+        r, g, b = self._phasor_center_color
+        self.plotter_inputs_widget.pc_color_button.setStyleSheet(
+            f"background-color: rgb({int(r*255)}, {int(g*255)}, {int(b*255)});"
+        )
+        self._update_setting_in_metadata(
+            'phasor_center_color', self._phasor_center_color
+        )
+        if self._phasor_center_enabled:
+            self._update_phasor_centers()
+
+    def _on_phasor_center_method_changed(self, text):
+        """Handle center method combobox change."""
+        self._phasor_center_method = text
+        self._update_setting_in_metadata('phasor_center_method', text)
+        if self._phasor_center_enabled:
+            self._update_phasor_centers()
+
+    def _on_phasor_center_size_changed(self, value):
+        """Handle center size spinbox change."""
+        self._phasor_center_size = value
+        self._update_setting_in_metadata('phasor_center_size', value)
+        if self._phasor_center_enabled:
+            self._update_phasor_centers()
+
+    def _on_phasor_center_alpha_changed(self, value):
+        """Handle center alpha spinbox change."""
+        self._phasor_center_alpha = value
+        self._update_setting_in_metadata('phasor_center_alpha', value)
+        if self._phasor_center_enabled:
+            self._update_phasor_centers()
+
+    def _update_phasor_center_controls_visibility(self):
+        """Show/hide inline controls vs configure button based on state."""
+        enabled = self._phasor_center_enabled
+        is_multi = self._has_multiple_selected_layers()
+
+        # The toggle itself is always visible
+        self.plotter_inputs_widget.label_phasor_center.setVisible(True)
+        self.plotter_inputs_widget.phasor_center_checkbox.setVisible(True)
+
+        # Method, size, alpha are visible when enabled (inline for single)
+        show_inline = enabled and not is_multi
+        self.plotter_inputs_widget.label_pc_method.setVisible(show_inline)
+        self.plotter_inputs_widget.pc_method_combobox.setVisible(show_inline)
+        self.plotter_inputs_widget.label_pc_color.setVisible(show_inline)
+        self.plotter_inputs_widget.pc_color_button.setVisible(show_inline)
+        self.plotter_inputs_widget.label_pc_size.setVisible(show_inline)
+        self.plotter_inputs_widget.pc_size_spinbox.setVisible(show_inline)
+        self.plotter_inputs_widget.label_pc_alpha.setVisible(show_inline)
+        self.plotter_inputs_widget.pc_alpha_spinbox.setVisible(show_inline)
+
+        # Configure button visible only when enabled + multi-layer
+        show_configure = enabled and is_multi
+        self.plotter_inputs_widget.label_pc_configure.setVisible(
+            show_configure
+        )
+        self.plotter_inputs_widget.pc_configure_button.setVisible(
+            show_configure
+        )
+
+    def _clear_phasor_center_artists(self):
+        """Remove all phasor center artists from the axes."""
+        for artist in self._phasor_center_artists:
+            with contextlib.suppress(Exception):
+                artist.remove()
+        self._phasor_center_artists.clear()
+
+    def _compute_single_center(self, layer):
+        """Compute phasor center for a single layer.
+
+        Parameters
+        ----------
+        layer : napari.layers.Image
+            Layer with phasor metadata.
+
+        Returns
+        -------
+        tuple or None
+            (g_center, s_center) scalars, or None on failure.
+        """
+        g_array = layer.metadata.get("G")
+        s_array = layer.metadata.get("S")
+        harmonics = layer.metadata.get("harmonics")
+
+        if g_array is None or s_array is None:
+            return None
+
+        if harmonics is not None:
+            harmonics = np.atleast_1d(harmonics)
+            target = self.harmonic
+            try:
+                idx = int(np.where(harmonics == target)[0][0])
+            except (IndexError, ValueError):
+                return None
+            if g_array.ndim > layer.data.ndim:
+                g = g_array[idx]
+                s = s_array[idx]
+            else:
+                g = g_array
+                s = s_array
+        else:
+            g = g_array
+            s = s_array
+
+        # Use layer.data as intensity (mean)
+        mean_data = layer.data.copy().astype(float)
+        g_flat = g.ravel()
+        s_flat = s.ravel()
+        mean_flat = mean_data.ravel()
+
+        # Remove NaN entries
+        valid = ~np.isnan(g_flat) & ~np.isnan(s_flat) & ~np.isnan(mean_flat)
+        if not np.any(valid):
+            return None
+
+        try:
+            _mean_c, g_c, s_c = _phasor_center(
+                mean_flat[valid],
+                g_flat[valid],
+                s_flat[valid],
+                method=self._phasor_center_method,
+            )
+        except Exception:  # noqa: BLE001
+            return None
+
+        return float(g_c), float(s_c)
+
+    def _update_phasor_centers(self):
+        """Calculate and plot phasor center dots on the axes."""
+        self._clear_phasor_center_artists()
+
+        if not self._phasor_center_enabled or not self.has_phasor_data():
+            return
+
+        ax = self.canvas_widget.axes
+        selected_layers = self.get_selected_layers()
+        if not selected_layers:
+            return
+
+        has_multiple = len(selected_layers) > 1
+        display_mode = (
+            self._phasor_center_display_mode if has_multiple else "Merged"
+        )
+
+        layer_centers = {}
+        for layer in selected_layers:
+            result = self._compute_single_center(layer)
+            if result is not None:
+                layer_centers[layer.name] = result
+
+        if not layer_centers:
+            self._phasor_center_stats_widget.update_centers({})
+            self._phasor_center_stats_widget.update_group_centers({})
+            self.canvas_widget.figure.canvas.draw_idle()
+            return
+
+        default_tab10 = plt.cm.tab10.colors
+        zorder = 10  # Above other plot elements
+
+        stats_layer = {}
+        stats_group = {}
+
+        if display_mode == "Merged":
+            # Use merged G/S from all layers
+            features = self.get_merged_features()
+            if features is not None:
+                g_all, s_all = features
+                # Build mean from all selected layers' data
+                all_mean = []
+                for layer in selected_layers:
+                    m = layer.data.copy().astype(float).ravel()
+                    g_l = layer.metadata.get("G")
+                    s_l = layer.metadata.get("S")
+                    harmonics = layer.metadata.get("harmonics")
+                    if g_l is None or s_l is None:
+                        continue
+                    if harmonics is not None:
+                        harmonics = np.atleast_1d(harmonics)
+                        try:
+                            idx = int(
+                                np.where(harmonics == self.harmonic)[0][0]
+                            )
+                        except (IndexError, ValueError):
+                            continue
+                        if g_l.ndim > layer.data.ndim:
+                            g_l = g_l[idx]
+                            s_l = s_l[idx]
+                    g_f = g_l.ravel()
+                    s_f = s_l.ravel()
+                    valid = ~np.isnan(g_f) & ~np.isnan(s_f) & ~np.isnan(m)
+                    all_mean.append(m[valid])
+
+                if all_mean:
+                    mean_merged = np.concatenate(all_mean)
+                    try:
+                        _mc, gc, sc = _phasor_center(
+                            mean_merged,
+                            g_all,
+                            s_all,
+                            method=self._phasor_center_method,
+                        )
+                        gc, sc = float(gc), float(sc)
+                    except Exception:  # noqa: BLE001
+                        gc, sc = float(np.nanmean(g_all)), float(
+                            np.nanmean(s_all)
+                        )
+                else:
+                    gc = float(np.nanmean(g_all))
+                    sc = float(np.nanmean(s_all))
+            else:
+                # Fallback: average of per-layer centers
+                gs = list(layer_centers.values())
+                gc = float(np.mean([g for g, _ in gs]))
+                sc = float(np.mean([s for _, s in gs]))
+
+            color = self._phasor_center_color
+            artist = ax.scatter(
+                [gc],
+                [sc],
+                s=self._phasor_center_size,
+                c=[color],
+                alpha=self._phasor_center_alpha,
+                zorder=zorder,
+                marker='o',
+                edgecolors='white',
+                linewidths=0.5,
+            )
+            self._phasor_center_artists.append(artist)
+
+            phase, mod = phasor_to_polar(np.array([gc]), np.array([sc]))
+            stats_layer["Merged"] = (
+                gc,
+                sc,
+                float(np.degrees(phase[0])),
+                float(mod[0]),
+            )
+
+        elif display_mode == "Individual layers":
+            for i, (name, (gc, sc)) in enumerate(layer_centers.items()):
+                color = self._phasor_center_layer_colors.get(
+                    name, default_tab10[i % len(default_tab10)][:3]
+                )
+                artist = ax.scatter(
+                    [gc],
+                    [sc],
+                    s=self._phasor_center_size,
+                    c=[color],
+                    alpha=self._phasor_center_alpha,
+                    zorder=zorder,
+                    marker='o',
+                    edgecolors='white',
+                    linewidths=0.5,
+                )
+                self._phasor_center_artists.append(artist)
+                phase, mod = phasor_to_polar(np.array([gc]), np.array([sc]))
+                stats_layer[name] = (
+                    gc,
+                    sc,
+                    float(np.degrees(phase[0])),
+                    float(mod[0]),
+                )
+
+        elif display_mode == "Grouped":
+            grouped = {}
+            for name in layer_centers:
+                gid = int(self._phasor_center_group_assignments.get(name, 1))
+                grouped.setdefault(gid, []).append(name)
+
+            for gid in sorted(grouped):
+                group_label = self._phasor_center_group_names.get(
+                    gid, f"Group {gid}"
+                )
+                color = self._phasor_center_group_colors.get(
+                    gid, default_tab10[(gid - 1) % len(default_tab10)][:3]
+                )
+                members = grouped[gid]
+                gs = [layer_centers[n] for n in members if n in layer_centers]
+                if not gs:
+                    continue
+                gc = float(np.mean([g for g, _ in gs]))
+                sc = float(np.mean([s for _, s in gs]))
+
+                artist = ax.scatter(
+                    [gc],
+                    [sc],
+                    s=self._phasor_center_size,
+                    c=[color],
+                    alpha=self._phasor_center_alpha,
+                    zorder=zorder,
+                    marker='o',
+                    edgecolors='white',
+                    linewidths=0.5,
+                )
+                self._phasor_center_artists.append(artist)
+                phase, mod = phasor_to_polar(np.array([gc]), np.array([sc]))
+                stats_group[group_label] = (
+                    gc,
+                    sc,
+                    float(np.degrees(phase[0])),
+                    float(mod[0]),
+                )
+
+            # Also compute per-layer stats for the layer table
+            for name, (gc, sc) in layer_centers.items():
+                phase, mod = phasor_to_polar(np.array([gc]), np.array([sc]))
+                stats_layer[name] = (
+                    gc,
+                    sc,
+                    float(np.degrees(phase[0])),
+                    float(mod[0]),
+                )
+
+        # Update statistics widget
+        self._phasor_center_stats_widget.update_centers(stats_layer)
+        self._phasor_center_stats_widget.update_group_centers(stats_group)
+
+        self.canvas_widget.figure.canvas.draw_idle()
+
     def _update_single_contour_color_button(self):
         if self.plot_type == 'HISTOGRAM2D':
             rgb = self._normalize_rgb(self._histogram_color)
@@ -2827,6 +3921,10 @@ class PlotterWidget(QWidget):
             show_multi_layer_contour_controls
         )
         self._refresh_main_colormap_control_for_mode()
+
+        # Update phasor center controls for current layer count
+        if hasattr(self, '_phasor_center_enabled'):
+            self._update_phasor_center_controls_visibility()
 
     def _reflow_plot_settings_rows(self, show_multi_layer_contour_controls):
         """Reposition rows to avoid empty spacing when contour row is hidden."""
@@ -5603,6 +6701,10 @@ class PlotterWidget(QWidget):
         self._enforce_axes_aspect()
         self._update_plot_bg_color()
 
+        # Update phasor center dots if enabled
+        if self._phasor_center_enabled:
+            self._update_phasor_centers()
+
     def plot(self, x_data=None, y_data=None, selection_id_data=None):
         """Plot the selected phasor features efficiently."""
         if not self.has_phasor_data():
@@ -5644,6 +6746,10 @@ class PlotterWidget(QWidget):
                 self.canvas_widget.axes.set_xlim(xlim)
                 self.canvas_widget.axes.set_ylim(ylim)
                 self.canvas_widget.figure.canvas.draw_idle()
+
+            # Update phasor center dots if enabled
+            if self._phasor_center_enabled:
+                self._update_phasor_centers()
         finally:
             self._updating_plot = False
 
