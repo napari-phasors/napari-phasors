@@ -1601,3 +1601,126 @@ def test_phasor_mapping_histogram_overlay_tab_visibility_lifecycle(
     mapping_widget.on_tab_visibility_changed(True)
     assert mapping_widget._overlay_imshow is not None
     assert not histogram_img.get_visible()
+
+
+def test_mesh_overlay_independent_from_apply_colormap_toggle(
+    make_napari_viewer,
+):
+    """Mesh should remain visible when colormap toggle is off."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    parent.on_image_layer_changed()
+
+    mapping_widget.output_mode_combobox.setCurrentText("Phase")
+    mapping_widget._on_calculate_lifetime_clicked()
+
+    hist_artist = parent.canvas_widget.artists["HISTOGRAM2D"]
+    histogram_img = hist_artist._mpl_artists.get("histogram_image")
+    assert histogram_img is not None
+
+    mapping_widget.apply_2d_colormap_checkbox.setChecked(False)
+    mapping_widget.mesh_overlay_checkbox.setChecked(True)
+
+    assert mapping_widget._overlay_imshow is not None
+    # With independent toggles, density image remains visible when
+    # apply-colormap is off even if mesh is on.
+    assert histogram_img.get_visible()
+
+
+def test_mesh_settings_persist_across_layer_switches(make_napari_viewer):
+    """Mesh toggle, alpha, and ranges should restore per layer."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    layer_1 = create_image_layer_with_phasors()
+    layer_2 = create_image_layer_with_phasors()
+    viewer.add_layer(layer_1)
+    viewer.add_layer(layer_2)
+
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(
+        layer_1.name
+    )
+    parent.on_image_layer_changed()
+
+    mapping_widget.output_mode_combobox.setCurrentText("Phase")
+    mapping_widget._on_calculate_lifetime_clicked()
+
+    mapping_widget.mesh_overlay_checkbox.setChecked(True)
+    mapping_widget.mesh_alpha_spinbox.setValue(0.62)
+    mapping_widget.phase_range_slider.setValue((25, 120))
+    mapping_widget.modulation_range_slider.setValue((10, 70))
+
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(
+        layer_2.name
+    )
+    parent.on_image_layer_changed()
+
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(
+        layer_1.name
+    )
+    parent.on_image_layer_changed()
+
+    assert mapping_widget.mesh_overlay_checkbox.isChecked()
+    assert abs(mapping_widget.mesh_alpha_spinbox.value() - 0.62) < 1e-6
+    assert mapping_widget.phase_range_slider.value() == (25, 120)
+    assert mapping_widget.modulation_range_slider.value() == (10, 70)
+
+
+def test_full_circle_mesh_supports_phase_over_pi(make_napari_viewer):
+    """Full-circle mode should keep mesh values for phases > pi."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    parent.on_image_layer_changed()
+
+    mapping_widget.output_mode_combobox.setCurrentText("Phase")
+    mapping_widget._on_calculate_lifetime_clicked()
+
+    # Full-circle toggle ON means full circle mode.
+    parent.plotter_inputs_widget.semi_circle_checkbox.setChecked(True)
+
+    mapping_widget.mesh_overlay_checkbox.setChecked(True)
+    lower = int(3.5 * mapping_widget.phase_range_factor)
+    upper = int(4.2 * mapping_widget.phase_range_factor)
+    mapping_widget.phase_range_slider.setValue((lower, upper))
+
+    assert mapping_widget._overlay_imshow is not None
+    arr = np.asarray(mapping_widget._overlay_imshow.get_array())
+    assert np.isfinite(arr).any()
+
+
+def test_mesh_redraw_is_debounced_on_axes_limit_changes(make_napari_viewer):
+    """Axes changes should schedule one deferred mesh redraw via timer."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    parent.on_image_layer_changed()
+
+    mapping_widget.output_mode_combobox.setCurrentText("Phase")
+    mapping_widget._on_calculate_lifetime_clicked()
+    mapping_widget.mesh_overlay_checkbox.setChecked(True)
+    mapping_widget._coloring_paused_by_tab = False
+
+    with patch.object(
+        mapping_widget, '_apply_histogram_coloring'
+    ) as mock_apply:
+        mapping_widget._on_axes_limits_changed(parent.canvas_widget.axes)
+        assert mapping_widget._mesh_axes_update_timer.isActive()
+        mock_apply.assert_not_called()
+
+        mapping_widget._apply_mesh_after_axes_change()
+        mock_apply.assert_called_once_with("Phase")
