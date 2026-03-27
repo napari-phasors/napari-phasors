@@ -119,7 +119,7 @@ def resolve_napari_layer_colormap(
     return create_napari_colormap_from_qcolor(custom_color)
 
 
-def create_colormap_icon(cmap_name, width=72, height=14):
+def create_colormap_icon(cmap_name, width=25, height=10):
     """Create a QIcon representing the colormap."""
     pixmap = QPixmap(width, height)
     pixmap.fill(Qt.transparent)
@@ -158,6 +158,11 @@ def populate_colormap_combobox(
 
     was_blocked = combo.blockSignals(True)
     try:
+        combo.setIconSize(QSize(25, 10))
+        # Ensure the dropdown list has consistent, spacious row heights
+        if not hasattr(combo, "_colormap_delegate_set"):
+            combo.view().setItemDelegate(_ColormapDelegate(combo))
+            combo._colormap_delegate_set = True
         combo.clear()
         if include_select_color:
             combo.addItem("Select color...")
@@ -720,6 +725,15 @@ def update_frequency_in_metadata(
     if "settings" not in image_layer.metadata:
         image_layer.metadata["settings"] = {}
     image_layer.metadata["settings"]["frequency"] = frequency
+
+
+class _ColormapDelegate(QStyledItemDelegate):
+    """Custom delegate to ensure colormap icons have vertical spacing in dropdowns."""
+
+    def sizeHint(self, option, index):
+        size = super().sizeHint(option, index)
+        # Ensure a minimum height of 18 to comfortably fit the icon
+        return QSize(size.width(), 18)
 
 
 class _PrimaryLayerDelegate(QStyledItemDelegate):
