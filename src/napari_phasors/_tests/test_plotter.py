@@ -21,7 +21,10 @@ from napari_phasors.calibration_tab import CalibrationWidget
 from napari_phasors.components_tab import ComponentsWidget
 from napari_phasors.filter_tab import FilterWidget
 from napari_phasors.fret_tab import FretWidget
-from napari_phasors.plotter import PlotterWidget
+from napari_phasors.plotter import (
+    PhasorCenterLayerSettingsDialog,
+    PlotterWidget,
+)
 from napari_phasors.selection_tab import SelectionWidget
 
 
@@ -2326,5 +2329,79 @@ def test_copy_metadata_from_layer_applies_to_all_selected_layers(
 
     # Source layer's own settings must remain unchanged
     assert source_layer.metadata["settings"]["filter"]["size"] == 5
+
+    plotter.deleteLater()
+
+
+def test_phasor_center_settings_dialog_ui_states(qtbot):
+    """Verify dialog correctly hides/shows mode selection based on layer count."""
+    # single layer - mode should be hidden
+    dialog1 = PhasorCenterLayerSettingsDialog(
+        layer_labels=["One Layer"], display_mode="Merged"
+    )
+    qtbot.addWidget(dialog1)
+
+    # Dialog title for single layer is simplified
+    assert dialog1.windowTitle() == "Phasor Center Settings"
+    assert dialog1._mode_container.isHidden()
+    assert dialog1._merged_color_label.text() == "Center color:"
+
+    # Multiple layers - mode should be visible
+    dialog2 = PhasorCenterLayerSettingsDialog(
+        layer_labels=["L1", "L2"], display_mode="Merged"
+    )
+    qtbot.addWidget(dialog2)
+    assert dialog2.windowTitle() == "Phasor Center Settings (Multi-Layer)"
+    assert not dialog2._mode_container.isHidden()
+    assert dialog2._merged_color_label.text() == "Merged center color:"
+
+
+def test_phasor_center_integration_and_dock_logic(make_napari_viewer, qtbot):
+    """Test full integration of phasor centers: artist creation, dock switching, and table naming."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    qtbot.addWidget(plotter)
+
+    # Add a layer with data
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    # Ensure dock exists
+    plotter._add_analysis_dock_widget()
+
+    # 1. Enable centers
+    with patch.object(plotter._statistics_dock, 'raise_') as mock_raise:
+        plotter.plotter_inputs_widget.phasor_center_checkbox.setChecked(True)
+
+        # Verify artists created
+        assert len(plotter._phasor_center_artists) > 0
+
+        # Verify statistics page switch
+        # Switch to Plot Settings tab, should show phasor center stats
+        plotter.tab_widget.setCurrentWidget(plotter.settings_tab)
+        assert (
+            plotter._statistics_stack.currentIndex()
+            == plotter._phasor_center_stats_page_idx
+        )
+
+        # Verify raise_ was called specifically on the statistics dock
+        # because toggling centers ON raises it to visibility
+        mock_raise.assert_called()
+
+    # 2. Verify table content for single layer (should NOT say 'Merged', should be the layer name)
+    table = plotter._phasor_center_stats_widget._layer_table
+    assert table.rowCount() == 1
+    assert table.item(0, 0).text() == layer.name
+
+    # 3. Verify metadata update
+    assert (
+        layer.metadata.get('settings', {}).get('phasor_center_enabled') is True
+    )
+
+    # 4. Disable centers
+    plotter.plotter_inputs_widget.phasor_center_checkbox.setChecked(False)
+    assert len(plotter._phasor_center_artists) == 0
+    assert table.rowCount() == 0
+    assert layer.metadata['settings']['phasor_center_enabled'] is False
 
     plotter.deleteLater()
