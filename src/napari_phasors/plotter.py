@@ -705,8 +705,8 @@ class PhasorCenterLayerSettingsDialog(QDialog):
         *,
         display_mode="Merged",
         center_method="mean",
-        marker_size=100,
-        alpha=0.8,
+        marker_size=50,
+        alpha=1.0,
         merged_color=None,
         layer_labels=None,
         layer_colors=None,
@@ -1654,6 +1654,7 @@ class PlotterWidget(QWidget):
         )
         self._plotter_settings_layout = contour_settings_layout
 
+        # --- Phasor center controls ---
         self.plotter_inputs_widget.label_phasor_center = QLabel(
             "Plot phasor centers:"
         )
@@ -1666,114 +1667,36 @@ class PlotterWidget(QWidget):
             self._on_phasor_center_toggled
         )
 
-        self.plotter_inputs_widget.label_pc_method = QLabel("Center method:")
-        self.plotter_inputs_widget.pc_method_combobox = QComboBox()
-        self.plotter_inputs_widget.pc_method_combobox.addItems(
-            ["mean", "median"]
-        )
-        self.plotter_inputs_widget.pc_method_combobox.currentTextChanged.connect(
-            self._on_phasor_center_method_changed
-        )
-
-        self.plotter_inputs_widget.label_pc_color = QLabel("Center color:")
-        self.plotter_inputs_widget.pc_color_button = QPushButton()
-        self.plotter_inputs_widget.pc_color_button.setFixedSize(24, 24)
-        self.plotter_inputs_widget.pc_color_button.setStyleSheet(
-            "background-color: rgb(255, 0, 0);"
-        )
-        self.plotter_inputs_widget.pc_color_button.clicked.connect(
-            self._on_phasor_center_color_clicked
-        )
-
-        self.plotter_inputs_widget.label_pc_size = QLabel("Center size:")
-        self.plotter_inputs_widget.pc_size_spinbox = QSpinBox()
-        self.plotter_inputs_widget.pc_size_spinbox.setRange(1, 1000)
-        self.plotter_inputs_widget.pc_size_spinbox.setValue(100)
-        self.plotter_inputs_widget.pc_size_spinbox.valueChanged.connect(
-            self._on_phasor_center_size_changed
-        )
-
-        self.plotter_inputs_widget.label_pc_alpha = QLabel("Center alpha:")
-        self.plotter_inputs_widget.pc_alpha_spinbox = QDoubleSpinBox()
-        self.plotter_inputs_widget.pc_alpha_spinbox.setRange(0.01, 1.0)
-        self.plotter_inputs_widget.pc_alpha_spinbox.setSingleStep(0.1)
-        self.plotter_inputs_widget.pc_alpha_spinbox.setValue(0.8)
-        self.plotter_inputs_widget.pc_alpha_spinbox.valueChanged.connect(
-            self._on_phasor_center_alpha_changed
-        )
-
-        # Multi-layer configure button
-        self.plotter_inputs_widget.label_pc_configure = QLabel(
-            "Multi-layer center display:"
-        )
         self.plotter_inputs_widget.pc_configure_button = QPushButton(
-            "Configure Phasor Center..."
+            "Configure..."
         )
         self.plotter_inputs_widget.pc_configure_button.clicked.connect(
             self._on_phasor_center_configure_clicked
         )
+        self.plotter_inputs_widget.pc_configure_button.setVisible(False)
 
-        # Add phasor center rows to the layout (they start hidden)
-        # We use high row numbers; _reflow_plot_settings_rows handles placement.
-        pc_base_row = 20  # well below existing rows
+        pc_base_row = 20
         contour_settings_layout.addWidget(
             self.plotter_inputs_widget.label_phasor_center,
             pc_base_row,
             0,
         )
+        # Container for Toggle and Configure button
+        pc_controls_container = QWidget()
+        pc_controls_layout = QHBoxLayout(pc_controls_container)
+        pc_controls_layout.setContentsMargins(0, 0, 0, 0)
+        pc_controls_layout.setSpacing(10)
+        pc_controls_layout.addWidget(
+            self.plotter_inputs_widget.phasor_center_checkbox
+        )
+        pc_controls_layout.addWidget(
+            self.plotter_inputs_widget.pc_configure_button
+        )
+        pc_controls_layout.addStretch(1)
+
         contour_settings_layout.addWidget(
-            self.plotter_inputs_widget.phasor_center_checkbox,
+            pc_controls_container,
             pc_base_row,
-            1,
-        )
-        contour_settings_layout.addWidget(
-            self.plotter_inputs_widget.label_pc_configure,
-            pc_base_row + 1,
-            0,
-        )
-        contour_settings_layout.addWidget(
-            self.plotter_inputs_widget.pc_configure_button,
-            pc_base_row + 1,
-            1,
-        )
-        contour_settings_layout.addWidget(
-            self.plotter_inputs_widget.label_pc_method,
-            pc_base_row + 2,
-            0,
-        )
-        contour_settings_layout.addWidget(
-            self.plotter_inputs_widget.pc_method_combobox,
-            pc_base_row + 2,
-            1,
-        )
-        contour_settings_layout.addWidget(
-            self.plotter_inputs_widget.label_pc_color,
-            pc_base_row + 3,
-            0,
-        )
-        contour_settings_layout.addWidget(
-            self.plotter_inputs_widget.pc_color_button,
-            pc_base_row + 3,
-            1,
-        )
-        contour_settings_layout.addWidget(
-            self.plotter_inputs_widget.label_pc_size,
-            pc_base_row + 4,
-            0,
-        )
-        contour_settings_layout.addWidget(
-            self.plotter_inputs_widget.pc_size_spinbox,
-            pc_base_row + 4,
-            1,
-        )
-        contour_settings_layout.addWidget(
-            self.plotter_inputs_widget.label_pc_alpha,
-            pc_base_row + 5,
-            0,
-        )
-        contour_settings_layout.addWidget(
-            self.plotter_inputs_widget.pc_alpha_spinbox,
-            pc_base_row + 5,
             1,
         )
 
@@ -1815,8 +1738,8 @@ class PlotterWidget(QWidget):
         self._phasor_center_enabled = False
         self._phasor_center_method = "mean"
         self._phasor_center_color = (1.0, 0.0, 0.0)
-        self._phasor_center_size = 100
-        self._phasor_center_alpha = 0.8
+        self._phasor_center_size = 50
+        self._phasor_center_alpha = 1
         self._phasor_center_display_mode = "Merged"
         self._phasor_center_layer_colors = {}
         self._phasor_center_group_assignments = {}
@@ -2141,8 +2064,8 @@ class PlotterWidget(QWidget):
             'phasor_center_enabled': False,
             'phasor_center_method': 'mean',
             'phasor_center_color': (1.0, 0.0, 0.0),
-            'phasor_center_size': 100,
-            'phasor_center_alpha': 0.8,
+            'phasor_center_size': 50,
+            'phasor_center_alpha': 1,
             'phasor_center_display_mode': 'Merged',
             'phasor_center_layer_colors': {},
             'phasor_center_group_assignments': {},
@@ -2383,10 +2306,8 @@ class PlotterWidget(QWidget):
             self._phasor_center_color = tuple(
                 settings.get('phasor_center_color', (1.0, 0.0, 0.0))
             )
-            self._phasor_center_size = settings.get('phasor_center_size', 100)
-            self._phasor_center_alpha = settings.get(
-                'phasor_center_alpha', 0.8
-            )
+            self._phasor_center_size = settings.get('phasor_center_size', 50)
+            self._phasor_center_alpha = settings.get('phasor_center_alpha', 1)
             self._phasor_center_display_mode = settings.get(
                 'phasor_center_display_mode', 'Merged'
             )
@@ -2413,26 +2334,7 @@ class PlotterWidget(QWidget):
             self.plotter_inputs_widget.phasor_center_checkbox.blockSignals(
                 False
             )
-            self.plotter_inputs_widget.pc_method_combobox.blockSignals(True)
-            self.plotter_inputs_widget.pc_method_combobox.setCurrentText(
-                self._phasor_center_method
-            )
-            self.plotter_inputs_widget.pc_method_combobox.blockSignals(False)
-            self.plotter_inputs_widget.pc_size_spinbox.blockSignals(True)
-            self.plotter_inputs_widget.pc_size_spinbox.setValue(
-                self._phasor_center_size
-            )
-            self.plotter_inputs_widget.pc_size_spinbox.blockSignals(False)
-            self.plotter_inputs_widget.pc_alpha_spinbox.blockSignals(True)
-            self.plotter_inputs_widget.pc_alpha_spinbox.setValue(
-                self._phasor_center_alpha
-            )
-            self.plotter_inputs_widget.pc_alpha_spinbox.blockSignals(False)
-            r, g, b = self._phasor_center_color[:3]
-            self.plotter_inputs_widget.pc_color_button.setStyleSheet(
-                f"background-color: rgb({int(r*255)}, {int(g*255)}, {int(b*255)});"
-            )
-
+            # Update UI visibility
             self._update_phasor_center_controls_visibility()
 
         finally:
@@ -3398,12 +3300,10 @@ class PlotterWidget(QWidget):
             self._update_histogram_dock_visibility(current_tab)
 
     def _on_phasor_center_configure_clicked(self):
-        """Open the PhasorCenterLayerSettingsDialog for multi-layer mode."""
+        """Open the PhasorCenterLayerSettingsDialog to configure all settings."""
         selected_names = self.get_selected_layer_names()
-        if len(selected_names) <= 1:
-            notifications.show_info(
-                "Phasor center layer settings are for multi-layer mode."
-            )
+        if not selected_names:
+            notifications.show_info("Select at least one layer.")
             return
 
         current_layer_colors = {
@@ -3452,23 +3352,6 @@ class PlotterWidget(QWidget):
         self._phasor_center_group_colors = dialog.get_group_colors()
         self._phasor_center_group_names = dialog.get_group_names()
 
-        # Sync inline controls
-        self.plotter_inputs_widget.pc_method_combobox.blockSignals(True)
-        self.plotter_inputs_widget.pc_method_combobox.setCurrentText(
-            self._phasor_center_method
-        )
-        self.plotter_inputs_widget.pc_method_combobox.blockSignals(False)
-        self.plotter_inputs_widget.pc_size_spinbox.blockSignals(True)
-        self.plotter_inputs_widget.pc_size_spinbox.setValue(
-            self._phasor_center_size
-        )
-        self.plotter_inputs_widget.pc_size_spinbox.blockSignals(False)
-        self.plotter_inputs_widget.pc_alpha_spinbox.blockSignals(True)
-        self.plotter_inputs_widget.pc_alpha_spinbox.setValue(
-            self._phasor_center_alpha
-        )
-        self.plotter_inputs_widget.pc_alpha_spinbox.blockSignals(False)
-
         # Save all to metadata
         for key in (
             'phasor_center_display_mode',
@@ -3486,73 +3369,12 @@ class PlotterWidget(QWidget):
         if self._phasor_center_enabled:
             self._update_phasor_centers()
 
-    def _on_phasor_center_color_clicked(self):
-        """Open color picker for single-layer phasor center color."""
-        from qtpy.QtWidgets import QColorDialog
-
-        color = QColorDialog.getColor(parent=self)
-        if not color.isValid():
-            return
-        self._phasor_center_color = color.getRgbF()[:3]
-        r, g, b = self._phasor_center_color
-        self.plotter_inputs_widget.pc_color_button.setStyleSheet(
-            f"background-color: rgb({int(r*255)}, {int(g*255)}, {int(b*255)});"
-        )
-        self._update_setting_in_metadata(
-            'phasor_center_color', self._phasor_center_color
-        )
-        if self._phasor_center_enabled:
-            self._update_phasor_centers()
-
-    def _on_phasor_center_method_changed(self, text):
-        """Handle center method combobox change."""
-        self._phasor_center_method = text
-        self._update_setting_in_metadata('phasor_center_method', text)
-        if self._phasor_center_enabled:
-            self._update_phasor_centers()
-
-    def _on_phasor_center_size_changed(self, value):
-        """Handle center size spinbox change."""
-        self._phasor_center_size = value
-        self._update_setting_in_metadata('phasor_center_size', value)
-        if self._phasor_center_enabled:
-            self._update_phasor_centers()
-
-    def _on_phasor_center_alpha_changed(self, value):
-        """Handle center alpha spinbox change."""
-        self._phasor_center_alpha = value
-        self._update_setting_in_metadata('phasor_center_alpha', value)
-        if self._phasor_center_enabled:
-            self._update_phasor_centers()
+    # Remaning methods for phasor center callbacks have been removed as settings are now in the dialog.
 
     def _update_phasor_center_controls_visibility(self):
-        """Show/hide inline controls vs configure button based on state."""
+        """Show/hide configure button based on toggle state."""
         enabled = self._phasor_center_enabled
-        is_multi = self._has_multiple_selected_layers()
-
-        # The toggle itself is always visible
-        self.plotter_inputs_widget.label_phasor_center.setVisible(True)
-        self.plotter_inputs_widget.phasor_center_checkbox.setVisible(True)
-
-        # Method, size, alpha are visible when enabled (inline for single)
-        show_inline = enabled and not is_multi
-        self.plotter_inputs_widget.label_pc_method.setVisible(show_inline)
-        self.plotter_inputs_widget.pc_method_combobox.setVisible(show_inline)
-        self.plotter_inputs_widget.label_pc_color.setVisible(show_inline)
-        self.plotter_inputs_widget.pc_color_button.setVisible(show_inline)
-        self.plotter_inputs_widget.label_pc_size.setVisible(show_inline)
-        self.plotter_inputs_widget.pc_size_spinbox.setVisible(show_inline)
-        self.plotter_inputs_widget.label_pc_alpha.setVisible(show_inline)
-        self.plotter_inputs_widget.pc_alpha_spinbox.setVisible(show_inline)
-
-        # Configure button visible only when enabled + multi-layer
-        show_configure = enabled and is_multi
-        self.plotter_inputs_widget.label_pc_configure.setVisible(
-            show_configure
-        )
-        self.plotter_inputs_widget.pc_configure_button.setVisible(
-            show_configure
-        )
+        self.plotter_inputs_widget.pc_configure_button.setVisible(enabled)
 
     def _clear_phasor_center_artists(self):
         """Remove all phasor center artists from the axes."""
@@ -3718,8 +3540,8 @@ class PlotterWidget(QWidget):
                 alpha=self._phasor_center_alpha,
                 zorder=zorder,
                 marker='o',
-                edgecolors='white',
-                linewidths=0.5,
+                edgecolors='none',
+                linewidths=0,
             )
             self._phasor_center_artists.append(artist)
 
@@ -3744,8 +3566,8 @@ class PlotterWidget(QWidget):
                     alpha=self._phasor_center_alpha,
                     zorder=zorder,
                     marker='o',
-                    edgecolors='white',
-                    linewidths=0.5,
+                    edgecolors='none',
+                    linewidths=0,
                 )
                 self._phasor_center_artists.append(artist)
                 phase, mod = phasor_to_polar(np.array([gc]), np.array([sc]))
@@ -3784,8 +3606,8 @@ class PlotterWidget(QWidget):
                     alpha=self._phasor_center_alpha,
                     zorder=zorder,
                     marker='o',
-                    edgecolors='white',
-                    linewidths=0.5,
+                    edgecolors='none',
+                    linewidths=0,
                 )
                 self._phasor_center_artists.append(artist)
                 phase, mod = phasor_to_polar(np.array([gc]), np.array([sc]))
