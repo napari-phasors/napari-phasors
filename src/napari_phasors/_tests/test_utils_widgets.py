@@ -198,3 +198,23 @@ def test_histogram_dock_widget_links_statistics_dock(qtbot):
     hist_dock.link_statistics_dock(stats_dock)
 
     assert hist_dock._stats_dock is stats_dock
+
+
+def test_phasor_center_statistics_widget_update(qtbot):
+    """PhasorCenterStatisticsWidget table should populate and be formatted correctly."""
+    from napari_phasors.plotter import PhasorCenterStatisticsWidget
+
+    widget = PhasorCenterStatisticsWidget()
+    qtbot.addWidget(widget)
+
+    # name -> (G, S, phase, mod)
+    data = {"Layer X": (0.5, 0.4, 45.0, 0.7071)}
+    widget.update_centers(data)
+
+    table = widget._layer_table
+    assert table.rowCount() == 1
+    assert table.item(0, 0).text() == "Layer X"
+    assert table.item(0, 1).text() == "0.500000"
+    assert table.item(0, 2).text() == "0.400000"
+    assert table.item(0, 3).text() == "45.0000"
+    assert table.item(0, 4).text() == "0.707100"
