@@ -377,4 +377,36 @@ def test_reader_ometif_metadata():
             assert len(cursor["color"]) == 4  # RGBA
 
 
+def test_reader_czi():
+    """Test reading a CZI file"""
+    czi_file = get_test_file_path("test_file.czi")
+    reader = napari_get_reader(czi_file)
+    assert callable(reader)
+
+    layer_data_list = reader(czi_file)
+
+    assert isinstance(layer_data_list, list) and len(layer_data_list) == 1
+    layer_data_tuple = layer_data_list[0]
+
+    assert isinstance(layer_data_tuple, tuple) and len(layer_data_tuple) == 2
+    assert isinstance(layer_data_tuple[0], np.ndarray) and isinstance(
+        layer_data_tuple[1], dict
+    )
+    assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
+    assert layer_data_tuple[1]["name"] == "test_file Intensity Image"
+
+    metadata = layer_data_tuple[1]["metadata"]
+    assert "G" in metadata
+    assert "S" in metadata
+
+    # Original shape (1, 1, 28, 1, 1, 512, 512, 1) squeezed to (28, 512, 512)
+    # Spectral dimension C=28 (index 0)
+    # Phasor output for harmonics 1, 2: (2, 512, 512)
+    assert metadata["G"].shape == (2, 512, 512)
+    assert metadata["S"].shape == (2, 512, 512)
+
+    # Check original mean shape is matched too (512, 512)
+    assert metadata["original_mean"].shape == (512, 512)
+
+
 # TODO: Add tests for .tif files

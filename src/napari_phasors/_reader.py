@@ -12,6 +12,7 @@ import os
 from collections.abc import Callable, Sequence
 from typing import Any, Union
 
+import czifile
 import numpy as np
 import phasorpy.io as io
 import tifffile
@@ -62,6 +63,7 @@ extension_mapping = {
             {},
             reader_options,
         ),
+        ".czi": lambda path, reader_options: read_czi(path),
         # ".flif": lambda path: io.read_flif(path),
         # ".bh": lambda path: io.read_bh(path),
         # ".bhz": lambda path: io.read_bhz(path),
@@ -93,6 +95,7 @@ iter_index_mapping = {
     ".tif": None,
     ".tiff": None,
     '.sdt': "C",
+    ".czi": None,
 }
 """This dictionary contains the mapping for the axis to iterate over
 when calculating phasor coordinates in the file.
@@ -711,3 +714,21 @@ def _get_filename_extension(path: str) -> tuple[str, str]:
     parts = filename.split(".", 1)
     file_extension = "." + parts[1] if len(parts) > 1 else ""
     return parts[0], file_extension.lower()
+
+
+def read_czi(path: str) -> xr.DataArray:
+    """Read CZI file and return an xarray DataArray.
+
+    Parameters
+    ----------
+    path : str
+        Path to file.
+
+    Returns
+    -------
+    data : xr.DataArray
+        DataArray with dimensions named after the CZI axes (e.g., 'C', 'Z', 'Y', 'X').
+    """
+    with czifile.CziFile(path) as czi:
+        data = czi.asxarray().squeeze()
+    return data

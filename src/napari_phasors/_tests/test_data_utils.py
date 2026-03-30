@@ -24,6 +24,10 @@ test_data_downloader = pooch.create(
             'sha256:'
             '0b330f58dbc3ba26c821218a446db48a6b352640f3452859202bd1f66962f232'
         ),
+        'test_file.czi': (
+            'sha256:'
+            'a5bf495d01fb8134442f17fc09d02cca5a1d1d9e7cd725fc605c2bb17262c897'
+        ),
     },
 )
 
