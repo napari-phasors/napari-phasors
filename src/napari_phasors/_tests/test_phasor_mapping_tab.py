@@ -1724,3 +1724,85 @@ def test_mesh_redraw_is_debounced_on_axes_limit_changes(make_napari_viewer):
 
         mapping_widget._apply_mesh_after_axes_change()
         mock_apply.assert_called_once_with("Phase")
+
+
+def test_mesh_overlay_colorbar_and_alpha_updates(make_napari_viewer):
+    """Mesh colorbar toggle and alpha updates should reflect dynamically."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    parent.on_image_layer_changed()
+
+    mapping_widget.output_mode_combobox.setCurrentText("Phase")
+    mapping_widget._on_calculate_lifetime_clicked()
+
+    # Turn mesh on
+    mapping_widget.mesh_overlay_checkbox.setChecked(True)
+    assert mapping_widget.mesh_colorbar_checkbox.isVisible()
+
+    # Enable colorbar
+    mapping_widget.mesh_colorbar_checkbox.setChecked(True)
+    # The parent plotter coordinates the actual matplotlib colorbar instance
+    assert parent.mapping_colorbar is not None
+    assert parent.mapping_cax is not None
+
+    # Test setting alpha instantly triggers map redraw
+    with patch.object(
+        mapping_widget, '_apply_histogram_coloring'
+    ) as mock_apply:
+        mapping_widget.mesh_alpha_spinbox.setValue(0.73)
+        mock_apply.assert_called_once_with("Phase")
+
+    # Disable colorbar
+    mapping_widget.mesh_colorbar_checkbox.setChecked(False)
+    assert parent.mapping_colorbar is None
+    assert parent.mapping_cax is None
+
+
+def test_mesh_overlay_range_edits_and_sliders(make_napari_viewer):
+    """Text edits to phrase/modulation limits should synchronize with the sliders and trigger a redraw."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    parent.on_image_layer_changed()
+
+    mapping_widget.output_mode_combobox.setCurrentText("Phase")
+    mapping_widget._on_calculate_lifetime_clicked()
+    mapping_widget.mesh_overlay_checkbox.setChecked(True)
+
+    # Inject values simulating manual line edit entries
+    mapping_widget.phase_min_edit.setText("0.5")
+    mapping_widget.phase_max_edit.setText("1.0")
+
+    with patch.object(
+        mapping_widget, '_apply_histogram_coloring'
+    ) as mock_apply:
+        mapping_widget._on_phase_edits_changed()
+
+        # Verify the slider caught the change and snapped to integers
+        min_v, max_v = mapping_widget.phase_range_slider.value()
+        assert min_v == int(0.5 * mapping_widget.phase_range_factor)
+        assert max_v == int(1.0 * mapping_widget.phase_range_factor)
+        mock_apply.assert_called()
+
+    mapping_widget.modulation_min_edit.setText("0.2")
+    mapping_widget.modulation_max_edit.setText("0.6")
+
+    with patch.object(
+        mapping_widget, '_apply_histogram_coloring'
+    ) as mock_apply:
+        mapping_widget._on_modulation_edits_changed()
+
+        # Verify the slider caught the change for modulation
+        min_v, max_v = mapping_widget.modulation_range_slider.value()
+        assert min_v == int(0.2 * mapping_widget.modulation_range_factor)
+        assert max_v == int(0.6 * mapping_widget.modulation_range_factor)
+        mock_apply.assert_called()

@@ -2,7 +2,9 @@ import contextlib
 import warnings
 from typing import TYPE_CHECKING
 
+import matplotlib.cm as cm
 import numpy as np
+from matplotlib.colors import Normalize
 from napari.layers import Image
 from napari.utils.notifications import show_error, show_warning
 from phasorpy.lifetime import (
@@ -237,7 +239,7 @@ class PhasorMappingWidget(QWidget):
         # Mesh Overlay Settings (at the end of the tab)
         self.mesh_overlay_group = QWidget()
         mesh_overlay_group_layout = QVBoxLayout(self.mesh_overlay_group)
-        mesh_overlay_group_layout.setContentsMargins(0, 10, 0, 0)
+        mesh_overlay_group_layout.setContentsMargins(0, 0, 0, 0)
 
         # Toggle for background mesh
         self.mesh_overlay_checkbox = QToggleSwitch("Show mesh overlay")
@@ -247,38 +249,69 @@ class PhasorMappingWidget(QWidget):
         )
         mesh_overlay_group_layout.addWidget(self.mesh_overlay_checkbox)
 
-        # Mesh alpha controls
-        self.mesh_alpha_widget = QWidget()
-        mesh_alpha_row = QHBoxLayout(self.mesh_alpha_widget)
-        mesh_alpha_row.setContentsMargins(0, 0, 0, 0)
-        mesh_alpha_row.addWidget(QLabel("Mesh alpha:"))
+        # Toggle to clip mesh to semicircle
+        self.mesh_clip_semicircle_checkbox = QToggleSwitch(
+            "Clip mesh to semicircle"
+        )
+        self.mesh_clip_semicircle_checkbox.onColor = QColor("#27ae60")
+        self.mesh_clip_semicircle_checkbox.setToolTip(
+            "Only show the background mesh inside the universal semicircle"
+        )
+        self.mesh_clip_semicircle_checkbox.setVisible(False)
+
+        # Toggle for colorbar
+        self.mesh_colorbar_checkbox = QToggleSwitch("Show colorbar")
+        self.mesh_colorbar_checkbox.onColor = QColor("#27ae60")
+        self.mesh_colorbar_checkbox.setToolTip(
+            "Show a colorbar for the phase or modulation mesh/plot"
+        )
+        self.mesh_colorbar_checkbox.setVisible(False)
+
+        # Row for Alpha, Clip Toggle, and Colorbar Toggle
+        self.mesh_controls_widget = QWidget()
+        mesh_controls_layout = QHBoxLayout(self.mesh_controls_widget)
+        mesh_controls_layout.setContentsMargins(0, 0, 0, 0)
+
+        mesh_controls_layout.addWidget(QLabel("Alpha:"))
         self.mesh_alpha_spinbox = QDoubleSpinBox()
-        self.mesh_alpha_spinbox.setRange(0.0, 1.0)
+        self.mesh_alpha_spinbox.setRange(0.01, 1.0)
         self.mesh_alpha_spinbox.setSingleStep(0.05)
         self.mesh_alpha_spinbox.setDecimals(2)
         self.mesh_alpha_spinbox.setValue(0.45)
         self.mesh_alpha_spinbox.setToolTip(
             "Opacity of the phase/modulation mesh overlay"
         )
-        mesh_alpha_row.addWidget(self.mesh_alpha_spinbox)
-        mesh_alpha_row.addStretch(1)
-        mesh_overlay_group_layout.addWidget(self.mesh_alpha_widget)
+        self.mesh_alpha_spinbox.setFixedWidth(60)
+        mesh_controls_layout.addWidget(self.mesh_alpha_spinbox)
+
+        mesh_controls_layout.addSpacing(10)
+        mesh_controls_layout.addWidget(self.mesh_clip_semicircle_checkbox)
+        mesh_controls_layout.addSpacing(10)
+        mesh_controls_layout.addWidget(self.mesh_colorbar_checkbox)
+        mesh_controls_layout.addStretch(1)
+
+        mesh_overlay_group_layout.addWidget(self.mesh_controls_widget)
 
         # Phase range controls
         self.phase_range_container = QWidget()
         ph_cnt_layout = QVBoxLayout(self.phase_range_container)
-        ph_cnt_layout.setContentsMargins(0, 0, 0, 0)
-        ph_cnt_layout.addWidget(QLabel("Phase range (rad):"))
-        ph_edits_layout = QHBoxLayout()
+        ph_cnt_layout.setContentsMargins(0, 5, 0, 0)
+
+        ph_row = QHBoxLayout()
+        ph_row.addWidget(QLabel("Phase range (rad):"))
+        ph_row.addStretch(1)
         self.phase_min_edit = QLineEdit("0.00")
-        self.phase_max_edit = QLineEdit("6.28")
+        self.phase_max_edit = QLineEdit("1.60")
         self.phase_min_edit.setValidator(QDoubleValidator())
         self.phase_max_edit.setValidator(QDoubleValidator())
-        ph_edits_layout.addWidget(QLabel("Min:"))
-        ph_edits_layout.addWidget(self.phase_min_edit)
-        ph_edits_layout.addWidget(QLabel("Max:"))
-        ph_edits_layout.addWidget(self.phase_max_edit)
-        ph_cnt_layout.addLayout(ph_edits_layout)
+        self.phase_min_edit.setFixedWidth(50)
+        self.phase_max_edit.setFixedWidth(50)
+        self.phase_min_edit.setAlignment(Qt.AlignCenter)
+        self.phase_max_edit.setAlignment(Qt.AlignCenter)
+        ph_row.addWidget(self.phase_min_edit)
+        ph_row.addWidget(QLabel("to"))
+        ph_row.addWidget(self.phase_max_edit)
+        ph_cnt_layout.addLayout(ph_row)
         self.phase_range_slider = QRangeSlider(Qt.Orientation.Horizontal)
         self.phase_range_slider.setRange(0, 628)
         self.phase_range_slider.setValue((0, 628))
@@ -288,18 +321,23 @@ class PhasorMappingWidget(QWidget):
         # Modulation range controls
         self.modulation_range_container = QWidget()
         mod_cnt_layout = QVBoxLayout(self.modulation_range_container)
-        mod_cnt_layout.setContentsMargins(0, 0, 0, 0)
-        mod_cnt_layout.addWidget(QLabel("Modulation range:"))
-        mod_edits_layout = QHBoxLayout()
+        mod_cnt_layout.setContentsMargins(0, 5, 0, 0)
+
+        mod_row = QHBoxLayout()
+        mod_row.addWidget(QLabel("Modulation range:"))
+        mod_row.addStretch(1)
         self.modulation_min_edit = QLineEdit("0.00")
         self.modulation_max_edit = QLineEdit("1.00")
         self.modulation_min_edit.setValidator(QDoubleValidator())
         self.modulation_max_edit.setValidator(QDoubleValidator())
-        mod_edits_layout.addWidget(QLabel("Min:"))
-        mod_edits_layout.addWidget(self.modulation_min_edit)
-        mod_edits_layout.addWidget(QLabel("Max:"))
-        mod_edits_layout.addWidget(self.modulation_max_edit)
-        mod_cnt_layout.addLayout(mod_edits_layout)
+        self.modulation_min_edit.setFixedWidth(50)
+        self.modulation_max_edit.setFixedWidth(50)
+        self.modulation_min_edit.setAlignment(Qt.AlignCenter)
+        self.modulation_max_edit.setAlignment(Qt.AlignCenter)
+        mod_row.addWidget(self.modulation_min_edit)
+        mod_row.addWidget(QLabel("to"))
+        mod_row.addWidget(self.modulation_max_edit)
+        mod_cnt_layout.addLayout(mod_row)
         self.modulation_range_slider = QRangeSlider(Qt.Orientation.Horizontal)
         self.modulation_range_slider.setRange(0, 100)
         self.modulation_range_slider.setValue((0, 100))
@@ -320,10 +358,17 @@ class PhasorMappingWidget(QWidget):
             self._on_calculate_lifetime_clicked
         )
         self.main_layout.addWidget(self.calculate_lifetime_button)
+        self.main_layout.addStretch(1)
 
         # Connect signals for mesh overlay
         self.mesh_overlay_checkbox.toggled.connect(
             self._on_mesh_overlay_toggled
+        )
+        self.mesh_clip_semicircle_checkbox.toggled.connect(
+            self._on_mesh_clip_toggled
+        )
+        self.mesh_colorbar_checkbox.toggled.connect(
+            self._on_mesh_colorbar_toggled
         )
         self.phase_range_slider.valueChanged.connect(
             self._on_phase_slider_changed
@@ -470,6 +515,7 @@ class PhasorMappingWidget(QWidget):
         is_lifetime_mode = (
             self.output_mode_combobox.currentText() == "Lifetime"
         )
+        pw = self.parent_widget
         self.lifetime_output_widget.setVisible(is_lifetime_mode)
         self.frequency_widget.setVisible(is_lifetime_mode)
         self.colormap_widget.setVisible(not is_lifetime_mode)
@@ -478,14 +524,19 @@ class PhasorMappingWidget(QWidget):
         self.mesh_overlay_group.setVisible(not is_lifetime_mode)
         if not is_lifetime_mode:
             show_ranges = self.mesh_overlay_checkbox.isChecked()
-            self.mesh_alpha_widget.setVisible(show_ranges)
+            is_semi = self._is_semicircle_mode()
+            self.mesh_controls_widget.setVisible(show_ranges)
             self.phase_range_container.setVisible(show_ranges)
             self.modulation_range_container.setVisible(show_ranges)
+            self.mesh_clip_semicircle_checkbox.setVisible(is_semi)
+            self.mesh_colorbar_checkbox.setVisible(True)
             self._update_phase_slider_bounds_from_plot_mode()
         else:
-            self.mesh_alpha_widget.setVisible(False)
+            self.mesh_controls_widget.setVisible(False)
             self.phase_range_container.setVisible(False)
             self.modulation_range_container.setVisible(False)
+            if pw is not None:
+                pw._remove_mapping_colorbar()
 
     def _is_semicircle_mode(self) -> bool:
         if self.parent_widget is None:
@@ -596,6 +647,7 @@ class PhasorMappingWidget(QWidget):
 
     def _on_plot_geometry_mode_toggled(self, _checked):
         self._update_phase_slider_bounds_from_plot_mode()
+        self._sync_mode_widgets()
         if self.mesh_overlay_checkbox.isChecked():
             settings = self._get_current_layer_mapping_settings(create=False)
             if not self._restore_mesh_ranges_from_settings(settings):
@@ -631,6 +683,8 @@ class PhasorMappingWidget(QWidget):
             'range_min': None,
             'range_max': None,
             'mesh_overlay_enabled': False,
+            'mesh_clip_semicircle_enabled': False,
+            'mesh_colorbar_enabled': False,
             'mesh_alpha': 0.45,
             'mesh_phase_min': None,
             'mesh_phase_max': None,
@@ -662,6 +716,14 @@ class PhasorMappingWidget(QWidget):
         self._update_lifetime_setting_in_metadata(
             'mesh_modulation_max', mod_max_i / self.modulation_range_factor
         )
+        self._update_lifetime_setting_in_metadata(
+            'mesh_clip_semicircle_enabled',
+            self.mesh_clip_semicircle_checkbox.isChecked(),
+        )
+        self._update_lifetime_setting_in_metadata(
+            'mesh_colorbar_enabled',
+            self.mesh_colorbar_checkbox.isChecked(),
+        )
 
     def _restore_mesh_ranges_from_settings(self, settings) -> bool:
         if settings is None:
@@ -671,6 +733,8 @@ class PhasorMappingWidget(QWidget):
         phase_max = settings.get('mesh_phase_max')
         mod_min = settings.get('mesh_modulation_min')
         mod_max = settings.get('mesh_modulation_max')
+        clip_semi = settings.get('mesh_clip_semicircle_enabled', False)
+        show_colorbar = settings.get('mesh_colorbar_enabled', False)
         if any(v is None for v in (phase_min, phase_max, mod_min, mod_max)):
             return False
 
@@ -700,6 +764,8 @@ class PhasorMappingWidget(QWidget):
         self.modulation_range_slider.setValue((mod_min_i, mod_max_i))
         self.modulation_min_edit.setText(f"{mod_min:.2f}")
         self.modulation_max_edit.setText(f"{mod_max:.2f}")
+        self.mesh_clip_semicircle_checkbox.setChecked(bool(clip_semi))
+        self.mesh_colorbar_checkbox.setChecked(bool(show_colorbar))
         return True
 
     @staticmethod
@@ -758,12 +824,12 @@ class PhasorMappingWidget(QWidget):
         )
         self._configure_histogram_labels_for_output(output_type)
         self.outputTypeChanged.emit(output_type)
-        if self._output_requires_frequency(output_type):
-            self._clear_2d_coloring()
-        elif self.current_metric_data is not None and (
+        can_apply_coloring = (
             self.apply_2d_colormap_checkbox.isChecked()
             or self.mesh_overlay_checkbox.isChecked()
-        ):
+            or self.mesh_colorbar_checkbox.isChecked()
+        )
+        if can_apply_coloring:
             self._apply_histogram_coloring(output_type)
         else:
             self._clear_2d_coloring()
@@ -788,6 +854,7 @@ class PhasorMappingWidget(QWidget):
         if output_type in {"Phase", "Modulation"} and (
             self.apply_2d_colormap_checkbox.isChecked()
             or self.mesh_overlay_checkbox.isChecked()
+            or self.mesh_colorbar_checkbox.isChecked()
         ):
             actual_cmap_to_apply = self._resolve_layer_colormap(name)
 
@@ -822,6 +889,7 @@ class PhasorMappingWidget(QWidget):
         self._remove_overlay()
         pw = self.parent_widget
         if pw is not None:
+            pw._remove_mapping_colorbar()
             self._set_histogram_density_visible(pw, True)
             if getattr(pw, 'plot_type', None) == 'SCATTER':
                 pw.refresh_current_plot()
@@ -1766,6 +1834,15 @@ class PhasorMappingWidget(QWidget):
             mod_ok = (m_grid >= mod_min) & (m_grid <= mod_max)
 
             mesh_mask = ~(phase_ok & mod_ok)
+
+            if (
+                self.mesh_clip_semicircle_checkbox.isChecked()
+                and self._is_semicircle_mode()
+            ):
+                with np.errstate(invalid='ignore'):
+                    is_outside_semi = m_grid > np.cos(p_grid)
+                    mesh_mask |= is_outside_semi
+
             stat_display = p_grid if output_type == "Phase" else m_grid
             stat_display = np.where(mesh_mask, np.nan, stat_display)
             extent = [
@@ -1794,11 +1871,27 @@ class PhasorMappingWidget(QWidget):
 
             if not apply_plot_coloring:
                 self._restore_plot_coloring_state_without_mesh()
+                if not self.mesh_colorbar_checkbox.isChecked():
+                    pw._remove_mapping_colorbar()
+                else:
+                    self._update_mapping_colorbar(
+                        cmap, vmin, vmax, output_type
+                    )
                 return
 
         if not apply_plot_coloring:
             self._restore_plot_coloring_state_without_mesh()
+            if not self.mesh_colorbar_checkbox.isChecked():
+                pw._remove_mapping_colorbar()
+            else:
+                self._update_mapping_colorbar(cmap, vmin, vmax, output_type)
             return
+
+        # If reaching here, apply_plot_coloring is True
+        if self.mesh_colorbar_checkbox.isChecked():
+            self._update_mapping_colorbar(cmap, vmin, vmax, output_type)
+        else:
+            pw._remove_mapping_colorbar()
 
         if pw.plot_type == 'SCATTER':
             self._remove_overlay()
@@ -2039,6 +2132,43 @@ class PhasorMappingWidget(QWidget):
             self._apply_histogram_coloring(output_type)
         else:
             self._clear_2d_coloring()
+
+    def _on_mesh_clip_toggled(self, checked):
+        """Handle mesh clipping toggle."""
+        if self._updating_settings:
+            return
+
+        self._update_lifetime_setting_in_metadata(
+            'mesh_clip_semicircle_enabled', bool(checked)
+        )
+        self._refresh_mesh_overlay_if_needed()
+
+    def _update_mapping_colorbar(self, cmap, vmin, vmax, output_type):
+        """Update the plotter colorbar for phase or modulation."""
+        pw = self.parent_widget
+        if pw is None:
+            return
+        norm = Normalize(vmin=vmin, vmax=vmax)
+        mappable = cm.ScalarMappable(norm=norm, cmap=cmap)
+        label = "Phase (rad)" if output_type == "Phase" else "Modulation"
+        # Access the private method to update the colorbar in the plotter
+        pw._update_mapping_colorbar(mappable=mappable, label=label)
+
+    def _on_mesh_colorbar_toggled(self, checked):
+        """Handle mesh colorbar toggle."""
+        if self._updating_settings:
+            return
+
+        self._update_lifetime_setting_in_metadata(
+            'mesh_colorbar_enabled', bool(checked)
+        )
+
+        output_type = self._get_selected_output_type()
+        if output_type in {"Phase", "Modulation"}:
+            if checked:
+                self._apply_histogram_coloring(output_type)
+            elif self.parent_widget is not None:
+                self.parent_widget._remove_mapping_colorbar()
 
     def _on_mesh_alpha_changed(self, _value):
         """Refresh mesh overlay when alpha changes."""
