@@ -38,7 +38,8 @@ dependencies = [
     "pandas",
     "pyqt5",
     "pawflim",
-    "scipy"
+    "scipy",
+    "czifile"
 ]
 
 [project.optional-dependencies]
@@ -63,7 +64,8 @@ testing = [
     "sdtfile",
     "ptufile",
     "pawflim",
-    "scipy"
+    "scipy",
+    "czifile"
 ]
 
 [project.entry-points."napari.manifest"]
