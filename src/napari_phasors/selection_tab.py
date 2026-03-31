@@ -10,6 +10,7 @@ from phasorpy.cluster import phasor_cluster_gmm
 from phasorpy.cursor import (
     mask_from_circular_cursor,
     mask_from_elliptic_cursor,
+    mask_from_polar_cursor,
 )
 from qtpy import uic
 from qtpy.QtCore import Qt, Signal
@@ -69,7 +70,13 @@ class SelectionWidget(QWidget):
         mode_layout.addWidget(QLabel("Selection Mode:"))
         self.selection_mode_combobox = QComboBox()
         self.selection_mode_combobox.addItems(
-            ["Circular Cursor", "Automatic Clustering", "Manual Selection"]
+            [
+                "Circular Cursor",
+                "Polar Cursor",
+                "Elliptical Cursor",
+                "Automatic Clustering",
+                "Manual Selection",
+            ]
         )
         mode_layout.addWidget(self.selection_mode_combobox, 1)
         layout.addLayout(mode_layout)
@@ -146,6 +153,18 @@ class SelectionWidget(QWidget):
         )
         self.stacked_widget.addWidget(self.circular_cursor_widget)
 
+        # === Polar Cursor Mode Widget ===
+        self.polar_cursor_widget = PolarCursorWidget(
+            viewer, self.parent_widget
+        )
+        self.stacked_widget.addWidget(self.polar_cursor_widget)
+
+        # === Elliptical Cursor Mode Widget ===
+        self.elliptical_cursor_widget = EllipticalCursorWidget(
+            viewer, self.parent_widget
+        )
+        self.stacked_widget.addWidget(self.elliptical_cursor_widget)
+
         # === Automatic Clustering Mode Widget ===
         self.automatic_clustering_widget = AutomaticClusteringWidget(
             viewer, self.parent_widget
@@ -165,7 +184,11 @@ class SelectionWidget(QWidget):
         current_mode = self.selection_mode_combobox.currentIndex()
         if current_mode == 0:  # Circular Cursor mode
             self.circular_cursor_widget.on_harmonic_changed()
-        elif current_mode == 1:  # Automatic Clustering mode
+        elif current_mode == 1:  # Polar Cursor mode
+            self.polar_cursor_widget.on_harmonic_changed()
+        elif current_mode == 2:  # Elliptical Cursor mode
+            self.elliptical_cursor_widget.on_harmonic_changed()
+        elif current_mode == 3:  # Automatic Clustering mode
             self.automatic_clustering_widget.on_harmonic_changed()
 
     def clear_artists(self):
@@ -173,14 +196,18 @@ class SelectionWidget(QWidget):
         # Clear artists from all sub-widgets
         if hasattr(self, 'circular_cursor_widget'):
             self.circular_cursor_widget.clear_all_patches()
+        if hasattr(self, 'polar_cursor_widget'):
+            self.polar_cursor_widget.clear_all_patches()
+        if hasattr(self, 'elliptical_cursor_widget'):
+            self.elliptical_cursor_widget.clear_all_patches()
         if hasattr(self, 'automatic_clustering_widget'):
             self.automatic_clustering_widget.clear_all_patches()
 
     def is_manual_selection_mode(self):
         """Check if manual selection mode is currently active."""
         return (
-            self.selection_mode_combobox.currentIndex() == 2
-        )  # Manual is index 2
+            self.selection_mode_combobox.currentIndex() == 4
+        )  # Manual is index 4
 
     def _manage_labels_layer_visibility(self, show_manual):
         """Manage visibility of labels layers based on selection mode.
@@ -214,6 +241,8 @@ class SelectionWidget(QWidget):
                 if source_layer == layer.name:
                     if (
                         selection_type == 'circular_cursor'
+                        or selection_type == 'polar_cursor'
+                        or selection_type == 'elliptical_cursor'
                         or selection_type == 'automatic_clustering'
                     ):
                         viewer_layer.visible = not show_manual
@@ -224,19 +253,49 @@ class SelectionWidget(QWidget):
         """Handle selection mode change."""
         self.stacked_widget.setCurrentIndex(index)
 
-        if index == 2:  # Manual selection mode
+        if index == 4:  # Manual selection mode
             self.circular_cursor_widget.clear_all_patches()
+            self.polar_cursor_widget.clear_all_patches()
+            self.elliptical_cursor_widget.clear_all_patches()
             self.automatic_clustering_widget.clear_all_patches()
             if self.parent_widget is not None:
                 self.parent_widget._set_selection_visibility(True)
             self._manage_labels_layer_visibility(show_manual=True)
             self.update_phasor_plot_with_selection_id(self.selection_id)
-        elif index == 1:  # Automatic clustering mode
+        elif index == 3:  # Automatic clustering mode
             # Deactivate any active selection tools before hiding toolbar
             if self.parent_widget is not None:
                 self.parent_widget.canvas_widget._on_escape(None)
             self.circular_cursor_widget.clear_all_patches()
+            self.polar_cursor_widget.clear_all_patches()
+            self.elliptical_cursor_widget.clear_all_patches()
             self.automatic_clustering_widget.redraw_all_patches()
+            if self.parent_widget is not None:
+                self.parent_widget._set_selection_visibility(False)
+            if self.parent_widget is not None:
+                self.parent_widget.plot(selection_id_data=None)
+            self._manage_labels_layer_visibility(show_manual=False)
+        elif index == 2:  # Elliptical cursor mode
+            # Deactivate any active selection tools before hiding toolbar
+            if self.parent_widget is not None:
+                self.parent_widget.canvas_widget._on_escape(None)
+            self.circular_cursor_widget.clear_all_patches()
+            self.polar_cursor_widget.clear_all_patches()
+            self.elliptical_cursor_widget.redraw_all_patches()
+            self.automatic_clustering_widget.clear_all_patches()
+            if self.parent_widget is not None:
+                self.parent_widget._set_selection_visibility(False)
+            if self.parent_widget is not None:
+                self.parent_widget.plot(selection_id_data=None)
+            self._manage_labels_layer_visibility(show_manual=False)
+        elif index == 1:  # Polar cursor mode
+            # Deactivate any active selection tools before hiding toolbar
+            if self.parent_widget is not None:
+                self.parent_widget.canvas_widget._on_escape(None)
+            self.circular_cursor_widget.clear_all_patches()
+            self.polar_cursor_widget.redraw_all_patches()
+            self.elliptical_cursor_widget.clear_all_patches()
+            self.automatic_clustering_widget.clear_all_patches()
             if self.parent_widget is not None:
                 self.parent_widget._set_selection_visibility(False)
             if self.parent_widget is not None:
@@ -247,6 +306,8 @@ class SelectionWidget(QWidget):
             if self.parent_widget is not None:
                 self.parent_widget.canvas_widget._on_escape(None)
             self.circular_cursor_widget.redraw_all_patches()
+            self.polar_cursor_widget.clear_all_patches()
+            self.elliptical_cursor_widget.clear_all_patches()
             self.automatic_clustering_widget.clear_all_patches()
             if self.parent_widget is not None:
                 self.parent_widget._set_selection_visibility(False)
@@ -2660,3 +2721,1526 @@ class CircularCursorWidget(QWidget):
                 )
 
         event.accept()
+
+
+class PolarCursorWidget(QWidget):
+    """
+    Widget for polar cursor selection in phasor plots.
+
+    This widget provides a table interface for adding and managing
+    polar cursors that can be used to select regions in the phasor plot
+    based on phase and modulation ranges.
+
+    Parameters
+    ----------
+    viewer : napari.Viewer
+        The napari viewer instance.
+    parent_widget : QWidget
+        The parent PlotterWidget.
+    """
+
+    DEFAULT_COLORS = [
+        QColor(int(r * 255), int(g * 255), int(b * 255))
+        for r, g, b, _ in [plt.get_cmap('Set1')(i) for i in range(9)]
+    ]
+
+    def __init__(self, viewer, parent_widget):
+        """Initialize the PolarCursorWidget."""
+        super().__init__()
+        self.viewer = viewer
+        self.parent_widget = parent_widget
+
+        # Store cursor data: list of dicts with phase_min, phase_max, modulation_min, modulation_max, color
+        self._cursors = []
+        self._phasors_selected_layer = None
+
+        # Autoupdate state (not stored in metadata)
+        self._autoupdate_enabled = False
+
+        self._setup_ui()
+
+    def _setup_ui(self):
+        """Set up the user interface."""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 5, 0, 0)
+
+        # Table for cursors
+        self.cursor_table = QTableWidget()
+        self.cursor_table.setColumnCount(8)
+        self.cursor_table.setHorizontalHeaderLabels(
+            [
+                "Phase Min",
+                "Phase Max",
+                "Mod Min",
+                "Mod Max",
+                "Color",
+                "Count",
+                "%",
+                "",
+            ]
+        )
+        self.cursor_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.Stretch
+        )
+        self.cursor_table.horizontalHeader().setSectionResizeMode(
+            4, QHeaderView.Fixed
+        )
+        self.cursor_table.horizontalHeader().setSectionResizeMode(
+            5, QHeaderView.Fixed
+        )
+        self.cursor_table.horizontalHeader().setSectionResizeMode(
+            6, QHeaderView.Fixed
+        )
+        self.cursor_table.horizontalHeader().setSectionResizeMode(
+            7, QHeaderView.Fixed
+        )
+        self.cursor_table.setColumnWidth(4, 40)
+        self.cursor_table.setColumnWidth(5, 70)
+        self.cursor_table.setColumnWidth(6, 60)
+        self.cursor_table.setColumnWidth(7, 40)
+        self.cursor_table.verticalHeader().setVisible(False)
+        layout.addWidget(self.cursor_table)
+
+        # Buttons for add and remove
+        buttons_layout = QHBoxLayout()
+
+        self.add_cursor_button = QPushButton("Add Cursor")
+        self.add_cursor_button.clicked.connect(self._add_cursor)
+        buttons_layout.addWidget(self.add_cursor_button)
+
+        self.clear_all_button = QPushButton("Clear All")
+        self.clear_all_button.clicked.connect(self._clear_all_cursors)
+        buttons_layout.addWidget(self.clear_all_button)
+
+        layout.addLayout(buttons_layout)
+
+        # Calculate button and autoupdate checkbox
+        calculate_layout = QHBoxLayout()
+
+        self.calculate_button = QPushButton("Calculate")
+        self.calculate_button.clicked.connect(self._on_calculate_clicked)
+        calculate_layout.addWidget(self.calculate_button)
+
+        self.autoupdate_checkbox = QWidget()
+        autoupdate_layout = QHBoxLayout(self.autoupdate_checkbox)
+        autoupdate_layout.setContentsMargins(0, 0, 0, 0)
+        self.autoupdate_check = QToggleSwitch("Autoupdate")
+        self.autoupdate_check.onColor = QColor("#27ae60")  # Nice Green
+        self.autoupdate_check.setChecked(False)
+        self.autoupdate_check.toggled.connect(self._on_autoupdate_changed)
+        autoupdate_layout.addWidget(self.autoupdate_check)
+        calculate_layout.addWidget(self.autoupdate_checkbox)
+
+        layout.addLayout(calculate_layout)
+
+        layout.addStretch()
+
+    def _get_next_color(self):
+        """Get the next color from the default palette based on current harmonic cursors."""
+        if self.parent_widget is None:
+            index = 0
+        else:
+            current_harmonic = self.parent_widget.harmonic
+            # Count cursors in current harmonic only
+            current_harmonic_count = sum(
+                1
+                for c in self._cursors
+                if c.get('harmonic', 1) == current_harmonic
+            )
+            index = current_harmonic_count % len(self.DEFAULT_COLORS)
+        return self.DEFAULT_COLORS[index]
+
+    def _add_cursor(
+        self,
+        phase_min=0.0,
+        phase_max=90.0,
+        modulation_min=0.0,
+        modulation_max=1.0,
+        color=None,
+    ):
+        """Add a new cursor to the table."""
+        if color is None:
+            color = self._get_next_color()
+
+        # Store cursor data first to get the correct index
+        cursor_data = {
+            'phase_min': phase_min,
+            'phase_max': phase_max,
+            'modulation_min': modulation_min,
+            'modulation_max': modulation_max,
+            'color': color,
+            'harmonic': (
+                self.parent_widget.harmonic if self.parent_widget else 1
+            ),
+        }
+        self._cursors.append(cursor_data)
+
+        # The actual index in self._cursors for this cursor
+        cursor_idx = len(self._cursors) - 1
+
+        # Now add to table
+        table_row = self.cursor_table.rowCount()
+        self.cursor_table.insertRow(table_row)
+
+        # Phase Min spinbox
+        phase_min_spinbox = QDoubleSpinBox()
+        phase_min_spinbox.setRange(-180.0, 180.0)
+        phase_min_spinbox.setSingleStep(1.0)
+        phase_min_spinbox.setDecimals(1)
+        phase_min_spinbox.setValue(phase_min)
+        phase_min_spinbox.valueChanged.connect(
+            lambda val, idx=cursor_idx: self._on_cursor_changed(idx)
+        )
+        self.cursor_table.setCellWidget(table_row, 0, phase_min_spinbox)
+
+        # Phase Max spinbox
+        phase_max_spinbox = QDoubleSpinBox()
+        phase_max_spinbox.setRange(-180.0, 180.0)
+        phase_max_spinbox.setSingleStep(1.0)
+        phase_max_spinbox.setDecimals(1)
+        phase_max_spinbox.setValue(phase_max)
+        phase_max_spinbox.valueChanged.connect(
+            lambda val, idx=cursor_idx: self._on_cursor_changed(idx)
+        )
+        self.cursor_table.setCellWidget(table_row, 1, phase_max_spinbox)
+
+        # Modulation Min spinbox
+        mod_min_spinbox = QDoubleSpinBox()
+        mod_min_spinbox.setRange(0.0, 1.0)
+        mod_min_spinbox.setSingleStep(0.01)
+        mod_min_spinbox.setDecimals(2)
+        mod_min_spinbox.setValue(modulation_min)
+        mod_min_spinbox.valueChanged.connect(
+            lambda val, idx=cursor_idx: self._on_cursor_changed(idx)
+        )
+        self.cursor_table.setCellWidget(table_row, 2, mod_min_spinbox)
+
+        # Modulation Max spinbox
+        mod_max_spinbox = QDoubleSpinBox()
+        mod_max_spinbox.setRange(0.0, 1.0)
+        mod_max_spinbox.setSingleStep(0.01)
+        mod_max_spinbox.setDecimals(2)
+        mod_max_spinbox.setValue(modulation_max)
+        mod_max_spinbox.valueChanged.connect(
+            lambda val, idx=cursor_idx: self._on_cursor_changed(idx)
+        )
+        self.cursor_table.setCellWidget(table_row, 3, mod_max_spinbox)
+
+        # Color button
+        color_button = ColorButton(color)
+        color_button.color_changed.connect(
+            lambda c, idx=cursor_idx: self._on_cursor_changed(idx)
+        )
+        self.cursor_table.setCellWidget(table_row, 4, color_button)
+
+        # Count label
+        count_label = QLabel("-")
+        count_label.setAlignment(Qt.AlignCenter)
+        self.cursor_table.setCellWidget(table_row, 5, count_label)
+
+        # Percentage label
+        percentage_label = QLabel("-")
+        percentage_label.setAlignment(Qt.AlignCenter)
+        self.cursor_table.setCellWidget(table_row, 6, percentage_label)
+
+        # Remove button
+        remove_button = QPushButton("×")
+        remove_button.setFixedSize(25, 25)
+        remove_button.clicked.connect(
+            lambda _, idx=cursor_idx: self._remove_cursor(idx)
+        )
+        self.cursor_table.setCellWidget(table_row, 7, remove_button)
+
+        # Apply selection to update labels layer (only if autoupdate is enabled)
+        if self._cursors and self._autoupdate_enabled:
+            self._apply_selection()
+        else:
+            # Update statistics even if not applying selection
+            self._update_cursor_statistics()
+
+    def _remove_cursor(self, cursor_idx):
+        """Remove a cursor from the table using its index in self._cursors."""
+        if cursor_idx < 0 or cursor_idx >= len(self._cursors):
+            return
+
+        # Remove from data
+        self._cursors.pop(cursor_idx)
+
+        # Rebuild the table to reflect the removal
+        if self.parent_widget is not None:
+            self.on_harmonic_changed()
+
+        # Apply selection to update labels layer
+        if not self._cursors:
+            # If no cursors left, remove the selection layer
+            self._remove_selection_layer()
+
+    def _on_cursor_changed(self, cursor_idx):
+        """Handle cursor parameter changes using cursor index in self._cursors."""
+        if cursor_idx < 0 or cursor_idx >= len(self._cursors):
+            return
+
+        if self.parent_widget is None:
+            return
+
+        # Find the table row for this cursor (only current harmonic cursors are in table)
+        current_harmonic = self.parent_widget.harmonic
+        table_row = 0
+        for idx in range(len(self._cursors)):
+            if self._cursors[idx].get('harmonic', 1) == current_harmonic:
+                if idx == cursor_idx:
+                    # Found it!
+                    break
+                table_row += 1
+        else:
+            # Cursor not in current harmonic's table
+            return
+
+        # Get current values from widgets using the table row
+        phase_min_spinbox = self.cursor_table.cellWidget(table_row, 0)
+        phase_max_spinbox = self.cursor_table.cellWidget(table_row, 1)
+        mod_min_spinbox = self.cursor_table.cellWidget(table_row, 2)
+        mod_max_spinbox = self.cursor_table.cellWidget(table_row, 3)
+        color_button = self.cursor_table.cellWidget(table_row, 4)
+
+        if all(
+            [
+                phase_min_spinbox,
+                phase_max_spinbox,
+                mod_min_spinbox,
+                mod_max_spinbox,
+                color_button,
+            ]
+        ):
+            self._cursors[cursor_idx]['phase_min'] = phase_min_spinbox.value()
+            self._cursors[cursor_idx]['phase_max'] = phase_max_spinbox.value()
+            self._cursors[cursor_idx][
+                'modulation_min'
+            ] = mod_min_spinbox.value()
+            self._cursors[cursor_idx][
+                'modulation_max'
+            ] = mod_max_spinbox.value()
+            self._cursors[cursor_idx]['color'] = color_button.color()
+
+            # Apply selection automatically if autoupdate is enabled
+            if self._cursors and self._autoupdate_enabled:
+                self._apply_selection()
+            elif self._cursors:
+                # Update statistics even if not applying selection
+                self._update_cursor_statistics()
+
+    def _clear_all_cursors(self):
+        """Clear all cursors."""
+        self._cursors.clear()
+        self.cursor_table.setRowCount(0)
+
+        self._remove_selection_layer()
+
+        if self.parent_widget is not None:
+            self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def clear_all_patches(self):
+        """Clear all patches from the canvas (called when switching modes)."""
+        # Polar cursors don't have visual patches on the canvas
+
+    def redraw_all_patches(self):
+        """Redraw all patches on the canvas (called when switching back to polar cursor mode)."""
+        # Polar cursors don't have visual patches on the canvas
+
+    def on_harmonic_changed(self):
+        """Handle harmonic change - rebuild table and labels for current harmonic only."""
+        if self.parent_widget is None:
+            return
+
+        current_harmonic = self.parent_widget.harmonic
+
+        # Rebuild the table to show only cursors for current harmonic
+        self.cursor_table.setRowCount(0)
+
+        for cursor_idx, cursor in enumerate(self._cursors):
+            cursor_harmonic = cursor.get('harmonic', 1)
+            if cursor_harmonic == current_harmonic:
+                # Add this cursor to the table
+                table_row = self.cursor_table.rowCount()
+                self.cursor_table.insertRow(table_row)
+
+                # Phase Min spinbox
+                phase_min_spinbox = QDoubleSpinBox()
+                phase_min_spinbox.setRange(-180.0, 180.0)
+                phase_min_spinbox.setSingleStep(1.0)
+                phase_min_spinbox.setDecimals(1)
+                phase_min_spinbox.setValue(cursor['phase_min'])
+                phase_min_spinbox.valueChanged.connect(
+                    lambda val, idx=cursor_idx: self._on_cursor_changed(idx)
+                )
+                self.cursor_table.setCellWidget(
+                    table_row, 0, phase_min_spinbox
+                )
+
+                # Phase Max spinbox
+                phase_max_spinbox = QDoubleSpinBox()
+                phase_max_spinbox.setRange(-180.0, 180.0)
+                phase_max_spinbox.setSingleStep(1.0)
+                phase_max_spinbox.setDecimals(1)
+                phase_max_spinbox.setValue(cursor['phase_max'])
+                phase_max_spinbox.valueChanged.connect(
+                    lambda val, idx=cursor_idx: self._on_cursor_changed(idx)
+                )
+                self.cursor_table.setCellWidget(
+                    table_row, 1, phase_max_spinbox
+                )
+
+                # Modulation Min spinbox
+                mod_min_spinbox = QDoubleSpinBox()
+                mod_min_spinbox.setRange(0.0, 1.0)
+                mod_min_spinbox.setSingleStep(0.01)
+                mod_min_spinbox.setDecimals(2)
+                mod_min_spinbox.setValue(cursor['modulation_min'])
+                mod_min_spinbox.valueChanged.connect(
+                    lambda val, idx=cursor_idx: self._on_cursor_changed(idx)
+                )
+                self.cursor_table.setCellWidget(table_row, 2, mod_min_spinbox)
+
+                # Modulation Max spinbox
+                mod_max_spinbox = QDoubleSpinBox()
+                mod_max_spinbox.setRange(0.0, 1.0)
+                mod_max_spinbox.setSingleStep(0.01)
+                mod_max_spinbox.setDecimals(2)
+                mod_max_spinbox.setValue(cursor['modulation_max'])
+                mod_max_spinbox.valueChanged.connect(
+                    lambda val, idx=cursor_idx: self._on_cursor_changed(idx)
+                )
+                self.cursor_table.setCellWidget(table_row, 3, mod_max_spinbox)
+
+                # Color button
+                color_button = ColorButton(cursor['color'])
+                color_button.color_changed.connect(
+                    lambda c, idx=cursor_idx: self._on_cursor_changed(idx)
+                )
+                self.cursor_table.setCellWidget(table_row, 4, color_button)
+
+                # Count label
+                count_label = QLabel("-")
+                count_label.setAlignment(Qt.AlignCenter)
+                self.cursor_table.setCellWidget(table_row, 5, count_label)
+
+                # Percentage label
+                percentage_label = QLabel("-")
+                percentage_label.setAlignment(Qt.AlignCenter)
+                self.cursor_table.setCellWidget(table_row, 6, percentage_label)
+
+                # Remove button
+                remove_button = QPushButton("×")
+                remove_button.setFixedSize(25, 25)
+                remove_button.clicked.connect(
+                    lambda _, idx=cursor_idx: self._remove_cursor(idx)
+                )
+                self.cursor_table.setCellWidget(table_row, 7, remove_button)
+
+        # Update labels layer to show only current harmonic selections (only if autoupdate is enabled)
+        if self._autoupdate_enabled:
+            self._apply_selection()
+        else:
+            # Update statistics even if not applying selection
+            self._update_cursor_statistics()
+
+    def _get_selected_layers(self):
+        """Get all currently selected layers."""
+        if self.parent_widget is None:
+            return []
+        return self.parent_widget.get_selected_layers()
+
+    def _on_calculate_clicked(self):
+        """Handle Calculate button click - manually trigger selection calculation."""
+        if self._cursors:
+            self._apply_selection()
+
+    def _on_autoupdate_changed(self, checked):
+        """Handle Autoupdate checkbox state change."""
+        self._autoupdate_enabled = self.autoupdate_check.isChecked()
+        # Enable/disable calculate button based on autoupdate state
+        self.calculate_button.setEnabled(not self._autoupdate_enabled)
+
+        # If autoupdate is being enabled, immediately apply selection
+        if self._autoupdate_enabled and self._cursors:
+            self._apply_selection()
+
+    def _remove_selection_layer(self):
+        """Remove the selection layer if it exists."""
+        selected_layers = self._get_selected_layers()
+        if not selected_layers:
+            return
+
+        for layer in selected_layers:
+            layer_name = f"Polar Cursor Selection: {layer.name}"
+            for viewer_layer in list(self.viewer.layers):
+                if viewer_layer.name == layer_name:
+                    self.viewer.layers.remove(viewer_layer)
+                    break
+
+        self._phasors_selected_layer = None
+
+    def _apply_selection(self):
+        """Apply the polar cursor selections to create a labels layer."""
+        if not self._cursors:
+            return
+        if self.parent_widget is None:
+            return None
+
+        selected_layers = self._get_selected_layers()
+        if not selected_layers:
+            return
+
+        current_harmonic = self.parent_widget.harmonic
+
+        # Filter cursors for current harmonic only
+        current_harmonic_cursors = [
+            cursor
+            for cursor in self._cursors
+            if cursor.get('harmonic', 1) == current_harmonic
+        ]
+
+        if not current_harmonic_cursors:
+            # No cursors for this harmonic - clear labels layers
+            for layer in selected_layers:
+                layer_name = f"Polar Cursor Selection: {layer.name}"
+                for viewer_layer in self.viewer.layers:
+                    if viewer_layer.name == layer_name:
+                        self.viewer.layers.remove(viewer_layer)
+                        break
+            return
+
+        # Apply selection to each selected layer
+        for layer in selected_layers:
+            # Get phasor data for this specific layer
+            g_array = layer.metadata.get('G')
+            s_array = layer.metadata.get('S')
+            harmonics_array = layer.metadata.get('harmonics')
+
+            if g_array is None or s_array is None:
+                continue
+
+            # Extract correct harmonic if arrays are 3D
+            if harmonics_array is not None:
+                harmonics_array = np.atleast_1d(harmonics_array)
+                target_harmonic = self.parent_widget.harmonic
+                try:
+                    harmonic_idx = int(
+                        np.where(harmonics_array == target_harmonic)[0][0]
+                    )
+                except (IndexError, ValueError):
+                    continue
+            else:
+                harmonic_idx = 0
+
+            if g_array.ndim > layer.data.ndim:
+                g = g_array[harmonic_idx]
+                s = s_array[harmonic_idx]
+            else:
+                g = g_array
+                s = s_array
+
+            spatial_shape = layer.data.shape
+
+            # Create selection map
+            selection_map = np.zeros(spatial_shape, dtype=np.uint32)
+
+            # Apply each cursor from current harmonic
+            for idx, cursor in enumerate(current_harmonic_cursors):
+                phase_min = np.deg2rad(cursor['phase_min'])
+                phase_max = np.deg2rad(cursor['phase_max'])
+                modulation_min = cursor['modulation_min']
+                modulation_max = cursor['modulation_max']
+
+                mask = mask_from_polar_cursor(
+                    g, s, phase_min, phase_max, modulation_min, modulation_max
+                )
+
+                selection_map[mask] = idx + 1
+
+            self._create_or_update_labels_layer(
+                layer, selection_map, current_harmonic_cursors
+            )
+
+        # Update count and percentage in the table
+        self._update_cursor_statistics()
+
+    def _update_cursor_statistics(self):
+        """Update the count and percentage columns in the cursor table."""
+        if self.parent_widget is None:
+            return
+
+        selected_layers = self._get_selected_layers()
+        if not selected_layers:
+            return
+
+        current_harmonic = self.parent_widget.harmonic
+
+        # Calculate total valid pixels across all selected layers
+        total_valid_pixels = 0
+        for layer in selected_layers:
+            g_array = layer.metadata.get('G')
+            s_array = layer.metadata.get('S')
+            harmonics_array = layer.metadata.get('harmonics')
+
+            if g_array is None or s_array is None:
+                continue
+
+            # Extract correct harmonic if arrays are 3D
+            if harmonics_array is not None:
+                harmonics_array = np.atleast_1d(harmonics_array)
+                target_harmonic = current_harmonic
+                try:
+                    harmonic_idx = int(
+                        np.where(harmonics_array == target_harmonic)[0][0]
+                    )
+                except (IndexError, ValueError):
+                    continue
+            else:
+                harmonic_idx = 0
+
+            if g_array.ndim > layer.data.ndim:
+                g = g_array[harmonic_idx]
+                s = s_array[harmonic_idx]
+            else:
+                g = g_array
+                s = s_array
+
+            valid_pixels_mask = np.isfinite(g) & np.isfinite(s)
+            total_valid_pixels += np.sum(valid_pixels_mask)
+
+        if total_valid_pixels == 0:
+            # If no valid pixels, clear statistics
+            for table_row in range(self.cursor_table.rowCount()):
+                count_label = self.cursor_table.cellWidget(table_row, 5)
+                percentage_label = self.cursor_table.cellWidget(table_row, 6)
+                if count_label:
+                    count_label.setText("-")
+                if percentage_label:
+                    percentage_label.setText("-")
+            return
+
+        # Calculate statistics for each cursor
+        current_harmonic_cursors = [
+            (idx, cursor)
+            for idx, cursor in enumerate(self._cursors)
+            if cursor.get('harmonic', 1) == current_harmonic
+        ]
+
+        cursor_pixel_counts = {}
+        for cursor_idx, cursor in current_harmonic_cursors:
+            count = 0
+            for layer in selected_layers:
+                g_array = layer.metadata.get('G')
+                s_array = layer.metadata.get('S')
+                harmonics_array = layer.metadata.get('harmonics')
+
+                if g_array is None or s_array is None:
+                    continue
+
+                # Extract correct harmonic if arrays are 3D
+                if harmonics_array is not None:
+                    harmonics_array = np.atleast_1d(harmonics_array)
+                    target_harmonic = current_harmonic
+                    try:
+                        harmonic_idx = int(
+                            np.where(harmonics_array == target_harmonic)[0][0]
+                        )
+                    except (IndexError, ValueError):
+                        continue
+                else:
+                    harmonic_idx = 0
+
+                if g_array.ndim > layer.data.ndim:
+                    g = g_array[harmonic_idx]
+                    s = s_array[harmonic_idx]
+                else:
+                    g = g_array
+                    s = s_array
+
+                # Calculate mask for this cursor
+                phase_min = np.deg2rad(cursor['phase_min'])
+                phase_max = np.deg2rad(cursor['phase_max'])
+                modulation_min = cursor['modulation_min']
+                modulation_max = cursor['modulation_max']
+
+                mask = mask_from_polar_cursor(
+                    g, s, phase_min, phase_max, modulation_min, modulation_max
+                )
+
+                count += np.sum(mask)
+
+            cursor_pixel_counts[cursor_idx] = count
+
+        # Update table with statistics
+        table_row = 0
+        for cursor_idx, _cursor in current_harmonic_cursors:
+            count = cursor_pixel_counts[cursor_idx]
+            percentage = (
+                (count / total_valid_pixels * 100)
+                if total_valid_pixels > 0
+                else 0
+            )
+
+            count_label = self.cursor_table.cellWidget(table_row, 5)
+            percentage_label = self.cursor_table.cellWidget(table_row, 6)
+
+            if count_label:
+                count_label.setText(str(count))
+            if percentage_label:
+                percentage_label.setText(f"{percentage:.1f}")
+
+            table_row += 1
+
+    def _create_or_update_labels_layer(
+        self, image_layer, selection_map, cursors_list
+    ):
+        """Create or update the labels layer for the selection."""
+        layer_name = f"Polar Cursor Selection: {image_layer.name}"
+
+        color_dict = {None: (0, 0, 0, 0)}
+        for idx, cursor in enumerate(cursors_list):
+            color = cursor['color']
+            color_dict[idx + 1] = (
+                color.redF(),
+                color.greenF(),
+                color.blueF(),
+                1.0,
+            )
+
+        existing_layer = None
+        for viewer_layer in self.viewer.layers:
+            if viewer_layer.name == layer_name:
+                existing_layer = viewer_layer
+                break
+
+        if existing_layer is not None:
+            existing_layer.data = selection_map
+            existing_layer.colormap = DirectLabelColormap(
+                color_dict=color_dict, name="polar_cursor_colors"
+            )
+            existing_layer.visible = True
+            self._phasors_selected_layer = existing_layer
+        else:
+            labels_layer = Labels(
+                selection_map,
+                name=layer_name,
+                scale=image_layer.scale,
+                colormap=DirectLabelColormap(
+                    color_dict=color_dict, name="polar_cursor_colors"
+                ),
+                metadata={
+                    'napari_phasors_selection_type': 'polar_cursor',
+                    'napari_phasors_source_layer': image_layer.name,
+                },
+            )
+            self._phasors_selected_layer = self.viewer.add_layer(labels_layer)
+
+
+class EllipticalCursorWidget(QWidget):
+    """
+    Widget for elliptical cursor selection in phasor plots.
+
+    This widget provides a table interface for adding and managing
+    elliptical cursors that can be used to select regions in the phasor plot.
+
+    Parameters
+    ----------
+    viewer : napari.Viewer
+        The napari viewer instance.
+    parent_widget : QWidget
+        The parent PlotterWidget.
+    """
+
+    DEFAULT_COLORS = [
+        QColor(int(r * 255), int(g * 255), int(b * 255))
+        for r, g, b, _ in [plt.get_cmap('Set1')(i) for i in range(9)]
+    ]
+
+    def __init__(self, viewer, parent_widget):
+        """Initialize the EllipticalCursorWidget."""
+        super().__init__()
+        self.viewer = viewer
+        self.parent_widget = parent_widget
+
+        # Store cursor data: list of dicts with g, s, radius, radius_minor, angle, color, patch
+        self._cursors = []
+        self._phasors_selected_layer = None
+
+        # Autoupdate state (not stored in metadata)
+        self._autoupdate_enabled = False
+
+        self._setup_ui()
+
+    def _setup_ui(self):
+        """Set up the user interface."""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 5, 0, 0)
+
+        # Table for cursors
+        self.cursor_table = QTableWidget()
+        self.cursor_table.setColumnCount(9)
+        self.cursor_table.setHorizontalHeaderLabels(
+            ["G", "S", "Major", "Minor", "Angle", "Color", "Count", "%", ""]
+        )
+        self.cursor_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.Stretch
+        )
+        self.cursor_table.horizontalHeader().setSectionResizeMode(
+            5, QHeaderView.Fixed
+        )
+        self.cursor_table.horizontalHeader().setSectionResizeMode(
+            6, QHeaderView.Fixed
+        )
+        self.cursor_table.horizontalHeader().setSectionResizeMode(
+            7, QHeaderView.Fixed
+        )
+        self.cursor_table.horizontalHeader().setSectionResizeMode(
+            8, QHeaderView.Fixed
+        )
+        self.cursor_table.setColumnWidth(5, 40)
+        self.cursor_table.setColumnWidth(6, 60)
+        self.cursor_table.setColumnWidth(7, 50)
+        self.cursor_table.setColumnWidth(8, 40)
+        self.cursor_table.verticalHeader().setVisible(False)
+        layout.addWidget(self.cursor_table)
+
+        # Buttons for add and remove
+        buttons_layout = QHBoxLayout()
+
+        self.add_cursor_button = QPushButton("Add Cursor")
+        self.add_cursor_button.clicked.connect(self._add_cursor)
+        buttons_layout.addWidget(self.add_cursor_button)
+
+        self.clear_all_button = QPushButton("Clear All")
+        self.clear_all_button.clicked.connect(self._clear_all_cursors)
+        buttons_layout.addWidget(self.clear_all_button)
+
+        layout.addLayout(buttons_layout)
+
+        # Calculate button and autoupdate checkbox
+        calculate_layout = QHBoxLayout()
+
+        self.calculate_button = QPushButton("Calculate")
+        self.calculate_button.clicked.connect(self._on_calculate_clicked)
+        calculate_layout.addWidget(self.calculate_button)
+
+        self.autoupdate_checkbox = QWidget()
+        autoupdate_layout = QHBoxLayout(self.autoupdate_checkbox)
+        autoupdate_layout.setContentsMargins(0, 0, 0, 0)
+        self.autoupdate_check = QToggleSwitch("Autoupdate")
+        self.autoupdate_check.onColor = QColor("#27ae60")  # Nice Green
+        self.autoupdate_check.setChecked(False)
+        self.autoupdate_check.toggled.connect(self._on_autoupdate_changed)
+        autoupdate_layout.addWidget(self.autoupdate_check)
+        calculate_layout.addWidget(self.autoupdate_checkbox)
+
+        layout.addLayout(calculate_layout)
+
+        layout.addStretch()
+
+    def _get_next_color(self):
+        """Get the next color from the default palette based on current harmonic cursors."""
+        if self.parent_widget is None:
+            index = 0
+        else:
+            current_harmonic = self.parent_widget.harmonic
+            # Count cursors in current harmonic only
+            current_harmonic_count = sum(
+                1
+                for c in self._cursors
+                if c.get('harmonic', 1) == current_harmonic
+            )
+            index = current_harmonic_count % len(self.DEFAULT_COLORS)
+        return self.DEFAULT_COLORS[index]
+
+    def _add_cursor(
+        self,
+        g=0.5,
+        s=0.5,
+        radius=0.1,
+        radius_minor=0.05,
+        angle=0.0,
+        color=None,
+    ):
+        """Add a new cursor to the table."""
+        if color is None:
+            color = self._get_next_color()
+
+        # Store cursor data first to get the correct index
+        cursor_data = {
+            'g': g,
+            's': s,
+            'radius': radius,
+            'radius_minor': radius_minor,
+            'angle': angle,
+            'color': color,
+            'patch': None,
+            'harmonic': (
+                self.parent_widget.harmonic if self.parent_widget else 1
+            ),
+        }
+        self._cursors.append(cursor_data)
+
+        # The actual index in self._cursors for this cursor
+        cursor_idx = len(self._cursors) - 1
+
+        # Now add to table
+        table_row = self.cursor_table.rowCount()
+        self.cursor_table.insertRow(table_row)
+
+        # G spinbox
+        g_spinbox = QDoubleSpinBox()
+        g_spinbox.setRange(-1.5, 1.5)
+        g_spinbox.setSingleStep(0.01)
+        g_spinbox.setDecimals(2)
+        g_spinbox.setValue(g)
+        g_spinbox.valueChanged.connect(
+            lambda val, idx=cursor_idx: self._on_cursor_changed(idx)
+        )
+        self.cursor_table.setCellWidget(table_row, 0, g_spinbox)
+
+        # S spinbox
+        s_spinbox = QDoubleSpinBox()
+        s_spinbox.setRange(-1.5, 1.5)
+        s_spinbox.setSingleStep(0.01)
+        s_spinbox.setDecimals(2)
+        s_spinbox.setValue(s)
+        s_spinbox.valueChanged.connect(
+            lambda val, idx=cursor_idx: self._on_cursor_changed(idx)
+        )
+        self.cursor_table.setCellWidget(table_row, 1, s_spinbox)
+
+        # Radius spinbox
+        radius_spinbox = QDoubleSpinBox()
+        radius_spinbox.setRange(0.001, 1.0)
+        radius_spinbox.setSingleStep(0.01)
+        radius_spinbox.setDecimals(3)
+        radius_spinbox.setValue(radius)
+        radius_spinbox.valueChanged.connect(
+            lambda val, idx=cursor_idx: self._on_cursor_changed(idx)
+        )
+        self.cursor_table.setCellWidget(table_row, 2, radius_spinbox)
+
+        # Minor Radius spinbox
+        radius_minor_spinbox = QDoubleSpinBox()
+        radius_minor_spinbox.setRange(0.001, 1.0)
+        radius_minor_spinbox.setSingleStep(0.01)
+        radius_minor_spinbox.setDecimals(3)
+        radius_minor_spinbox.setValue(radius_minor)
+        radius_minor_spinbox.valueChanged.connect(
+            lambda val, idx=cursor_idx: self._on_cursor_changed(idx)
+        )
+        self.cursor_table.setCellWidget(table_row, 3, radius_minor_spinbox)
+
+        # Angle spinbox
+        angle_spinbox = QDoubleSpinBox()
+        angle_spinbox.setRange(-360.0, 360.0)
+        angle_spinbox.setSingleStep(1.0)
+        angle_spinbox.setDecimals(1)
+        angle_spinbox.setValue(angle)
+        angle_spinbox.valueChanged.connect(
+            lambda val, idx=cursor_idx: self._on_cursor_changed(idx)
+        )
+        self.cursor_table.setCellWidget(table_row, 4, angle_spinbox)
+
+        # Color button
+        color_button = ColorButton(color)
+        color_button.color_changed.connect(
+            lambda c, idx=cursor_idx: self._on_cursor_changed(idx)
+        )
+        self.cursor_table.setCellWidget(table_row, 5, color_button)
+
+        # Count label
+        count_label = QLabel("-")
+        count_label.setAlignment(Qt.AlignCenter)
+        self.cursor_table.setCellWidget(table_row, 6, count_label)
+
+        # Percentage label
+        percentage_label = QLabel("-")
+        percentage_label.setAlignment(Qt.AlignCenter)
+        self.cursor_table.setCellWidget(table_row, 7, percentage_label)
+
+        # Remove button
+        remove_button = QPushButton("×")
+        remove_button.setFixedSize(25, 25)
+        remove_button.clicked.connect(
+            lambda _, idx=cursor_idx: self._remove_cursor(idx)
+        )
+        self.cursor_table.setCellWidget(table_row, 8, remove_button)
+
+        # Draw patch on canvas using cursor_idx
+        self._update_cursor_patch(cursor_idx)
+
+        # Apply selection to update labels layer (only if autoupdate is enabled)
+        if self._cursors and self._autoupdate_enabled:
+            self._apply_selection()
+        else:
+            # Update statistics even if not applying selection
+            self._update_cursor_statistics()
+
+    def _remove_cursor(self, cursor_idx):
+        """Remove a cursor from the table using its index in self._cursors."""
+        if cursor_idx < 0 or cursor_idx >= len(self._cursors):
+            return
+
+        # Remove patch from canvas
+        if self._cursors[cursor_idx]['patch'] is not None:
+            with contextlib.suppress(ValueError):
+                self._cursors[cursor_idx]['patch'].remove()
+
+        # Remove from data
+        self._cursors.pop(cursor_idx)
+
+        # Rebuild the table to reflect the removal
+        if self.parent_widget is not None:
+            self.on_harmonic_changed()
+        else:
+            # If no parent, just clear the table and rebuild manually
+            self.cursor_table.setRowCount(0)
+
+        # Redraw canvas
+        if self.parent_widget is not None:
+            self.parent_widget.canvas_widget.canvas.draw_idle()
+
+        # Apply selection to update labels layer
+        if not self._cursors:
+            # If no cursors left, remove the selection layer
+            self._remove_selection_layer()
+
+    def _on_cursor_changed(self, cursor_idx):
+        """Handle cursor parameter changes using cursor index in self._cursors."""
+        if cursor_idx < 0 or cursor_idx >= len(self._cursors):
+            return
+
+        if self.parent_widget is None:
+            return
+
+        # Find the table row for this cursor (only current harmonic cursors are in table)
+        current_harmonic = self.parent_widget.harmonic
+        table_row = 0
+        for idx in range(len(self._cursors)):
+            if self._cursors[idx].get('harmonic', 1) == current_harmonic:
+                if idx == cursor_idx:
+                    # Found it!
+                    break
+                table_row += 1
+        else:
+            # Cursor not in current harmonic's table
+            return
+
+        # Get current values from widgets using the table row
+        g_spinbox = self.cursor_table.cellWidget(table_row, 0)
+        s_spinbox = self.cursor_table.cellWidget(table_row, 1)
+        radius_spinbox = self.cursor_table.cellWidget(table_row, 2)
+        radius_minor_spinbox = self.cursor_table.cellWidget(table_row, 3)
+        angle_spinbox = self.cursor_table.cellWidget(table_row, 4)
+        color_button = self.cursor_table.cellWidget(table_row, 5)
+
+        if all(
+            [
+                g_spinbox,
+                s_spinbox,
+                radius_spinbox,
+                radius_minor_spinbox,
+                angle_spinbox,
+                color_button,
+            ]
+        ):
+            self._cursors[cursor_idx]['g'] = g_spinbox.value()
+            self._cursors[cursor_idx]['s'] = s_spinbox.value()
+            self._cursors[cursor_idx]['radius'] = radius_spinbox.value()
+            self._cursors[cursor_idx][
+                'radius_minor'
+            ] = radius_minor_spinbox.value()
+            self._cursors[cursor_idx]['angle'] = angle_spinbox.value()
+            self._cursors[cursor_idx]['color'] = color_button.color()
+
+            self._update_cursor_patch(cursor_idx)
+
+            # Apply selection automatically if autoupdate is enabled
+            if self._cursors and self._autoupdate_enabled:
+                self._apply_selection()
+            elif self._cursors:
+                # Update statistics even if not applying selection
+                self._update_cursor_statistics()
+
+    def _update_cursor_patch(self, row):
+        """Update or create the patch for a cursor."""
+        if row < 0 or row >= len(self._cursors):
+            return
+
+        if self.parent_widget is None:
+            return
+
+        cursor = self._cursors[row]
+
+        # Only show cursor if it matches current harmonic
+        current_harmonic = self.parent_widget.harmonic
+        cursor_harmonic = cursor.get('harmonic', 1)
+
+        # Remove old patch if exists
+        if cursor['patch'] is not None:
+            with contextlib.suppress(ValueError):
+                cursor['patch'].remove()
+            cursor['patch'] = None
+
+        # Only create new patch if harmonics match
+        if cursor_harmonic != current_harmonic:
+            self.parent_widget.canvas_widget.canvas.draw_idle()
+            return
+
+        ax = self.parent_widget.canvas_widget.axes
+
+        color = cursor['color']
+        edge_rgba = (color.redF(), color.greenF(), color.blueF(), 1.0)
+
+        patch = Ellipse(
+            xy=(cursor['g'], cursor['s']),
+            width=2 * cursor['radius'],
+            height=2 * cursor['radius_minor'],
+            angle=cursor['angle'],
+            facecolor='none',
+            edgecolor=edge_rgba,
+            linewidth=2,
+            zorder=10,
+            picker=False,  # elliptical cursors can't be dragged
+        )
+        cursor['patch'] = ax.add_patch(patch)
+
+        self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def _clear_all_cursors(self):
+        """Clear all cursors."""
+        for cursor in self._cursors:
+            if cursor['patch'] is not None:
+                with contextlib.suppress(ValueError):
+                    cursor['patch'].remove()
+
+        self._cursors.clear()
+        self.cursor_table.setRowCount(0)
+
+        self._remove_selection_layer()
+
+        if self.parent_widget is not None:
+            self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def clear_all_patches(self):
+        """Clear all patches from the canvas (called when switching modes)."""
+        for cursor in self._cursors:
+            if cursor['patch'] is not None:
+                with contextlib.suppress(ValueError):
+                    cursor['patch'].remove()
+                cursor['patch'] = None
+
+        if self.parent_widget is not None:
+            self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def redraw_all_patches(self):
+        """Redraw all patches on the canvas (called when switching back to elliptical cursor mode)."""
+        for row in range(len(self._cursors)):
+            self._update_cursor_patch(row)
+
+    def on_harmonic_changed(self):
+        """Handle harmonic change - rebuild table and labels for current harmonic only."""
+        if self.parent_widget is None:
+            return
+
+        current_harmonic = self.parent_widget.harmonic
+
+        # Rebuild the table to show only cursors for current harmonic
+        self.cursor_table.setRowCount(0)
+
+        for cursor_idx, cursor in enumerate(self._cursors):
+            cursor_harmonic = cursor.get('harmonic', 1)
+            if cursor_harmonic == current_harmonic:
+                # Add this cursor to the table
+                table_row = self.cursor_table.rowCount()
+                self.cursor_table.insertRow(table_row)
+
+                # G spinbox
+                g_spinbox = QDoubleSpinBox()
+                g_spinbox.setRange(-1.5, 1.5)
+                g_spinbox.setSingleStep(0.01)
+                g_spinbox.setDecimals(2)
+                g_spinbox.setValue(cursor['g'])
+                g_spinbox.valueChanged.connect(
+                    lambda val, idx=cursor_idx: self._on_cursor_changed(idx)
+                )
+                self.cursor_table.setCellWidget(table_row, 0, g_spinbox)
+
+                # S spinbox
+                s_spinbox = QDoubleSpinBox()
+                s_spinbox.setRange(-1.5, 1.5)
+                s_spinbox.setSingleStep(0.01)
+                s_spinbox.setDecimals(2)
+                s_spinbox.setValue(cursor['s'])
+                s_spinbox.valueChanged.connect(
+                    lambda val, idx=cursor_idx: self._on_cursor_changed(idx)
+                )
+                self.cursor_table.setCellWidget(table_row, 1, s_spinbox)
+
+                # Radius spinbox
+                radius_spinbox = QDoubleSpinBox()
+                radius_spinbox.setRange(0.001, 1.0)
+                radius_spinbox.setSingleStep(0.01)
+                radius_spinbox.setDecimals(3)
+                radius_spinbox.setValue(cursor['radius'])
+                radius_spinbox.valueChanged.connect(
+                    lambda val, idx=cursor_idx: self._on_cursor_changed(idx)
+                )
+                self.cursor_table.setCellWidget(table_row, 2, radius_spinbox)
+
+                # Minor Radius spinbox
+                radius_minor_spinbox = QDoubleSpinBox()
+                radius_minor_spinbox.setRange(0.001, 1.0)
+                radius_minor_spinbox.setSingleStep(0.01)
+                radius_minor_spinbox.setDecimals(3)
+                radius_minor_spinbox.setValue(cursor['radius_minor'])
+                radius_minor_spinbox.valueChanged.connect(
+                    lambda val, idx=cursor_idx: self._on_cursor_changed(idx)
+                )
+                self.cursor_table.setCellWidget(
+                    table_row, 3, radius_minor_spinbox
+                )
+
+                # Angle spinbox
+                angle_spinbox = QDoubleSpinBox()
+                angle_spinbox.setRange(-360.0, 360.0)
+                angle_spinbox.setSingleStep(1.0)
+                angle_spinbox.setDecimals(1)
+                angle_spinbox.setValue(cursor['angle'])
+                angle_spinbox.valueChanged.connect(
+                    lambda val, idx=cursor_idx: self._on_cursor_changed(idx)
+                )
+                self.cursor_table.setCellWidget(table_row, 4, angle_spinbox)
+
+                # Color button
+                color_button = ColorButton(cursor['color'])
+                color_button.color_changed.connect(
+                    lambda c, idx=cursor_idx: self._on_cursor_changed(idx)
+                )
+                self.cursor_table.setCellWidget(table_row, 5, color_button)
+
+                # Count label
+                count_label = QLabel("-")
+                count_label.setAlignment(Qt.AlignCenter)
+                self.cursor_table.setCellWidget(table_row, 6, count_label)
+
+                # Percentage label
+                percentage_label = QLabel("-")
+                percentage_label.setAlignment(Qt.AlignCenter)
+                self.cursor_table.setCellWidget(table_row, 7, percentage_label)
+
+                # Remove button
+                remove_button = QPushButton("×")
+                remove_button.setFixedSize(25, 25)
+                remove_button.clicked.connect(
+                    lambda _, idx=cursor_idx: self._remove_cursor(idx)
+                )
+                self.cursor_table.setCellWidget(table_row, 8, remove_button)
+
+        # Redraw patches for current harmonic
+        for row in range(len(self._cursors)):
+            self._update_cursor_patch(row)
+
+        # Update labels layer to show only current harmonic selections (only if autoupdate is enabled)
+        if self._autoupdate_enabled:
+            self._apply_selection()
+        else:
+            # Update statistics even if not applying selection
+            self._update_cursor_statistics()
+
+    def _get_selected_layers(self):
+        """Get all currently selected layers."""
+        if self.parent_widget is None:
+            return []
+        return self.parent_widget.get_selected_layers()
+
+    def _on_calculate_clicked(self):
+        """Handle Calculate button click - manually trigger selection calculation."""
+        if self._cursors:
+            self._apply_selection()
+
+    def _on_autoupdate_changed(self, checked):
+        """Handle Autoupdate checkbox state change."""
+        self._autoupdate_enabled = self.autoupdate_check.isChecked()
+        # Enable/disable calculate button based on autoupdate state
+        self.calculate_button.setEnabled(not self._autoupdate_enabled)
+
+        # If autoupdate is being enabled, immediately apply selection
+        if self._autoupdate_enabled and self._cursors:
+            self._apply_selection()
+
+    def _remove_selection_layer(self):
+        """Remove the selection layer if it exists."""
+        selected_layers = self._get_selected_layers()
+        if not selected_layers:
+            return
+
+        for layer in selected_layers:
+            layer_name = f"Elliptical Cursor Selection: {layer.name}"
+            for viewer_layer in list(self.viewer.layers):
+                if viewer_layer.name == layer_name:
+                    self.viewer.layers.remove(viewer_layer)
+                    break
+
+        self._phasors_selected_layer = None
+
+    def _apply_selection(self):
+        """Apply the elliptical cursor selections to create a labels layer."""
+        if not self._cursors:
+            return
+        if self.parent_widget is None:
+            return None
+
+        selected_layers = self._get_selected_layers()
+        if not selected_layers:
+            return
+
+        current_harmonic = self.parent_widget.harmonic
+
+        # Filter cursors for current harmonic only
+        current_harmonic_cursors = [
+            cursor
+            for cursor in self._cursors
+            if cursor.get('harmonic', 1) == current_harmonic
+        ]
+
+        if not current_harmonic_cursors:
+            # No cursors for this harmonic - clear labels layers
+            for layer in selected_layers:
+                layer_name = f"Elliptical Cursor Selection: {layer.name}"
+                for viewer_layer in self.viewer.layers:
+                    if viewer_layer.name == layer_name:
+                        self.viewer.layers.remove(viewer_layer)
+                        break
+            return
+
+        # Apply selection to each selected layer
+        for layer in selected_layers:
+            # Get phasor data for this specific layer
+            g_array = layer.metadata.get('G')
+            s_array = layer.metadata.get('S')
+            harmonics_array = layer.metadata.get('harmonics')
+
+            if g_array is None or s_array is None:
+                continue
+
+            # Extract correct harmonic if arrays are 3D
+            if harmonics_array is not None:
+                harmonics_array = np.atleast_1d(harmonics_array)
+                target_harmonic = self.parent_widget.harmonic
+                try:
+                    harmonic_idx = int(
+                        np.where(harmonics_array == target_harmonic)[0][0]
+                    )
+                except (IndexError, ValueError):
+                    continue
+            else:
+                harmonic_idx = 0
+
+            if g_array.ndim > layer.data.ndim:
+                g = g_array[harmonic_idx]
+                s = s_array[harmonic_idx]
+            else:
+                g = g_array
+                s = s_array
+
+            spatial_shape = layer.data.shape
+
+            # Create selection map
+            selection_map = np.zeros(spatial_shape, dtype=np.uint32)
+
+            # Apply each cursor from current harmonic
+            for idx, cursor in enumerate(current_harmonic_cursors):
+                mask = mask_from_elliptic_cursor(
+                    g,
+                    s,
+                    cursor['g'],
+                    cursor['s'],
+                    radius=cursor['radius'],
+                    radius_minor=cursor['radius_minor'],
+                    angle=np.deg2rad(cursor['angle']),
+                )
+
+                selection_map[mask] = idx + 1
+
+            self._create_or_update_labels_layer(
+                layer, selection_map, current_harmonic_cursors
+            )
+
+        # Update count and percentage in the table
+        self._update_cursor_statistics()
+
+    def _update_cursor_statistics(self):
+        """Update the count and percentage columns in the cursor table."""
+        if self.parent_widget is None:
+            return
+
+        selected_layers = self._get_selected_layers()
+        if not selected_layers:
+            return
+
+        current_harmonic = self.parent_widget.harmonic
+
+        # Calculate total valid pixels across all selected layers
+        total_valid_pixels = 0
+        for layer in selected_layers:
+            g_array = layer.metadata.get('G')
+            s_array = layer.metadata.get('S')
+            harmonics_array = layer.metadata.get('harmonics')
+
+            if g_array is None or s_array is None:
+                continue
+
+            # Extract correct harmonic if arrays are 3D
+            if harmonics_array is not None:
+                harmonics_array = np.atleast_1d(harmonics_array)
+                target_harmonic = current_harmonic
+                try:
+                    harmonic_idx = int(
+                        np.where(harmonics_array == target_harmonic)[0][0]
+                    )
+                except (IndexError, ValueError):
+                    continue
+            else:
+                harmonic_idx = 0
+
+            if g_array.ndim > layer.data.ndim:
+                g = g_array[harmonic_idx]
+                s = s_array[harmonic_idx]
+            else:
+                g = g_array
+                s = s_array
+
+            valid_pixels_mask = np.isfinite(g) & np.isfinite(s)
+            total_valid_pixels += np.sum(valid_pixels_mask)
+
+        if total_valid_pixels == 0:
+            # If no valid pixels, clear statistics
+            for table_row in range(self.cursor_table.rowCount()):
+                count_label = self.cursor_table.cellWidget(table_row, 6)
+                percentage_label = self.cursor_table.cellWidget(table_row, 7)
+                if count_label:
+                    count_label.setText("-")
+                if percentage_label:
+                    percentage_label.setText("-")
+            return
+
+        # Calculate statistics for each cursor
+        current_harmonic_cursors = [
+            (idx, cursor)
+            for idx, cursor in enumerate(self._cursors)
+            if cursor.get('harmonic', 1) == current_harmonic
+        ]
+
+        cursor_pixel_counts = {}
+        for cursor_idx, cursor in current_harmonic_cursors:
+            count = 0
+            for layer in selected_layers:
+                g_array = layer.metadata.get('G')
+                s_array = layer.metadata.get('S')
+                harmonics_array = layer.metadata.get('harmonics')
+
+                if g_array is None or s_array is None:
+                    continue
+
+                # Extract correct harmonic if arrays are 3D
+                if harmonics_array is not None:
+                    harmonics_array = np.atleast_1d(harmonics_array)
+                    target_harmonic = current_harmonic
+                    try:
+                        harmonic_idx = int(
+                            np.where(harmonics_array == target_harmonic)[0][0]
+                        )
+                    except (IndexError, ValueError):
+                        continue
+                else:
+                    harmonic_idx = 0
+
+                if g_array.ndim > layer.data.ndim:
+                    g = g_array[harmonic_idx]
+                    s = s_array[harmonic_idx]
+                else:
+                    g = g_array
+                    s = s_array
+
+                # Calculate mask for this cursor
+                mask = mask_from_elliptic_cursor(
+                    g,
+                    s,
+                    cursor['g'],
+                    cursor['s'],
+                    radius=cursor['radius'],
+                    radius_minor=cursor['radius_minor'],
+                    angle=np.deg2rad(cursor['angle']),
+                )
+
+                count += np.sum(mask)
+
+            cursor_pixel_counts[cursor_idx] = count
+
+        # Update table with statistics
+        table_row = 0
+        for cursor_idx, _cursor in current_harmonic_cursors:
+            count = cursor_pixel_counts[cursor_idx]
+            percentage = (
+                (count / total_valid_pixels * 100)
+                if total_valid_pixels > 0
+                else 0
+            )
+
+            count_label = self.cursor_table.cellWidget(table_row, 6)
+            percentage_label = self.cursor_table.cellWidget(table_row, 7)
+
+            if count_label:
+                count_label.setText(str(count))
+            if percentage_label:
+                percentage_label.setText(f"{percentage:.1f}")
+
+            table_row += 1
+
+    def _create_or_update_labels_layer(
+        self, image_layer, selection_map, cursors_list
+    ):
+        """Create or update the labels layer for the selection."""
+        layer_name = f"Elliptical Cursor Selection: {image_layer.name}"
+
+        color_dict = {None: (0, 0, 0, 0)}
+        for idx, cursor in enumerate(cursors_list):
+            color = cursor['color']
+            color_dict[idx + 1] = (
+                color.redF(),
+                color.greenF(),
+                color.blueF(),
+                1.0,
+            )
+
+        existing_layer = None
+        for viewer_layer in self.viewer.layers:
+            if viewer_layer.name == layer_name:
+                existing_layer = viewer_layer
+                break
+
+        if existing_layer is not None:
+            existing_layer.data = selection_map
+            existing_layer.colormap = DirectLabelColormap(
+                color_dict=color_dict, name="elliptical_cursor_colors"
+            )
+            existing_layer.visible = True
+            self._phasors_selected_layer = existing_layer
+        else:
+            labels_layer = Labels(
+                selection_map,
+                name=layer_name,
+                scale=image_layer.scale,
+                colormap=DirectLabelColormap(
+                    color_dict=color_dict, name="elliptical_cursor_colors"
+                ),
+                metadata={
+                    'napari_phasors_selection_type': 'elliptical_cursor',
+                    'napari_phasors_source_layer': image_layer.name,
+                },
+            )
+            self._phasors_selected_layer = self.viewer.add_layer(labels_layer)
