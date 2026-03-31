@@ -21,6 +21,7 @@ from napari_phasors._synthetic_generator import (
 from napari_phasors._tests.test_data_utils import get_test_file_path
 from napari_phasors._widget import (
     AdvancedOptionsWidget,
+    CziWidget,
     FbdWidget,
     LsmWidget,
     OmeTifWidget,
@@ -61,6 +62,8 @@ def test_phasor_transform_widget(make_napari_viewer):
             test_file_path = get_test_file_path("test_file.ptu")
         elif extension == ".ome.tif":
             test_file_path = get_test_file_path("test_file.ome.tif")
+        elif extension == ".czi":
+            test_file_path = get_test_file_path("test_file.czi")
         else:
             continue
 
@@ -317,6 +320,52 @@ def test_phasor_transform_lsm_widget(make_napari_viewer):
     assert viewer.layers[1].data.shape == (512, 512)
     assert viewer.layers[1].metadata["G"].shape == (1, 512, 512)
     assert list(viewer.layers[1].metadata["harmonics"]) == [2]
+
+
+def test_phasor_transform_czi_widget(make_napari_viewer):
+    """Test CziWidget from PhasorTransform widget."""
+    viewer = make_napari_viewer()
+    PhasorTransform(viewer)
+    test_file_path = get_test_file_path("test_file.czi")
+    widget = CziWidget(viewer, path=test_file_path)
+    assert widget.viewer is viewer
+    # Init values
+    assert isinstance(widget, AdvancedOptionsWidget)
+    assert widget.path == test_file_path
+    assert widget.reader_options == {}
+    assert widget.harmonics == [1, 2]
+    assert widget.harmonic_slider.value() == (1, 2)
+    # Harmonic range: (1, 14) for 28 channels
+    assert widget.max_harmonic == 14
+    assert widget.harmonic_slider.maximum() == 14
+
+    # Modify harmonic values
+    widget.harmonic_slider.setValue((2, 2))
+    assert widget.harmonic_slider.value() == (2, 2)
+    assert widget.harmonics == [2]
+
+    # Click button of phasor transform and check layers
+    widget.btn.click()
+    assert len(viewer.layers) == 1
+    assert viewer.layers[0].name == "test_file Intensity Image"
+    # Shape after squeeze was (28, 512, 512), so spatial is (512, 512)
+    assert viewer.layers[0].data.shape == (512, 512)
+    # Check phasor data in metadata
+    assert "G" in viewer.layers[0].metadata
+    assert "S" in viewer.layers[0].metadata
+    assert "harmonics" in viewer.layers[0].metadata
+    # Harmonic 2 requested -> shape (1, 512, 512)
+    assert viewer.layers[0].metadata["G"].shape == (1, 512, 512)
+    assert list(viewer.layers[0].metadata["harmonics"]) == [2]
+
+    # Modify harmonics and phasor transform again
+    widget.harmonic_slider.setValue((2, 3))
+    widget.btn.click()
+    assert len(viewer.layers) == 2
+    assert viewer.layers[1].name == "test_file Intensity Image [1]"
+    assert viewer.layers[1].data.shape == (512, 512)
+    assert viewer.layers[1].metadata["G"].shape == (2, 512, 512)
+    assert list(viewer.layers[1].metadata["harmonics"]) == [2, 3]
 
 
 def test_phasor_transform_ome_tif_widget(make_napari_viewer):

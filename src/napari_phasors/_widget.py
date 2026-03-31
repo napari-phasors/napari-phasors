@@ -87,6 +87,7 @@ class PhasorTransform(QWidget):
             ".ome.tif": OmeTifWidget,
             ".ome.tiff": OmeTifWidget,
             ".sdt": SdtWidget,
+            ".czi": CziWidget,
         }
 
     def _open_file_dialog(self):
@@ -95,7 +96,7 @@ class PhasorTransform(QWidget):
         dialog = QFileDialog(self, "Select Export Location", options=options)
         dialog.setFileMode(QFileDialog.AnyFile)
         dialog.setNameFilter(
-            "All files (*.tif *.tiff *.ome.tif *.ome.tiff *.ptu *.fbd *.sdt *.lsm)"
+            "All files (*.tif *.tiff *.ome.tif *.ome.tiff *.ptu *.fbd *.sdt *.lsm *.czi)"
         )
         if dialog.exec_():
             selected_file = dialog.selectedFiles()[0]
@@ -119,6 +120,7 @@ class PhasorTransform(QWidget):
             "*.ptu",
             "*.fbd",
             "*.sdt",
+            "*.czi",
         )
 
         selected_entries, _ = QFileDialog.getOpenFileNames(
@@ -1377,6 +1379,43 @@ class SdtWidget(AdvancedOptionsWidget):
         if self.index.text():
             reader_options["index"] = int(self.index.text())
         super()._on_click(path, reader_options, harmonics)
+
+
+class CziWidget(AdvancedOptionsWidget):
+    """Widget for Zeiss CZI files."""
+
+    def __init__(self, viewer, path):
+        """Initialize the widget."""
+        super().__init__(viewer, path)
+
+    def initUI(self):
+        """Initialize the user interface."""
+        self.mainLayout = QVBoxLayout()
+        self.setLayout(self.mainLayout)
+
+        self.mainLayout.addWidget(self.canvas)
+
+        self._harmonic_widget()
+
+        self.btn = QPushButton("Phasor Transform")
+        self.btn.clicked.connect(
+            lambda: self._on_click(
+                self.path, self.reader_options, self.harmonics
+            )
+        )
+        self.mainLayout.addWidget(self.btn)
+
+        self._update_signal_plot()
+
+    def _get_signal_data(self):
+        """Get signal data for CZI files."""
+        try:
+            from ._reader import read_czi
+
+            return read_czi(self.path)
+        except Exception as e:  # noqa: BLE001
+            show_error(f"Error reading CZI signal: {str(e)}")
+            return None
 
 
 class OmeTifWidget(AdvancedOptionsWidget):
