@@ -1742,7 +1742,7 @@ def test_mesh_overlay_colorbar_and_alpha_updates(make_napari_viewer):
 
     # Turn mesh on
     mapping_widget.mesh_overlay_checkbox.setChecked(True)
-    assert mapping_widget.mesh_colorbar_checkbox.isVisible()
+    assert not mapping_widget.mesh_colorbar_checkbox.isHidden()
 
     # Enable colorbar
     mapping_widget.mesh_colorbar_checkbox.setChecked(True)
