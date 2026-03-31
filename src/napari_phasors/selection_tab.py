@@ -3,7 +3,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.patches import Circle, Ellipse
+from matplotlib.patches import Circle, Ellipse, Wedge
 from napari.layers import Labels
 from napari.utils import DirectLabelColormap
 from phasorpy.cluster import phasor_cluster_gmm
@@ -16,6 +16,7 @@ from qtpy import uic
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
+    QApplication,
     QColorDialog,
     QComboBox,
     QDoubleSpinBox,
@@ -443,49 +444,10 @@ class SelectionWidget(QWidget):
             self._switching_selection_id = False
 
     def _on_image_layer_changed(self):
-        """Callback when the image layer changes - restores circular cursors from metadata."""
-        # NOTE: Commented out restoring manual selections until they are saved during export
-        # layer = self._get_current_layer()
-        # if layer is None:
-        #     return
-
-        # self.selection_input_widget.phasor_selection_id_combobox.blockSignals(
-        #     True
-        # )
-        # self.selection_input_widget.phasor_selection_id_combobox.clear()
-        # self.selection_input_widget.phasor_selection_id_combobox.addItem(
-        #     "None"
-        # )
-
-        # if (
-        #     "settings" in layer.metadata
-        #     and "selections" in layer.metadata["settings"]
-        #     and "manual_selections" in layer.metadata["settings"]["selections"]
-        # ):
-        #     manual_selections = layer.metadata["settings"]["selections"][
-        #         "manual_selections"
-        #     ]
-        #     for selection_id in manual_selections.keys():
-        #         self.selection_input_widget.phasor_selection_id_combobox.addItem(
-        #             selection_id
-        #         )
-        #         self._recreate_manual_selection_layer(
-        #             selection_id, manual_selections[selection_id]
-        #         )
-
-        # self.selection_input_widget.phasor_selection_id_combobox.setCurrentText(
-        #     "None"
-        # )
-        # self._current_selection_id = "None"
-        # self.selection_id = "None"
-
-        # self.selection_input_widget.phasor_selection_id_combobox.blockSignals(
-        #     False
-        # )
-
-        # self._phasors_selected_layer = None
-
+        """Callback when the image layer changes - restores cursors from metadata."""
         self.circular_cursor_widget._on_image_layer_changed()
+        self.polar_cursor_widget._on_image_layer_changed()
+        self.elliptical_cursor_widget._on_image_layer_changed()
 
     def update_phasor_plot_with_selection_id(self, selection_id):
         """Update the phasor plot with the selected ID and show/hide label layers."""
@@ -2386,19 +2348,17 @@ class CircularCursorWidget(QWidget):
                 }
             )
 
-        # Save cursor params to primary layer
-        primary_layer = selected_layers[0]
-        if "settings" not in primary_layer.metadata:
-            primary_layer.metadata["settings"] = {}
-        if "selections" not in primary_layer.metadata["settings"]:
-            primary_layer.metadata["settings"]["selections"] = {}
-
-        primary_layer.metadata["settings"]["selections"][
-            "circular_cursors"
-        ] = cursor_params
-
         # Apply selection to each selected layer
         for layer in selected_layers:
+            if "settings" not in layer.metadata:
+                layer.metadata["settings"] = {}
+            if "selections" not in layer.metadata["settings"]:
+                layer.metadata["settings"]["selections"] = {}
+
+            layer.metadata["settings"]["selections"][
+                "circular_cursors"
+            ] = cursor_params
+
             # Get phasor data for this specific layer
             g_array = layer.metadata.get('G')
             s_array = layer.metadata.get('S')
@@ -2852,10 +2812,10 @@ class PolarCursorWidget(QWidget):
 
     def _add_cursor(
         self,
-        phase_min=0.0,
-        phase_max=90.0,
-        modulation_min=0.0,
-        modulation_max=1.0,
+        phase_min=10.0,
+        phase_max=30.0,
+        modulation_min=0.4,
+        modulation_max=0.6,
         color=None,
     ):
         """Add a new cursor to the table."""
@@ -2869,6 +2829,7 @@ class PolarCursorWidget(QWidget):
             'modulation_min': modulation_min,
             'modulation_max': modulation_max,
             'color': color,
+            'patch': None,
             'harmonic': (
                 self.parent_widget.harmonic if self.parent_widget else 1
             ),
@@ -2951,6 +2912,9 @@ class PolarCursorWidget(QWidget):
         )
         self.cursor_table.setCellWidget(table_row, 7, remove_button)
 
+        # Draw patch on canvas
+        self._update_cursor_patch(cursor_idx)
+
         # Apply selection to update labels layer (only if autoupdate is enabled)
         if self._cursors and self._autoupdate_enabled:
             self._apply_selection()
@@ -3022,6 +2986,8 @@ class PolarCursorWidget(QWidget):
             ] = mod_max_spinbox.value()
             self._cursors[cursor_idx]['color'] = color_button.color()
 
+            self._update_cursor_patch(cursor_idx)
+
             # Apply selection automatically if autoupdate is enabled
             if self._cursors and self._autoupdate_enabled:
                 self._apply_selection()
@@ -3029,8 +2995,65 @@ class PolarCursorWidget(QWidget):
                 # Update statistics even if not applying selection
                 self._update_cursor_statistics()
 
+    def _update_cursor_patch(self, row):
+        """Update or create the patch for a cursor."""
+        if row < 0 or row >= len(self._cursors):
+            return
+
+        if self.parent_widget is None:
+            return
+
+        cursor = self._cursors[row]
+
+        # Only show cursor if it matches current harmonic
+        current_harmonic = self.parent_widget.harmonic
+        cursor_harmonic = cursor.get('harmonic', 1)
+
+        # Remove old patch if exists
+        if cursor.get('patch') is not None:
+            with contextlib.suppress(ValueError):
+                cursor['patch'].remove()
+            cursor['patch'] = None
+
+        # Only create new patch if harmonics match
+        if cursor_harmonic != current_harmonic:
+            self.parent_widget.canvas_widget.canvas.draw_idle()
+            return
+
+        ax = self.parent_widget.canvas_widget.axes
+
+        color = cursor['color']
+        edge_rgba = (color.redF(), color.greenF(), color.blueF(), 1.0)
+
+        r = cursor['modulation_max']
+        width = cursor['modulation_max'] - cursor['modulation_min']
+        if width <= 0:
+            width = 0.001
+
+        patch = Wedge(
+            (0, 0),
+            r,
+            cursor['phase_min'],
+            cursor['phase_max'],
+            width=width,
+            fill=False,
+            edgecolor=edge_rgba,
+            linewidth=2,
+            zorder=10,
+            picker=True,
+        )
+        cursor['patch'] = ax.add_patch(patch)
+
+        self.parent_widget.canvas_widget.canvas.draw_idle()
+
     def _clear_all_cursors(self):
         """Clear all cursors."""
+        for cursor in self._cursors:
+            if cursor.get('patch') is not None:
+                with contextlib.suppress(ValueError):
+                    cursor['patch'].remove()
+                cursor['patch'] = None
+
         self._cursors.clear()
         self.cursor_table.setRowCount(0)
 
@@ -3041,11 +3064,19 @@ class PolarCursorWidget(QWidget):
 
     def clear_all_patches(self):
         """Clear all patches from the canvas (called when switching modes)."""
-        # Polar cursors don't have visual patches on the canvas
+        for cursor in self._cursors:
+            if cursor.get('patch') is not None:
+                with contextlib.suppress(ValueError):
+                    cursor['patch'].remove()
+                cursor['patch'] = None
+
+        if self.parent_widget is not None:
+            self.parent_widget.canvas_widget.canvas.draw_idle()
 
     def redraw_all_patches(self):
         """Redraw all patches on the canvas (called when switching back to polar cursor mode)."""
-        # Polar cursors don't have visual patches on the canvas
+        for row in range(len(self._cursors)):
+            self._update_cursor_patch(row)
 
     def on_harmonic_changed(self):
         """Handle harmonic change - rebuild table and labels for current harmonic only."""
@@ -3210,8 +3241,34 @@ class PolarCursorWidget(QWidget):
                         break
             return
 
+        cursor_params = []
+        for cursor in current_harmonic_cursors:
+            cursor_params.append(
+                {
+                    'phase_min': cursor['phase_min'],
+                    'phase_max': cursor['phase_max'],
+                    'modulation_min': cursor['modulation_min'],
+                    'modulation_max': cursor['modulation_max'],
+                    'color': (
+                        cursor['color'].red(),
+                        cursor['color'].green(),
+                        cursor['color'].blue(),
+                        cursor['color'].alpha(),
+                    ),
+                }
+            )
+
         # Apply selection to each selected layer
         for layer in selected_layers:
+            if "settings" not in layer.metadata:
+                layer.metadata["settings"] = {}
+            if "selections" not in layer.metadata["settings"]:
+                layer.metadata["settings"]["selections"] = {}
+
+            layer.metadata["settings"]["selections"][
+                "polar_cursors"
+            ] = cursor_params
+
             # Get phasor data for this specific layer
             g_array = layer.metadata.get('G')
             s_array = layer.metadata.get('S')
@@ -3264,6 +3321,57 @@ class PolarCursorWidget(QWidget):
 
         # Update count and percentage in the table
         self._update_cursor_statistics()
+
+    def _on_image_layer_changed(self):
+        """Callback when the image layer changes - restores polar cursors from metadata."""
+        # Clear current cursors
+        for cursor in self._cursors:
+            if cursor.get('patch') is not None:
+                cursor['patch'].remove()
+                cursor['patch'] = None
+
+        self._cursors.clear()
+        self.cursor_table.setRowCount(0)
+
+        # Use primary layer for restoring cursors
+        selected_layers = self._get_selected_layers()
+        if not selected_layers:
+            return
+
+        primary_layer = selected_layers[0]
+        if (
+            "settings" in primary_layer.metadata
+            and "selections" in primary_layer.metadata["settings"]
+            and "polar_cursors"
+            in primary_layer.metadata["settings"]["selections"]
+        ):
+            cursor_params = primary_layer.metadata["settings"]["selections"][
+                "polar_cursors"
+            ]
+
+            original_apply_selection = getattr(self, "_apply_selection", None)
+
+            def _noop_apply_selection(*args, **kwargs):
+                return None
+
+            if original_apply_selection is not None:
+                self._apply_selection = _noop_apply_selection
+            try:
+                for params in cursor_params:
+                    color = QColor(*params["color"])
+                    self._add_cursor(
+                        phase_min=params["phase_min"],
+                        phase_max=params["phase_max"],
+                        modulation_min=params["modulation_min"],
+                        modulation_max=params["modulation_max"],
+                        color=color,
+                    )
+            finally:
+                if original_apply_selection is not None:
+                    self._apply_selection = original_apply_selection
+
+        if self.parent_widget is not None:
+            self.parent_widget.canvas_widget.canvas.draw_idle()
 
     def _update_cursor_statistics(self):
         """Update the count and percentage columns in the cursor table."""
@@ -3467,10 +3575,15 @@ class EllipticalCursorWidget(QWidget):
         self._cursors = []
         self._phasors_selected_layer = None
 
+        # Dragging state
+        self._dragging_cursor = None
+        self._drag_offset = (0, 0)
+
         # Autoupdate state (not stored in metadata)
         self._autoupdate_enabled = False
 
         self._setup_ui()
+        self._connect_drag_events()
 
     def _setup_ui(self):
         """Set up the user interface."""
@@ -4017,8 +4130,35 @@ class EllipticalCursorWidget(QWidget):
                         break
             return
 
+        cursor_params = []
+        for cursor in current_harmonic_cursors:
+            cursor_params.append(
+                {
+                    'g': cursor['g'],
+                    's': cursor['s'],
+                    'radius': cursor['radius'],
+                    'radius_minor': cursor['radius_minor'],
+                    'angle': cursor['angle'],
+                    'color': (
+                        cursor['color'].red(),
+                        cursor['color'].green(),
+                        cursor['color'].blue(),
+                        cursor['color'].alpha(),
+                    ),
+                }
+            )
+
         # Apply selection to each selected layer
         for layer in selected_layers:
+            if "settings" not in layer.metadata:
+                layer.metadata["settings"] = {}
+            if "selections" not in layer.metadata["settings"]:
+                layer.metadata["settings"]["selections"] = {}
+
+            layer.metadata["settings"]["selections"][
+                "elliptical_cursors"
+            ] = cursor_params
+
             # Get phasor data for this specific layer
             g_array = layer.metadata.get('G')
             s_array = layer.metadata.get('S')
@@ -4072,6 +4212,58 @@ class EllipticalCursorWidget(QWidget):
 
         # Update count and percentage in the table
         self._update_cursor_statistics()
+
+    def _on_image_layer_changed(self):
+        """Callback when the image layer changes - restores elliptical cursors from metadata."""
+        # Clear current cursors
+        for cursor in self._cursors:
+            if cursor.get('patch') is not None:
+                cursor['patch'].remove()
+                cursor['patch'] = None
+
+        self._cursors.clear()
+        self.cursor_table.setRowCount(0)
+
+        # Use primary layer for restoring cursors
+        selected_layers = self._get_selected_layers()
+        if not selected_layers:
+            return
+
+        primary_layer = selected_layers[0]
+        if (
+            "settings" in primary_layer.metadata
+            and "selections" in primary_layer.metadata["settings"]
+            and "elliptical_cursors"
+            in primary_layer.metadata["settings"]["selections"]
+        ):
+            cursor_params = primary_layer.metadata["settings"]["selections"][
+                "elliptical_cursors"
+            ]
+
+            original_apply_selection = getattr(self, "_apply_selection", None)
+
+            def _noop_apply_selection(*args, **kwargs):
+                return None
+
+            if original_apply_selection is not None:
+                self._apply_selection = _noop_apply_selection
+            try:
+                for params in cursor_params:
+                    color = QColor(*params["color"])
+                    self._add_cursor(
+                        g=params["g"],
+                        s=params["s"],
+                        radius=params["radius"],
+                        radius_minor=params["radius_minor"],
+                        angle=params["angle"],
+                        color=color,
+                    )
+            finally:
+                if original_apply_selection is not None:
+                    self._apply_selection = original_apply_selection
+
+        if self.parent_widget is not None:
+            self.parent_widget.canvas_widget.canvas.draw_idle()
 
     def _update_cursor_statistics(self):
         """Update the count and percentage columns in the cursor table."""
@@ -4244,3 +4436,192 @@ class EllipticalCursorWidget(QWidget):
                 },
             )
             self._phasors_selected_layer = self.viewer.add_layer(labels_layer)
+
+    def _connect_drag_events(self):
+        """Connect matplotlib events for dragging ellipses."""
+        if self.parent_widget is None:
+            return
+
+        canvas = self.parent_widget.canvas_widget.canvas
+        canvas.mpl_connect('pick_event', self._on_pick)
+        canvas.mpl_connect('motion_notify_event', self._on_motion)
+        canvas.mpl_connect('button_release_event', self._on_release)
+        canvas.mpl_connect('key_press_event', self._update_hover_cursor)
+        canvas.mpl_connect('key_release_event', self._update_hover_cursor)
+
+    def _on_pick(self, event):
+        """Handle pick event when clicking on an ellipse."""
+        if event.artist is None:
+            return
+
+        for row, cursor in enumerate(self._cursors):
+            if cursor.get('patch') == event.artist:
+                self._dragging_cursor = row
+                click_pos = (event.mouseevent.xdata, event.mouseevent.ydata)
+
+                modifiers = QApplication.keyboardModifiers()
+                is_shift = bool(modifiers & Qt.ShiftModifier)
+
+                if is_shift:
+                    self._drag_mode = 'rotate'
+                    if click_pos[0] is not None and click_pos[1] is not None:
+                        dy = click_pos[1] - cursor['s']
+                        dx = click_pos[0] - cursor['g']
+                        self._drag_start_angle = np.degrees(np.arctan2(dy, dx))
+                        self._drag_start_cursor_angle = cursor['angle']
+                else:
+                    self._drag_mode = 'translate'
+                    if click_pos[0] is not None and click_pos[1] is not None:
+                        self._drag_offset = (
+                            cursor['g'] - click_pos[0],
+                            cursor['s'] - click_pos[1],
+                        )
+                break
+
+    def _update_hover_cursor(self, event):
+        """Handle hover events to change mouse cursor based on interaction."""
+        if getattr(self, '_dragging_cursor', None) is not None:
+            return
+        if self.parent_widget is None:
+            return
+
+        canvas = self.parent_widget.canvas_widget.canvas
+        is_hovering = False
+        if (
+            getattr(event, 'inaxes', None) is not None
+            and getattr(event, 'xdata', None) is not None
+        ):
+            for cursor in self._cursors:
+                if (
+                    cursor.get('patch') is not None
+                    and cursor['patch'].axes == event.inaxes
+                ):
+                    contains, _ = cursor['patch'].contains(event)
+                    if contains:
+                        is_hovering = True
+                        break
+
+        if is_hovering:
+            modifiers = QApplication.keyboardModifiers()
+            is_shift = bool(modifiers & Qt.ShiftModifier)
+
+            if is_shift:
+                canvas.setCursor(Qt.CrossCursor)
+            else:
+                canvas.setCursor(Qt.SizeAllCursor)
+        else:
+            canvas.setCursor(Qt.ArrowCursor)
+
+    def _on_motion(self, event):
+        """Handle mouse motion to drag the ellipse."""
+        # Update hover state
+        self._update_hover_cursor(event)
+
+        if getattr(self, '_dragging_cursor', None) is None:
+            return
+
+        if event.xdata is None or event.ydata is None:
+            return
+
+        cursor_idx = self._dragging_cursor
+        if cursor_idx < 0 or cursor_idx >= len(self._cursors):
+            return
+
+        if self._drag_mode == 'rotate':
+            dy = event.ydata - self._cursors[cursor_idx]['s']
+            dx = event.xdata - self._cursors[cursor_idx]['g']
+            current_angle = np.degrees(np.arctan2(dy, dx))
+            angle_diff = current_angle - self._drag_start_angle
+            new_angle = (self._drag_start_cursor_angle + angle_diff) % 360.0
+
+            self._cursors[cursor_idx]['angle'] = new_angle
+            patch = self._cursors[cursor_idx]['patch']
+            if patch is not None:
+                patch.set_angle(new_angle)
+
+            if self.parent_widget is not None:
+                current_harmonic = self.parent_widget.harmonic
+                table_row = 0
+                for idx in range(len(self._cursors)):
+                    if (
+                        self._cursors[idx].get('harmonic', 1)
+                        == current_harmonic
+                    ):
+                        if idx == cursor_idx:
+                            angle_spinbox = self.cursor_table.cellWidget(
+                                table_row, 4
+                            )
+                            if angle_spinbox is not None:
+                                angle_spinbox.blockSignals(True)
+                                angle_spinbox.setValue(new_angle)
+                                angle_spinbox.blockSignals(False)
+                            break
+                        table_row += 1
+
+        elif self._drag_mode == 'translate':
+            new_g = event.xdata + self._drag_offset[0]
+            new_s = event.ydata + self._drag_offset[1]
+
+            self._cursors[cursor_idx]['g'] = new_g
+            self._cursors[cursor_idx]['s'] = new_s
+
+            patch = self._cursors[cursor_idx]['patch']
+            if patch is not None:
+                patch.set_center((new_g, new_s))
+
+            if self.parent_widget is not None:
+                current_harmonic = self.parent_widget.harmonic
+                table_row = 0
+                for idx in range(len(self._cursors)):
+                    if (
+                        self._cursors[idx].get('harmonic', 1)
+                        == current_harmonic
+                    ):
+                        if idx == cursor_idx:
+                            g_spinbox = self.cursor_table.cellWidget(
+                                table_row, 0
+                            )
+                            s_spinbox = self.cursor_table.cellWidget(
+                                table_row, 1
+                            )
+
+                            if g_spinbox is not None:
+                                g_spinbox.blockSignals(True)
+                                g_spinbox.setValue(new_g)
+                                g_spinbox.blockSignals(False)
+
+                            if s_spinbox is not None:
+                                s_spinbox.blockSignals(True)
+                                s_spinbox.setValue(new_s)
+                                s_spinbox.blockSignals(False)
+                            break
+                        table_row += 1
+
+        if self.parent_widget is not None:
+            self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def _on_release(self, event):
+        """Handle mouse release to finish dragging and update selection."""
+        # Check if we were dragging
+        was_dragging = getattr(self, '_dragging_cursor', None) is not None
+        if was_dragging:
+            if self._autoupdate_enabled:
+                self._apply_selection()
+            else:
+                self._update_cursor_statistics()
+            self._dragging_cursor = None
+            self._drag_mode = None
+            self._drag_offset = (0, 0)
+
+            if self.parent_widget is not None:
+                self.parent_widget.canvas_widget.canvas.setCursor(
+                    Qt.ArrowCursor
+                )
+
+    def closeEvent(self, event):
+        """Clean up signal connections before closing."""
+        if hasattr(self, 'parent_widget') and self.parent_widget:
+            with contextlib.suppress(ValueError, AttributeError):
+                self.parent_widget.canvas_widget.show_color_overlay_signal.disconnect()
+
+        event.accept()
