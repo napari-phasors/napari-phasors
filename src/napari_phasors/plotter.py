@@ -1770,6 +1770,8 @@ class PlotterWidget(QWidget):
             True  # default: semicircle shown (toggle OFF)
         )
         self.colorbar = None
+        self.mapping_colorbar = None
+        self.mapping_cax = None
         self._colormap = self.canvas_widget.artists[
             'HISTOGRAM2D'
         ].overlay_colormap
@@ -2006,6 +2008,14 @@ class PlotterWidget(QWidget):
             self.colorbar.ax.yaxis.label.set_size(fs)
             self.colorbar.ax.tick_params(axis='y', which='both', labelsize=fs)
             for tick_label in self.colorbar.ax.get_yticklabels():
+                tick_label.set_fontsize(fs)
+
+        if getattr(self, 'mapping_colorbar', None) is not None:
+            self.mapping_colorbar.ax.yaxis.label.set_size(fs)
+            self.mapping_colorbar.ax.tick_params(
+                axis='y', which='both', labelsize=fs
+            )
+            for tick_label in self.mapping_colorbar.ax.get_yticklabels():
                 tick_label.set_fontsize(fs)
 
         self.canvas_widget.figure.canvas.draw_idle()
@@ -5872,6 +5882,11 @@ class PlotterWidget(QWidget):
 
         if self.colorbar is not None:
             self.set_colorbar_style(color=color)
+        if (
+            hasattr(self, 'mapping_colorbar')
+            and self.mapping_colorbar is not None
+        ):
+            self.set_colorbar_style(color=color, is_mapping=True)
 
         if not self.white_background:
             for artist in self.semi_circle_plot_artist_list:
@@ -6519,7 +6534,7 @@ class PlotterWidget(QWidget):
                 handler_map={ColormapLegendProxy: ColormapLegendHandler()},
             )
 
-    def _update_colorbar(self, colormap=None, mappable=None):
+    def _update_colorbar(self, colormap=None, mappable=None, label=None):
         """Update or create colorbar for the current plot."""
         self._remove_colorbar()
 
@@ -6582,8 +6597,44 @@ class PlotterWidget(QWidget):
                     "white"
                     if self.plotter_inputs_widget.white_background_checkbox.isChecked()
                     else "black"
-                )
+                ),
+                label=label,
             )
+
+    def _update_mapping_colorbar(self, mappable=None, label=None):
+        """Update or create a secondary colorbar for mapping overlays."""
+        self._remove_mapping_colorbar()
+
+        if mappable is None:
+            return
+
+        ax = self.canvas_widget.axes
+        # Position mapping colorbar to the right at 1.35 for compact right-hand labels.
+        try:
+            # Create an inset axes for the mapping colorbar to match the density colorbar's dimensions exactly
+            self.mapping_cax = ax.inset_axes([1.35, 0, 0.05, 1])
+            self.mapping_colorbar = self.canvas_widget.figure.colorbar(
+                mappable, cax=self.mapping_cax, orientation='vertical'
+            )
+
+            # 1. Scale all text first
+            side = getattr(self.canvas_widget, 'width', lambda: 300)()
+            self._update_text_sizes_for_canvas(side)
+
+            # 2. Then apply specific style and label to the mapping bar
+            self.set_colorbar_style(
+                color=(
+                    "white"
+                    if self.plotter_inputs_widget.white_background_checkbox.isChecked()
+                    else "black"
+                ),
+                label=label,
+                is_mapping=True,
+            )
+
+            self.canvas_widget.figure.canvas.draw_idle()
+        except ValueError:
+            self._remove_mapping_colorbar()
 
     def _remove_colorbar(self):
         """Remove colorbar if it exists."""
@@ -6595,6 +6646,22 @@ class PlotterWidget(QWidget):
             with contextlib.suppress(Exception):
                 self.cax.remove()
             self.cax = None
+
+    def _remove_mapping_colorbar(self):
+        """Remove mapping colorbar if it exists."""
+        if (
+            hasattr(self, 'mapping_colorbar')
+            and self.mapping_colorbar is not None
+        ):
+            with contextlib.suppress(Exception):
+                self.mapping_colorbar.remove()
+            self.mapping_colorbar = None
+        if hasattr(self, 'mapping_cax') and self.mapping_cax is not None:
+            with contextlib.suppress(Exception):
+                self.mapping_cax.remove()
+            self.mapping_cax = None
+        if hasattr(self, 'canvas_widget') and self.canvas_widget is not None:
+            self.canvas_widget.figure.canvas.draw_idle()
 
     def _update_plot_elements(self):
         """Update common plot elements like semicircle, axes, etc."""
@@ -6735,36 +6802,41 @@ class PlotterWidget(QWidget):
 
         self._update_plot_elements()
 
-    def set_colorbar_style(self, color="white"):
+    def set_colorbar_style(
+        self, color="white", label=None, is_mapping=False, label_side='right'
+    ):
         """Set the colorbar style in the canvas widget."""
+        cb = self.mapping_colorbar if is_mapping else self.colorbar
+        if cb is None:
+            return
+
         side = getattr(self.canvas_widget, 'width', lambda: 300)()
         fs = self._compute_font_size(side)
 
         # Color the ticks and their labels (both major and minor for log scale)
-        self.colorbar.ax.yaxis.set_tick_params(
+        cb.ax.yaxis.set_tick_params(
             color=color, labelcolor=color, which='both'
         )
-        self.colorbar.ax.tick_params(
-            axis='y', colors=color, which='both', labelsize=fs
+        cb.ax.tick_params(
+            axis='y', colors=color, which='both', labelsize=fs, pad=3
         )
 
         # Color the bounding box (outline)
-        self.colorbar.outline.set_edgecolor(color)
+        cb.outline.set_edgecolor(color)
 
         # Ensure all spines are colored
-        for spine in self.colorbar.ax.spines.values():
+        for spine in cb.ax.spines.values():
             spine.set_edgecolor(color)
 
         # Set the label with correct color and scaled font size
-        label_text = (
-            "Log10(Count)"
-            if isinstance(self.colorbar.norm, LogNorm)
-            else "Count"
-        )
-        self.colorbar.set_label(label_text, color=color, fontsize=fs)
+        if label is None:
+            label = "Log10(Count)" if isinstance(cb.norm, LogNorm) else "Count"
+        cb.ax.yaxis.set_label_position('right')
+        cb.set_label(label, color=color, fontsize=fs, labelpad=5)
+        cb.ax.yaxis.label.set_visible(True)
 
         # Force update of tick labels (sometimes needed for older matplotlib)
-        for tick_label in self.colorbar.ax.get_yticklabels():
+        for tick_label in cb.ax.get_yticklabels():
             tick_label.set_color(color)
             tick_label.set_fontsize(fs)
 

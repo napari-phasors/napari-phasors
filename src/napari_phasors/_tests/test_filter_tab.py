@@ -105,7 +105,7 @@ def test_filter_widget_initialization_values(make_napari_viewer):
     # Test warning label for harmonics
     assert hasattr(filter_widget, 'harmonic_warning_label')
     assert isinstance(filter_widget.harmonic_warning_label, QLabel)
-    assert not filter_widget.harmonic_warning_label.isVisible()
+    assert filter_widget.harmonic_warning_label.isHidden()
 
     # Test threshold editable text fields (min and max intensity)
     assert hasattr(filter_widget, 'min_threshold_edit')
@@ -295,7 +295,7 @@ def test_wavelet_harmonics_validation_incompatible(make_napari_viewer):
     filter_widget.filter_method_combobox.setCurrentText("Wavelet")
     filter_widget.on_filter_method_changed()
 
-    assert not filter_widget.harmonic_warning_label.isVisible()
+    assert not filter_widget.harmonic_warning_label.isHidden()
     assert filter_widget.wavelet_params_widget.isHidden()
 
     warning_text = filter_widget.harmonic_warning_label.text()

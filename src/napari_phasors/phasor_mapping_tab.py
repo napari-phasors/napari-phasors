@@ -2,7 +2,9 @@ import contextlib
 import warnings
 from typing import TYPE_CHECKING
 
+import matplotlib.cm as cm
 import numpy as np
+from matplotlib.colors import Normalize
 from napari.layers import Image
 from napari.utils.notifications import show_error, show_warning
 from phasorpy.lifetime import (
@@ -10,10 +12,11 @@ from phasorpy.lifetime import (
     phasor_to_normal_lifetime,
 )
 from phasorpy.phasor import phasor_to_polar
-from qtpy.QtCore import Qt, Signal
+from qtpy.QtCore import Qt, QTimer, Signal
 from qtpy.QtGui import QColor, QDoubleValidator
 from qtpy.QtWidgets import (
     QComboBox,
+    QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -24,7 +27,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 from scipy.stats import binned_statistic_2d
-from superqt import QToggleSwitch
+from superqt import QRangeSlider, QToggleSwitch
 
 from ._utils import (
     HistogramWidget,
@@ -86,6 +89,15 @@ class PhasorMappingWidget(QWidget):
         self._updating_settings = False  # Flag to prevent recursive updates
         self._updating_linked_layers = (
             False  # Flag to prevent recursive layer updates
+        )
+        self.phase_range_factor = 100
+        self.modulation_range_factor = 100
+        self._axes_limit_callback_cids = []
+        self._mesh_axes_update_timer = QTimer(self)
+        self._mesh_axes_update_timer.setSingleShot(True)
+        self._mesh_axes_update_timer.setInterval(75)
+        self._mesh_axes_update_timer.timeout.connect(
+            self._apply_mesh_after_axes_change
         )
 
         # Create scroll area
@@ -179,20 +191,6 @@ class PhasorMappingWidget(QWidget):
         coloring_checkbox_layout.addStretch(1)
         self.main_layout.addWidget(self.coloring_checkbox_widget)
 
-        # Add Calculate button in its own row
-        self.calculate_lifetime_button = QPushButton("Calculate Output")
-        self.calculate_lifetime_button.setSizePolicy(
-            QSizePolicy.Expanding, QSizePolicy.Fixed
-        )
-        self.calculate_lifetime_button.setToolTip(
-            "Calculate and display the selected output for all selected layers"
-        )
-        self.calculate_lifetime_button.clicked.connect(
-            self._on_calculate_lifetime_clicked
-        )
-
-        self.main_layout.addWidget(self.calculate_lifetime_button)
-
         # Connect signals
         self.lifetime_type_combobox.currentTextChanged.connect(
             self._on_lifetime_type_changed
@@ -237,6 +235,163 @@ class PhasorMappingWidget(QWidget):
         self._configure_histogram_labels_for_output(
             self.lifetime_type_combobox.currentText()
         )
+
+        # Mesh Overlay Settings (at the end of the tab)
+        self.mesh_overlay_group = QWidget()
+        mesh_overlay_group_layout = QVBoxLayout(self.mesh_overlay_group)
+        mesh_overlay_group_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Toggle for background mesh
+        self.mesh_overlay_checkbox = QToggleSwitch("Show mesh overlay")
+        self.mesh_overlay_checkbox.onColor = QColor("#27ae60")
+        self.mesh_overlay_checkbox.setToolTip(
+            "Show a full phase/modulation mesh behind the phasor data"
+        )
+        mesh_overlay_group_layout.addWidget(self.mesh_overlay_checkbox)
+
+        # Toggle to clip mesh to semicircle
+        self.mesh_clip_semicircle_checkbox = QToggleSwitch(
+            "Clip mesh to semicircle"
+        )
+        self.mesh_clip_semicircle_checkbox.onColor = QColor("#27ae60")
+        self.mesh_clip_semicircle_checkbox.setToolTip(
+            "Only show the background mesh inside the universal semicircle"
+        )
+        self.mesh_clip_semicircle_checkbox.setVisible(False)
+
+        # Toggle for colorbar
+        self.mesh_colorbar_checkbox = QToggleSwitch("Show colorbar")
+        self.mesh_colorbar_checkbox.onColor = QColor("#27ae60")
+        self.mesh_colorbar_checkbox.setToolTip(
+            "Show a colorbar for the phase or modulation mesh/plot"
+        )
+        self.mesh_colorbar_checkbox.setVisible(False)
+
+        # Row for Alpha, Clip Toggle, and Colorbar Toggle
+        self.mesh_controls_widget = QWidget()
+        mesh_controls_layout = QHBoxLayout(self.mesh_controls_widget)
+        mesh_controls_layout.setContentsMargins(0, 0, 0, 0)
+
+        mesh_controls_layout.addWidget(QLabel("Alpha:"))
+        self.mesh_alpha_spinbox = QDoubleSpinBox()
+        self.mesh_alpha_spinbox.setRange(0.01, 1.0)
+        self.mesh_alpha_spinbox.setSingleStep(0.05)
+        self.mesh_alpha_spinbox.setDecimals(2)
+        self.mesh_alpha_spinbox.setValue(0.45)
+        self.mesh_alpha_spinbox.setToolTip(
+            "Opacity of the phase/modulation mesh overlay"
+        )
+        self.mesh_alpha_spinbox.setFixedWidth(60)
+        mesh_controls_layout.addWidget(self.mesh_alpha_spinbox)
+
+        mesh_controls_layout.addSpacing(10)
+        mesh_controls_layout.addWidget(self.mesh_clip_semicircle_checkbox)
+        mesh_controls_layout.addSpacing(10)
+        mesh_controls_layout.addWidget(self.mesh_colorbar_checkbox)
+        mesh_controls_layout.addStretch(1)
+
+        mesh_overlay_group_layout.addWidget(self.mesh_controls_widget)
+
+        # Phase range controls
+        self.phase_range_container = QWidget()
+        ph_cnt_layout = QVBoxLayout(self.phase_range_container)
+        ph_cnt_layout.setContentsMargins(0, 5, 0, 0)
+
+        ph_row = QHBoxLayout()
+        ph_row.addWidget(QLabel("Phase range (rad):"))
+        ph_row.addStretch(1)
+        self.phase_min_edit = QLineEdit("0.00")
+        self.phase_max_edit = QLineEdit("1.60")
+        self.phase_min_edit.setValidator(QDoubleValidator())
+        self.phase_max_edit.setValidator(QDoubleValidator())
+        self.phase_min_edit.setFixedWidth(50)
+        self.phase_max_edit.setFixedWidth(50)
+        self.phase_min_edit.setAlignment(Qt.AlignCenter)
+        self.phase_max_edit.setAlignment(Qt.AlignCenter)
+        ph_row.addWidget(self.phase_min_edit)
+        ph_row.addWidget(QLabel("to"))
+        ph_row.addWidget(self.phase_max_edit)
+        ph_cnt_layout.addLayout(ph_row)
+        self.phase_range_slider = QRangeSlider(Qt.Orientation.Horizontal)
+        self.phase_range_slider.setRange(0, 628)
+        self.phase_range_slider.setValue((0, 628))
+        ph_cnt_layout.addWidget(self.phase_range_slider)
+        mesh_overlay_group_layout.addWidget(self.phase_range_container)
+
+        # Modulation range controls
+        self.modulation_range_container = QWidget()
+        mod_cnt_layout = QVBoxLayout(self.modulation_range_container)
+        mod_cnt_layout.setContentsMargins(0, 5, 0, 0)
+
+        mod_row = QHBoxLayout()
+        mod_row.addWidget(QLabel("Modulation range:"))
+        mod_row.addStretch(1)
+        self.modulation_min_edit = QLineEdit("0.00")
+        self.modulation_max_edit = QLineEdit("1.00")
+        self.modulation_min_edit.setValidator(QDoubleValidator())
+        self.modulation_max_edit.setValidator(QDoubleValidator())
+        self.modulation_min_edit.setFixedWidth(50)
+        self.modulation_max_edit.setFixedWidth(50)
+        self.modulation_min_edit.setAlignment(Qt.AlignCenter)
+        self.modulation_max_edit.setAlignment(Qt.AlignCenter)
+        mod_row.addWidget(self.modulation_min_edit)
+        mod_row.addWidget(QLabel("to"))
+        mod_row.addWidget(self.modulation_max_edit)
+        mod_cnt_layout.addLayout(mod_row)
+        self.modulation_range_slider = QRangeSlider(Qt.Orientation.Horizontal)
+        self.modulation_range_slider.setRange(0, 100)
+        self.modulation_range_slider.setValue((0, 100))
+        mod_cnt_layout.addWidget(self.modulation_range_slider)
+        mesh_overlay_group_layout.addWidget(self.modulation_range_container)
+
+        self.main_layout.addWidget(self.mesh_overlay_group)
+
+        # Add Calculate button in its own row (at the bottom of this tab)
+        self.calculate_lifetime_button = QPushButton("Calculate Output")
+        self.calculate_lifetime_button.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed
+        )
+        self.calculate_lifetime_button.setToolTip(
+            "Calculate and display the selected output for all selected layers"
+        )
+        self.calculate_lifetime_button.clicked.connect(
+            self._on_calculate_lifetime_clicked
+        )
+        self.main_layout.addWidget(self.calculate_lifetime_button)
+        self.main_layout.addStretch(1)
+
+        # Connect signals for mesh overlay
+        self.mesh_overlay_checkbox.toggled.connect(
+            self._on_mesh_overlay_toggled
+        )
+        self.mesh_clip_semicircle_checkbox.toggled.connect(
+            self._on_mesh_clip_toggled
+        )
+        self.mesh_colorbar_checkbox.toggled.connect(
+            self._on_mesh_colorbar_toggled
+        )
+        self.phase_range_slider.valueChanged.connect(
+            self._on_phase_slider_changed
+        )
+        self.phase_min_edit.editingFinished.connect(
+            self._on_phase_edits_changed
+        )
+        self.phase_max_edit.editingFinished.connect(
+            self._on_phase_edits_changed
+        )
+        self.modulation_range_slider.valueChanged.connect(
+            self._on_modulation_slider_changed
+        )
+        self.modulation_min_edit.editingFinished.connect(
+            self._on_modulation_edits_changed
+        )
+        self.modulation_max_edit.editingFinished.connect(
+            self._on_modulation_edits_changed
+        )
+        self.mesh_alpha_spinbox.valueChanged.connect(
+            self._on_mesh_alpha_changed
+        )
+
         self._sync_mode_widgets()
         self._update_calculate_button_text()
         self.update_apply_2d_text()
@@ -246,6 +401,58 @@ class PhasorMappingWidget(QWidget):
             self.parent_widget.plotter_inputs_widget.plot_type_combobox.currentTextChanged.connect(
                 self.update_apply_2d_text
             )
+            self.parent_widget.plotter_inputs_widget.semi_circle_checkbox.toggled.connect(
+                self._on_plot_geometry_mode_toggled
+            )
+            self._connect_axes_limit_callbacks()
+
+    def _connect_axes_limit_callbacks(self):
+        if self.parent_widget is None:
+            return
+        axes = getattr(self.parent_widget.canvas_widget, 'axes', None)
+        if axes is None:
+            return
+        if self._axes_limit_callback_cids:
+            return
+        self._axes_limit_callback_cids = [
+            axes.callbacks.connect(
+                'xlim_changed', self._on_axes_limits_changed
+            ),
+            axes.callbacks.connect(
+                'ylim_changed', self._on_axes_limits_changed
+            ),
+        ]
+
+    def _disconnect_axes_limit_callbacks(self):
+        if self.parent_widget is None:
+            return
+        axes = getattr(self.parent_widget.canvas_widget, 'axes', None)
+        if axes is None:
+            return
+        for cid in self._axes_limit_callback_cids:
+            with contextlib.suppress(Exception):
+                axes.callbacks.disconnect(cid)
+        self._axes_limit_callback_cids = []
+
+    def _on_axes_limits_changed(self, _axes):
+        if self._coloring_paused_by_tab:
+            return
+        output_type = self._get_selected_output_type()
+        if (
+            output_type in {"Phase", "Modulation"}
+            and self.mesh_overlay_checkbox.isChecked()
+        ):
+            self._mesh_axes_update_timer.start()
+
+    def _apply_mesh_after_axes_change(self):
+        if self._coloring_paused_by_tab:
+            return
+        output_type = self._get_selected_output_type()
+        if (
+            output_type in {"Phase", "Modulation"}
+            and self.mesh_overlay_checkbox.isChecked()
+        ):
+            self._apply_histogram_coloring(output_type)
 
     def update_apply_2d_text(self):
         """Update the checkbox text based on the current plot type."""
@@ -308,10 +515,153 @@ class PhasorMappingWidget(QWidget):
         is_lifetime_mode = (
             self.output_mode_combobox.currentText() == "Lifetime"
         )
+        pw = self.parent_widget
         self.lifetime_output_widget.setVisible(is_lifetime_mode)
         self.frequency_widget.setVisible(is_lifetime_mode)
         self.colormap_widget.setVisible(not is_lifetime_mode)
         self.coloring_checkbox_widget.setVisible(not is_lifetime_mode)
+
+        self.mesh_overlay_group.setVisible(not is_lifetime_mode)
+        if not is_lifetime_mode:
+            show_ranges = self.mesh_overlay_checkbox.isChecked()
+            is_semi = self._is_semicircle_mode()
+            self.mesh_controls_widget.setVisible(show_ranges)
+            self.phase_range_container.setVisible(show_ranges)
+            self.modulation_range_container.setVisible(show_ranges)
+            self.mesh_clip_semicircle_checkbox.setVisible(is_semi)
+            self.mesh_colorbar_checkbox.setVisible(True)
+            self._update_phase_slider_bounds_from_plot_mode()
+        else:
+            self.mesh_controls_widget.setVisible(False)
+            self.phase_range_container.setVisible(False)
+            self.modulation_range_container.setVisible(False)
+            if pw is not None:
+                pw._remove_mapping_colorbar()
+
+    def _is_semicircle_mode(self) -> bool:
+        if self.parent_widget is None:
+            return True
+        with contextlib.suppress(AttributeError):
+            return bool(self.parent_widget.toggle_semi_circle)
+        with contextlib.suppress(AttributeError):
+            return not bool(
+                self.parent_widget.plotter_inputs_widget.semi_circle_checkbox.isChecked()
+            )
+        return True
+
+    def _phase_max_allowed(self) -> float:
+        return (np.pi / 2.0) if self._is_semicircle_mode() else (2.0 * np.pi)
+
+    def _update_phase_slider_bounds_from_plot_mode(self):
+        max_phase = self._phase_max_allowed()
+        max_phase_i = int(max_phase * self.phase_range_factor)
+        min_phase_i, cur_max_phase_i = self.phase_range_slider.value()
+        min_phase_i = max(0, min(min_phase_i, max_phase_i))
+        cur_max_phase_i = max(min_phase_i, min(cur_max_phase_i, max_phase_i))
+
+        self._updating_settings = True
+        try:
+            self.phase_range_slider.setRange(0, max_phase_i)
+            self.phase_range_slider.setValue((min_phase_i, cur_max_phase_i))
+            self.phase_min_edit.setText(
+                f"{min_phase_i / self.phase_range_factor:.2f}"
+            )
+            self.phase_max_edit.setText(
+                f"{cur_max_phase_i / self.phase_range_factor:.2f}"
+            )
+        finally:
+            self._updating_settings = False
+
+    def _initialize_mesh_ranges_from_current_data(self):
+        pw = self.parent_widget
+        if pw is None:
+            return
+        features = pw.get_merged_features()
+        if features is None:
+            return
+        g_flat, s_flat = features
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            phase_values, modulation_values = phasor_to_polar(g_flat, s_flat)
+
+        if not self._is_semicircle_mode():
+            with np.errstate(invalid='ignore'):
+                phase_values = np.mod(phase_values, 2.0 * np.pi)
+
+        phase_max_allowed = self._phase_max_allowed()
+        with np.errstate(invalid='ignore'):
+            phase_valid = phase_values[np.isfinite(phase_values)]
+            modulation_valid = modulation_values[
+                np.isfinite(modulation_values)
+            ]
+
+        if phase_valid.size > 0:
+            phase_min = float(np.nanmin(phase_valid))
+            phase_max = float(np.nanmax(phase_valid))
+            phase_min = max(0.0, min(phase_min, phase_max_allowed))
+            phase_max = max(phase_min, min(phase_max, phase_max_allowed))
+        else:
+            phase_min, phase_max = 0.0, phase_max_allowed
+
+        if modulation_valid.size > 0:
+            mod_min = float(np.nanmin(modulation_valid))
+            mod_max = float(np.nanmax(modulation_valid))
+            mod_min = max(0.0, mod_min)
+            mod_max = max(mod_min, mod_max)
+        else:
+            mod_min, mod_max = 0.0, 1.0
+
+        phase_max_i = int(phase_max_allowed * self.phase_range_factor)
+        phase_min_i = int(phase_min * self.phase_range_factor)
+        phase_val_max_i = int(phase_max * self.phase_range_factor)
+
+        mod_slider_max = max(1.0, mod_max)
+        mod_slider_max_i = int(mod_slider_max * self.modulation_range_factor)
+        mod_min_i = int(mod_min * self.modulation_range_factor)
+        mod_max_i = int(mod_max * self.modulation_range_factor)
+
+        phase_min_i = max(0, min(phase_min_i, phase_max_i))
+        phase_val_max_i = max(phase_min_i, min(phase_val_max_i, phase_max_i))
+        mod_min_i = max(0, min(mod_min_i, mod_slider_max_i))
+        mod_max_i = max(mod_min_i, min(mod_max_i, mod_slider_max_i))
+
+        self._updating_settings = True
+        try:
+            self.phase_range_slider.setRange(0, phase_max_i)
+            self.phase_range_slider.setValue((phase_min_i, phase_val_max_i))
+            self.phase_min_edit.setText(f"{phase_min:.2f}")
+            self.phase_max_edit.setText(
+                f"{phase_val_max_i / self.phase_range_factor:.2f}"
+            )
+
+            self.modulation_range_slider.setRange(0, mod_slider_max_i)
+            self.modulation_range_slider.setValue((mod_min_i, mod_max_i))
+            self.modulation_min_edit.setText(f"{mod_min:.2f}")
+            self.modulation_max_edit.setText(
+                f"{mod_max_i / self.modulation_range_factor:.2f}"
+            )
+        finally:
+            self._updating_settings = False
+
+        self._persist_current_mesh_ranges_to_metadata()
+
+    def _on_plot_geometry_mode_toggled(self, _checked):
+        self._update_phase_slider_bounds_from_plot_mode()
+        self._sync_mode_widgets()
+        if self.mesh_overlay_checkbox.isChecked():
+            settings = self._get_current_layer_mapping_settings(create=False)
+            if not self._restore_mesh_ranges_from_settings(settings):
+                self._initialize_mesh_ranges_from_current_data()
+            self._persist_current_mesh_ranges_to_metadata()
+        self.reapply_if_active()
+
+    def _refresh_mesh_overlay_if_needed(self):
+        output_type = self._get_selected_output_type()
+        if (
+            output_type in {"Phase", "Modulation"}
+            and self.mesh_overlay_checkbox.isChecked()
+        ):
+            self._apply_histogram_coloring(output_type)
 
     def get_selected_output_display_name(self) -> str:
         output_type = self._get_selected_output_type()
@@ -332,7 +682,91 @@ class PhasorMappingWidget(QWidget):
             'output_type': 'Apparent Phase Lifetime',
             'range_min': None,
             'range_max': None,
+            'mesh_overlay_enabled': False,
+            'mesh_clip_semicircle_enabled': False,
+            'mesh_colorbar_enabled': False,
+            'mesh_alpha': 0.45,
+            'mesh_phase_min': None,
+            'mesh_phase_max': None,
+            'mesh_modulation_min': None,
+            'mesh_modulation_max': None,
         }
+
+    def _get_current_layer_mapping_settings(self, create: bool = False):
+        layer_name = self.parent_widget.get_primary_layer_name()
+        if not layer_name:
+            return None
+        layer = self.viewer.layers[layer_name]
+        return self._get_phasor_mapping_settings(layer, create=create)
+
+    def _persist_current_mesh_ranges_to_metadata(self):
+        if self._updating_settings:
+            return
+        phase_min_i, phase_max_i = self.phase_range_slider.value()
+        mod_min_i, mod_max_i = self.modulation_range_slider.value()
+        self._update_lifetime_setting_in_metadata(
+            'mesh_phase_min', phase_min_i / self.phase_range_factor
+        )
+        self._update_lifetime_setting_in_metadata(
+            'mesh_phase_max', phase_max_i / self.phase_range_factor
+        )
+        self._update_lifetime_setting_in_metadata(
+            'mesh_modulation_min', mod_min_i / self.modulation_range_factor
+        )
+        self._update_lifetime_setting_in_metadata(
+            'mesh_modulation_max', mod_max_i / self.modulation_range_factor
+        )
+        self._update_lifetime_setting_in_metadata(
+            'mesh_clip_semicircle_enabled',
+            self.mesh_clip_semicircle_checkbox.isChecked(),
+        )
+        self._update_lifetime_setting_in_metadata(
+            'mesh_colorbar_enabled',
+            self.mesh_colorbar_checkbox.isChecked(),
+        )
+
+    def _restore_mesh_ranges_from_settings(self, settings) -> bool:
+        if settings is None:
+            return False
+
+        phase_min = settings.get('mesh_phase_min')
+        phase_max = settings.get('mesh_phase_max')
+        mod_min = settings.get('mesh_modulation_min')
+        mod_max = settings.get('mesh_modulation_max')
+        clip_semi = settings.get('mesh_clip_semicircle_enabled', False)
+        show_colorbar = settings.get('mesh_colorbar_enabled', False)
+        if any(v is None for v in (phase_min, phase_max, mod_min, mod_max)):
+            return False
+
+        phase_max_allowed = self._phase_max_allowed()
+        phase_min = float(np.clip(float(phase_min), 0.0, phase_max_allowed))
+        phase_max = float(
+            np.clip(float(phase_max), phase_min, phase_max_allowed)
+        )
+        mod_min = max(0.0, float(mod_min))
+        mod_max = max(mod_min, float(mod_max))
+
+        phase_slider_max_i = int(phase_max_allowed * self.phase_range_factor)
+        phase_min_i = int(phase_min * self.phase_range_factor)
+        phase_max_i = int(phase_max * self.phase_range_factor)
+
+        mod_slider_max = max(1.0, mod_max)
+        mod_slider_max_i = int(mod_slider_max * self.modulation_range_factor)
+        mod_min_i = int(mod_min * self.modulation_range_factor)
+        mod_max_i = int(mod_max * self.modulation_range_factor)
+
+        self.phase_range_slider.setRange(0, phase_slider_max_i)
+        self.phase_range_slider.setValue((phase_min_i, phase_max_i))
+        self.phase_min_edit.setText(f"{phase_min:.2f}")
+        self.phase_max_edit.setText(f"{phase_max:.2f}")
+
+        self.modulation_range_slider.setRange(0, mod_slider_max_i)
+        self.modulation_range_slider.setValue((mod_min_i, mod_max_i))
+        self.modulation_min_edit.setText(f"{mod_min:.2f}")
+        self.modulation_max_edit.setText(f"{mod_max:.2f}")
+        self.mesh_clip_semicircle_checkbox.setChecked(bool(clip_semi))
+        self.mesh_colorbar_checkbox.setChecked(bool(show_colorbar))
+        return True
 
     @staticmethod
     def _output_requires_frequency(output_type: str) -> bool:
@@ -390,12 +824,12 @@ class PhasorMappingWidget(QWidget):
         )
         self._configure_histogram_labels_for_output(output_type)
         self.outputTypeChanged.emit(output_type)
-        if self._output_requires_frequency(output_type):
-            self._clear_2d_coloring()
-        elif (
-            self.current_metric_data is not None
-            and self.apply_2d_colormap_checkbox.isChecked()
-        ):
+        can_apply_coloring = (
+            self.apply_2d_colormap_checkbox.isChecked()
+            or self.mesh_overlay_checkbox.isChecked()
+            or self.mesh_colorbar_checkbox.isChecked()
+        )
+        if can_apply_coloring:
             self._apply_histogram_coloring(output_type)
         else:
             self._clear_2d_coloring()
@@ -417,9 +851,10 @@ class PhasorMappingWidget(QWidget):
         elif output_type == "Modulation":
             self._modulation_colormap_name = name
 
-        if (
-            output_type in {"Phase", "Modulation"}
-            and self.apply_2d_colormap_checkbox.isChecked()
+        if output_type in {"Phase", "Modulation"} and (
+            self.apply_2d_colormap_checkbox.isChecked()
+            or self.mesh_overlay_checkbox.isChecked()
+            or self.mesh_colorbar_checkbox.isChecked()
         ):
             actual_cmap_to_apply = self._resolve_layer_colormap(name)
 
@@ -445,7 +880,7 @@ class PhasorMappingWidget(QWidget):
         if output_type not in {"Phase", "Modulation"}:
             self._clear_2d_coloring()
             return
-        if checked:
+        if checked or self.mesh_overlay_checkbox.isChecked():
             self._apply_histogram_coloring(output_type)
         else:
             self._clear_2d_coloring()
@@ -454,6 +889,7 @@ class PhasorMappingWidget(QWidget):
         self._remove_overlay()
         pw = self.parent_widget
         if pw is not None:
+            pw._remove_mapping_colorbar()
             self._set_histogram_density_visible(pw, True)
             if getattr(pw, 'plot_type', None) == 'SCATTER':
                 pw.refresh_current_plot()
@@ -466,6 +902,24 @@ class PhasorMappingWidget(QWidget):
                     elif hasattr(cs, 'set_visible'):
                         cs.set_visible(True)
             pw.canvas_widget.figure.canvas.draw_idle()
+
+    def _restore_plot_coloring_state_without_mesh(self):
+        """Restore non-mesh plot rendering while keeping mesh logic independent."""
+        pw = self.parent_widget
+        if pw is None:
+            return
+        self._set_histogram_density_visible(pw, True)
+        if getattr(pw, 'plot_type', None) == 'SCATTER':
+            pw.refresh_current_plot()
+        elif getattr(pw, 'plot_type', None) == 'CONTOUR':
+            contour_collections = getattr(pw, '_contour_collections', [])
+            for cs in contour_collections:
+                if hasattr(cs, 'collections') and len(cs.collections) > 0:
+                    for col in cs.collections:
+                        col.set_visible(True)
+                elif hasattr(cs, 'set_visible'):
+                    cs.set_visible(True)
+        pw.canvas_widget.figure.canvas.draw_idle()
 
     def _get_phasor_mapping_settings(self, layer, create: bool = False):
         """Return mapping settings, migrating legacy metadata when needed."""
@@ -563,6 +1017,16 @@ class PhasorMappingWidget(QWidget):
                     f'{self.histogram_widget._range_label_prefix}: 0.0 - 100.0'
                 )
                 self._set_frequency_input_enabled(True)
+                self.mesh_overlay_checkbox.blockSignals(True)
+                try:
+                    self.mesh_overlay_checkbox.setChecked(False)
+                finally:
+                    self.mesh_overlay_checkbox.blockSignals(False)
+                self.mesh_alpha_spinbox.blockSignals(True)
+                try:
+                    self.mesh_alpha_spinbox.setValue(0.45)
+                finally:
+                    self.mesh_alpha_spinbox.blockSignals(False)
                 self._sync_mode_widgets()
                 self._clear_2d_coloring()
                 self.histogram_widget.hide()
@@ -592,6 +1056,27 @@ class PhasorMappingWidget(QWidget):
                     self._get_selected_output_type()
                 )
             )
+
+            mesh_enabled = bool(settings.get('mesh_overlay_enabled', False))
+            mesh_alpha = float(settings.get('mesh_alpha', 0.45))
+            mesh_alpha = float(np.clip(mesh_alpha, 0.0, 1.0))
+
+            self.mesh_overlay_checkbox.blockSignals(True)
+            try:
+                self.mesh_overlay_checkbox.setChecked(mesh_enabled)
+            finally:
+                self.mesh_overlay_checkbox.blockSignals(False)
+
+            self.mesh_alpha_spinbox.blockSignals(True)
+            try:
+                self.mesh_alpha_spinbox.setValue(mesh_alpha)
+            finally:
+                self.mesh_alpha_spinbox.blockSignals(False)
+
+            self._update_phase_slider_bounds_from_plot_mode()
+            if not self._restore_mesh_ranges_from_settings(settings):
+                self._initialize_mesh_ranges_from_current_data()
+            self._sync_mode_widgets()
 
         finally:
             self._updating_settings = False
@@ -638,6 +1123,9 @@ class PhasorMappingWidget(QWidget):
         min_lifetime = min_val / self.lifetime_range_factor
         max_lifetime = max_val / self.lifetime_range_factor
         output_type = self._get_selected_output_type()
+
+        if not self._updating_settings:
+            self._update_tab_sliders_from_range(min_lifetime, max_lifetime)
 
         if self.current_metric_data_original is not None:
             self.current_metric_data = np.clip(
@@ -1035,9 +1523,9 @@ class PhasorMappingWidget(QWidget):
             contrast_limits=self.colormap_contrast_limits,
         )
 
-        if (
-            output_type in {"Phase", "Modulation"}
-            and self.apply_2d_colormap_checkbox.isChecked()
+        if output_type in {"Phase", "Modulation"} and (
+            self.apply_2d_colormap_checkbox.isChecked()
+            or self.mesh_overlay_checkbox.isChecked()
         ):
             self._apply_histogram_coloring(output_type)
 
@@ -1107,6 +1595,9 @@ class PhasorMappingWidget(QWidget):
         self.calculate_output_data()
         self._update_lifetime_range_slider()
         self.create_output_layers()
+        settings = self._get_current_layer_mapping_settings(create=False)
+        if not self._restore_mesh_ranges_from_settings(settings):
+            self._initialize_mesh_ranges_from_current_data()
 
         self._restore_lifetime_range_from_metadata()
         self._on_lifetime_range_changed(self.lifetime_range_slider.value())
@@ -1114,9 +1605,9 @@ class PhasorMappingWidget(QWidget):
         if self.current_metric_data is not None:
             self.plot_lifetime_histogram()
 
-        if (
-            output_type in {"Phase", "Modulation"}
-            and self.apply_2d_colormap_checkbox.isChecked()
+        if output_type in {"Phase", "Modulation"} and (
+            self.apply_2d_colormap_checkbox.isChecked()
+            or self.mesh_overlay_checkbox.isChecked()
         ):
             self._apply_histogram_coloring(output_type)
         else:
@@ -1275,6 +1766,9 @@ class PhasorMappingWidget(QWidget):
         if pw is None or getattr(pw, 'plot_type', 'HISTOGRAM2D') == 'NONE':
             return
 
+        apply_plot_coloring = self.apply_2d_colormap_checkbox.isChecked()
+        show_mesh = self.mesh_overlay_checkbox.isChecked()
+
         features = pw.get_merged_features()
         if features is None:
             return
@@ -1283,6 +1777,10 @@ class PhasorMappingWidget(QWidget):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
             phase, modulation = phasor_to_polar(g_flat, s_flat)
+
+        if not self._is_semicircle_mode():
+            with np.errstate(invalid='ignore'):
+                phase = np.mod(phase, 2.0 * np.pi)
 
         values = phase if output_type == "Phase" else modulation
 
@@ -1295,9 +1793,105 @@ class PhasorMappingWidget(QWidget):
                 cmap = resolve_colormap_by_name("viridis")
         vmin, vmax = self._get_clim_from_metric_layers()
         if vmin is None or vmax is None:
-            with np.errstate(invalid='ignore'):
-                vmin = float(np.nanmin(values))
-                vmax = float(np.nanmax(values))
+            if output_type == "Phase":
+                vmin, vmax = self.phase_range_slider.value()
+                vmin /= self.phase_range_factor
+                vmax /= self.phase_range_factor
+            elif output_type == "Modulation":
+                vmin, vmax = self.modulation_range_slider.value()
+                vmin /= self.modulation_range_factor
+                vmax /= self.modulation_range_factor
+            else:
+                with np.errstate(invalid='ignore'):
+                    vmin = float(np.nanmin(values))
+                    vmax = float(np.nanmax(values))
+
+        if show_mesh:
+            ax = pw.canvas_widget.axes
+            range_xlim = ax.get_xlim()
+            range_ylim = ax.get_ylim()
+
+            x_fine = np.linspace(range_xlim[0], range_xlim[1], 400)
+            y_fine = np.linspace(range_ylim[0], range_ylim[1], 400)
+            X, Y = np.meshgrid(x_fine, y_fine)
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                p_grid, m_grid = phasor_to_polar(X, Y)
+
+            if not self._is_semicircle_mode():
+                with np.errstate(invalid='ignore'):
+                    p_grid = np.mod(p_grid, 2.0 * np.pi)
+
+            phase_min_i, phase_max_i = self.phase_range_slider.value()
+            mod_min_i, mod_max_i = self.modulation_range_slider.value()
+            phase_min = phase_min_i / self.phase_range_factor
+            phase_max = phase_max_i / self.phase_range_factor
+            mod_min = mod_min_i / self.modulation_range_factor
+            mod_max = mod_max_i / self.modulation_range_factor
+
+            phase_ok = (p_grid >= phase_min) & (p_grid <= phase_max)
+            mod_ok = (m_grid >= mod_min) & (m_grid <= mod_max)
+
+            mesh_mask = ~(phase_ok & mod_ok)
+
+            if (
+                self.mesh_clip_semicircle_checkbox.isChecked()
+                and self._is_semicircle_mode()
+            ):
+                with np.errstate(invalid='ignore'):
+                    is_outside_semi = m_grid > np.cos(p_grid)
+                    mesh_mask |= is_outside_semi
+
+            stat_display = p_grid if output_type == "Phase" else m_grid
+            stat_display = np.where(mesh_mask, np.nan, stat_display)
+            extent = [
+                range_xlim[0],
+                range_xlim[1],
+                range_ylim[0],
+                range_ylim[1],
+            ]
+
+            self._remove_overlay()
+
+            self._overlay_imshow = ax.imshow(
+                stat_display,
+                extent=extent,
+                origin="lower",
+                cmap=cmap,
+                vmin=vmin,
+                vmax=vmax,
+                interpolation="bilinear",
+                zorder=0.1,  # Behind all phasor artists
+                alpha=float(self.mesh_alpha_spinbox.value()),
+                aspect="auto",
+            )
+            ax.set_aspect(1, adjustable="box")
+            pw.canvas_widget.figure.canvas.draw_idle()
+
+            if not apply_plot_coloring:
+                self._restore_plot_coloring_state_without_mesh()
+                if not self.mesh_colorbar_checkbox.isChecked():
+                    pw._remove_mapping_colorbar()
+                else:
+                    self._update_mapping_colorbar(
+                        cmap, vmin, vmax, output_type
+                    )
+                return
+
+        if not apply_plot_coloring:
+            self._restore_plot_coloring_state_without_mesh()
+            if not self.mesh_colorbar_checkbox.isChecked():
+                pw._remove_mapping_colorbar()
+            else:
+                self._update_mapping_colorbar(cmap, vmin, vmax, output_type)
+            return
+
+        # If reaching here, apply_plot_coloring is True
+        if self.mesh_colorbar_checkbox.isChecked():
+            self._update_mapping_colorbar(cmap, vmin, vmax, output_type)
+        else:
+            pw._remove_mapping_colorbar()
 
         if pw.plot_type == 'SCATTER':
             self._remove_overlay()
@@ -1484,9 +2078,9 @@ class PhasorMappingWidget(QWidget):
             self._clear_2d_coloring()
             return
         output_type = self._get_selected_output_type()
-        if (
-            output_type in {"Phase", "Modulation"}
-            and self.apply_2d_colormap_checkbox.isChecked()
+        if output_type in {"Phase", "Modulation"} and (
+            self.apply_2d_colormap_checkbox.isChecked()
+            or self.mesh_overlay_checkbox.isChecked()
         ):
             self._apply_histogram_coloring(output_type)
         else:
@@ -1501,6 +2095,9 @@ class PhasorMappingWidget(QWidget):
 
     def closeEvent(self, event):
         """Clean up signal connections before closing."""
+        self._mesh_axes_update_timer.stop()
+        self._disconnect_axes_limit_callbacks()
+
         # Disconnect all lifetime layer events
         for layer in self.metric_layers:
             with contextlib.suppress(ValueError, AttributeError):
@@ -1511,3 +2108,168 @@ class PhasorMappingWidget(QWidget):
                 )
 
         event.accept()
+
+    def _on_mesh_overlay_toggled(self, checked):
+        """Handle mesh overlay toggle."""
+        if self._updating_settings:
+            return
+
+        self._sync_mode_widgets()
+        if checked:
+            settings = self._get_current_layer_mapping_settings(create=False)
+            if not self._restore_mesh_ranges_from_settings(settings):
+                self._initialize_mesh_ranges_from_current_data()
+
+        self._update_lifetime_setting_in_metadata(
+            'mesh_overlay_enabled', bool(checked)
+        )
+
+        output_type = self._get_selected_output_type()
+        if output_type not in {"Phase", "Modulation"}:
+            self._clear_2d_coloring()
+            return
+        if checked or self.apply_2d_colormap_checkbox.isChecked():
+            self._apply_histogram_coloring(output_type)
+        else:
+            self._clear_2d_coloring()
+
+    def _on_mesh_clip_toggled(self, checked):
+        """Handle mesh clipping toggle."""
+        if self._updating_settings:
+            return
+
+        self._update_lifetime_setting_in_metadata(
+            'mesh_clip_semicircle_enabled', bool(checked)
+        )
+        self._refresh_mesh_overlay_if_needed()
+
+    def _update_mapping_colorbar(self, cmap, vmin, vmax, output_type):
+        """Update the plotter colorbar for phase or modulation."""
+        pw = self.parent_widget
+        if pw is None:
+            return
+        norm = Normalize(vmin=vmin, vmax=vmax)
+        mappable = cm.ScalarMappable(norm=norm, cmap=cmap)
+        label = "Phase (rad)" if output_type == "Phase" else "Modulation"
+        # Access the private method to update the colorbar in the plotter
+        pw._update_mapping_colorbar(mappable=mappable, label=label)
+
+    def _on_mesh_colorbar_toggled(self, checked):
+        """Handle mesh colorbar toggle."""
+        if self._updating_settings:
+            return
+
+        self._update_lifetime_setting_in_metadata(
+            'mesh_colorbar_enabled', bool(checked)
+        )
+
+        output_type = self._get_selected_output_type()
+        if output_type in {"Phase", "Modulation"}:
+            if checked:
+                self._apply_histogram_coloring(output_type)
+            elif self.parent_widget is not None:
+                self.parent_widget._remove_mapping_colorbar()
+
+    def _on_mesh_alpha_changed(self, _value):
+        """Refresh mesh overlay when alpha changes."""
+        if not self._updating_settings:
+            self._update_lifetime_setting_in_metadata(
+                'mesh_alpha', float(self.mesh_alpha_spinbox.value())
+            )
+        self._refresh_mesh_overlay_if_needed()
+
+    def _on_phase_slider_changed(self, value):
+        """Handle phase range slider change from tab."""
+        if self._updating_settings:
+            return
+        min_v, max_v = value
+        min_f = min_v / self.phase_range_factor
+        max_f = max_v / self.phase_range_factor
+        self.phase_min_edit.setText(f"{min_f:.2f}")
+        self.phase_max_edit.setText(f"{max_f:.2f}")
+
+        if self.output_mode_combobox.currentText() == "Phase":
+            self._sync_range_to_histogram(min_f, max_f)
+        self._persist_current_mesh_ranges_to_metadata()
+        self._refresh_mesh_overlay_if_needed()
+
+    def _on_phase_edits_changed(self):
+        """Handle phase range line edit change from tab."""
+        if self._updating_settings:
+            return
+        try:
+            min_f = float(self.phase_min_edit.text())
+            max_f = float(self.phase_max_edit.text())
+            min_v = int(min_f * self.phase_range_factor)
+            max_v = int(max_f * self.phase_range_factor)
+            self.phase_range_slider.setValue((min_v, max_v))
+            # slider valueChanged will trigger sync and refresh
+        except ValueError:
+            pass
+        self._persist_current_mesh_ranges_to_metadata()
+        self._refresh_mesh_overlay_if_needed()
+
+    def _on_modulation_slider_changed(self, value):
+        """Handle modulation range slider change from tab."""
+        if self._updating_settings:
+            return
+        min_v, max_v = value
+        min_f = min_v / self.modulation_range_factor
+        max_f = max_v / self.modulation_range_factor
+        self.modulation_min_edit.setText(f"{min_f:.2f}")
+        self.modulation_max_edit.setText(f"{max_f:.2f}")
+
+        if self.output_mode_combobox.currentText() == "Modulation":
+            self._sync_range_to_histogram(min_f, max_f)
+        self._persist_current_mesh_ranges_to_metadata()
+        self._refresh_mesh_overlay_if_needed()
+
+    def _on_modulation_edits_changed(self):
+        """Handle modulation range line edit change from tab."""
+        if self._updating_settings:
+            return
+        try:
+            min_f = float(self.modulation_min_edit.text())
+            max_f = float(self.modulation_max_edit.text())
+            min_v = int(min_f * self.modulation_range_factor)
+            max_v = int(max_f * self.modulation_range_factor)
+            self.modulation_range_slider.setValue((min_v, max_v))
+            # slider valueChanged will trigger sync and refresh
+        except ValueError:
+            pass
+        self._persist_current_mesh_ranges_to_metadata()
+        self._refresh_mesh_overlay_if_needed()
+
+    def _sync_range_to_histogram(self, min_f, max_f):
+        """Sync tab slider range changes to HistogramWidget and update layers."""
+        # Use HistogramWidget's factor for its slider
+        factor = self.lifetime_range_factor
+        self.histogram_widget.range_slider.blockSignals(True)
+        try:
+            self.histogram_widget.set_range(min_f, max_f)
+            # Re-run current range logic to update napari layers
+            self._on_lifetime_range_changed(
+                (int(min_f * factor), int(max_f * factor))
+            )
+        finally:
+            self.histogram_widget.range_slider.blockSignals(False)
+
+    def _update_tab_sliders_from_range(self, min_f, max_f):
+        """Update tab sliders when range changes from HistogramWidget."""
+        output_type = self._get_selected_output_type()
+        self._updating_settings = True
+        try:
+            if output_type == "Phase":
+                min_v = int(min_f * self.phase_range_factor)
+                max_v = int(max_f * self.phase_range_factor)
+                self.phase_range_slider.setValue((min_v, max_v))
+                self.phase_min_edit.setText(f"{min_f:.2f}")
+                self.phase_max_edit.setText(f"{max_f:.2f}")
+            elif output_type == "Modulation":
+                min_v = int(min_f * self.modulation_range_factor)
+                max_v = int(max_f * self.modulation_range_factor)
+                self.modulation_range_slider.setValue((min_v, max_v))
+                self.modulation_min_edit.setText(f"{min_f:.2f}")
+                self.modulation_max_edit.setText(f"{max_f:.2f}")
+        finally:
+            self._updating_settings = False
