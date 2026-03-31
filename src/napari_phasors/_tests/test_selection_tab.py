@@ -261,7 +261,7 @@ def test_create_phasors_selected_layer_with_data(
     widget = parent.selection_tab
 
     # Make a manual selection to set up selection ID
-    widget.selection_mode_combobox.setCurrentIndex(2)  # Switch to manual mode
+    widget.selection_mode_combobox.setCurrentIndex(4)  # Switch to manual mode
     manual_selection = np.array([1, 0, 1, 0, 1, 0, 0, 0, 0, 0])
     widget.manual_selection_changed(manual_selection)
     widget.selection_id = "custom_selection"
@@ -305,13 +305,13 @@ def test_selection_mode_switching(make_napari_viewer):
     assert not widget.is_manual_selection_mode()
 
     # Switch to automatic clustering mode
-    widget.selection_mode_combobox.setCurrentIndex(1)
-    assert widget.stacked_widget.currentIndex() == 1
+    widget.selection_mode_combobox.setCurrentIndex(3)
+    assert widget.stacked_widget.currentIndex() == 3
     assert not widget.is_manual_selection_mode()
 
     # Switch to manual selection mode
-    widget.selection_mode_combobox.setCurrentIndex(2)
-    assert widget.stacked_widget.currentIndex() == 2
+    widget.selection_mode_combobox.setCurrentIndex(4)
+    assert widget.stacked_widget.currentIndex() == 4
     assert widget.is_manual_selection_mode()
 
     # Switch back to circular cursor mode
@@ -563,8 +563,8 @@ def test_circular_cursor_labels_layer_visibility(make_napari_viewer):
 
     # Switch to manual selection mode
     selection_widget.selection_mode_combobox.setCurrentIndex(
-        2
-    )  # Manual is index 2
+        4
+    )  # Manual is index 4
 
     # Circular cursor layer should be hidden now
     assert circular_layer.visible is False
@@ -775,7 +775,7 @@ def test_manual_selection_layers_hidden_in_circular_mode(make_napari_viewer):
     selection_widget = parent.selection_tab
 
     # Switch to manual selection mode
-    selection_widget.selection_mode_combobox.setCurrentIndex(1)
+    selection_widget.selection_mode_combobox.setCurrentIndex(4)
 
     # Make a manual selection
     manual_selection = np.array([1, 0, 1, 0, 1, 0, 0, 0, 0, 0])
@@ -795,8 +795,8 @@ def test_manual_selection_layers_hidden_in_circular_mode(make_napari_viewer):
 
     # Switch back to manual selection mode
     selection_widget.selection_mode_combobox.setCurrentIndex(
-        2
-    )  # Manual is index 2
+        4
+    )  # Manual is index 4
 
     # Manual selection layer should be visible again
     assert manual_layer.visible is True
@@ -1885,8 +1885,8 @@ def test_elliptical_cursor_widget_initialization(make_napari_viewer):
     # Test table initialization
     assert isinstance(widget.cursor_table, QTableWidget)
     assert (
-        widget.cursor_table.columnCount() == 8
-    )  # G, S, Radius, Radius Minor, Angle, Color, Count, %, Remove
+        widget.cursor_table.columnCount() == 9
+    )  # G, S, Major, Minor, Angle, Color, Count, %, Remove
     assert widget.cursor_table.rowCount() == 0  # No cursors initially
 
 
@@ -1930,6 +1930,7 @@ def test_elliptical_cursor_drag_and_rotate_logic(make_napari_viewer):
     # Simulate translation (no Shift)
     widget._dragging_cursor = 0
     widget._drag_offset = (0, 0)
+    widget._drag_mode = 'translate'
 
     # Mock event for translation
     mock_event = Mock()
@@ -1952,7 +1953,9 @@ def test_elliptical_cursor_drag_and_rotate_logic(make_napari_viewer):
 
     # Start rotation from (0.7, 0.6) relative to (0.6, 0.6)
     widget._dragging_cursor = 0
-    # No offset for rotation logic as implemented (it calculates angle from mouse to center)
+    widget._drag_mode = 'rotate'
+    widget._drag_start_angle = 0.0
+    widget._drag_start_cursor_angle = 0.0
 
     mock_rotate_event = Mock()
     mock_rotate_event.xdata = 0.6
