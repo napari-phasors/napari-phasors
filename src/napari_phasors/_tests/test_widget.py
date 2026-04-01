@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
+from phasorpy.datasets import fetch
 from phasorpy.io import (
     phasor_from_ometiff,
     signal_from_fbd,
@@ -733,6 +734,61 @@ def test_signal_plot_data_consistency_across_widgets(make_napari_viewer):
         assert isinstance(signal_array, np.ndarray)
         assert len(signal_array) > 0
         assert not np.isnan(signal_array).all()
+
+
+def test_phasor_transform_flif_widget(make_napari_viewer):
+    viewer = make_napari_viewer()
+    file_path = fetch("flimfast.flif")
+    PhasorTransform(viewer)
+    from napari_phasors._widget import FlifWidget
+
+    widget = FlifWidget(viewer, path=file_path)
+    widget.btn.click()
+    assert len(viewer.layers) > 0
+
+
+def test_phasor_transform_bh_widget(make_napari_viewer):
+    viewer = make_napari_viewer()
+    file_path = fetch("simfcs.b&h")
+    PhasorTransform(viewer)
+    from napari_phasors._widget import BhWidget
+
+    widget = BhWidget(viewer, path=file_path)
+    widget.btn.click()
+    assert len(viewer.layers) > 0
+
+
+def test_phasor_transform_bhz_widget(make_napari_viewer):
+    viewer = make_napari_viewer()
+    file_path = fetch("simfcs.bhz")
+    PhasorTransform(viewer)
+    from napari_phasors._widget import BhWidget
+
+    widget = BhWidget(viewer, path=file_path)
+    widget.btn.click()
+    assert len(viewer.layers) > 0
+
+
+def test_phasor_transform_json_widget(make_napari_viewer):
+    viewer = make_napari_viewer()
+    file_path = fetch("Fluorescein_Calibration_m2_1740751189_imaging.json")
+    PhasorTransform(viewer)
+    from napari_phasors._widget import JsonWidget
+
+    widget = JsonWidget(viewer, path=file_path)
+    widget.btn.click()
+    assert len(viewer.layers) > 0
+
+
+def test_phasor_transform_simfcs_widget(make_napari_viewer):
+    viewer = make_napari_viewer()
+    file_path = fetch("simfcs.r64")
+    PhasorTransform(viewer)
+    from napari_phasors._widget import SimfcsWidget
+
+    widget = SimfcsWidget(viewer, path=file_path)
+    widget.btn.click()
+    assert len(viewer.layers) > 0
 
 
 def test_writer_widget(make_napari_viewer, tmp_path):

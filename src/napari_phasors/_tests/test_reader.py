@@ -1,6 +1,7 @@
 import json
 
 import numpy as np
+from phasorpy.datasets import fetch
 from phasorpy.io import (
     phasor_from_ometiff,
     signal_from_fbd,
@@ -410,3 +411,72 @@ def test_reader_czi():
 
 
 # TODO: Add tests for .tif files
+
+# TODO: Add tests for .tif files
+
+
+def test_reader_flif():
+    """Test reading a flif file."""
+    flif_file = fetch("flimfast.flif")
+    reader = napari_get_reader(flif_file)
+    assert callable(reader)
+    layer_data_list = reader(flif_file)
+    assert isinstance(layer_data_list, list) and len(layer_data_list) > 0
+    layer_data = layer_data_list[0]
+    assert "metadata" in layer_data[1]
+    assert "G" in layer_data[1]["metadata"]
+
+
+def test_reader_bh():
+    """Test reading a bh file."""
+    bh_file = fetch("simfcs.b&h")
+    reader = napari_get_reader(bh_file)
+    assert callable(reader)
+    layer_data_list = reader(bh_file)
+    assert isinstance(layer_data_list, list) and len(layer_data_list) > 0
+    layer_data = layer_data_list[0]
+    assert "G" in layer_data[1]["metadata"]
+
+
+def test_reader_bhz():
+    """Test reading a bhz file."""
+    bhz_file = fetch("simfcs.bhz")
+    reader = napari_get_reader(bhz_file)
+    assert callable(reader)
+    layer_data_list = reader(bhz_file)
+    assert isinstance(layer_data_list, list) and len(layer_data_list) > 0
+    layer_data = layer_data_list[0]
+    assert "G" in layer_data[1]["metadata"]
+
+
+def test_reader_r64():
+    """Test reading a r64 file."""
+    r64_file = fetch("simfcs.r64")
+    reader = napari_get_reader(r64_file)
+    assert callable(reader)
+    layer_data_list = reader(r64_file)
+    assert isinstance(layer_data_list, list) and len(layer_data_list) > 0
+    layer_data = layer_data_list[0]
+    assert "G" in layer_data[1]["metadata"]
+
+
+def test_reader_json_imaging():
+    """Test reading a JSON imaging file."""
+    json_file = fetch("Fluorescein_Calibration_m2_1740751189_imaging.json")
+    reader = napari_get_reader(json_file)
+    assert callable(reader)
+    layer_data_list = reader(json_file)
+    assert isinstance(layer_data_list, list) and len(layer_data_list) > 0
+    layer_data = layer_data_list[0]
+    assert "G" in layer_data[1]["metadata"]
+
+
+def test_reader_json_phasor():
+    """Test reading a JSON phasor file."""
+    json_file = fetch("Convallaria_m2_1740751781_phasor_ch1.json")
+    reader = napari_get_reader(json_file)
+    assert callable(reader)
+    layer_data_list = reader(json_file)
+    assert isinstance(layer_data_list, list) and len(layer_data_list) > 0
+    layer_data = layer_data_list[0]
+    assert "G" in layer_data[1]["metadata"]

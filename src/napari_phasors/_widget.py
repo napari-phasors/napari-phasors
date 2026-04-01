@@ -88,6 +88,16 @@ class PhasorTransform(QWidget):
             ".ome.tiff": OmeTifWidget,
             ".sdt": SdtWidget,
             ".czi": CziWidget,
+            ".flif": FlifWidget,
+            ".bh": BhWidget,
+            ".b&h": BhWidget,
+            ".bhz": BhWidget,
+            ".bin": PqbinWidget,
+            ".r64": SimfcsWidget,
+            ".ref": SimfcsWidget,
+            ".ifli": IfliWidget,
+            ".lif": LifWidget,
+            ".json": JsonWidget,
         }
 
     def _open_file_dialog(self):
@@ -96,7 +106,8 @@ class PhasorTransform(QWidget):
         dialog = QFileDialog(self, "Select Export Location", options=options)
         dialog.setFileMode(QFileDialog.AnyFile)
         dialog.setNameFilter(
-            "All files (*.tif *.tiff *.ome.tif *.ome.tiff *.ptu *.fbd *.sdt *.lsm *.czi)"
+            "All files (*.tif *.tiff *.ome.tif *.ome.tiff *.ptu *.fbd *.sdt *.lsm *.czi"
+            " *.flif *.bh *.b&h *.bhz *.bin *.r64 *.ref *.ifli *.lif *.json)"
         )
         if dialog.exec_():
             selected_file = dialog.selectedFiles()[0]
@@ -121,6 +132,16 @@ class PhasorTransform(QWidget):
             "*.fbd",
             "*.sdt",
             "*.czi",
+            "*.flif",
+            "*.bh",
+            "*.b&h",
+            "*.bhz",
+            "*.bin",
+            "*.r64",
+            "*.ref",
+            "*.ifli",
+            "*.lif",
+            "*.json",
         )
 
         selected_entries, _ = QFileDialog.getOpenFileNames(
@@ -1621,6 +1642,304 @@ class OmeTifWidget(AdvancedOptionsWidget):
             super()._on_click(path, reader_options, harmonics)
         except Exception as e:  # noqa: BLE001
             show_error(f"Error during phasor transformation: {str(e)}")
+
+
+class FlifWidget(AdvancedOptionsWidget):
+    """Widget for FlimFast FLIF files."""
+
+    def __init__(self, viewer, path):
+        """Initialize the widget."""
+        super().__init__(viewer, path)
+
+    def initUI(self):
+        """Initialize the user interface."""
+        self.mainLayout = QVBoxLayout()
+        self.setLayout(self.mainLayout)
+        self.mainLayout.addWidget(self.canvas)
+        self._harmonic_widget()
+
+        self.btn = QPushButton("Phasor Transform")
+        self.btn.clicked.connect(
+            lambda: self._on_click(
+                self.path, self.reader_options, self.harmonics
+            )
+        )
+        self.mainLayout.addWidget(self.btn)
+        self._update_signal_plot()
+
+    def _get_signal_data(self):
+        """Get signal data for FLIF files."""
+        try:
+            from phasorpy.io import signal_from_flif
+
+            return signal_from_flif(self.path)
+        except Exception as e:  # noqa: BLE001
+            show_error(f"Error reading FLIF signal: {str(e)}")
+            return None
+
+
+class BhWidget(AdvancedOptionsWidget):
+    """Widget for SimFCS B&H files."""
+
+    def __init__(self, viewer, path):
+        """Initialize the widget."""
+        super().__init__(viewer, path)
+
+    def initUI(self):
+        """Initialize the user interface."""
+        self.mainLayout = QVBoxLayout()
+        self.setLayout(self.mainLayout)
+        self.mainLayout.addWidget(self.canvas)
+        self._harmonic_widget()
+
+        self.btn = QPushButton("Phasor Transform")
+        self.btn.clicked.connect(
+            lambda: self._on_click(
+                self.path, self.reader_options, self.harmonics
+            )
+        )
+        self.mainLayout.addWidget(self.btn)
+        self._update_signal_plot()
+
+    def _get_signal_data(self):
+        """Get signal data for B&H and BHZ files."""
+        try:
+            from phasorpy.io import signal_from_bh, signal_from_bhz
+
+            _, ext = _get_filename_extension(self.path)
+            if ext == ".bhz":
+                return signal_from_bhz(self.path)
+            return signal_from_bh(self.path)
+        except Exception as e:  # noqa: BLE001
+            show_error(f"Error reading B&H signal: {str(e)}")
+            return None
+
+
+class PqbinWidget(AdvancedOptionsWidget):
+    """Widget for PicoQuant BIN files."""
+
+    def __init__(self, viewer, path):
+        """Initialize the widget."""
+        super().__init__(viewer, path)
+
+    def initUI(self):
+        """Initialize the user interface."""
+        self.mainLayout = QVBoxLayout()
+        self.setLayout(self.mainLayout)
+        self.mainLayout.addWidget(self.canvas)
+        self._harmonic_widget()
+
+        self.btn = QPushButton("Phasor Transform")
+        self.btn.clicked.connect(
+            lambda: self._on_click(
+                self.path, self.reader_options, self.harmonics
+            )
+        )
+        self.mainLayout.addWidget(self.btn)
+        self._update_signal_plot()
+
+    def _get_signal_data(self):
+        """Get signal data for PicoQuant BIN files."""
+        try:
+            from phasorpy.io import signal_from_pqbin
+
+            return signal_from_pqbin(self.path)
+        except Exception as e:  # noqa: BLE001
+            show_error(f"Error reading PicoQuant BIN signal: {str(e)}")
+            return None
+
+
+class LifWidget(AdvancedOptionsWidget):
+    """Widget for Leica LIF files."""
+
+    def __init__(self, viewer, path):
+        """Initialize the widget."""
+        super().__init__(viewer, path)
+
+    def initUI(self):
+        """Initialize the user interface."""
+        self.mainLayout = QVBoxLayout()
+        self.setLayout(self.mainLayout)
+        self.mainLayout.addWidget(self.canvas)
+        self._harmonic_widget()
+
+        image_layout = QHBoxLayout()
+        image_layout.addWidget(QLabel("Image (regex/index): "))
+        self.image = QLineEdit()
+        self.image.setToolTip("Index or regex pattern of image to return.")
+        self.image.textChanged.connect(lambda: self._update_signal_plot())
+        image_layout.addWidget(self.image)
+        image_layout.addStretch()
+        self.mainLayout.addLayout(image_layout)
+
+        dim_layout = QHBoxLayout()
+        dim_layout.addWidget(QLabel("Dim: "))
+        self.dim = QComboBox()
+        self.dim.addItems(["λ", "Λ"])
+        self.dim.setToolTip(
+            "Character code of hyperspectral dimension. 'λ' for emission, 'Λ' for excitation."
+        )
+        self.dim.currentIndexChanged.connect(
+            lambda: self._update_signal_plot()
+        )
+        dim_layout.addWidget(self.dim)
+        dim_layout.addStretch()
+        self.mainLayout.addLayout(dim_layout)
+
+        self.btn = QPushButton("Phasor Transform")
+        self.btn.clicked.connect(
+            lambda: self._on_click(
+                self.path, self.reader_options, self.harmonics
+            )
+        )
+        self.mainLayout.addWidget(self.btn)
+        self._update_signal_plot()
+
+    def _get_signal_data(self):
+        """Get signal data for LIF files if raw."""
+        try:
+            import ast
+
+            from phasorpy.io import signal_from_lif
+
+            options = self.reader_options.copy()
+            text = self.image.text()
+            if text:
+                try:
+                    options["image"] = ast.literal_eval(text)
+                except Exception:  # noqa: BLE001
+                    options["image"] = text
+            options["dim"] = self.dim.currentText()
+            return signal_from_lif(self.path, **options)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _on_click(self, path, reader_options, harmonics):
+        """Callback whenever the calculate phasor button is clicked."""
+        text = self.image.text()
+        if text:
+            import ast
+
+            try:
+                reader_options["image"] = ast.literal_eval(text)
+            except Exception:  # noqa: BLE001
+                reader_options["image"] = text
+        reader_options["dim"] = self.dim.currentText()
+        super()._on_click(path, reader_options, harmonics)
+
+
+class JsonWidget(AdvancedOptionsWidget):
+    """Widget for FLIM LABS JSON files."""
+
+    def __init__(self, viewer, path):
+        """Initialize the widget."""
+        super().__init__(viewer, path)
+        self.reader_options["channel"] = 0
+
+    def initUI(self):
+        """Initialize the user interface."""
+        self.mainLayout = QVBoxLayout()
+        self.setLayout(self.mainLayout)
+        self.mainLayout.addWidget(self.canvas)
+        self._harmonic_widget()
+
+        chan_layout = QHBoxLayout()
+        chan_layout.addWidget(QLabel("Channel (optional): "))
+        self.channel_entry = QLineEdit("0")
+        self.channel_entry.setValidator(QDoubleValidator())
+        self.channel_entry.setToolTip(
+            "Index of channel or empty for all channel reading."
+        )
+        self.channel_entry.textChanged.connect(
+            lambda: self._update_signal_plot()
+        )
+        chan_layout.addWidget(self.channel_entry)
+        chan_layout.addStretch()
+        self.mainLayout.addLayout(chan_layout)
+
+        self.btn = QPushButton("Phasor Transform")
+        self.btn.clicked.connect(
+            lambda: self._on_click(
+                self.path, self.reader_options, self.harmonics
+            )
+        )
+        self.mainLayout.addWidget(self.btn)
+        self._update_signal_plot()
+
+    def _get_signal_data(self):
+        """Get signal data for JSON files if raw."""
+        try:
+            from phasorpy.io import signal_from_flimlabs_json
+
+            options = self.reader_options.copy()
+            txt = self.channel_entry.text()
+            options["channel"] = int(txt) if txt else None
+            return signal_from_flimlabs_json(self.path, **options)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _on_click(self, path, reader_options, harmonics):
+        """Callback whenever the calculate phasor button is clicked."""
+        txt = self.channel_entry.text()
+        reader_options["channel"] = int(txt) if txt else None
+        super()._on_click(path, reader_options, harmonics)
+
+
+class ProcessedOnlyWidget(AdvancedOptionsWidget):
+    """Generic Widget for Processed-only files (no signal)."""
+
+    def __init__(self, viewer, path):
+        """Initialize the widget."""
+        super().__init__(viewer, path)
+
+    def initUI(self):
+        """Initialize the user interface."""
+        self.mainLayout = QVBoxLayout()
+        self.setLayout(self.mainLayout)
+        self.canvas.hide()
+        self._harmonic_widget()
+        self.btn = QPushButton("Phasor Transform")
+        self.btn.clicked.connect(
+            lambda: self._on_click(
+                self.path, self.reader_options, self.harmonics
+            )
+        )
+        self.mainLayout.addWidget(self.btn)
+
+    def _get_signal_data(self):
+        """No raw signal for processed files."""
+        return None
+
+    def _update_signal_plot(self):
+        """Override to just sync widgets and harmonics."""
+        self._sync_stack_z_spacing_widget_visibility()
+        self._update_harmonic_slider()
+
+
+class SimfcsWidget(ProcessedOnlyWidget):
+    """Widget for SimFCS referenced phasor files (.r64, .ref)."""
+
+
+class IfliWidget(ProcessedOnlyWidget):
+    """Widget for ISS IFLI files."""
+
+    def initUI(self):
+        """Initialize the user interface."""
+        super().initUI()
+        self.reader_options["channel"] = 0
+        chan_layout = QHBoxLayout()
+        chan_layout.addWidget(QLabel("Channel: "))
+        self.channel_entry = QLineEdit("0")
+        self.channel_entry.setValidator(QDoubleValidator())
+        chan_layout.addWidget(self.channel_entry)
+        chan_layout.addStretch()
+        self.mainLayout.insertLayout(1, chan_layout)
+
+    def _on_click(self, path, reader_options, harmonics):
+        """Callback whenever the calculate phasor button is clicked."""
+        txt = self.channel_entry.text()
+        reader_options["channel"] = int(txt) if txt else 0
+        super()._on_click(path, reader_options, harmonics)
 
 
 class WriterWidget(QWidget):
