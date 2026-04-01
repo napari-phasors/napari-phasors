@@ -377,6 +377,34 @@ def test_reader_ometif_metadata():
             assert isinstance(cursor["color"], (list, tuple))
             assert len(cursor["color"]) == 4  # RGBA
 
+    # Test polar cursors in metadata
+    if "selections" in settings and "polar_cursors" in settings["selections"]:
+        polar_cursors = settings["selections"]["polar_cursors"]
+        assert isinstance(polar_cursors, list)
+        for cursor in polar_cursors:
+            assert "phase_min" in cursor
+            assert "phase_max" in cursor
+            assert "modulation_min" in cursor
+            assert "modulation_max" in cursor
+            assert "color" in cursor
+            assert len(cursor["color"]) == 4
+
+    # Test elliptical cursors in metadata
+    if (
+        "selections" in settings
+        and "elliptical_cursors" in settings["selections"]
+    ):
+        elliptical_cursors = settings["selections"]["elliptical_cursors"]
+        assert isinstance(elliptical_cursors, list)
+        for cursor in elliptical_cursors:
+            assert "g" in cursor
+            assert "s" in cursor
+            assert "radius" in cursor
+            assert "radius_minor" in cursor
+            assert "angle" in cursor
+            assert "color" in cursor
+            assert len(cursor["color"]) == 4
+
 
 def test_reader_czi():
     """Test reading a CZI file"""
