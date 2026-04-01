@@ -4822,6 +4822,32 @@ class PlotterWidget(QWidget):
                 for layer in self.viewer.layers
                 if isinstance(layer, (Labels, Shapes))
             ]
+            mask_layers_by_id = {
+                id(layer): layer.name
+                for layer in self.viewer.layers
+                if isinstance(layer, (Labels, Shapes))
+            }
+
+            # If mask layers were renamed, keep combobox and assignments synced
+            # by matching layer object identity across updates.
+            old_mask_layers_by_id = getattr(self, '_mask_layers_by_id', {})
+            renamed_masks = {
+                old_mask_layers_by_id[layer_id]: new_name
+                for layer_id, new_name in mask_layers_by_id.items()
+                if layer_id in old_mask_layers_by_id
+                and old_mask_layers_by_id[layer_id] != new_name
+            }
+
+            if mask_layer_combobox_current_text in renamed_masks:
+                mask_layer_combobox_current_text = renamed_masks[
+                    mask_layer_combobox_current_text
+                ]
+
+            if renamed_masks:
+                self._mask_assignments = {
+                    image_layer_name: renamed_masks.get(mask_name, mask_name)
+                    for image_layer_name, mask_name in self._mask_assignments.items()
+                }
 
             # Add items to the checkable combobox
             for name in layer_names:
@@ -4885,10 +4911,11 @@ class PlotterWidget(QWidget):
             # Connect layer name change events (disconnect first to avoid duplicates)
             for layer_name in layer_names + mask_layer_names:
                 layer = self.viewer.layers[layer_name]
-                if (
-                    isinstance(layer, Image)
-                    and "phasor_features_labels_layer" in layer.metadata
-                ):
+                if isinstance(layer, Image):
+                    with contextlib.suppress(TypeError, ValueError):
+                        layer.events.name.disconnect(self.reset_layer_choices)
+                    layer.events.name.connect(self.reset_layer_choices)
+                if isinstance(layer, (Shapes, Labels)):
                     with contextlib.suppress(TypeError, ValueError):
                         layer.events.name.disconnect(self.reset_layer_choices)
                     layer.events.name.connect(self.reset_layer_choices)
@@ -4910,6 +4937,8 @@ class PlotterWidget(QWidget):
                         pass  # Not connected, ignore
                     layer.events.paint.connect(self._on_mask_data_changed)
                     layer.events.set_data.connect(self._on_mask_data_changed)
+
+            self._mask_layers_by_id = mask_layers_by_id
 
             new_selected = self.get_selected_layer_names()
             if new_selected != previously_selected or (
@@ -5386,7 +5415,19 @@ class PlotterWidget(QWidget):
             self.mask_assign_button.setVisible(False)
             # Sync the combobox with current assignment for the single selected layer
             if selected:
-                current_mask = self._mask_assignments.get(selected[0], "None")
+                assigned_mask = self._mask_assignments.get(selected[0])
+                available_masks = {
+                    self.mask_layer_combobox.itemText(i)
+                    for i in range(self.mask_layer_combobox.count())
+                }
+                if assigned_mask in available_masks:
+                    current_mask = assigned_mask
+                elif self.mask_layer_combobox.currentText() in available_masks:
+                    # Preserve the current valid selection when there is no
+                    # explicit assignment for this layer.
+                    current_mask = self.mask_layer_combobox.currentText()
+                else:
+                    current_mask = "None"
                 self.mask_layer_combobox.blockSignals(True)
                 self.mask_layer_combobox.setCurrentText(current_mask)
                 self.mask_layer_combobox.blockSignals(False)

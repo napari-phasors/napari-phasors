@@ -1495,6 +1495,48 @@ def test_phasor_plotter_restore_original_phasor_data(make_napari_viewer):
     )
 
 
+def test_mask_layer_rename_updates_combobox_and_assignments(
+    make_napari_viewer,
+):
+    """Regression test for mask-layer rename synchronization in the plotter."""
+    viewer = make_napari_viewer()
+
+    layer1 = create_image_layer_with_phasors()
+    layer2 = create_image_layer_with_phasors()
+    viewer.add_layer(layer1)
+    viewer.add_layer(layer2)
+
+    # Build a mask compatible with phasor spatial dimensions.
+    g_data = layer1.metadata["G"]
+    mask_shape = g_data.shape[1:] if g_data.ndim == 3 else g_data.shape
+    mask = np.ones(mask_shape, dtype=int)
+    labels_layer = viewer.add_labels(mask, name="mask_before_rename")
+
+    plotter = PlotterWidget(viewer)
+
+    # Single-layer mode: selecting a mask updates the combobox and assignments.
+    plotter.image_layers_checkable_combobox.setCheckedItems([layer1.name])
+    plotter.mask_layer_combobox.setCurrentText("mask_before_rename")
+    assert plotter.mask_layer_combobox.currentText() == "mask_before_rename"
+    assert plotter._mask_assignments.get(layer1.name) == "mask_before_rename"
+
+    # Renaming the mask layer should propagate to UI and assignments.
+    labels_layer.name = "mask_after_rename"
+
+    combo_items = [
+        plotter.mask_layer_combobox.itemText(i)
+        for i in range(plotter.mask_layer_combobox.count())
+    ]
+    assert "mask_after_rename" in combo_items
+    assert "mask_before_rename" not in combo_items
+    assert plotter.mask_layer_combobox.currentText() == "mask_after_rename"
+    assert plotter._mask_assignments.get(layer1.name) == "mask_after_rename"
+
+    # Re-running UI sync must not reset selection to None.
+    plotter._update_mask_ui_mode()
+    assert plotter.mask_layer_combobox.currentText() == "mask_after_rename"
+
+
 def test_mask_ui_switches_to_button_when_multiple_layers_selected(
     make_napari_viewer,
 ):
