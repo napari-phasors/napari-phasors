@@ -21,7 +21,7 @@ from matplotlib.figure import Figure
 from napari.layers import Image
 from napari.utils.notifications import show_error, show_info
 from qtpy.QtCore import Qt
-from qtpy.QtGui import QDoubleValidator
+from qtpy.QtGui import QDoubleValidator, QIntValidator
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -1767,7 +1767,7 @@ class LifWidget(AdvancedOptionsWidget):
         image_layout.addWidget(QLabel("Image (regex/index): "))
         self.image = QLineEdit()
         self.image.setToolTip("Index or regex pattern of image to return.")
-        self.image.textChanged.connect(lambda: self._update_signal_plot())
+        self.image.textChanged.connect(self._on_lif_options_changed)
         image_layout.addWidget(self.image)
         image_layout.addStretch()
         self.mainLayout.addLayout(image_layout)
@@ -1779,12 +1779,12 @@ class LifWidget(AdvancedOptionsWidget):
         self.dim.setToolTip(
             "Character code of hyperspectral dimension. 'λ' for emission, 'Λ' for excitation."
         )
-        self.dim.currentIndexChanged.connect(
-            lambda: self._update_signal_plot()
-        )
+        self.dim.currentIndexChanged.connect(self._on_lif_options_changed)
         dim_layout.addWidget(self.dim)
         dim_layout.addStretch()
         self.mainLayout.addLayout(dim_layout)
+
+        self._sync_lif_reader_options()
 
         self.btn = QPushButton("Phasor Transform")
         self.btn.clicked.connect(
@@ -1795,23 +1795,47 @@ class LifWidget(AdvancedOptionsWidget):
         self.mainLayout.addWidget(self.btn)
         self._update_signal_plot()
 
+    def _sync_lif_reader_options(self):
+        """Synchronize reader options with current LIF widget state."""
+        text = self.image.text().strip()
+        if text:
+            import ast
+
+            try:
+                self.reader_options["image"] = ast.literal_eval(text)
+            except Exception:  # noqa: BLE001
+                self.reader_options["image"] = text
+        else:
+            self.reader_options.pop("image", None)
+
+        self.reader_options["dim"] = self.dim.currentText()
+
+    def _on_lif_options_changed(self):
+        """Update options and refresh plot/shape preview on UI changes."""
+        self._sync_lif_reader_options()
+        self._update_signal_plot()
+
     def _get_signal_data(self):
         """Get signal data for LIF files if raw."""
+        text = self.image.text()
+        dim = self.dim.currentText()
         try:
             import ast
 
             from phasorpy.io import signal_from_lif
 
             options = self.reader_options.copy()
-            text = self.image.text()
             if text:
                 try:
                     options["image"] = ast.literal_eval(text)
                 except Exception:  # noqa: BLE001
                     options["image"] = text
-            options["dim"] = self.dim.currentText()
+            options["dim"] = dim
             return signal_from_lif(self.path, **options)
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            show_error(
+                f"Error reading LIF signal (image={text!r}, dim={dim!r}): {str(e)}"
+            )
             return None
 
     def _on_click(self, path, reader_options, harmonics):
@@ -1846,16 +1870,16 @@ class JsonWidget(AdvancedOptionsWidget):
         chan_layout = QHBoxLayout()
         chan_layout.addWidget(QLabel("Channel (optional): "))
         self.channel_entry = QLineEdit("0")
-        self.channel_entry.setValidator(QDoubleValidator())
+        self.channel_entry.setValidator(QIntValidator(0, 2147483647, self))
         self.channel_entry.setToolTip(
             "Index of channel or empty for all channel reading."
         )
-        self.channel_entry.textChanged.connect(
-            lambda: self._update_signal_plot()
-        )
+        self.channel_entry.textChanged.connect(self._on_json_channel_changed)
         chan_layout.addWidget(self.channel_entry)
         chan_layout.addStretch()
         self.mainLayout.addLayout(chan_layout)
+
+        self._sync_json_reader_options()
 
         self.btn = QPushButton("Phasor Transform")
         self.btn.clicked.connect(
@@ -1866,22 +1890,38 @@ class JsonWidget(AdvancedOptionsWidget):
         self.mainLayout.addWidget(self.btn)
         self._update_signal_plot()
 
+    def _sync_json_reader_options(self):
+        """Synchronize reader channel option with current JSON widget state."""
+        txt = self.channel_entry.text().strip()
+        try:
+            self.reader_options["channel"] = int(txt) if txt else None
+        except ValueError:
+            # Keep previous behavior for invalid transient text states.
+            self.reader_options["channel"] = None
+
+    def _on_json_channel_changed(self):
+        """Update options and refresh previews when JSON channel changes."""
+        self._sync_json_reader_options()
+        self._update_signal_plot()
+
     def _get_signal_data(self):
         """Get signal data for JSON files if raw."""
+        self._sync_json_reader_options()
+        txt = self.channel_entry.text().strip()
         try:
             from phasorpy.io import signal_from_flimlabs_json
 
             options = self.reader_options.copy()
-            txt = self.channel_entry.text()
-            options["channel"] = int(txt) if txt else None
             return signal_from_flimlabs_json(self.path, **options)
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            show_error(
+                f"Error reading JSON signal (channel={txt!r}): {str(e)}"
+            )
             return None
 
     def _on_click(self, path, reader_options, harmonics):
         """Callback whenever the calculate phasor button is clicked."""
-        txt = self.channel_entry.text()
-        reader_options["channel"] = int(txt) if txt else None
+        self._sync_json_reader_options()
         super()._on_click(path, reader_options, harmonics)
 
 
@@ -1930,15 +1970,19 @@ class IfliWidget(ProcessedOnlyWidget):
         chan_layout = QHBoxLayout()
         chan_layout.addWidget(QLabel("Channel: "))
         self.channel_entry = QLineEdit("0")
-        self.channel_entry.setValidator(QDoubleValidator())
+        self.channel_entry.setValidator(QIntValidator(0, 2147483647, self))
         chan_layout.addWidget(self.channel_entry)
         chan_layout.addStretch()
         self.mainLayout.insertLayout(1, chan_layout)
 
     def _on_click(self, path, reader_options, harmonics):
         """Callback whenever the calculate phasor button is clicked."""
-        txt = self.channel_entry.text()
-        reader_options["channel"] = int(txt) if txt else 0
+        txt = self.channel_entry.text().strip()
+        try:
+            reader_options["channel"] = int(txt) if txt else 0
+        except ValueError:
+            reader_options["channel"] = 0
+            self.channel_entry.setText("0")
         super()._on_click(path, reader_options, harmonics)
 
 

@@ -280,15 +280,17 @@ def raw_file_reader(
 
     layers = []
     iter_axis = iter_index_mapping[file_extension]
+    has_dims = hasattr(raw_data, 'dims')
+    raw_dims = tuple(raw_data.dims) if has_dims else ()
 
-    if iter_axis is None or iter_axis not in raw_data.dims:
+    if iter_axis is None or iter_axis not in raw_dims:
         # Handle files without iteration axis or when keepdims=False squeezed it out
         if file_extension in [".tif", ".tiff"]:
             axis = 0
-        elif "H" in raw_data.dims:
-            axis = raw_data.dims.index("H")
-        elif "C" in raw_data.dims:
-            axis = raw_data.dims.index("C")
+        elif has_dims and "H" in raw_dims:
+            axis = raw_dims.index("H")
+        elif has_dims and "C" in raw_dims:
+            axis = raw_dims.index("C")
         else:
             axis = 0
 

@@ -438,11 +438,6 @@ def test_reader_czi():
     assert metadata["original_mean"].shape == (512, 512)
 
 
-# TODO: Add tests for .tif files
-
-# TODO: Add tests for .tif files
-
-
 def test_reader_flif():
     """Test reading a flif file."""
     flif_file = fetch("flimfast.flif")
@@ -508,3 +503,6 @@ def test_reader_json_phasor():
     assert isinstance(layer_data_list, list) and len(layer_data_list) > 0
     layer_data = layer_data_list[0]
     assert "G" in layer_data[1]["metadata"]
+
+
+# TODO: Add tests for .tif files
