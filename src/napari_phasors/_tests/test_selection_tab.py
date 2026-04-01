@@ -76,9 +76,7 @@ def test_selection_widget_with_layer_data(make_napari_viewer):
     assert widget._phasors_selected_layer is None
 
     # Switch to manual selection mode to test manual selection functionality
-    widget.selection_mode_combobox.setCurrentIndex(
-        2
-    )  # Manual Selection is now index 2
+    widget.selection_mode_combobox.setCurrentText("Manual Selection")
 
     combobox = widget.selection_input_widget.phasor_selection_id_combobox
     assert combobox.count() == 2
@@ -261,7 +259,9 @@ def test_create_phasors_selected_layer_with_data(
     widget = parent.selection_tab
 
     # Make a manual selection to set up selection ID
-    widget.selection_mode_combobox.setCurrentIndex(4)  # Switch to manual mode
+    widget.selection_mode_combobox.setCurrentText(
+        "Manual Selection"
+    )  # Switch to manual mode
     manual_selection = np.array([1, 0, 1, 0, 1, 0, 0, 0, 0, 0])
     widget.manual_selection_changed(manual_selection)
     widget.selection_id = "custom_selection"
@@ -305,17 +305,17 @@ def test_selection_mode_switching(make_napari_viewer):
     assert not widget.is_manual_selection_mode()
 
     # Switch to automatic clustering mode
-    widget.selection_mode_combobox.setCurrentIndex(3)
+    widget.selection_mode_combobox.setCurrentText("Automatic Clustering")
     assert widget.stacked_widget.currentIndex() == 3
     assert not widget.is_manual_selection_mode()
 
     # Switch to manual selection mode
-    widget.selection_mode_combobox.setCurrentIndex(4)
+    widget.selection_mode_combobox.setCurrentText("Manual Selection")
     assert widget.stacked_widget.currentIndex() == 4
     assert widget.is_manual_selection_mode()
 
     # Switch back to circular cursor mode
-    widget.selection_mode_combobox.setCurrentIndex(0)
+    widget.selection_mode_combobox.setCurrentText("Circular Cursor")
     assert widget.stacked_widget.currentIndex() == 0
     assert not widget.is_manual_selection_mode()
 
@@ -562,16 +562,14 @@ def test_circular_cursor_labels_layer_visibility(make_napari_viewer):
     assert circular_layer.visible is True
 
     # Switch to manual selection mode
-    selection_widget.selection_mode_combobox.setCurrentIndex(
-        4
-    )  # Manual is index 4
+    selection_widget.selection_mode_combobox.setCurrentText("Manual Selection")
 
     # Circular cursor layer should be hidden now
     assert circular_layer.visible is False
     assert selection_widget.is_manual_selection_mode()
 
     # Switch back to circular cursor mode
-    selection_widget.selection_mode_combobox.setCurrentIndex(0)
+    selection_widget.selection_mode_combobox.setCurrentText("Circular Cursor")
 
     # Circular cursor layer should be visible again
     assert circular_layer.visible is True
@@ -775,7 +773,7 @@ def test_manual_selection_layers_hidden_in_circular_mode(make_napari_viewer):
     selection_widget = parent.selection_tab
 
     # Switch to manual selection mode
-    selection_widget.selection_mode_combobox.setCurrentIndex(4)
+    selection_widget.selection_mode_combobox.setCurrentText("Manual Selection")
 
     # Make a manual selection
     manual_selection = np.array([1, 0, 1, 0, 1, 0, 0, 0, 0, 0])
@@ -787,16 +785,14 @@ def test_manual_selection_layers_hidden_in_circular_mode(make_napari_viewer):
     assert manual_layer.visible is True
 
     # Switch to circular cursor mode
-    selection_widget.selection_mode_combobox.setCurrentIndex(0)
+    selection_widget.selection_mode_combobox.setCurrentText("Circular Cursor")
 
     # Manual selection layer should be hidden now
     assert manual_layer.visible is False
     assert not selection_widget.is_manual_selection_mode()
 
     # Switch back to manual selection mode
-    selection_widget.selection_mode_combobox.setCurrentIndex(
-        4
-    )  # Manual is index 4
+    selection_widget.selection_mode_combobox.setCurrentText("Manual Selection")
 
     # Manual selection layer should be visible again
     assert manual_layer.visible is True
@@ -1484,9 +1480,9 @@ def test_on_harmonic_changed_only_updates_active_mode(make_napari_viewer):
     circular_widget._add_cursor()
 
     # Switch to automatic clustering mode
-    selection_widget.selection_mode_combobox.setCurrentIndex(
-        1
-    )  # Automatic is index 1
+    selection_widget.selection_mode_combobox.setCurrentText(
+        "Automatic Clustering"
+    )
 
     # Apply clustering on harmonic 1
     clustering_widget = selection_widget.automatic_clustering_widget
@@ -1502,7 +1498,7 @@ def test_on_harmonic_changed_only_updates_active_mode(make_napari_viewer):
     # so that's fine
 
     # Switch back to circular cursor mode
-    selection_widget.selection_mode_combobox.setCurrentIndex(0)
+    selection_widget.selection_mode_combobox.setCurrentText("Circular Cursor")
 
     # Change harmonic back to 1
     parent.harmonic_spinbox.setValue(1)

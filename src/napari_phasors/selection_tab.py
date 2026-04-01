@@ -2927,12 +2927,21 @@ class PolarCursorWidget(QWidget):
         if cursor_idx < 0 or cursor_idx >= len(self._cursors):
             return
 
+        # Remove patch from canvas
+        if self._cursors[cursor_idx]['patch'] is not None:
+            with contextlib.suppress(ValueError):
+                self._cursors[cursor_idx]['patch'].remove()
+
         # Remove from data
         self._cursors.pop(cursor_idx)
 
         # Rebuild the table to reflect the removal
         if self.parent_widget is not None:
             self.on_harmonic_changed()
+
+        # Redraw canvas
+        if self.parent_widget is not None:
+            self.parent_widget.canvas_widget.canvas.draw_idle()
 
         # Apply selection to update labels layer
         if not self._cursors:
