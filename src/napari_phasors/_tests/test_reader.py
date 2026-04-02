@@ -10,6 +10,7 @@ from phasorpy.io import (
     signal_from_sdt,
 )
 
+import napari_phasors._reader as reader_module
 from napari_phasors import napari_get_reader
 from napari_phasors._tests.test_data_utils import get_test_file_path
 
@@ -307,6 +308,34 @@ def test_reader_tiff_extension():
     """Test .tiff extension maps to raw reader."""
     reader = napari_get_reader("test_file.tiff")
     assert callable(reader)
+
+
+def test_reader_multi_file_raw_dispatches_to_stack_reader(monkeypatch):
+    """Test that a list of raw files is handled via raw_file_stack_reader."""
+    paths = ["slice_01.lsm", "slice_02.lsm", "slice_03.lsm"]
+    expected_layers = [(np.zeros((2, 2, 2)), {"name": "stack"})]
+
+    def fake_stack_reader(
+        in_paths,
+        reader_options=None,
+        harmonics=None,
+    ):
+        assert in_paths == paths
+        assert reader_options == {"foo": "bar"}
+        assert harmonics == [1, 2]
+        return expected_layers
+
+    monkeypatch.setattr(
+        reader_module, "raw_file_stack_reader", fake_stack_reader
+    )
+
+    reader = napari_get_reader(
+        paths,
+        reader_options={"foo": "bar"},
+        harmonics=[1, 2],
+    )
+    assert callable(reader)
+    assert reader(paths) == expected_layers
 
 
 def test_reader_ometif_metadata():

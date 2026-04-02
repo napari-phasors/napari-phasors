@@ -148,7 +148,7 @@ when calculating phasor coordinates in the file.
 
 
 def napari_get_reader(
-    path: str,
+    path: str | list[str],
     reader_options: dict | None = None,
     harmonics: Union[int, Sequence[int], None] = None,
 ) -> Callable | None:
@@ -157,8 +157,8 @@ def napari_get_reader(
 
     Parameters
     ----------
-    path : str
-        Path to file.
+    path : str or list of str
+        Path to a file, or a list of file paths selected in napari.
     reader_options : dict, optional
         Dictionary containing the arguments to pass to the function.
     harmonics : Union[int, Sequence[int], None], optional
@@ -177,6 +177,35 @@ def napari_get_reader(
         in 'metadata' contain phasor coordinates as columns 'G' and 'S'.
 
     """
+    if isinstance(path, list):
+        if len(path) == 0:
+            show_error("No files selected.")
+            return None
+
+        # Napari may pass a list of paths when selecting multiple files.
+        if len(path) > 1:
+            extensions = {_get_filename_extension(p)[1] for p in path}
+            if len(extensions) != 1:
+                show_error(
+                    f"All files must share the same extension, got: {extensions}"
+                )
+                return None
+
+            file_extension = next(iter(extensions))
+            if file_extension in extension_mapping["raw"]:
+                return lambda paths: raw_file_stack_reader(
+                    paths,
+                    reader_options=reader_options,
+                    harmonics=harmonics,
+                )
+
+            show_error(
+                "Multi-file loading is only supported for raw file formats."
+            )
+            return None
+
+        path = path[0]
+
     extensions_both = set(extension_mapping["raw"].keys()).intersection(
         extension_mapping["processed"].keys()
     )
