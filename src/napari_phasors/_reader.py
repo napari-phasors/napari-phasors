@@ -236,10 +236,18 @@ def ambiguous_file_reader(
         return raw_file_reader(
             path, reader_options=reader_options, harmonics=harmonics
         )
-    except Exception:  # noqa: BLE001
-        return processed_file_reader(
-            path, reader_options=reader_options, harmonics=harmonics
-        )
+    except Exception as e_raw:  # noqa: BLE001
+        try:
+            return processed_file_reader(
+                path, reader_options=reader_options, harmonics=harmonics
+            )
+        except Exception as e_processed:  # noqa: BLE001
+            raise RuntimeError(
+                "Failed to read ambiguous file with both raw and "
+                "processed readers. "
+                f"raw_file_reader error: {e_raw!r}; "
+                f"processed_file_reader error: {e_processed!r}"
+            ) from e_processed
 
 
 def raw_file_reader(

@@ -192,7 +192,9 @@ def test_multi_file_preview_is_averaged(make_napari_viewer):
         "file_a.lsm": np.array([1.0, 2.0, 3.0]),
         "file_b.lsm": np.array([3.0, 4.0, 5.0]),
     }
-    widget._multi_file_paths = file_paths
+    widget._grouped_file_paths = file_paths
+    # Also set multi paths to verify grouped mode takes precedence.
+    widget._multi_file_paths = ["other_a.lsm", "other_b.lsm"]
 
     original_path = widget.path
 

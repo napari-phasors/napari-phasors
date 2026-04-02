@@ -1,6 +1,7 @@
 import json
 
 import numpy as np
+import pytest
 from phasorpy.datasets import fetch
 from phasorpy.io import (
     phasor_from_ometiff,
@@ -532,6 +533,46 @@ def test_reader_json_phasor():
     assert isinstance(layer_data_list, list) and len(layer_data_list) > 0
     layer_data = layer_data_list[0]
     assert "G" in layer_data[1]["metadata"]
+
+
+def test_ambiguous_file_reader_falls_back_to_processed(monkeypatch):
+    """Ambiguous reader should fallback to processed when raw fails."""
+    expected_layers = [(np.zeros((2, 2)), {"name": "processed"})]
+
+    def fake_raw(*args, **kwargs):
+        raise ValueError("raw failed")
+
+    def fake_processed(*args, **kwargs):
+        return expected_layers
+
+    monkeypatch.setattr(reader_module, "raw_file_reader", fake_raw)
+    monkeypatch.setattr(reader_module, "processed_file_reader", fake_processed)
+
+    result = reader_module.ambiguous_file_reader("ambiguous.json")
+    assert result == expected_layers
+
+
+def test_ambiguous_file_reader_raises_combined_error(monkeypatch):
+    """Ambiguous reader should raise an error including both failure contexts."""
+
+    def fake_raw(*args, **kwargs):
+        raise ValueError("raw exploded")
+
+    def fake_processed(*args, **kwargs):
+        raise TypeError("processed exploded")
+
+    monkeypatch.setattr(reader_module, "raw_file_reader", fake_raw)
+    monkeypatch.setattr(reader_module, "processed_file_reader", fake_processed)
+
+    with pytest.raises(
+        RuntimeError, match="raw_file_reader error"
+    ) as exc_info:
+        reader_module.ambiguous_file_reader("ambiguous.json")
+
+    message = str(exc_info.value)
+    assert "processed_file_reader error" in message
+    assert "raw exploded" in message
+    assert "processed exploded" in message
 
 
 # TODO: Add tests for .tif files

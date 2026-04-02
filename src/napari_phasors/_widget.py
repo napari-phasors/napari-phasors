@@ -158,11 +158,9 @@ class PhasorTransform(QWidget):
 
         self._clear_dynamic_widgets()
         grouped_paths: dict[str, list[str]] = {}
-        unsupported = []
         for file_path in selected_files:
             _, extension = _get_filename_extension(file_path)
             if extension not in self.reader_options:
-                unsupported.append(os.path.basename(file_path))
                 continue
             grouped_paths.setdefault(extension, []).append(file_path)
 
@@ -424,7 +422,16 @@ class AdvancedOptionsWidget(QWidget):
         if not hasattr(self, 'shape_preview_label'):
             return
 
-        n_files = len(getattr(self, '_multi_file_paths', []) or [self.path])
+        grouped_paths = getattr(self, '_grouped_file_paths', None)
+        multi_paths = getattr(self, '_multi_file_paths', None)
+
+        if grouped_paths:
+            n_files = len(grouped_paths)
+        elif multi_paths:
+            n_files = len(multi_paths)
+        else:
+            n_files = 1
+
         shape = _estimate_output_shape_from_options(
             self.path,
             self.reader_options,
