@@ -6843,9 +6843,7 @@ class PlotterWidget(QWidget):
 
         self._update_plot_elements()
 
-    def set_colorbar_style(
-        self, color="white", label=None, is_mapping=False, label_side='right'
-    ):
+    def set_colorbar_style(self, color="white", label=None, is_mapping=False):
         """Set the colorbar style in the canvas widget."""
         cb = self.mapping_colorbar if is_mapping else self.colorbar
         if cb is None:
