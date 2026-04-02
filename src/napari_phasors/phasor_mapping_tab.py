@@ -72,6 +72,7 @@ class PhasorMappingWidget(QWidget):
         self.metric_layers = []  # List of output layers for current metric
         self.current_output_type = "Apparent Phase Lifetime"
         self._overlay_imshow = None
+        self._mesh_overlay_imshow = None
         self._phase_colormap_name = "hsv"
         self._modulation_colormap_name = "viridis"
         self._coloring_paused_by_tab = False
@@ -1746,6 +1747,10 @@ class PhasorMappingWidget(QWidget):
             img.set_visible(visible)
 
     def _remove_overlay(self):
+        self._remove_plot_overlay()
+        self._remove_mesh_overlay()
+
+    def _remove_plot_overlay(self):
         if getattr(self, '_overlay_imshow', None) is not None:
             with contextlib.suppress(ValueError, AttributeError):
                 self._overlay_imshow.remove()
@@ -1754,6 +1759,12 @@ class PhasorMappingWidget(QWidget):
             with contextlib.suppress(ValueError, AttributeError):
                 self._overlay_clip_patch.remove()
             self._overlay_clip_patch = None
+
+    def _remove_mesh_overlay(self):
+        if getattr(self, '_mesh_overlay_imshow', None) is not None:
+            with contextlib.suppress(ValueError, AttributeError):
+                self._mesh_overlay_imshow.remove()
+            self._mesh_overlay_imshow = None
 
     def _get_mesh_grid_resolution(self, ax) -> int:
         with contextlib.suppress(Exception):
@@ -1834,6 +1845,11 @@ class PhasorMappingWidget(QWidget):
         apply_plot_coloring = self.apply_2d_colormap_checkbox.isChecked()
         show_mesh = self.mesh_overlay_checkbox.isChecked()
 
+        if not show_mesh:
+            self._remove_mesh_overlay()
+        if not apply_plot_coloring:
+            self._remove_plot_overlay()
+
         features = pw.get_merged_features()
         if features is None:
             return
@@ -1902,9 +1918,9 @@ class PhasorMappingWidget(QWidget):
             stat_display = np.where(mesh_mask, np.nan, stat_display)
             extent = mesh_grid['extent']
 
-            self._remove_overlay()
+            self._remove_mesh_overlay()
 
-            self._overlay_imshow = ax.imshow(
+            self._mesh_overlay_imshow = ax.imshow(
                 stat_display,
                 extent=extent,
                 origin="lower",
@@ -1944,7 +1960,7 @@ class PhasorMappingWidget(QWidget):
             pw._remove_mapping_colorbar()
 
         if pw.plot_type == 'SCATTER':
-            self._remove_overlay()
+            self._remove_plot_overlay()
             scatter_artist = pw.canvas_widget.artists.get("SCATTER")
             if scatter_artist is not None:
                 sc = scatter_artist._mpl_artists.get("scatter")
@@ -2017,14 +2033,14 @@ class PhasorMappingWidget(QWidget):
 
             if not min_paths:
                 # If no contours found or they don't have paths, don't show the mesh overlay
-                self._remove_overlay()
+                self._remove_plot_overlay()
                 self._set_histogram_density_visible(
                     pw, pw.plot_type == 'HISTOGRAM2D'
                 )
                 pw.canvas_widget.figure.canvas.draw_idle()
                 return
 
-            self._remove_overlay()
+            self._remove_plot_overlay()
             self._set_histogram_density_visible(pw, False)
 
             self._overlay_imshow = ax.imshow(
@@ -2105,7 +2121,7 @@ class PhasorMappingWidget(QWidget):
         ax = pw.canvas_widget.axes
         extent = [x_edges[0], x_edges[-1], y_edges[0], y_edges[-1]]
 
-        self._remove_overlay()
+        self._remove_plot_overlay()
         self._set_histogram_density_visible(pw, False)
 
         self._overlay_imshow = ax.imshow(

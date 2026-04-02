@@ -1626,10 +1626,18 @@ def test_mesh_overlay_independent_from_apply_colormap_toggle(
     mapping_widget.apply_2d_colormap_checkbox.setChecked(False)
     mapping_widget.mesh_overlay_checkbox.setChecked(True)
 
-    assert mapping_widget._overlay_imshow is not None
+    assert mapping_widget._mesh_overlay_imshow is not None
+    assert mapping_widget._overlay_imshow is None
     # With independent toggles, density image remains visible when
     # apply-colormap is off even if mesh is on.
     assert histogram_img.get_visible()
+
+    # Turning on apply-colormap should add the plot overlay without
+    # removing mesh overlay.
+    mapping_widget.apply_2d_colormap_checkbox.setChecked(True)
+    assert mapping_widget._mesh_overlay_imshow is not None
+    assert mapping_widget._overlay_imshow is not None
+    assert not histogram_img.get_visible()
 
 
 def test_mesh_settings_persist_across_layer_switches(make_napari_viewer):
@@ -1694,8 +1702,8 @@ def test_full_circle_mesh_supports_phase_over_pi(make_napari_viewer):
     upper = int(4.2 * mapping_widget.phase_range_factor)
     mapping_widget.phase_range_slider.setValue((lower, upper))
 
-    assert mapping_widget._overlay_imshow is not None
-    arr = np.asarray(mapping_widget._overlay_imshow.get_array())
+    assert mapping_widget._mesh_overlay_imshow is not None
+    arr = np.asarray(mapping_widget._mesh_overlay_imshow.get_array())
     assert np.isfinite(arr).any()
 
 
