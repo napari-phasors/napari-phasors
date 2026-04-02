@@ -31,7 +31,10 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -42,7 +45,12 @@ from ._reader import (
     napari_get_reader,
     raw_file_stack_reader,
 )
-from ._utils import CheckableComboBox, FileOrderDialog, natural_sort_key
+from ._utils import (
+    CheckableComboBox,
+    CollapsibleSection,
+    FileOrderDialog,
+    natural_sort_key,
+)
 from ._writer import export_layer_as_csv, export_layer_as_image, write_ome_tiff
 
 if TYPE_CHECKING:
@@ -59,9 +67,17 @@ class PhasorTransform(QWidget):
 
         self.setMinimumWidth(400)
 
-        self.main_layout = QVBoxLayout(self)
+        self.outer_layout = QVBoxLayout(self)
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+        self.outer_layout.addWidget(self.scroll_area)
 
-        self.search_button = QPushButton("Select file to be read")
+        self.content_widget = QWidget()
+        self.main_layout = QVBoxLayout(self.content_widget)
+        self.main_layout.setAlignment(Qt.AlignTop)
+        self.scroll_area.setWidget(self.content_widget)
+
+        self.search_button = QPushButton("Select file(s) to be read")
         self.search_button.clicked.connect(self._open_file_dialog)
         self.main_layout.addWidget(self.search_button)
 
@@ -75,7 +91,12 @@ class PhasorTransform(QWidget):
         self.save_path.setReadOnly(True)
         self.main_layout.addWidget(self.save_path)
 
+        self.selected_paths_list = QListWidget()
+        self.selected_paths_list.hide()
+        self.main_layout.addWidget(self.selected_paths_list)
+
         self.dynamic_widget_layout = QVBoxLayout()
+        self.dynamic_widget_layout.setAlignment(Qt.AlignTop)
         self.main_layout.addLayout(self.dynamic_widget_layout)
 
         self.reader_options = {
@@ -101,17 +122,29 @@ class PhasorTransform(QWidget):
         }
 
     def _open_file_dialog(self):
-        """Open a `QFileDialog` to select a file with specific extensions."""
-        options = QFileDialog.Options()
-        dialog = QFileDialog(self, "Select Export Location", options=options)
-        dialog.setFileMode(QFileDialog.AnyFile)
-        dialog.setNameFilter(
-            "All files (*.tif *.tiff *.ome.tif *.ome.tiff *.ptu *.fbd *.sdt *.lsm *.czi"
-            " *.flif *.bh *.b&h *.bhz *.bin *.r64 *.ref *.ifli *.lif *.json)"
+        """Open a dialog to select one or many files for import.
+
+        Single file: show the per-format options widget.
+        Multiple files: create grouped option widgets by extension.
+        """
+        supported_filter = (
+            "All files (*.tif *.tiff *.ome.tif *.ome.tiff *.ptu *.fbd *.sdt "
+            "*.lsm *.czi *.flif *.bh *.b&h *.bhz *.bin *.r64 *.ref *.ifli "
+            "*.lif *.json)"
         )
-        if dialog.exec_():
-            selected_file = dialog.selectedFiles()[0]
-            self.save_path.setText(selected_file)
+        selected_files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Select file(s) to be read",
+            "",
+            supported_filter,
+        )
+        if not selected_files:
+            return
+
+        selected_files = sorted(selected_files, key=natural_sort_key)
+        if len(selected_files) == 1:
+            selected_file = selected_files[0]
+            self._show_path_text(selected_file)
             _, extension = _get_filename_extension(selected_file)
             if extension in self.reader_options:
                 self._clear_dynamic_widgets()
@@ -119,6 +152,54 @@ class PhasorTransform(QWidget):
                 create_widget_class = self.reader_options[extension]
                 new_widget = create_widget_class(self.viewer, selected_file)
                 self.dynamic_widget_layout.addWidget(new_widget)
+            else:
+                show_error(f"Extension {extension} is not supported.")
+            return
+
+        self._clear_dynamic_widgets()
+        grouped_paths: dict[str, list[str]] = {}
+        unsupported = []
+        for file_path in selected_files:
+            _, extension = _get_filename_extension(file_path)
+            if extension not in self.reader_options:
+                unsupported.append(os.path.basename(file_path))
+                continue
+            grouped_paths.setdefault(extension, []).append(file_path)
+
+        if not grouped_paths:
+            show_error("No supported files found in the selection.")
+            return
+
+        summary_parts = []
+        for extension, paths in sorted(grouped_paths.items()):
+            summary_parts.append(f"{extension}: {len(paths)}")
+
+            create_widget_class = self.reader_options[extension]
+            new_widget = create_widget_class(self.viewer, paths[0])
+            new_widget._grouped_file_paths = paths
+            if hasattr(new_widget, 'btn'):
+                new_widget.btn.setText(
+                    f"Phasor Transform Group ({len(paths)} file(s))"
+                )
+
+            group_container = CollapsibleSection(
+                title=f"Group {extension} ({len(paths)} file(s))",
+                initially_collapsed=False,
+                text_color="#c7c7c7",
+            )
+            group_container.setSizePolicy(
+                QSizePolicy.Preferred,
+                QSizePolicy.Maximum,
+            )
+            new_widget.setSizePolicy(
+                QSizePolicy.Preferred,
+                QSizePolicy.Maximum,
+            )
+            group_container.add_widget(new_widget)
+            self.dynamic_widget_layout.addWidget(group_container)
+
+        self.dynamic_widget_layout.addStretch()
+        self._show_path_list(selected_files)
 
     def _open_multi_file_dialog(self):
         """Open one dialog to select either a file or a directory."""
@@ -215,7 +296,7 @@ class PhasorTransform(QWidget):
             axis_labels = None
 
         # Update the path display
-        self.save_path.setText(
+        self._show_path_text(
             f"{len(file_paths)} file(s) selected (first: "
             f"{os.path.basename(file_paths[0])}, z spacing: {z_spacing} um)"
         )
@@ -231,6 +312,10 @@ class PhasorTransform(QWidget):
         new_widget._stack_z_spacing = z_spacing
         new_widget._stack_axis_order = axis_order
         new_widget._stack_axis_labels = axis_labels
+        new_widget.setSizePolicy(
+            QSizePolicy.Preferred,
+            QSizePolicy.Maximum,
+        )
         if hasattr(new_widget, '_update_signal_plot'):
             new_widget._update_signal_plot()
         self.dynamic_widget_layout.addWidget(new_widget)
@@ -241,6 +326,30 @@ class PhasorTransform(QWidget):
             widget = self.dynamic_widget_layout.takeAt(i).widget()
             if widget is not None:
                 widget.deleteLater()
+
+    def _show_path_text(self, text: str):
+        """Show one-line path/status text and hide the multi-path list."""
+        self.selected_paths_list.hide()
+        self.save_path.show()
+        self.save_path.setText(text)
+
+    def _show_path_list(self, paths: list[str]):
+        """Show selected paths in a scrollable list with a 3-row viewport."""
+        self.save_path.hide()
+        self.selected_paths_list.show()
+        self.selected_paths_list.clear()
+        for path in paths:
+            self.selected_paths_list.addItem(path)
+
+        if paths:
+            row_height = self.selected_paths_list.sizeHintForRow(0)
+            if row_height <= 0:
+                row_height = 22
+            visible_rows = min(3, len(paths))
+            frame_height = 2 * self.selected_paths_list.frameWidth()
+            self.selected_paths_list.setFixedHeight(
+                row_height * visible_rows + frame_height + 2
+            )
 
 
 class AdvancedOptionsWidget(QWidget):
@@ -283,6 +392,11 @@ class AdvancedOptionsWidget(QWidget):
         self.ax.title.set_color('grey')
         self.ax.title.set_fontsize(10)
         self.initUI()
+        # After initUI (which subclasses override) ensure the layout and size
+        # policy never cause vertical stretching inside grouped containers.
+        if hasattr(self, 'mainLayout') and self.mainLayout is not None:
+            self.mainLayout.setAlignment(Qt.AlignTop)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         self._add_shape_preview_widget()
         self._update_shape_preview()
 
@@ -348,15 +462,24 @@ class AdvancedOptionsWidget(QWidget):
         )
 
     def _get_preview_signal_data(self):
-        """Return preview signal, averaging across selected stack files."""
+        """Return preview signal, averaging across selected stack/grouped files."""
         multi_paths = getattr(self, '_multi_file_paths', None)
-        if not multi_paths or len(multi_paths) <= 1:
+        grouped_paths = getattr(self, '_grouped_file_paths', None)
+
+        # Prefer grouped paths over multi-file-stack paths
+        paths_to_average = None
+        if grouped_paths and len(grouped_paths) > 1:
+            paths_to_average = grouped_paths
+        elif multi_paths and len(multi_paths) > 1:
+            paths_to_average = multi_paths
+
+        if paths_to_average is None:
             return self._get_signal_data()
 
         original_path = self.path
         signals = []
         try:
-            for path in multi_paths:
+            for path in paths_to_average:
                 self.path = path
                 signal = self._get_signal_data()
                 if signal is None:
@@ -466,7 +589,8 @@ class AdvancedOptionsWidget(QWidget):
             self.ax.title.set_color('grey')
             self.ax.title.set_fontsize(10)
 
-            self.figure.tight_layout()
+            self.figure.tight_layout(pad=1.0)
+            self.figure.subplots_adjust(left=0.15)
             self.canvas.draw()
             self._update_shape_preview()
 
@@ -838,11 +962,50 @@ class AdvancedOptionsWidget(QWidget):
         If ``_multi_file_paths`` is set, all files are stacked into a
         single 3D layer via :func:`raw_file_stack_reader`.
         """
+        grouped_paths = getattr(self, '_grouped_file_paths', None)
         multi_paths = getattr(self, '_multi_file_paths', None)
         self._on_stack_z_spacing_changed()
         z_spacing = getattr(self, '_stack_z_spacing', None)
         axis_order = getattr(self, '_stack_axis_order', None)
         axis_labels = getattr(self, '_stack_axis_labels', None)
+        if grouped_paths and len(grouped_paths) > 1:
+            imported = 0
+            failed = []
+            for group_path in grouped_paths:
+                reader = napari_get_reader(
+                    group_path,
+                    reader_options=reader_options,
+                    harmonics=harmonics,
+                )
+                if reader is None:
+                    failed.append((os.path.basename(group_path), "no reader"))
+                    continue
+
+                try:
+                    for layer in reader(group_path):
+                        add_kw = dict(layer[1].items())
+                        layer_data = self._apply_axis_transform(
+                            add_kw, layer[0], axis_order, axis_labels
+                        )
+                        self._set_layer_z_scale(add_kw, layer_data, z_spacing)
+                        self.viewer.add_image(
+                            layer_data,
+                            name=add_kw.pop("name"),
+                            metadata=add_kw.pop("metadata"),
+                            **add_kw,
+                        )
+                    imported += 1
+                except Exception as e:  # noqa: BLE001
+                    failed.append((os.path.basename(group_path), str(e)))
+
+            if failed:
+                failed_names = ", ".join(name for name, _ in failed)
+                show_error(
+                    f"Imported {imported}/{len(grouped_paths)} file(s). "
+                    f"Failed: {failed_names}."
+                )
+            return
+
         if multi_paths and len(multi_paths) > 1:
             layers = raw_file_stack_reader(
                 multi_paths,
@@ -1333,7 +1496,8 @@ class LsmWidget(AdvancedOptionsWidget):
             self.ax.title.set_color('grey')
             self.ax.title.set_fontsize(10)
 
-            self.figure.tight_layout()
+            self.figure.tight_layout(pad=1.0)
+            self.figure.subplots_adjust(left=0.15)
             self.canvas.draw()
             self._update_shape_preview()
 
@@ -1629,7 +1793,8 @@ class OmeTifWidget(AdvancedOptionsWidget):
             self.ax.title.set_color('grey')
             self.ax.title.set_fontsize(10)
 
-            self.figure.tight_layout()
+            self.figure.tight_layout(pad=1.0)
+            self.figure.subplots_adjust(left=0.15)
             self.canvas.draw()
             self._update_shape_preview()
 

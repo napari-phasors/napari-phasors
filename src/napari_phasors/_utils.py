@@ -52,6 +52,7 @@ from qtpy.QtWidgets import (
     QListWidgetItem,
     QMenu,
     QPushButton,
+    QSizePolicy,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionButton,
@@ -2701,6 +2702,7 @@ class CollapsibleSection(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
 
         # Clickable header with disclosure triangle
         self._toggle_button = QPushButton()
@@ -2715,8 +2717,10 @@ class CollapsibleSection(QWidget):
 
         # Content area
         self._content = QWidget()
+        self._content.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         self._content_layout = QVBoxLayout(self._content)
         self._content_layout.setContentsMargins(0, 0, 0, 0)
+        self._content_layout.setAlignment(Qt.AlignTop)
         layout.addWidget(self._content)
 
         self._title = title
