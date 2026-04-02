@@ -72,6 +72,7 @@ class PhasorMappingWidget(QWidget):
         self.metric_layers = []  # List of output layers for current metric
         self.current_output_type = "Apparent Phase Lifetime"
         self._overlay_imshow = None
+        self._mesh_overlay_imshow = None
         self._phase_colormap_name = "hsv"
         self._modulation_colormap_name = "viridis"
         self._coloring_paused_by_tab = False
@@ -99,6 +100,9 @@ class PhasorMappingWidget(QWidget):
         self._mesh_axes_update_timer.timeout.connect(
             self._apply_mesh_after_axes_change
         )
+        self._mesh_grid_cache = {}
+        self._mesh_grid_cache_order = []
+        self._mesh_grid_cache_max_entries = 8
 
         # Create scroll area
         scroll_area = QScrollArea()
@@ -824,15 +828,18 @@ class PhasorMappingWidget(QWidget):
         )
         self._configure_histogram_labels_for_output(output_type)
         self.outputTypeChanged.emit(output_type)
-        can_apply_coloring = (
-            self.apply_2d_colormap_checkbox.isChecked()
-            or self.mesh_overlay_checkbox.isChecked()
-            or self.mesh_colorbar_checkbox.isChecked()
-        )
-        if can_apply_coloring:
-            self._apply_histogram_coloring(output_type)
-        else:
+        if output_type not in {"Phase", "Modulation"}:
             self._clear_2d_coloring()
+        else:
+            can_apply_coloring = (
+                self.apply_2d_colormap_checkbox.isChecked()
+                or self.mesh_overlay_checkbox.isChecked()
+                or self.mesh_colorbar_checkbox.isChecked()
+            )
+            if can_apply_coloring:
+                self._apply_histogram_coloring(output_type)
+            else:
+                self._clear_2d_coloring()
         if not self._updating_settings:
             self._update_lifetime_setting_in_metadata(
                 'output_type', output_type
@@ -1740,6 +1747,10 @@ class PhasorMappingWidget(QWidget):
             img.set_visible(visible)
 
     def _remove_overlay(self):
+        self._remove_plot_overlay()
+        self._remove_mesh_overlay()
+
+    def _remove_plot_overlay(self):
         if getattr(self, '_overlay_imshow', None) is not None:
             with contextlib.suppress(ValueError, AttributeError):
                 self._overlay_imshow.remove()
@@ -1748,6 +1759,71 @@ class PhasorMappingWidget(QWidget):
             with contextlib.suppress(ValueError, AttributeError):
                 self._overlay_clip_patch.remove()
             self._overlay_clip_patch = None
+
+    def _remove_mesh_overlay(self):
+        if getattr(self, '_mesh_overlay_imshow', None) is not None:
+            with contextlib.suppress(ValueError, AttributeError):
+                self._mesh_overlay_imshow.remove()
+            self._mesh_overlay_imshow = None
+
+    def _get_mesh_grid_resolution(self, ax) -> int:
+        with contextlib.suppress(Exception):
+            bbox = ax.get_window_extent()
+            target = int(max(float(bbox.width), float(bbox.height)) * 0.6)
+            return int(np.clip(target, 160, 400))
+        return 280
+
+    def _make_mesh_grid_cache_key(self, ax, resolution: int):
+        x_min, x_max = ax.get_xlim()
+        y_min, y_max = ax.get_ylim()
+        return (
+            round(float(x_min), 5),
+            round(float(x_max), 5),
+            round(float(y_min), 5),
+            round(float(y_max), 5),
+            bool(self._is_semicircle_mode()),
+            int(resolution),
+        )
+
+    def _get_mesh_polar_grid(self, ax, resolution: int):
+        key = self._make_mesh_grid_cache_key(ax, resolution)
+        cached = self._mesh_grid_cache.get(key)
+        if cached is not None:
+            with contextlib.suppress(ValueError):
+                self._mesh_grid_cache_order.remove(key)
+            self._mesh_grid_cache_order.append(key)
+            return cached
+
+        x_min, x_max = ax.get_xlim()
+        y_min, y_max = ax.get_ylim()
+        x_fine = np.linspace(x_min, x_max, resolution)
+        y_fine = np.linspace(y_min, y_max, resolution)
+        X, Y = np.meshgrid(x_fine, y_fine)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            p_grid, m_grid = phasor_to_polar(X, Y)
+
+        if not self._is_semicircle_mode():
+            with np.errstate(invalid='ignore'):
+                p_grid = np.mod(p_grid, 2.0 * np.pi)
+
+        grid = {
+            'p_grid': p_grid,
+            'm_grid': m_grid,
+            'extent': [x_min, x_max, y_min, y_max],
+        }
+        self._mesh_grid_cache[key] = grid
+        self._mesh_grid_cache_order.append(key)
+
+        while (
+            len(self._mesh_grid_cache_order)
+            > self._mesh_grid_cache_max_entries
+        ):
+            stale_key = self._mesh_grid_cache_order.pop(0)
+            self._mesh_grid_cache.pop(stale_key, None)
+
+        return grid
 
     def _get_clim_from_metric_layers(self):
         for layer in self.metric_layers:
@@ -1769,8 +1845,18 @@ class PhasorMappingWidget(QWidget):
         apply_plot_coloring = self.apply_2d_colormap_checkbox.isChecked()
         show_mesh = self.mesh_overlay_checkbox.isChecked()
 
+        if not show_mesh:
+            self._remove_mesh_overlay()
+        if not apply_plot_coloring:
+            self._remove_plot_overlay()
+
         features = pw.get_merged_features()
         if features is None:
+            canvas_widget = getattr(pw, "canvas_widget", None)
+            figure = getattr(canvas_widget, "figure", None)
+            canvas = getattr(figure, "canvas", None)
+            if canvas is not None and hasattr(canvas, "draw_idle"):
+                canvas.draw_idle()
             return
         g_flat, s_flat = features
 
@@ -1808,20 +1894,10 @@ class PhasorMappingWidget(QWidget):
 
         if show_mesh:
             ax = pw.canvas_widget.axes
-            range_xlim = ax.get_xlim()
-            range_ylim = ax.get_ylim()
-
-            x_fine = np.linspace(range_xlim[0], range_xlim[1], 400)
-            y_fine = np.linspace(range_ylim[0], range_ylim[1], 400)
-            X, Y = np.meshgrid(x_fine, y_fine)
-
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", RuntimeWarning)
-                p_grid, m_grid = phasor_to_polar(X, Y)
-
-            if not self._is_semicircle_mode():
-                with np.errstate(invalid='ignore'):
-                    p_grid = np.mod(p_grid, 2.0 * np.pi)
+            resolution = self._get_mesh_grid_resolution(ax)
+            mesh_grid = self._get_mesh_polar_grid(ax, resolution)
+            p_grid = mesh_grid['p_grid']
+            m_grid = mesh_grid['m_grid']
 
             phase_min_i, phase_max_i = self.phase_range_slider.value()
             mod_min_i, mod_max_i = self.modulation_range_slider.value()
@@ -1845,16 +1921,11 @@ class PhasorMappingWidget(QWidget):
 
             stat_display = p_grid if output_type == "Phase" else m_grid
             stat_display = np.where(mesh_mask, np.nan, stat_display)
-            extent = [
-                range_xlim[0],
-                range_xlim[1],
-                range_ylim[0],
-                range_ylim[1],
-            ]
+            extent = mesh_grid['extent']
 
-            self._remove_overlay()
+            self._remove_mesh_overlay()
 
-            self._overlay_imshow = ax.imshow(
+            self._mesh_overlay_imshow = ax.imshow(
                 stat_display,
                 extent=extent,
                 origin="lower",
@@ -1894,7 +1965,7 @@ class PhasorMappingWidget(QWidget):
             pw._remove_mapping_colorbar()
 
         if pw.plot_type == 'SCATTER':
-            self._remove_overlay()
+            self._remove_plot_overlay()
             scatter_artist = pw.canvas_widget.artists.get("SCATTER")
             if scatter_artist is not None:
                 sc = scatter_artist._mpl_artists.get("scatter")
@@ -1967,14 +2038,14 @@ class PhasorMappingWidget(QWidget):
 
             if not min_paths:
                 # If no contours found or they don't have paths, don't show the mesh overlay
-                self._remove_overlay()
+                self._remove_plot_overlay()
                 self._set_histogram_density_visible(
                     pw, pw.plot_type == 'HISTOGRAM2D'
                 )
                 pw.canvas_widget.figure.canvas.draw_idle()
                 return
 
-            self._remove_overlay()
+            self._remove_plot_overlay()
             self._set_histogram_density_visible(pw, False)
 
             self._overlay_imshow = ax.imshow(
@@ -2055,7 +2126,7 @@ class PhasorMappingWidget(QWidget):
         ax = pw.canvas_widget.axes
         extent = [x_edges[0], x_edges[-1], y_edges[0], y_edges[-1]]
 
-        self._remove_overlay()
+        self._remove_plot_overlay()
         self._set_histogram_density_visible(pw, False)
 
         self._overlay_imshow = ax.imshow(
@@ -2203,11 +2274,9 @@ class PhasorMappingWidget(QWidget):
             min_v = int(min_f * self.phase_range_factor)
             max_v = int(max_f * self.phase_range_factor)
             self.phase_range_slider.setValue((min_v, max_v))
-            # slider valueChanged will trigger sync and refresh
+            # slider valueChanged will trigger sync, persist, and refresh
         except ValueError:
             pass
-        self._persist_current_mesh_ranges_to_metadata()
-        self._refresh_mesh_overlay_if_needed()
 
     def _on_modulation_slider_changed(self, value):
         """Handle modulation range slider change from tab."""
@@ -2234,11 +2303,9 @@ class PhasorMappingWidget(QWidget):
             min_v = int(min_f * self.modulation_range_factor)
             max_v = int(max_f * self.modulation_range_factor)
             self.modulation_range_slider.setValue((min_v, max_v))
-            # slider valueChanged will trigger sync and refresh
+            # slider valueChanged will trigger sync, persist, and refresh
         except ValueError:
             pass
-        self._persist_current_mesh_ranges_to_metadata()
-        self._refresh_mesh_overlay_if_needed()
 
     def _sync_range_to_histogram(self, min_f, max_f):
         """Sync tab slider range changes to HistogramWidget and update layers."""
