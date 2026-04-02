@@ -1764,7 +1764,7 @@ def test_mesh_overlay_colorbar_and_alpha_updates(make_napari_viewer):
 
 
 def test_mesh_overlay_range_edits_and_sliders(make_napari_viewer):
-    """Text edits to phrase/modulation limits should synchronize with the sliders and trigger a redraw."""
+    """Text edits to phase/modulation limits should synchronize with the sliders and trigger a redraw."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
     mapping_widget = parent.phasor_mapping_tab
