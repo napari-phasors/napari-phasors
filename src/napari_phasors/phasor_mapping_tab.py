@@ -1852,6 +1852,11 @@ class PhasorMappingWidget(QWidget):
 
         features = pw.get_merged_features()
         if features is None:
+            canvas_widget = getattr(pw, "canvas_widget", None)
+            figure = getattr(canvas_widget, "figure", None)
+            canvas = getattr(figure, "canvas", None)
+            if canvas is not None and hasattr(canvas, "draw_idle"):
+                canvas.draw_idle()
             return
         g_flat, s_flat = features
 
