@@ -1,6 +1,8 @@
 import json
 
 import numpy as np
+import pytest
+from phasorpy.datasets import fetch
 from phasorpy.io import (
     phasor_from_ometiff,
     signal_from_fbd,
@@ -9,6 +11,7 @@ from phasorpy.io import (
     signal_from_sdt,
 )
 
+import napari_phasors._reader as reader_module
 from napari_phasors import napari_get_reader
 from napari_phasors._tests.test_data_utils import get_test_file_path
 
@@ -308,6 +311,34 @@ def test_reader_tiff_extension():
     assert callable(reader)
 
 
+def test_reader_multi_file_raw_dispatches_to_stack_reader(monkeypatch):
+    """Test that a list of raw files is handled via raw_file_stack_reader."""
+    paths = ["slice_01.lsm", "slice_02.lsm", "slice_03.lsm"]
+    expected_layers = [(np.zeros((2, 2, 2)), {"name": "stack"})]
+
+    def fake_stack_reader(
+        in_paths,
+        reader_options=None,
+        harmonics=None,
+    ):
+        assert in_paths == paths
+        assert reader_options == {"foo": "bar"}
+        assert harmonics == [1, 2]
+        return expected_layers
+
+    monkeypatch.setattr(
+        reader_module, "raw_file_stack_reader", fake_stack_reader
+    )
+
+    reader = napari_get_reader(
+        paths,
+        reader_options={"foo": "bar"},
+        harmonics=[1, 2],
+    )
+    assert callable(reader)
+    assert reader(paths) == expected_layers
+
+
 def test_reader_ometif_metadata():
     """Test reading OME-TIFF file and verify metadata settings"""
     ometif_file = get_test_file_path("test_file.ome.tif")
@@ -435,6 +466,113 @@ def test_reader_czi():
 
     # Check original mean shape is matched too (512, 512)
     assert metadata["original_mean"].shape == (512, 512)
+
+
+def test_reader_flif():
+    """Test reading a flif file."""
+    flif_file = fetch("flimfast.flif")
+    reader = napari_get_reader(flif_file)
+    assert callable(reader)
+    layer_data_list = reader(flif_file)
+    assert isinstance(layer_data_list, list) and len(layer_data_list) > 0
+    layer_data = layer_data_list[0]
+    assert "metadata" in layer_data[1]
+    assert "G" in layer_data[1]["metadata"]
+
+
+def test_reader_bh():
+    """Test reading a bh file."""
+    bh_file = fetch("simfcs.b&h")
+    reader = napari_get_reader(bh_file)
+    assert callable(reader)
+    layer_data_list = reader(bh_file)
+    assert isinstance(layer_data_list, list) and len(layer_data_list) > 0
+    layer_data = layer_data_list[0]
+    assert "G" in layer_data[1]["metadata"]
+
+
+def test_reader_bhz():
+    """Test reading a bhz file."""
+    bhz_file = fetch("simfcs.bhz")
+    reader = napari_get_reader(bhz_file)
+    assert callable(reader)
+    layer_data_list = reader(bhz_file)
+    assert isinstance(layer_data_list, list) and len(layer_data_list) > 0
+    layer_data = layer_data_list[0]
+    assert "G" in layer_data[1]["metadata"]
+
+
+def test_reader_r64():
+    """Test reading a r64 file."""
+    r64_file = fetch("simfcs.r64")
+    reader = napari_get_reader(r64_file)
+    assert callable(reader)
+    layer_data_list = reader(r64_file)
+    assert isinstance(layer_data_list, list) and len(layer_data_list) > 0
+    layer_data = layer_data_list[0]
+    assert "G" in layer_data[1]["metadata"]
+
+
+def test_reader_json_imaging():
+    """Test reading a JSON imaging file."""
+    json_file = fetch("Fluorescein_Calibration_m2_1740751189_imaging.json")
+    reader = napari_get_reader(json_file)
+    assert callable(reader)
+    layer_data_list = reader(json_file)
+    assert isinstance(layer_data_list, list) and len(layer_data_list) > 0
+    layer_data = layer_data_list[0]
+    assert "G" in layer_data[1]["metadata"]
+
+
+def test_reader_json_phasor():
+    """Test reading a JSON phasor file."""
+    json_file = fetch("Convallaria_m2_1740751781_phasor_ch1.json")
+    reader = napari_get_reader(json_file)
+    assert callable(reader)
+    layer_data_list = reader(json_file)
+    assert isinstance(layer_data_list, list) and len(layer_data_list) > 0
+    layer_data = layer_data_list[0]
+    assert "G" in layer_data[1]["metadata"]
+
+
+def test_ambiguous_file_reader_falls_back_to_processed(monkeypatch):
+    """Ambiguous reader should fallback to processed when raw fails."""
+    expected_layers = [(np.zeros((2, 2)), {"name": "processed"})]
+
+    def fake_raw(*args, **kwargs):
+        raise ValueError("raw failed")
+
+    def fake_processed(*args, **kwargs):
+        return expected_layers
+
+    monkeypatch.setattr(reader_module, "raw_file_reader", fake_raw)
+    monkeypatch.setattr(reader_module, "processed_file_reader", fake_processed)
+
+    result = reader_module.ambiguous_file_reader("ambiguous.json")
+    assert result == expected_layers
+
+
+def test_ambiguous_file_reader_raises_combined_error(monkeypatch):
+    """Ambiguous reader should raise an error including both failure contexts."""
+
+    def fake_raw(*args, **kwargs):
+        raise ValueError("raw exploded")
+
+    def fake_processed(*args, **kwargs):
+        raise TypeError("processed exploded")
+
+    monkeypatch.setattr(reader_module, "raw_file_reader", fake_raw)
+    monkeypatch.setattr(reader_module, "processed_file_reader", fake_processed)
+
+    with pytest.raises(
+        RuntimeError, match="raw_file_reader error"
+    ) as exc_info:
+        reader_module.ambiguous_file_reader("ambiguous.json")
+
+    message = str(exc_info.value)
+    assert "processed_file_reader error" in message
+    assert "raw exploded" in message
+    assert "processed exploded" in message
 
 
 # TODO: Add tests for .tif files

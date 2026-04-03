@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
+from phasorpy.datasets import fetch
 from phasorpy.io import (
     phasor_from_ometiff,
     signal_from_fbd,
@@ -19,6 +20,7 @@ from napari_phasors._synthetic_generator import (
     make_raw_flim_data,
 )
 from napari_phasors._tests.test_data_utils import get_test_file_path
+from napari_phasors._utils import CollapsibleSection, natural_sort_key
 from napari_phasors._widget import (
     AdvancedOptionsWidget,
     CziWidget,
@@ -69,12 +71,11 @@ def test_phasor_transform_widget(make_napari_viewer):
 
         with (
             patch(
-                "napari_phasors._widget.QFileDialog.exec_", return_value=True
+                "napari_phasors._widget.QFileDialog.getOpenFileNames",
+                return_value=([test_file_path], ""),
             ),
-            patch(
-                "napari_phasors._widget.QFileDialog.selectedFiles",
-                return_value=[test_file_path],
-            ),
+            patch("napari_phasors._widget.show_info"),
+            patch("napari_phasors._widget.show_error"),
         ):
 
             # Simulate button click to open file dialog
@@ -90,6 +91,123 @@ def test_phasor_transform_widget(make_napari_viewer):
                 assert isinstance(added_widget, expected_widget_class)
             else:
                 assert widget.dynamic_widget_layout.count() == 0
+
+
+def test_phasor_transform_widget_multi_file_grouped_mode(make_napari_viewer):
+    """Test grouped mode creates collapsible widgets and a scrollable path list."""
+    viewer = make_napari_viewer()
+    widget = PhasorTransform(viewer)
+
+    file_paths = [
+        get_test_file_path("test_file.ptu"),
+        get_test_file_path("test_file.lsm"),
+        get_test_file_path("test_file$EI0S.fbd"),
+        get_test_file_path("seminal_receptacle_FLIM_single_image.sdt"),
+    ]
+
+    with (
+        patch(
+            "napari_phasors._widget.QFileDialog.getOpenFileNames",
+            return_value=(file_paths, ""),
+        ),
+        patch("napari_phasors._widget.show_info"),
+        patch("napari_phasors._widget.show_error"),
+    ):
+        widget.search_button.click()
+
+    assert widget.save_path.isHidden()
+    assert widget.selected_paths_list.isHidden() is False
+    assert widget.selected_paths_list.count() == len(file_paths)
+    assert [
+        widget.selected_paths_list.item(i).text()
+        for i in range(widget.selected_paths_list.count())
+    ] == sorted(file_paths, key=natural_sort_key)
+
+    # Four different file formats should create four collapsible groups plus a stretch at the bottom.
+    assert widget.dynamic_widget_layout.count() == 5
+
+    first_group = widget.dynamic_widget_layout.itemAt(0).widget()
+    assert isinstance(first_group, CollapsibleSection)
+    assert first_group._toggle_button.isChecked() is True
+    assert first_group._content.isHidden() is False
+
+    first_group._toggle_button.setChecked(False)
+    first_group._on_toggle()
+    assert first_group._content.isHidden() is True
+    first_group._toggle_button.setChecked(True)
+    first_group._on_toggle()
+    assert first_group._content.isHidden() is False
+
+    expected_groups = [
+        ".fbd",
+        ".lsm",
+        ".ptu",
+        ".sdt",
+    ]
+    expected_widget_types = [
+        FbdWidget,
+        LsmWidget,
+        PtuWidget,
+        SdtWidget,
+    ]
+    for index, (expected_group, expected_type) in enumerate(
+        zip(expected_groups, expected_widget_types, strict=True)
+    ):
+        container = widget.dynamic_widget_layout.itemAt(index).widget()
+        assert isinstance(container, CollapsibleSection)
+        assert expected_group in container._toggle_button.text()
+
+        group_widget = container._content.layout().itemAt(0).widget()
+        assert isinstance(group_widget, expected_type)
+
+
+def test_collapsible_group_container_toggle(make_napari_viewer):
+    """Test collapsible group container hides and shows its content."""
+    container = CollapsibleSection(
+        title="Group .ptu (2 file(s))",
+        initially_collapsed=False,
+    )
+    label = QWidget()
+    container.add_widget(label)
+
+    assert container._toggle_button.isChecked() is True
+    assert container._content.isHidden() is False
+
+    container._toggle_button.setChecked(False)
+    container._on_toggle()
+    assert container._content.isHidden() is True
+
+    container._toggle_button.setChecked(True)
+    container._on_toggle()
+    assert container._content.isHidden() is False
+
+
+def test_multi_file_preview_is_averaged(make_napari_viewer):
+    """Test grouped preview signal averages over all selected files."""
+    viewer = make_napari_viewer()
+    widget = LsmWidget(viewer, path=get_test_file_path("test_file.lsm"))
+
+    file_paths = ["file_a.lsm", "file_b.lsm"]
+    signals = {
+        "file_a.lsm": np.array([1.0, 2.0, 3.0]),
+        "file_b.lsm": np.array([3.0, 4.0, 5.0]),
+    }
+    widget._grouped_file_paths = file_paths
+    # Also set multi paths to verify grouped mode takes precedence.
+    widget._multi_file_paths = ["other_a.lsm", "other_b.lsm"]
+
+    original_path = widget.path
+
+    def fake_get_signal_data():
+        return signals[widget.path]
+
+    with patch.object(
+        widget, "_get_signal_data", side_effect=fake_get_signal_data
+    ):
+        preview = widget._get_preview_signal_data()
+
+    assert widget.path == original_path
+    np.testing.assert_array_equal(preview, np.array([2.0, 3.0, 4.0]))
 
 
 def test_phasor_transform_fbd_widget(make_napari_viewer):
@@ -664,12 +782,9 @@ def test_phasor_transform_with_ome_tif_reader_option(make_napari_viewer):
     # Test with OME-TIF file
     test_file_path = get_test_file_path("test_file.ome.tif")
 
-    with (
-        patch("napari_phasors._widget.QFileDialog.exec_", return_value=True),
-        patch(
-            "napari_phasors._widget.QFileDialog.selectedFiles",
-            return_value=[test_file_path],
-        ),
+    with patch(
+        "napari_phasors._widget.QFileDialog.getOpenFileNames",
+        return_value=([test_file_path], ""),
     ):
         widget.search_button.click()
 
@@ -733,6 +848,61 @@ def test_signal_plot_data_consistency_across_widgets(make_napari_viewer):
         assert isinstance(signal_array, np.ndarray)
         assert len(signal_array) > 0
         assert not np.isnan(signal_array).all()
+
+
+def test_phasor_transform_flif_widget(make_napari_viewer):
+    viewer = make_napari_viewer()
+    file_path = fetch("flimfast.flif")
+    PhasorTransform(viewer)
+    from napari_phasors._widget import FlifWidget
+
+    widget = FlifWidget(viewer, path=file_path)
+    widget.btn.click()
+    assert len(viewer.layers) > 0
+
+
+def test_phasor_transform_bh_widget(make_napari_viewer):
+    viewer = make_napari_viewer()
+    file_path = fetch("simfcs.b&h")
+    PhasorTransform(viewer)
+    from napari_phasors._widget import BhWidget
+
+    widget = BhWidget(viewer, path=file_path)
+    widget.btn.click()
+    assert len(viewer.layers) > 0
+
+
+def test_phasor_transform_bhz_widget(make_napari_viewer):
+    viewer = make_napari_viewer()
+    file_path = fetch("simfcs.bhz")
+    PhasorTransform(viewer)
+    from napari_phasors._widget import BhWidget
+
+    widget = BhWidget(viewer, path=file_path)
+    widget.btn.click()
+    assert len(viewer.layers) > 0
+
+
+def test_phasor_transform_json_widget(make_napari_viewer):
+    viewer = make_napari_viewer()
+    file_path = fetch("Fluorescein_Calibration_m2_1740751189_imaging.json")
+    PhasorTransform(viewer)
+    from napari_phasors._widget import JsonWidget
+
+    widget = JsonWidget(viewer, path=file_path)
+    widget.btn.click()
+    assert len(viewer.layers) > 0
+
+
+def test_phasor_transform_simfcs_widget(make_napari_viewer):
+    viewer = make_napari_viewer()
+    file_path = fetch("simfcs.r64")
+    PhasorTransform(viewer)
+    from napari_phasors._widget import SimfcsWidget
+
+    widget = SimfcsWidget(viewer, path=file_path)
+    widget.btn.click()
+    assert len(viewer.layers) > 0
 
 
 def test_writer_widget(make_napari_viewer, tmp_path):
