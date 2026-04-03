@@ -1,0 +1,15 @@
+# Codecov configuration
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 1%
+    patch:
+      default:
+        target: auto
+        threshold: 1%
+comment:
+  layout: "reach,diff,flags,files"
+  behavior: default # comment on every PR
+  require_changes: false # even if coverage doesn't change, comment

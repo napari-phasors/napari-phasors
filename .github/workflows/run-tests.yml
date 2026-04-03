@@ -59,20 +59,13 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
 
       # Internal pushes/PRs can use repository secrets.
-      - name: Coverage (internal)
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        uses: codecov/codecov-action@v4.0.1
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: napari-phasors/napari-phasors
-
-      # Fork PRs do not have access to repository secrets.
-      - name: Coverage (fork PR, tokenless)
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
-        uses: codecov/codecov-action@v4.0.1
-        with:
-          slug: napari-phasors/napari-phasors
-          fail_ci_if_error: false
+          fail_ci_if_error: true
+          verbose: true
 
   static_analysis:
     name: Static code analysis
