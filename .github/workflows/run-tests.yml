@@ -25,10 +25,12 @@ jobs:
         python-version: ['3.12', '3.13', '3.14']
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -64,7 +66,8 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: napari-phasors/napari-phasors
-          fail_ci_if_error: true
+          files: ./coverage.xml
+          fail_ci_if_error: false
           verbose: true
 
   static_analysis:
