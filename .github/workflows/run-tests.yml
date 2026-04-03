@@ -76,7 +76,7 @@ jobs:
           QT_API: ${{ matrix.qt-binding == 'pyqt6' && 'pyqt6' || 'pyside6' }}
 
       - name: Coverage
-        uses: codecov/codecov-action@v4.0.1
+        uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: napari-phasors/napari-phasors
