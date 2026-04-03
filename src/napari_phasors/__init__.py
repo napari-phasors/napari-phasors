@@ -3,6 +3,8 @@ try:
 except ImportError:
     __version__ = "unknown"
 
+from qtpy import API_NAME
+
 from ._reader import napari_get_reader
 from ._sample_data import (
     convallaria_FLIM_sample_data,
@@ -25,3 +27,10 @@ __all__ = (
     "PlotterWidget",
     "WriterWidget",
 )
+
+if API_NAME.lower().startswith("pyside"):
+    raise RuntimeError(
+        f"napari-phasors is currently only compatible with PyQt5 or PyQt6 (detected {API_NAME}). "
+        "Please install a PyQt backend (e.g., 'pip install PyQt6') and set your "
+        "NAPARI_QT_API environment variable to 'pyqt6' or 'pyqt5'."
+    )

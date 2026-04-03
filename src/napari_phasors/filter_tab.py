@@ -3,9 +3,7 @@ from math import ceil, log10
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.backends.backend_qt5agg import (
-    FigureCanvasQTAgg as FigureCanvas,
-)
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from napari.utils.notifications import show_error
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QColor

@@ -1,5 +1,5 @@
 jupyter-book<2.0
 matplotlib
 numpy
-PyQt5
+PyQt6
 qtpy
