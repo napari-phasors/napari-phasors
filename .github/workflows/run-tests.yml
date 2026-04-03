@@ -17,12 +17,27 @@ concurrency:
 
 jobs:
   test:
-    name: ${{ matrix.platform }} py${{ matrix.python-version }}
+    name: ${{ matrix.platform }} py${{ matrix.python-version }} ${{ matrix.qt-binding }}
     runs-on: ${{ matrix.platform }}
     strategy:
+      fail-fast: false
       matrix:
         platform: [ubuntu-latest, windows-latest, macos-14, macos-15]
-        python-version: ['3.12', '3.13', '3.14']
+        python-version: ["3.12", "3.13", "3.14"]
+        qt-binding: [pyqt6]
+        include:
+          - platform: ubuntu-latest
+            python-version: "3.14"
+            qt-binding: pyside6
+          - platform: windows-latest
+            python-version: "3.14"
+            qt-binding: pyside6
+          - platform: macos-14
+            python-version: "3.14"
+            qt-binding: pyside6
+          - platform: macos-15
+            python-version: "3.14"
+            qt-binding: pyside6
 
     steps:
       - uses: actions/checkout@v3
@@ -57,9 +72,11 @@ jobs:
           run: python -m tox
         env:
           PLATFORM: ${{ matrix.platform }}
+          QT_BINDING: ${{ matrix.qt-binding }}
+          QT_API: ${{ matrix.qt-binding == 'pyqt6' && 'pyqt6' || 'pyside6' }}
 
       - name: Coverage
-        uses: codecov/codecov-action@v4.0.1
+        uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: napari-phasors/napari-phasors

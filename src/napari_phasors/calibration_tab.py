@@ -34,19 +34,23 @@ class CalibrationWidget(QWidget):
 
         # Connect callbacks
         self.calibration_widget.calibrate_push_button.clicked.connect(
-            self._on_click
+            lambda: self._on_click()
         )
 
         # Connect layer events to populate combobox and update button state
-        self.viewer.layers.events.inserted.connect(self._populate_comboboxes)
-        self.viewer.layers.events.removed.connect(self._populate_comboboxes)
+        self.viewer.layers.events.inserted.connect(
+            lambda e: self._populate_comboboxes(e)
+        )
+        self.viewer.layers.events.removed.connect(
+            lambda e: self._populate_comboboxes(e)
+        )
 
         # Connect to update button state when layer selection changes
         if hasattr(
             self.parent_widget, 'image_layer_with_phasor_features_combobox'
         ):
             self.parent_widget.image_layer_with_phasor_features_combobox.currentTextChanged.connect(
-                self._update_button_state
+                lambda text: self._update_button_state()
             )
 
         # Populate combobox
@@ -107,7 +111,9 @@ class CalibrationWidget(QWidget):
             for layer in image_layers:
                 with contextlib.suppress(TypeError, ValueError):
                     layer.events.name.disconnect(self._populate_comboboxes)
-                layer.events.name.connect(self._populate_comboboxes)
+                layer.events.name.connect(
+                    lambda e: self._populate_comboboxes(e)
+                )
 
         finally:
             self._populating_comboboxes = False

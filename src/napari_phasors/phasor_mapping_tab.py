@@ -98,7 +98,7 @@ class PhasorMappingWidget(QWidget):
         self._mesh_axes_update_timer.setSingleShot(True)
         self._mesh_axes_update_timer.setInterval(75)
         self._mesh_axes_update_timer.timeout.connect(
-            self._apply_mesh_after_axes_change
+            lambda *args: self._apply_mesh_after_axes_change(*args)
         )
         self._mesh_grid_cache = {}
         self._mesh_grid_cache_order = []
@@ -177,7 +177,9 @@ class PhasorMappingWidget(QWidget):
         self.custom_color_button.setFixedSize(22, 22)
         self.custom_color_button.setToolTip("Select custom color")
         self.custom_color_button.setVisible(False)
-        self.custom_color_button.clicked.connect(self._on_custom_color_clicked)
+        self.custom_color_button.clicked.connect(
+            lambda *args: self._on_custom_color_clicked()
+        )
         colormap_layout.addWidget(self.custom_color_button)
 
         self.main_layout.addWidget(self.colormap_widget)
@@ -197,19 +199,19 @@ class PhasorMappingWidget(QWidget):
 
         # Connect signals
         self.lifetime_type_combobox.currentTextChanged.connect(
-            self._on_lifetime_type_changed
+            lambda *args: self._on_lifetime_type_changed(*args)
         )
         self.output_mode_combobox.currentTextChanged.connect(
-            self._on_output_mode_changed
+            lambda *args: self._on_output_mode_changed(*args)
         )
         self.colormap_combobox.currentTextChanged.connect(
-            self._on_colormap_combobox_changed
+            lambda *args: self._on_colormap_combobox_changed(*args)
         )
         self.apply_2d_colormap_checkbox.toggled.connect(
-            self._on_apply_2d_colormap_checkbox_changed
+            lambda *args: self._on_apply_2d_colormap_checkbox_changed(*args)
         )
         self.frequency_input.editingFinished.connect(
-            self._on_frequency_changed
+            lambda *args: self._on_frequency_changed()
         )
 
         # NOTE: The widget is created here but NOT added to this tab's layout.
@@ -234,7 +236,7 @@ class PhasorMappingWidget(QWidget):
 
         # Connect the histogram widget's rangeChanged signal
         self.histogram_widget.rangeChanged.connect(
-            self._on_range_changed_from_histogram
+            lambda *args: self._on_range_changed_from_histogram(*args)
         )
         self._configure_histogram_labels_for_output(
             self.lifetime_type_combobox.currentText()
@@ -359,41 +361,41 @@ class PhasorMappingWidget(QWidget):
             "Calculate and display the selected output for all selected layers"
         )
         self.calculate_lifetime_button.clicked.connect(
-            self._on_calculate_lifetime_clicked
+            lambda *args: self._on_calculate_lifetime_clicked()
         )
         self.main_layout.addWidget(self.calculate_lifetime_button)
         self.main_layout.addStretch(1)
 
         # Connect signals for mesh overlay
         self.mesh_overlay_checkbox.toggled.connect(
-            self._on_mesh_overlay_toggled
+            lambda *args: self._on_mesh_overlay_toggled(*args)
         )
         self.mesh_clip_semicircle_checkbox.toggled.connect(
-            self._on_mesh_clip_toggled
+            lambda *args: self._on_mesh_clip_toggled(*args)
         )
         self.mesh_colorbar_checkbox.toggled.connect(
-            self._on_mesh_colorbar_toggled
+            lambda *args: self._on_mesh_colorbar_toggled(*args)
         )
         self.phase_range_slider.valueChanged.connect(
-            self._on_phase_slider_changed
+            lambda *args: self._on_phase_slider_changed(*args)
         )
         self.phase_min_edit.editingFinished.connect(
-            self._on_phase_edits_changed
+            lambda *args: self._on_phase_edits_changed()
         )
         self.phase_max_edit.editingFinished.connect(
-            self._on_phase_edits_changed
+            lambda *args: self._on_phase_edits_changed()
         )
         self.modulation_range_slider.valueChanged.connect(
-            self._on_modulation_slider_changed
+            lambda *args: self._on_modulation_slider_changed(*args)
         )
         self.modulation_min_edit.editingFinished.connect(
-            self._on_modulation_edits_changed
+            lambda *args: self._on_modulation_edits_changed()
         )
         self.modulation_max_edit.editingFinished.connect(
-            self._on_modulation_edits_changed
+            lambda *args: self._on_modulation_edits_changed()
         )
         self.mesh_alpha_spinbox.valueChanged.connect(
-            self._on_mesh_alpha_changed
+            lambda *args: self._on_mesh_alpha_changed(*args)
         )
 
         self._sync_mode_widgets()
@@ -403,10 +405,10 @@ class PhasorMappingWidget(QWidget):
         # Connect to plot type changes in the parent widget
         if self.parent_widget is not None:
             self.parent_widget.plotter_inputs_widget.plot_type_combobox.currentTextChanged.connect(
-                self.update_apply_2d_text
+                lambda *args: self.update_apply_2d_text()
             )
             self.parent_widget.plotter_inputs_widget.semi_circle_checkbox.toggled.connect(
-                self._on_plot_geometry_mode_toggled
+                lambda *args: self._on_plot_geometry_mode_toggled(*args)
             )
             self._connect_axes_limit_callbacks()
 
@@ -420,10 +422,12 @@ class PhasorMappingWidget(QWidget):
             return
         self._axes_limit_callback_cids = [
             axes.callbacks.connect(
-                'xlim_changed', self._on_axes_limits_changed
+                'xlim_changed',
+                lambda *args: self._on_axes_limits_changed(*args),
             ),
             axes.callbacks.connect(
-                'ylim_changed', self._on_axes_limits_changed
+                'ylim_changed',
+                lambda *args: self._on_axes_limits_changed(*args),
             ),
         ]
 
@@ -1471,9 +1475,11 @@ class PhasorMappingWidget(QWidget):
 
             self.metric_layers.append(output_layer)
             self.lifetime_layers.append(output_layer)
-            output_layer.events.colormap.connect(self._on_colormap_changed)
+            output_layer.events.colormap.connect(
+                lambda *args: self._on_colormap_changed(*args)
+            )
             output_layer.events.contrast_limits.connect(
-                self._on_colormap_changed
+                lambda *args: self._on_colormap_changed(*args)
             )
 
             if self.lifetime_layer is None:

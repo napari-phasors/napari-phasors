@@ -3,9 +3,7 @@ from math import ceil, log10
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.backends.backend_qt5agg import (
-    FigureCanvasQTAgg as FigureCanvas,
-)
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from napari.utils.notifications import show_error
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QColor
@@ -17,6 +15,7 @@ from qtpy.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -86,7 +85,7 @@ class FilterWidget(QWidget):
         self.setup_ui()
 
         self.parent_widget.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
-            self._on_image_layer_changed
+            lambda index: self._on_image_layer_changed()
         )
 
     def _is_tab_visible(self):
@@ -147,7 +146,9 @@ class FilterWidget(QWidget):
         self.log_scale_checkbox = QToggleSwitch("Log Scale Histogram")
         self.log_scale_checkbox.onColor = QColor("#27ae60")  # Nice Green
         self.log_scale_checkbox.setChecked(False)
-        self.log_scale_checkbox.toggled.connect(self.on_log_scale_changed)
+        self.log_scale_checkbox.toggled.connect(
+            lambda checked: self.on_log_scale_changed(checked)
+        )
         threshold_method_layout.addWidget(self.log_scale_checkbox)
         threshold_method_layout.addStretch()
 
@@ -186,9 +187,7 @@ class FilterWidget(QWidget):
         # Embed the Matplotlib figure into the widget with fixed size
         canvas = FigureCanvas(self.hist_fig)
         canvas.setFixedHeight(150)
-        canvas.setSizePolicy(
-            canvas.sizePolicy().Expanding, canvas.sizePolicy().Fixed
-        )
+        canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self._canvas = canvas
 
         # Connect mouse events for draggable threshold line
@@ -212,23 +211,23 @@ class FilterWidget(QWidget):
 
         # Connect signals (once, not on every tab switch)
         self.threshold_slider.valueChanged.connect(
-            self.on_threshold_slider_change
+            lambda: self.on_threshold_slider_change()
         )
         self.threshold_method_combobox.currentTextChanged.connect(
-            self.on_threshold_method_changed
+            lambda text: self.on_threshold_method_changed()
         )
         self.filter_method_combobox.currentTextChanged.connect(
-            self.on_filter_method_changed
+            lambda text: self.on_filter_method_changed()
         )
         self.median_filter_spinbox.valueChanged.connect(
-            self.on_median_kernel_size_change
+            lambda val: self.on_median_kernel_size_change()
         )
-        self.apply_button.clicked.connect(self.apply_button_clicked)
+        self.apply_button.clicked.connect(lambda: self.apply_button_clicked())
         self.min_threshold_edit.editingFinished.connect(
-            self.on_min_threshold_edit_changed
+            lambda: self.on_min_threshold_edit_changed()
         )
         self.max_threshold_edit.editingFinished.connect(
-            self.on_max_threshold_edit_changed
+            lambda: self.on_max_threshold_edit_changed()
         )
 
         # Initialize UI state

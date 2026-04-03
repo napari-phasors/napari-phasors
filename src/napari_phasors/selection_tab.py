@@ -26,6 +26,7 @@ from qtpy.QtWidgets import (
     QPushButton,
     QSpinBox,
     QStackedWidget,
+    QStyle,
     QTableWidget,
     QVBoxLayout,
     QWidget,
@@ -116,12 +117,12 @@ class SelectionWidget(QWidget):
         self.refresh_selection_button = QPushButton()
         self.refresh_selection_button.setIcon(
             self.refresh_selection_button.style().standardIcon(
-                self.refresh_selection_button.style().SP_BrowserReload
+                QStyle.SP_BrowserReload
             )
         )
         self.refresh_selection_button.setMaximumWidth(35)
         self.refresh_selection_button.clicked.connect(
-            self._on_refresh_selection_clicked
+            lambda: self._on_refresh_selection_clicked()
         )
 
         # Find the grid layout and add the button to row 4, column 3
@@ -133,10 +134,10 @@ class SelectionWidget(QWidget):
 
         # Connect to multiple signals to handle both selection and text editing
         self.selection_input_widget.phasor_selection_id_combobox.currentIndexChanged.connect(
-            self.on_selection_id_changed
+            lambda index: self.on_selection_id_changed()
         )
         self.selection_input_widget.phasor_selection_id_combobox.activated.connect(
-            self.on_selection_id_changed
+            lambda index: self.on_selection_id_changed()
         )
         if hasattr(
             self.selection_input_widget.phasor_selection_id_combobox,
@@ -146,7 +147,9 @@ class SelectionWidget(QWidget):
                 self.selection_input_widget.phasor_selection_id_combobox.lineEdit()
             )
             if line_edit:
-                line_edit.editingFinished.connect(self.on_selection_id_changed)
+                line_edit.editingFinished.connect(
+                    lambda: self.on_selection_id_changed()
+                )
 
         # === Circular Cursor Mode Widget ===
         self.circular_cursor_widget = CircularCursorWidget(
@@ -176,7 +179,7 @@ class SelectionWidget(QWidget):
 
         # Connect mode change
         self.selection_mode_combobox.currentIndexChanged.connect(
-            self._on_selection_mode_changed
+            lambda index: self._on_selection_mode_changed(index)
         )
 
     def on_harmonic_changed(self):
@@ -405,7 +408,7 @@ class SelectionWidget(QWidget):
                 self._on_show_color_overlay
             )
         self.parent_widget.canvas_widget.show_color_overlay_signal.connect(
-            self._on_show_color_overlay
+            lambda visible: self._on_show_color_overlay(visible)
         )
 
     def _on_refresh_selection_clicked(self):
@@ -974,7 +977,7 @@ class AutomaticClusteringWidget(QWidget):
 
         # Apply clustering button
         self.apply_button = QPushButton("Apply Clustering")
-        self.apply_button.clicked.connect(self._apply_clustering)
+        self.apply_button.clicked.connect(lambda: self._apply_clustering())
         layout.addWidget(self.apply_button)
 
         # Table for clusters
@@ -1017,7 +1020,7 @@ class AutomaticClusteringWidget(QWidget):
         # Clear button
         self.clear_button = QPushButton("Clear Clusters")
         self.clear_button.setEnabled(False)
-        self.clear_button.clicked.connect(self._clear_clusters)
+        self.clear_button.clicked.connect(lambda: self._clear_clusters())
         layout.addWidget(self.clear_button)
 
         layout.addStretch()
@@ -1680,7 +1683,7 @@ class ColorButton(QPushButton):
         self._color = color or QColor(255, 0, 0)
         self.setFixedSize(25, 25)
         self._update_style()
-        self.clicked.connect(self._on_clicked)
+        self.clicked.connect(lambda: self._on_clicked())
 
     def _update_style(self):
         """Update the button style to show the current color."""
@@ -1784,11 +1787,13 @@ class CircularCursorWidget(QWidget):
         buttons_layout = QHBoxLayout()
 
         self.add_cursor_button = QPushButton("Add Cursor")
-        self.add_cursor_button.clicked.connect(self._add_cursor)
+        self.add_cursor_button.clicked.connect(lambda: self._add_cursor())
         buttons_layout.addWidget(self.add_cursor_button)
 
         self.clear_all_button = QPushButton("Clear All")
-        self.clear_all_button.clicked.connect(self._clear_all_cursors)
+        self.clear_all_button.clicked.connect(
+            lambda: self._clear_all_cursors()
+        )
         buttons_layout.addWidget(self.clear_all_button)
 
         layout.addLayout(buttons_layout)
@@ -1797,7 +1802,9 @@ class CircularCursorWidget(QWidget):
         calculate_layout = QHBoxLayout()
 
         self.calculate_button = QPushButton("Calculate")
-        self.calculate_button.clicked.connect(self._on_calculate_clicked)
+        self.calculate_button.clicked.connect(
+            lambda: self._on_calculate_clicked()
+        )
         calculate_layout.addWidget(self.calculate_button)
 
         self.autoupdate_checkbox = QWidget()
@@ -1806,7 +1813,9 @@ class CircularCursorWidget(QWidget):
         self.autoupdate_check = QToggleSwitch("Autoupdate")
         self.autoupdate_check.onColor = QColor("#27ae60")  # Nice Green
         self.autoupdate_check.setChecked(False)
-        self.autoupdate_check.toggled.connect(self._on_autoupdate_changed)
+        self.autoupdate_check.toggled.connect(
+            lambda val: self._on_autoupdate_changed(val)
+        )
         autoupdate_layout.addWidget(self.autoupdate_check)
         calculate_layout.addWidget(self.autoupdate_checkbox)
 
@@ -2765,11 +2774,13 @@ class PolarCursorWidget(QWidget):
         buttons_layout = QHBoxLayout()
 
         self.add_cursor_button = QPushButton("Add Cursor")
-        self.add_cursor_button.clicked.connect(self._add_cursor)
+        self.add_cursor_button.clicked.connect(lambda: self._add_cursor())
         buttons_layout.addWidget(self.add_cursor_button)
 
         self.clear_all_button = QPushButton("Clear All")
-        self.clear_all_button.clicked.connect(self._clear_all_cursors)
+        self.clear_all_button.clicked.connect(
+            lambda: self._clear_all_cursors()
+        )
         buttons_layout.addWidget(self.clear_all_button)
 
         layout.addLayout(buttons_layout)
@@ -2778,7 +2789,9 @@ class PolarCursorWidget(QWidget):
         calculate_layout = QHBoxLayout()
 
         self.calculate_button = QPushButton("Calculate")
-        self.calculate_button.clicked.connect(self._on_calculate_clicked)
+        self.calculate_button.clicked.connect(
+            lambda: self._on_calculate_clicked()
+        )
         calculate_layout.addWidget(self.calculate_button)
 
         self.autoupdate_checkbox = QWidget()
@@ -2787,7 +2800,9 @@ class PolarCursorWidget(QWidget):
         self.autoupdate_check = QToggleSwitch("Autoupdate")
         self.autoupdate_check.onColor = QColor("#27ae60")  # Nice Green
         self.autoupdate_check.setChecked(False)
-        self.autoupdate_check.toggled.connect(self._on_autoupdate_changed)
+        self.autoupdate_check.toggled.connect(
+            lambda val: self._on_autoupdate_changed(val)
+        )
         autoupdate_layout.addWidget(self.autoupdate_check)
         calculate_layout.addWidget(self.autoupdate_checkbox)
 
@@ -3631,11 +3646,13 @@ class EllipticalCursorWidget(QWidget):
         buttons_layout = QHBoxLayout()
 
         self.add_cursor_button = QPushButton("Add Cursor")
-        self.add_cursor_button.clicked.connect(self._add_cursor)
+        self.add_cursor_button.clicked.connect(lambda: self._add_cursor())
         buttons_layout.addWidget(self.add_cursor_button)
 
         self.clear_all_button = QPushButton("Clear All")
-        self.clear_all_button.clicked.connect(self._clear_all_cursors)
+        self.clear_all_button.clicked.connect(
+            lambda: self._clear_all_cursors()
+        )
         buttons_layout.addWidget(self.clear_all_button)
 
         layout.addLayout(buttons_layout)
@@ -3644,7 +3661,9 @@ class EllipticalCursorWidget(QWidget):
         calculate_layout = QHBoxLayout()
 
         self.calculate_button = QPushButton("Calculate")
-        self.calculate_button.clicked.connect(self._on_calculate_clicked)
+        self.calculate_button.clicked.connect(
+            lambda: self._on_calculate_clicked()
+        )
         calculate_layout.addWidget(self.calculate_button)
 
         self.autoupdate_checkbox = QWidget()
@@ -3653,7 +3672,9 @@ class EllipticalCursorWidget(QWidget):
         self.autoupdate_check = QToggleSwitch("Autoupdate")
         self.autoupdate_check.onColor = QColor("#27ae60")  # Nice Green
         self.autoupdate_check.setChecked(False)
-        self.autoupdate_check.toggled.connect(self._on_autoupdate_changed)
+        self.autoupdate_check.toggled.connect(
+            lambda val: self._on_autoupdate_changed(val)
+        )
         autoupdate_layout.addWidget(self.autoupdate_check)
         calculate_layout.addWidget(self.autoupdate_checkbox)
 
