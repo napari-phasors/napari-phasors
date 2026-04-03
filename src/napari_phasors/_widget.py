@@ -14,9 +14,7 @@ from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.backends.backend_qt5agg import (
-    FigureCanvasQTAgg as FigureCanvas,
-)
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from napari.layers import Image
 from napari.utils.notifications import show_error, show_info
@@ -374,9 +372,7 @@ class AdvancedOptionsWidget(QWidget):
         self.figure.patch.set_alpha(0.0)
         self.canvas = FigureCanvas(self.figure)
         self.canvas.setFixedHeight(300)
-        self.canvas.setSizePolicy(
-            self.canvas.sizePolicy().Expanding, self.canvas.sizePolicy().Fixed
-        )
+        self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.ax = self.figure.add_subplot(111)
         self.ax.set_facecolor('none')
 

@@ -3,9 +3,7 @@ from math import ceil, log10
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.backends.backend_qt5agg import (
-    FigureCanvasQTAgg as FigureCanvas,
-)
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from napari.utils.notifications import show_error
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QColor
@@ -17,6 +15,7 @@ from qtpy.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -186,9 +185,7 @@ class FilterWidget(QWidget):
         # Embed the Matplotlib figure into the widget with fixed size
         canvas = FigureCanvas(self.hist_fig)
         canvas.setFixedHeight(150)
-        canvas.setSizePolicy(
-            canvas.sizePolicy().Expanding, canvas.sizePolicy().Fixed
-        )
+        canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self._canvas = canvas
 
         # Connect mouse events for draggable threshold line

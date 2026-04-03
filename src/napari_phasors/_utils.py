@@ -10,9 +10,7 @@ from typing import TYPE_CHECKING
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy
-from matplotlib.backends.backend_qt5agg import (
-    FigureCanvasQTAgg as FigureCanvas,
-)
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.collections import LineCollection
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.legend_handler import HandlerBase
@@ -1742,9 +1740,7 @@ class HistogramWidget(QWidget):
 
         canvas = FigureCanvas(self.fig)
         canvas.setFixedHeight(canvas_height)
-        canvas.setSizePolicy(
-            canvas.sizePolicy().Expanding, canvas.sizePolicy().Fixed
-        )
+        canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         layout.addWidget(canvas)
 
         # Settings and export controls in one row

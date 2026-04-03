@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - Python 3.12 or 3.13
-- A working Qt backend (PyQt5 is installed automatically)
+- A working Qt backend (PyQt6, PySide6, PyQt5, or PySide2)
 
 ## Using conda + pip (recommended)
 
@@ -13,7 +13,7 @@ If you use Anaconda or Miniconda, replace `mamba` with `conda`.
 Create an environment with napari:
 
 ```bash
-mamba create -y -n napari-phasors-env napari pyqt python=3.12 # or 3.13
+mamba create -y -n napari-phasors-env napari pyqt6 python=3.13 # or pyside6, pyqt5, etc.
 mamba activate napari-phasors-env
 ```
 
