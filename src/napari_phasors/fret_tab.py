@@ -82,8 +82,12 @@ class FretWidget(QWidget):
         self.setup_ui()
 
         # Connect to layer events to update background combobox
-        self.viewer.layers.events.inserted.connect(self._on_layer_changed)
-        self.viewer.layers.events.removed.connect(self._on_layer_changed)
+        self.viewer.layers.events.inserted.connect(
+            lambda *args: self._on_layer_changed()
+        )
+        self.viewer.layers.events.removed.connect(
+            lambda *args: self._on_layer_changed()
+        )
 
     def setup_ui(self):
         """Set up the user interface for the FRET widget with a scroll area."""
@@ -106,7 +110,9 @@ class FretWidget(QWidget):
         self.frequency_input.setSizePolicy(
             QSizePolicy.Expanding, QSizePolicy.Fixed
         )
-        self.frequency_input.textChanged.connect(self._on_parameters_changed)
+        self.frequency_input.textChanged.connect(
+            lambda *args: self._on_parameters_changed(*args)
+        )
         self.frequency_input.setToolTip(
             "Enter the laser pulse or modulation frequency in MHz"
         )
@@ -125,7 +131,7 @@ class FretWidget(QWidget):
             QSizePolicy.Expanding, QSizePolicy.Fixed
         )
         self.donor_source_selector.currentIndexChanged.connect(
-            self._on_donor_source_changed
+            lambda *args: self._on_donor_source_changed(*args)
         )
         self.donor_source_selector.setToolTip(
             "Select whether to input donor lifetime manually or derive it from a layer"
@@ -146,7 +152,9 @@ class FretWidget(QWidget):
         self.donor_line_edit.setSizePolicy(
             QSizePolicy.Expanding, QSizePolicy.Fixed
         )
-        self.donor_line_edit.textChanged.connect(self._on_parameters_changed)
+        self.donor_line_edit.textChanged.connect(
+            lambda *args: self._on_parameters_changed(*args)
+        )
         self.donor_line_edit.setToolTip(
             "Enter the donor lifetime in nanoseconds"
         )
@@ -162,7 +170,7 @@ class FretWidget(QWidget):
             enable_primary_layer=False
         )
         self.donor_lifetime_combobox.selectionChanged.connect(
-            self._calculate_donor_lifetime
+            lambda *args: self._calculate_donor_lifetime(*args)
         )
         self.donor_lifetime_combobox.setToolTip(
             "Select one or more layers from which to derive the donor lifetime (averaged)"
@@ -180,7 +188,7 @@ class FretWidget(QWidget):
             ]
         )
         self.lifetime_type_combobox.currentIndexChanged.connect(
-            self._calculate_donor_lifetime
+            lambda *args: self._calculate_donor_lifetime(*args)
         )
         self.lifetime_type_combobox.setToolTip(
             "Select the method to calculate donor lifetime from phasor coordinates"
@@ -203,7 +211,7 @@ class FretWidget(QWidget):
             QSizePolicy.Expanding, QSizePolicy.Fixed
         )
         self.background_slider.valueChanged.connect(
-            self._on_background_slider_changed
+            lambda *args: self._on_background_slider_changed(*args)
         )
         self.background_slider.setToolTip(
             "Weight of background fluorescence in donor channel relative to fluorescence of donor without FRET. A weight of 1 means the fluorescence of background and donor without FRET are equal."
@@ -223,7 +231,7 @@ class FretWidget(QWidget):
             QComboBox.AdjustToMinimumContentsLengthWithIcon
         )
         self.bg_source_selector.currentIndexChanged.connect(
-            self._on_bg_source_changed
+            lambda *args: self._on_bg_source_changed(*args)
         )
         self.bg_source_selector.setToolTip(
             "Select whether to input background position manually or derive it from a layer"
@@ -244,7 +252,7 @@ class FretWidget(QWidget):
         self.background_real_edit.setValidator(QDoubleValidator())
         self.background_real_edit.setText("0.0")
         self.background_real_edit.textChanged.connect(
-            self._on_background_position_changed
+            lambda *args: self._on_background_position_changed()
         )
         self.background_real_edit.setToolTip(
             "Real component of background fluorescence phasor coordinate at frequency"
@@ -256,7 +264,7 @@ class FretWidget(QWidget):
         self.background_imag_edit.setValidator(QDoubleValidator())
         self.background_imag_edit.setText("0.0")
         self.background_imag_edit.textChanged.connect(
-            self._on_background_position_changed
+            lambda *args: self._on_background_position_changed()
         )
         self.background_imag_edit.setToolTip(
             "Imaginary component of background fluorescence phasor coordinate at frequency"
@@ -273,7 +281,7 @@ class FretWidget(QWidget):
             enable_primary_layer=False
         )
         self.background_image_combobox.selectionChanged.connect(
-            self._calculate_background_position
+            lambda *args: self._calculate_background_position()
         )
         self.background_image_combobox.setToolTip(
             "Select one or more layers from which to derive the background position (averaged)"
@@ -295,7 +303,7 @@ class FretWidget(QWidget):
             QSizePolicy.Expanding, QSizePolicy.Fixed
         )
         self.fretting_slider.valueChanged.connect(
-            self._on_fretting_slider_changed
+            lambda *args: self._on_fretting_slider_changed()
         )
         self.fretting_slider.setToolTip(
             "Fraction of donors participating in FRET"
@@ -316,7 +324,7 @@ class FretWidget(QWidget):
         self.colormap_checkbox.onColor = QColor("#27ae60")  # Nice Green
         self.colormap_checkbox.setChecked(True)
         self.colormap_checkbox.toggled.connect(
-            self._on_colormap_checkbox_changed
+            lambda *args: self._on_colormap_checkbox_changed(*args)
         )
         layout.addWidget(self.colormap_checkbox)
 
@@ -325,7 +333,7 @@ class FretWidget(QWidget):
             "Calculate FRET efficiency"
         )
         self.calculate_fret_efficiency_button.clicked.connect(
-            self.calculate_fret_efficiency
+            lambda *args: self.calculate_fret_efficiency()
         )
         layout.addWidget(self.calculate_fret_efficiency_button)
 
@@ -343,7 +351,9 @@ class FretWidget(QWidget):
         )
 
         # Connect range-slider signal
-        self.histogram_widget.rangeChanged.connect(self._on_fret_range_changed)
+        self.histogram_widget.rangeChanged.connect(
+            lambda *args: self._on_fret_range_changed(*args)
+        )
 
         layout.addStretch()
 
@@ -673,7 +683,9 @@ class FretWidget(QWidget):
                         layer.events.name.disconnect(
                             self._update_background_combobox
                         )
-                    layer.events.name.connect(self._update_background_combobox)
+                    layer.events.name.connect(
+                        lambda *args: self._update_background_combobox()
+                    )
 
         finally:
             self._updating_background_combobox = False
@@ -713,7 +725,9 @@ class FretWidget(QWidget):
                             self._update_donor_lifetime_combobox
                         )
                     layer.events.name.connect(
-                        self._update_donor_lifetime_combobox
+                        lambda *args: self._update_donor_lifetime_combobox(
+                            *args
+                        )
                     )
 
         finally:
@@ -1457,10 +1471,10 @@ class FretWidget(QWidget):
                 self.colormap_contrast_limits = self.fret_layer.contrast_limits
 
                 self.fret_layer.events.colormap.connect(
-                    self._on_colormap_changed
+                    lambda *args: self._on_colormap_changed(*args)
                 )
                 self.fret_layer.events.contrast_limits.connect(
-                    self._on_contrast_limits_changed
+                    lambda *args: self._on_contrast_limits_changed(*args)
                 )
 
                 self.plot_donor_trajectory()
@@ -1469,10 +1483,10 @@ class FretWidget(QWidget):
                 print(f"Error applying saved colormap settings: {e}")
                 try:
                     self.fret_layer.events.colormap.connect(
-                        self._on_colormap_changed
+                        lambda *args: self._on_colormap_changed(*args)
                     )
                     self.fret_layer.events.contrast_limits.connect(
-                        self._on_contrast_limits_changed
+                        lambda *args: self._on_contrast_limits_changed(*args)
                     )
                 except Exception:  # noqa: BLE001
                     pass
@@ -1484,9 +1498,11 @@ class FretWidget(QWidget):
         if fret_layer_name in self.viewer.layers:
             self.fret_layer = self.viewer.layers[fret_layer_name]
 
-            self.fret_layer.events.colormap.connect(self._on_colormap_changed)
+            self.fret_layer.events.colormap.connect(
+                lambda *args: self._on_colormap_changed(*args)
+            )
             self.fret_layer.events.contrast_limits.connect(
-                self._on_contrast_limits_changed
+                lambda *args: self._on_contrast_limits_changed(*args)
             )
 
             if hasattr(self, '_saved_colormap_name'):
@@ -1828,9 +1844,11 @@ class FretWidget(QWidget):
 
             # Add to list of FRET layers and connect events
             self.fret_layers.append(fret_layer)
-            fret_layer.events.colormap.connect(self._on_colormap_changed)
+            fret_layer.events.colormap.connect(
+                lambda *args: self._on_colormap_changed(*args)
+            )
             fret_layer.events.contrast_limits.connect(
-                self._on_contrast_limits_changed
+                lambda *args: self._on_contrast_limits_changed(*args)
             )
 
             # Store reference to first FRET layer for backward compatibility

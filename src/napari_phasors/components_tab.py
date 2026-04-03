@@ -137,7 +137,7 @@ class ComponentsWidget(QWidget):
         self._update_lifetime_inputs_visibility()
         self._update_analysis_options()
         self.parent_widget.harmonic_spinbox.valueChanged.connect(
-            self._on_harmonic_changed
+            lambda *args: self._on_harmonic_changed(*args)
         )
 
     def setup_ui(self):
@@ -164,7 +164,7 @@ class ComponentsWidget(QWidget):
         analysis_layout.addWidget(QLabel("Analysis Type:"))
         self.analysis_type_combo = QComboBox()
         self.analysis_type_combo.currentTextChanged.connect(
-            self._on_analysis_type_changed
+            lambda *args: self._on_analysis_type_changed(*args)
         )
         self.analysis_type_combo.setToolTip(
             "Select the type of component analysis to perform."
@@ -199,19 +199,23 @@ class ComponentsWidget(QWidget):
         # Component management section
         comp_management_layout = QHBoxLayout()
         self.add_component_btn = QPushButton("Add Component")
-        self.add_component_btn.clicked.connect(self._add_component)
+        self.add_component_btn.clicked.connect(lambda: self._add_component())
         self.add_component_btn.setToolTip("Add a new component field.")
         comp_management_layout.addWidget(self.add_component_btn)
 
         self.remove_component_btn = QPushButton("Remove Component")
-        self.remove_component_btn.clicked.connect(self._remove_component)
+        self.remove_component_btn.clicked.connect(
+            lambda: self._remove_component()
+        )
         self.remove_component_btn.setToolTip(
             "Remove the last component field."
         )
         comp_management_layout.addWidget(self.remove_component_btn)
 
         self.clear_components_btn = QPushButton("Clear All")
-        self.clear_components_btn.clicked.connect(self._clear_components)
+        self.clear_components_btn.clicked.connect(
+            lambda: self._clear_components()
+        )
         self.clear_components_btn.setToolTip("Clear all component values.")
         comp_management_layout.addWidget(self.clear_components_btn)
 
@@ -220,7 +224,7 @@ class ComponentsWidget(QWidget):
 
         # Calculate button
         self.calculate_button = QPushButton("Run Component Analysis")
-        self.calculate_button.clicked.connect(self._run_analysis)
+        self.calculate_button.clicked.connect(lambda: self._run_analysis())
         self.calculate_button.setToolTip(
             "Run the selected analysis type on the defined components."
         )
@@ -233,7 +237,9 @@ class ComponentsWidget(QWidget):
 
         buttons_row = QHBoxLayout()
         self.plot_settings_btn = QPushButton("Edit Line Layout...")
-        self.plot_settings_btn.clicked.connect(self._open_plot_settings_dialog)
+        self.plot_settings_btn.clicked.connect(
+            lambda: self._open_plot_settings_dialog()
+        )
         self.plot_settings_btn.setToolTip(
             "Edit the layout of the line(s) between components."
         )
@@ -241,7 +247,9 @@ class ComponentsWidget(QWidget):
 
         # Label style button
         self.label_style_btn = QPushButton("Edit Component Name Layout...")
-        self.label_style_btn.clicked.connect(self._open_label_style_dialog)
+        self.label_style_btn.clicked.connect(
+            lambda: self._open_label_style_dialog()
+        )
         self.label_style_btn.setToolTip(
             "Edit the layout of the component name labels in the plot."
         )
@@ -256,7 +264,7 @@ class ComponentsWidget(QWidget):
             "Select which component's fraction data to display in the histogram."
         )
         self.histogram_component_combobox.currentIndexChanged.connect(
-            self._on_histogram_component_changed
+            lambda *args: self._on_histogram_component_changed(*args)
         )
 
         # NOTE: The widget is created here but NOT added to this tab's layout.
@@ -272,7 +280,7 @@ class ComponentsWidget(QWidget):
             parent=self,
         )
         self.histogram_widget.rangeChanged.connect(
-            self._on_fraction_range_changed
+            lambda *args: self._on_fraction_range_changed(*args)
         )
 
         layout.addStretch()
@@ -1012,7 +1020,7 @@ class ComponentsWidget(QWidget):
 
             finally:
                 fraction_layer.events.colormap.connect(
-                    self._on_colormap_changed
+                    lambda *args: self._on_colormap_changed(*args)
                 )
 
         if (
@@ -1048,14 +1056,14 @@ class ComponentsWidget(QWidget):
         self.colormap_line_checkbox = QCheckBox("Overlay Colormap")
         self.colormap_line_checkbox.setChecked(self.show_colormap_line)
         self.colormap_line_checkbox.stateChanged.connect(
-            self._on_plot_setting_changed
+            lambda *args: self._on_plot_setting_changed(*args)
         )
         row1.addWidget(self.colormap_line_checkbox)
 
         self.show_dots_checkbox = QCheckBox("Show component positions")
         self.show_dots_checkbox.setChecked(self.show_component_dots)
         self.show_dots_checkbox.stateChanged.connect(
-            self._on_plot_setting_changed
+            lambda *args: self._on_plot_setting_changed(*args)
         )
         row1.addWidget(self.show_dots_checkbox)
         row1.addStretch()
@@ -1068,7 +1076,7 @@ class ComponentsWidget(QWidget):
         self.line_offset_slider.setRange(-500, 500)
         self.line_offset_slider.setValue(int(self.line_offset * 1000))
         self.line_offset_slider.valueChanged.connect(
-            self._on_line_offset_changed
+            lambda *args: self._on_line_offset_changed(*args)
         )
         row2.addWidget(self.line_offset_slider)
         self.line_offset_value_label = QLabel(f"{self.line_offset:.3f}")
@@ -1082,7 +1090,9 @@ class ComponentsWidget(QWidget):
         self.line_width_spin.setRange(0.5, 20.0)
         self.line_width_spin.setSingleStep(0.5)
         self.line_width_spin.setValue(self.line_width)
-        self.line_width_spin.valueChanged.connect(self._on_line_width_changed)
+        self.line_width_spin.valueChanged.connect(
+            lambda val: self._on_line_width_changed(val)
+        )
         row3.addWidget(self.line_width_spin)
 
         row3.addWidget(QLabel("Alpha:"))
@@ -1090,7 +1100,7 @@ class ComponentsWidget(QWidget):
         self.line_alpha_slider.setRange(0, 100)
         self.line_alpha_slider.setValue(int(self.line_alpha * 100))
         self.line_alpha_slider.valueChanged.connect(
-            self._on_line_alpha_changed
+            lambda *args: self._on_line_alpha_changed(*args)
         )
         row3.addWidget(self.line_alpha_slider)
         self.line_alpha_value_label = QLabel(f"{self.line_alpha:.2f}")
@@ -1107,7 +1117,9 @@ class ComponentsWidget(QWidget):
         self.color_button.setStyleSheet(
             f"background-color: {self.default_component_color}; border: 1px solid black;"
         )
-        self.color_button.clicked.connect(self._on_color_button_clicked)
+        self.color_button.clicked.connect(
+            lambda: self._on_color_button_clicked()
+        )
         row4.addWidget(self.color_button)
 
         row4.addStretch()
@@ -1117,13 +1129,15 @@ class ComponentsWidget(QWidget):
         buttons_layout = QHBoxLayout()
 
         reset_button = QPushButton("Reset")
-        reset_button.clicked.connect(self._reset_plot_settings)
+        reset_button.clicked.connect(lambda: self._reset_plot_settings())
         buttons_layout.addWidget(reset_button)
 
         buttons_layout.addStretch()
 
         close_button = QPushButton("Close")
-        close_button.clicked.connect(self.plot_dialog.close)
+        close_button.clicked.connect(
+            lambda *args: self.plot_dialog.close(*args)
+        )
         buttons_layout.addWidget(close_button)
 
         vbox.addLayout(buttons_layout)
@@ -1338,28 +1352,34 @@ class ComponentsWidget(QWidget):
         self.fontsize_spin = QSpinBox()
         self.fontsize_spin.setRange(6, 72)
         self.fontsize_spin.setValue(self.label_fontsize)
-        self.fontsize_spin.valueChanged.connect(self._on_label_style_changed)
+        self.fontsize_spin.valueChanged.connect(
+            lambda val: self._on_label_style_changed(val)
+        )
         row.addWidget(self.fontsize_spin)
 
         self.bold_checkbox = QCheckBox("Bold")
         self.bold_checkbox.setChecked(self.label_bold)
-        self.bold_checkbox.stateChanged.connect(self._on_label_style_changed)
+        self.bold_checkbox.stateChanged.connect(
+            lambda val: self._on_label_style_changed(val)
+        )
         row.addWidget(self.bold_checkbox)
 
         self.italic_checkbox = QCheckBox("Italic")
         self.italic_checkbox.setChecked(self.label_italic)
-        self.italic_checkbox.stateChanged.connect(self._on_label_style_changed)
+        self.italic_checkbox.stateChanged.connect(
+            lambda val: self._on_label_style_changed(val)
+        )
         row.addWidget(self.italic_checkbox)
 
         self.color_button = QPushButton("Color")
-        self.color_button.clicked.connect(self._pick_label_color)
+        self.color_button.clicked.connect(lambda: self._pick_label_color())
         row.addWidget(self.color_button)
 
         row.addStretch()
         vbox.addLayout(row)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
-        buttons.rejected.connect(self.style_dialog.close)
+        buttons.rejected.connect(lambda *args: self.style_dialog.close(*args))
         vbox.addWidget(buttons)
 
         self.style_dialog.show()
@@ -1458,10 +1478,10 @@ class ComponentsWidget(QWidget):
                 )
 
                 self.comp1_fractions_layer.events.colormap.connect(
-                    self._on_colormap_changed
+                    lambda *args: self._on_colormap_changed(*args)
                 )
                 self.comp1_fractions_layer.events.contrast_limits.connect(
-                    self._on_contrast_limits_changed
+                    lambda *args: self._on_contrast_limits_changed(*args)
                 )
 
                 self.draw_line_between_components()
@@ -1470,10 +1490,10 @@ class ComponentsWidget(QWidget):
                 print(f"Error applying saved colormap settings: {e}")
                 try:
                     self.comp1_fractions_layer.events.colormap.connect(
-                        self._on_colormap_changed
+                        lambda *args: self._on_colormap_changed(*args)
                     )
                     self.comp1_fractions_layer.events.contrast_limits.connect(
-                        self._on_contrast_limits_changed
+                        lambda *args: self._on_contrast_limits_changed(*args)
                     )
                 except Exception:  # noqa: BLE001
                     pass
@@ -3085,10 +3105,10 @@ class ComponentsWidget(QWidget):
             if idx == 0:
                 self.comp1_fractions_layer = self.viewer.layers[expected_name]
                 self.comp1_fractions_layer.events.colormap.connect(
-                    self._on_colormap_changed
+                    lambda *args: self._on_colormap_changed(*args)
                 )
                 self.comp1_fractions_layer.events.contrast_limits.connect(
-                    self._on_contrast_limits_changed
+                    lambda *args: self._on_contrast_limits_changed(*args)
                 )
         else:
             possible_names = [
@@ -3104,10 +3124,12 @@ class ComponentsWidget(QWidget):
                     if idx == 0:
                         self.comp1_fractions_layer = layer_obj
                         self.comp1_fractions_layer.events.colormap.connect(
-                            self._on_colormap_changed
+                            lambda *args: self._on_colormap_changed(*args)
                         )
                         self.comp1_fractions_layer.events.contrast_limits.connect(
-                            self._on_contrast_limits_changed
+                            lambda *args: self._on_contrast_limits_changed(
+                                *args
+                            )
                         )
                     break
 
@@ -3568,10 +3590,10 @@ class ComponentsWidget(QWidget):
                 )
 
         self.comp1_fractions_layer.events.colormap.connect(
-            self._on_colormap_changed
+            lambda *args: self._on_colormap_changed(*args)
         )
         self.comp1_fractions_layer.events.contrast_limits.connect(
-            self._on_contrast_limits_changed
+            lambda *args: self._on_contrast_limits_changed(*args)
         )
 
         self._update_component_colors()
@@ -3830,9 +3852,11 @@ class ComponentsWidget(QWidget):
                 new_layer.contrast_limits = contrast_limits
 
                 self.fraction_layers.append(new_layer)
-                new_layer.events.colormap.connect(self._on_colormap_changed)
+                new_layer.events.colormap.connect(
+                    lambda *args: self._on_colormap_changed(*args)
+                )
                 new_layer.events.contrast_limits.connect(
-                    self._on_contrast_limits_changed
+                    lambda *args: self._on_contrast_limits_changed(*args)
                 )
 
                 if (

@@ -85,7 +85,7 @@ class FilterWidget(QWidget):
         self.setup_ui()
 
         self.parent_widget.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
-            self._on_image_layer_changed
+            lambda index: self._on_image_layer_changed()
         )
 
     def _is_tab_visible(self):
@@ -211,23 +211,23 @@ class FilterWidget(QWidget):
 
         # Connect signals (once, not on every tab switch)
         self.threshold_slider.valueChanged.connect(
-            self.on_threshold_slider_change
+            lambda: self.on_threshold_slider_change()
         )
         self.threshold_method_combobox.currentTextChanged.connect(
-            self.on_threshold_method_changed
+            lambda text: self.on_threshold_method_changed()
         )
         self.filter_method_combobox.currentTextChanged.connect(
-            self.on_filter_method_changed
+            lambda text: self.on_filter_method_changed()
         )
         self.median_filter_spinbox.valueChanged.connect(
-            self.on_median_kernel_size_change
+            lambda val: self.on_median_kernel_size_change()
         )
-        self.apply_button.clicked.connect(self.apply_button_clicked)
+        self.apply_button.clicked.connect(lambda: self.apply_button_clicked())
         self.min_threshold_edit.editingFinished.connect(
-            self.on_min_threshold_edit_changed
+            lambda: self.on_min_threshold_edit_changed()
         )
         self.max_threshold_edit.editingFinished.connect(
-            self.on_max_threshold_edit_changed
+            lambda: self.on_max_threshold_edit_changed()
         )
 
         # Initialize UI state

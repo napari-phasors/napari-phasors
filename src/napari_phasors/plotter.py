@@ -65,6 +65,51 @@ from .phasor_mapping_tab import PhasorMappingWidget
 from .selection_tab import SelectionWidget
 
 
+def _patch_nap_plot_tools_toolbar_disconnect():
+    try:
+        from nap_plot_tools.tools import CustomToolbarWidget
+    except ImportError:
+        return
+
+    if getattr(
+        CustomToolbarWidget, '_napari_phasors_disconnect_patched', False
+    ):
+        return
+
+    def connect_button_callback(self, name, callback):
+        if name in self.buttons:
+            button = self.buttons[name]
+            checkable = button.isCheckable()
+            previous_callback = getattr(
+                button, '_napari_phasors_toolbar_callback', None
+            )
+
+            if previous_callback is not None:
+                signal = button.toggled if checkable else button.clicked
+                with contextlib.suppress(TypeError, RuntimeError):
+                    signal.disconnect(previous_callback)
+
+            if callback:
+                if checkable:
+                    button._napari_phasors_toolbar_callback = callback
+                    button.toggled.connect(callback)
+                else:
+
+                    def _wrapped_callback(*args, **kwargs):
+                        callback()
+
+                    button._napari_phasors_toolbar_callback = _wrapped_callback
+                    button.clicked.connect(_wrapped_callback)
+            else:
+                button._napari_phasors_toolbar_callback = None
+
+    CustomToolbarWidget.connect_button_callback = connect_button_callback
+    CustomToolbarWidget._napari_phasors_disconnect_patched = True
+
+
+_patch_nap_plot_tools_toolbar_disconnect()
+
+
 class MaskAssignmentDialog(QDialog):
     """Dialog to assign a mask layer to each selected image layer.
 
@@ -127,7 +172,7 @@ class MaskAssignmentDialog(QDialog):
         self._apply_all_combo = QComboBox()
         self._apply_all_combo.addItems(mask_options)
         self._apply_all_combo.currentTextChanged.connect(
-            self._on_apply_all_changed
+            lambda *args: self._on_apply_all_changed(*args)
         )
         apply_all_layout.addWidget(self._apply_all_combo, 1)
         layout.addLayout(apply_all_layout)
@@ -136,8 +181,8 @@ class MaskAssignmentDialog(QDialog):
         button_box = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel
         )
-        button_box.accepted.connect(self.accept)
-        button_box.rejected.connect(self.reject)
+        button_box.accepted.connect(lambda *args: self.accept(*args))
+        button_box.rejected.connect(lambda *args: self.reject(*args))
         layout.addWidget(button_box)
 
     def _on_apply_all_changed(self, text):
@@ -262,7 +307,7 @@ class ContourLayerSettingsDialog(QDialog):
         if merged_style == "solid":
             self._merged_colormap_combo.setCurrentIndex(0)
         self._merged_colormap_combo.currentTextChanged.connect(
-            self._on_merged_colormap_changed
+            lambda *args: self._on_merged_colormap_changed(*args)
         )
         self._merged_color_btn = QPushButton()
         self._merged_color_btn.setFixedSize(24, 24)
@@ -385,18 +430,20 @@ class ContourLayerSettingsDialog(QDialog):
 
         add_group_btn = QPushButton("+ Add Group")
         add_group_btn.setMaximumWidth(120)
-        add_group_btn.clicked.connect(self._on_add_group)
+        add_group_btn.clicked.connect(lambda: self._on_add_group())
         group_layout.addWidget(add_group_btn)
         root.addWidget(self._group_section)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel
         )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(lambda *args: self.accept(*args))
+        buttons.rejected.connect(lambda *args: self.reject(*args))
         root.addWidget(buttons)
 
-        self.mode_combo.currentTextChanged.connect(self._update_ui_for_mode)
+        self.mode_combo.currentTextChanged.connect(
+            lambda val: self._update_ui_for_mode(val)
+        )
         self._update_ui_for_mode(self.mode_combo.currentText())
 
     @staticmethod
@@ -852,18 +899,20 @@ class PhasorCenterLayerSettingsDialog(QDialog):
 
         add_group_btn = QPushButton("+ Add Group")
         add_group_btn.setMaximumWidth(120)
-        add_group_btn.clicked.connect(self._on_add_group)
+        add_group_btn.clicked.connect(lambda: self._on_add_group())
         group_layout.addWidget(add_group_btn)
         root.addWidget(self._group_section)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel
         )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(lambda *args: self.accept(*args))
+        buttons.rejected.connect(lambda *args: self.reject(*args))
         root.addWidget(buttons)
 
-        self.mode_combo.currentTextChanged.connect(self._update_ui_for_mode)
+        self.mode_combo.currentTextChanged.connect(
+            lambda val: self._update_ui_for_mode(val)
+        )
         self._update_ui_for_mode(self.mode_combo.currentText())
 
     @staticmethod
@@ -1327,7 +1376,7 @@ class PlotterWidget(QWidget):
             "Assign different mask layers to each selected image layer."
         )
         self.mask_assign_button.clicked.connect(
-            self._open_mask_assignment_dialog
+            lambda *args: self._open_mask_assignment_dialog(*args)
         )
         self.mask_assign_button.setVisible(False)
         harmonics_and_mask_container.addWidget(self.mask_assign_button, 1)
@@ -1364,19 +1413,25 @@ class PlotterWidget(QWidget):
             "Re-open the Phasor Analysis dock"
         )
         self.show_analysis_button.setVisible(False)
-        self.show_analysis_button.clicked.connect(self._show_analysis_dock)
+        self.show_analysis_button.clicked.connect(
+            lambda: self._show_analysis_dock()
+        )
         dock_buttons_layout.addWidget(self.show_analysis_button)
 
         self.show_histogram_button = QPushButton("Show Histogram")
         self.show_histogram_button.setToolTip("Re-open the Histogram dock")
         self.show_histogram_button.setVisible(False)
-        self.show_histogram_button.clicked.connect(self._show_histogram_dock)
+        self.show_histogram_button.clicked.connect(
+            lambda: self._show_histogram_dock()
+        )
         dock_buttons_layout.addWidget(self.show_histogram_button)
 
         self.show_statistics_button = QPushButton("Show Statistics Table")
         self.show_statistics_button.setToolTip("Re-open the Statistics dock")
         self.show_statistics_button.setVisible(False)
-        self.show_statistics_button.clicked.connect(self._show_statistics_dock)
+        self.show_statistics_button.clicked.connect(
+            lambda: self._show_statistics_dock()
+        )
         dock_buttons_layout.addWidget(self.show_statistics_button)
 
         self._dock_buttons_widget = QWidget()
@@ -1387,7 +1442,9 @@ class PlotterWidget(QWidget):
         # Timer that polls dock visibility — reliable for both the hide and
         # close-X buttons (the latter destroys the dock without emitting signals).
         self._dock_check_timer = QTimer(self)
-        self._dock_check_timer.timeout.connect(self._check_dock_visibility)
+        self._dock_check_timer.timeout.connect(
+            lambda: self._check_dock_visibility()
+        )
         self._dock_check_timer.start(500)
 
         # Create tab widget
@@ -1458,12 +1515,14 @@ class PlotterWidget(QWidget):
         self._analysis_dock_init_timer = QTimer(self)
         self._analysis_dock_init_timer.setSingleShot(True)
         self._analysis_dock_init_timer.timeout.connect(
-            self._add_analysis_dock_widget
+            lambda *args: self._add_analysis_dock_widget(*args)
         )
 
         self._dock_resize_timer = QTimer(self)
         self._dock_resize_timer.setSingleShot(True)
-        self._dock_resize_timer.timeout.connect(self._resize_initial_docks)
+        self._dock_resize_timer.timeout.connect(
+            lambda: self._resize_initial_docks()
+        )
 
         self._analysis_dock_init_timer.start(20)
 
@@ -1480,13 +1539,13 @@ class PlotterWidget(QWidget):
         self._layer_selection_timer.setSingleShot(True)
         self._layer_selection_timer.setInterval(300)  # 300ms delay
         self._layer_selection_timer.timeout.connect(
-            self._process_layer_selection_change
+            lambda *args: self._process_layer_selection_change(*args)
         )
 
         self._bins_timer = QTimer(self)
         self._bins_timer.setSingleShot(True)
         self._bins_timer.setInterval(500)  # 500ms delay
-        self._bins_timer.timeout.connect(self._process_bins_change)
+        self._bins_timer.timeout.connect(lambda: self._process_bins_change())
 
         # Create Settings tab
         self.settings_tab = QWidget()
@@ -1520,8 +1579,12 @@ class PlotterWidget(QWidget):
         self._create_fret_tab()
 
         # Connect napari signals when new layer is inseted or removed
-        self.viewer.layers.events.inserted.connect(self.reset_layer_choices)
-        self.viewer.layers.events.removed.connect(self.reset_layer_choices)
+        self.viewer.layers.events.inserted.connect(
+            lambda *args: self.reset_layer_choices()
+        )
+        self.viewer.layers.events.removed.connect(
+            lambda *args: self.reset_layer_choices()
+        )
 
         # Set contour single-layer defaults before wiring UI signals.
         # Combo-box population can emit callbacks during initialization.
@@ -1536,58 +1599,60 @@ class PlotterWidget(QWidget):
         # Connect callbacks
         # When primary layer changes, update all tab UIs (but don't run analyses)
         self.image_layers_checkable_combobox.primaryLayerChanged.connect(
-            self._on_primary_layer_changed
+            lambda *args: self._on_primary_layer_changed(*args)
         )
         # When selection changes, only update the plot
         self.image_layers_checkable_combobox.selectionChanged.connect(
-            self._on_selection_changed
+            lambda *args: self._on_selection_changed(*args)
         )
         # Update mask UI mode when selection changes (combobox vs button)
         self.image_layers_checkable_combobox.selectionChanged.connect(
-            self._update_mask_ui_mode
+            lambda *args: self._update_mask_ui_mode(*args)
         )
         # Update all frequency widgets from layer metadata if primary layer changes
         self.image_layers_checkable_combobox.primaryLayerChanged.connect(
-            self._sync_frequency_inputs_from_metadata
+            lambda *args: self._sync_frequency_inputs_from_metadata(*args)
         )
         # Update mask when mask layer selection changes
         self.mask_layer_combobox.currentTextChanged.connect(
-            self._on_mask_layer_changed
+            lambda *args: self._on_mask_layer_changed(*args)
         )
         self.plotter_inputs_widget.semi_circle_checkbox.toggled.connect(
-            self._on_semi_circle_changed
+            lambda *args: self._on_semi_circle_changed(*args)
         )
-        self.harmonic_spinbox.valueChanged.connect(self._on_harmonic_changed)
+        self.harmonic_spinbox.valueChanged.connect(
+            lambda val: self._on_harmonic_changed(val)
+        )
         self.plotter_inputs_widget.plot_type_combobox.currentIndexChanged.connect(
-            self._on_plot_type_changed
+            lambda *args: self._on_plot_type_changed()
         )
         self.plotter_inputs_widget.colormap_combobox.currentIndexChanged.connect(
-            self._on_colormap_changed
+            lambda *args: self._on_colormap_changed()
         )
         self.plotter_inputs_widget.number_of_bins_spinbox.valueChanged.connect(
-            self._on_bins_changed
+            lambda *args: self._on_bins_changed(*args)
         )
         self.plotter_inputs_widget.log_scale_checkbox.toggled.connect(
-            self._on_log_scale_changed
+            lambda *args: self._on_log_scale_changed(*args)
         )
         self.plotter_inputs_widget.white_background_checkbox.toggled.connect(
-            self._on_white_background_changed
+            lambda *args: self._on_white_background_changed(*args)
         )
 
         self.plotter_inputs_widget.marker_size_spinbox.valueChanged.connect(
-            self._on_marker_size_changed
+            lambda *args: self._on_marker_size_changed(*args)
         )
         self.plotter_inputs_widget.marker_color_button.clicked.connect(
-            self._on_marker_color_clicked
+            lambda *args: self._on_marker_color_clicked(*args)
         )
         self.plotter_inputs_widget.marker_alpha_spinbox.valueChanged.connect(
-            self._on_marker_alpha_changed
+            lambda *args: self._on_marker_alpha_changed(*args)
         )
         self.plotter_inputs_widget.contour_levels_spinbox.valueChanged.connect(
-            self._on_contour_levels_changed
+            lambda *args: self._on_contour_levels_changed(*args)
         )
         self.plotter_inputs_widget.contour_linewidth_spinbox.valueChanged.connect(
-            self._on_contour_linewidth_changed
+            lambda *args: self._on_contour_linewidth_changed(*args)
         )
 
         contour_settings_parent = self.plotter_inputs_widget.findChild(
@@ -1614,7 +1679,7 @@ class PlotterWidget(QWidget):
             "Choose solid contour color"
         )
         self.plotter_inputs_widget.contour_single_color_button.clicked.connect(
-            self._on_single_contour_color_clicked
+            lambda *args: self._on_single_contour_color_clicked()
         )
         self.plotter_inputs_widget.contour_single_color_button.setVisible(
             False
@@ -1659,7 +1724,7 @@ class PlotterWidget(QWidget):
             "Configure Multi-Layer Display..."
         )
         self.plotter_inputs_widget.contour_layer_settings_button.clicked.connect(
-            self._on_contour_layer_settings_clicked
+            lambda *args: self._on_contour_layer_settings_clicked()
         )
         contour_settings_layout.addWidget(
             self.plotter_inputs_widget.label_contour_layer_settings,
@@ -1683,14 +1748,14 @@ class PlotterWidget(QWidget):
             "#27ae60"
         )
         self.plotter_inputs_widget.phasor_center_checkbox.toggled.connect(
-            self._on_phasor_center_toggled
+            lambda *args: self._on_phasor_center_toggled(*args)
         )
 
         self.plotter_inputs_widget.pc_configure_button = QPushButton(
             "Configure center display..."
         )
         self.plotter_inputs_widget.pc_configure_button.clicked.connect(
-            self._on_phasor_center_configure_clicked
+            lambda *args: self._on_phasor_center_configure_clicked()
         )
         self.plotter_inputs_widget.pc_configure_button.setVisible(False)
 
@@ -1720,10 +1785,10 @@ class PlotterWidget(QWidget):
         )
 
         self.import_from_layer_button.clicked.connect(
-            self._import_settings_from_layer
+            lambda *args: self._import_settings_from_layer()
         )
         self.import_from_file_button.clicked.connect(
-            self._import_settings_from_file
+            lambda *args: self._import_settings_from_file()
         )
 
         # Populate plot type combobox with display names
@@ -1792,7 +1857,7 @@ class PlotterWidget(QWidget):
         self._connect_active_artist_signals()
         self._connect_selector_signals()
         self.canvas_widget.show_color_overlay_signal.connect(
-            self._enforce_axes_aspect
+            lambda *args: self._enforce_axes_aspect()
         )
 
         # Set the initial plot
@@ -1803,7 +1868,9 @@ class PlotterWidget(QWidget):
         self.reset_layer_choices()
 
         # Connect tab change signal
-        self.tab_widget.currentChanged.connect(self._on_tab_changed)
+        self.tab_widget.currentChanged.connect(
+            lambda *args: self._on_tab_changed(*args)
+        )
         self._set_selection_visibility(False)
 
         # Phasor center statistics widget
@@ -1909,7 +1976,10 @@ class PlotterWidget(QWidget):
             getattr(self, 'canvas_container', None),
             getattr(self, 'controls_container', None),
         }
-        if obj in watched and event.type() in {QEvent.Resize, QEvent.Show}:
+        if obj in watched and event.type() in {
+            QEvent.Type.Resize,
+            QEvent.Type.Show,
+        }:
             QTimer.singleShot(0, self._resize_canvas_to_available_space)
         return super().eventFilter(obj, event)
 
@@ -2497,8 +2567,8 @@ class PlotterWidget(QWidget):
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel
         )
         layout.addWidget(button_box)
-        button_box.accepted.connect(dialog.accept)
-        button_box.rejected.connect(dialog.reject)
+        button_box.accepted.connect(lambda *args: dialog.accept(*args))
+        button_box.rejected.connect(lambda *args: dialog.reject(*args))
 
         dialog.setLayout(layout)
         if dialog.exec_() == QDialog.Accepted:
@@ -2745,8 +2815,8 @@ class PlotterWidget(QWidget):
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel
         )
         layout.addWidget(button_box)
-        button_box.accepted.connect(dialog.accept)
-        button_box.rejected.connect(dialog.reject)
+        button_box.accepted.connect(lambda *args: dialog.accept(*args))
+        button_box.rejected.connect(lambda *args: dialog.reject(*args))
         dialog.setLayout(layout)
 
         if dialog.exec_() == QDialog.Accepted and layer_combo.currentText():
@@ -4209,7 +4279,7 @@ class PlotterWidget(QWidget):
             )
         )
         self.harmonic_spinbox.valueChanged.connect(
-            self.fret_tab._on_harmonic_changed
+            lambda *args: self.fret_tab._on_harmonic_changed(*args)
         )
 
     @property
@@ -4752,7 +4822,7 @@ class PlotterWidget(QWidget):
         """Connect selection applied signal from all selectors to enforce axes aspect."""
         for selector in self.canvas_widget.selectors.values():
             selector.selection_applied_signal.connect(
-                self._enforce_axes_aspect
+                lambda *args: self._enforce_axes_aspect()
             )
 
     def _connect_active_artist_signals(self):
@@ -4763,13 +4833,17 @@ class PlotterWidget(QWidget):
             self.canvas_widget.artists[
                 'HISTOGRAM2D'
             ].color_indices_changed_signal.connect(
-                self.selection_tab.manual_selection_changed
+                lambda *args: self.selection_tab.manual_selection_changed(
+                    *args
+                )
             )
         elif self.plot_type == 'SCATTER':
             self.canvas_widget.artists[
                 'SCATTER'
             ].color_indices_changed_signal.connect(
-                self.selection_tab.manual_selection_changed
+                lambda *args: self.selection_tab.manual_selection_changed(
+                    *args
+                )
             )
 
     def _disconnect_all_artist_signals(self):
@@ -4914,17 +4988,23 @@ class PlotterWidget(QWidget):
                 if isinstance(layer, Image):
                     with contextlib.suppress(TypeError, ValueError):
                         layer.events.name.disconnect(self.reset_layer_choices)
-                    layer.events.name.connect(self.reset_layer_choices)
+                    layer.events.name.connect(
+                        lambda *args: self.reset_layer_choices(*args)
+                    )
                 if isinstance(layer, (Shapes, Labels)):
                     with contextlib.suppress(TypeError, ValueError):
                         layer.events.name.disconnect(self.reset_layer_choices)
-                    layer.events.name.connect(self.reset_layer_choices)
+                    layer.events.name.connect(
+                        lambda *args: self.reset_layer_choices(*args)
+                    )
                 if isinstance(layer, Shapes):
                     with contextlib.suppress(TypeError, ValueError):
                         layer.events.data.disconnect(
                             self._on_mask_data_changed
                         )
-                    layer.events.data.connect(self._on_mask_data_changed)
+                    layer.events.data.connect(
+                        lambda *args: self._on_mask_data_changed(*args)
+                    )
                 if isinstance(layer, Labels):
                     try:
                         layer.events.paint.disconnect(
@@ -4935,8 +5015,12 @@ class PlotterWidget(QWidget):
                         )
                     except (TypeError, ValueError):
                         pass  # Not connected, ignore
-                    layer.events.paint.connect(self._on_mask_data_changed)
-                    layer.events.set_data.connect(self._on_mask_data_changed)
+                    layer.events.paint.connect(
+                        lambda *args: self._on_mask_data_changed(*args)
+                    )
+                    layer.events.set_data.connect(
+                        lambda *args: self._on_mask_data_changed(*args)
+                    )
 
             self._mask_layers_by_id = mask_layers_by_id
 

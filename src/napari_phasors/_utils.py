@@ -21,7 +21,7 @@ from phasorpy.filter import (
     phasor_filter_pawflim,
     phasor_threshold,
 )
-from qtpy.QtCore import QRect, QSize, Qt, Signal
+from qtpy.QtCore import QEvent, QRect, QSize, Qt, Signal
 from qtpy.QtGui import (
     QColor,
     QDoubleValidator,
@@ -921,7 +921,9 @@ class CheckableComboBox(QComboBox):
         self._primary_layer_name = ""
 
         # Connect model signals
-        self.model().dataChanged.connect(self._on_data_changed)
+        self.model().dataChanged.connect(
+            lambda *args: self._on_data_changed(*args)
+        )
 
         # Track if we're inside the popup
         self._popup_visible = False
@@ -960,14 +962,14 @@ class CheckableComboBox(QComboBox):
     def eventFilter(self, obj, event):
         """Filter events to make line edit clickable and handle item clicks."""
         if obj == self.lineEdit():
-            if event.type() == event.MouseButtonRelease:
+            if event.type() == QEvent.Type.MouseButtonRelease:
                 if not self.view().isVisible():
                     self.showPopup()
                 return True
-            elif event.type() == event.MouseButtonPress:
+            elif event.type() == QEvent.Type.MouseButtonPress:
                 return True
         elif obj == self.view().viewport():
-            if event.type() == event.MouseMove:
+            if event.type() == QEvent.Type.MouseMove:
                 index = self.view().indexAt(event.pos())
                 old_hover = self._delegate._hovered_index
                 self._delegate._hovered_index = (
@@ -976,7 +978,7 @@ class CheckableComboBox(QComboBox):
                 if old_hover != self._delegate._hovered_index:
                     self.view().viewport().update()
                 return False
-            elif event.type() == event.MouseButtonRelease:
+            elif event.type() == QEvent.Type.MouseButtonRelease:
                 index = self.view().indexAt(event.pos())
                 if index.isValid():
                     vis_rect = self.view().visualRect(index)
@@ -1010,7 +1012,7 @@ class CheckableComboBox(QComboBox):
                             )
                             item.setCheckState(new_state)
                         return True
-            elif event.type() == event.Leave:
+            elif event.type() == QEvent.Type.Leave:
                 if self._delegate._hovered_index is not None:
                     self._delegate._hovered_index = None
                     self.view().viewport().update()
@@ -1405,21 +1407,23 @@ class HistogramSettingsDialog(QDialog):
         # Add group button
         add_group_btn = QPushButton("+ Add Group")
         add_group_btn.setMaximumWidth(120)
-        add_group_btn.clicked.connect(self._on_add_group)
+        add_group_btn.clicked.connect(lambda: self._on_add_group())
         group_layout.addWidget(add_group_btn)
 
         layout.addWidget(self._group_section)
 
         # Show / hide sections based on mode
         self._update_ui_for_mode(display_mode)
-        self.mode_combo.currentTextChanged.connect(self._update_ui_for_mode)
+        self.mode_combo.currentTextChanged.connect(
+            lambda: self._update_ui_for_mode()
+        )
 
         # --- OK / Cancel ---
         btn_layout = QHBoxLayout()
         ok_btn = QPushButton("OK")
         cancel_btn = QPushButton("Cancel")
-        ok_btn.clicked.connect(self.accept)
-        cancel_btn.clicked.connect(self.reject)
+        ok_btn.clicked.connect(lambda: self.accept())
+        cancel_btn.clicked.connect(lambda: self.reject())
         btn_layout.addWidget(ok_btn)
         btn_layout.addWidget(cancel_btn)
         layout.addLayout(btn_layout)
@@ -1720,16 +1724,22 @@ class HistogramWidget(QWidget):
             self.range_slider.setValue((0, 100))
             self.range_slider.setBarMovesAllHandles(False)
 
-            self.range_slider.valueChanged.connect(self._on_range_label_update)
-            self.range_slider.sliderPressed.connect(self._on_slider_pressed)
-            self.range_slider.sliderReleased.connect(self._on_slider_released)
+            self.range_slider.valueChanged.connect(
+                lambda *args: self._on_range_label_update(*args)
+            )
+            self.range_slider.sliderPressed.connect(
+                lambda *args: self._on_slider_pressed(*args)
+            )
+            self.range_slider.sliderReleased.connect(
+                lambda *args: self._on_slider_released(*args)
+            )
             layout.addWidget(self.range_slider)
 
             self.range_min_edit.editingFinished.connect(
-                self._on_range_min_edit
+                lambda *args: self._on_range_min_edit(*args)
             )
             self.range_max_edit.editingFinished.connect(
-                self._on_range_max_edit
+                lambda *args: self._on_range_max_edit(*args)
             )
 
         # Matplotlib canvas
@@ -1748,19 +1758,25 @@ class HistogramWidget(QWidget):
 
         self._settings_button = QPushButton("Histogram Settings…")
         self._settings_button.setMaximumWidth(150)
-        self._settings_button.clicked.connect(self._open_settings_dialog)
+        self._settings_button.clicked.connect(
+            lambda: self._open_settings_dialog()
+        )
         controls_layout.addWidget(self._settings_button)
 
         controls_layout.addStretch()
 
         self.save_png_button = QPushButton("Save Histogram as PNG")
         self.save_png_button.setMinimumWidth(180)
-        self.save_png_button.clicked.connect(self._save_histogram_png)
+        self.save_png_button.clicked.connect(
+            lambda: self._save_histogram_png()
+        )
         controls_layout.addWidget(self.save_png_button)
 
         self.save_csv_button = QPushButton("Save Histogram as CSV")
         self.save_csv_button.setMinimumWidth(180)
-        self.save_csv_button.clicked.connect(self._save_histogram_csv)
+        self.save_csv_button.clicked.connect(
+            lambda: self._save_histogram_csv()
+        )
         controls_layout.addWidget(self.save_csv_button)
 
         layout.addLayout(controls_layout)
@@ -2708,7 +2724,7 @@ class CollapsibleSection(QWidget):
         )
         self._toggle_button.setCheckable(True)
         self._toggle_button.setChecked(not initially_collapsed)
-        self._toggle_button.clicked.connect(self._on_toggle)
+        self._toggle_button.clicked.connect(lambda: self._on_toggle())
         layout.addWidget(self._toggle_button)
 
         # Content area
@@ -2776,7 +2792,9 @@ class StatisticsTableWidget(QTableWidget):
             "QTableWidget::item:selected { background: #4a6fa5; color: white; }"
         )
         self.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.customContextMenuRequested.connect(self._show_context_menu)
+        self.customContextMenuRequested.connect(
+            lambda: self._show_context_menu()
+        )
 
     def keyPressEvent(self, event):
         """Handle Ctrl+C / Ctrl+A keyboard shortcuts."""
@@ -3020,12 +3038,14 @@ class StatisticsDockWidget(QWidget):
         self.export_csv_button = QPushButton("Export Table as CSV")
         self.export_csv_button.setMinimumWidth(140)
         self.export_csv_button.setEnabled(False)
-        self.export_csv_button.clicked.connect(self._export_table_csv_impl)
+        self.export_csv_button.clicked.connect(
+            lambda: self._export_table_csv_impl()
+        )
         main_layout.addWidget(self.export_csv_button)
 
         main_layout.addStretch()
 
-        histogram_widget.dataChanged.connect(self._update_statistics)
+        histogram_widget.dataChanged.connect(lambda: self._update_statistics())
 
     def _update_statistics(self):
         """Recompute the statistics tables from the histogram's data."""
@@ -3246,21 +3266,21 @@ class FileOrderDialog(QDialog):
         btn_layout = QHBoxLayout()
 
         self.move_up_btn = QPushButton("▲ Move Up")
-        self.move_up_btn.clicked.connect(self._move_up)
+        self.move_up_btn.clicked.connect(lambda: self._move_up())
         btn_layout.addWidget(self.move_up_btn)
 
         self.move_down_btn = QPushButton("▼ Move Down")
-        self.move_down_btn.clicked.connect(self._move_down)
+        self.move_down_btn.clicked.connect(lambda: self._move_down())
         btn_layout.addWidget(self.move_down_btn)
 
         btn_layout.addStretch()
 
         self.ok_btn = QPushButton("OK")
-        self.ok_btn.clicked.connect(self.accept)
+        self.ok_btn.clicked.connect(lambda: self.accept())
         btn_layout.addWidget(self.ok_btn)
 
         self.cancel_btn = QPushButton("Cancel")
-        self.cancel_btn.clicked.connect(self.reject)
+        self.cancel_btn.clicked.connect(lambda: self.reject())
         btn_layout.addWidget(self.cancel_btn)
 
         layout.addLayout(btn_layout)

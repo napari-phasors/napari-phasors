@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 import numpy as np
 from biaplotter.plotter import CanvasWidget
+from nap_plot_tools.tools import CustomToolbarWidget
 from napari.layers import Image
 from qtpy.QtWidgets import (
     QComboBox,
@@ -164,6 +165,12 @@ def test_phasor_plotter_initialization_values(make_napari_viewer):
     ylim = plotter.canvas_widget.axes.get_ylim()
     assert xlim[0] == -0.1 and xlim[1] == 1.1
     assert ylim[0] == -0.1 and ylim[1] == 0.7
+
+
+def test_nap_plot_tools_toolbar_disconnect_is_patched():
+    assert getattr(
+        CustomToolbarWidget, '_napari_phasors_disconnect_patched', False
+    )
 
 
 def test_phasor_plotter_initialization_plot_not_called(make_napari_viewer):

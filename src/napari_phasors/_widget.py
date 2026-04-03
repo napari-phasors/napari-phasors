@@ -76,11 +76,13 @@ class PhasorTransform(QWidget):
         self.scroll_area.setWidget(self.content_widget)
 
         self.search_button = QPushButton("Select file(s) to be read")
-        self.search_button.clicked.connect(self._open_file_dialog)
+        self.search_button.clicked.connect(lambda: self._open_file_dialog())
         self.main_layout.addWidget(self.search_button)
 
         self.multi_file_button = QPushButton("Open 3D stack")
-        self.multi_file_button.clicked.connect(self._open_multi_file_dialog)
+        self.multi_file_button.clicked.connect(
+            lambda: self._open_multi_file_dialog()
+        )
         self.main_layout.addWidget(self.multi_file_button)
 
         self.main_layout.addWidget(QLabel("Path to the selected file(s): "))
@@ -676,7 +678,7 @@ class AdvancedOptionsWidget(QWidget):
                 "Spacing along Z in micrometers (um)."
             )
             self._stack_z_spacing_edit.editingFinished.connect(
-                self._on_stack_z_spacing_changed
+                lambda *args: self._on_stack_z_spacing_changed(*args)
             )
 
             z_layout.addWidget(self._stack_z_spacing_edit)
@@ -734,7 +736,7 @@ class AdvancedOptionsWidget(QWidget):
             self.frames.addItem(str(frame))
         self.frames.setCurrentIndex(0)
         self.frames.currentIndexChanged.connect(
-            self._on_frames_combobox_changed
+            lambda *args: self._on_frames_combobox_changed(*args)
         )
         frame_layout.addWidget(self.frames)
         frame_layout.addStretch()
@@ -771,7 +773,7 @@ class AdvancedOptionsWidget(QWidget):
                 self.channels.addItem(str(channel))
             self.channels.setCurrentIndex(0)
             self.channels.currentIndexChanged.connect(
-                self._on_channels_combobox_changed
+                lambda *args: self._on_channels_combobox_changed(*args)
             )
             self.channels_layout.addWidget(self.channels)
         else:
@@ -824,7 +826,7 @@ class AdvancedOptionsWidget(QWidget):
             self.harmonic_start_edit.setFixedWidth(50)
             self.harmonic_start_edit.setValidator(QDoubleValidator())
             self.harmonic_start_edit.editingFinished.connect(
-                self._on_harmonic_edit_changed
+                lambda *args: self._on_harmonic_edit_changed(*args)
             )
             self.harmonic_layout.addWidget(self.harmonic_start_edit)
 
@@ -836,7 +838,7 @@ class AdvancedOptionsWidget(QWidget):
             self.harmonic_end_edit.setFixedWidth(50)
             self.harmonic_end_edit.setValidator(QDoubleValidator())
             self.harmonic_end_edit.editingFinished.connect(
-                self._on_harmonic_edit_changed
+                lambda *args: self._on_harmonic_edit_changed(*args)
             )
             self.harmonic_layout.addWidget(self.harmonic_end_edit)
         else:
@@ -871,7 +873,7 @@ class AdvancedOptionsWidget(QWidget):
             self.harmonic_slider.setValue((preserved_start, preserved_end))
             self.harmonic_slider.setBarMovesAllHandles(True)
             self.harmonic_slider.valueChanged.connect(
-                self._on_harmonic_slider_changed
+                lambda *args: self._on_harmonic_slider_changed(*args)
             )
 
             harmonic_layout_index = None
@@ -1271,7 +1273,7 @@ class FbdWidget(AdvancedOptionsWidget):
         laser_factor_completer = QCompleter(["0.00022", "2.50012", "2.50016"])
         self.laser_factor.setCompleter(laser_factor_completer)
         self.laser_factor.textChanged.connect(
-            lambda: self._update_signal_plot()
+            lambda *args: self._update_signal_plot()
         )
         laser_layout.addWidget(self.laser_factor)
         laser_layout.addStretch()
@@ -1355,7 +1357,9 @@ class PtuWidget(AdvancedOptionsWidget):
             "If < 0, integrate delay time axis."
             "If > 0, return up to specified bin."
         )
-        self.dtime.textChanged.connect(lambda: self._update_signal_plot())
+        self.dtime.textChanged.connect(
+            lambda *args: self._update_signal_plot()
+        )
         dtime_layout.addWidget(self.dtime)
         dtime_layout.addStretch()
         self.mainLayout.addLayout(dtime_layout)
@@ -1532,7 +1536,9 @@ class SdtWidget(AdvancedOptionsWidget):
             "Index of dataset to read in case the file contains multiple "
             "datasets. By default, the first dataset is read."
         )
-        self.index.textChanged.connect(lambda: self._update_signal_plot())
+        self.index.textChanged.connect(
+            lambda *args: self._update_signal_plot()
+        )
         index_layout.addWidget(self.index)
         index_layout.addStretch()
         self.mainLayout.addLayout(index_layout)
@@ -1713,7 +1719,9 @@ class OmeTifWidget(AdvancedOptionsWidget):
 
             self.channels.setCurrentIndex(0)
             self.channels.currentIndexChanged.connect(
-                self._on_channels_combobox_changed_settings
+                lambda *args: self._on_channels_combobox_changed_settings(
+                    *args
+                )
             )
             self.channels_layout.addWidget(self.channels)
         else:
@@ -1935,7 +1943,9 @@ class LifWidget(AdvancedOptionsWidget):
         image_layout.addWidget(QLabel("Image (regex/index): "))
         self.image = QLineEdit()
         self.image.setToolTip("Index or regex pattern of image to return.")
-        self.image.textChanged.connect(self._on_lif_options_changed)
+        self.image.textChanged.connect(
+            lambda *args: self._on_lif_options_changed()
+        )
         image_layout.addWidget(self.image)
         image_layout.addStretch()
         self.mainLayout.addLayout(image_layout)
@@ -1947,7 +1957,9 @@ class LifWidget(AdvancedOptionsWidget):
         self.dim.setToolTip(
             "Character code of hyperspectral dimension. 'λ' for emission, 'Λ' for excitation."
         )
-        self.dim.currentIndexChanged.connect(self._on_lif_options_changed)
+        self.dim.currentIndexChanged.connect(
+            lambda *args: self._on_lif_options_changed()
+        )
         dim_layout.addWidget(self.dim)
         dim_layout.addStretch()
         self.mainLayout.addLayout(dim_layout)
@@ -2042,7 +2054,9 @@ class JsonWidget(AdvancedOptionsWidget):
         self.channel_entry.setToolTip(
             "Index of channel or empty for all channel reading."
         )
-        self.channel_entry.textChanged.connect(self._on_json_channel_changed)
+        self.channel_entry.textChanged.connect(
+            lambda *args: self._on_json_channel_changed()
+        )
         chan_layout.addWidget(self.channel_entry)
         chan_layout.addStretch()
         self.mainLayout.addLayout(chan_layout)
@@ -2243,11 +2257,15 @@ class WriterWidget(QWidget):
         self.main_layout.addWidget(self.colorbar_checkbox)
 
         self.search_button = QPushButton("Select Export Location and Name")
-        self.search_button.clicked.connect(self._open_file_dialog)
+        self.search_button.clicked.connect(lambda: self._open_file_dialog())
         self.main_layout.addWidget(self.search_button)
 
-        self.viewer.layers.events.inserted.connect(self._populate_combobox)
-        self.viewer.layers.events.removed.connect(self._populate_combobox)
+        self.viewer.layers.events.inserted.connect(
+            lambda *args: self._populate_combobox()
+        )
+        self.viewer.layers.events.removed.connect(
+            lambda *args: self._populate_combobox()
+        )
 
         self._populate_combobox()
 
