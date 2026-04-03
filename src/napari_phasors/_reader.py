@@ -64,10 +64,33 @@ extension_mapping = {
             reader_options,
         ),
         ".czi": lambda path, reader_options: read_czi(path),
-        # ".flif": lambda path: io.read_flif(path),
-        # ".bh": lambda path: io.read_bh(path),
-        # ".bhz": lambda path: io.read_bhz(path),
-        # ".ifli": lambda path: io.read_ifli(),
+        ".flif": lambda path, reader_options: _parse_and_call_io_function(
+            path, io.signal_from_flif, {}, reader_options
+        ),
+        ".bh": lambda path, reader_options: _parse_and_call_io_function(
+            path, io.signal_from_bh, {}, reader_options
+        ),
+        ".b&h": lambda path, reader_options: _parse_and_call_io_function(
+            path, io.signal_from_bh, {}, reader_options
+        ),
+        ".bhz": lambda path, reader_options: _parse_and_call_io_function(
+            path, io.signal_from_bhz, {}, reader_options
+        ),
+        ".lif": lambda path, reader_options: _parse_and_call_io_function(
+            path,
+            io.signal_from_lif,
+            {"image": (None, False), "dim": ("λ", False)},
+            reader_options,
+        ),
+        ".bin": lambda path, reader_options: _parse_and_call_io_function(
+            path, io.signal_from_pqbin, {}, reader_options
+        ),
+        ".json": lambda path, reader_options: _parse_and_call_io_function(
+            path,
+            io.signal_from_flimlabs_json,
+            {"channel": (0, False), "dtype": (None, False)},
+            reader_options,
+        ),
     },
     "processed": {
         ".ome.tif": lambda path, reader_options: _parse_and_call_io_function(
@@ -76,9 +99,24 @@ extension_mapping = {
         ".ome.tiff": lambda path, reader_options: _parse_and_call_io_function(
             path, io.phasor_from_ometiff, {}, reader_options
         ),
-        # ".b64": lambda path: io.read_b64(path),
-        # ".r64": lambda path: io.read_r64(path),
-        # ".ref": lambda path: io.read_ref(path)
+        ".r64": lambda path, reader_options: _parse_and_call_io_function(
+            path, io.phasor_from_simfcs_referenced, {}, reader_options
+        ),
+        ".ref": lambda path, reader_options: _parse_and_call_io_function(
+            path, io.phasor_from_simfcs_referenced, {}, reader_options
+        ),
+        ".ifli": lambda path, reader_options: _parse_and_call_io_function(
+            path, io.phasor_from_ifli, {"channel": (0, False)}, reader_options
+        ),
+        ".lif": lambda path, reader_options: _parse_and_call_io_function(
+            path, io.phasor_from_lif, {"image": (None, False)}, reader_options
+        ),
+        ".json": lambda path, reader_options: _parse_and_call_io_function(
+            path,
+            io.phasor_from_flimlabs_json,
+            {"channel": (0, False)},
+            reader_options,
+        ),
     },
 }
 """This dictionary contains the mapping for reader functions from
@@ -96,6 +134,13 @@ iter_index_mapping = {
     ".tiff": None,
     '.sdt': "C",
     ".czi": None,
+    ".flif": None,
+    ".bh": None,
+    ".b&h": None,
+    ".bhz": None,
+    ".lif": None,
+    ".bin": None,
+    ".json": "C",
 }
 """This dictionary contains the mapping for the axis to iterate over
 when calculating phasor coordinates in the file.
@@ -103,7 +148,7 @@ when calculating phasor coordinates in the file.
 
 
 def napari_get_reader(
-    path: str,
+    path: str | list[str],
     reader_options: dict | None = None,
     harmonics: Union[int, Sequence[int], None] = None,
 ) -> Callable | None:
@@ -112,8 +157,8 @@ def napari_get_reader(
 
     Parameters
     ----------
-    path : str
-        Path to file.
+    path : str or list of str
+        Path to a file, or a list of file paths selected in napari.
     reader_options : dict, optional
         Dictionary containing the arguments to pass to the function.
     harmonics : Union[int, Sequence[int], None], optional
@@ -132,7 +177,43 @@ def napari_get_reader(
         in 'metadata' contain phasor coordinates as columns 'G' and 'S'.
 
     """
-    if path.endswith(tuple(extension_mapping["processed"].keys())):
+    if isinstance(path, list):
+        if len(path) == 0:
+            show_error("No files selected.")
+            return None
+
+        # Napari may pass a list of paths when selecting multiple files.
+        if len(path) > 1:
+            extensions = {_get_filename_extension(p)[1] for p in path}
+            if len(extensions) != 1:
+                show_error(
+                    f"All files must share the same extension, got: {extensions}"
+                )
+                return None
+
+            file_extension = next(iter(extensions))
+            if file_extension in extension_mapping["raw"]:
+                return lambda paths: raw_file_stack_reader(
+                    paths,
+                    reader_options=reader_options,
+                    harmonics=harmonics,
+                )
+
+            show_error(
+                "Multi-file loading is only supported for raw file formats."
+            )
+            return None
+
+        path = path[0]
+
+    extensions_both = set(extension_mapping["raw"].keys()).intersection(
+        extension_mapping["processed"].keys()
+    )
+    if path.endswith(tuple(extensions_both)):
+        return lambda path: ambiguous_file_reader(
+            path, reader_options=reader_options, harmonics=harmonics
+        )
+    elif path.endswith(tuple(extension_mapping["processed"].keys())):
         return lambda path: processed_file_reader(
             path, reader_options=reader_options, harmonics=harmonics
         )
@@ -142,6 +223,31 @@ def napari_get_reader(
         )
     else:
         show_error("File extension not supported.")
+        return None
+
+
+def ambiguous_file_reader(
+    path: str,
+    reader_options: dict | None = None,
+    harmonics: Union[int, Sequence[int], None] = None,
+) -> list[tuple]:
+    """Fallback reader that attempts to parse an ambiguous file extension as raw, then processed."""
+    try:
+        return raw_file_reader(
+            path, reader_options=reader_options, harmonics=harmonics
+        )
+    except Exception as e_raw:  # noqa: BLE001
+        try:
+            return processed_file_reader(
+                path, reader_options=reader_options, harmonics=harmonics
+            )
+        except Exception as e_processed:  # noqa: BLE001
+            raise RuntimeError(
+                "Failed to read ambiguous file with both raw and "
+                "processed readers. "
+                f"raw_file_reader error: {e_raw!r}; "
+                f"processed_file_reader error: {e_processed!r}"
+            ) from e_processed
 
 
 def raw_file_reader(
@@ -211,17 +317,19 @@ def raw_file_reader(
 
     layers = []
     iter_axis = iter_index_mapping[file_extension]
+    has_dims = hasattr(raw_data, 'dims')
+    raw_dims = tuple(raw_data.dims) if has_dims else ()
 
-    if iter_axis is None or iter_axis not in raw_data.dims:
+    if iter_axis is None or iter_axis not in raw_dims:
         # Handle files without iteration axis or when keepdims=False squeezed it out
         if file_extension in [".tif", ".tiff"]:
             axis = 0
-        elif iter_axis is None:
-            # Hyperspectral files - find "C" dimension
-            axis = raw_data.dims.index("C")
+        elif has_dims and "H" in raw_dims:
+            axis = raw_dims.index("H")
+        elif has_dims and "C" in raw_dims:
+            axis = raw_dims.index("C")
         else:
-            # FLIM files without "C" dimension (single channel)
-            axis = raw_data.dims.index("H")
+            axis = 0
 
         if file_extension in [".lsm", ".tif", ".tiff"]:
             axes_to_sum = tuple(range(1, len(raw_data.shape)))
