@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import matplotlib.colors as mcolors
 import numpy as np
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from napari.layers import Image
 from phasorpy.lifetime import (

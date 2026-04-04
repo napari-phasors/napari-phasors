@@ -809,7 +809,7 @@ def test_filter_widget_ui_layout(make_napari_viewer):
 
 def test_filter_widget_canvas_properties(make_napari_viewer):
     """Test canvas and figure properties."""
-    from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
+    from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
