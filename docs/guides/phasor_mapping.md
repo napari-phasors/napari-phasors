@@ -3,8 +3,9 @@
 The **Phasor Mapping** tab of the **Phasor Plot** widget lets you compute and
 visualize pixel-level physical quantities derived from the phasor coordinates:
 fluorescence lifetimes, phasor phase (angle), and phasor modulation (radius).
-Each output is displayed as a colormapped image layer and accompanied by an
-interactive **1D Histogram** panel and a **Statistics Table**.
+Each output is displayed as a colormapped image layer. Quantitative
+distribution and summary metrics can be explored in the
+**Histogram and Statistics Table** widget.
 
 ## Selecting the parameter to analyze
 
@@ -48,68 +49,21 @@ phasor plot and the image.
 Click **Calculate Output** to compute the selected metric for all currently
 selected layers. A new napari image layer is created (or updated if it already
 exists) with the selected colormap applied. The colormapped image can be
-exported as a PNG or OME-TIF file.
+exported as a PNG or OME-TIF file. For histogram and statistics options, see
+{doc}`histogram_statistics`.
 
-## 1D Histogram
+For practical FLIM examples and visualization/customization tools (contours,
+and phasor centers), see {doc}`plot_customization`.
 
-After calculating the output, a **1D Histogram** dock panel opens
-automatically below the Phasor Plot widget. It shows the distribution of the
-computed metric values (lifetime, phase, or modulation) across all valid pixels
-of all selected layers.
+## Arc Overlay Tool
 
-### Histogram features
+The **Phase & Modulation Arcs** tool helps visualize analysis boundaries by
+overlaying:
 
-- **Range slider** — drag the handles to clip the display / contrast limits of
-  the colormapped image in real time.
-- **Histogram Settings** — opens a dialog to configure:
+- **Phase arcs**: constant lifetime trajectories
+- **Modulation arcs**: constant modulation circles
 
-  | Option | Description |
-  |--------|-------------|
-  | Display mode | **Merged** (pooled), **Individual layers** (one curve per layer), or **Grouped** (custom layer groups) |
-  | Show standard deviation | Shades the ±1 SD band around the merged / group curve |
-  | Show line | Overlays a vertical line at the *Center of mass*, *Mean*, or *Median* |
-  | Show legend | Toggles the curve legend |
-  | White background | Switches to a white plot background for figures |
-  | Smooth curves | Applies Gaussian smoothing to improve curve readability |
-  | Layer / group colours | Picker for per-layer or per-group histogram colours |
+These guides help interpret whether a distribution shifts along a single
+component or reflects mixed lifetimes.
 
-- **Save Histogram as PNG** — exports the histogram at 300 DPI.
-
-## Statistics Table
-
-A **Statistics** dock panel, linked to the histogram, displays per-layer (and
-optionally per-group) descriptive statistics:
-
-| Column | Description |
-|--------|-------------|
-| Name | Layer or group name |
-| Center of Mass | Histogram-weighted center |
-| Mean | Arithmetic mean |
-| Median | 50th percentile |
-| Std Dev | Standard deviation |
-
-Right-clicking on the table provides **Copy**, **Copy with Headers**, and
-**Select All** options. The entire table can also be exported to CSV via the
-**Export Table as CSV** button.
-
-## Example workflow (FLIM)
-
-1. Load your FLIM file and open the **Phasor Plot** widget.
-2. Calibrate your data (optional but recommended).
-3. Go to the **Phasor Mapping** tab.
-4. Choose **Lifetime** → **Apparent Phase Lifetime** and enter the laser
-   frequency.
-5. Click **Calculate Output** — a false-colour lifetime image and a histogram
-   appear.
-6. Adjust the range slider to set the displayed lifetime range.
-7. Open **Histogram Settings** and switch to *Individual layers* if you have
-   multiple layers loaded to compare their distributions side-by-side.
-8. Use **Export Table as CSV** to save the statistics for further analysis.
-
-The GIF below shows the **Lifetime** workflow.
-
-![lifetimes](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/lifetime.gif)
-
-The GIF below shows the **Phase** and **Modulation** color mapping workflow.
-
-![phase_modulation](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/phase%20modulation.gif)
+![arc_tool](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/arc%20tool.gif)

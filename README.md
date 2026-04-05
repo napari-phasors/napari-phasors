@@ -21,13 +21,19 @@ available at **[https://napari-phasors.readthedocs.io](https://napari-phasors.re
 
 ## Features
 
-- Read FLIM and hyperspectral files (`.fbd`, `.sdt`, `.ptu`, `.lsm`, `.ome.tif`)
-- Simultaneous multi-layer phasor analysis with primary-layer selection
-- Calibration, filtering (median / wavelet), and automatic thresholding
-- Phasor selections: circular cursors, automatic clustering, and manual drawing
-- Phasor Mapping: colormap apparent/normal lifetime, phasor phase, and modulation per pixel, with an interactive 1D histogram and statistics table
-- Component analysis and FRET trajectory analysis
-- Export as OME-TIF or CSV (multiple layers simultaneously)
+- **Reading** a wide range of FLIM and hyperspectral file formats:
+    - **Raw data formats:**
+        - `.ptu`, `.fbd`, `.sdt`, `.lsm`, `.tif`, `.tiff`, `.czi`, `.flif`, `.bh`, `.b&h`, `.bhz`, `.lif`, `.bin`, `.json`
+    - **Processed data formats:**
+        - `.ome.tif`, `.ome.tiff`, `.r64`, `.ref`, `.ifli`, `.lif`, `.json`
+- **Phasor analysis** on multiple layers simultaneously, including support for stacking multiple raw data files
+- **Calibration** using reference images with known lifetimes
+- **Filtering** with median, wavelet, and automatic thresholding (Otsu, Li, Yen)
+- **Component analysis** for multi-component systems
+- **Phasor Mapping** — colormap apparent/normal lifetime, phasor phase, and phasor modulation per pixel, with interactive 1D histograms, statistics tables, and arc overlay tools
+- **FRET analysis** with donor trajectory visualization and multi-layer donor/background source selection
+- **Selections** via manual drawing, circular/polar/elliptical cursors, and automatic clustering
+- **Exporting** results as OME-TIF or CSV (multiple layers simultaneously)
 
 ## Installation
 

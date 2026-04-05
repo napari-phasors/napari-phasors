@@ -4,14 +4,32 @@ This guide walks through a complete FLIM (Fluorescence Lifetime Imaging Microsco
 
 ## 1. Load your FLIM data
 
-napari-phasors can read several FLIM file formats directly:
+napari-phasors supports a wide range of FLIM file formats directly:
 
-- **FBD** files (`.fbd`) — FlimBox data
-- **SDT** files (`.sdt`) — Becker & Hickl
-- **PTU** files (`.ptu`) — PicoQuant
-- **OME-TIF** files (`.ome.tif`) — Previously exported phasor data
+**FLIM file formats:**
+- **FBD** (`.fbd`) — FlimBox data
+- **SDT** (`.sdt`) — Becker & Hickl
+- **PTU** (`.ptu`) — PicoQuant
+- **OME-TIF** (`.ome.tif`, `.ome.tiff`) — Bio-Formats / OME
+- **TIFF** (`.tif`, `.tiff`) — Generic TIFF stacks
+- **BH** (`.bh`, `.b&h`) — Becker & Hickl binary
+- **BHZ** (`.bhz`) — Becker & Hickl zipped
+- **BIN** (`.bin`) — PicoQuant binary
+- **FLIF** (`.flif`) — FLIM Labs
+- **R64** (`.r64`), **REF** (`.ref`) — SimFCS referenced
+- **IFLI** (`.ifli`) — FLIM Labs intensity
+- **JSON** (`.json`) — FLIM Labs/FLIM processed
+
+All formats above can be opened via **File → Open File(s)** or by drag-and-drop into napari.
+> [!TIP]
+> You can select and open multiple raw data files simultaneously. napari-phasors will automatically recognize and stack compatible files into a single 3D image.
+
+For advanced import options and stack building with the custom widget, see
+{doc}`custom_import`.
 
 Use **File → Open File(s)** or drag-and-drop your file into napari.
+> [!TIP]
+> You can select and open multiple raw data files simultaneously. napari-phasors will automatically recognize and stack compatible files into a single 3D image.
 
 Alternatively, load the built-in sample data: **File → Open Sample → napari-phasors**.
 
@@ -41,9 +59,16 @@ Use the **Selection** tab to identify regions in phasor space using circular cur
 
 ## 7. Analyze phasor outputs
 
+Run **Component Analysis** when you want to decompose mixtures into two or
+more components and generate fraction maps. See {doc}`components` for details.
+
 Use the **Phasor Mapping** tab to colormap each pixel by its apparent lifetime,
 phasor phase, or phasor modulation. An interactive 1D histogram and statistics
-table update automatically. See {doc}`phasor_mapping` for details.
+table update automatically. See {doc}`phasor_mapping` and
+{doc}`histogram_statistics` for details.
+
+For practical visualization examples and plot customization tools, see
+{doc}`plot_customization`.
 
 ## 8. Export results
 

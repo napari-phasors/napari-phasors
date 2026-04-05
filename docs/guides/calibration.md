@@ -4,7 +4,7 @@ FLIM images can be calibrated using a reference image acquired under the same ex
 
 ## What is calibration?
 
-Phasor coordinates computed from raw FLIM data are affected by the instrument response function (IRF). Calibration corrects for this by using a reference sample — a homogeneous solution of a fluorophore with a **known fluorescence lifetime** — measured under the same conditions.
+Phasor coordinates computed from raw FLIM data are affected by the instrument response function (IRF). Calibration corrects for this by using a reference sample, a homogeneous solution of a fluorophore with a **known fluorescence lifetime**, measured under the same conditions.
 
 ## How to calibrate
 
