@@ -4292,9 +4292,11 @@ class PlotterWidget(QWidget):
                     Line2D(
                         [-1, 1],
                         [0, 0],
-                        linestyle='-',
+                        linestyle="-",
                         linewidth=1,
                         color=line_color,
+                        visible=visible,
+                        alpha=alpha,
                     )
                 )
             )
@@ -4303,16 +4305,32 @@ class PlotterWidget(QWidget):
                     Line2D(
                         [0, 0],
                         [-1, 1],
-                        linestyle='-',
+                        linestyle="-",
                         linewidth=1,
                         color=line_color,
+                        visible=visible,
+                        alpha=alpha,
                     )
                 )
             )
-            circle = Circle((0, 0), 1, fill=False, color=line_color)
+            circle = Circle(
+                (0, 0),
+                1,
+                fill=False,
+                color=line_color,
+                visible=visible,
+                alpha=alpha,
+            )
             self.polar_plot_artist_list.append(ax.add_patch(circle))
             for r in (1 / 3, 2 / 3):
-                circle = Circle((0, 0), r, fill=False, color=line_color)
+                circle = Circle(
+                    (0, 0),
+                    r,
+                    fill=False,
+                    color=line_color,
+                    visible=visible,
+                    alpha=alpha,
+                )
                 self.polar_plot_artist_list.append(ax.add_patch(circle))
             for a in (3, 6):
                 x = math.cos(math.pi / a)
@@ -4322,9 +4340,11 @@ class PlotterWidget(QWidget):
                         Line2D(
                             [-x, x],
                             [-y, y],
-                            linestyle=':',
+                            linestyle=":",
                             linewidth=0.5,
                             color=line_color,
+                            visible=visible,
+                            alpha=alpha,
                         )
                     )
                 )
@@ -4333,9 +4353,11 @@ class PlotterWidget(QWidget):
                         Line2D(
                             [-x, x],
                             [y, -y],
-                            linestyle=':',
+                            linestyle=":",
                             linewidth=0.5,
                             color=line_color,
+                            visible=visible,
+                            alpha=alpha,
                         )
                     )
                 )
