@@ -250,6 +250,28 @@ class SelectionWidget(QWidget):
                     elif selection_type == 'manual':
                         viewer_layer.visible = show_manual
 
+    def _set_labels_layer_visibility(self, visible):
+        """Toggle the visibility of all selection layers for the active tab."""
+        if not visible:
+            layer = self._get_current_layer()
+            if layer is None:
+                return
+            for viewer_layer in self.viewer.layers:
+                if not isinstance(viewer_layer, Labels) or not hasattr(
+                    viewer_layer, 'metadata'
+                ):
+                    continue
+                if 'napari_phasors_selection_type' in viewer_layer.metadata:
+                    source_layer = viewer_layer.metadata.get(
+                        'napari_phasors_source_layer'
+                    )
+                    if source_layer == layer.name:
+                        viewer_layer.visible = False
+        else:
+            self._manage_labels_layer_visibility(
+                show_manual=self.is_manual_selection_mode()
+            )
+
     def _on_selection_mode_changed(self, index):
         """Handle selection mode change."""
         self.stacked_widget.setCurrentIndex(index)

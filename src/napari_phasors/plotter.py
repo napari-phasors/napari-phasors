@@ -2947,7 +2947,8 @@ class PlotterWidget(QWidget):
             if hasattr(self, 'canvas_widget'):
                 self.canvas_widget._on_escape(None)
             self._set_selection_visibility(False)
-            self._set_circular_cursor_visibility(False)
+            self._set_selection_cursors_visibility(False)
+            self.selection_tab._set_labels_layer_visibility(False)
         if hasattr(self, 'components_tab'):
             self._set_components_visibility(False)
         if hasattr(self, 'fret_tab'):
@@ -2969,12 +2970,12 @@ class PlotterWidget(QWidget):
     def _show_tab_artists(self, current_tab):
         """Show artists for the specified tab."""
         if current_tab == getattr(self, 'selection_tab', None):
+            self.selection_tab._set_labels_layer_visibility(True)
             # Only show toolbar if manual selection mode is active
             if hasattr(self.selection_tab, 'is_manual_selection_mode'):
                 is_manual = self.selection_tab.is_manual_selection_mode()
                 self._set_selection_visibility(is_manual)
-                if not is_manual:
-                    self._set_circular_cursor_visibility(True)
+                self._set_selection_cursors_visibility(True)
             else:
                 self._set_selection_visibility(True)
         elif current_tab == getattr(self, 'components_tab', None):
@@ -2992,14 +2993,38 @@ class PlotterWidget(QWidget):
                 if widget is not None:
                     widget.setVisible(visible)
 
-    def _set_circular_cursor_visibility(self, visible):
-        """Set visibility of circular cursor patches."""
+    def _set_selection_cursors_visibility(self, visible):
+        """Set visibility of cursor patches based on current selection mode."""
         if hasattr(self, 'selection_tab'):
-            circular_cursor_widget = self.selection_tab.circular_cursor_widget
+            mode_idx = (
+                self.selection_tab.selection_mode_combobox.currentIndex()
+            )
+            w_circ = self.selection_tab.circular_cursor_widget
+            w_pol = self.selection_tab.polar_cursor_widget
+            w_ell = self.selection_tab.elliptical_cursor_widget
+            w_auto = self.selection_tab.automatic_clustering_widget
+
             if visible:
-                circular_cursor_widget.redraw_all_patches()
+                if mode_idx == 0:
+                    w_circ.redraw_all_patches()
+                elif mode_idx == 1:
+                    w_pol.redraw_all_patches()
+                elif mode_idx == 2:
+                    w_ell.redraw_all_patches()
+                elif mode_idx == 3:
+                    w_auto.redraw_all_patches()
+                elif mode_idx == 4:
+                    self.selection_tab.update_phasor_plot_with_selection_id(
+                        self.selection_tab.selection_id
+                    )
             else:
-                circular_cursor_widget.clear_all_patches()
+                w_circ.clear_all_patches()
+                w_pol.clear_all_patches()
+                w_ell.clear_all_patches()
+                w_auto.clear_all_patches()
+                # Clear manual selection from plot when not visible
+                if mode_idx == 4:
+                    self.plot(selection_id_data=None)
 
     def _set_components_visibility(self, visible):
         """Set visibility of components tab artists."""
