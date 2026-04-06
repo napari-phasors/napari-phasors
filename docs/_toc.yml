@@ -11,6 +11,7 @@ parts:
 - caption: User Guide
   chapters:
   - file: guides/open_files
+  - file: guides/multi_layer_analysis
   - file: guides/flim_workflow
   - file: guides/hyperspectral_workflow
   - file: guides/plot_customization

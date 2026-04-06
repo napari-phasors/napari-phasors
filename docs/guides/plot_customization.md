@@ -1,42 +1,72 @@
 # Phasor Plot Customization
 
-This page collects practical examples and visualization tools used with the
-**Phasor Plot** and **Phasor Mapping** workflows.
+The **Plot Settings** tab offers several ways to visualize phasor distributions
+and customize the appearance of the phasor plot.
 
-## Example workflow (FLIM)
+## Plot Settings
 
-1. Load your FLIM file and open the **Phasor Plot** widget.
-2. Calibrate your data (optional but recommended).
-3. Go to the **Phasor Mapping** tab.
-4. Choose **Lifetime** -> **Apparent Phase Lifetime** and enter the laser
-   frequency.
-5. Click **Calculate Output** to generate a false-color lifetime image.
-6. Adjust display range and histogram settings as needed.
-7. Export images and statistics for downstream analysis.
+In the **Plot Settings** tab, you can adjust the following general options:
 
-The GIF below shows the **Lifetime** workflow.
+- **White Background**: Toggle between a dark (default) and a white background for the plot.
+- **Plot Type**: Choose how the phasor data is displayed. Options include **Density Plot**, **Scatter Plot**, **Contour Plot**, or **None** (to hide the main plot).
 
-![lifetimes](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/lifetime.gif)
+### Density Plot
 
-The GIF below shows the **Phase** and **Modulation** color-mapping workflow.
+The **Density Plot** displays a 2D histogram of the phasor coordinates.
+Customizable parameters include:
 
-![phase_modulation](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/phase%20modulation.gif)
+- **Colormap**: Choose a colormap for the density distribution or a solid color gradient.
+- **Bins**: Adjust the number of bins for the 2D histogram.
+- **Log Scale**: Toggle logarithmic scaling for the color mapping to highlight low-density areas.
 
-## Phasor plot customization
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/phasor%20plot%202dhist.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/phasor%20plot%202dhist.mp4" type="video/mp4">
+</video>
 
-The **Plot Settings** tab offers additional ways to visualize phasor
-distributions beyond the default 2D density histogram.
+### Scatter Plot
 
-### Contour plot
+The **Scatter Plot** renders individual phasor points.
+Customizable parameters include:
 
-Toggle **Contour Plot** to visualize density levels as smooth isolines.
-This is useful when comparing overlapping layer distributions.
+- **Marker Size**: Adjust the size of the points.
+- **Color**: Select a color for the markers.
+- **Alpha**: Set the transparency level of the points.
 
-![contour_plot](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/contour%20plot.gif)
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/phasor%20plot%20scatter.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/phasor%20plot%20scatter.mp4" type="video/mp4">
+</video>
 
-### Phasor centers
+### Contour Plot
 
-Enable **Plot Centers** to overlay the center-of-mass coordinate for each
-selected layer. This helps track global shifts between conditions.
+The **Contour Plot** visualizes density levels as smooth isolines.
+Customizable parameters include:
 
-![phasor_centers](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/phasor%20centers.gif)
+- **Colormap**: Select a colormap or a solid color for the contours.
+- **Bins**: Adjust the number of bins of the underlying 2d histogram used to calculate contours.
+- **Levels**: Define the number of contour levels.
+- **Linewidth**: Adjust the thickness of the contour lines.
+
+When multiple layers are selected, you can choose between **Merged**, **Individual**, or **Group** modes, each with customizable colors.
+
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/phasor%20plot%20contour.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/phasor%20plot%20contour.mp4" type="video/mp4">
+</video>
+
+## Phasor Centers
+
+Enable **Plot Centers** to overlay the center-of-mass coordinates (mean or median) for each selected layer.
+Customizable parameters include:
+
+- **Method**: Choose between **Mean** or **Median** to calculate the phasor center.
+- **Marker Size**: Adjust the size of the center markers.
+- **Color**: Select a color for the markers.
+- **Alpha**: Set the transparency level.
+
+When multiple layers are selected, you can choose between **Merged**, **Individual**, or **Group** modes to visualize centers accordingly.
+
+> [!TIP]
+> Selecting **None** in the **Plot Type** can hide the main plot (density, scatter, or contour) and only show the phasor centers.
+
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/phasor%20center.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/phasor%20center.mp4" type="video/mp4">
+</video>

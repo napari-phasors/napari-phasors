@@ -32,6 +32,10 @@ When **Lifetime** is selected, a secondary drop-down lets you choose between:
 You also need to set the **Frequency (MHz)** used in the acquisition (copied
 from the calibration tab when calibration is applied).
 
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/lifetime.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/lifetime.mp4" type="video/mp4">
+</video>
+
 ### Phase and Modulation modes
 
 These modes derive the polar coordinates of the phasor directly with no
@@ -43,6 +47,10 @@ An optional **Apply colormap to 2D Histogram** checkbox, when enabled,
 colors the phasor 2D histogram according to the phase or modulation value of
 each phasor point, giving a spatially consistent color encoding between the
 phasor plot and the image.
+
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/phase%20modulation.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/phase%20modulation.mp4" type="video/mp4">
+</video>
 
 ## Calculating the output
 
@@ -66,4 +74,6 @@ overlaying:
 These guides help interpret whether a distribution shifts along a single
 component or reflects mixed lifetimes.
 
-![arc_tool](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/arc%20tool.gif)
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/phase%20arc.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/phase%20arc.mp4" type="video/mp4">
+</video>

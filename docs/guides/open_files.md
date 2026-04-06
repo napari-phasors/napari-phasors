@@ -76,6 +76,10 @@ If you select multiple files, the widget groups files by extension and applies
 the chosen settings per group. The files are imported as separate layers, not
 as a stack.
 
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/open%20files.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/open%20files.mp4" type="video/mp4">
+</video>
+
 ## Example 2: Create a 3D stack from multiple files
 
 Use this when each file should be treated as one slice of a 3D volume.
@@ -89,6 +93,10 @@ Use this when each file should be treated as one slice of a 3D volume.
 4. Confirm and click **Phasor Transform**.
 
 The widget stacks files along a new first axis and creates 3D output layers.
+
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/3d%20stack.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/3d%20stack.mp4" type="video/mp4">
+</video>
 
 ## Notes
 

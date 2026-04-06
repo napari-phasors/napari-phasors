@@ -15,6 +15,10 @@ FRET analysis in phasor space uses the donor fluorophore's position on the phaso
 4. **Visualize the trajectory**: The donor trajectory is drawn on the phasor
    plot showing the path from 0 % to 100 % FRET efficiency.
 
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/fret.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/fret.mp4" type="video/mp4">
+</video>
+
 ## Donor lifetime types
 
 | Type | Description |

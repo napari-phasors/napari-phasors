@@ -6,7 +6,7 @@ The **1D Histogram** and **Statistics Table** panels in napari-phasors provide q
 - **Phasor mapping** (lifetime, phase, modulation)
 - **FRET analysis**
 
-For component-analysis-specific setup and interpretation, see {doc}`components`.
+For component-analysis-specific setup and interpretation, see {doc}`component_analysis`.
 
 The statistics table can also display phasor center data for each layer or group.
 
@@ -63,3 +63,7 @@ Right-clicking on the table provides **Copy**, **Copy with Headers**, and **Sele
 2. View the histogram and statistics table for all selected layers.
 3. Switch between merged, individual, or grouped display modes as needed.
 4. Export the histogram or statistics for publication or further analysis.
+
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/histogram%20table.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/histogram%20table.mp4" type="video/mp4">
+</video>

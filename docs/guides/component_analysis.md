@@ -1,10 +1,20 @@
 # Component Analysis
 
-The **Components** tab of the **Phasor Plot** widget lets you decompose phasor
-distributions into fluorophore components and compute per-pixel fraction maps.
+The **Components** tab of the **Phasor Plot** widget lets you decompose phasor distributions into fluorophore components and compute per-pixel fraction maps.
+
+**Component locations can be selected in several ways:**
+- By clicking the **Select** button in the analysis tab for each component
+- By specifying the G and S coordinates directly
+- By specifying the lifetime (for FLIM, only when the frequency is available)
+You can also drag the component locations in the phasor plot for repositioning.
+
+**The line and component locations can be fully customized:**
+- Change the width, offset, alpha (transparency), and color of the line joining the components
+- Style the text labels for each component (size, bold, italic, color)
+
 Two analysis modes are available:
 
-- **Two-component linear projection**
+- **Two-component fit projection**
 - **Multi-component fit**
 
 ## Two-component linear projection
@@ -12,7 +22,6 @@ Two analysis modes are available:
 Use this mode when you want to project pixels onto a line between two
 components in phasor space.
 
-### Workflow
 
 1. Open the **Components** tab and keep **Analysis Type** set to
    **Linear Projection**.
@@ -24,11 +33,13 @@ components in phasor space.
 
 This mode is fast and intuitive for mixtures dominated by two endmembers.
 
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/component%20linear%20analysis.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/component%20linear%20analysis.mp4" type="video/mp4">
+</video>
+
 ## Multi-component fit
 
 Use this mode when your data contains more than two components.
-
-### Workflow
 
 1. Set **Analysis Type** to **Component Fit**.
 2. Add and position the required number of components.
@@ -39,6 +50,10 @@ Use this mode when your data contains more than two components.
 
 This mode uses multi-component fitting in phasor space and is appropriate for
 more complex mixtures.
+
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/component%20fit%20analysis.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/component%20fit%20analysis.mp4" type="video/mp4">
+</video>
 
 ## Visualization and quantitative analysis
 

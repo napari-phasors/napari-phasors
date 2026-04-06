@@ -25,7 +25,7 @@ All formats above can be opened via **File → Open File(s)** or by drag-and-dro
 > You can select and open multiple raw data files simultaneously. napari-phasors will automatically recognize and stack compatible files into a single 3D image.
 
 For advanced import options and stack building with the custom widget, see
-{doc}`custom_import`.
+{doc}`open_files`.
 
 Use **File → Open File(s)** or drag-and-drop your file into napari.
 > [!TIP]
@@ -37,13 +37,13 @@ Alternatively, load the built-in sample data: **File → Open Sample → napari-
 
 Once a FLIM file is loaded, the phasor transform is computed automatically and stored in the layer metadata. Open the **Phasor Plot** widget via **Plugins → napari-phasors → Phasor Plot**.
 
-![phasors_flim](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/flim%20plot.gif)
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/phasor%20plot%202dhist.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/phasor%20plot%202dhist.mp4" type="video/mp4">
+</video>
 
 ## 3. Select layers
 
-Multiple image layers can be selected simultaneously from the layer dropdown. Use **All** / **None** to quickly select or deselect all layers. A **primary layer** can be designated to drive plot settings.
-
-![multiple_layers](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/multiple%20layers.gif)
+Multiple image layers can be selected simultaneously from the layer dropdown. Use **All** / **None** to quickly select or deselect all layers. A **primary layer** can be designated to drive plot settings. See {doc}`multi_layer_analysis` for details.
 
 ## 4. Calibrate
 
@@ -55,12 +55,12 @@ Use the **Filter** tab to apply median or wavelet filters, and set automatic thr
 
 ## 6. Select regions of interest
 
-Use the **Selection** tab to identify regions in phasor space using circular cursors, manual drawing, or automatic clustering. See {doc}`selections` for details.
+Use the **Selection** tab to identify regions in phasor space using circular cursors, manual drawing, or automatic clustering. See {doc}`phasor_selection` for details.
 
 ## 7. Analyze phasor outputs
 
 Run **Component Analysis** when you want to decompose mixtures into two or
-more components and generate fraction maps. See {doc}`components` for details.
+more components and generate fraction maps. See {doc}`component_analysis` for details.
 
 Use the **Phasor Mapping** tab to colormap each pixel by its apparent lifetime,
 phasor phase, or phasor modulation. An interactive 1D histogram and statistics

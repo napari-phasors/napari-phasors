@@ -26,13 +26,17 @@ A separate labels layer is created for each cursor, color-coded for easy identif
 
 **Circular cursors** select a circular region in phasor space.
 
-![circular_cursors](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/circular%20cursors.gif)
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/circular%20cursor.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/circular%20cursor.mp4" type="video/mp4">
+</video>
 
 ### Polar cursors
 
 **Polar cursors** allow selecting phasors within a range of phases and modulations.
 
-![polar_cursors](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/polar%20cursors.gif)
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/polar%20cursor.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/polar%20cursor.mp4" type="video/mp4">
+</video>
 
 ### Elliptical cursors
 
@@ -41,7 +45,9 @@ A separate labels layer is created for each cursor, color-coded for easy identif
 > [!TIP]
 > To rotate (shift the angle of) an elliptical cursor, hold the **Shift** key and click-and-drag on the cursor.
 
-![elliptical_cursors](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/elliptical%20cursors.gif)
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/elliptical%20cursor.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/elliptical%20cursor.mp4" type="video/mp4">
+</video>
 
 ---
 
@@ -49,12 +55,19 @@ A separate labels layer is created for each cursor, color-coded for easy identif
 
 Cluster phasors automatically using k-means or Gaussian Mixture Models (GMM). The number of clusters can be specified, and the results are mapped back to the image as a labels layer.
 
-![clustering](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/clustering.gif)
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/automatic%20clustering.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/automatic%20clustering.mp4" type="video/mp4">
+</video>
 
 ---
 
 ## Manual selection
 
-Draw freeform shapes directly on the phasor plot using napari's built-in shapes tools. Pixels whose phasors fall inside the drawn shape are highlighted in the image.
 
-![manual_selection](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/manual%20selection.gif)
+Use the top toolbar tools (from matplotlib) to draw circular, square, or freehand ROIs directly on the phasor plot. To select different regions, change the class (which also changes the color). To remove a class assigned in the phasor plot, assign class 0 to that region.
+
+For circular and square selectors, once the shape is drawn, right-click to accept and apply the selection. You can use different manual selection IDs to compare multiple selections. Each selection creates a labels layer with the selected regions.
+
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/manual%20selections.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/manual%20selections.mp4" type="video/mp4">
+</video>

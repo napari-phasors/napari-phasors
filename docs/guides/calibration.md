@@ -15,7 +15,9 @@ Phasor coordinates computed from raw FLIM data are affected by the instrument re
 5. Enter the laser frequency used in the experiment (in MHz)
 6. Click **Calibrate**
 
-![calibration](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/calibration.gif)
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/calibration.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/calibration.mp4" type="video/mp4">
+</video>
 
 ## Notes
 

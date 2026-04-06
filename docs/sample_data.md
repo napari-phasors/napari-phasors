@@ -4,7 +4,9 @@ Two sample datasets for FLIM are provided, along with their corresponding calibr
 
 To load sample data, go to **File → Open Sample → napari-phasors** and choose one of the available datasets.
 
-![sample_data](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/samples.gif)
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/sample%20data.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/sample%20data.mp4" type="video/mp4">
+</video>
 
 ## Available datasets
 
