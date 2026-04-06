@@ -376,8 +376,17 @@ def raw_file_reader(
     else:
         # Handle multi-channel files with iteration axis
         iter_axis_index = raw_data.dims.index(iter_axis)
-        for channel in range(raw_data.shape[iter_axis_index]):
-            channel_data = raw_data.sel(C=channel)
+        channel_coord = raw_data.coords.get(iter_axis)
+        if (
+            channel_coord is not None
+            and len(channel_coord) == raw_data.shape[iter_axis_index]
+        ):
+            channel_labels = list(channel_coord.values)
+        else:
+            channel_labels = list(range(raw_data.shape[iter_axis_index]))
+
+        for channel_pos, channel_label in enumerate(channel_labels):
+            channel_data = raw_data.isel({iter_axis: channel_pos})
             histogram_axis = channel_data.dims.index("H")
 
             # Calculate summed signal over spatial dimensions for this channel
@@ -394,7 +403,12 @@ def raw_file_reader(
 
             # Create settings dict for this channel
             channel_settings = settings.copy()
-            channel_settings['channel'] = channel
+            try:
+                channel_settings['channel'] = int(
+                    np.asarray(channel_label).item()
+                )
+            except (TypeError, ValueError):
+                channel_settings['channel'] = channel_label
 
             mean_intensity_image, G_image, S_image = phasor_from_signal(
                 channel_data,
@@ -402,7 +416,9 @@ def raw_file_reader(
                 harmonic=harmonics,
             )
             add_kwargs = {
-                "name": f"{filename} Intensity Image: Channel {channel}",
+                "name": (
+                    f"{filename} Intensity Image: Channel {channel_label}"
+                ),
                 "metadata": {
                     "original_mean": mean_intensity_image,
                     "settings": channel_settings,

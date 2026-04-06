@@ -2,6 +2,7 @@ import json
 
 import numpy as np
 import pytest
+import xarray as xr
 from phasorpy.datasets import fetch
 from phasorpy.io import (
     phasor_from_ometiff,
@@ -65,6 +66,49 @@ def test_reader_ptu():
     assert G_original.shape == (2, 256, 256)
     assert S_original.shape == (2, 256, 256)
     assert list(harmonics) == [1, 2]
+
+
+def test_reader_ptu_nonzero_channel_label(monkeypatch):
+    """PTU channel selection should not assume labels start at zero."""
+    data = xr.DataArray(
+        np.ones((2, 2, 1, 4), dtype=np.uint16),
+        dims=("Y", "X", "C", "H"),
+        coords={"Y": [0, 1], "X": [0, 1], "C": [3], "H": [0, 1, 2, 3]},
+    )
+
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".ptu",
+        lambda path, reader_options: data,
+    )
+
+    layer_data_list = reader_module.raw_file_reader("example.ptu")
+
+    assert len(layer_data_list) == 1
+    assert layer_data_list[0][1]["name"].endswith("Channel 3")
+    assert layer_data_list[0][1]["metadata"]["settings"]["channel"] == 3
+
+
+@pytest.mark.parametrize("extension", [".ptu", ".fbd", ".json"])
+def test_raw_reader_nonzero_channel_label(monkeypatch, extension):
+    """Raw readers should use channel position, not channel label, for selection."""
+    data = xr.DataArray(
+        np.ones((2, 2, 1, 4), dtype=np.uint16),
+        dims=("Y", "X", "C", "H"),
+        coords={"Y": [0, 1], "X": [0, 1], "C": [3], "H": [0, 1, 2, 3]},
+    )
+
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        extension,
+        lambda path, reader_options: data,
+    )
+
+    layer_data_list = reader_module.raw_file_reader(f"example{extension}")
+
+    assert len(layer_data_list) == 1
+    assert layer_data_list[0][1]["name"].endswith("Channel 3")
+    assert layer_data_list[0][1]["metadata"]["settings"]["channel"] == 3
 
 
 def test_reader_fbd():
