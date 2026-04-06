@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import sys
 from unittest.mock import patch
@@ -284,11 +285,12 @@ def test_phasor_transform_fbd_widget(make_napari_viewer):
     # TODO: test laser factor parameter
 
 
-def test_phasor_transform_ptu_widget(make_napari_viewer):
+def test_phasor_transform_ptu_widget(make_napari_viewer, caplog):
     """Test PtuWidget from PhasorTransfrom widget."""
     viewer = make_napari_viewer()
     PhasorTransform(viewer)
     test_file_path = get_test_file_path("test_file.ptu")
+    caplog.set_level(logging.ERROR, logger="ptufile")
     widget = PtuWidget(viewer, path=test_file_path)
     assert widget.viewer is viewer
     # Init values
@@ -327,6 +329,10 @@ def test_phasor_transform_ptu_widget(make_napari_viewer):
     assert widget.reader_options == {"frame": 0, "channel": None}
     # Click button of phasor transform and check layers
     widget.btn.click()
+    assert not any(
+        "tag with index not in tags" in record.message
+        for record in caplog.records
+    )
     assert len(viewer.layers) == 1
     assert viewer.layers[0].name == "test_file Intensity Image: Channel 0"
     assert viewer.layers[0].data.shape == (256, 256)
