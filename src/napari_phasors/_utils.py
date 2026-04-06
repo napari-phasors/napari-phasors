@@ -63,6 +63,17 @@ from qtpy.QtWidgets import (
 from superqt import QRangeSlider
 
 
+def _check_state_value(state):
+    """Return the integer value of a Qt check-state.
+
+    In PyQt5 ``Qt.Checked`` is already an int; in PyQt6 it is a
+    ``Qt.CheckState`` enum member whose integer value is in ``.value``.
+    This helper normalises both cases so comparisons work with either
+    binding.
+    """
+    return state.value if hasattr(state, 'value') else int(state)
+
+
 def resolve_colormap_by_name(cmap_name):
     """Resolve colormap name to a Matplotlib colormap object."""
     if (
@@ -777,7 +788,7 @@ class _PrimaryLayerDelegate(QStyledItemDelegate):
             cb_size,
             cb_size,
         )
-        if check_state == Qt.Checked:
+        if _check_state_value(check_state) == _check_state_value(Qt.Checked):
             cb_option.state = QStyle.State_On | QStyle.State_Enabled
         else:
             cb_option.state = QStyle.State_Off | QStyle.State_Enabled
@@ -801,7 +812,9 @@ class _PrimaryLayerDelegate(QStyledItemDelegate):
                 painter.setFont(self._label_font)
                 label_color = QColor(255, 100, 100)
             elif is_hovered:
-                if check_state == Qt.Checked:
+                if _check_state_value(check_state) == _check_state_value(
+                    Qt.Checked
+                ):
                     label_text = "Set as primary"
                     painter.setFont(self._action_font)
                     label_color = QColor(180, 180, 220)
@@ -862,7 +875,9 @@ class _PrimaryLayerDelegate(QStyledItemDelegate):
                 if self._hovered_index
                 else False
             )
-            if is_hovered and check_state == Qt.Checked:
+            if is_hovered and _check_state_value(
+                check_state
+            ) == _check_state_value(Qt.Checked):
                 label_text = "Set as primary"
                 font = self._action_font
 
@@ -909,7 +924,8 @@ class CheckableComboBox(QComboBox):
         self.setModel(QStandardItemModel(self))
         self.setEditable(True)
         self.lineEdit().setReadOnly(True)
-        self.lineEdit().setPlaceholderText(placeholder)
+        self._placeholder_text = placeholder
+        self.lineEdit().setPlaceholderText(self._placeholder_text)
 
         self._enable_primary_layer = enable_primary_layer
 
@@ -1027,6 +1043,7 @@ class CheckableComboBox(QComboBox):
         self.model().appendRow(item)
         if checked and not self._primary_layer_name:
             self._set_primary_by_name(text, emit=False)
+        self._update_display_text()
 
     def addItems(self, texts):
         """Add multiple items to the combobox."""
@@ -1125,7 +1142,10 @@ class CheckableComboBox(QComboBox):
 
     def _on_data_changed(self, topLeft, bottomRight, roles):
         """Handle item check state changes."""
-        if Qt.CheckStateRole in roles:
+        # In PyQt6, roles is a list of ints; Qt.CheckStateRole is an enum.
+        # Normalize both sides to int for cross-binding compatibility.
+        check_state_role_int = int(Qt.CheckStateRole)
+        if any(int(r) == check_state_role_int for r in roles):
             self._refresh_primary_and_notify()
 
     def _refresh_primary_and_notify(self):
@@ -1173,7 +1193,7 @@ class CheckableComboBox(QComboBox):
 
         if not checked:
             line_edit.setText("")
-            line_edit.setPlaceholderText("Select Layers...")
+            line_edit.setPlaceholderText(self._placeholder_text)
         elif len(checked) == 1:
             line_edit.setText(checked[0])
         else:

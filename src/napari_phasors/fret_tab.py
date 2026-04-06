@@ -159,7 +159,8 @@ class FretWidget(QWidget):
         donor_layer_layout.setContentsMargins(0, 0, 0, 0)
 
         self.donor_lifetime_combobox = CheckableComboBox(
-            enable_primary_layer=False
+            enable_primary_layer=False,
+            placeholder="Select layer(s)...",
         )
         self.donor_lifetime_combobox.selectionChanged.connect(
             self._calculate_donor_lifetime
@@ -270,7 +271,8 @@ class FretWidget(QWidget):
         bg_image_layout.setContentsMargins(0, 0, 0, 0)
 
         self.background_image_combobox = CheckableComboBox(
-            enable_primary_layer=False
+            enable_primary_layer=False,
+            placeholder="Select layer(s)...",
         )
         self.background_image_combobox.selectionChanged.connect(
             self._calculate_background_position
