@@ -9,7 +9,9 @@ This module contains widgets to:
 
 import glob
 import json
+import logging
 import os
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
@@ -50,6 +52,19 @@ from ._utils import (
     natural_sort_key,
 )
 from ._writer import export_layer_as_csv, export_layer_as_image, write_ome_tiff
+
+
+@contextmanager
+def _silence_ptufile_logger():
+    """Temporarily suppress noisy ptufile diagnostics for PTU imports."""
+    logger = logging.getLogger("ptufile")
+    previous_level = logger.level
+    try:
+        logger.setLevel(logging.CRITICAL)
+        yield
+    finally:
+        logger.setLevel(previous_level)
+
 
 if TYPE_CHECKING:
     import napari
@@ -1216,6 +1231,7 @@ def _estimate_output_shape_from_options(
 ):
     """Estimate output shape with current reader options and harmonics."""
     try:
+        _, extension = _get_filename_extension(path)
         reader = napari_get_reader(
             path,
             reader_options=reader_options,
@@ -1224,7 +1240,11 @@ def _estimate_output_shape_from_options(
         if reader is None:
             return None
 
-        layers = reader(path)
+        if extension == ".ptu":
+            with _silence_ptufile_logger():
+                layers = reader(path)
+        else:
+            layers = reader(path)
         if not layers:
             return None
         base_shape = tuple(np.shape(layers[0][0]))
@@ -1328,9 +1348,10 @@ class PtuWidget(AdvancedOptionsWidget):
         """Initialize the widget."""
         import ptufile
 
-        with ptufile.PtuFile(path) as ptu:
-            self.all_frames = ptu.shape[0]
-            self.all_channels = ptu.shape[-2]
+        with _silence_ptufile_logger():
+            with ptufile.PtuFile(path) as ptu:
+                self.all_frames = ptu.shape[0]
+                self.all_channels = ptu.shape[-2]
 
         super().__init__(viewer, path)
         self.reader_options["frame"] = -1
@@ -1381,7 +1402,8 @@ class PtuWidget(AdvancedOptionsWidget):
             options["dtime"] = float(self.dtime.text())
 
         try:
-            signal = signal_from_ptu(self.path, **options)
+            with _silence_ptufile_logger():
+                signal = signal_from_ptu(self.path, **options)
             return signal
         except Exception as e:  # noqa: BLE001
             show_error(f"Error reading PTU signal: {str(e)}")
@@ -1401,7 +1423,8 @@ class PtuWidget(AdvancedOptionsWidget):
         """Callback whenever the calculate phasor button is clicked."""
         if self.dtime.text():
             reader_options["dtime"] = float(self.dtime.text())
-        super()._on_click(path, reader_options, harmonics)
+        with _silence_ptufile_logger():
+            super()._on_click(path, reader_options, harmonics)
 
 
 class LsmWidget(AdvancedOptionsWidget):
