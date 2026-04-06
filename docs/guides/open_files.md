@@ -1,11 +1,6 @@
-# Phasor Custom Import Widget
+# Open Files
 
-The **Phasor Custom Import** widget (**PhasorTransformWidget**) provides
-format-aware import options for FLIM and hyperspectral files.
-
-Open it from:
-
-**Plugins -> napari-phasors -> Phasor Transform**
+This guide explains how to open data files in napari-phasors, describes the default and custom import options, and shows how phasor coordinates and mean intensity images are automatically calculated and stored in the image layer metadata.
 
 ## Default opening vs custom import
 
@@ -14,14 +9,18 @@ Standard opening methods in napari:
 - drag-and-drop files into the viewer
 - **File -> Open File(s)**
 
-These methods open files with default reader parameters for the detected file
-format.
+These methods open files with default reader parameters for the detected file format.
 
-By default, standard opening reads the first two harmonics (when available).
+When you open a file this way, the phasor coordinates and mean intensity image are automatically calculated and stored in the image layer metadata.
+By default, standard opening reads the first 1<sup>st</sup> and second 2<sup>nd</sup> harmonics, when available.
 
-Use the **Phasor Custom Import** widget when you need to override those
-defaults (for example, choose a specific channel/frame, set LIF image/dimension,
-or build a custom 3D stack with z spacing and axis order).
+Use the **Phasor Custom Import** widget when you need to override those defaults (for example, choose a specific channel/frame, set LIF image/dimension, or build a custom 3D stack with z spacing and axis order).
+
+The **Phasor Custom Import** widget (**PhasorTransformWidget**) provides format-aware import options for FLIM and hyperspectral files.
+
+Open it from:
+
+**Plugins -> napari-phasors -> Phasor Transform**
 
 ### Default reader parameters by format
 

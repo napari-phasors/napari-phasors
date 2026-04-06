@@ -10,18 +10,18 @@ parts:
   - file: sample_data
 - caption: User Guide
   chapters:
-  - file: guides/custom_import
+  - file: guides/open_files
   - file: guides/flim_workflow
   - file: guides/hyperspectral_workflow
+  - file: guides/plot_customization
+  - file: guides/mask
   - file: guides/calibration
   - file: guides/filtering_thresholding
-  - file: guides/selections
-  - file: guides/components
+  - file: guides/phasor_selection
+  - file: guides/component_analysis
   - file: guides/phasor_mapping
-  - file: guides/plot_customization
-  - file: guides/histogram_statistics
   - file: guides/fret_analysis
-  - file: guides/mask
+  - file: guides/histogram_statistics
   - file: guides/exporting
 - caption: API Reference
   chapters:

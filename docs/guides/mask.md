@@ -1,4 +1,4 @@
-# Masks
+# Masking Regions of Interest in the Image
 
 Masking allows you to restrict phasor analysis to specific regions of your image. napari-phasors supports several ways to create and use masks:
 

@@ -1,4 +1,4 @@
-# Phasor Mapping
+# Lifetime, phase and modulation quantification
 
 The **Phasor Mapping** tab of the **Phasor Plot** widget lets you compute and
 visualize pixel-level physical quantities derived from the phasor coordinates:

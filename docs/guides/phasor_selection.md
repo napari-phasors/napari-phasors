@@ -1,4 +1,4 @@
-# Selections
+# ROI Selection in the Phasor Plot
 
 
 The **Selection** tab provides several modes for identifying regions of interest (ROIs) in the phasor plot and mapping the corresponding pixels back to the intensity image. The main selection modes are:

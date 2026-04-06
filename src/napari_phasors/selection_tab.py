@@ -1673,6 +1673,7 @@ class ColorButton(QPushButton):
     """A button that displays a color and opens a color dialog when clicked."""
 
     color_changed = Signal(QColor)
+    """Signal emitted with the new QColor when the color is changed."""
 
     def __init__(self, color=None, parent=None):
         """Initialize the ColorButton."""

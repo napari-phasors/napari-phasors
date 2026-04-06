@@ -1,4 +1,4 @@
-# Plot Customization and Examples
+# Phasor Plot Customization
 
 This page collects practical examples and visualization tools used with the
 **Phasor Plot** and **Phasor Mapping** workflows.
