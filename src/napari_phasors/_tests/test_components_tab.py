@@ -45,6 +45,7 @@ def test_components_widget_initialization_values(make_napari_viewer):
     assert comp_widget.components[1].s_edit is not None
     assert comp_widget.components[1].select_button is not None
     assert comp_widget.components[1].lifetime_edit is not None
+    assert comp_widget.histogram_widget.isVisible()
 
 
 def test_components_widget_lifetime_inputs_visibility_no_frequency(
