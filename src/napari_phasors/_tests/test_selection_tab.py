@@ -1964,3 +1964,42 @@ def test_elliptical_cursor_drag_and_rotate_logic(make_napari_viewer):
 
     # Angle from (0.6, 0.6) to (0.6, 0.7) is 90 degrees
     assert np.isclose(cursor['angle'], 90.0)
+
+
+def test_labels_layer_visibility_on_tab_toggle(make_napari_viewer):
+    """Test that all selection layers are hidden when selection tab is hidden."""
+    viewer = make_napari_viewer()
+    intensity_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+
+    # Create a circular cursor and a manual selection
+    widget.circular_cursor_widget._add_cursor()
+    widget.circular_cursor_widget._apply_selection()
+
+    widget.selection_mode_combobox.setCurrentText("Manual Selection")
+    widget.manual_selection_changed(np.array([1, 0, 1, 0, 1, 0, 0, 0, 0, 0]))
+
+    circ_layer_name = f"Cursor Selection: {intensity_layer.name}"
+    man_layer_name = f"MANUAL SELECTION #1: {intensity_layer.name}"
+
+    # In manual mode, only manual should be visible
+    assert viewer.layers[man_layer_name].visible is True
+    assert viewer.layers[circ_layer_name].visible is False
+
+    # Hide selection tab (called by plotter._on_tab_changed -> _hide_all_tab_artists)
+    widget._set_labels_layer_visibility(False)
+    assert viewer.layers[man_layer_name].visible is False
+    assert viewer.layers[circ_layer_name].visible is False
+
+    # Show selection tab (restores current mode visibility)
+    widget._set_labels_layer_visibility(True)
+    assert viewer.layers[man_layer_name].visible is True
+    assert viewer.layers[circ_layer_name].visible is False
+
+    # Switch back to circular and check restoration
+    widget.selection_mode_combobox.setCurrentText("Circular Cursor")
+    widget._set_labels_layer_visibility(True)
+    assert viewer.layers[man_layer_name].visible is False
+    assert viewer.layers[circ_layer_name].visible is True

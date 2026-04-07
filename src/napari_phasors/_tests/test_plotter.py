@@ -2032,7 +2032,7 @@ def test_circular_cursor_and_manual_selection_visibility_coordination(
     with (
         patch.object(plotter, '_set_selection_visibility') as mock_manual_vis,
         patch.object(
-            plotter, '_set_circular_cursor_visibility'
+            plotter, '_set_selection_cursors_visibility'
         ) as mock_circular_vis,
     ):
         # Switch to circular cursor mode
