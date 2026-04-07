@@ -1636,7 +1636,7 @@ def test_mesh_overlay_independent_from_apply_colormap_toggle(
 
     # Turning on apply-colormap should add the plot overlay without
     # removing mesh overlay.
-    mapping_widget.update_settings({"apply_colormap": True})
+    mapping_widget.apply_2d_colormap_checkbox.setChecked(True)
     assert mapping_widget._mesh_overlay_imshow is not None
     assert mapping_widget._overlay_imshow is not None
     assert not histogram_img.get_visible()
