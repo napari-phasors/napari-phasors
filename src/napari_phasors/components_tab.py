@@ -4048,6 +4048,8 @@ class ComponentsWidget(QWidget):
             first_data = next(iter(clipped_data.values()))
             self.histogram_widget.update_data(first_data)
 
+        self.draw_line_between_components()
+
     def update_component_histogram(self):
         """Update the histogram with the fraction data of the selected component."""
         selected_text = self.histogram_component_combobox.currentText()
