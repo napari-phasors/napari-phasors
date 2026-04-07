@@ -2423,10 +2423,9 @@ class HistogramWidget(QWidget):
             if bin_centers is None or bin_edges is None:
                 return float(np.mean(data))
             counts, _ = np.histogram(data, bins=bin_edges)
-            total = counts.sum()
-            if total == 0:
+            if counts.sum() == 0:
                 return None
-            return float(np.sum(bin_centers * counts) / total)
+            return float(np.average(bin_centers, weights=counts))
         return None
 
     def _draw_central_tendency_lines(self) -> None:

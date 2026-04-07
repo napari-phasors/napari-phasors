@@ -230,7 +230,9 @@ def test_histogram_widget_respects_range_slider_limits(qtbot):
     data = np.array([0.1, 0.5, 0.9])
 
     # Set range slider to 2 to 3 (outside data) using set_range helper
-    widget.set_range(2.0, 3.0)
+    # We must also update the slider's absolute limits (slider_min/max)
+    # otherwise it will be clipped to the default 0-100 (which is 1.0 with factor 100)
+    widget.set_range(2.0, 3.0, slider_min=0.0, slider_max=5.0)
     widget.update_data(data)
 
     # X-axis should be exactly 2 to 3
