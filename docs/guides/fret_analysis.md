@@ -9,13 +9,15 @@ FRET analysis in phasor space uses the donor fluorophore's position on the phaso
 ## Workflow
 
 1. **Set the donor lifetime**: Enter it manually, or select one or more donor
-   layers from the **Donor Source** drop-down — the lifetime is computed
-   automatically from the average phasor position of the selected layers.
-2. **Set the background position** (optional): Select a background layer or
-   enter coordinates manually to correct for autofluorescence.
+   layers from the **Donor Source** drop-down. If multiple layers are selected, the donor lifetime is computed automatically from the average phasor position of all selected layers.
+2. **Set the background position** (optional): Select one or more background layers from the **Background Source** drop-down, or enter coordinates manually to correct for autofluorescence. If multiple layers are selected, the background position is computed as the average of the selected layers.
 3. **Configure the frequency**: The laser frequency used in the experiment.
 4. **Visualize the trajectory**: The donor trajectory is drawn on the phasor
    plot showing the path from 0 % to 100 % FRET efficiency.
+
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/fret.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/fret.mp4" type="video/mp4">
+</video>
 
 ## Donor lifetime types
 
@@ -27,4 +29,4 @@ FRET analysis in phasor space uses the donor fluorophore's position on the phaso
 
 ## Results
 
-FRET efficiency values are computed per-pixel and can be visualized as a colormapped image layer. Results can be exported to CSV.
+FRET efficiency values are computed per-pixel and can be visualized as a colormapped image layer. The results can also be explored quantitatively in the **Histogram and Statistics Table** widget, allowing you to analyze the distribution and summary statistics of FRET efficiency across your data. Results can be exported to CSV.

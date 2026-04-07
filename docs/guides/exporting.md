@@ -17,10 +17,6 @@ Phasor coordinates and selections can be exported as CSV files using the **Expor
 
 The colormapped image layer can be exported with or without its associated colorbar.
 
-![export_phasors](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/export.gif)
-
-## Copy settings
-
-You can copy plot settings and analysis parameters (calibration, frequency, filter settings, component locations) from another layer or from a previously exported OME-TIF file, streamlining multi-dataset workflows.
-
-![copy_settings](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/copy%20settings.gif)
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/export.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/export.mp4" type="video/mp4">
+</video>

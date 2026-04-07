@@ -51,6 +51,7 @@ class PhasorMappingWidget(QWidget):
     """
 
     outputTypeChanged = Signal(str)
+    """Signal emitted with the new output type name when the mapping output changes."""
 
     def __init__(self, viewer: "napari.viewer.Viewer", parent=None):
         super().__init__()

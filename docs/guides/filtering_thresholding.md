@@ -6,17 +6,28 @@ The **Filter** tab provides tools to reduce noise in phasor data and remove low-
 
 ### Median filter
 
-Applies a spatial median filter to the phasor coordinates (G and S channels), reducing salt-and-pepper noise while preserving edges.
+Applies a spatial median filter to the phasor coordinates (G and S channels), reducing salt-and-pepper noise while preserving edges. Generally, filtering 3 times with a
+3x3 kernel size is enough.
+
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/median%20filter.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/median%20filter.mp4" type="video/mp4">
+</video>
 
 ### Wavelet filter
 
 Applies wavelet denoising to the phasor data. This requires that the selected harmonics are compatible (each must have a double or half counterpart, e.g., harmonics 1 and 2).
 
-![filter_threshold](https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/filter%20threshold.gif)
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/wavelet%20filter.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/wavelet%20filter.mp4" type="video/mp4">
+</video>
 
 ## Thresholding
 
 Thresholding sets a minimum intensity cutoff. Pixels below the threshold are masked (set to NaN) and excluded from the phasor plot and analysis.
+
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/threshold.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/threshold.mp4" type="video/mp4">
+</video>
 
 ### Automatic threshold methods
 

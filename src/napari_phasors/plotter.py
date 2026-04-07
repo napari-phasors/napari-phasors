@@ -1128,20 +1128,21 @@ class PlotterWidget(QWidget):
         The FRET tab for FRET analysis.
     plotter_inputs_widget : QWidget
         The main plotter inputs widget (in Settings tab). The widget contains:
+
         - semi_circle_checkbox : QToggleSwitch
-            The toggle for the display of the semi-circle plot.
+          The toggle for the display of the semi-circle plot.
         - white_background_checkbox : QToggleSwitch
-            The toggle for the white background in the plot.
+          The toggle for the white background in the plot.
         - plot_type_combobox : QComboBox
-            The combobox for selecting the plot type.
+          The combobox for selecting the plot type.
         - colormap_combobox : QComboBox
-            The combobox for selecting the histogram colormap.
+          The combobox for selecting the histogram colormap.
         - number_of_bins_spinbox : QSpinBox
-            The spinbox for selecting the number of bins in the histogram.
+          The spinbox for selecting the number of bins in the histogram.
         - log_scale_checkbox : QToggleSwitch
-            The toggle for selecting the log scale in the histogram.
+          The toggle for selecting the log scale in the histogram.
         - phasor_center_checkbox : QToggleSwitch
-            The toggle for plotting phasor centers.
+          The toggle for plotting phasor centers.
 
     """
 

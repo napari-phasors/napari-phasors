@@ -320,7 +320,7 @@ def threshold_otsu(data, nbins=256):
 def threshold_li(data, initial_guess=None, tolerance=None):
     """Calculate Li's minimum cross-entropy threshold.
 
-    Li's iterative method finds the threshold that minimizes the
+    Li's iterative method [Li1993]_ [Li1998]_ finds the threshold that minimizes the
     cross-entropy between the foreground and background distributions.
 
     This implementation matches scikit-image's ``threshold_li`` by
@@ -344,9 +344,9 @@ def threshold_li(data, initial_guess=None, tolerance=None):
 
     References
     ----------
-    .. [1] Li, C.H. and Lee, C.K., "Minimum Cross Entropy Thresholding",
+    .. [Li1993] Li, C.H. and Lee, C.K., "Minimum Cross Entropy Thresholding",
            Pattern Recognition, vol. 26, no. 4, pp. 617-625, 1993.
-    .. [2] Li, C.H. and Tam, P.K.S., "An Iterative Algorithm for Minimum
+    .. [Li1998] Li, C.H. and Tam, P.K.S., "An Iterative Algorithm for Minimum
            Cross Entropy Thresholding", Pattern Recognition Letters,
            vol. 19, no. 8, pp. 771-776, 1998.
     """
@@ -400,7 +400,7 @@ def threshold_li(data, initial_guess=None, tolerance=None):
 def threshold_yen(data, nbins=256):
     """Calculate Yen's threshold.
 
-    Yen's method maximizes the correlation between the original and
+    Yen's method [Yen1995]_ maximizes the correlation between the original and
     thresholded images in terms of their entropy.
 
     Parameters
@@ -417,7 +417,7 @@ def threshold_yen(data, nbins=256):
 
     References
     ----------
-    .. [1] Yen, J.C., Chang, F.J., and Chang, S., "A New Criterion for
+    .. [Yen1995] Yen, J.C., Chang, F.J., and Chang, S., "A New Criterion for
            Automatic Multilevel Thresholding", IEEE Transactions on Image
            Processing, vol. 4, no. 3, pp. 370-378, 1995.
     """
@@ -447,7 +447,7 @@ def threshold_yen(data, nbins=256):
     P1_sq = np.cumsum(pmf**2)  # sum of p_i^2 for class 1
     P2_sq = np.cumsum(pmf[::-1] ** 2)[::-1]  # sum of p_j^2 for class 2
 
-    # Yen's criterion (Eq. 4 in [1]):
+    # Yen's criterion (Eq. 4 in [Yen1995]):
     #   crit = log( (P1*(1-P1))^2 / (P1_sq * P2_sq) )
     crit = np.log(
         ((P1_sq[:-1] * P2_sq[1:]) ** -1) * (P1[:-1] * (1.0 - P1[:-1])) ** 2
@@ -912,7 +912,10 @@ class CheckableComboBox(QComboBox):
     """
 
     selectionChanged = Signal()
-    primaryLayerChanged = Signal(str)  # Emits the new primary layer name
+    """Signal emitted when the selection of layers changes."""
+
+    primaryLayerChanged = Signal(str)
+    """Signal emitted with the name of the new primary (main) layer."""
 
     def __init__(
         self,
@@ -1615,7 +1618,7 @@ class HistogramWidget(QWidget):
     It is designed to be embedded in any tab that needs to display a
     histogram of scalar data (e.g. lifetime, concentration, FRET efficiency).
 
-    When *range_slider_enabled* is ``True`` the widget also displays a
+    When ``range_slider_enabled`` is ``True`` the widget also displays a
     range slider together with min / max line-edits that allow the user
     to clip the displayed / stored data.  The ``rangeChanged`` signal is
     emitted whenever the effective range changes (min, max as floats).
@@ -1638,7 +1641,7 @@ class HistogramWidget(QWidget):
         histogram plot, by default ``False``.
     range_label_prefix : str, optional
         Prefix for the range label, e.g. ``"Lifetime range (ns)"``.
-        Only used when *range_slider_enabled* is ``True``.
+        Only used when ``range_slider_enabled`` is ``True``.
     range_factor : int, optional
         Multiplicative factor to convert float range values to integer
         slider positions, by default 1000.
@@ -1649,10 +1652,11 @@ class HistogramWidget(QWidget):
         Parent widget.
     """
 
-    # Emitted as (min_float, max_float) whenever the range changes.
     rangeChanged = Signal(float, float)
-    # Emitted whenever the underlying data or display settings change.
+    """Signal emitted with (min, max) values whenever the effective range changes."""
+
     dataChanged = Signal()
+    """Signal emitted whenever the underlying data or display settings change."""
 
     def __init__(
         self,
