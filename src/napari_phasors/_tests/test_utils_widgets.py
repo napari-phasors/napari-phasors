@@ -218,3 +218,24 @@ def test_phasor_center_statistics_widget_update(qtbot):
     assert table.item(0, 2).text() == "0.400000"
     assert table.item(0, 3).text() == "45.0000"
     assert table.item(0, 4).text() == "0.707100"
+
+
+def test_histogram_widget_respects_range_slider_limits(qtbot):
+    """HistogramWidget axes should match the range slider even if data is outside."""
+    # Use explicit range_factor for easy testing
+    widget = HistogramWidget(range_slider_enabled=True, range_factor=100)
+    qtbot.addWidget(widget)
+
+    # Data from 0 to 1
+    data = np.array([0.1, 0.5, 0.9])
+
+    # Set range slider to 2 to 3 (outside data) using set_range helper
+    # We must also update the slider's absolute limits (slider_min/max)
+    # otherwise it will be clipped to the default 0-100 (which is 1.0 with factor 100)
+    widget.set_range(2.0, 3.0, slider_min=0.0, slider_max=5.0)
+    widget.update_data(data)
+
+    # X-axis should be exactly 2 to 3
+    xlim = widget.ax.get_xlim()
+    assert xlim[0] == 2.0
+    assert xlim[1] == 3.0

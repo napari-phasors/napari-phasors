@@ -13,6 +13,7 @@ import scipy
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.collections import LineCollection
 from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.figure import Figure
 from matplotlib.legend_handler import HandlerBase
 from matplotlib.patches import Polygon as MplPolygon
 from napari.layers import Image
@@ -1757,9 +1758,8 @@ class HistogramWidget(QWidget):
             )
 
         # Matplotlib canvas
-        self.fig, self.ax = plt.subplots(
-            figsize=(8, 4), constrained_layout=True
-        )
+        self.fig = Figure(figsize=(8, 4), constrained_layout=True)
+        self.ax = self.fig.add_subplot(111)
         self._style_axes()
 
         canvas = FigureCanvas(self.fig)
@@ -2133,13 +2133,6 @@ class HistogramWidget(QWidget):
         if len(valid) == 0:
             self.ax.clear()
             self._style_axes()
-            self.ax.text(
-                0.5,
-                0.5,
-                "No valid data",
-                transform=self.ax.transAxes,
-                ha="center",
-            )
             self.fig.canvas.draw_idle()
             self._settings_button.setEnabled(False)
             self.save_png_button.setEnabled(False)
@@ -2152,7 +2145,10 @@ class HistogramWidget(QWidget):
         self._raw_valid_data = valid
         self._previous_dataset_count = 0
 
-        self.counts, self.bin_edges = np.histogram(valid, bins=self.bins)
+        hist_range = self.get_range() if self._range_slider_enabled else None
+        self.counts, self.bin_edges = np.histogram(
+            valid, bins=self.bins, range=hist_range
+        )
         self.bin_centers = (self.bin_edges[:-1] + self.bin_edges[1:]) / 2
 
         self._counts_per_dataset = {"Layer": self.counts}
@@ -2186,13 +2182,6 @@ class HistogramWidget(QWidget):
         if not self._datasets:
             self.ax.clear()
             self._style_axes()
-            self.ax.text(
-                0.5,
-                0.5,
-                "No valid data",
-                transform=self.ax.transAxes,
-                ha="center",
-            )
             self.fig.canvas.draw_idle()
             self._settings_button.setEnabled(False)
             self.save_png_button.setEnabled(False)
@@ -2203,7 +2192,10 @@ class HistogramWidget(QWidget):
 
         all_valid = np.concatenate(list(self._datasets.values()))
         self._raw_valid_data = all_valid
-        self.counts, self.bin_edges = np.histogram(all_valid, bins=self.bins)
+        hist_range = self.get_range() if self._range_slider_enabled else None
+        self.counts, self.bin_edges = np.histogram(
+            all_valid, bins=self.bins, range=hist_range
+        )
         self.bin_centers = (self.bin_edges[:-1] + self.bin_edges[1:]) / 2
 
         self._counts_per_dataset = {}
@@ -2329,6 +2321,14 @@ class HistogramWidget(QWidget):
             spine.set_linewidth(1)
         self.ax.set_ylabel(self.ylabel, fontsize=6, color=color)
         self.ax.set_xlabel(self.xlabel, fontsize=6, color=color)
+
+        if self._range_slider_enabled:
+            lo, hi = self.get_range()
+            self.ax.set_xlim(lo, hi)
+        elif self.bin_centers is not None and len(self.bin_centers) > 1:
+            self.ax.set_xlim(
+                float(self.bin_centers[0]), float(self.bin_centers[-1])
+            )
         for which in ("major", "minor"):
             self.ax.tick_params(
                 axis="x", which=which, labelsize=7, colors=color
@@ -2423,10 +2423,9 @@ class HistogramWidget(QWidget):
             if bin_centers is None or bin_edges is None:
                 return float(np.mean(data))
             counts, _ = np.histogram(data, bins=bin_edges)
-            total = counts.sum()
-            if total == 0:
+            if counts.sum() == 0:
                 return None
-            return float(np.sum(bin_centers * counts) / total)
+            return float(np.average(bin_centers, weights=counts))
         return None
 
     def _draw_central_tendency_lines(self) -> None:
@@ -2530,10 +2529,13 @@ class HistogramWidget(QWidget):
             y_max = y_min + 1
 
         n_pixels = 256
-        gradient_values = np.linspace(
-            float(x[0]), float(x[-1]), n_pixels
-        ).reshape(1, -1)
-        extent = [float(x[0]), float(x[-1]), y_min, y_max * 1.02]
+        lo, hi = (
+            self.get_range()
+            if self._range_slider_enabled
+            else (float(self.bin_centers[0]), float(self.bin_centers[-1]))
+        )
+        gradient_values = np.linspace(lo, hi, n_pixels).reshape(1, -1)
+        extent = [lo, hi, y_min, y_max * 1.02]
 
         im = self.ax.imshow(
             gradient_values,
@@ -2552,7 +2554,6 @@ class HistogramWidget(QWidget):
         clip_poly = MplPolygon(verts, closed=True, transform=self.ax.transData)
         im.set_clip_path(clip_poly)
 
-        self.ax.set_xlim(float(x[0]), float(x[-1]))
         self.ax.set_ylim(0, y_max * 1.05)
 
     def _draw_gradient_line(

@@ -213,10 +213,12 @@ def test_phasor_mapping_widget_plot_histogram_no_data(make_napari_viewer):
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.phasor_mapping_tab
+    parent.tab_widget.setCurrentWidget(lifetime_widget)
 
-    # No data should leave the histogram empty with controls disabled.
+    # No data should leave the histogram empty but VISIBLE with controls disabled.
     lifetime_widget.plot_lifetime_histogram()
     assert lifetime_widget.histogram_widget.counts is None
+    assert not lifetime_widget.histogram_widget.isHidden()
     assert not lifetime_widget.histogram_widget._settings_button.isEnabled()
     assert not lifetime_widget.histogram_widget.save_png_button.isEnabled()
 

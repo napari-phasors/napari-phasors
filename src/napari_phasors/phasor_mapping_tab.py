@@ -240,6 +240,7 @@ class PhasorMappingWidget(QWidget):
         self._configure_histogram_labels_for_output(
             self.lifetime_type_combobox.currentText()
         )
+        self.histogram_widget.update_data(np.array([]))
 
         # Mesh Overlay Settings (at the end of the tab)
         self.mesh_overlay_group = QWidget()
@@ -1037,7 +1038,7 @@ class PhasorMappingWidget(QWidget):
                     self.mesh_alpha_spinbox.blockSignals(False)
                 self._sync_mode_widgets()
                 self._clear_2d_coloring()
-                self.histogram_widget.hide()
+                self.histogram_widget.update_data(np.array([]))
             finally:
                 self._updating_settings = False
             return
@@ -1114,7 +1115,7 @@ class PhasorMappingWidget(QWidget):
                     )
             elif frequency_text == "":
                 self.frequency = None
-                self.histogram_widget.hide()
+                self.histogram_widget.update_data(np.array([]))
 
     def _set_frequency_input_enabled(self, enabled: bool):
         self.frequency_input.setEnabled(enabled)
@@ -1387,14 +1388,12 @@ class PhasorMappingWidget(QWidget):
 
     def plot_lifetime_histogram(self):
         """Plot the histogram of the merged lifetime data from all selected layers."""
-        if self.current_metric_data is None:
-            self.histogram_widget.hide()
-            return
-        if not self.parent_widget.has_phasor_data():
-            self.histogram_widget.hide()
-            return
-        if self.parent_widget.harmonic is None:
-            self.histogram_widget.hide()
+        if (
+            self.current_metric_data is None
+            or not self.parent_widget.has_phasor_data()
+            or self.parent_widget.harmonic is None
+        ):
+            self.histogram_widget.update_data(np.array([]))
             return
 
         self.histogram_widget.update_colormap(
@@ -1555,8 +1554,8 @@ class PhasorMappingWidget(QWidget):
             self._clear_2d_coloring()
             # Don't auto-calculate - just restore UI state
             # User must click "Calculate" to run analysis
-            self.histogram_widget.hide()
         else:
+            self.histogram_widget.update_data(np.array([]))
             # Disconnect events from all lifetime layers
             for layer in self.metric_layers:
                 if layer in self.viewer.layers:
@@ -2149,6 +2148,9 @@ class PhasorMappingWidget(QWidget):
         if self._coloring_paused_by_tab:
             self._clear_2d_coloring()
             return
+
+        self.plot_lifetime_histogram()
+
         output_type = self._get_selected_output_type()
         if output_type in {"Phase", "Modulation"} and (
             self.apply_2d_colormap_checkbox.isChecked()
