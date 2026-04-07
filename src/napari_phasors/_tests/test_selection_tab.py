@@ -1979,7 +1979,7 @@ def test_labels_layer_visibility_on_tab_toggle(make_napari_viewer):
     widget.circular_cursor_widget._apply_selection()
 
     widget.selection_mode_combobox.setCurrentText("Manual Selection")
-    widget.manual_selection_changed(np.array([1, 0, 1]))
+    widget.manual_selection_changed(np.array([1, 0, 1, 0, 1, 0, 0, 0, 0, 0]))
 
     circ_layer_name = f"Cursor Selection: {intensity_layer.name}"
     man_layer_name = f"MANUAL SELECTION #1: {intensity_layer.name}"
