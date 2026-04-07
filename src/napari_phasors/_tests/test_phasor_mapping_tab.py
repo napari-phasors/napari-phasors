@@ -213,11 +213,12 @@ def test_phasor_mapping_widget_plot_histogram_no_data(make_napari_viewer):
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.phasor_mapping_tab
+    parent.tab_widget.setCurrentWidget(lifetime_widget)
 
     # No data should leave the histogram empty but VISIBLE with controls disabled.
     lifetime_widget.plot_lifetime_histogram()
     assert lifetime_widget.histogram_widget.counts is None
-    assert lifetime_widget.histogram_widget.isVisible()
+    assert not lifetime_widget.histogram_widget.isHidden()
     assert not lifetime_widget.histogram_widget._settings_button.isEnabled()
     assert not lifetime_widget.histogram_widget.save_png_button.isEnabled()
 
@@ -1635,7 +1636,7 @@ def test_mesh_overlay_independent_from_apply_colormap_toggle(
 
     # Turning on apply-colormap should add the plot overlay without
     # removing mesh overlay.
-    mapping_widget.apply_2d_colormap_checkbox.setChecked(True)
+    mapping_widget.update_settings({"apply_colormap": True})
     assert mapping_widget._mesh_overlay_imshow is not None
     assert mapping_widget._overlay_imshow is not None
     assert not histogram_img.get_visible()

@@ -13,6 +13,7 @@ import scipy
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.collections import LineCollection
 from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.figure import Figure
 from matplotlib.legend_handler import HandlerBase
 from matplotlib.patches import Polygon as MplPolygon
 from napari.layers import Image
@@ -1757,9 +1758,8 @@ class HistogramWidget(QWidget):
             )
 
         # Matplotlib canvas
-        self.fig, self.ax = plt.subplots(
-            figsize=(8, 4), constrained_layout=True
-        )
+        self.fig = Figure(figsize=(8, 4), constrained_layout=True)
+        self.ax = self.fig.add_subplot(111)
         self._style_axes()
 
         canvas = FigureCanvas(self.fig)

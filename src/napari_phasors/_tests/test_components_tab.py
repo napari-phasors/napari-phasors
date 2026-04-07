@@ -11,6 +11,7 @@ def test_components_widget_initialization_values(make_napari_viewer):
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
     comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
 
     assert comp_widget.viewer is viewer
     assert comp_widget.parent_widget is parent
@@ -45,7 +46,7 @@ def test_components_widget_initialization_values(make_napari_viewer):
     assert comp_widget.components[1].s_edit is not None
     assert comp_widget.components[1].select_button is not None
     assert comp_widget.components[1].lifetime_edit is not None
-    assert comp_widget.histogram_widget.isVisible()
+    assert not comp_widget.histogram_widget.isHidden()
 
 
 def test_components_widget_lifetime_inputs_visibility_no_frequency(

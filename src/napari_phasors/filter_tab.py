@@ -1,9 +1,9 @@
 import contextlib
 from math import ceil, log10
 
-import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
 from napari.utils.notifications import show_error
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QColor
@@ -64,9 +64,9 @@ class FilterWidget(QWidget):
         self._phasors_selected_layer = None
         self.threshold_factor = 1
         self._histogram_data = None
-        self.hist_fig, self.hist_ax = plt.subplots(
-            figsize=(3.5, 1.5), constrained_layout=True
-        )
+        self.hist_fig = Figure(figsize=(3.5, 1.5), constrained_layout=True)
+        self.hist_ax = self.hist_fig.add_subplot(111)
+
         self.threshold_line_lower = None
         self.threshold_line_upper = None
         self.threshold_area_lower = None
