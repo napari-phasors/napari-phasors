@@ -92,10 +92,10 @@ This section documents the public Python API of napari-phasors.
    :undoc-members:
 ```
 
-### Lifetime Tab
+### Phasor Mapping Tab
 
 ```{eval-rst}
-.. automodule:: napari_phasors.lifetime_tab
+.. automodule:: napari_phasors.phasor_mapping_tab
    :members:
    :undoc-members:
 ```

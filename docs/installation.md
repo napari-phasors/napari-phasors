@@ -3,7 +3,9 @@
 ## Prerequisites
 
 - Python 3.12, 3.13 or 3.14
-- A working Qt backend (PyQt6 is installed automatically)
+- A working Qt backend. **PyQt6 is highly recommended.**
+  > [!IMPORTANT]
+  > PySide6 is currently known to cause segmentation faults and UI instability on some systems. Please install `pyqt6` for the best experience.
 
 ## Using conda + pip (recommended)
 
