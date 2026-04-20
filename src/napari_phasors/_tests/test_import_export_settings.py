@@ -105,7 +105,7 @@ def test_import_from_layer_dialog_accepted(make_napari_viewer):
         mock_dialog.Accepted = 1
 
         mock_dialog_instance = Mock()
-        mock_dialog_instance.exec_ = Mock(return_value=mock_dialog.Accepted)
+        mock_dialog_instance.exec = Mock(return_value=mock_dialog.Accepted)
         mock_dialog.return_value = mock_dialog_instance
 
         # Mock the second dialog (_show_import_dialog)
@@ -122,7 +122,7 @@ def test_import_from_layer_dialog_accepted(make_napari_viewer):
 
                 # Verify the first dialog was created and executed
                 mock_dialog.assert_called_once()
-                mock_dialog_instance.exec_.assert_called_once()
+                mock_dialog_instance.exec.assert_called_once()
 
                 # Verify the layer selection combobox was populated
                 mock_combo_instance.addItems.assert_called_with(['layer2'])
@@ -151,7 +151,7 @@ def test_import_from_layer_no_other_layers(make_napari_viewer):
 
         mock_dialog.Accepted = 1
         mock_dialog_instance = Mock()
-        mock_dialog_instance.exec_ = Mock(return_value=mock_dialog.Accepted)
+        mock_dialog_instance.exec = Mock(return_value=mock_dialog.Accepted)
         mock_dialog.return_value = mock_dialog_instance
 
         with patch.object(
@@ -168,7 +168,7 @@ def test_import_from_layer_no_other_layers(make_napari_viewer):
 
                 # Verify the first dialog was shown
                 mock_dialog.assert_called_once()
-                mock_dialog_instance.exec_.assert_called_once()
+                mock_dialog_instance.exec.assert_called_once()
 
                 # Verify the combobox was populated with an empty list
                 mock_combo_instance.addItems.assert_called_with([])
@@ -546,7 +546,7 @@ def test_show_import_dialog_all_options(make_napari_viewer):
     with patch('napari_phasors.plotter.QDialog') as mock_dialog_class:
         # Create a proper mock instance that can be used as a parent
         mock_dialog_instance = Mock()
-        mock_dialog_instance.exec_ = Mock(return_value=0)  # Rejected
+        mock_dialog_instance.exec = Mock(return_value=0)  # Rejected
         mock_dialog_class.return_value = mock_dialog_instance
 
         # Mock the layout to avoid type errors
@@ -557,7 +557,7 @@ def test_show_import_dialog_all_options(make_napari_viewer):
             assert result == []
             # Verify dialog was created
             mock_dialog_class.assert_called_once()
-            mock_dialog_instance.exec_.assert_called_once()
+            mock_dialog_instance.exec.assert_called_once()
 
 
 def test_show_import_dialog_default_all_checked(make_napari_viewer):
@@ -574,7 +574,7 @@ def test_show_import_dialog_default_all_checked(make_napari_viewer):
     ):
 
         mock_dialog_instance = Mock()
-        mock_dialog_instance.exec_ = Mock(return_value=1)  # Accepted
+        mock_dialog_instance.exec = Mock(return_value=1)  # Accepted
         mock_dialog.return_value = mock_dialog_instance
 
         mock_cb_instance = Mock()
@@ -603,7 +603,7 @@ def test_show_import_dialog_partial_selection(make_napari_viewer):
     ):
 
         mock_dialog_instance = Mock()
-        mock_dialog_instance.exec_ = Mock(return_value=0)
+        mock_dialog_instance.exec = Mock(return_value=0)
         mock_dialog.return_value = mock_dialog_instance
 
         result = plotter._show_import_dialog(default_checked=['settings_tab'])

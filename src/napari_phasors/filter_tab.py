@@ -15,6 +15,7 @@ from qtpy.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -184,9 +185,7 @@ class FilterWidget(QWidget):
         # Embed the Matplotlib figure into the widget with fixed size
         canvas = FigureCanvas(self.hist_fig)
         canvas.setFixedHeight(150)
-        canvas.setSizePolicy(
-            canvas.sizePolicy().Expanding, canvas.sizePolicy().Fixed
-        )
+        canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self._canvas = canvas
 
         # Connect mouse events for draggable threshold line

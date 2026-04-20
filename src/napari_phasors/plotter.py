@@ -2502,7 +2502,7 @@ class PlotterWidget(QWidget):
         button_box.rejected.connect(dialog.reject)
 
         dialog.setLayout(layout)
-        if dialog.exec_() == QDialog.Accepted:
+        if dialog.exec() == QDialog.Accepted:
             selected = [
                 attr for attr, cb in checkboxes.items() if cb.isChecked()
             ]
@@ -2750,7 +2750,7 @@ class PlotterWidget(QWidget):
         button_box.rejected.connect(dialog.reject)
         dialog.setLayout(layout)
 
-        if dialog.exec_() == QDialog.Accepted and layer_combo.currentText():
+        if dialog.exec() == QDialog.Accepted and layer_combo.currentText():
             source_layer_name = layer_combo.currentText()
             source_layer = self.viewer.layers[source_layer_name]
 
@@ -3333,7 +3333,7 @@ class PlotterWidget(QWidget):
             parent=self,
         )
 
-        if dialog.exec_() != QDialog.Accepted:
+        if dialog.exec() != QDialog.Accepted:
             return
 
         self._contour_display_mode = dialog.get_display_mode()
@@ -3451,7 +3451,7 @@ class PlotterWidget(QWidget):
             parent=self,
         )
 
-        if dialog.exec_() != QDialog.Accepted:
+        if dialog.exec() != QDialog.Accepted:
             return
 
         self._phasor_center_display_mode = dialog.get_display_mode()
@@ -5514,7 +5514,7 @@ class PlotterWidget(QWidget):
             parent=self,
         )
 
-        if dialog.exec_() == QDialog.Accepted:
+        if dialog.exec() == QDialog.Accepted:
             new_assignments = dialog.get_assignments()
             self._apply_mask_assignments(new_assignments)
 
