@@ -1,3 +1,4 @@
+import contextlib
 from unittest.mock import patch
 
 import numpy as np
@@ -1043,10 +1044,26 @@ def test_filter_widget_no_duplicate_signal_connections(make_napari_viewer):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
+    def _receiver_count(combo_box):
+        signal = combo_box.currentTextChanged
+        with contextlib.suppress(TypeError):
+            return combo_box.receivers(signal)
+
+        # PySide variants expect a signal signature string.
+        for signal_name in (
+            "currentTextChanged(str)",
+            "currentTextChanged(QString)",
+        ):
+            with contextlib.suppress(TypeError):
+                return combo_box.receivers(signal_name)
+
+        raise AssertionError(
+            "Could not query signal receivers for currentTextChanged"
+        )
+
     # Count receivers on the threshold_method_combobox signal before
-    # In PySide6, receivers() takes a string signal name
-    initial_receivers = filter_widget.threshold_method_combobox.receivers(
-        "currentTextChanged(str)"
+    initial_receivers = _receiver_count(
+        filter_widget.threshold_method_combobox
     )
 
     # Simulate switching to the filter tab multiple times
@@ -1054,9 +1071,7 @@ def test_filter_widget_no_duplicate_signal_connections(make_napari_viewer):
         filter_widget._update_histogram_if_needed()
 
     # Count receivers after — should be the same as before
-    final_receivers = filter_widget.threshold_method_combobox.receivers(
-        "currentTextChanged(str)"
-    )
+    final_receivers = _receiver_count(filter_widget.threshold_method_combobox)
 
     assert final_receivers == initial_receivers, (
         f"Signal has {final_receivers} receivers after 5 tab switches "
