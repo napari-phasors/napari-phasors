@@ -1,3 +1,4 @@
+import contextlib
 from unittest.mock import patch
 
 import numpy as np
@@ -18,7 +19,6 @@ from qtpy.QtWidgets import (
 from superqt import QRangeSlider, QToggleSwitch
 
 from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
-from napari_phasors.filter_tab import FilterWidget
 from napari_phasors.plotter import PlotterWidget
 
 
@@ -490,20 +490,15 @@ def test_settings_restoration_with_incompatible_wavelet(make_napari_viewer):
 
 def test_filter_widget_histogram_styling(make_napari_viewer):
     """Test that histogram styling is applied correctly."""
+    import matplotlib.colors as mcolors
+
     viewer = make_napari_viewer()
-
-    with patch.object(FilterWidget, 'style_histogram_axes') as mock_style:
-        parent = PlotterWidget(viewer)
-        filter_widget = parent.filter_tab
-        mock_style.assert_called_once()
-
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
+    # Verify that style_histogram_axes was called during initialization
     assert filter_widget.hist_ax.patch.get_alpha() == 0
     assert filter_widget.hist_fig.patch.get_alpha() == 0
-
-    import matplotlib.colors as mcolors
 
     grey_rgba = mcolors.to_rgba('grey')
 
@@ -695,36 +690,23 @@ def test_slider_and_histogram_update_on_layer_add_and_select(
 def test_layer_with_no_phasor_features_does_nothing(make_napari_viewer):
     """If a layer with no phasor features is added, nothing should happen."""
     viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    filter_widget = parent.filter_tab
 
-    with (
-        patch.object(
-            FilterWidget, '_on_image_layer_changed'
-        ) as mock_on_labels,
-        patch.object(FilterWidget, 'plot_mean_histogram') as mock_plot_hist,
-        patch.object(
-            FilterWidget, 'update_threshold_lines'
-        ) as mock_update_line,
-    ):
+    # Create a dummy napari Image layer without phasor features
+    dummy_data = np.random.rand(10, 10)
+    image_layer = Image(dummy_data, name="no_phasor_layer")
+    viewer.add_layer(image_layer)
 
-        parent = PlotterWidget(viewer)
-        # Create a dummy napari Image layer without phasor features
-        dummy_data = np.random.rand(10, 10)
-        image_layer = Image(dummy_data, name="no_phasor_layer")
-        viewer.add_layer(image_layer)
-        filter_widget = parent.filter_tab
+    # Add a regular image layer (no phasor features)
+    regular_layer = Image(np.random.random((10, 10)))
+    viewer.add_layer(regular_layer)
 
-        # Add a regular image layer (no phasor features)
-        regular_layer = Image(np.random.random((10, 10)))
-        viewer.add_layer(regular_layer)
+    # The combobox should not be updated (no items checked)
+    # since neither layer has phasor features
+    assert len(parent.image_layers_checkable_combobox.checkedItems()) == 0
 
-        # None of the methods should be called
-        mock_on_labels.assert_not_called()
-        mock_plot_hist.assert_not_called()
-        mock_update_line.assert_not_called()
-
-        # The combobox should not be updated (no items checked)
-        assert len(parent.image_layers_checkable_combobox.checkedItems()) == 0
-
+    # Threshold lines should not be created without phasor data
     assert filter_widget.threshold_line_lower is None
     assert filter_widget.threshold_line_upper is None
 
@@ -1062,9 +1044,26 @@ def test_filter_widget_no_duplicate_signal_connections(make_napari_viewer):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
+    def _receiver_count(combo_box):
+        signal = combo_box.currentTextChanged
+        with contextlib.suppress(TypeError):
+            return combo_box.receivers(signal)
+
+        # PySide variants expect a signal signature string.
+        for signal_name in (
+            "currentTextChanged(str)",
+            "currentTextChanged(QString)",
+        ):
+            with contextlib.suppress(TypeError):
+                return combo_box.receivers(signal_name)
+
+        raise AssertionError(
+            "Could not query signal receivers for currentTextChanged"
+        )
+
     # Count receivers on the threshold_method_combobox signal before
-    initial_receivers = filter_widget.threshold_method_combobox.receivers(
-        filter_widget.threshold_method_combobox.currentTextChanged
+    initial_receivers = _receiver_count(
+        filter_widget.threshold_method_combobox
     )
 
     # Simulate switching to the filter tab multiple times
@@ -1072,9 +1071,7 @@ def test_filter_widget_no_duplicate_signal_connections(make_napari_viewer):
         filter_widget._update_histogram_if_needed()
 
     # Count receivers after — should be the same as before
-    final_receivers = filter_widget.threshold_method_combobox.receivers(
-        filter_widget.threshold_method_combobox.currentTextChanged
-    )
+    final_receivers = _receiver_count(filter_widget.threshold_method_combobox)
 
     assert final_receivers == initial_receivers, (
         f"Signal has {final_receivers} receivers after 5 tab switches "

@@ -26,6 +26,7 @@ from qtpy.QtWidgets import (
     QPushButton,
     QSpinBox,
     QStackedWidget,
+    QStyle,
     QTableWidget,
     QVBoxLayout,
     QWidget,
@@ -116,7 +117,7 @@ class SelectionWidget(QWidget):
         self.refresh_selection_button = QPushButton()
         self.refresh_selection_button.setIcon(
             self.refresh_selection_button.style().standardIcon(
-                self.refresh_selection_button.style().SP_BrowserReload
+                QStyle.SP_BrowserReload
             )
         )
         self.refresh_selection_button.setMaximumWidth(35)

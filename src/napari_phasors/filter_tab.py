@@ -15,6 +15,7 @@ from qtpy.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -83,9 +84,8 @@ class FilterWidget(QWidget):
 
         self.setup_ui()
 
-        self.parent_widget.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
-            self._on_image_layer_changed
-        )
+        # Connect signals after the full widget hierarchy is built.
+        self._connect_signals()
 
     def _is_tab_visible(self):
         """Check if the filter tab is currently visible."""
@@ -99,6 +99,40 @@ class FilterWidget(QWidget):
         if self._histogram_needs_update and self._is_tab_visible():
             self.plot_mean_histogram()
             self._histogram_needs_update = False
+
+    def _connect_signals(self):
+        """Connect all widget signals to their slots.
+
+        Called from ``__init__`` *after* ``setup_ui()`` has fully assembled
+        and parented the widget hierarchy.  Deferring connections until this
+        point avoids a PySide6 segmentation fault that occurs when signals on
+        ``superqt`` widgets (``QRangeSlider``, ``QToggleSwitch``) are connected
+        while the Qt object tree is still being constructed — in particular
+        after ``FigureCanvasQTAgg`` re-parents the Matplotlib figure.
+        """
+        self.threshold_slider.valueChanged.connect(
+            self.on_threshold_slider_change
+        )
+        self.threshold_method_combobox.currentTextChanged.connect(
+            self.on_threshold_method_changed
+        )
+        self.filter_method_combobox.currentTextChanged.connect(
+            self.on_filter_method_changed
+        )
+        self.median_filter_spinbox.valueChanged.connect(
+            self.on_median_kernel_size_change
+        )
+        self.apply_button.clicked.connect(self.apply_button_clicked)
+        self.min_threshold_edit.editingFinished.connect(
+            self.on_min_threshold_edit_changed
+        )
+        self.max_threshold_edit.editingFinished.connect(
+            self.on_max_threshold_edit_changed
+        )
+        self.log_scale_checkbox.toggled.connect(self.on_log_scale_changed)
+        self.parent_widget.image_layer_with_phasor_features_combobox.currentIndexChanged.connect(
+            self._on_image_layer_changed
+        )
 
     def setup_ui(self):
         """Setup the user interface elements."""
@@ -145,7 +179,6 @@ class FilterWidget(QWidget):
         self.log_scale_checkbox = QToggleSwitch("Log Scale Histogram")
         self.log_scale_checkbox.onColor = QColor("#27ae60")  # Nice Green
         self.log_scale_checkbox.setChecked(False)
-        self.log_scale_checkbox.toggled.connect(self.on_log_scale_changed)
         threshold_method_layout.addWidget(self.log_scale_checkbox)
         threshold_method_layout.addStretch()
 
@@ -184,9 +217,7 @@ class FilterWidget(QWidget):
         # Embed the Matplotlib figure into the widget with fixed size
         canvas = FigureCanvas(self.hist_fig)
         canvas.setFixedHeight(150)
-        canvas.setSizePolicy(
-            canvas.sizePolicy().Expanding, canvas.sizePolicy().Fixed
-        )
+        canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self._canvas = canvas
 
         # Connect mouse events for draggable threshold line
@@ -208,28 +239,8 @@ class FilterWidget(QWidget):
 
         self.setLayout(layout)
 
-        # Connect signals (once, not on every tab switch)
-        self.threshold_slider.valueChanged.connect(
-            self.on_threshold_slider_change
-        )
-        self.threshold_method_combobox.currentTextChanged.connect(
-            self.on_threshold_method_changed
-        )
-        self.filter_method_combobox.currentTextChanged.connect(
-            self.on_filter_method_changed
-        )
-        self.median_filter_spinbox.valueChanged.connect(
-            self.on_median_kernel_size_change
-        )
-        self.apply_button.clicked.connect(self.apply_button_clicked)
-        self.min_threshold_edit.editingFinished.connect(
-            self.on_min_threshold_edit_changed
-        )
-        self.max_threshold_edit.editingFinished.connect(
-            self.on_max_threshold_edit_changed
-        )
-
-        # Initialize UI state
+        # Initialize UI state (before signals are connected to avoid
+        # spurious callbacks during initial widget setup)
         self.on_filter_method_changed()
 
     def setup_median_filter_ui(self):

@@ -295,7 +295,7 @@ class PhasorTransform(QWidget):
             initial_z_spacing=initial_z_spacing,
             estimated_shape=estimated_shape,
         )
-        if dialog.exec_() != FileOrderDialog.Accepted:
+        if dialog.exec() != FileOrderDialog.Accepted:
             return
         file_paths = dialog.get_ordered_paths()
         z_spacing = dialog.get_z_spacing()
@@ -387,9 +387,7 @@ class AdvancedOptionsWidget(QWidget):
         self.figure.patch.set_alpha(0.0)
         self.canvas = FigureCanvas(self.figure)
         self.canvas.setFixedHeight(300)
-        self.canvas.setSizePolicy(
-            self.canvas.sizePolicy().Expanding, self.canvas.sizePolicy().Fixed
-        )
+        self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.ax = self.figure.add_subplot(111)
         self.ax.set_facecolor('none')
 

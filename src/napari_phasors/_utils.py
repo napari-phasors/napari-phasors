@@ -22,7 +22,7 @@ from phasorpy.filter import (
     phasor_filter_pawflim,
     phasor_threshold,
 )
-from qtpy.QtCore import QRect, QSize, Qt, Signal
+from qtpy.QtCore import QEvent, QRect, QSize, Qt, Signal
 from qtpy.QtGui import (
     QColor,
     QDoubleValidator,
@@ -980,14 +980,14 @@ class CheckableComboBox(QComboBox):
     def eventFilter(self, obj, event):
         """Filter events to make line edit clickable and handle item clicks."""
         if obj == self.lineEdit():
-            if event.type() == event.MouseButtonRelease:
+            if event.type() == QEvent.MouseButtonRelease:
                 if not self.view().isVisible():
                     self.showPopup()
                 return True
-            elif event.type() == event.MouseButtonPress:
+            elif event.type() == QEvent.MouseButtonPress:
                 return True
         elif obj == self.view().viewport():
-            if event.type() == event.MouseMove:
+            if event.type() == QEvent.MouseMove:
                 index = self.view().indexAt(event.pos())
                 old_hover = self._delegate._hovered_index
                 self._delegate._hovered_index = (
@@ -996,7 +996,7 @@ class CheckableComboBox(QComboBox):
                 if old_hover != self._delegate._hovered_index:
                     self.view().viewport().update()
                 return False
-            elif event.type() == event.MouseButtonRelease:
+            elif event.type() == QEvent.MouseButtonRelease:
                 index = self.view().indexAt(event.pos())
                 if index.isValid():
                     vis_rect = self.view().visualRect(index)
@@ -1030,7 +1030,7 @@ class CheckableComboBox(QComboBox):
                             )
                             item.setCheckState(new_state)
                         return True
-            elif event.type() == event.Leave:
+            elif event.type() == QEvent.Leave:
                 if self._delegate._hovered_index is not None:
                     self._delegate._hovered_index = None
                     self.view().viewport().update()
@@ -1764,9 +1764,7 @@ class HistogramWidget(QWidget):
 
         canvas = FigureCanvas(self.fig)
         canvas.setFixedHeight(canvas_height)
-        canvas.setSizePolicy(
-            canvas.sizePolicy().Expanding, canvas.sizePolicy().Fixed
-        )
+        canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         layout.addWidget(canvas)
 
         # Settings and export controls in one row
@@ -2098,7 +2096,7 @@ class HistogramWidget(QWidget):
         dlg.white_bg_checkbox.setChecked(self._white_background)
         dlg.smooth_checkbox.setChecked(self._smooth_curves)
 
-        if dlg.exec_() == QDialog.Accepted:
+        if dlg.exec() == QDialog.Accepted:
             self._display_mode = dlg.mode_combo.currentText()
             self._show_sd = dlg.sd_checkbox.isChecked()
             self._central_tendency = dlg.central_tendency_combo.currentText()
@@ -2862,7 +2860,7 @@ class StatisticsTableWidget(QTableWidget):
         menu.addSeparator()
         select_all_action = menu.addAction("Select All")
 
-        action = menu.exec_(self.viewport().mapToGlobal(pos))
+        action = menu.exec(self.viewport().mapToGlobal(pos))
         if action == copy_action:
             self._copy_selection(include_headers=False)
         elif action == copy_with_headers_action:
