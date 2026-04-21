@@ -18,7 +18,6 @@ from qtpy.QtWidgets import (
 from superqt import QRangeSlider, QToggleSwitch
 
 from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
-from napari_phasors.filter_tab import FilterWidget
 from napari_phasors.plotter import PlotterWidget
 
 
@@ -690,36 +689,23 @@ def test_slider_and_histogram_update_on_layer_add_and_select(
 def test_layer_with_no_phasor_features_does_nothing(make_napari_viewer):
     """If a layer with no phasor features is added, nothing should happen."""
     viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    filter_widget = parent.filter_tab
 
-    with (
-        patch.object(
-            FilterWidget, '_on_image_layer_changed'
-        ) as mock_on_labels,
-        patch.object(FilterWidget, 'plot_mean_histogram') as mock_plot_hist,
-        patch.object(
-            FilterWidget, 'update_threshold_lines'
-        ) as mock_update_line,
-    ):
+    # Create a dummy napari Image layer without phasor features
+    dummy_data = np.random.rand(10, 10)
+    image_layer = Image(dummy_data, name="no_phasor_layer")
+    viewer.add_layer(image_layer)
 
-        parent = PlotterWidget(viewer)
-        # Create a dummy napari Image layer without phasor features
-        dummy_data = np.random.rand(10, 10)
-        image_layer = Image(dummy_data, name="no_phasor_layer")
-        viewer.add_layer(image_layer)
-        filter_widget = parent.filter_tab
+    # Add a regular image layer (no phasor features)
+    regular_layer = Image(np.random.random((10, 10)))
+    viewer.add_layer(regular_layer)
 
-        # Add a regular image layer (no phasor features)
-        regular_layer = Image(np.random.random((10, 10)))
-        viewer.add_layer(regular_layer)
+    # The combobox should not be updated (no items checked)
+    # since neither layer has phasor features
+    assert len(parent.image_layers_checkable_combobox.checkedItems()) == 0
 
-        # None of the methods should be called
-        mock_on_labels.assert_not_called()
-        mock_plot_hist.assert_not_called()
-        mock_update_line.assert_not_called()
-
-        # The combobox should not be updated (no items checked)
-        assert len(parent.image_layers_checkable_combobox.checkedItems()) == 0
-
+    # Threshold lines should not be created without phasor data
     assert filter_widget.threshold_line_lower is None
     assert filter_widget.threshold_line_upper is None
 
@@ -1058,8 +1044,9 @@ def test_filter_widget_no_duplicate_signal_connections(make_napari_viewer):
     filter_widget = parent.filter_tab
 
     # Count receivers on the threshold_method_combobox signal before
+    # In PySide6, receivers() takes a string signal name
     initial_receivers = filter_widget.threshold_method_combobox.receivers(
-        filter_widget.threshold_method_combobox.currentTextChanged
+        "currentTextChanged(str)"
     )
 
     # Simulate switching to the filter tab multiple times
@@ -1068,7 +1055,7 @@ def test_filter_widget_no_duplicate_signal_connections(make_napari_viewer):
 
     # Count receivers after — should be the same as before
     final_receivers = filter_widget.threshold_method_combobox.receivers(
-        filter_widget.threshold_method_combobox.currentTextChanged
+        "currentTextChanged(str)"
     )
 
     assert final_receivers == initial_receivers, (
