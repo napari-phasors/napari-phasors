@@ -146,7 +146,6 @@ class FilterWidget(QWidget):
         self.log_scale_checkbox = QToggleSwitch("Log Scale Histogram")
         self.log_scale_checkbox.onColor = QColor("#27ae60")  # Nice Green
         self.log_scale_checkbox.setChecked(False)
-        self.log_scale_checkbox.toggled.connect(self.on_log_scale_changed)
         threshold_method_layout.addWidget(self.log_scale_checkbox)
         threshold_method_layout.addStretch()
 
@@ -227,6 +226,7 @@ class FilterWidget(QWidget):
         self.max_threshold_edit.editingFinished.connect(
             self.on_max_threshold_edit_changed
         )
+        self.log_scale_checkbox.toggled.connect(self.on_log_scale_changed)
 
         # Initialize UI state
         self.on_filter_method_changed()
