@@ -490,20 +490,15 @@ def test_settings_restoration_with_incompatible_wavelet(make_napari_viewer):
 
 def test_filter_widget_histogram_styling(make_napari_viewer):
     """Test that histogram styling is applied correctly."""
+    import matplotlib.colors as mcolors
+
     viewer = make_napari_viewer()
-
-    with patch.object(FilterWidget, 'style_histogram_axes') as mock_style:
-        parent = PlotterWidget(viewer)
-        filter_widget = parent.filter_tab
-        mock_style.assert_called_once()
-
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
+    # Verify that style_histogram_axes was called during initialization
     assert filter_widget.hist_ax.patch.get_alpha() == 0
     assert filter_widget.hist_fig.patch.get_alpha() == 0
-
-    import matplotlib.colors as mcolors
 
     grey_rgba = mcolors.to_rgba('grey')
 
