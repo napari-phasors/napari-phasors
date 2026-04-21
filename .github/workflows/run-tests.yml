@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [ubuntu-latest, windows-latest, macos-14, macos-15]
+        platform: [ubuntu-latest, windows-latest, macos-latest]
         python-version: ['3.12', '3.13', '3.14']
         qt-backend: [pyqt6, pyside6]
         exclude:
