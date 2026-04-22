@@ -133,7 +133,10 @@ def _patch_biaplotter_safe_toggle_sender():
 
     def _on_toggle_button_safe(self, checked: bool):
         sender_obj = self.sender()
-        sender_name = None if sender_obj is None else sender_obj.text()
+        sender_name = None
+        if sender_obj is not None:
+            with contextlib.suppress(AttributeError, RuntimeError, TypeError):
+                sender_name = sender_obj.text()
 
         # Non-Qt emitters (psygnal) can call this with sender=None.
         # Preserve expected behavior for toolbar pan/zoom toggles.
