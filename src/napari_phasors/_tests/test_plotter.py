@@ -1,4 +1,5 @@
 import contextlib
+import warnings
 from unittest.mock import patch
 
 import numpy as np
@@ -36,6 +37,101 @@ def create_image_layer_with_phasors(harmonic=None):
     raw_flim_data = make_raw_flim_data(time_constants=time_constants)
     harmonic = harmonic
     return make_intensity_layer_with_phasors(raw_flim_data, harmonic=harmonic)
+
+
+def test_nap_plot_tools_safe_disconnect_patch_is_applied_and_idempotent():
+    """The runtime patch should be installed once and remain safe to re-run."""
+    from nap_plot_tools.tools import CustomToolbarWidget
+
+    from napari_phasors import plotter as plotter_module
+
+    assert getattr(
+        CustomToolbarWidget,
+        '_napari_phasors_safe_disconnect_patch',
+        False,
+    )
+
+    # Reapplying should be a no-op (idempotent guard path).
+    plotter_module._patch_nap_plot_tools_safe_disconnect()
+    plotter_module._patch_nap_plot_tools_safe_disconnect()
+
+    assert getattr(
+        CustomToolbarWidget,
+        '_napari_phasors_safe_disconnect_patch',
+        False,
+    )
+
+
+def test_nap_plot_tools_safe_disconnect_rewires_callbacks_without_warning(
+    qtbot,
+):
+    """Rewiring toolbar callbacks should not emit Qt disconnect RuntimeWarning."""
+    from nap_plot_tools.tools import CustomToolbarWidget
+
+    toolbar = CustomToolbarWidget()
+    qtbot.addWidget(toolbar)
+
+    toggle_calls = []
+    click_calls = []
+
+    def toggle_cb_1(checked):
+        toggle_calls.append(('toggle_cb_1', bool(checked)))
+
+    def toggle_cb_2(checked):
+        toggle_calls.append(('toggle_cb_2', bool(checked)))
+
+    def click_cb_1():
+        click_calls.append('click_cb_1')
+
+    def click_cb_2():
+        click_calls.append('click_cb_2')
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+
+        # Checkable path (toggled signal).
+        toolbar.add_custom_button(
+            name='SEL',
+            default_icon_path='dummy_default.png',
+            checked_icon_path='dummy_checked.png',
+            callback=toggle_cb_1,
+        )
+        toolbar.buttons['SEL'].setChecked(True)
+        toolbar.connect_button_callback('SEL', toggle_cb_2)
+        toolbar.buttons['SEL'].setChecked(False)
+        toolbar.connect_button_callback('SEL', None)
+        toolbar.buttons['SEL'].setChecked(True)
+
+        # Non-checkable path (clicked signal).
+        toolbar.add_custom_button(
+            name='ACT',
+            default_icon_path='dummy_action.png',
+            callback=click_cb_1,
+        )
+        toolbar.buttons['ACT'].click()
+        toolbar.connect_button_callback('ACT', click_cb_2)
+        toolbar.buttons['ACT'].click()
+        toolbar.connect_button_callback('ACT', None)
+        toolbar.buttons['ACT'].click()
+
+        # Unknown button name should be safely ignored.
+        toolbar.connect_button_callback('MISSING', toggle_cb_1)
+
+    assert ('toggle_cb_1', True) in toggle_calls
+    assert ('toggle_cb_2', False) in toggle_calls
+    assert all(name != 'toggle_cb_1' for name, _ in toggle_calls[1:])
+
+    assert click_calls[:2] == ['click_cb_1', 'click_cb_2']
+    assert click_calls.count('click_cb_1') == 1
+    assert click_calls.count('click_cb_2') == 1
+
+    disconnect_warnings = [
+        w
+        for w in caught
+        if 'Failed to disconnect' in str(w.message)
+        and 'toggled(bool)' in str(w.message)
+    ]
+    assert not disconnect_warnings
 
 
 def test_phasor_plotter_initialization_values(make_napari_viewer):

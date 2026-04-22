@@ -26,6 +26,7 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from scipy.ndimage import gaussian_filter
 from scipy.stats import binned_statistic_2d
 from superqt import QRangeSlider, QToggleSwitch
 
@@ -556,7 +557,7 @@ class PhasorMappingWidget(QWidget):
         return True
 
     def _phase_max_allowed(self) -> float:
-        return (np.pi / 2.0) if self._is_semicircle_mode() else (2.0 * np.pi)
+        return 2.0 * np.pi
 
     def _update_phase_slider_bounds_from_plot_mode(self):
         max_phase = self._phase_max_allowed()
@@ -1769,9 +1770,9 @@ class PhasorMappingWidget(QWidget):
     def _get_mesh_grid_resolution(self, ax) -> int:
         with contextlib.suppress(Exception):
             bbox = ax.get_window_extent()
-            target = int(max(float(bbox.width), float(bbox.height)) * 0.6)
-            return int(np.clip(target, 160, 400))
-        return 280
+            target = int(max(float(bbox.width), float(bbox.height)) * 1.2)
+            return int(np.clip(target, 320, 900))
+        return 480
 
     def _make_mesh_grid_cache_key(self, ax, resolution: int):
         x_min, x_max = ax.get_xlim()
@@ -1920,8 +1921,15 @@ class PhasorMappingWidget(QWidget):
                     mesh_mask |= is_outside_semi
 
             stat_display = p_grid if output_type == "Phase" else m_grid
-            stat_display = np.where(mesh_mask, np.nan, stat_display)
+            stat_display = np.ma.array(stat_display, mask=mesh_mask)
             extent = mesh_grid['extent']
+            mesh_cmap = cmap.copy()
+            mesh_cmap.set_bad((0, 0, 0, 0))
+            mesh_alpha = float(self.mesh_alpha_spinbox.value())
+            mesh_alpha_map = gaussian_filter(
+                (~mesh_mask).astype(float), sigma=1.2, mode="nearest"
+            )
+            mesh_alpha_map = np.clip(mesh_alpha_map, 0.0, 1.0) * mesh_alpha
 
             self._remove_mesh_overlay()
 
@@ -1929,12 +1937,13 @@ class PhasorMappingWidget(QWidget):
                 stat_display,
                 extent=extent,
                 origin="lower",
-                cmap=cmap,
+                cmap=mesh_cmap,
                 vmin=vmin,
                 vmax=vmax,
-                interpolation="bilinear",
+                interpolation="lanczos",
+                interpolation_stage="rgba",
                 zorder=0.1,  # Behind all phasor artists
-                alpha=float(self.mesh_alpha_spinbox.value()),
+                alpha=mesh_alpha_map,
                 aspect="auto",
             )
             ax.set_aspect(1, adjustable="box")
