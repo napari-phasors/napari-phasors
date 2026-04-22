@@ -34,14 +34,7 @@ DESKTOP
     fi
 fi
 
-# Create an alias-style launcher for macOS
+# macOS: no additional launchers needed (handled by .app bundle in DMG)
 if [ "$(uname)" = "Darwin" ]; then
-    # Create a simple command-line launcher in /usr/local/bin if writable
-    if [ -w "/usr/local/bin" ]; then
-        ln -sf "${PREFIX}/napari-phasors" "/usr/local/bin/napari-phasors"
-    fi
-    echo ""
-    echo "=== napari-phasors installed ==="
-    echo "Run with: ${PREFIX}/napari-phasors"
-    echo ""
+    echo "napari-phasors installed successfully."
 fi

@@ -86,6 +86,72 @@ jobs:
         shell: bash -el {0}
         run: ls -la installer/napari-phasors-*
 
+      - name: Create macOS DMG
+        if: matrix.platform == 'macos'
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          SH_INSTALLER=$(ls installer/napari-phasors-*.sh)
+          INSTALL_DIR="${RUNNER_TEMP}/napari-phasors-install"
+          DMG_CONTENTS="${RUNNER_TEMP}/dmg-contents"
+          APP_DIR="${DMG_CONTENTS}/napari-phasors.app"
+
+          echo "=== Running .sh installer silently ==="
+          bash "${SH_INSTALLER}" -b -p "${INSTALL_DIR}"
+
+          echo "=== Creating .app bundle ==="
+          mkdir -p "${APP_DIR}/Contents/MacOS"
+          mkdir -p "${APP_DIR}/Contents/Resources"
+
+          cat > "${APP_DIR}/Contents/Info.plist" << PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+            <dict>
+              <key>CFBundleName</key>
+              <string>napari-phasors</string>
+              <key>CFBundleExecutable</key>
+              <string>napari-phasors</string>
+              <key>CFBundleIdentifier</key>
+              <string>org.napari-phasors.app</string>
+              <key>CFBundleVersion</key>
+              <string>${VERSION}</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleShortVersionString</key>
+              <string>${VERSION}</string>
+            </dict>
+          </plist>
+          PLIST
+
+          cat > "${APP_DIR}/Contents/MacOS/napari-phasors" << 'LAUNCHER'
+          #!/bin/bash
+          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+          ENV_DIR="${SCRIPT_DIR}/../Resources/env"
+          source "${ENV_DIR}/bin/activate"
+          exec "${ENV_DIR}/bin/napari" "$@"
+          LAUNCHER
+          chmod +x "${APP_DIR}/Contents/MacOS/napari-phasors"
+
+          echo "=== Moving conda env into .app bundle ==="
+          mv "${INSTALL_DIR}" "${APP_DIR}/Contents/Resources/env"
+
+          ln -s /Applications "${DMG_CONTENTS}/Applications"
+
+          echo "=== Creating DMG ==="
+          ARCH="$(uname -m)"
+          hdiutil create \
+            -volname "napari-phasors" \
+            -srcfolder "${DMG_CONTENTS}" \
+            -ov \
+            -format UDZO \
+            "installer/napari-phasors-${VERSION}-macOS-${ARCH}.dmg"
+
+          rm -f "${SH_INSTALLER}"
+          echo "=== DMG created ==="
+          ls -la installer/napari-phasors-*
+
       - name: Upload installer as artifact
         uses: actions/upload-artifact@v4
         with:
