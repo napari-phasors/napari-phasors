@@ -3,6 +3,7 @@ import warnings
 from unittest.mock import patch
 
 import numpy as np
+import pytest
 from biaplotter.plotter import CanvasWidget
 from napari.layers import Image
 from qtpy.QtWidgets import (
@@ -41,6 +42,8 @@ def create_image_layer_with_phasors(harmonic=None):
 
 def test_nap_plot_tools_safe_disconnect_patch_is_applied_and_idempotent():
     """The runtime patch should be installed once and remain safe to re-run."""
+    pytest.importorskip("nap_plot_tools")
+
     from nap_plot_tools.tools import CustomToolbarWidget
 
     from napari_phasors import plotter as plotter_module
@@ -66,6 +69,8 @@ def test_nap_plot_tools_safe_disconnect_rewires_callbacks_without_warning(
     qtbot,
 ):
     """Rewiring toolbar callbacks should not emit Qt disconnect RuntimeWarning."""
+    pytest.importorskip("nap_plot_tools")
+
     from nap_plot_tools.tools import CustomToolbarWidget
 
     toolbar = CustomToolbarWidget()
@@ -132,6 +137,27 @@ def test_nap_plot_tools_safe_disconnect_rewires_callbacks_without_warning(
         and 'toggled(bool)' in str(w.message)
     ]
     assert not disconnect_warnings
+
+
+def test_biaplotter_toggle_callback_handles_missing_sender(
+    make_napari_viewer,
+):
+    """Pan/zoom toggles emitted via non-Qt signals must not rely on sender()."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    canvas = plotter.canvas_widget
+
+    canvas.toolbar.mode = 'pan/zoom'
+
+    with (
+        patch.object(
+            canvas, '_deactivate_and_remove_all_selectors'
+        ) as mock_deactivate,
+        patch.object(CanvasWidget, 'sender', return_value=None),
+    ):
+        canvas._on_toggle_button(True)
+
+    mock_deactivate.assert_called_once()
 
 
 def test_phasor_plotter_initialization_values(make_napari_viewer):

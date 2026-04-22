@@ -116,7 +116,40 @@ def _patch_nap_plot_tools_safe_disconnect():
     CustomToolbarWidget._napari_phasors_safe_disconnect_patch = True
 
 
+def _patch_biaplotter_safe_toggle_sender():
+    """Patch biaplotter toggle callback to tolerate missing Qt sender.
+
+    biaplotter wires ``pan_toggled_signal`` and ``zoom_toggled_signal``
+    (non-Qt signals) to ``CanvasWidget._on_toggle_button``. In that path,
+    ``self.sender()`` can be ``None``, which raises an AttributeError when the
+    callback unconditionally accesses ``.text()``.
+    """
+    if getattr(
+        CanvasWidget, "_napari_phasors_safe_toggle_sender_patch", False
+    ):
+        return
+
+    original = CanvasWidget._on_toggle_button
+
+    def _on_toggle_button_safe(self, checked: bool):
+        sender_obj = self.sender()
+        sender_name = None if sender_obj is None else sender_obj.text()
+
+        # Non-Qt emitters (psygnal) can call this with sender=None.
+        # Preserve expected behavior for toolbar pan/zoom toggles.
+        if sender_name is None:
+            if checked and self.toolbar.mode in {'pan/zoom', 'zoom rect'}:
+                self._deactivate_and_remove_all_selectors()
+            return
+
+        return original(self, checked)
+
+    CanvasWidget._on_toggle_button = _on_toggle_button_safe
+    CanvasWidget._napari_phasors_safe_toggle_sender_patch = True
+
+
 _patch_nap_plot_tools_safe_disconnect()
+_patch_biaplotter_safe_toggle_sender()
 
 
 class MaskAssignmentDialog(QDialog):
