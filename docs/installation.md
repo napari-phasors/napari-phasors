@@ -82,14 +82,28 @@ Then find the plugin under **Plugins → napari-phasors**.
 
 ## Option 3: Standalone installer (no Python required)
 
-Pre-built installers for Windows, macOS, and Linux are available on the
-[GitHub Releases](https://github.com/napari-phasors/napari-phasors/releases)
-page. Download the installer for your platform, run it, and you're ready to
-go — no Python installation needed.
+Pre-built installers for Windows, macOS, and Linux are
+available on the
+[latest release](https://github.com/napari-phasors/napari-phasors/releases/latest)
+page. Download the installer for your platform, run it,
+and you're ready to go — no Python installation needed.
+
+| Platform  | File type | How to install                             |
+|-----------|-----------|--------------------------------------------|
+| Windows   | `.exe`    | Double-click to install                    |
+| macOS     | `.dmg`    | Open and drag to Applications              |
+| Linux     | `.sh`     | Run `bash napari-phasors-*.sh` in terminal |
+
+```{tip}
+Installers are ~350–470 MB because they bundle
+Python, napari, and all dependencies — nothing else
+to install.
+```
 
 ```{note}
-Standalone installers are generated automatically for each release. If no
-installer is available for the latest version yet, use Option 1 or 2.
+Standalone installers are generated automatically for
+each release. If no installer is available for the
+latest version yet, use Option 1 or 2.
 ```
 
 ---

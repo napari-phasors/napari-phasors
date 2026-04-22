@@ -47,9 +47,12 @@ and click **Install**.
 
 ### Standalone installer (no Python required)
 
-Pre-built installers for Windows, macOS, and Linux are available on the
-[Releases](https://github.com/napari-phasors/napari-phasors/releases) page.
-Download and run — no Python installation needed.
+Pre-built installers for Windows (`.exe`), macOS
+(`.dmg`), and Linux (`.sh`) are available on the
+[latest release](https://github.com/napari-phasors/napari-phasors/releases/latest)
+page. Download and run — no Python installation
+needed. Installers are ~350–470 MB and bundle
+everything required.
 
 ### Using conda + pip
 

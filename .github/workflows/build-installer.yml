@@ -71,6 +71,12 @@ jobs:
           sed -i.bak 's/^          //' construct.yaml
           sed -i.bak "s/VERSION_PLACEHOLDER/${{ steps.version.outputs.version }}/" construct.yaml
           sed -i.bak "s/POST_INSTALL_PLACEHOLDER/${{ matrix.post_install }}/" construct.yaml
+          if [ -f icon.png ]; then
+            echo "icon_image: icon.png" >> construct.yaml
+            echo "Found icon.png — adding icon_image to construct.yaml"
+          else
+            echo "No icon.png found — skipping icon_image"
+          fi
           echo "=== construct.yaml ==="
           cat construct.yaml
           echo "=== Building ==="
