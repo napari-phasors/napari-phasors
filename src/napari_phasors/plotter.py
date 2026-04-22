@@ -5632,6 +5632,7 @@ class PlotterWidget(QWidget):
                 mask_layer = self.viewer.layers[mask_name]
                 self._apply_mask_to_phasor_data(mask_layer, image_layer)
 
+        notifications.show_info("Mask assignments applied")
         if hasattr(self, 'filter_tab'):
             self.filter_tab._on_image_layer_changed()
             if selected_layers:

@@ -18,7 +18,7 @@ import phasorpy.io as io
 import tifffile
 import xarray as xr
 from napari.utils.colormaps.colormap_utils import CYMRGB, MAGENTA_GREEN
-from napari.utils.notifications import show_error
+from napari.utils.notifications import show_error, show_info
 from phasorpy.phasor import phasor_from_signal
 
 from ._utils import show_activity_progress
@@ -368,6 +368,7 @@ def raw_file_reader(
         )
         pbr.update(n_steps)
         pbr.close()
+        show_info(f"Loaded {filename}")
         channel_suffix = (
             " Intensity Image"
             if iter_axis is None
@@ -459,6 +460,7 @@ def raw_file_reader(
             }
             layers.append((mean_intensity_image, add_kwargs))
         pbr.close()
+        show_info(f"Loaded {filename}")
     # Set colormaps if multichannel image
     if len(layers) == 2:
         # add colormaps MAGENTA_GREEN
@@ -792,6 +794,7 @@ def processed_file_reader(
 
     layers.append((mean_intensity_image, add_kwargs))
     pbr.close()
+    show_info(f"Loaded {filename}")
     return layers
 
 

@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.colors import LinearSegmentedColormap
 from napari.layers import Image
+from napari.utils.notifications import show_info
 from phasorpy.io import phasor_to_ometiff
 
 from ._utils import show_activity_progress
@@ -269,6 +270,7 @@ def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
         )
 
     pbr.close()
+    show_info("Saved OME-TIFF")
     return [path]
 
 

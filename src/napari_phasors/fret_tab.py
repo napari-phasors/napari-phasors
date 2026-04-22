@@ -6,7 +6,7 @@ from matplotlib.collections import LineCollection
 from matplotlib.colors import LinearSegmentedColormap
 from napari.layers import Image
 from napari.utils import progress
-from napari.utils.notifications import show_error, show_warning
+from napari.utils.notifications import show_error, show_info, show_warning
 from phasorpy.lifetime import (
     phasor_from_fret_donor,
     phasor_to_apparent_lifetime,
@@ -793,6 +793,7 @@ class FretWidget(QWidget):
                 except Exception:  # noqa: BLE001
                     continue
 
+        show_info("Background position calculated")
         if not positions_by_harmonic:
             if self.bg_source_selector.currentIndex() == 1:
                 self.background_position_label.setText("Background position:")
@@ -936,6 +937,7 @@ class FretWidget(QWidget):
             except Exception:  # noqa: BLE001
                 continue
 
+        show_info("Donor lifetime calculated")
         if not lifetimes:
             if self.donor_source_selector.currentIndex() == 1:
                 self.donor_label.setText("Donor lifetime (ns):")
@@ -1857,6 +1859,7 @@ class FretWidget(QWidget):
             except ValueError:
                 pass
 
+        show_info("FRET efficiency calculated")
         if (
             not hasattr(self, '_saved_colormap_name')
             or self._updating_settings

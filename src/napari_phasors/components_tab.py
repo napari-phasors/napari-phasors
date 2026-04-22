@@ -3415,6 +3415,7 @@ class ComponentsWidget(QWidget):
             self._run_linear_projection_for_layer(
                 layer, component_real, component_imag, c1, c2
             )
+        show_info("Linear projection complete")
 
     def _run_linear_projection_for_layer(
         self, layer, component_real, component_imag, c1, c2
@@ -3616,6 +3617,7 @@ class ComponentsWidget(QWidget):
                 current_harmonic,
                 required_harmonics,
             )
+        show_info("Component fit complete")
 
     def _run_component_fit_for_layer(
         self,

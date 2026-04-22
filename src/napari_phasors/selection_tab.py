@@ -6,6 +6,7 @@ import numpy as np
 from matplotlib.patches import Circle, Ellipse, Wedge
 from napari.layers import Labels
 from napari.utils import DirectLabelColormap, progress
+from napari.utils.notifications import show_info
 from phasorpy.cluster import phasor_cluster_gmm
 from phasorpy.cursor import (
     mask_from_circular_cursor,
@@ -1174,6 +1175,7 @@ class AutomaticClusteringWidget(QWidget):
 
             traceback.print_exc()
 
+        show_info("Clustering applied")
         # Enable clear button
         self.clear_button.setEnabled(True)
 
@@ -2435,6 +2437,7 @@ class CircularCursorWidget(QWidget):
                 layer, selection_map, current_harmonic_cursors
             )
 
+        show_info("Selection applied")
         # Update count and percentage in the table
         self._update_cursor_statistics()
 
