@@ -833,6 +833,32 @@ def test_log_scale_checkbox_functionality(make_napari_viewer):
     assert filter_widget.hist_ax.get_yscale() == 'linear'
 
 
+def test_log_scale_persists_after_new_layer_redraw(make_napari_viewer):
+    """Test that histogram redraws keep the current log scale setting."""
+    viewer = make_napari_viewer()
+    first_layer = create_image_layer_with_phasors()
+    viewer.add_layer(first_layer)
+    parent = PlotterWidget(viewer)
+    filter_widget = parent.filter_tab
+
+    filter_tab_index = parent.tab_widget.indexOf(filter_widget)
+    parent.tab_widget.setCurrentIndex(filter_tab_index)
+
+    filter_widget.plot_mean_histogram()
+    filter_widget.log_scale_checkbox.setChecked(True)
+    filter_widget.on_log_scale_changed(2)  # Qt.Checked = 2
+
+    second_layer = create_image_layer_with_phasors()
+    viewer.add_layer(second_layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(
+        second_layer.name
+    )
+    filter_widget._on_image_layer_changed()
+
+    assert filter_widget.log_scale_checkbox.isChecked()
+    assert filter_widget.hist_ax.get_yscale() == 'log'
+
+
 def test_log_scale_checkbox_with_no_layer(make_napari_viewer):
     """Test log scale checkbox when no layer is selected."""
     viewer = make_napari_viewer()

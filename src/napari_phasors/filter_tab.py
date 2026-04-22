@@ -718,6 +718,13 @@ class FilterWidget(QWidget):
             axis='y', which='minor', labelsize=7, colors='grey'
         )
 
+    def _apply_histogram_scale(self):
+        """Apply the histogram y-axis scale based on the toggle state."""
+        if self.log_scale_checkbox.isChecked():
+            self.hist_ax.set_yscale('log')
+        else:
+            self.hist_ax.set_yscale('linear')
+
     def plot_mean_histogram(self):
         """Plot the histogram of the mean intensity data from all selected layers."""
         selected_layers = self.parent_widget.get_selected_layers()
@@ -756,6 +763,7 @@ class FilterWidget(QWidget):
             merged_mean_data, bins=100, color='white', edgecolor='white'
         )
         self.style_histogram_axes()
+        self._apply_histogram_scale()
 
         self.update_threshold_lines()
         self.hist_fig.canvas.draw_idle()
@@ -882,13 +890,8 @@ class FilterWidget(QWidget):
                 edgecolor='white',
             )
 
-            # Set scale before styling to ensure proper tick formatting
-            if checked:
-                self.hist_ax.set_yscale('log')
-            else:
-                self.hist_ax.set_yscale('linear')
-
             self.style_histogram_axes()
+            self._apply_histogram_scale()
             self.update_threshold_lines()
             self.hist_fig.canvas.draw_idle()
 
