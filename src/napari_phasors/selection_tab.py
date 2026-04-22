@@ -2869,7 +2869,7 @@ class PolarCursorWidget(QWidget):
 
         # Phase Min spinbox
         phase_min_spinbox = QDoubleSpinBox()
-        phase_min_spinbox.setRange(-180.0, 180.0)
+        phase_min_spinbox.setRange(-360.0, 360.0)
         phase_min_spinbox.setSingleStep(1.0)
         phase_min_spinbox.setDecimals(1)
         phase_min_spinbox.setValue(phase_min)
@@ -2880,7 +2880,7 @@ class PolarCursorWidget(QWidget):
 
         # Phase Max spinbox
         phase_max_spinbox = QDoubleSpinBox()
-        phase_max_spinbox.setRange(-180.0, 180.0)
+        phase_max_spinbox.setRange(-360.0, 360.0)
         phase_max_spinbox.setSingleStep(1.0)
         phase_max_spinbox.setDecimals(1)
         phase_max_spinbox.setValue(phase_max)
@@ -3130,7 +3130,7 @@ class PolarCursorWidget(QWidget):
 
                 # Phase Min spinbox
                 phase_min_spinbox = QDoubleSpinBox()
-                phase_min_spinbox.setRange(-180.0, 180.0)
+                phase_min_spinbox.setRange(-360.0, 360.0)
                 phase_min_spinbox.setSingleStep(1.0)
                 phase_min_spinbox.setDecimals(1)
                 phase_min_spinbox.setValue(cursor['phase_min'])
@@ -3143,7 +3143,7 @@ class PolarCursorWidget(QWidget):
 
                 # Phase Max spinbox
                 phase_max_spinbox = QDoubleSpinBox()
-                phase_max_spinbox.setRange(-180.0, 180.0)
+                phase_max_spinbox.setRange(-360.0, 360.0)
                 phase_max_spinbox.setSingleStep(1.0)
                 phase_max_spinbox.setDecimals(1)
                 phase_max_spinbox.setValue(cursor['phase_max'])

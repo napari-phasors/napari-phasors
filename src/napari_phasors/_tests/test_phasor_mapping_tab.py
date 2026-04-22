@@ -144,6 +144,30 @@ def test_phasor_mapping_widget_histogram_styling(make_napari_viewer):
     assert lifetime_widget.histogram_widget.ax.get_xlabel() == "Lifetime (ns)"
 
 
+def test_mesh_alpha_map_is_cached_for_repeated_refreshes(make_napari_viewer):
+    """Test that the blurred mesh alpha map is reused for identical mesh state."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    lifetime_widget = parent.phasor_mapping_tab
+
+    mesh_mask = np.array([[False, True], [True, False]])
+    alpha_key = (1, 2, 3, 4, True, 320, 0, 628, 0, 100, False)
+    blurred_base = np.array([[0.1, 0.2], [0.3, 0.4]], dtype=float)
+
+    with patch(
+        'napari_phasors.phasor_mapping_tab.gaussian_filter',
+        return_value=blurred_base,
+    ) as mock_filter:
+        first = lifetime_widget._get_mesh_alpha_map(mesh_mask, alpha_key, 0.5)
+        second = lifetime_widget._get_mesh_alpha_map(
+            mesh_mask, alpha_key, 0.25
+        )
+
+    assert mock_filter.call_count == 1
+    np.testing.assert_allclose(first, blurred_base * 0.5)
+    np.testing.assert_allclose(second, blurred_base * 0.25)
+
+
 def test_phasor_mapping_widget_frequency_input_validation(make_napari_viewer):
     """Test frequency input validation."""
     viewer = make_napari_viewer()

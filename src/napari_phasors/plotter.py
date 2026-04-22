@@ -65,6 +65,96 @@ from .phasor_mapping_tab import PhasorMappingWidget
 from .selection_tab import SelectionWidget
 
 
+def _patch_nap_plot_tools_safe_disconnect():
+    """Patch nap_plot_tools toolbar callback wiring to avoid warning spam.
+
+    nap_plot_tools currently calls ``button.toggled.disconnect()`` for
+    checkable buttons. Under PySide/Qt this can emit a RuntimeWarning when no
+    callback is connected. We patch it to disconnect only the previously
+    connected callback we track locally.
+    """
+    try:
+        from nap_plot_tools.tools import CustomToolbarWidget
+    except ImportError:
+        return
+
+    if getattr(
+        CustomToolbarWidget, "_napari_phasors_safe_disconnect_patch", False
+    ):
+        return
+
+    def _connect_button_callback_safe(self, name, callback):
+        if name not in self.buttons:
+            return
+
+        button = self.buttons[name]
+        signal = button.toggled if button.isCheckable() else button.clicked
+
+        connected = getattr(self, "_napari_phasors_connected_callbacks", {})
+        previous = connected.get(name)
+        if previous is not None:
+            with contextlib.suppress(TypeError, RuntimeError):
+                signal.disconnect(previous)
+
+        if callback:
+            if button.isCheckable():
+                to_connect = callback
+            else:
+
+                def _clicked_callback(checked=False, cb=callback):
+                    cb()
+
+                to_connect = _clicked_callback
+            signal.connect(to_connect)
+            connected[name] = to_connect
+        else:
+            connected.pop(name, None)
+
+        self._napari_phasors_connected_callbacks = connected
+
+    CustomToolbarWidget.connect_button_callback = _connect_button_callback_safe
+    CustomToolbarWidget._napari_phasors_safe_disconnect_patch = True
+
+
+def _patch_biaplotter_safe_toggle_sender():
+    """Patch biaplotter toggle callback to tolerate missing Qt sender.
+
+    biaplotter wires ``pan_toggled_signal`` and ``zoom_toggled_signal``
+    (non-Qt signals) to ``CanvasWidget._on_toggle_button``. In that path,
+    ``self.sender()`` can be ``None``, which raises an AttributeError when the
+    callback unconditionally accesses ``.text()``.
+    """
+    if getattr(
+        CanvasWidget, "_napari_phasors_safe_toggle_sender_patch", False
+    ):
+        return
+
+    original = CanvasWidget._on_toggle_button
+
+    def _on_toggle_button_safe(self, checked: bool):
+        sender_obj = self.sender()
+        sender_name = None
+        if sender_obj is not None:
+            with contextlib.suppress(AttributeError, RuntimeError, TypeError):
+                sender_name = sender_obj.text()
+
+        # Non-Qt emitters (psygnal) can call this with sender=None.
+        # Preserve expected behavior for toolbar pan/zoom toggles.
+        if sender_name is None:
+            if checked and self.toolbar.mode in {'pan/zoom', 'zoom rect'}:
+                self._deactivate_and_remove_all_selectors()
+            return
+
+        return original(self, checked)
+
+    CanvasWidget._on_toggle_button = _on_toggle_button_safe
+    CanvasWidget._napari_phasors_safe_toggle_sender_patch = True
+
+
+_patch_nap_plot_tools_safe_disconnect()
+_patch_biaplotter_safe_toggle_sender()
+
+
 class MaskAssignmentDialog(QDialog):
     """Dialog to assign a mask layer to each selected image layer.
 
