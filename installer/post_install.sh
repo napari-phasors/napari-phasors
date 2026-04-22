@@ -23,6 +23,7 @@ Type=Application
 Name=napari-phasors
 Comment=Phasor analysis in napari
 Exec=${PREFIX}/napari-phasors
+Icon=${PREFIX}/icon.png
 Terminal=false
 Categories=Science;Education;
 DESKTOP

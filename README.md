@@ -59,11 +59,11 @@ everything required.
 We recommend using [miniforge](https://conda-forge.org/download/). If you
 use Anaconda or Miniconda, replace `mamba` with `conda`.
 
-    mamba create -y -n napari-phasors-env napari pyqt6 python=3.14 # or 3.12 or 3.13
+    mamba create -y -n napari-phasors-env napari pyqt6 python=3.14 # or 3.12, 3.13
 
 Activate the environment :
 
-    mamba activate napari-phasors-env
+    conda activate napari-phasors-env
     pip install napari-phasors
 
 ### Development version

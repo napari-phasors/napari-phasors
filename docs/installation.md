@@ -50,13 +50,13 @@ If you already have Anaconda or Miniconda, you can use `conda` instead of
 ### Step 2: Create an environment
 
 ```bash
-mamba create -y -n napari-phasors-env napari pyqt6 python=3.14 # or 3.13
+mamba create -y -n napari-phasors-env napari pyqt6 python=3.14 # or 3.12, 3.13
 ```
 
 ### Step 3: Activate the environment
 
 ```bash
-mamba activate napari-phasors-env
+conda activate napari-phasors-env
 ```
 
 ```{important}
@@ -113,7 +113,7 @@ latest version yet, use Option 1 or 2.
 To update to the latest version:
 
 ```bash
-mamba activate napari-phasors-env
+conda activate napari-phasors-env
 pip install --upgrade napari-phasors
 ```
 

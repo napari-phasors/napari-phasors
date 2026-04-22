@@ -63,12 +63,13 @@ jobs:
           specs:
             - python=3.12
             - napari
-            - pyqt
+            - pyqt6
             - pip
           post_install: POST_INSTALL_PLACEHOLDER
           license_file: ../LICENSE
           ENDOFYAML
-          sed -i.bak 's/^          //' construct.yaml
+          # YAML literal block scalar (|) already strips leading
+          # indentation, so the heredoc content is at column 0.
           sed -i.bak "s/VERSION_PLACEHOLDER/${{ steps.version.outputs.version }}/" construct.yaml
           sed -i.bak "s/POST_INSTALL_PLACEHOLDER/${{ matrix.post_install }}/" construct.yaml
           if [ -f icon.png ]; then
@@ -92,7 +93,12 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${{ steps.version.outputs.version }}"
-          SH_INSTALLER=$(ls installer/napari-phasors-*.sh)
+          SH_INSTALLER=( installer/napari-phasors-*.sh )
+          if [[ ${#SH_INSTALLER[@]} -ne 1 ]]; then
+            echo "ERROR: Expected exactly one .sh installer, found: ${SH_INSTALLER[*]}"
+            exit 1
+          fi
+          SH_INSTALLER="${SH_INSTALLER[0]}"
           INSTALL_DIR="${RUNNER_TEMP}/napari-phasors-install"
           DMG_CONTENTS="${RUNNER_TEMP}/dmg-contents"
           APP_DIR="${DMG_CONTENTS}/napari-phasors.app"
