@@ -1401,6 +1401,11 @@ class PlotterWidget(QWidget):
         # Per-layer mask assignments: {image_layer_name: mask_layer_name}
         self._mask_assignments = {}
 
+        # Cache for get_merged_features() — avoids re-extracting phasor
+        # data when only visual parameters (bins, colormap, etc.) change.
+        self._features_cache = None
+        self._features_cache_key = None
+
         # Mask label and combobox (shown when 0-1 layers selected)
         self.mask_layer_label = QLabel("Mask Layer:")
         harmonics_and_mask_container.addWidget(self.mask_layer_label)
@@ -3290,6 +3295,8 @@ class PlotterWidget(QWidget):
 
     def _on_harmonic_changed(self, value):
         """Callback for harmonic spinbox change."""
+        self._features_cache = None
+        self._features_cache_key = None
         self._update_setting_in_metadata('harmonic', value)
         if not self._updating_settings:
             self.refresh_current_plot()
@@ -5176,6 +5183,10 @@ class PlotterWidget(QWidget):
         selected_layers = self.get_selected_layers()
         self._update_grid_view(selected_layers)
 
+        # Invalidate features cache — layer data changed.
+        self._features_cache = None
+        self._features_cache_key = None
+
         if not layer_name:
             self._g_array = None
             self._s_array = None
@@ -5802,6 +5813,10 @@ class PlotterWidget(QWidget):
         for unified plotting. Each layer's data is extracted at the current
         harmonic and merged together.
 
+        Results are cached and reused when the selected layers and harmonic
+        haven't changed (e.g. when only visual parameters like bins or
+        colormap are modified).
+
         Returns
         -------
         tuple or None
@@ -5810,6 +5825,16 @@ class PlotterWidget(QWidget):
         selected_layers = self.get_selected_layers()
         if not selected_layers:
             return None
+
+        cache_key = (
+            tuple(layer.name for layer in selected_layers),
+            self.harmonic,
+        )
+        if (
+            self._features_cache is not None
+            and self._features_cache_key == cache_key
+        ):
+            return self._features_cache
 
         all_g = []
         all_s = []
@@ -5849,15 +5874,22 @@ class PlotterWidget(QWidget):
             all_s.append(s_flat[valid])
 
         if not all_g:
+            self._features_cache = None
+            self._features_cache_key = cache_key
             return None
 
         g_merged = np.concatenate(all_g)
         s_merged = np.concatenate(all_s)
 
         if len(g_merged) == 0:
+            self._features_cache = None
+            self._features_cache_key = cache_key
             return None
 
-        return g_merged, s_merged
+        result = (g_merged, s_merged)
+        self._features_cache = result
+        self._features_cache_key = cache_key
+        return result
 
     def _on_scroll_zoom(self, event):
         """Zoom the phasor plot axes centered on the mouse cursor.
