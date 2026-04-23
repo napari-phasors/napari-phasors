@@ -406,9 +406,7 @@ def raw_file_reader(
 
         n_channels = len(channel_labels)
         for channel_pos, channel_label in enumerate(channel_labels):
-            pbr.set_description(
-                f"Channel {channel_pos + 1}/{n_channels}"
-            )
+            pbr.set_description(f"Channel {channel_pos + 1}/{n_channels}")
             pbr.update(1)
             channel_data = raw_data.isel({iter_axis: channel_pos})
             histogram_axis = channel_data.dims.index("H")

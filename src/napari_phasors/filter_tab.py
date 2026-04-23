@@ -2,9 +2,7 @@ import contextlib
 from math import ceil, log10
 
 import numpy as np
-from matplotlib.backends.backend_qtagg import (
-    FigureCanvasQTAgg as FigureCanvas,
-)
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from napari.utils.notifications import show_error, show_info
 from qtpy.QtCore import Qt
