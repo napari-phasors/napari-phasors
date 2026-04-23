@@ -335,3 +335,129 @@ class TestCallCountAudit:
         finally:
             for _name, p in mock_ctx_managers:
                 p.stop()
+
+
+# ---------------------------------------------------------------------------
+# Coverage tests for deferred tab updates and features cache
+# ---------------------------------------------------------------------------
+
+
+class TestDeferredTabUpdateCoverage:
+    """Tests exercising deferred tab update paths for code coverage."""
+
+    def test_deferred_update_runs_on_tab_switch(
+        self, make_napari_viewer, qtbot
+    ):
+        """Switching to a dirty tab triggers _restore_on_layer_change."""
+        viewer = make_napari_viewer()
+        layer = _create_layer("L1")
+        viewer.add_layer(layer)
+        plotter = PlotterWidget(viewer)
+        qtbot.addWidget(plotter)
+        qtbot.wait(200)
+
+        _select_layers(plotter, ["L1"])
+        qtbot.wait(500)
+
+        # Switch to Plot Settings (index 0) so components_tab is hidden
+        plotter.tab_widget.setCurrentIndex(0)
+        qtbot.wait(100)
+
+        # Trigger layer change while components_tab is NOT current
+        plotter.on_image_layer_changed()
+        qtbot.wait(200)
+
+        # components_tab, phasor_mapping_tab, fret_tab should be dirty
+        assert plotter.components_tab._needs_update is True
+        assert plotter.phasor_mapping_tab._needs_update is True
+        assert plotter.fret_tab._needs_update is True
+
+        # Now switch to components_tab — should trigger deferred restore
+        components_idx = None
+        for i in range(plotter.tab_widget.count()):
+            if plotter.tab_widget.widget(i) is plotter.components_tab:
+                components_idx = i
+                break
+        assert components_idx is not None
+
+        plotter.tab_widget.setCurrentIndex(components_idx)
+        qtbot.wait(200)
+
+        # _needs_update should now be cleared
+        assert plotter.components_tab._needs_update is False
+
+    def test_components_restore_with_no_layer(self, make_napari_viewer, qtbot):
+        """_restore_on_layer_change clears fields when no layer."""
+        viewer = make_napari_viewer()
+        layer = _create_layer("L1")
+        viewer.add_layer(layer)
+        plotter = PlotterWidget(viewer)
+        qtbot.addWidget(plotter)
+        qtbot.wait(200)
+
+        _select_layers(plotter, ["L1"])
+        qtbot.wait(500)
+
+        # Deselect all layers
+        _select_layers(plotter, [])
+        qtbot.wait(500)
+
+        # Manually call _restore_on_layer_change (empty layer path)
+        plotter.components_tab._restore_on_layer_change()
+        qtbot.wait(100)
+
+        assert plotter.components_tab._needs_update is False
+
+
+class TestFeaturesCacheCoverage:
+    """Tests exercising the get_merged_features cache hit path."""
+
+    def test_cache_hit_on_second_call(self, make_napari_viewer, qtbot):
+        """Second call to get_merged_features returns cached result."""
+        viewer = make_napari_viewer()
+        layer = _create_layer("L1")
+        viewer.add_layer(layer)
+        plotter = PlotterWidget(viewer)
+        qtbot.addWidget(plotter)
+        qtbot.wait(200)
+
+        _select_layers(plotter, ["L1"])
+        qtbot.wait(500)
+
+        # First call populates cache
+        result1 = plotter.get_merged_features()
+        assert result1 is not None
+        assert plotter._features_cache is not None
+        assert plotter._features_cache_key is not None
+
+        # Second call should return the same cached object
+        result2 = plotter.get_merged_features()
+        assert result2 is result1
+
+    def test_cache_invalidated_on_harmonic_change(
+        self, make_napari_viewer, qtbot
+    ):
+        """Harmonic change invalidates and repopulates the cache."""
+        viewer = make_napari_viewer()
+        layer = _create_layer("L1")
+        viewer.add_layer(layer)
+        plotter = PlotterWidget(viewer)
+        qtbot.addWidget(plotter)
+        qtbot.wait(200)
+
+        _select_layers(plotter, ["L1"])
+        qtbot.wait(500)
+
+        # Populate cache at harmonic 1
+        result1 = plotter.get_merged_features()
+        assert result1 is not None
+        key1 = plotter._features_cache_key
+
+        # Change harmonic via spinbox — triggers _on_harmonic_changed
+        plotter.harmonic_spinbox.setValue(2)
+        qtbot.wait(200)
+
+        # Cache key must have changed (different harmonic)
+        key2 = plotter._features_cache_key
+        assert key2 != key1
+        assert key2[1] == 2
