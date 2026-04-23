@@ -2003,3 +2003,256 @@ def test_labels_layer_visibility_on_tab_toggle(make_napari_viewer):
     widget._set_labels_layer_visibility(True)
     assert viewer.layers[man_layer_name].visible is False
     assert viewer.layers[circ_layer_name].visible is True
+
+
+def test_polar_cursor_remove_cursor(make_napari_viewer):
+    """Test removing polar cursors."""
+    viewer = make_napari_viewer()
+    intensity_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.polar_cursor_widget
+
+    # Add cursors
+    widget._add_cursor()
+    widget._add_cursor()
+    assert len(widget._cursors) == 2
+
+    # Remove first cursor
+    widget._remove_cursor(0)
+    assert len(widget._cursors) == 1
+    assert widget.cursor_table.rowCount() == 1
+
+    # Remove the last cursor
+    widget._remove_cursor(0)
+    assert len(widget._cursors) == 0
+
+
+def test_polar_cursor_on_cursor_changed(make_napari_viewer):
+    """Test polar cursor parameter changes via table widgets."""
+    viewer = make_napari_viewer()
+    intensity_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.polar_cursor_widget
+
+    widget._add_cursor()
+    cursor = widget._cursors[0]
+
+    # Get table spinboxes
+    phase_min = widget.cursor_table.cellWidget(0, 0)
+    phase_max = widget.cursor_table.cellWidget(0, 1)
+    mod_min = widget.cursor_table.cellWidget(0, 2)
+    mod_max = widget.cursor_table.cellWidget(0, 3)
+
+    assert isinstance(phase_min, QDoubleSpinBox)
+    assert isinstance(phase_max, QDoubleSpinBox)
+
+    # Change values
+    phase_min.setValue(20.0)
+    phase_max.setValue(50.0)
+    mod_min.setValue(0.3)
+    mod_max.setValue(0.8)
+
+    assert cursor['phase_min'] == 20.0
+    assert cursor['phase_max'] == 50.0
+    assert cursor['modulation_min'] == 0.3
+    assert cursor['modulation_max'] == 0.8
+
+
+def test_polar_cursor_apply_selection(make_napari_viewer):
+    """Test polar cursor apply selection creates labels layer."""
+    viewer = make_napari_viewer()
+    intensity_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.polar_cursor_widget
+
+    widget._add_cursor()
+    widget.calculate_button.click()
+
+    expected_name = f"Polar Cursor Selection: {intensity_layer.name}"
+    layer_names = [layer.name for layer in viewer.layers]
+    assert expected_name in layer_names
+    labels_layer = viewer.layers[expected_name]
+    assert isinstance(labels_layer, Labels)
+
+
+def test_polar_cursor_clear_and_redraw(make_napari_viewer):
+    """Test clearing and redrawing polar cursor patches."""
+    viewer = make_napari_viewer()
+    intensity_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.polar_cursor_widget
+
+    widget._add_cursor()
+    widget._add_cursor()
+    assert len(widget._cursors) == 2
+
+    # Clear patches
+    widget.clear_all_patches()
+    for cursor in widget._cursors:
+        assert cursor['patch'] is None or not cursor['patch'].get_visible()
+
+    # Redraw patches
+    widget.redraw_all_patches()
+    for cursor in widget._cursors:
+        assert cursor['patch'] is not None
+
+
+def test_elliptical_cursor_remove_cursor(make_napari_viewer):
+    """Test removing elliptical cursors."""
+    viewer = make_napari_viewer()
+    intensity_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.elliptical_cursor_widget
+
+    widget._add_cursor()
+    widget._add_cursor()
+    assert len(widget._cursors) == 2
+
+    widget._remove_cursor(0)
+    assert len(widget._cursors) == 1
+
+    widget._remove_cursor(0)
+    assert len(widget._cursors) == 0
+
+
+def test_elliptical_cursor_apply_selection(make_napari_viewer):
+    """Test elliptical cursor apply selection creates labels layer."""
+    viewer = make_napari_viewer()
+    intensity_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.elliptical_cursor_widget
+
+    widget._add_cursor()
+    widget.calculate_button.click()
+
+    expected_name = f"Elliptical Cursor Selection: {intensity_layer.name}"
+    layer_names = [layer.name for layer in viewer.layers]
+    assert expected_name in layer_names
+    labels_layer = viewer.layers[expected_name]
+    assert isinstance(labels_layer, Labels)
+
+
+def test_elliptical_cursor_on_harmonic_changed(make_napari_viewer):
+    """Test elliptical cursor table rebuild on harmonic change."""
+    viewer = make_napari_viewer()
+    intensity_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.elliptical_cursor_widget
+
+    # Add cursor at harmonic 1
+    widget._add_cursor()
+    assert widget.cursor_table.rowCount() == 1
+
+    # Change harmonic — cursor was added for harmonic 1
+    parent.harmonic_spinbox.setValue(2)
+    widget.on_harmonic_changed()
+
+    # Table should not show harmonic-1 cursor at harmonic 2
+    assert widget.cursor_table.rowCount() == 0
+
+    # Switch back
+    parent.harmonic_spinbox.setValue(1)
+    widget.on_harmonic_changed()
+    assert widget.cursor_table.rowCount() == 1
+
+
+def test_elliptical_cursor_clear_and_redraw(make_napari_viewer):
+    """Test clearing and redrawing elliptical cursor patches."""
+    viewer = make_napari_viewer()
+    intensity_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.elliptical_cursor_widget
+
+    widget._add_cursor()
+    assert len(widget._cursors) == 1
+
+    widget.clear_all_patches()
+    for cursor in widget._cursors:
+        assert cursor['patch'] is None or not cursor['patch'].get_visible()
+
+    widget.redraw_all_patches()
+    for cursor in widget._cursors:
+        assert cursor['patch'] is not None
+
+
+def test_on_selection_id_changed_updates_state(make_napari_viewer):
+    """Test that on_selection_id_changed updates internal state."""
+    viewer = make_napari_viewer()
+    intensity_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+
+    widget.selection_mode_combobox.setCurrentText("Manual Selection")
+
+    # Make a manual selection
+    manual_selection = np.array([1, 0, 1, 0, 1, 0, 0, 0, 0, 0])
+    widget.manual_selection_changed(manual_selection)
+
+    # Change selection via combobox
+    combobox = widget.selection_input_widget.phasor_selection_id_combobox
+    combobox.setCurrentText("MANUAL SELECTION #1")
+    widget.on_selection_id_changed()
+    assert widget._current_selection_id == "MANUAL SELECTION #1"
+
+    # Change back to None
+    combobox.setCurrentText("None")
+    widget.on_selection_id_changed()
+    assert widget._current_selection_id == "None"
+
+
+def test_mode_switching_to_polar_and_elliptical(make_napari_viewer):
+    """Test that switching to polar and elliptical modes manages
+    visibility and patch state correctly."""
+    viewer = make_napari_viewer()
+    intensity_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+
+    # Switch to polar cursor mode
+    widget.selection_mode_combobox.setCurrentText("Polar Cursor")
+    assert widget.stacked_widget.currentIndex() == 1
+    assert not widget.is_manual_selection_mode()
+
+    # Switch to elliptical cursor mode
+    widget.selection_mode_combobox.setCurrentText("Elliptical Cursor")
+    assert widget.stacked_widget.currentIndex() == 2
+    assert not widget.is_manual_selection_mode()
+
+    # Switch back to circular
+    widget.selection_mode_combobox.setCurrentText("Circular Cursor")
+    assert widget.stacked_widget.currentIndex() == 0
+
+
+def test_polar_cursor_mode_hides_manual_labels(make_napari_viewer):
+    """Test switching to polar mode hides manual selection labels."""
+    viewer = make_napari_viewer()
+    intensity_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+
+    # Switch to manual and create a selection
+    widget.selection_mode_combobox.setCurrentText("Manual Selection")
+    manual_selection = np.array([1, 0, 1, 0, 1, 0, 0, 0, 0, 0])
+    widget.manual_selection_changed(manual_selection)
+
+    man_name = f"MANUAL SELECTION #1: {intensity_layer.name}"
+    assert viewer.layers[man_name].visible is True
+
+    # Switch to polar cursor mode
+    widget.selection_mode_combobox.setCurrentText("Polar Cursor")
+    assert viewer.layers[man_name].visible is False
+
+    # Switch back to manual
+    widget.selection_mode_combobox.setCurrentText("Manual Selection")
+    assert viewer.layers[man_name].visible is True
