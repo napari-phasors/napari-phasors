@@ -1,6 +1,6 @@
 import contextlib
 import warnings
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -3204,3 +3204,90 @@ def test_on_mask_data_changed_multi_layer_no_affected(
     # Should return early — no masks applied
     assert "mask" not in layer1.metadata
     assert "mask" not in layer2.metadata
+
+
+def test_clear_labels_on_nan_skips_non_labels(
+    make_napari_viewer,
+):
+    """Test _clear_labels_on_nan_pixels skips non-Labels layers."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    plotter = PlotterWidget(viewer)
+
+    shape = _make_mask_shape(layer)
+    rect = np.array(
+        [[0, 0], [0, shape[1]], [shape[0], shape[1]], [shape[0], 0]]
+    )
+    shapes_layer = viewer.add_shapes(
+        [rect], shape_type="polygon", name="shape_mask"
+    )
+
+    # Should return early without error
+    plotter._clear_labels_on_nan_pixels(shapes_layer, layer)
+
+
+def test_clear_labels_on_nan_uses_current_data_fallback(
+    make_napari_viewer,
+):
+    """Test _clear_labels_on_nan_pixels uses image data when
+    original_mean is absent."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    plotter = PlotterWidget(viewer)
+
+    # Remove original_mean so the fallback is used
+    layer.metadata.pop("original_mean", None)
+
+    # Set first row to NaN directly in current data
+    layer.data[0, :] = np.nan
+
+    shape = _make_mask_shape(layer)
+    labels_layer = viewer.add_labels(np.ones(shape, dtype=int), name="mask")
+
+    plotter._clear_labels_on_nan_pixels(labels_layer, layer)
+
+    # First row NaN pixels should have labels cleared
+    assert np.all(labels_layer.data[0, :] == 0)
+    assert np.all(labels_layer.data[1:, :] == 1)
+
+
+def test_open_mask_assignment_dialog_applies_invert(
+    make_napari_viewer,
+):
+    """Test _open_mask_assignment_dialog passes invert state."""
+    viewer = make_napari_viewer()
+    layer1 = create_image_layer_with_phasors()
+    layer2 = create_image_layer_with_phasors()
+    viewer.add_layer(layer1)
+    viewer.add_layer(layer2)
+    plotter = PlotterWidget(viewer)
+
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [layer1.name, layer2.name]
+    )
+
+    shape = _make_mask_shape(layer1)
+    viewer.add_labels(np.ones(shape, dtype=int), name="mask1")
+
+    # Mock dialog to simulate user accepting with invert
+    mock_dialog = MagicMock()
+    mock_dialog.exec.return_value = 1  # QDialog.Accepted
+    mock_dialog.get_assignments.return_value = {
+        layer1.name: "mask1",
+        layer2.name: "None",
+    }
+    mock_dialog.get_invert_assignments.return_value = {
+        layer1.name: True,
+        layer2.name: False,
+    }
+
+    with patch(
+        "napari_phasors.plotter.MaskAssignmentDialog",
+        return_value=mock_dialog,
+    ):
+        plotter._open_mask_assignment_dialog()
+
+    # layer1 should have inverted mask applied
+    assert plotter._mask_invert_assignments.get(layer1.name, False)
