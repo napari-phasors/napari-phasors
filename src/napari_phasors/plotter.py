@@ -5120,118 +5120,19 @@ class PlotterWidget(QWidget):
         contribute to the merged plot.
 
         This is the full handler used for initial load and layer list updates.
-        For incremental changes, use _on_primary_layer_changed or _on_selection_changed.
+        For incremental changes, use _on_primary_layer_changed or
+        _on_selection_changed.
         """
         if getattr(self, "_in_on_image_layer_changed", False):
             return
         self._in_on_image_layer_changed = True
         try:
-            selected_layers = self.get_selected_layers()
-
-            self._update_grid_view(selected_layers)
-
             layer_name = self.get_primary_layer_name()
-            if layer_name == "":
-                self._g_array = None
-                self._s_array = None
-                self._g_original_array = None
-                self._s_original_array = None
-                self._harmonics_array = None
-                # Clear phasor data artists (histogram/scatter) but keep
-                # the semicircle/polar plot and axes styling intact.
-                for artist in self.canvas_widget.artists.values():
-                    artist._remove_artists()
-                self._remove_colorbar()
-                # Clear tab-specific artists
-                self._clear_all_tab_artists()
-                # Redraw circle/semicircle and axes
-                self.set_axes_labels()
-                self._update_plot_bg_color()
-                if self.toggle_semi_circle:
-                    self._update_semi_circle_plot(self.canvas_widget.axes)
-                else:
-                    self._update_polar_plot(self.canvas_widget.axes)
-                self._redefine_axes_limits()
-                self.canvas_widget.figure.canvas.draw_idle()
-                return
-
-            layer = self.viewer.layers[layer_name]
-            layer_metadata = layer.metadata
-
-            # On a fresh layer load, reset any user-defined zoom so the
-            # view auto-fits to the new data.
-            self._user_axes_limits = None
-
-            self._g_array = layer_metadata.get("G")
-            self._s_array = layer_metadata.get("S")
-            self._g_original_array = layer_metadata.get("G_original")
-            self._s_original_array = layer_metadata.get("S_original")
-            self._harmonics_array = layer_metadata.get("harmonics")
-
-            if len(selected_layers) > 1:
-                common_harmonics = self._get_common_harmonics(selected_layers)
-                if common_harmonics is not None and len(common_harmonics) > 0:
-                    min_harmonic = int(np.min(common_harmonics))
-                    max_harmonic = int(np.max(common_harmonics))
-                    self.harmonic_spinbox.setRange(min_harmonic, max_harmonic)
-            elif self._harmonics_array is not None:
-                self._harmonics_array = np.atleast_1d(self._harmonics_array)
-                min_harmonic = int(np.min(self._harmonics_array))
-                max_harmonic = int(np.max(self._harmonics_array))
-                self.harmonic_spinbox.setRange(min_harmonic, max_harmonic)
-
-            # Reset masks
-            self._mask_assignments.clear()
-            self.mask_layer_combobox.blockSignals(True)
-            self.mask_layer_combobox.setCurrentText("None")
-            self.mask_layer_combobox.blockSignals(False)
-            self._update_mask_ui_mode()
-            self._update_contour_controls_visibility()
-
-            self._initialize_plot_settings_in_metadata(layer)
-
-            self._restore_plot_settings_from_metadata()
-
-            self._sync_frequency_inputs_from_metadata()
-
-            if hasattr(self, 'filter_tab'):
-                self.filter_tab._on_image_layer_changed()
-
-            if hasattr(self, 'calibration_tab'):
-                self.calibration_tab._on_image_layer_changed()
-
-            current_tab = self.tab_widget.currentWidget()
-
-            if hasattr(self, 'selection_tab'):
-                self.selection_tab._on_image_layer_changed()
-
-            if hasattr(self, 'phasor_mapping_tab'):
-                self.phasor_mapping_tab._teardown_on_layer_change()
-                if current_tab is self.phasor_mapping_tab:
-                    self.phasor_mapping_tab._restore_on_layer_change()
-                else:
-                    self.phasor_mapping_tab._needs_update = True
-
-            if hasattr(self, 'components_tab'):
-                self.components_tab._teardown_on_layer_change()
-                if current_tab is self.components_tab:
-                    self.components_tab._restore_on_layer_change()
-                else:
-                    self.components_tab._needs_update = True
-
-            if hasattr(self, 'fret_tab'):
-                self.fret_tab._teardown_on_layer_change()
-                if current_tab is self.fret_tab:
-                    self.fret_tab._restore_on_layer_change()
-                else:
-                    self.fret_tab._needs_update = True
-
-            self.plot()
-
-            # Enforce tab-specific artist visibility based on current tab
-            current_tab_index = self.tab_widget.currentIndex()
-            self._on_tab_changed(current_tab_index)
-
+            self._apply_layer_data(
+                layer_name,
+                reset_zoom=True,
+                sync_frequency=True,
+            )
         finally:
             self._in_on_image_layer_changed = False
 
@@ -5250,100 +5151,125 @@ class PlotterWidget(QWidget):
             return
         self._in_on_primary_layer_changed = True
         try:
-            selected_layers = self.get_selected_layers()
-            self._update_grid_view(selected_layers)
-
-            if not new_primary_name:
-                self._g_array = None
-                self._s_array = None
-                self._g_original_array = None
-                self._s_original_array = None
-                self._harmonics_array = None
-                for artist in self.canvas_widget.artists.values():
-                    artist._remove_artists()
-                self._remove_colorbar()
-                self._clear_all_tab_artists()
-                self.set_axes_labels()
-                self._update_plot_bg_color()
-                if self.toggle_semi_circle:
-                    self._update_semi_circle_plot(self.canvas_widget.axes)
-                else:
-                    self._update_polar_plot(self.canvas_widget.axes)
-                self._redefine_axes_limits()
-                self.canvas_widget.figure.canvas.draw_idle()
-                return
-
-            layer = self.viewer.layers[new_primary_name]
-            layer_metadata = layer.metadata
-
-            self._g_array = layer_metadata.get("G")
-            self._s_array = layer_metadata.get("S")
-            self._g_original_array = layer_metadata.get("G_original")
-            self._s_original_array = layer_metadata.get("S_original")
-            self._harmonics_array = layer_metadata.get("harmonics")
-
-            if len(selected_layers) > 1:
-                common_harmonics = self._get_common_harmonics(selected_layers)
-                if common_harmonics is not None and len(common_harmonics) > 0:
-                    min_harmonic = int(np.min(common_harmonics))
-                    max_harmonic = int(np.max(common_harmonics))
-                    self.harmonic_spinbox.setRange(min_harmonic, max_harmonic)
-            elif self._harmonics_array is not None:
-                self._harmonics_array = np.atleast_1d(self._harmonics_array)
-                min_harmonic = int(np.min(self._harmonics_array))
-                max_harmonic = int(np.max(self._harmonics_array))
-                self.harmonic_spinbox.setRange(min_harmonic, max_harmonic)
-
-            # Reset masks
-            self._mask_assignments.clear()
-            self.mask_layer_combobox.blockSignals(True)
-            self.mask_layer_combobox.setCurrentText("None")
-            self.mask_layer_combobox.blockSignals(False)
-            self._update_mask_ui_mode()
-            self._update_contour_controls_visibility()
-
-            self._initialize_plot_settings_in_metadata(layer)
-            self._restore_plot_settings_from_metadata()
-
-            if hasattr(self, 'filter_tab'):
-                self.filter_tab._on_image_layer_changed()
-
-            if hasattr(self, 'calibration_tab'):
-                self.calibration_tab._on_image_layer_changed()
-
-            current_tab = self.tab_widget.currentWidget()
-
-            if hasattr(self, 'selection_tab'):
-                self.selection_tab._on_image_layer_changed()
-
-            if hasattr(self, 'phasor_mapping_tab'):
-                self.phasor_mapping_tab._teardown_on_layer_change()
-                if current_tab is self.phasor_mapping_tab:
-                    self.phasor_mapping_tab._restore_on_layer_change()
-                else:
-                    self.phasor_mapping_tab._needs_update = True
-
-            if hasattr(self, 'components_tab'):
-                self.components_tab._teardown_on_layer_change()
-                if current_tab is self.components_tab:
-                    self.components_tab._restore_on_layer_change()
-                else:
-                    self.components_tab._needs_update = True
-
-            if hasattr(self, 'fret_tab'):
-                self.fret_tab._teardown_on_layer_change()
-                if current_tab is self.fret_tab:
-                    self.fret_tab._restore_on_layer_change()
-                else:
-                    self.fret_tab._needs_update = True
-
-            self.plot()
-
-            current_tab_index = self.tab_widget.currentIndex()
-            self._on_tab_changed(current_tab_index)
-
+            self._apply_layer_data(
+                new_primary_name,
+                reset_zoom=False,
+                sync_frequency=False,
+            )
         finally:
             self._in_on_primary_layer_changed = False
+
+    def _apply_layer_data(
+        self, layer_name, *, reset_zoom=False, sync_frequency=False
+    ):
+        """Shared logic for loading layer data and updating all tabs.
+
+        Parameters
+        ----------
+        layer_name : str
+            Name of the primary layer (empty string means no layer).
+        reset_zoom : bool
+            If True, reset user-defined zoom to auto-fit new data.
+        sync_frequency : bool
+            If True, synchronise frequency inputs from metadata.
+        """
+        selected_layers = self.get_selected_layers()
+        self._update_grid_view(selected_layers)
+
+        if not layer_name:
+            self._g_array = None
+            self._s_array = None
+            self._g_original_array = None
+            self._s_original_array = None
+            self._harmonics_array = None
+            for artist in self.canvas_widget.artists.values():
+                artist._remove_artists()
+            self._remove_colorbar()
+            self._clear_all_tab_artists()
+            self.set_axes_labels()
+            self._update_plot_bg_color()
+            if self.toggle_semi_circle:
+                self._update_semi_circle_plot(self.canvas_widget.axes)
+            else:
+                self._update_polar_plot(self.canvas_widget.axes)
+            self._redefine_axes_limits()
+            self.canvas_widget.figure.canvas.draw_idle()
+            return
+
+        layer = self.viewer.layers[layer_name]
+        layer_metadata = layer.metadata
+
+        if reset_zoom:
+            self._user_axes_limits = None
+
+        self._g_array = layer_metadata.get("G")
+        self._s_array = layer_metadata.get("S")
+        self._g_original_array = layer_metadata.get("G_original")
+        self._s_original_array = layer_metadata.get("S_original")
+        self._harmonics_array = layer_metadata.get("harmonics")
+
+        if len(selected_layers) > 1:
+            common_harmonics = self._get_common_harmonics(selected_layers)
+            if common_harmonics is not None and len(common_harmonics) > 0:
+                min_harmonic = int(np.min(common_harmonics))
+                max_harmonic = int(np.max(common_harmonics))
+                self.harmonic_spinbox.setRange(min_harmonic, max_harmonic)
+        elif self._harmonics_array is not None:
+            self._harmonics_array = np.atleast_1d(self._harmonics_array)
+            min_harmonic = int(np.min(self._harmonics_array))
+            max_harmonic = int(np.max(self._harmonics_array))
+            self.harmonic_spinbox.setRange(min_harmonic, max_harmonic)
+
+        # Reset masks
+        self._mask_assignments.clear()
+        self.mask_layer_combobox.blockSignals(True)
+        self.mask_layer_combobox.setCurrentText("None")
+        self.mask_layer_combobox.blockSignals(False)
+        self._update_mask_ui_mode()
+        self._update_contour_controls_visibility()
+
+        self._initialize_plot_settings_in_metadata(layer)
+        self._restore_plot_settings_from_metadata()
+
+        if sync_frequency:
+            self._sync_frequency_inputs_from_metadata()
+
+        if hasattr(self, 'filter_tab'):
+            self.filter_tab._on_image_layer_changed()
+
+        if hasattr(self, 'calibration_tab'):
+            self.calibration_tab._on_image_layer_changed()
+
+        current_tab = self.tab_widget.currentWidget()
+
+        if hasattr(self, 'selection_tab'):
+            self.selection_tab._on_image_layer_changed()
+
+        if hasattr(self, 'phasor_mapping_tab'):
+            self.phasor_mapping_tab._teardown_on_layer_change()
+            if current_tab is self.phasor_mapping_tab:
+                self.phasor_mapping_tab._restore_on_layer_change()
+            else:
+                self.phasor_mapping_tab._needs_update = True
+
+        if hasattr(self, 'components_tab'):
+            self.components_tab._teardown_on_layer_change()
+            if current_tab is self.components_tab:
+                self.components_tab._restore_on_layer_change()
+            else:
+                self.components_tab._needs_update = True
+
+        if hasattr(self, 'fret_tab'):
+            self.fret_tab._teardown_on_layer_change()
+            if current_tab is self.fret_tab:
+                self.fret_tab._restore_on_layer_change()
+            else:
+                self.fret_tab._needs_update = True
+
+        self.plot()
+
+        current_tab_index = self.tab_widget.currentIndex()
+        self._on_tab_changed(current_tab_index)
 
     def _on_selection_changed(self):
         """Handle changes to layer selection (adding/removing layers).
