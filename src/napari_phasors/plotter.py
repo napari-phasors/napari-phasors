@@ -3013,6 +3013,10 @@ class PlotterWidget(QWidget):
         """Handle tab change events to show/hide tab-specific lines."""
         current_tab = self.tab_widget.widget(index)
 
+        # Run deferred tab updates BEFORE visibility changes
+        # to avoid stale state being briefly visible.
+        self._run_deferred_tab_update(current_tab)
+
         if hasattr(self, 'phasor_mapping_tab'):
             self.phasor_mapping_tab.on_tab_visibility_changed(
                 current_tab == self.phasor_mapping_tab
@@ -3030,6 +3034,26 @@ class PlotterWidget(QWidget):
             self.filter_tab._update_histogram_if_needed()
 
         self.canvas_widget.figure.canvas.draw_idle()
+
+    def _run_deferred_tab_update(self, current_tab):
+        """Run deferred _on_image_layer_changed for the given tab."""
+        deferrable_tabs = []
+        for attr in (
+            'phasor_mapping_tab',
+            'components_tab',
+            'fret_tab',
+        ):
+            tab = getattr(self, attr, None)
+            if tab is not None:
+                deferrable_tabs.append(tab)
+
+        for tab in deferrable_tabs:
+            if tab is current_tab and getattr(tab, '_needs_update', False):
+                if hasattr(tab, '_restore_on_layer_change'):
+                    tab._restore_on_layer_change()
+                else:
+                    tab._on_image_layer_changed()
+                tab._needs_update = False
 
     def _hide_all_tab_artists(self):
         """Hide all tab-specific artists."""
@@ -5176,17 +5200,31 @@ class PlotterWidget(QWidget):
             if hasattr(self, 'calibration_tab'):
                 self.calibration_tab._on_image_layer_changed()
 
+            current_tab = self.tab_widget.currentWidget()
+
             if hasattr(self, 'selection_tab'):
                 self.selection_tab._on_image_layer_changed()
 
             if hasattr(self, 'phasor_mapping_tab'):
-                self.phasor_mapping_tab._on_image_layer_changed()
+                self.phasor_mapping_tab._teardown_on_layer_change()
+                if current_tab is self.phasor_mapping_tab:
+                    self.phasor_mapping_tab._restore_on_layer_change()
+                else:
+                    self.phasor_mapping_tab._needs_update = True
 
             if hasattr(self, 'components_tab'):
-                self.components_tab._on_image_layer_changed()
+                self.components_tab._teardown_on_layer_change()
+                if current_tab is self.components_tab:
+                    self.components_tab._restore_on_layer_change()
+                else:
+                    self.components_tab._needs_update = True
 
             if hasattr(self, 'fret_tab'):
-                self.fret_tab._on_image_layer_changed()
+                self.fret_tab._teardown_on_layer_change()
+                if current_tab is self.fret_tab:
+                    self.fret_tab._restore_on_layer_change()
+                else:
+                    self.fret_tab._needs_update = True
 
             self.plot()
 
@@ -5273,17 +5311,31 @@ class PlotterWidget(QWidget):
             if hasattr(self, 'calibration_tab'):
                 self.calibration_tab._on_image_layer_changed()
 
+            current_tab = self.tab_widget.currentWidget()
+
             if hasattr(self, 'selection_tab'):
                 self.selection_tab._on_image_layer_changed()
 
             if hasattr(self, 'phasor_mapping_tab'):
-                self.phasor_mapping_tab._on_image_layer_changed()
+                self.phasor_mapping_tab._teardown_on_layer_change()
+                if current_tab is self.phasor_mapping_tab:
+                    self.phasor_mapping_tab._restore_on_layer_change()
+                else:
+                    self.phasor_mapping_tab._needs_update = True
 
             if hasattr(self, 'components_tab'):
-                self.components_tab._on_image_layer_changed()
+                self.components_tab._teardown_on_layer_change()
+                if current_tab is self.components_tab:
+                    self.components_tab._restore_on_layer_change()
+                else:
+                    self.components_tab._needs_update = True
 
             if hasattr(self, 'fret_tab'):
-                self.fret_tab._on_image_layer_changed()
+                self.fret_tab._teardown_on_layer_change()
+                if current_tab is self.fret_tab:
+                    self.fret_tab._restore_on_layer_change()
+                else:
+                    self.fret_tab._needs_update = True
 
             self.plot()
 

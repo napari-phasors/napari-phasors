@@ -90,6 +90,7 @@ class PhasorMappingWidget(QWidget):
             False  # Flag to track contrast limits updates
         )
         self._updating_settings = False  # Flag to prevent recursive updates
+        self._needs_update = False  # Deferred update flag
         self._updating_linked_layers = (
             False  # Flag to prevent recursive layer updates
         )
@@ -1546,19 +1547,13 @@ class PhasorMappingWidget(QWidget):
         This only restores UI state from metadata - it does NOT run calculations.
         User must click "Calculate" button to run lifetime analysis.
         """
+        self._teardown_on_layer_change()
+        self._restore_on_layer_change()
+
+    def _teardown_on_layer_change(self):
+        """Immediate cleanup: disconnect signals and clear data."""
         layer_name = self.parent_widget.get_primary_layer_name()
-        if layer_name:
-            self._restore_lifetime_settings_from_metadata()
-            self._sync_mode_widgets()
-            self._set_frequency_input_enabled(
-                self._output_requires_frequency(
-                    self._get_selected_output_type()
-                )
-            )
-            self._clear_2d_coloring()
-            # Don't auto-calculate - just restore UI state
-            # User must click "Calculate" to run analysis
-        else:
+        if not layer_name:
             self.histogram_widget.update_data(np.array([]))
             # Disconnect events from all lifetime layers
             for layer in self.metric_layers:
@@ -1585,6 +1580,21 @@ class PhasorMappingWidget(QWidget):
 
             self._clear_2d_coloring()
             self.histogram_widget.clear()
+
+    def _restore_on_layer_change(self):
+        """Deferred restore: update UI state from metadata."""
+        self._needs_update = False
+
+        layer_name = self.parent_widget.get_primary_layer_name()
+        if layer_name:
+            self._restore_lifetime_settings_from_metadata()
+            self._sync_mode_widgets()
+            self._set_frequency_input_enabled(
+                self._output_requires_frequency(
+                    self._get_selected_output_type()
+                )
+            )
+            self._clear_2d_coloring()
 
     def _on_calculate_lifetime_clicked(self):
         """Callback when Calculate button is clicked.

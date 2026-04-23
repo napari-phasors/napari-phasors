@@ -111,6 +111,7 @@ class SelectionWidget(QWidget):
         # Initialize the current selection id to match the default
         self._current_selection_id = "None"
         self.selection_id = "None"
+        self._needs_update = False  # Deferred update flag
         self._phasors_selected_layer = None
 
         # Create refresh button and add it to the scroll area layout
@@ -468,6 +469,7 @@ class SelectionWidget(QWidget):
 
     def _on_image_layer_changed(self):
         """Callback when the image layer changes - restores cursors from metadata."""
+        self._needs_update = False
         self.circular_cursor_widget._on_image_layer_changed()
         self.polar_cursor_widget._on_image_layer_changed()
         self.elliptical_cursor_widget._on_image_layer_changed()
