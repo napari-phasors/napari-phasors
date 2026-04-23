@@ -3064,3 +3064,143 @@ def test_nan_pixel_clearing_uses_original_data(
     plotter._clear_labels_on_nan_pixels(labels_layer, layer)
     assert np.all(labels_layer.data[0, :] == 0)
     assert np.all(labels_layer.data[1, :] == 1)
+
+
+# --- Coverage gap tests for issue #257 ---
+
+
+def test_mask_assignment_dialog_fallback_to_none(
+    make_napari_viewer,
+):
+    """Test dialog sets 'None' when current assignment is invalid."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    shape = _make_mask_shape(layer)
+    viewer.add_labels(np.ones(shape, dtype=int), name="mask1")
+
+    # Pass an assignment that references a non-existent mask
+    dialog = MaskAssignmentDialog(
+        image_layer_names=[layer.name],
+        mask_layer_names=["mask1"],
+        current_assignments={layer.name: "deleted_mask"},
+    )
+
+    assignments = dialog.get_assignments()
+    assert assignments[layer.name] == "None"
+
+
+def test_apply_mask_shapes_layer(make_napari_viewer):
+    """Test _apply_mask_to_phasor_data with a Shapes layer."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    plotter = PlotterWidget(viewer)
+
+    shape = _make_mask_shape(layer)
+    # Create a shapes layer with a rectangle covering the image
+    rect = np.array(
+        [[0, 0], [0, shape[1]], [shape[0], shape[1]], [shape[0], 0]]
+    )
+    shapes_layer = viewer.add_shapes(
+        [rect], shape_type="polygon", name="shape_mask"
+    )
+
+    plotter._apply_mask_to_phasor_data(shapes_layer, layer)
+
+    assert "mask" in layer.metadata
+
+
+def test_apply_mask_non_invert_empty_labels_returns(
+    make_napari_viewer,
+):
+    """Test non-invert empty Labels mask early returns."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    plotter = PlotterWidget(viewer)
+
+    original_g = layer.metadata["G"].copy()
+    shape = _make_mask_shape(layer)
+    empty_labels = viewer.add_labels(np.zeros(shape, dtype=int), name="empty")
+
+    # Non-invert + empty mask should early return (no changes)
+    plotter._apply_mask_to_phasor_data(empty_labels, layer, invert=False)
+    np.testing.assert_array_equal(layer.metadata["G"], original_g)
+    assert "mask" not in layer.metadata
+
+
+def test_on_mask_data_changed_no_selected_layers(
+    make_napari_viewer,
+):
+    """Test _on_mask_data_changed returns early with no layers."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    shape = (5, 5)
+    labels_layer = viewer.add_labels(np.ones(shape, dtype=int), name="mask")
+
+    # No image layers selected — should return early
+    event = type("Event", (), {"source": labels_layer})()
+    plotter._on_mask_data_changed(event)
+
+
+def test_on_mask_data_changed_multi_layer_branch(
+    make_napari_viewer,
+):
+    """Test _on_mask_data_changed multi-layer path."""
+    viewer = make_napari_viewer()
+    layer1 = create_image_layer_with_phasors()
+    layer2 = create_image_layer_with_phasors()
+    viewer.add_layer(layer1)
+    viewer.add_layer(layer2)
+    plotter = PlotterWidget(viewer)
+
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [layer1.name, layer2.name]
+    )
+
+    shape = _make_mask_shape(layer1)
+    mask_data = np.ones(shape, dtype=int)
+    labels_layer = viewer.add_labels(mask_data, name="shared_mask")
+
+    # Assign mask only to layer1
+    plotter._mask_assignments = {layer1.name: "shared_mask"}
+
+    # Trigger mask data change — should only affect layer1
+    event = type("Event", (), {"source": labels_layer})()
+    plotter._on_mask_data_changed(event)
+
+    assert "mask" in layer1.metadata
+
+
+def test_on_mask_data_changed_multi_layer_no_affected(
+    make_napari_viewer,
+):
+    """Test _on_mask_data_changed multi-layer with no affected."""
+    viewer = make_napari_viewer()
+    layer1 = create_image_layer_with_phasors()
+    layer2 = create_image_layer_with_phasors()
+    viewer.add_layer(layer1)
+    viewer.add_layer(layer2)
+    plotter = PlotterWidget(viewer)
+
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [layer1.name, layer2.name]
+    )
+
+    shape = _make_mask_shape(layer1)
+    labels_layer = viewer.add_labels(
+        np.ones(shape, dtype=int), name="unassigned_mask"
+    )
+
+    # No layer has this mask assigned
+    plotter._mask_assignments = {}
+
+    event = type("Event", (), {"source": labels_layer})()
+    plotter._on_mask_data_changed(event)
+
+    # Should return early — no masks applied
+    assert "mask" not in layer1.metadata
+    assert "mask" not in layer2.metadata
