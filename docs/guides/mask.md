@@ -36,6 +36,20 @@ When you use the cursor selection tools (circular, polar, elliptical) in the **S
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/mask%20cursor.mp4" type="video/mp4">
 </video>
 
+## Inverting a mask
+
+You can invert a mask so that pixels **outside** the drawn region are included in the analysis instead of those **inside**. This is useful when you want to exclude a specific region rather than select it.
+
+1. Select a mask layer (Labels or Shapes) in the **Phasor Plot** widget.
+2. Check the **Invert** checkbox next to the mask layer dropdown.
+3. The mask is now inverted: labeled pixels are excluded and unlabeled pixels are included.
+
+When using the **Assign Masks** dialog (for multiple image layers), each layer has its own **Invert** checkbox, allowing independent inversion per layer.
+
+## NaN-aware mask painting
+
+When painting a labels layer to use as a mask, pixels that have no intensity data (NaN values) are automatically excluded. This means the paint bucket tool will not label background pixels that lack signal data, ensuring only meaningful regions are included in the mask.
+
 ## Assigning masks to image layers
 
 - You can assign a mask to a single image layer, restricting phasor analysis to that region only.

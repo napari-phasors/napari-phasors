@@ -22,6 +22,7 @@ from qtpy import uic
 from qtpy.QtCore import QEvent, Qt, QTimer
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -166,6 +167,8 @@ class MaskAssignmentDialog(QDialog):
         Names of available mask layers (Labels/Shapes).
     current_assignments : dict, optional
         Current mapping of image layer name -> mask layer name.
+    current_invert_assignments : dict, optional
+        Current mapping of image layer name -> bool (invert).
     parent : QWidget, optional
         Parent widget.
     """
@@ -175,6 +178,7 @@ class MaskAssignmentDialog(QDialog):
         image_layer_names,
         mask_layer_names,
         current_assignments=None,
+        current_invert_assignments=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -183,6 +187,8 @@ class MaskAssignmentDialog(QDialog):
 
         if current_assignments is None:
             current_assignments = {}
+        if current_invert_assignments is None:
+            current_invert_assignments = {}
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Assign a mask layer to each image layer:"))
@@ -195,9 +201,14 @@ class MaskAssignmentDialog(QDialog):
         form_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
         self._combos = {}  # image_layer_name -> QComboBox
+        self._invert_checks = {}  # image_layer_name -> QCheckBox
         mask_options = ["None"] + list(mask_layer_names)
 
         for name in image_layer_names:
+            row_widget = QWidget()
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+
             combo = QComboBox()
             combo.addItems(mask_options)
             current = current_assignments.get(name, "None")
@@ -206,7 +217,22 @@ class MaskAssignmentDialog(QDialog):
             else:
                 combo.setCurrentText("None")
             self._combos[name] = combo
-            form_layout.addRow(QLabel(name), combo)
+            row_layout.addWidget(combo, 1)
+
+            invert_check = QCheckBox("Invert")
+            invert_check.setChecked(
+                current_invert_assignments.get(name, False)
+            )
+            invert_check.setEnabled(current != "None")
+            self._invert_checks[name] = invert_check
+            row_layout.addWidget(invert_check)
+
+            # Enable/disable invert when mask changes
+            combo.currentTextChanged.connect(
+                lambda text, cb=invert_check: cb.setEnabled(text != "None")
+            )
+
+            form_layout.addRow(QLabel(name), row_widget)
 
         scroll.setWidget(form_widget)
         layout.addWidget(scroll)
@@ -231,7 +257,7 @@ class MaskAssignmentDialog(QDialog):
         layout.addWidget(button_box)
 
     def _on_apply_all_changed(self, text):
-        """Automatically set all per-layer combos when a mask is selected."""
+        """Auto-set all per-layer combos when a mask is selected."""
         self._apply_to_all()
 
     def _apply_to_all(self):
@@ -250,6 +276,18 @@ class MaskAssignmentDialog(QDialog):
         """
         return {
             name: combo.currentText() for name, combo in self._combos.items()
+        }
+
+    def get_invert_assignments(self):
+        """Return the invert assignments as a dict.
+
+        Returns
+        -------
+        dict
+            Mapping of image layer name -> bool (invert flag).
+        """
+        return {
+            name: cb.isChecked() for name, cb in self._invert_checks.items()
         }
 
 
@@ -1400,17 +1438,30 @@ class PlotterWidget(QWidget):
 
         # Per-layer mask assignments: {image_layer_name: mask_layer_name}
         self._mask_assignments = {}
+        # Per-layer invert state: {image_layer_name: bool}
+        self._mask_invert_assignments = {}
 
         # Mask label and combobox (shown when 0-1 layers selected)
         self.mask_layer_label = QLabel("Mask Layer:")
         harmonics_and_mask_container.addWidget(self.mask_layer_label)
         self.mask_layer_combobox = QComboBox()
         self.mask_layer_combobox.setToolTip(
-            "Create or select a Labels or Shapes layer with a mask to restrict analysis to specific regions. "
+            "Create or select a Labels or Shapes layer with a "
+            "mask to restrict analysis to specific regions. "
             "Selecting 'None' will disable masking."
         )
         self.mask_layer_combobox.addItem("None")
         harmonics_and_mask_container.addWidget(self.mask_layer_combobox, 1)
+
+        # Invert mask checkbox (next to combobox)
+        self.mask_invert_checkbox = QCheckBox("Invert")
+        self.mask_invert_checkbox.setToolTip(
+            "Invert the mask: exclude pixels inside the mask "
+            "instead of those outside."
+        )
+        self.mask_invert_checkbox.setEnabled(False)
+        self.mask_invert_checkbox.toggled.connect(self._on_mask_invert_changed)
+        harmonics_and_mask_container.addWidget(self.mask_invert_checkbox)
 
         # Mask assign button (shown when >1 layers selected)
         self.mask_assign_button = QPushButton("Assign Masks...")
@@ -5021,6 +5072,11 @@ class PlotterWidget(QWidget):
                 for k, v in self._mask_assignments.items()
                 if k in current_selected and v in mask_layer_names
             }
+            self._mask_invert_assignments = {
+                k: v
+                for k, v in self._mask_invert_assignments.items()
+                if k in self._mask_assignments
+            }
 
             self.image_layers_checkable_combobox.blockSignals(False)
             self.mask_layer_combobox.blockSignals(False)
@@ -5158,9 +5214,12 @@ class PlotterWidget(QWidget):
 
             # Reset masks
             self._mask_assignments.clear()
+            self._mask_invert_assignments.clear()
             self.mask_layer_combobox.blockSignals(True)
             self.mask_layer_combobox.setCurrentText("None")
             self.mask_layer_combobox.blockSignals(False)
+            self.mask_invert_checkbox.setChecked(False)
+            self.mask_invert_checkbox.setEnabled(False)
             self._update_mask_ui_mode()
             self._update_contour_controls_visibility()
 
@@ -5258,9 +5317,12 @@ class PlotterWidget(QWidget):
 
             # Reset masks
             self._mask_assignments.clear()
+            self._mask_invert_assignments.clear()
             self.mask_layer_combobox.blockSignals(True)
             self.mask_layer_combobox.setCurrentText("None")
             self.mask_layer_combobox.blockSignals(False)
+            self.mask_invert_checkbox.setChecked(False)
+            self.mask_invert_checkbox.setEnabled(False)
             self._update_mask_ui_mode()
             self._update_contour_controls_visibility()
 
@@ -5421,8 +5483,10 @@ class PlotterWidget(QWidget):
         image_layer.metadata['S'] = image_layer.metadata['S_original']
         image_layer.data = image_layer.metadata["original_mean"].copy()
 
-    def _apply_mask_to_phasor_data(self, mask_layer, image_layer):
-        """Apply mask to phasor data by setting G and S values outside mask to NaN.
+    def _apply_mask_to_phasor_data(
+        self, mask_layer, image_layer, invert=False
+    ):
+        """Apply mask to phasor data by setting values outside mask to NaN.
 
         Parameters
         ----------
@@ -5430,19 +5494,26 @@ class PlotterWidget(QWidget):
             The mask layer to apply.
         image_layer : napari.layers.Image
             The image layer to store mask metadata.
+        invert : bool
+            If True, invert the mask so pixels inside the mask
+            are excluded instead of those outside.
         """
         if isinstance(mask_layer, Shapes) and len(mask_layer.data) > 0:
             mask_data = mask_layer.to_labels(
                 labels_shape=image_layer.data.shape
             )
-        elif isinstance(mask_layer, Labels) and mask_layer.data.any():
+        elif isinstance(mask_layer, Labels):
+            if not invert and not mask_layer.data.any():
+                return
             mask_data = mask_layer.data
         else:
             return
 
         image_layer.metadata['mask'] = mask_data.copy()
+        image_layer.metadata['mask_invert'] = invert
 
-        mask_invalid = mask_data <= 0
+        mask_invalid = mask_data > 0 if invert else mask_data <= 0
+
         image_layer.data = np.where(mask_invalid, np.nan, image_layer.data)
 
         g_array = image_layer.metadata['G']
@@ -5466,19 +5537,34 @@ class PlotterWidget(QWidget):
         if not selected_layers:
             return
 
-        # In single-layer mode, apply the same mask to all selected layers
-        # and update the assignments dict accordingly
+        # Update invert checkbox state
+        if text == "None":
+            self.mask_invert_checkbox.setChecked(False)
+            self.mask_invert_checkbox.setEnabled(False)
+        else:
+            self.mask_invert_checkbox.setEnabled(True)
+
+        invert = self.mask_invert_checkbox.isChecked()
+
+        # In single-layer mode, apply the same mask to all selected
+        # layers and update the assignments dict accordingly
         for image_layer in selected_layers:
             self._restore_original_phasor_data(image_layer)
 
             if text == "None":
                 if 'mask' in image_layer.metadata:
                     del image_layer.metadata['mask']
+                if 'mask_invert' in image_layer.metadata:
+                    del image_layer.metadata['mask_invert']
                 self._mask_assignments.pop(image_layer.name, None)
+                self._mask_invert_assignments.pop(image_layer.name, None)
             else:
                 mask_layer = self.viewer.layers[text]
-                self._apply_mask_to_phasor_data(mask_layer, image_layer)
+                self._apply_mask_to_phasor_data(
+                    mask_layer, image_layer, invert=invert
+                )
                 self._mask_assignments[image_layer.name] = text
+                self._mask_invert_assignments[image_layer.name] = invert
 
         if hasattr(self, 'filter_tab'):
             self.filter_tab._on_image_layer_changed()
@@ -5495,21 +5581,27 @@ class PlotterWidget(QWidget):
 
     def _on_mask_data_changed(self, event):
         """Handle changes to the mask layer data."""
+        if getattr(self, '_in_mask_update', False):
+            return
+        self._in_mask_update = True
+        try:
+            self._on_mask_data_changed_inner(event)
+        finally:
+            self._in_mask_update = False
+
+    def _on_mask_data_changed_inner(self, event):
+        """Inner handler for mask data changes."""
         mask_name = event.source.name
 
-        # Check if this mask is relevant: either the combobox selection
-        # (single-layer mode) or any per-layer assignment (multi-layer mode)
         selected_layers = self.get_selected_layers()
         if not selected_layers:
             return
 
         if len(selected_layers) <= 1:
-            # Single-layer mode: use combobox
             if self.mask_layer_combobox.currentText() != mask_name:
                 return
             affected_layers = selected_layers
         else:
-            # Multi-layer mode: only affect layers assigned to this mask
             affected_layers = [
                 layer
                 for layer in selected_layers
@@ -5520,9 +5612,16 @@ class PlotterWidget(QWidget):
 
         mask_layer = event.source
 
+        # Clear labels on NaN pixels before applying the mask
         for image_layer in affected_layers:
+            self._clear_labels_on_nan_pixels(mask_layer, image_layer)
+
+        for image_layer in affected_layers:
+            invert = self._mask_invert_assignments.get(image_layer.name, False)
             self._restore_original_phasor_data(image_layer)
-            self._apply_mask_to_phasor_data(mask_layer, image_layer)
+            self._apply_mask_to_phasor_data(
+                mask_layer, image_layer, invert=invert
+            )
 
         if hasattr(self, 'filter_tab'):
             self.filter_tab._on_image_layer_changed()
@@ -5537,6 +5636,41 @@ class PlotterWidget(QWidget):
 
         self.refresh_current_plot()
 
+    def _clear_labels_on_nan_pixels(self, mask_layer, image_layer):
+        """Clear labels on pixels where original image data is NaN.
+
+        Parameters
+        ----------
+        mask_layer : napari.layers.Labels
+            The mask labels layer to modify.
+        image_layer : napari.layers.Image
+            The image layer whose original data defines NaN pixels.
+        """
+        if not isinstance(mask_layer, Labels):
+            return
+
+        # Use original data to find true NaN pixels
+        original = image_layer.metadata.get('original_mean')
+        if original is None:
+            original = image_layer.data
+
+        nan_mask = np.isnan(original)
+        if not nan_mask.any():
+            return
+
+        # Only modify if there are labels on NaN pixels
+        if np.any(mask_layer.data[nan_mask] != 0):
+            new_data = mask_layer.data.copy()
+            new_data[nan_mask] = 0
+            mask_layer.data = new_data
+
+    def _on_mask_invert_changed(self, checked):
+        """Handle invert checkbox state change."""
+        text = self.mask_layer_combobox.currentText()
+        if text == "None":
+            return
+        self._on_mask_layer_changed(text)
+
     def _update_mask_ui_mode(self):
         """Switch between single combobox and assign-masks button based on selection count."""
         selected = self.get_selected_layer_names()
@@ -5544,12 +5678,14 @@ class PlotterWidget(QWidget):
             # Multi-layer mode: show button, hide combobox
             self.mask_layer_label.setVisible(False)
             self.mask_layer_combobox.setVisible(False)
+            self.mask_invert_checkbox.setVisible(False)
             self.mask_assign_button.setVisible(True)
             self._update_mask_assign_button_text()
         else:
             # Single-layer mode: show combobox, hide button
             self.mask_layer_label.setVisible(True)
             self.mask_layer_combobox.setVisible(True)
+            self.mask_invert_checkbox.setVisible(True)
             self.mask_assign_button.setVisible(False)
             # Sync the combobox with current assignment for the single selected layer
             if selected:
@@ -5561,14 +5697,16 @@ class PlotterWidget(QWidget):
                 if assigned_mask in available_masks:
                     current_mask = assigned_mask
                 elif self.mask_layer_combobox.currentText() in available_masks:
-                    # Preserve the current valid selection when there is no
-                    # explicit assignment for this layer.
                     current_mask = self.mask_layer_combobox.currentText()
                 else:
                     current_mask = "None"
                 self.mask_layer_combobox.blockSignals(True)
                 self.mask_layer_combobox.setCurrentText(current_mask)
                 self.mask_layer_combobox.blockSignals(False)
+                # Sync invert checkbox
+                invert = self._mask_invert_assignments.get(selected[0], False)
+                self.mask_invert_checkbox.setChecked(invert)
+                self.mask_invert_checkbox.setEnabled(current_mask != "None")
 
     def _update_mask_assign_button_text(self):
         """Update the mask assign button text to show assignment summary."""
@@ -5601,23 +5739,37 @@ class PlotterWidget(QWidget):
             image_layer_names=selected_names,
             mask_layer_names=mask_layer_names,
             current_assignments=self._mask_assignments,
+            current_invert_assignments=(self._mask_invert_assignments),
             parent=self,
         )
 
         if dialog.exec() == QDialog.Accepted:
             new_assignments = dialog.get_assignments()
-            self._apply_mask_assignments(new_assignments)
+            new_invert = dialog.get_invert_assignments()
+            self._apply_mask_assignments(
+                new_assignments,
+                invert_assignments=new_invert,
+            )
 
-    def _apply_mask_assignments(self, assignments):
+    def _apply_mask_assignments(self, assignments, invert_assignments=None):
         """Apply per-layer mask assignments.
 
         Parameters
         ----------
         assignments : dict
-            Mapping of image layer name -> mask layer name (or "None").
+            Mapping of image layer name -> mask layer name
+            (or "None").
+        invert_assignments : dict, optional
+            Mapping of image layer name -> bool (invert flag).
         """
+        if invert_assignments is None:
+            invert_assignments = {}
+
         self._mask_assignments = {
             k: v for k, v in assignments.items() if v != "None"
+        }
+        self._mask_invert_assignments = {
+            k: invert_assignments.get(k, False) for k in self._mask_assignments
         }
 
         selected_layers = self.get_selected_layers()
@@ -5628,9 +5780,14 @@ class PlotterWidget(QWidget):
             if mask_name == "None":
                 if 'mask' in image_layer.metadata:
                     del image_layer.metadata['mask']
+                if 'mask_invert' in image_layer.metadata:
+                    del image_layer.metadata['mask_invert']
             else:
+                invert = invert_assignments.get(image_layer.name, False)
                 mask_layer = self.viewer.layers[mask_name]
-                self._apply_mask_to_phasor_data(mask_layer, image_layer)
+                self._apply_mask_to_phasor_data(
+                    mask_layer, image_layer, invert=invert
+                )
 
         if hasattr(self, 'filter_tab'):
             self.filter_tab._on_image_layer_changed()
