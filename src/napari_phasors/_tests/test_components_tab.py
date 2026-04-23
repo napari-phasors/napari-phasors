@@ -3,7 +3,7 @@ from matplotlib.collections import LineCollection
 from phasorpy.component import phasor_component_fraction
 from phasorpy.lifetime import phasor_from_lifetime
 
-from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
+from napari_phasors._tests.conftest import create_image_layer_with_phasors
 from napari_phasors.plotter import PlotterWidget
 
 

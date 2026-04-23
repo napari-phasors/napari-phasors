@@ -22,7 +22,7 @@ from qtpy.QtWidgets import (
 )
 from superqt import QRangeSlider
 
-from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
+from napari_phasors._tests.conftest import create_image_layer_with_phasors
 from napari_phasors._utils import HistogramWidget
 from napari_phasors.plotter import PlotterWidget
 

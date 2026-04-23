@@ -15,10 +15,7 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
 )
 
-from napari_phasors._synthetic_generator import (
-    make_intensity_layer_with_phasors,
-    make_raw_flim_data,
-)
+from napari_phasors._tests.conftest import create_image_layer_with_phasors
 from napari_phasors.calibration_tab import CalibrationWidget
 from napari_phasors.components_tab import ComponentsWidget
 from napari_phasors.filter_tab import FilterWidget
@@ -28,16 +25,6 @@ from napari_phasors.plotter import (
     PlotterWidget,
 )
 from napari_phasors.selection_tab import SelectionWidget
-
-
-def create_image_layer_with_phasors(harmonic=None):
-    """Create an intensity image layer with phasors for testing."""
-    if harmonic is None:
-        harmonic = [1, 2, 3]
-    time_constants = [0.1, 1, 2, 3, 4, 5, 10]
-    raw_flim_data = make_raw_flim_data(time_constants=time_constants)
-    harmonic = harmonic
-    return make_intensity_layer_with_phasors(raw_flim_data, harmonic=harmonic)
 
 
 def test_nap_plot_tools_safe_disconnect_patch_is_applied_and_idempotent():
@@ -893,84 +880,67 @@ def test_phasor_plotter_colormap_combobox(make_napari_viewer):
     assert colormap_combobox.currentText() == test_colormap
 
 
-def test_phasor_plotter_log_scale_checkbox(make_napari_viewer):
-    """Test log scale checkbox functionality."""
+@pytest.mark.parametrize(
+    'checkbox_attr, property_name',
+    [
+        ('log_scale_checkbox', 'histogram_log_scale'),
+        ('white_background_checkbox', 'white_background'),
+    ],
+    ids=['log_scale', 'white_background'],
+)
+def test_phasor_plotter_checkbox_toggle(
+    make_napari_viewer, checkbox_attr, property_name
+):
+    """Test checkbox toggle updates the corresponding property."""
     viewer = make_napari_viewer()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     plotter = PlotterWidget(viewer)
 
-    # Test initial log scale state
-    log_scale_checkbox = plotter.plotter_inputs_widget.log_scale_checkbox
-    initial_log_state = log_scale_checkbox.isChecked()
+    checkbox = getattr(plotter.plotter_inputs_widget, checkbox_attr)
+    initial_state = checkbox.isChecked()
 
-    # Toggle log scale
-    log_scale_checkbox.setChecked(not initial_log_state)
-    new_log_state = log_scale_checkbox.isChecked()
+    # Capture initial color for white_background verification
+    if property_name == 'white_background':
+        initial_bg_color = plotter.canvas_widget.axes.get_facecolor()
 
-    # Verify the state changed
-    assert new_log_state != initial_log_state
+    # Toggle checkbox
+    new_state = not initial_state
+    checkbox.setChecked(new_state)
+    assert checkbox.isChecked() == new_state
 
-    # If there's a property for log scale, test it
-    if hasattr(plotter, 'histogram_log_scale'):
-        plotter.histogram_log_scale = new_log_state
-        assert plotter.histogram_log_scale == new_log_state
+    # Set and verify property
+    if hasattr(plotter, property_name):
+        setattr(plotter, property_name, new_state)
+        assert getattr(plotter, property_name) == new_state
+
+    # Verify background color changed for white_background
+    if property_name == 'white_background':
+        new_bg_color = plotter.canvas_widget.axes.get_facecolor()
+        if new_state:
+            assert new_bg_color[0] > 0.9  # R close to 1
+            assert new_bg_color[1] > 0.9  # G close to 1
+            assert new_bg_color[2] > 0.9  # B close to 1
+        else:
+            is_white = (
+                new_bg_color[0] > 0.9
+                and new_bg_color[1] > 0.9
+                and new_bg_color[2] > 0.9
+            )
+            assert not is_white or new_bg_color[3] < 0.1
 
     # Toggle back
-    log_scale_checkbox.setChecked(initial_log_state)
-    assert log_scale_checkbox.isChecked() == initial_log_state
+    checkbox.setChecked(initial_state)
+    if hasattr(plotter, property_name):
+        setattr(plotter, property_name, initial_state)
+    assert checkbox.isChecked() == initial_state
 
-
-def test_phasor_plotter_white_background_checkbox(make_napari_viewer):
-    """Test white background checkbox functionality."""
-    viewer = make_napari_viewer()
-    intensity_image_layer = create_image_layer_with_phasors()
-    viewer.add_layer(intensity_image_layer)
-    plotter = PlotterWidget(viewer)
-
-    # Test initial background state
-    white_bg_checkbox = plotter.plotter_inputs_widget.white_background_checkbox
-    initial_bg_state = white_bg_checkbox.isChecked()
-
-    # Get initial background color
-    initial_bg_color = plotter.canvas_widget.axes.get_facecolor()
-
-    # Toggle white background
-    new_bg_state = not initial_bg_state
-    white_bg_checkbox.setChecked(new_bg_state)
-    plotter.white_background = new_bg_state
-
-    # Verify the property changed
-    assert plotter.white_background == new_bg_state
-    assert white_bg_checkbox.isChecked() == new_bg_state
-
-    # Check that background color changed
-    new_bg_color = plotter.canvas_widget.axes.get_facecolor()
-
-    if new_bg_state:
-        # White background should be close to (1, 1, 1, 1) or (1, 1, 1, 0) for transparent white
-        assert new_bg_color[0] > 0.9  # R component close to 1
-        assert new_bg_color[1] > 0.9  # G component close to 1
-        assert new_bg_color[2] > 0.9  # B component close to 1
-    else:
-        # Non-white background (could be transparent or dark)
-        # Should be different from white
-        is_white = (
-            new_bg_color[0] > 0.9
-            and new_bg_color[1] > 0.9
-            and new_bg_color[2] > 0.9
+    # Verify color restored for white_background
+    if property_name == 'white_background':
+        restored_bg_color = plotter.canvas_widget.axes.get_facecolor()
+        np.testing.assert_allclose(
+            restored_bg_color, initial_bg_color, atol=0.1
         )
-        assert (
-            not is_white or new_bg_color[3] < 0.1
-        )  # Either not white, or transparent
-
-    # Toggle back and verify
-    white_bg_checkbox.setChecked(initial_bg_state)
-    plotter.white_background = initial_bg_state
-
-    restored_bg_color = plotter.canvas_widget.axes.get_facecolor()
-    # Background should return to initial state (or close to it)
-    np.testing.assert_allclose(restored_bg_color, initial_bg_color, atol=0.1)
 
 
 def test_phasor_plotter_colorbar_updates(make_napari_viewer):
