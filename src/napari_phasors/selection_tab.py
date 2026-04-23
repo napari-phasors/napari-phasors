@@ -133,10 +133,10 @@ class SelectionWidget(QWidget):
         if scroll_area_layout is not None:
             scroll_area_layout.addWidget(self.refresh_selection_button, 4, 3)
 
-        # Connect to multiple signals to handle both selection and text editing
-        self.selection_input_widget.phasor_selection_id_combobox.currentIndexChanged.connect(
-            self.on_selection_id_changed
-        )
+        # Connect to signals for user-initiated selection changes only.
+        # Use activated (user clicks dropdown) + editingFinished (user
+        # types in line edit).  Do NOT use currentIndexChanged — it fires
+        # on programmatic changes too, causing duplicate callbacks.
         self.selection_input_widget.phasor_selection_id_combobox.activated.connect(
             self.on_selection_id_changed
         )
