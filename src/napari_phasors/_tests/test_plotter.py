@@ -160,6 +160,90 @@ def test_biaplotter_toggle_callback_handles_missing_sender(
     mock_deactivate.assert_called_once()
 
 
+def test_biaplotter_pan_toggle_deactivates_active_selector_without_sender(
+    make_napari_viewer,
+):
+    """A sender-less pan toggle should clear the current selector tool."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    canvas = plotter.canvas_widget
+
+    with patch.object(CanvasWidget, 'sender', return_value=None):
+        canvas.selection_toolbar.buttons['LASSO'].click()
+
+    canvas.toolbar.mode = 'pan/zoom'
+
+    with patch.object(CanvasWidget, 'sender', return_value=None):
+        canvas._on_toggle_button(True)
+
+    assert canvas.active_selector is None
+    assert all(
+        not button.isChecked()
+        for button in canvas.selection_toolbar.buttons.values()
+    )
+
+
+def test_biaplotter_selector_toggle_handles_missing_sender(
+    make_napari_viewer,
+):
+    """Selector buttons should still activate when sender() is unavailable."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    canvas = plotter.canvas_widget
+
+    with patch.object(CanvasWidget, 'sender', return_value=None):
+        canvas.selection_toolbar.buttons['LASSO'].click()
+
+    assert canvas.active_selector is not None
+    assert (
+        canvas.active_selector.__class__.__name__ == 'InteractiveLassoSelector'
+    )
+
+
+def test_biaplotter_selector_toggle_is_exclusive_without_sender(
+    make_napari_viewer,
+):
+    """Switching selector tools without sender() should deactivate the previous tool."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    canvas = plotter.canvas_widget
+
+    with patch.object(CanvasWidget, 'sender', return_value=None):
+        canvas.selection_toolbar.buttons['LASSO'].click()
+        canvas.selection_toolbar.buttons['ELLIPSE'].click()
+
+    assert canvas.selection_toolbar.buttons['LASSO'].isChecked() is False
+    assert canvas.selection_toolbar.buttons['ELLIPSE'].isChecked() is True
+    assert canvas.active_selector is not None
+    assert (
+        canvas.active_selector.__class__.__name__
+        == 'InteractiveEllipseSelector'
+    )
+
+
+def test_biaplotter_zoom_toggle_deactivates_active_selector_without_sender(
+    make_napari_viewer,
+):
+    """A sender-less zoom toggle should clear the current selector tool."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    canvas = plotter.canvas_widget
+
+    with patch.object(CanvasWidget, 'sender', return_value=None):
+        canvas.selection_toolbar.buttons['RECTANGLE'].click()
+
+    canvas.toolbar.mode = 'zoom rect'
+
+    with patch.object(CanvasWidget, 'sender', return_value=None):
+        canvas._on_toggle_button(True)
+
+    assert canvas.active_selector is None
+    assert all(
+        not button.isChecked()
+        for button in canvas.selection_toolbar.buttons.values()
+    )
+
+
 def test_phasor_plotter_initialization_values(make_napari_viewer):
     """Test the initialization of the Phasor Plotter Widget."""
     viewer = make_napari_viewer()
