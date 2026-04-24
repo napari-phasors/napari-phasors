@@ -1,0 +1,172 @@
+name: Build standalone installers
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build-installer:
+    name: Build installer (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            post_install: post_install.sh
+          - os: macos-14
+            platform: macos
+            post_install: post_install.sh
+          - os: windows-latest
+            platform: windows
+            post_install: post_install.bat
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Miniforge
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-version: latest
+          conda-remove-defaults: "true"
+
+      - name: Install constructor
+        shell: bash -el {0}
+        run: |
+          conda install -y constructor
+
+      - name: Determine version
+        id: version
+        shell: bash -el {0}
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            VERSION="${{ github.event.release.tag_name }}"
+            VERSION="${VERSION#v}"
+          else
+            VERSION="dev"
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Generate construct.yaml and build
+        shell: bash -el {0}
+        run: |
+          cd installer
+          cat > construct.yaml <<'ENDOFYAML'
+          name: napari-phasors
+          version: VERSION_PLACEHOLDER
+          channels:
+            - conda-forge
+          conda_default_channels:
+            - conda-forge
+          specs:
+            - python=3.12
+            - napari
+            - pyqt6
+            - pip
+          post_install: POST_INSTALL_PLACEHOLDER
+          license_file: ../LICENSE
+          ENDOFYAML
+          # YAML literal block scalar (|) already strips leading
+          # indentation, so the heredoc content is at column 0.
+          sed -i.bak "s/VERSION_PLACEHOLDER/${{ steps.version.outputs.version }}/" construct.yaml
+          sed -i.bak "s/POST_INSTALL_PLACEHOLDER/${{ matrix.post_install }}/" construct.yaml
+          if [ -f icon.png ]; then
+            echo "icon_image: icon.png" >> construct.yaml
+            echo "Found icon.png — adding icon_image to construct.yaml"
+          else
+            echo "No icon.png found — skipping icon_image"
+          fi
+          echo "=== construct.yaml ==="
+          cat construct.yaml
+          echo "=== Building ==="
+          constructor .
+
+      - name: List outputs
+        shell: bash -el {0}
+        run: ls -la installer/napari-phasors-*
+
+      - name: Create macOS DMG
+        if: matrix.platform == 'macos'
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          SH_INSTALLER=( installer/napari-phasors-*.sh )
+          if [[ ${#SH_INSTALLER[@]} -ne 1 ]]; then
+            echo "ERROR: Expected exactly one .sh installer, found: ${SH_INSTALLER[*]}"
+            exit 1
+          fi
+          SH_INSTALLER="${SH_INSTALLER[0]}"
+          INSTALL_DIR="${RUNNER_TEMP}/napari-phasors-install"
+          DMG_CONTENTS="${RUNNER_TEMP}/dmg-contents"
+          APP_DIR="${DMG_CONTENTS}/napari-phasors.app"
+
+          echo "=== Running .sh installer silently ==="
+          bash "${SH_INSTALLER}" -b -p "${INSTALL_DIR}"
+
+          echo "=== Creating .app bundle ==="
+          mkdir -p "${APP_DIR}/Contents/MacOS"
+          mkdir -p "${APP_DIR}/Contents/Resources"
+
+          cat > "${APP_DIR}/Contents/Info.plist" << PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+            <dict>
+              <key>CFBundleName</key>
+              <string>napari-phasors</string>
+              <key>CFBundleExecutable</key>
+              <string>napari-phasors</string>
+              <key>CFBundleIdentifier</key>
+              <string>org.napari-phasors.app</string>
+              <key>CFBundleVersion</key>
+              <string>${VERSION}</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleShortVersionString</key>
+              <string>${VERSION}</string>
+            </dict>
+          </plist>
+          PLIST
+
+          cat > "${APP_DIR}/Contents/MacOS/napari-phasors" << 'LAUNCHER'
+          #!/bin/bash
+          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+          ENV_DIR="${SCRIPT_DIR}/../Resources/env"
+          source "${ENV_DIR}/bin/activate"
+          exec "${ENV_DIR}/bin/napari" "$@"
+          LAUNCHER
+          chmod +x "${APP_DIR}/Contents/MacOS/napari-phasors"
+
+          echo "=== Moving conda env into .app bundle ==="
+          mv "${INSTALL_DIR}" "${APP_DIR}/Contents/Resources/env"
+
+          ln -s /Applications "${DMG_CONTENTS}/Applications"
+
+          echo "=== Creating DMG ==="
+          ARCH="$(uname -m)"
+          hdiutil create \
+            -volname "napari-phasors" \
+            -srcfolder "${DMG_CONTENTS}" \
+            -ov \
+            -format UDZO \
+            "installer/napari-phasors-${VERSION}-macOS-${ARCH}.dmg"
+
+          rm -f "${SH_INSTALLER}"
+          echo "=== DMG created ==="
+          ls -la installer/napari-phasors-*
+
+      - name: Upload installer as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.platform }}
+          path: installer/napari-phasors-*
+          if-no-files-found: error
+
+      - name: Upload to GitHub Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: installer/napari-phasors-*
