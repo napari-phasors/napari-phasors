@@ -1262,6 +1262,10 @@ class PhasorMappingWidget(QWidget):
                     phase_values, modulation_values = phasor_to_polar(
                         real, imag
                     )
+                if output_type == "Phase" and not self._is_semicircle_mode():
+                    # Full polar mode expects phase in [0, 2pi].
+                    with np.errstate(invalid='ignore'):
+                        phase_values = np.mod(phase_values, 2.0 * np.pi)
                 output_values = (
                     phase_values
                     if output_type == "Phase"
@@ -1352,34 +1356,54 @@ class PhasorMappingWidget(QWidget):
                 self.max_lifetime * self.lifetime_range_factor
             )
         else:
-            self.min_lifetime = np.min(valid_data)
-            self.max_lifetime = np.max(valid_data)
-
-            if (
-                self._output_requires_frequency(output_type)
-                and effective_frequency is not None
-                and (
-                    not np.isfinite(self.min_lifetime)
-                    or not np.isfinite(self.max_lifetime)
-                    or self.max_lifetime > (2e3 / effective_frequency)
-                    or self.min_lifetime < 0
-                )
-            ):
+            if output_type == "Phase" and not self._is_semicircle_mode():
+                # In full polar mode, initialize the display range to 0..2pi
+                # so users get the expected 0..360 degree domain.
                 self.min_lifetime = 0.0
-                self.max_lifetime = (
-                    2e3 / effective_frequency
-                )  # 2 periods in ns
+                self.max_lifetime = 2.0 * np.pi
                 min_slider_val = 0
                 max_slider_val = int(
                     self.max_lifetime * self.lifetime_range_factor
                 )
+                self.current_metric_data_original = np.mod(
+                    self.current_metric_data_original, 2.0 * np.pi
+                )
+                self.current_metric_data = (
+                    self.current_metric_data_original.copy()
+                )
+                for name, data in self.per_layer_metric_data_original.items():
+                    wrapped = np.mod(data, 2.0 * np.pi)
+                    self.per_layer_metric_data_original[name] = wrapped
+                    self.per_layer_metric_data[name] = wrapped.copy()
             else:
-                min_slider_val = int(
-                    self.min_lifetime * self.lifetime_range_factor
-                )
-                max_slider_val = int(
-                    self.max_lifetime * self.lifetime_range_factor
-                )
+                self.min_lifetime = np.min(valid_data)
+                self.max_lifetime = np.max(valid_data)
+
+                if (
+                    self._output_requires_frequency(output_type)
+                    and effective_frequency is not None
+                    and (
+                        not np.isfinite(self.min_lifetime)
+                        or not np.isfinite(self.max_lifetime)
+                        or self.max_lifetime > (2e3 / effective_frequency)
+                        or self.min_lifetime < 0
+                    )
+                ):
+                    self.min_lifetime = 0.0
+                    self.max_lifetime = (
+                        2e3 / effective_frequency
+                    )  # 2 periods in ns
+                    min_slider_val = 0
+                    max_slider_val = int(
+                        self.max_lifetime * self.lifetime_range_factor
+                    )
+                else:
+                    min_slider_val = int(
+                        self.min_lifetime * self.lifetime_range_factor
+                    )
+                    max_slider_val = int(
+                        self.max_lifetime * self.lifetime_range_factor
+                    )
         self.lifetime_range_slider.setRange(0, max_slider_val)
         self.lifetime_range_slider.setValue((min_slider_val, max_slider_val))
 
