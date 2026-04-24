@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 from napari_phasors._synthetic_generator import make_raw_flim_data
-from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
+from napari_phasors._tests.conftest import create_image_layer_with_phasors
 from napari_phasors.plotter import PlotterWidget
 
 

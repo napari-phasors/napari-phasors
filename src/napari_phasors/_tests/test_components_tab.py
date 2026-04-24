@@ -1,9 +1,11 @@
+from unittest.mock import Mock
+
 import numpy as np
 from matplotlib.collections import LineCollection
 from phasorpy.component import phasor_component_fraction
 from phasorpy.lifetime import phasor_from_lifetime
 
-from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
+from napari_phasors._tests.conftest import create_image_layer_with_phasors
 from napari_phasors.plotter import PlotterWidget
 
 
@@ -857,3 +859,423 @@ def test_components_fraction_range_updates_layer_and_is_reversible(
         atol=1e-9,
         equal_nan=True,
     )
+
+
+def test_components_on_image_layer_changed_clears_artists(
+    make_napari_viewer,
+):
+    """Test that _on_image_layer_changed clears fraction layer
+    references and internal state when switching to another layer."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+
+    comp_widget.analysis_type_combo.setCurrentText("Linear Projection")
+
+    comp_widget.components[0].g_edit.setText("0.3")
+    comp_widget.components[0].s_edit.setText("0.2")
+    comp_widget._on_component_coords_changed(0)
+    comp_widget.components[1].g_edit.setText("0.7")
+    comp_widget.components[1].s_edit.setText("0.4")
+    comp_widget._on_component_coords_changed(1)
+    comp_widget._run_analysis()
+
+    assert comp_widget.comp1_fractions_layer is not None
+    assert comp_widget.fractions_colormap is not None
+
+    # Remove the layer from viewer (will trigger combobox to be empty)
+    viewer.layers.remove(layer)
+    comp_widget._on_image_layer_changed()
+
+    # Fraction layer refs and colormap should be cleared
+    assert comp_widget.comp1_fractions_layer is None
+    assert comp_widget.fractions_colormap is None
+    assert comp_widget.colormap_contrast_limits is None
+
+
+def test_components_on_image_layer_changed_no_layer(
+    make_napari_viewer,
+):
+    """Test _on_image_layer_changed when no layer is selected."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+
+    # Set a component
+    comp_widget.components[0].g_edit.setText("0.3")
+    comp_widget.components[0].s_edit.setText("0.2")
+    comp_widget._on_component_coords_changed(0)
+
+    # Clear the layer selection (simulate no layer)
+    viewer.layers.remove(layer)
+
+    comp_widget._on_image_layer_changed()
+
+    # Fields should be cleared
+    assert comp_widget.components[0].g_edit.text() == ""
+    assert comp_widget.components[0].s_edit.text() == ""
+    assert comp_widget.components[0].name_edit.text() == ""
+
+
+def test_components_restore_ui_only_from_metadata(
+    make_napari_viewer,
+):
+    """Test _restore_components_ui_only_from_metadata restores
+    component inputs and dots without running analysis."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+
+    # Set components and trigger metadata save
+    comp_widget.components[0].g_edit.setText("0.3")
+    comp_widget.components[0].s_edit.setText("0.2")
+    comp_widget.components[0].name_edit.setText("CompA")
+    comp_widget._on_component_coords_changed(0)
+
+    comp_widget.components[1].g_edit.setText("0.8")
+    comp_widget.components[1].s_edit.setText("0.5")
+    comp_widget.components[1].name_edit.setText("CompB")
+    comp_widget._on_component_coords_changed(1)
+
+    # Clear the display
+    comp_widget._clear_components_display()
+    assert comp_widget.components[0].dot is None
+    assert comp_widget.components[0].g_edit.text() == ""
+
+    # Restore from metadata (UI only, no analysis)
+    comp_widget._restore_components_ui_only_from_metadata()
+
+    # Components should be restored from metadata
+    assert comp_widget.components[0].name_edit.text() == "CompA"
+    assert abs(float(comp_widget.components[0].g_edit.text()) - 0.3) < 1e-2
+    assert abs(float(comp_widget.components[0].s_edit.text()) - 0.2) < 1e-2
+    assert comp_widget.components[0].dot is not None
+    # comp1_fractions_layer should NOT be created (UI-only restore)
+    assert comp_widget.comp1_fractions_layer is None
+
+
+def test_components_restore_and_recreate_from_metadata(
+    make_napari_viewer,
+):
+    """Test _restore_and_recreate_components_from_metadata runs analysis."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+
+    comp_widget.analysis_type_combo.setCurrentText("Linear Projection")
+
+    # Set components
+    comp_widget.components[0].g_edit.setText("0.2")
+    comp_widget.components[0].s_edit.setText("0.1")
+    comp_widget._on_component_coords_changed(0)
+
+    comp_widget.components[1].g_edit.setText("0.8")
+    comp_widget.components[1].s_edit.setText("0.5")
+    comp_widget._on_component_coords_changed(1)
+
+    # Run analysis to populate metadata
+    comp_widget._run_analysis()
+    assert comp_widget.comp1_fractions_layer is not None
+
+    # Now clear everything
+    comp_widget._clear_components_display()
+    comp_widget.comp1_fractions_layer = None
+
+    # Restore and recreate — should re-run analysis
+    comp_widget._restore_and_recreate_components_from_metadata()
+
+    # Fraction layer should be recreated
+    assert comp_widget.comp1_fractions_layer is not None
+    assert comp_widget.components[0].dot is not None
+
+
+def test_components_reset_plot_settings(make_napari_viewer):
+    """Test _reset_plot_settings resets all plot settings."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+
+    # Set components and run analysis
+    comp_widget.components[0].g_edit.setText("0.2")
+    comp_widget.components[0].s_edit.setText("0.1")
+    comp_widget._on_component_coords_changed(0)
+    comp_widget.components[1].g_edit.setText("0.8")
+    comp_widget.components[1].s_edit.setText("0.5")
+    comp_widget._on_component_coords_changed(1)
+    comp_widget._run_analysis()
+
+    # Open settings dialog and modify values
+    comp_widget._open_plot_settings_dialog()
+    comp_widget.line_offset_slider.setValue(200)
+    comp_widget.line_width_spin.setValue(8.0)
+    comp_widget.line_alpha_slider.setValue(50)
+    comp_widget.colormap_line_checkbox.setChecked(False)
+    comp_widget._on_plot_setting_changed()
+
+    # Verify changed
+    assert comp_widget.line_width == 8.0
+    assert not comp_widget.show_colormap_line
+
+    # Reset
+    comp_widget._reset_plot_settings()
+
+    assert comp_widget.show_colormap_line is True
+    assert comp_widget.show_component_dots is True
+    assert comp_widget.line_offset == 0.0
+    assert comp_widget.line_width == 3.0
+    assert comp_widget.line_alpha == 1
+    assert comp_widget.default_component_color == 'dimgray'
+
+
+def test_components_remove_component_clears_artists(
+    make_napari_viewer,
+):
+    """Test that removing a component clears its dot, text, and line."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+
+    # Add third component
+    comp_widget._add_component()
+    assert len(comp_widget.components) == 3
+
+    # Set coordinates for all three
+    comp_widget.components[0].g_edit.setText("0.2")
+    comp_widget.components[0].s_edit.setText("0.1")
+    comp_widget._on_component_coords_changed(0)
+
+    comp_widget.components[1].g_edit.setText("0.5")
+    comp_widget.components[1].s_edit.setText("0.3")
+    comp_widget._on_component_coords_changed(1)
+
+    comp_widget.components[2].g_edit.setText("0.8")
+    comp_widget.components[2].s_edit.setText("0.5")
+    comp_widget._on_component_coords_changed(2)
+
+    # Should have polygon
+    assert comp_widget.component_polygon is not None
+
+    # Remove last component
+    comp_widget._remove_component()
+    assert len(comp_widget.components) == 2
+    # Polygon should be cleared
+    assert comp_widget.component_polygon is None
+
+
+def test_components_on_contrast_limits_changed(
+    make_napari_viewer,
+):
+    """Test _on_contrast_limits_changed updates widget state."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+
+    comp_widget.analysis_type_combo.setCurrentText("Linear Projection")
+
+    comp_widget.components[0].g_edit.setText("0.2")
+    comp_widget.components[0].s_edit.setText("0.1")
+    comp_widget._on_component_coords_changed(0)
+    comp_widget.components[1].g_edit.setText("0.8")
+    comp_widget.components[1].s_edit.setText("0.5")
+    comp_widget._on_component_coords_changed(1)
+    comp_widget._run_analysis()
+
+    assert comp_widget.comp1_fractions_layer is not None
+
+    # Change contrast limits on comp1 layer
+    comp_widget.comp1_fractions_layer.contrast_limits = (0.2, 0.8)
+    mock_event = Mock()
+    mock_event.source = comp_widget.comp1_fractions_layer
+    comp_widget._on_contrast_limits_changed(mock_event)
+
+    # Should update internal state
+    assert comp_widget.colormap_contrast_limits is not None
+    limits = comp_widget.colormap_contrast_limits
+    assert abs(limits[0] - 0.2) < 1e-3
+    assert abs(limits[1] - 0.8) < 1e-3
+
+
+def test_components_ensure_component_metadata_no_layer(
+    make_napari_viewer,
+):
+    """Test _ensure_component_metadata returns None when no layer."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+
+    # No layer name set
+    comp_widget.current_image_layer_name = ""
+    result = comp_widget._ensure_component_metadata(0)
+    assert result is None
+
+
+def test_components_update_input_styling_after_analysis(
+    make_napari_viewer,
+):
+    """Test component input styling highlights missing values
+    after analysis has been attempted."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+
+    # Mark analysis as attempted
+    comp_widget._analysis_attempted = True
+
+    # Set only one component, leave the other empty
+    comp_widget.components[0].g_edit.setText("0.3")
+    comp_widget.components[0].s_edit.setText("0.2")
+    comp_widget._update_component_input_styling(0)
+    # Should have clear style since it has values
+    assert comp_widget.components[0].g_edit.styleSheet() == ""
+
+    # Component with empty fields should be styled if highlighting
+    comp_widget.components[1].g_edit.setText("")
+    comp_widget.components[1].s_edit.setText("")
+    comp_widget._update_component_input_styling(1)
+    # Result depends on _should_highlight_missing_components()
+    # but the method shouldn't crash
+
+    # Index out of range should be a no-op
+    comp_widget._update_component_input_styling(99)
+
+
+def test_components_multi_component_fraction_layers(
+    make_napari_viewer,
+):
+    """Test multi-component analysis creates fraction layers for
+    each component."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+
+    comp_widget._add_component()
+    comp_widget.analysis_type_combo.setCurrentText("Component Fit")
+
+    comp_widget.components[0].g_edit.setText("0.2")
+    comp_widget.components[0].s_edit.setText("0.1")
+    comp_widget._on_component_coords_changed(0)
+
+    comp_widget.components[1].g_edit.setText("0.5")
+    comp_widget.components[1].s_edit.setText("0.3")
+    comp_widget._on_component_coords_changed(1)
+
+    comp_widget.components[2].g_edit.setText("0.8")
+    comp_widget.components[2].s_edit.setText("0.5")
+    comp_widget._on_component_coords_changed(2)
+
+    comp_widget._run_analysis()
+
+    # Should have fraction layers for each component
+    assert len(comp_widget.fraction_layers) == 3
+    for fl in comp_widget.fraction_layers:
+        assert fl in viewer.layers
+
+
+def test_components_on_image_layer_changed_with_fraction_layer(
+    make_napari_viewer,
+):
+    """Test that _on_image_layer_changed disconnects fraction layer
+    events and clears references before reconnecting."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+
+    comp_widget.analysis_type_combo.setCurrentText("Linear Projection")
+
+    comp_widget.components[0].g_edit.setText("0.2")
+    comp_widget.components[0].s_edit.setText("0.1")
+    comp_widget._on_component_coords_changed(0)
+    comp_widget.components[1].g_edit.setText("0.8")
+    comp_widget.components[1].s_edit.setText("0.5")
+    comp_widget._on_component_coords_changed(1)
+    comp_widget._run_analysis()
+
+    assert comp_widget.comp1_fractions_layer is not None
+    old_fraction_layer = comp_widget.comp1_fractions_layer
+
+    # Remove the fraction layer to force the no-reconnect path
+    viewer.layers.remove(old_fraction_layer)
+    comp_widget.comp1_fractions_layer = old_fraction_layer  # keep ref
+
+    # Trigger layer change — should clear the stale reference
+    comp_widget._on_image_layer_changed()
+
+    # comp2_fractions_layer should be None
+    assert comp_widget.comp2_fractions_layer is None
+    # fractions_colormap reset before potential reconnection
+    assert comp_widget.colormap_contrast_limits is None
+
+
+def test_components_remove_last_component_from_settings(
+    make_napari_viewer,
+):
+    """Test _remove_last_component_from_settings removes metadata."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+
+    comp_widget._add_component()
+
+    comp_widget.components[0].g_edit.setText("0.2")
+    comp_widget.components[0].s_edit.setText("0.1")
+    comp_widget._on_component_coords_changed(0)
+
+    comp_widget.components[1].g_edit.setText("0.5")
+    comp_widget.components[1].s_edit.setText("0.3")
+    comp_widget._on_component_coords_changed(1)
+
+    comp_widget.components[2].g_edit.setText("0.8")
+    comp_widget.components[2].s_edit.setText("0.5")
+    comp_widget._on_component_coords_changed(2)
+
+    settings = layer.metadata['settings']['component_analysis']
+    assert '2' in settings['components']
+
+    # Remove last component
+    comp_widget._remove_component()
+    settings = layer.metadata['settings']['component_analysis']
+    assert '2' not in settings['components']

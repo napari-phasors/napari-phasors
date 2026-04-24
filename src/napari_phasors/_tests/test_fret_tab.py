@@ -7,7 +7,7 @@ from phasorpy.lifetime import phasor_from_fret_donor
 from phasorpy.phasor import phasor_nearest_neighbor
 from superqt import QToggleSwitch
 
-from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
+from napari_phasors._tests.conftest import create_image_layer_with_phasors
 from napari_phasors.plotter import PlotterWidget
 
 
@@ -996,8 +996,17 @@ def test_calculate_donor_lifetime_no_frequency(make_napari_viewer):
     assert widget.donor_line_edit.text() == initial_lifetime
 
 
-def test_calculate_donor_lifetime_apparent_phase(make_napari_viewer):
-    """Test donor lifetime calculation using apparent phase lifetime."""
+@pytest.mark.parametrize(
+    'lifetime_type',
+    [
+        'Apparent Phase Lifetime',
+        'Apparent Modulation Lifetime',
+        'Normal Lifetime',
+    ],
+    ids=['phase', 'modulation', 'normal'],
+)
+def test_calculate_donor_lifetime_by_type(make_napari_viewer, lifetime_type):
+    """Test donor lifetime calculation using different lifetime types."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
@@ -1009,67 +1018,7 @@ def test_calculate_donor_lifetime_apparent_phase(make_napari_viewer):
 
     # Set up parameters
     widget.frequency_input.setText("80")
-    widget.lifetime_type_combobox.setCurrentText("Apparent Phase Lifetime")
-    widget.donor_lifetime_combobox.setCheckedItems(["test_layer"])
-
-    # Set up parent widget properly
-    parent.harmonic = 1
-
-    # Calculate donor lifetime
-    widget._calculate_donor_lifetime()
-
-    # Should have updated the donor lifetime
-    assert widget.donor_line_edit.text() != ""
-    lifetime_value = float(widget.donor_line_edit.text())
-    assert lifetime_value > 0
-    assert widget.donor_lifetime == lifetime_value
-
-
-def test_calculate_donor_lifetime_apparent_modulation(make_napari_viewer):
-    """Test donor lifetime calculation using apparent modulation lifetime."""
-    viewer = make_napari_viewer()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Add layer with phasor data
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-
-    # Set up parameters
-    widget.frequency_input.setText("80")
-    widget.lifetime_type_combobox.setCurrentText(
-        "Apparent Modulation Lifetime"
-    )
-    widget.donor_lifetime_combobox.setCheckedItems(["test_layer"])
-
-    # Set up parent widget properly
-    parent.harmonic = 1
-
-    # Calculate donor lifetime
-    widget._calculate_donor_lifetime()
-
-    # Should have updated the donor lifetime
-    assert widget.donor_line_edit.text() != ""
-    lifetime_value = float(widget.donor_line_edit.text())
-    assert lifetime_value > 0
-    assert widget.donor_lifetime == lifetime_value
-
-
-def test_calculate_donor_lifetime_normal_lifetime(make_napari_viewer):
-    """Test donor lifetime calculation using normal lifetime."""
-    viewer = make_napari_viewer()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
-
-    # Add layer with phasor data
-    test_layer = create_image_layer_with_phasors()
-    test_layer.name = "test_layer"
-    viewer.add_layer(test_layer)
-
-    # Set up parameters
-    widget.frequency_input.setText("80")
-    widget.lifetime_type_combobox.setCurrentText("Normal Lifetime")
+    widget.lifetime_type_combobox.setCurrentText(lifetime_type)
     widget.donor_lifetime_combobox.setCheckedItems(["test_layer"])
 
     # Set up parent widget properly
@@ -1245,56 +1194,62 @@ def test_calculate_donor_lifetime_error_handling(make_napari_viewer):
     assert widget.donor_line_edit.text() == initial_lifetime
 
 
-def test_donor_source_selector_functionality(make_napari_viewer):
-    """Test the donor source selector switches between Manual and From layer(s) modes."""
+@pytest.mark.parametrize(
+    'selector_attr, stack_attr, handler, label_attr, label_text',
+    [
+        (
+            'donor_source_selector',
+            'donor_stack',
+            '_on_donor_source_changed',
+            'donor_label',
+            'Donor lifetime (ns):',
+        ),
+        (
+            'bg_source_selector',
+            'bg_stack',
+            '_on_bg_source_changed',
+            'background_position_label',
+            'Background position:',
+        ),
+    ],
+    ids=['donor', 'background'],
+)
+def test_source_selector_functionality(
+    make_napari_viewer,
+    selector_attr,
+    stack_attr,
+    handler,
+    label_attr,
+    label_text,
+):
+    """Test source selector switches between Manual and From layer(s)."""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
-    # Initially should be in Manual mode
-    assert widget.donor_source_selector.currentText() == "Manual"
-    assert widget.donor_stack.currentIndex() == 0  # Manual page
-    assert widget.donor_label.text() == "Donor lifetime (ns):"
-
-    # Switch to "From layer(s)" mode
-    widget.donor_source_selector.setCurrentText("From layer(s)")
-    widget._on_donor_source_changed(1)
-
-    assert widget.donor_stack.currentIndex() == 1  # From layer(s) page
-    assert widget.donor_label.text() == "Donor lifetime (ns):"
-
-    # Switch back to Manual mode
-    widget.donor_source_selector.setCurrentText("Manual")
-    widget._on_donor_source_changed(0)
-
-    assert widget.donor_stack.currentIndex() == 0  # Manual page
-    assert widget.donor_label.text() == "Donor lifetime (ns):"
-
-
-def test_background_source_selector_functionality(make_napari_viewer):
-    """Test the background source selector switches between Manual and From layer(s) modes."""
-    viewer = make_napari_viewer()
-    parent = PlotterWidget(viewer)
-    widget = parent.fret_tab
+    selector = getattr(widget, selector_attr)
+    stack = getattr(widget, stack_attr)
+    label = getattr(widget, label_attr)
+    on_source_changed = getattr(widget, handler)
 
     # Initially should be in Manual mode
-    assert widget.bg_source_selector.currentText() == "Manual"
-    assert widget.bg_stack.currentIndex() == 0  # Manual page
-    assert widget.background_position_label.text() == "Background position:"
+    assert selector.currentText() == 'Manual'
+    assert stack.currentIndex() == 0  # Manual page
+    assert label.text() == label_text
 
     # Switch to "From layer(s)" mode
-    widget.bg_source_selector.setCurrentText("From layer(s)")
-    widget._on_bg_source_changed(1)
+    selector.setCurrentText('From layer(s)')
+    on_source_changed(1)
 
-    assert widget.bg_stack.currentIndex() == 1  # From layer(s) page
-    assert widget.background_position_label.text() == "Background position:"
+    assert stack.currentIndex() == 1  # From layer(s) page
+    assert label.text() == label_text
 
     # Switch back to Manual mode
-    widget.bg_source_selector.setCurrentText("Manual")
-    widget._on_bg_source_changed(0)
+    selector.setCurrentText('Manual')
+    on_source_changed(0)
 
-    assert widget.bg_stack.currentIndex() == 0  # Manual page
-    assert widget.background_position_label.text() == "Background position:"
+    assert stack.currentIndex() == 0  # Manual page
+    assert label.text() == label_text
 
 
 def test_donor_lifetime_label_updates_with_layer_calculation(
@@ -1966,3 +1921,202 @@ def test_metadata_persistence_across_layer_switches(make_napari_viewer):
     assert widget.donor_line_edit.text() == "3.5"
     assert widget.frequency_input.text() == "90.0"
     assert widget.background_slider.value() == 50
+
+
+def test_fret_on_image_layer_changed_clears_artists(
+    make_napari_viewer,
+):
+    """Test that _on_image_layer_changed clears donor trajectory
+    and circle artists."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+
+    # Set parameters and plot trajectory
+    widget.donor_line_edit.setText("2.0")
+    widget.frequency_input.setText("80")
+    widget.background_real_edit.setText("0.1")
+    widget.background_imag_edit.setText("0.1")
+    widget._on_parameters_changed()
+    widget.plot_donor_trajectory()
+
+    assert widget.current_donor_line is not None
+
+    # Trigger layer change (simulate removing all layers)
+    viewer.layers.remove(test_layer)
+    widget._on_image_layer_changed()
+
+    # Artists should be cleared
+    assert widget.current_donor_line is None
+    assert widget.fret_layer is None
+    assert widget.fret_colormap is None
+
+
+def test_fret_on_image_layer_changed_resets_inputs_no_layer(
+    make_napari_viewer,
+):
+    """Test that _on_image_layer_changed resets inputs when no
+    layer is available."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+
+    # Set some values
+    widget.donor_line_edit.setText("2.5")
+    widget.frequency_input.setText("80")
+    widget.background_slider.setValue(30)
+    widget._on_parameters_changed()
+
+    # Remove layer to trigger no-layer path
+    viewer.layers.remove(test_layer)
+    widget._on_image_layer_changed()
+
+    # Inputs should be reset to defaults
+    assert widget.donor_line_edit.text() == ""
+    assert widget.frequency_input.text() == ""
+    assert widget.background_slider.value() == 10
+    assert widget.fretting_slider.value() == 100
+
+
+def test_fret_on_fret_range_changed_clips_data(make_napari_viewer):
+    """Test _on_fret_range_changed clips FRET layer data."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+
+    widget.donor_line_edit.setText("2.0")
+    widget.frequency_input.setText("80")
+    widget.background_real_edit.setText("0.1")
+    widget.background_imag_edit.setText("0.1")
+    widget.calculate_fret_efficiency()
+
+    assert widget.fret_layer is not None
+    original_data = widget.fret_layer.data.copy()
+
+    # Clip the data to a narrower range
+    widget._on_fret_range_changed(0.2, 0.8)
+
+    clipped = widget.fret_layer.data
+    np.testing.assert_allclose(
+        clipped,
+        np.clip(original_data, 0.2, 0.8),
+        rtol=1e-6,
+        atol=1e-9,
+    )
+    assert widget.colormap_contrast_limits == [0.2, 0.8]
+
+
+def test_fret_recreate_from_metadata(make_napari_viewer):
+    """Test _recreate_fret_from_metadata recreates analysis."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+
+    # Set parameters and calculate to populate metadata
+    widget.donor_line_edit.setText("2.0")
+    widget.frequency_input.setText("80")
+    widget.background_real_edit.setText("0.1")
+    widget.background_imag_edit.setText("0.1")
+    widget._on_parameters_changed()
+    widget.calculate_fret_efficiency()
+
+    assert widget.fret_layer is not None
+    fret_name = widget.fret_layer.name
+
+    # Remove the FRET layer but keep metadata
+    viewer.layers.remove(widget.fret_layer)
+    widget.fret_layer = None
+    widget.fret_layers = []
+
+    # Recreate from metadata
+    widget._recreate_fret_from_metadata()
+
+    # FRET layer should be recreated
+    assert widget.fret_layer is not None
+    assert fret_name in [ly.name for ly in viewer.layers]
+
+
+def test_fret_background_position_zero_edge_case(
+    make_napari_viewer,
+):
+    """Test _store_current_background_position with (0,0) when no
+    prior position stored."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+
+    parent.harmonic = 1
+    widget.current_harmonic = 1
+
+    # Set background to (0,0) — should be a no-op when no prior
+    widget.background_positions_by_harmonic.clear()
+    widget.background_real_edit.setText("0.0")
+    widget.background_imag_edit.setText("0.0")
+    widget._store_current_background_position()
+
+    # Should NOT store (0,0) when no prior exists
+    assert 1 not in widget.background_positions_by_harmonic
+
+    # Now set a real position first
+    widget.background_real_edit.setText("0.5")
+    widget.background_imag_edit.setText("0.3")
+    widget._store_current_background_position()
+    assert 1 in widget.background_positions_by_harmonic
+    assert widget.background_positions_by_harmonic[1]['real'] == 0.5
+
+    # Now storing (0,0) should work (overwriting existing)
+    widget.background_real_edit.setText("0.0")
+    widget.background_imag_edit.setText("0.0")
+    widget._store_current_background_position()
+    assert widget.background_positions_by_harmonic[1]['real'] == 0.0
+
+
+def test_fret_apply_saved_colormap_settings(make_napari_viewer):
+    """Test _apply_saved_fret_colormap_settings applies colormap
+    to existing FRET layer."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+
+    widget.donor_line_edit.setText("2.0")
+    widget.frequency_input.setText("80")
+    widget.background_real_edit.setText("0.1")
+    widget.background_imag_edit.setText("0.1")
+    widget.calculate_fret_efficiency()
+
+    assert widget.fret_layer is not None
+
+    # Simulate saved colormap settings
+    widget._saved_colormap_name = 'plasma'
+    widget._saved_colormap_colors = None
+    widget._saved_contrast_limits = (0.1, 0.9)
+
+    widget._apply_saved_fret_colormap_settings()
+
+    assert widget.fret_layer.colormap.name == 'plasma'
+    assert widget.fret_layer.contrast_limits[0] == 0.1
+    assert widget.fret_layer.contrast_limits[1] == 0.9

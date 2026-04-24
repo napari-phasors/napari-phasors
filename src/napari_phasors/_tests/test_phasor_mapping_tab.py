@@ -22,7 +22,7 @@ from qtpy.QtWidgets import (
 )
 from superqt import QRangeSlider
 
-from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
+from napari_phasors._tests.conftest import create_image_layer_with_phasors
 from napari_phasors._utils import HistogramWidget
 from napari_phasors.plotter import PlotterWidget
 
@@ -1914,3 +1914,205 @@ def test_mesh_overlay_range_edits_and_sliders(make_napari_viewer):
         assert min_v == int(0.2 * mapping_widget.modulation_range_factor)
         assert max_v == int(0.6 * mapping_widget.modulation_range_factor)
         mock_apply.assert_called()
+
+
+def test_phasor_mapping_custom_frequency_calculation(
+    make_napari_viewer,
+):
+    """Test calculation with a manually entered custom frequency."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    mapping_widget._on_image_layer_changed()
+
+    # Set a custom frequency and calculate
+    mapping_widget.frequency_input.setText("120.0")
+    mapping_widget._on_frequency_changed()
+    mapping_widget.lifetime_type_combobox.setCurrentText(
+        "Apparent Phase Lifetime"
+    )
+    mapping_widget._on_calculate_lifetime_clicked()
+
+    # Should produce valid lifetime data
+    assert mapping_widget.lifetime_data is not None
+    assert mapping_widget.lifetime_data_original is not None
+    assert mapping_widget.frequency == 120.0
+
+    # Verify frequency is saved in metadata
+    assert layer.metadata['settings']['frequency'] == 120.0
+
+
+def test_phasor_mapping_get_settings_migration(make_napari_viewer):
+    """Test _get_phasor_mapping_settings migrates legacy metadata."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    # Manually set up legacy metadata (under 'lifetime' key)
+    layer.metadata['settings'] = {
+        'lifetime': {
+            'lifetime_type': 'Normal Lifetime',
+            'lifetime_range_min': 1.0,
+            'lifetime_range_max': 5.0,
+        }
+    }
+
+    result = mapping_widget._get_phasor_mapping_settings(layer)
+
+    # Should migrate from 'lifetime' to 'phasor_mapping'
+    assert result is not None
+    assert result['lifetime_type'] == 'Normal Lifetime'
+    assert 'phasor_mapping' in layer.metadata['settings']
+    # Legacy key should be kept for backward compatibility
+    assert 'lifetime' in layer.metadata['settings']
+
+
+def test_phasor_mapping_get_settings_creates_on_demand(
+    make_napari_viewer,
+):
+    """Test _get_phasor_mapping_settings creates settings when
+    create=True."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    # Remove any existing settings
+    layer.metadata.pop('settings', None)
+
+    # Without create=True, should return None
+    result = mapping_widget._get_phasor_mapping_settings(layer)
+    assert result is None
+
+    # With create=True, should create default settings
+    result = mapping_widget._get_phasor_mapping_settings(layer, create=True)
+    assert result is not None
+    assert 'settings' in layer.metadata
+    assert 'phasor_mapping' in layer.metadata['settings']
+
+
+def test_phasor_mapping_reapply_if_active(make_napari_viewer):
+    """Test reapply_if_active updates histogram and coloring."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    parent.on_image_layer_changed()
+
+    mapping_widget.output_mode_combobox.setCurrentText("Phase")
+    mapping_widget._on_calculate_lifetime_clicked()
+
+    # reapply should not crash and should call plot_lifetime_histogram
+    with patch.object(mapping_widget, 'plot_lifetime_histogram') as mock_hist:
+        mapping_widget._coloring_paused_by_tab = False
+        mapping_widget.reapply_if_active()
+        mock_hist.assert_called_once()
+
+
+def test_phasor_mapping_reapply_clears_when_paused(
+    make_napari_viewer,
+):
+    """Test reapply_if_active clears coloring when tab is paused."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    parent.on_image_layer_changed()
+
+    mapping_widget.output_mode_combobox.setCurrentText("Phase")
+    mapping_widget._on_calculate_lifetime_clicked()
+
+    # Pause the tab
+    mapping_widget._coloring_paused_by_tab = True
+
+    with patch.object(mapping_widget, '_clear_2d_coloring') as mock_clear:
+        mapping_widget.reapply_if_active()
+        mock_clear.assert_called_once()
+
+
+def test_phasor_mapping_close_event(make_napari_viewer):
+    """Test closeEvent stops timer and disconnects events."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    mapping_widget._on_image_layer_changed()
+
+    # Calculate to create metric layers
+    mapping_widget.frequency_input.setText("80.0")
+    mapping_widget._on_frequency_changed()
+    mapping_widget.lifetime_type_combobox.setCurrentText(
+        "Apparent Phase Lifetime"
+    )
+    mapping_widget._on_calculate_lifetime_clicked()
+
+    # Create a mock close event
+    mock_event = MagicMock()
+
+    # Should not crash
+    mapping_widget.closeEvent(mock_event)
+    mock_event.accept.assert_called_once()
+
+
+def test_phasor_mapping_set_custom_color(make_napari_viewer):
+    """Test _set_custom_color updates button style."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    color = QColor(255, 0, 0)
+    mapping_widget._set_custom_color(color)
+
+    style = mapping_widget.custom_color_button.styleSheet()
+    assert '#ff0000' in style.lower()
+    assert mapping_widget._custom_color == color
+
+
+def test_phasor_mapping_on_image_layer_changed_cleanup(
+    make_napari_viewer,
+):
+    """Test _on_image_layer_changed clears metric layer events."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    mapping_widget._on_image_layer_changed()
+
+    mapping_widget.frequency_input.setText("80.0")
+    mapping_widget._on_frequency_changed()
+    mapping_widget.lifetime_type_combobox.setCurrentText(
+        "Apparent Phase Lifetime"
+    )
+    mapping_widget._on_calculate_lifetime_clicked()
+
+    assert len(mapping_widget.metric_layers) > 0
+
+    # Now clear the layer selection
+    parent.image_layer_with_phasor_features_combobox.setCurrentText("")
+    mapping_widget._on_image_layer_changed()
+
+    # Data should be reset
+    assert mapping_widget.lifetime_data is None
+    assert mapping_widget.lifetime_data_original is None
