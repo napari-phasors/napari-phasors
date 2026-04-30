@@ -1105,3 +1105,73 @@ def test_filter_widget_no_duplicate_signal_connections(make_napari_viewer):
         f"Connections are accumulating on each call to "
         f"_update_histogram_if_needed()."
     )
+
+
+def test_apply_threshold_invalidates_features_cache(make_napari_viewer):
+    """Regression test for #268: applying threshold must update the phasor plot.
+
+    The plotter caches merged features keyed on (selected layer names,
+    harmonic). After applying a filter/threshold, the layer's G/S arrays
+    change but the cache key stays the same, so the cached stale features
+    must be invalidated by ``refresh_phasor_data``.
+    """
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+
+    # Prime the features cache by getting features once.
+    initial_features = parent.get_merged_features()
+    assert initial_features is not None
+    assert parent._features_cache is not None
+
+    # Inject a sentinel into the cache that we can detect later. Use a
+    # plain Python tuple of strings so equality/identity checks are
+    # unambiguous (numpy arrays would raise on ==).
+    sentinel = ('stale-sentinel', 'data')
+    parent._features_cache = sentinel
+
+    # Calling refresh_phasor_data() must invalidate the cache so the
+    # next call to get_merged_features() recomputes from layer metadata.
+    parent.refresh_phasor_data()
+
+    assert parent._features_cache is not sentinel, (
+        "refresh_phasor_data() did not invalidate stale features cache "
+        "— threshold/filter changes will not be reflected in the plot."
+    )
+    # The cache should either be None or repopulated with fresh data
+    # (not the sentinel and not the same object as before injection).
+    assert parent._features_cache is None or (
+        id(parent._features_cache) != id(sentinel)
+    )
+
+
+def test_apply_threshold_marks_deferred_tabs_for_update(make_napari_viewer):
+    """Regression test for #268: deferred tabs must be marked stale after
+    a filter/threshold is applied so they refresh when next visible.
+    """
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    filter_widget = parent.filter_tab
+
+    # Ensure the deferrable tabs start in a clean state.
+    for tab_attr in ('phasor_mapping_tab', 'components_tab', 'fret_tab'):
+        if hasattr(parent, tab_attr):
+            getattr(parent, tab_attr)._needs_update = False
+
+    # Switch to a non-deferrable tab so deferred tabs don't auto-restore.
+    parent.tab_widget.setCurrentWidget(filter_widget)
+
+    filter_widget.threshold_method_combobox.setCurrentText("Manual")
+    filter_widget.threshold_slider.setValue((20, 90))
+    filter_widget.apply_button_clicked()
+
+    for tab_attr in ('phasor_mapping_tab', 'components_tab', 'fret_tab'):
+        if hasattr(parent, tab_attr):
+            tab = getattr(parent, tab_attr)
+            assert tab._needs_update is True, (
+                f"{tab_attr} was not marked for deferred update after "
+                f"filter/threshold was applied."
+            )

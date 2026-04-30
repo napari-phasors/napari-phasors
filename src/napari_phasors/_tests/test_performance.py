@@ -461,3 +461,111 @@ class TestFeaturesCacheCoverage:
         key2 = plotter._features_cache_key
         assert key2 != key1
         assert key2[1] == 2
+
+
+# ---------------------------------------------------------------------------
+# Scaling matrix: how does work scale with the number of selected layers?
+# ---------------------------------------------------------------------------
+
+
+class TestScalingWithLayerCount:
+    """Measure how key operations scale with N (selected layers).
+
+    Bruno's feedback on PR #268: with 40 images open and selected, the
+    plugin felt no faster than main. The earlier benchmarks only went up
+    to 5 layers, which masked the scaling regime that matters most.
+    These benchmarks measure cold/warm merge cost, plot rendering with
+    precomputed data, and the end-to-end selection-change path across a
+    [1, 3, 10, 20] matrix so we can tell which step dominates at large N.
+    """
+
+    LAYER_COUNTS = (1, 3, 10, 20)
+
+    def _build_plotter_with_layers(self, make_napari_viewer, qtbot, n_layers):
+        viewer = make_napari_viewer()
+        plotter = PlotterWidget(viewer)
+        qtbot.addWidget(plotter)
+        for i in range(n_layers):
+            viewer.add_layer(_create_layer(name=f"layer_{i}"))
+        names = {f"layer_{i}" for i in range(n_layers)}
+        _select_layers(plotter, names)
+        qtbot.wait(50)
+        return plotter
+
+    def test_get_merged_features_cold_scaling(self, make_napari_viewer, qtbot):
+        """Cold (cache-miss) cost of get_merged_features vs N layers."""
+        results = {}
+        for n in self.LAYER_COUNTS:
+            plotter = self._build_plotter_with_layers(
+                make_napari_viewer, qtbot, n
+            )
+            # Force a cold cache for this measurement
+            plotter._features_cache = None
+            plotter._features_cache_key = None
+            _, elapsed = _measure(plotter.get_merged_features)
+            results[n] = elapsed
+            print(
+                f"[BENCHMARK] get_merged_features cold "
+                f"N={n:>2}: {elapsed * 1000:7.2f} ms"
+            )
+        # Sanity: cold cost should grow with N (allow some noise)
+        assert results[max(self.LAYER_COUNTS)] >= results[1] * 0.5
+
+    def test_get_merged_features_warm_scaling(self, make_napari_viewer, qtbot):
+        """Warm (cache-hit) cost of get_merged_features vs N layers."""
+        for n in self.LAYER_COUNTS:
+            plotter = self._build_plotter_with_layers(
+                make_napari_viewer, qtbot, n
+            )
+            # Prime the cache
+            plotter.get_merged_features()
+            _, elapsed = _measure(plotter.get_merged_features)
+            print(
+                f"[BENCHMARK] get_merged_features warm "
+                f"N={n:>2}: {elapsed * 1000:7.2f} ms"
+            )
+
+    def test_plot_with_precomputed_data_scaling(
+        self, make_napari_viewer, qtbot
+    ):
+        """Isolate biaplotter render cost from feature-merge cost."""
+        for n in self.LAYER_COUNTS:
+            plotter = self._build_plotter_with_layers(
+                make_napari_viewer, qtbot, n
+            )
+            features = plotter.get_merged_features()
+            assert features is not None
+            x_data, y_data = features
+            _, elapsed = _measure(plotter.plot, x_data=x_data, y_data=y_data)
+            print(
+                f"[BENCHMARK] plot(precomputed) "
+                f"N={n:>2}: {elapsed * 1000:7.2f} ms (pts={len(x_data)})"
+            )
+
+    def test_selection_change_end_to_end_scaling(
+        self, make_napari_viewer, qtbot
+    ):
+        """End-to-end cost when the user toggles selection of all layers.
+
+        This times the actual user-visible path: emitting selectionChanged
+        on the checkable combobox after the selection set is updated. It
+        flushes the debounce timer so the work is fully accounted for.
+        """
+        for n in self.LAYER_COUNTS:
+            viewer = make_napari_viewer()
+            plotter = PlotterWidget(viewer)
+            qtbot.addWidget(plotter)
+            for i in range(n):
+                viewer.add_layer(_create_layer(name=f"layer_{i}"))
+
+            names = {f"layer_{i}" for i in range(n)}
+            start = time.perf_counter()
+            _select_layers(plotter, names)
+            # Flush debounce timer so the cost of selection processing
+            # is included in the measurement.
+            qtbot.wait(400)
+            elapsed = time.perf_counter() - start
+            print(
+                f"[BENCHMARK] selection_change_end_to_end "
+                f"N={n:>2}: {elapsed * 1000:7.2f} ms"
+            )

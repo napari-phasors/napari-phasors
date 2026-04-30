@@ -1406,6 +1406,12 @@ class PlotterWidget(QWidget):
         self._features_cache = None
         self._features_cache_key = None
 
+        # Track layer ids whose name/data events we've already wired up so
+        # ``reset_layer_choices`` doesn't reconnect every layer on every
+        # layer add/remove (which is O(N) per add → O(N²) overall during
+        # bulk loads).
+        self._connected_layer_ids = set()
+
         # Mask label and combobox (shown when 0-1 layers selected)
         self.mask_layer_label = QLabel("Mask Layer:")
         harmonics_and_mask_container.addWidget(self.mask_layer_label)
@@ -3295,8 +3301,7 @@ class PlotterWidget(QWidget):
 
     def _on_harmonic_changed(self, value):
         """Callback for harmonic spinbox change."""
-        self._features_cache = None
-        self._features_cache_key = None
+        self._invalidate_features_cache()
         self._update_setting_in_metadata('harmonic', value)
         if not self._updating_settings:
             self.refresh_current_plot()
@@ -5077,35 +5082,32 @@ class PlotterWidget(QWidget):
                 else:
                     self._on_mask_layer_changed("None")
 
-            # Connect layer name change events (disconnect first to avoid duplicates)
+            # Connect layer name change events for layers we haven't
+            # wired up yet. Tracking by ``id(layer)`` avoids the O(N) per
+            # add reconnection that previously made bulk layer loads
+            # quadratic. We also drop ids of layers that have been
+            # removed so the set doesn't grow unbounded.
+            current_layer_ids = {
+                id(self.viewer.layers[name])
+                for name in layer_names + mask_layer_names
+            }
+            self._connected_layer_ids.intersection_update(current_layer_ids)
+
             for layer_name in layer_names + mask_layer_names:
                 layer = self.viewer.layers[layer_name]
+                layer_id = id(layer)
+                if layer_id in self._connected_layer_ids:
+                    continue
                 if isinstance(layer, Image):
-                    with contextlib.suppress(TypeError, ValueError):
-                        layer.events.name.disconnect(self.reset_layer_choices)
                     layer.events.name.connect(self.reset_layer_choices)
                 if isinstance(layer, (Shapes, Labels)):
-                    with contextlib.suppress(TypeError, ValueError):
-                        layer.events.name.disconnect(self.reset_layer_choices)
                     layer.events.name.connect(self.reset_layer_choices)
                 if isinstance(layer, Shapes):
-                    with contextlib.suppress(TypeError, ValueError):
-                        layer.events.data.disconnect(
-                            self._on_mask_data_changed
-                        )
                     layer.events.data.connect(self._on_mask_data_changed)
                 if isinstance(layer, Labels):
-                    try:
-                        layer.events.paint.disconnect(
-                            self._on_mask_data_changed
-                        )
-                        layer.events.set_data.disconnect(
-                            self._on_mask_data_changed
-                        )
-                    except (TypeError, ValueError):
-                        pass  # Not connected, ignore
                     layer.events.paint.connect(self._on_mask_data_changed)
                     layer.events.set_data.connect(self._on_mask_data_changed)
+                self._connected_layer_ids.add(layer_id)
 
             self._mask_layers_by_id = mask_layers_by_id
 
@@ -5184,8 +5186,7 @@ class PlotterWidget(QWidget):
         self._update_grid_view(selected_layers)
 
         # Invalidate features cache — layer data changed.
-        self._features_cache = None
-        self._features_cache_key = None
+        self._invalidate_features_cache()
 
         if not layer_name:
             self._g_array = None
@@ -5342,6 +5343,11 @@ class PlotterWidget(QWidget):
         selected layers visible. When only one layer is selected,
         disables grid mode.
 
+        Skips no-op writes to ``layer.visible`` so napari doesn't emit
+        redundant redraw events on every selection change. With many
+        layers (10+) the no-op skip alone removes the dominant per-layer
+        cost in the selection-change path.
+
         Parameters
         ----------
         selected_layers : list of napari.layers.Image
@@ -5350,7 +5356,8 @@ class PlotterWidget(QWidget):
         selected_names = {layer.name for layer in selected_layers}
 
         if len(selected_layers) > 1:
-            self.viewer.grid.enabled = True
+            if not self.viewer.grid.enabled:
+                self.viewer.grid.enabled = True
 
             for layer in self.viewer.layers:
                 if (
@@ -5360,11 +5367,14 @@ class PlotterWidget(QWidget):
                     and "G_original" in layer.metadata
                     and "S_original" in layer.metadata
                 ):
-                    layer.visible = layer.name in selected_names
+                    desired_visible = layer.name in selected_names
+                    if layer.visible != desired_visible:
+                        layer.visible = desired_visible
         else:
-            self.viewer.grid.enabled = False
+            if self.viewer.grid.enabled:
+                self.viewer.grid.enabled = False
 
-            if selected_layers:
+            if selected_layers and not selected_layers[0].visible:
                 selected_layers[0].visible = True
 
     def _get_common_harmonics(self, layers):
@@ -5409,6 +5419,7 @@ class PlotterWidget(QWidget):
         image_layer.metadata['G'] = image_layer.metadata['G_original']
         image_layer.metadata['S'] = image_layer.metadata['S_original']
         image_layer.data = image_layer.metadata["original_mean"].copy()
+        self._invalidate_features_cache()
 
     def _apply_mask_to_phasor_data(self, mask_layer, image_layer):
         """Apply mask to phasor data by setting G and S values outside mask to NaN.
@@ -5448,6 +5459,8 @@ class PlotterWidget(QWidget):
         else:
             image_layer.metadata['G'] = np.where(mask_invalid, np.nan, g_array)
             image_layer.metadata['S'] = np.where(mask_invalid, np.nan, s_array)
+
+        self._invalidate_features_cache()
 
     def _on_mask_layer_changed(self, text):
         """Handle changes to the mask layer combo box (single-layer mode)."""
@@ -5674,7 +5687,28 @@ class PlotterWidget(QWidget):
         if self._harmonics_array is not None:
             self._harmonics_array = np.atleast_1d(self._harmonics_array)
 
+        # Invalidate features cache — layer data has been updated
+        # (e.g. by filter/threshold), so the cached features are stale.
+        self._invalidate_features_cache()
+
         self.plot()
+
+        # Notify deferred tabs that data has changed and they need to update.
+        # When a deferrable tab is currently visible, restore it immediately so
+        # the user sees fresh state. Otherwise, mark it for restore on tab
+        # switch.
+        current_tab = self.tab_widget.currentWidget()
+        for tab_attr in ['phasor_mapping_tab', 'components_tab', 'fret_tab']:
+            if hasattr(self, tab_attr):
+                tab = getattr(self, tab_attr)
+                if tab is None:
+                    continue
+                if tab is current_tab and hasattr(
+                    tab, '_restore_on_layer_change'
+                ):
+                    tab._restore_on_layer_change()
+                elif hasattr(tab, '_needs_update'):
+                    tab._needs_update = True
 
     def has_phasor_data(self):
         """Check if valid phasor data is loaded.
@@ -5791,6 +5825,17 @@ class PlotterWidget(QWidget):
         if return_valid_mask:
             return g, s, valid
         return g, s
+
+    def _invalidate_features_cache(self):
+        """Invalidate the merged-features cache.
+
+        Call this whenever a layer's G/S arrays are mutated (filter,
+        threshold, calibration, mask application/restoration, etc.) so
+        that the next call to :meth:`get_merged_features` recomputes
+        from the layer metadata instead of returning stale data.
+        """
+        self._features_cache = None
+        self._features_cache_key = None
 
     def get_features(self):
         """Get the G and S features for the selected harmonic.
