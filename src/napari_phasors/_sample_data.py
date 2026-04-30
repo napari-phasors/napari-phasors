@@ -17,6 +17,7 @@ from __future__ import annotations
 import pooch
 
 from napari_phasors._reader import napari_get_reader
+from napari_phasors._utils import show_activity_progress
 
 
 def convallaria_FLIM_sample_data():
@@ -36,14 +37,28 @@ def convallaria_FLIM_sample_data():
         },
     )
 
+    pbr = show_activity_progress(
+        desc="Downloading Convallaria sample data...", total=4
+    )
+    pbr.set_description("Downloading Convallaria image...")
     data = downloader.fetch("Convallaria_$EI0S.fbd", progressbar=True)
+    pbr.update(1)
+    pbr.set_description("Downloading calibration data...")
     calibration_data = downloader.fetch(
         "Calibration_Rhodamine110_$EI0S.fbd", progressbar=True
     )
+    pbr.update(1)
 
     reader_options = {'channel': 0}
     reader = napari_get_reader(data, reader_options=reader_options)
-    return [reader(data)[0], reader(calibration_data)[0]]
+    pbr.set_description("Reading Convallaria image...")
+    result_data = reader(data)[0]
+    pbr.update(1)
+    pbr.set_description("Reading calibration data...")
+    result_calibration = reader(calibration_data)[0]
+    pbr.update(1)
+    pbr.close()
+    return [result_data, result_calibration]
 
 
 def embryo_FLIM_sample_data():
@@ -63,12 +78,26 @@ def embryo_FLIM_sample_data():
         },
     )
 
+    pbr = show_activity_progress(
+        desc="Downloading Embryo sample data...", total=4
+    )
+    pbr.set_description("Downloading Embryo image...")
     data = downloader.fetch("Embryo.tif", progressbar=True)
+    pbr.update(1)
+    pbr.set_description("Downloading calibration data...")
     calibration_data = downloader.fetch(
         "Fluorescein_Embryo.tif", progressbar=True
     )
+    pbr.update(1)
     reader = napari_get_reader(data)
-    return [reader(data)[0], reader(calibration_data)[0]]
+    pbr.set_description("Reading Embryo image...")
+    result_data = reader(data)[0]
+    pbr.update(1)
+    pbr.set_description("Reading calibration data...")
+    result_calibration = reader(calibration_data)[0]
+    pbr.update(1)
+    pbr.close()
+    return [result_data, result_calibration]
 
 
 def paramecium_HSI_sample_data():
@@ -84,6 +113,15 @@ def paramecium_HSI_sample_data():
         },
     )
 
+    pbr = show_activity_progress(
+        desc="Downloading Paramecium sample data...", total=2
+    )
+    pbr.set_description("Downloading Paramecium image...")
     data = downloader.fetch("paramecium.lsm", progressbar=True)
+    pbr.update(1)
     reader = napari_get_reader(data)
-    return reader(data)
+    pbr.set_description("Reading Paramecium image...")
+    result = reader(data)
+    pbr.update(1)
+    pbr.close()
+    return result

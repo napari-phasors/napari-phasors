@@ -16,7 +16,10 @@ import numpy as np
 import pandas as pd
 from matplotlib.colors import LinearSegmentedColormap
 from napari.layers import Image
+from napari.utils.notifications import show_info
 from phasorpy.io import phasor_to_ometiff
+
+from ._utils import show_activity_progress
 
 if TYPE_CHECKING:
     DataType = Union[Any, Sequence[Any]]
@@ -188,6 +191,8 @@ def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
                 metadata_dict['PhysicalSizeX'] = float(scale[x_idx])
                 metadata_dict['PhysicalSizeXUnit'] = 'µm'
 
+    pbr = show_activity_progress(desc="Saving OME-TIFF...", total=2)
+
     if has_phasor_data:
         # Export with phasor data
         mean = metadata["original_mean"]
@@ -225,7 +230,8 @@ def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
         description = json.dumps(
             {"napari_phasors_settings": json.dumps(settings)}
         )
-
+        pbr.set_description("Writing phasor data...")
+        pbr.update(1)
         phasor_to_ometiff(
             path,
             mean,
@@ -263,6 +269,8 @@ def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
             description=description,
         )
 
+    pbr.close()
+    show_info("Saved OME-TIFF")
     return [path]
 
 

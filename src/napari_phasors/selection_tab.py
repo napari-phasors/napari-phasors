@@ -2383,6 +2383,7 @@ class CircularCursorWidget(QWidget):
                 "circular_cursors"
             ] = cursor_params
 
+        for layer in selected_layers:
             # Get phasor data for this specific layer
             g_array = layer.metadata.get('G')
             s_array = layer.metadata.get('S')
