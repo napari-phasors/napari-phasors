@@ -9,7 +9,6 @@ import vispy.color
 from matplotlib.collections import LineCollection
 from matplotlib.colors import LinearSegmentedColormap, ListedColormap
 from napari.layers import Image
-from napari.utils import progress
 from napari.utils.colormaps import AVAILABLE_COLORMAPS, Colormap
 from napari.utils.notifications import show_error, show_info, show_warning
 from phasorpy.component import phasor_component_fit, phasor_component_fraction
@@ -3409,13 +3408,10 @@ class ComponentsWidget(QWidget):
         component_real = (c1.dot.get_data()[0][0], c2.dot.get_data()[0][0])
         component_imag = (c1.dot.get_data()[1][0], c2.dot.get_data()[1][0])
 
-        for layer in progress(
-            selected_layers, desc="Running linear projection..."
-        ):
+        for layer in selected_layers:
             self._run_linear_projection_for_layer(
                 layer, component_real, component_imag, c1, c2
             )
-        show_info("Linear projection complete")
 
     def _run_linear_projection_for_layer(
         self, layer, component_real, component_imag, c1, c2
@@ -3607,9 +3603,7 @@ class ComponentsWidget(QWidget):
                 )
                 return
 
-        for layer in progress(
-            selected_layers, desc="Running component fit..."
-        ):
+        for layer in selected_layers:
             self._run_component_fit_for_layer(
                 layer,
                 active_components,
@@ -3617,7 +3611,6 @@ class ComponentsWidget(QWidget):
                 current_harmonic,
                 required_harmonics,
             )
-        show_info("Component fit complete")
 
     def _run_component_fit_for_layer(
         self,

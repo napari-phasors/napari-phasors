@@ -14,7 +14,7 @@ from matplotlib.colors import LinearSegmentedColormap, LogNorm
 from matplotlib.lines import Line2D
 from matplotlib.patches import Circle, Patch
 from napari.layers import Image, Labels, Shapes
-from napari.utils import colormaps, notifications, progress
+from napari.utils import colormaps, notifications
 from phasorpy.lifetime import phasor_from_lifetime
 from phasorpy.phasor import phasor_center as _phasor_center
 from phasorpy.phasor import phasor_to_polar
@@ -5621,7 +5621,7 @@ class PlotterWidget(QWidget):
         }
 
         selected_layers = self.get_selected_layers()
-        for image_layer in progress(selected_layers, desc="Applying masks..."):
+        for image_layer in selected_layers:
             self._restore_original_phasor_data(image_layer)
             mask_name = assignments.get(image_layer.name, "None")
 
@@ -5632,7 +5632,6 @@ class PlotterWidget(QWidget):
                 mask_layer = self.viewer.layers[mask_name]
                 self._apply_mask_to_phasor_data(mask_layer, image_layer)
 
-        notifications.show_info("Mask assignments applied")
         if hasattr(self, 'filter_tab'):
             self.filter_tab._on_image_layer_changed()
             if selected_layers:

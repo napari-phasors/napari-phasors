@@ -4,19 +4,18 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from napari.layers import Image
-from napari.utils.notifications import show_error, show_info
+from napari.utils.notifications import show_error
 from phasorpy.lifetime import phasor_from_lifetime, polar_from_reference_phasor
 from phasorpy.phasor import phasor_center, phasor_transform
 from qtpy import uic
 from qtpy.QtWidgets import (
-    QApplication,
     QMessageBox,
     QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
-from ._utils import apply_filter_and_threshold, show_activity_progress
+from ._utils import apply_filter_and_threshold
 
 if TYPE_CHECKING:
     import napari
@@ -168,31 +167,12 @@ class CalibrationWidget(QWidget):
             ]
             for layer in calibrated_layers:
                 self._uncalibrate_layer(layer.name)
-
-            if calibrated_layers:
-                layer_names = ", ".join(
-                    [layer.name for layer in calibrated_layers]
-                )
-                show_info(f"Uncalibrated {layer_names}")
         else:
             calibrated_layers = []
-            pbr = show_activity_progress(
-                desc="Calibrating layers...", total=len(selected_layers)
-            )
             for layer in selected_layers:
-                pbr.set_description(f"Calibrating {layer.name}...")
-                pbr.update(1)
-                QApplication.processEvents()
                 result = self._calibrate_layer(layer.name, calibration_name)
                 if result is not False:
                     calibrated_layers.append(layer)
-            pbr.close()
-
-            if calibrated_layers:
-                layer_names = ", ".join(
-                    [layer.name for layer in calibrated_layers]
-                )
-                show_info(f"Calibrated {layer_names}")
 
         self._update_button_state()
         self.parent_widget.plot()

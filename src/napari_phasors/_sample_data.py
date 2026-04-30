@@ -15,7 +15,6 @@ The functions are:
 from __future__ import annotations
 
 import pooch
-from napari.utils.notifications import show_info
 
 from napari_phasors._reader import napari_get_reader
 from napari_phasors._utils import show_activity_progress
@@ -59,7 +58,6 @@ def convallaria_FLIM_sample_data():
     result_calibration = reader(calibration_data)[0]
     pbr.update(1)
     pbr.close()
-    show_info("Convallaria sample data loaded")
     return [result_data, result_calibration]
 
 
@@ -99,7 +97,6 @@ def embryo_FLIM_sample_data():
     result_calibration = reader(calibration_data)[0]
     pbr.update(1)
     pbr.close()
-    show_info("Embryo sample data loaded")
     return [result_data, result_calibration]
 
 
@@ -127,5 +124,4 @@ def paramecium_HSI_sample_data():
     result = reader(data)
     pbr.update(1)
     pbr.close()
-    show_info("Paramecium sample data loaded")
     return result

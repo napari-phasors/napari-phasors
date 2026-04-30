@@ -5,8 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Circle, Ellipse, Wedge
 from napari.layers import Labels
-from napari.utils import DirectLabelColormap, progress
-from napari.utils.notifications import show_info
+from napari.utils import DirectLabelColormap
 from phasorpy.cluster import phasor_cluster_gmm
 from phasorpy.cursor import (
     mask_from_circular_cursor,
@@ -1142,9 +1141,7 @@ class AutomaticClusteringWidget(QWidget):
             self._populate_cluster_table()
 
             # Step 4: Apply the same cluster parameters to each layer
-            for layer_info in progress(
-                layer_data, desc="Applying clusters..."
-            ):
+            for layer_info in layer_data:
                 layer = layer_info['layer']
                 g = layer_info['g']
                 s = layer_info['s']
@@ -1175,7 +1172,6 @@ class AutomaticClusteringWidget(QWidget):
 
             traceback.print_exc()
 
-        show_info("Clustering applied")
         # Enable clear button
         self.clear_button.setEnabled(True)
 
@@ -2387,7 +2383,7 @@ class CircularCursorWidget(QWidget):
                 "circular_cursors"
             ] = cursor_params
 
-        for layer in progress(selected_layers, desc="Applying selection..."):
+        for layer in selected_layers:
             # Get phasor data for this specific layer
             g_array = layer.metadata.get('G')
             s_array = layer.metadata.get('S')
@@ -2437,7 +2433,6 @@ class CircularCursorWidget(QWidget):
                 layer, selection_map, current_harmonic_cursors
             )
 
-        show_info("Selection applied")
         # Update count and percentage in the table
         self._update_cursor_statistics()
 
