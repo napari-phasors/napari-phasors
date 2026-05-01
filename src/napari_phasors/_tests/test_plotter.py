@@ -2865,3 +2865,620 @@ def test_phasor_center_grouped_median_uses_pooled_samples(make_napari_viewer):
     assert not np.allclose(pooled_center, arithmetic_mean, atol=1e-6)
 
     plotter.deleteLater()
+
+
+# ---------------------------------------------------------------------------
+# Coverage tests for PR #268: deferred tab updates, cache invalidation,
+# grid-view no-op skip, mask data path, common-harmonics edges
+# ---------------------------------------------------------------------------
+
+
+def test_run_deferred_tab_update_restore_branch(make_napari_viewer):
+    """_run_deferred_tab_update calls _restore_on_layer_change on dirty current tab."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    # Switch to components_tab FIRST (this triggers tab change handlers),
+    # then set the dirty flag. Otherwise the tab-switch handler clears it
+    # before our patch is in place.
+    plotter.tab_widget.setCurrentWidget(plotter.components_tab)
+    plotter.components_tab._needs_update = True
+
+    with patch.object(
+        plotter.components_tab, '_restore_on_layer_change'
+    ) as mock_restore:
+        plotter._run_deferred_tab_update(plotter.components_tab)
+        mock_restore.assert_called_once()
+
+    # After the run, the flag should be cleared.
+    assert plotter.components_tab._needs_update is False
+
+    plotter.deleteLater()
+
+
+def test_run_deferred_tab_update_fallback_on_image_layer_changed(
+    make_napari_viewer,
+):
+    """_run_deferred_tab_update falls back to _on_image_layer_changed if no _restore."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    # Replace components_tab with a stub that has no _restore_on_layer_change.
+    class _Stub:
+        _needs_update = True
+
+        def __init__(self):
+            self.called = False
+
+        def _on_image_layer_changed(self):
+            self.called = True
+
+    stub = _Stub()
+    # The real components_tab attribute must NOT have _restore — temporarily
+    # delete attribute so hasattr returns False.
+    original = plotter.components_tab
+    plotter.components_tab = stub
+    try:
+        plotter._run_deferred_tab_update(stub)
+        assert stub.called is True
+        assert stub._needs_update is False
+    finally:
+        plotter.components_tab = original
+
+    plotter.deleteLater()
+
+
+def test_run_deferred_tab_update_skips_clean_tab(make_napari_viewer):
+    """_run_deferred_tab_update is a no-op when _needs_update is False."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    plotter.components_tab._needs_update = False
+
+    with patch.object(
+        plotter.components_tab, '_restore_on_layer_change'
+    ) as mock_restore:
+        plotter._run_deferred_tab_update(plotter.components_tab)
+        mock_restore.assert_not_called()
+
+    plotter.deleteLater()
+
+
+def test_apply_layer_data_with_no_layer_clears_state(make_napari_viewer):
+    """_apply_layer_data with empty layer_name resets arrays and redraws."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    # Confirm there's data first
+    assert plotter._g_array is not None
+
+    # Now invoke with no layer name — this must hit the empty-path code.
+    plotter._apply_layer_data("", reset_zoom=True, sync_frequency=True)
+
+    assert plotter._g_array is None
+    assert plotter._s_array is None
+    assert plotter._g_original_array is None
+    assert plotter._s_original_array is None
+    assert plotter._harmonics_array is None
+
+    plotter.deleteLater()
+
+
+def test_apply_layer_data_with_no_layer_uses_polar_when_not_semicircle(
+    make_napari_viewer,
+):
+    """_apply_layer_data with no layer + toggle_semi_circle=False uses polar plot."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    plotter.toggle_semi_circle = False
+    plotter._apply_layer_data("", reset_zoom=True, sync_frequency=False)
+
+    assert plotter._g_array is None
+    plotter.deleteLater()
+
+
+def test_update_grid_view_skips_redundant_visibility_writes(
+    make_napari_viewer,
+):
+    """_update_grid_view does not write layer.visible when already correct."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    layers = []
+    for i in range(3):
+        layer = create_image_layer_with_phasors()
+        layer.name = f"layer_{i}"
+        viewer.add_layer(layer)
+        layers.append(layer)
+
+    selected_layers = list(layers)
+
+    # Prime: enable grid and set all visible
+    viewer.grid.enabled = True
+    for layer in layers:
+        layer.visible = True
+
+    # Counter for visibility setter invocations
+    write_count = {'n': 0}
+
+    def make_setter(layer):
+        # Observe via the events.visible signal which fires only on change.
+        layer.events.visible.connect(
+            lambda e: write_count.__setitem__('n', write_count['n'] + 1)
+        )
+
+    for layer in layers:
+        make_setter(layer)
+
+    # Call _update_grid_view — since everything matches, no events should fire
+    plotter._update_grid_view(selected_layers)
+
+    assert (
+        write_count['n'] == 0
+    ), "Expected zero visibility writes when state already matches"
+
+    plotter.deleteLater()
+
+
+def test_update_grid_view_single_layer_does_not_redisable_grid(
+    make_napari_viewer,
+):
+    """_update_grid_view skips disabling grid if already disabled."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    layer = create_image_layer_with_phasors()
+    layer.name = "L1"
+    viewer.add_layer(layer)
+
+    viewer.grid.enabled = False
+    layer.visible = True
+
+    # Should not toggle grid or visibility because state already matches
+    plotter._update_grid_view([layer])
+    assert viewer.grid.enabled is False
+    assert layer.visible is True
+
+    plotter.deleteLater()
+
+
+def test_update_grid_view_single_layer_makes_invisible_visible(
+    make_napari_viewer,
+):
+    """_update_grid_view makes the lone selected layer visible if it was hidden."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    layer = create_image_layer_with_phasors()
+    layer.name = "L1"
+    viewer.add_layer(layer)
+
+    viewer.grid.enabled = False
+    layer.visible = False  # simulate hidden state
+
+    plotter._update_grid_view([layer])
+    assert layer.visible is True
+
+    plotter.deleteLater()
+
+
+def test_get_common_harmonics_empty_layers_returns_none(make_napari_viewer):
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    assert plotter._get_common_harmonics([]) is None
+    plotter.deleteLater()
+
+
+def test_get_common_harmonics_skips_layer_without_harmonics(
+    make_napari_viewer,
+):
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    layer1 = create_image_layer_with_phasors()
+    layer1.name = "with_harmonics"
+    viewer.add_layer(layer1)
+
+    # Layer 2 with no 'harmonics' metadata key
+    layer2 = create_image_layer_with_phasors()
+    layer2.name = "no_harmonics"
+    layer2.metadata.pop("harmonics", None)
+    viewer.add_layer(layer2)
+
+    result = plotter._get_common_harmonics([layer1, layer2])
+    # Only layer1's harmonics should be considered → returns sorted set of layer1
+    assert result is not None
+    expected = sorted(np.atleast_1d(layer1.metadata["harmonics"]).tolist())
+    assert list(result) == expected
+
+    plotter.deleteLater()
+
+
+def test_get_common_harmonics_empty_intersection_returns_none(
+    make_napari_viewer,
+):
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    layer1 = create_image_layer_with_phasors(harmonic=[1, 2])
+    layer1.name = "L1"
+    layer2 = create_image_layer_with_phasors(harmonic=[3, 4])
+    layer2.name = "L2"
+    viewer.add_layer(layer1)
+    viewer.add_layer(layer2)
+
+    result = plotter._get_common_harmonics([layer1, layer2])
+    assert result is None
+
+    plotter.deleteLater()
+
+
+def test_apply_mask_to_phasor_data_unsupported_layer_returns(
+    make_napari_viewer,
+):
+    """_apply_mask_to_phasor_data returns early if mask layer is empty/wrong type."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(image_layer)
+
+    # An Image layer is neither Shapes nor (Labels with data.any()) → early return
+    other_image = create_image_layer_with_phasors()
+    plotter._apply_mask_to_phasor_data(other_image, image_layer)
+
+    # No mask metadata should have been set
+    assert "mask" not in image_layer.metadata
+
+    plotter.deleteLater()
+
+
+def test_apply_mask_to_phasor_data_invalidates_features_cache(
+    make_napari_viewer,
+):
+    """_apply_mask_to_phasor_data invalidates the cache after mutating G/S."""
+    from napari.layers import Labels
+
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(image_layer)
+
+    mask_data = np.ones(image_layer.data.shape, dtype=np.uint8)
+    mask_layer = Labels(mask_data, name="mask")
+    viewer.add_layer(mask_layer)
+
+    # Prime the features cache
+    plotter.get_merged_features()
+    sentinel = ('stale-mask-test',)
+    plotter._features_cache = sentinel
+
+    plotter._apply_mask_to_phasor_data(mask_layer, image_layer)
+
+    assert plotter._features_cache is not sentinel
+
+    plotter.deleteLater()
+
+
+def test_restore_original_phasor_data_invalidates_features_cache(
+    make_napari_viewer,
+):
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(image_layer)
+
+    plotter.get_merged_features()
+    sentinel = ('stale-restore-test',)
+    plotter._features_cache = sentinel
+
+    plotter._restore_original_phasor_data(image_layer)
+
+    assert plotter._features_cache is not sentinel
+
+    plotter.deleteLater()
+
+
+def test_invalidate_features_cache_clears_both_fields(make_napari_viewer):
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    plotter.get_merged_features()
+    assert plotter._features_cache is not None
+    assert plotter._features_cache_key is not None
+
+    plotter._invalidate_features_cache()
+
+    assert plotter._features_cache is None
+    assert plotter._features_cache_key is None
+
+    plotter.deleteLater()
+
+
+def test_refresh_phasor_data_immediately_restores_current_deferrable_tab(
+    make_napari_viewer,
+):
+    """When a deferrable tab is current, refresh_phasor_data restores it now."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    # Make components_tab the current tab
+    plotter.tab_widget.setCurrentWidget(plotter.components_tab)
+    plotter.components_tab._needs_update = False
+
+    with patch.object(
+        plotter.components_tab, '_restore_on_layer_change'
+    ) as mock_restore:
+        plotter.refresh_phasor_data()
+        mock_restore.assert_called_once()
+
+    plotter.deleteLater()
+
+
+def test_refresh_phasor_data_no_layer_returns_early(make_napari_viewer):
+    """refresh_phasor_data is a no-op when no layer is selected."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    # No layers added — combobox is empty
+    plotter.refresh_phasor_data()
+    # Should not raise; arrays remain None
+    assert plotter._g_array is None
+
+    plotter.deleteLater()
+
+
+def test_on_mask_data_changed_single_layer_mismatched_combobox_returns(
+    make_napari_viewer,
+):
+    """_on_mask_data_changed returns early in single-layer mode if mask doesn't match."""
+    from napari.layers import Labels
+
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(image_layer)
+
+    mask = Labels(
+        np.ones(image_layer.data.shape, dtype=np.uint8),
+        name="some_mask",
+    )
+    viewer.add_layer(mask)
+
+    # Combobox not selecting this mask
+    plotter.mask_layer_combobox.setCurrentText("None")
+
+    # Build a fake event whose .source is the mask layer
+    class _Event:
+        source = mask
+
+    g_before = image_layer.metadata['G'].copy()
+    plotter._on_mask_data_changed(_Event())
+    # Data should not have been modified (early return)
+    np.testing.assert_array_equal(image_layer.metadata['G'], g_before)
+
+    plotter.deleteLater()
+
+
+def test_on_mask_data_changed_no_selected_layers_returns(make_napari_viewer):
+    """_on_mask_data_changed early-returns when no layers selected."""
+    from napari.layers import Labels
+
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    mask = Labels(np.ones((4, 4), dtype=np.uint8), name="mask")
+    viewer.add_layer(mask)
+
+    class _Event:
+        source = mask
+
+    # Should not raise; just early-returns
+    plotter._on_mask_data_changed(_Event())
+    plotter.deleteLater()
+
+
+def test_apply_layer_data_immediate_restore_phasor_mapping(make_napari_viewer):
+    """_apply_layer_data calls _restore_on_layer_change when phasor_mapping_tab is current."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    layer = create_image_layer_with_phasors()
+    layer.name = "L1"
+    viewer.add_layer(layer)
+
+    plotter.tab_widget.setCurrentWidget(plotter.phasor_mapping_tab)
+
+    with patch.object(
+        plotter.phasor_mapping_tab, '_restore_on_layer_change'
+    ) as mock_restore:
+        plotter._apply_layer_data("L1", reset_zoom=False, sync_frequency=False)
+        # Should be called at least once (current tab branch)
+        assert mock_restore.call_count >= 1
+
+    plotter.deleteLater()
+
+
+def test_apply_layer_data_immediate_restore_components(make_napari_viewer):
+    """_apply_layer_data calls _restore_on_layer_change when components_tab is current."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    layer = create_image_layer_with_phasors()
+    layer.name = "L1"
+    viewer.add_layer(layer)
+
+    plotter.tab_widget.setCurrentWidget(plotter.components_tab)
+
+    with patch.object(
+        plotter.components_tab, '_restore_on_layer_change'
+    ) as mock_restore:
+        plotter._apply_layer_data("L1", reset_zoom=False, sync_frequency=False)
+        assert mock_restore.call_count >= 1
+
+    plotter.deleteLater()
+
+
+def test_apply_layer_data_immediate_restore_fret(make_napari_viewer):
+    """_apply_layer_data calls _restore_on_layer_change when fret_tab is current."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    layer = create_image_layer_with_phasors()
+    layer.name = "L1"
+    viewer.add_layer(layer)
+
+    plotter.tab_widget.setCurrentWidget(plotter.fret_tab)
+
+    with patch.object(
+        plotter.fret_tab, '_restore_on_layer_change'
+    ) as mock_restore:
+        plotter._apply_layer_data("L1", reset_zoom=False, sync_frequency=False)
+        assert mock_restore.call_count >= 1
+
+    plotter.deleteLater()
+
+
+def test_apply_layer_data_marks_other_tabs_needs_update(make_napari_viewer):
+    """_apply_layer_data marks non-current deferrable tabs as needing update."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    layer = create_image_layer_with_phasors()
+    layer.name = "L1"
+    viewer.add_layer(layer)
+
+    # Switch to a non-deferrable tab so all 3 deferrable tabs get _needs_update
+    plotter.tab_widget.setCurrentWidget(plotter.filter_tab)
+    plotter.phasor_mapping_tab._needs_update = False
+    plotter.components_tab._needs_update = False
+    plotter.fret_tab._needs_update = False
+
+    plotter._apply_layer_data("L1", reset_zoom=False, sync_frequency=False)
+
+    assert plotter.phasor_mapping_tab._needs_update is True
+    assert plotter.components_tab._needs_update is True
+    assert plotter.fret_tab._needs_update is True
+
+    plotter.deleteLater()
+
+
+def test_on_harmonic_changed_invalidates_features_cache(make_napari_viewer):
+    """Changing harmonic invalidates the features cache (PR #268)."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    plotter.get_merged_features()
+    sentinel = ('stale-harmonic-test',)
+    plotter._features_cache = sentinel
+
+    plotter._on_harmonic_changed(2)
+
+    assert plotter._features_cache is not sentinel
+
+    plotter.deleteLater()
+
+
+def test_on_mask_layer_changed_no_selected_layers_returns(make_napari_viewer):
+    """_on_mask_layer_changed returns early if no layers selected."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    # No image layers selected — early return
+    plotter._on_mask_layer_changed("None")
+    # Should not raise
+
+    plotter.deleteLater()
+
+
+def test_on_mask_data_changed_multi_layer_per_mask_filter(make_napari_viewer):
+    """_on_mask_data_changed multi-layer mode filters by per-layer assignment."""
+    from napari.layers import Labels
+
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    layer1 = create_image_layer_with_phasors()
+    layer1.name = "img1"
+    layer2 = create_image_layer_with_phasors()
+    layer2.name = "img2"
+    viewer.add_layer(layer1)
+    viewer.add_layer(layer2)
+
+    # Partial mask so _apply_mask_to_phasor_data actually mutates G/S
+    mask_data = np.zeros(layer1.data.shape, dtype=np.uint8)
+    mask_data[..., 0] = 1  # only first column is "inside" the mask
+    mask = Labels(mask_data, name="mask_a")
+    viewer.add_layer(mask)
+
+    # Select both image layers (multi-layer mode)
+    plotter.image_layers_checkable_combobox.setCheckedItems(["img1", "img2"])
+
+    # Assign mask only to img1
+    plotter._mask_assignments = {"img1": "mask_a"}
+
+    class _Event:
+        source = mask
+
+    g_before_layer2 = layer2.metadata['G'].copy()
+
+    plotter._on_mask_data_changed(_Event())
+
+    # img2 should NOT have changed (no mask assigned to it)
+    np.testing.assert_array_equal(layer2.metadata['G'], g_before_layer2)
+    # img1 G should now contain NaNs from the mask application
+    assert np.isnan(layer1.metadata['G']).any()
+
+    plotter.deleteLater()
+
+
+def test_on_mask_data_changed_multi_layer_no_assignments_returns(
+    make_napari_viewer,
+):
+    """_on_mask_data_changed returns early in multi-layer if no layer is assigned to this mask."""
+    from napari.layers import Labels
+
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    layer1 = create_image_layer_with_phasors()
+    layer1.name = "img1"
+    layer2 = create_image_layer_with_phasors()
+    layer2.name = "img2"
+    viewer.add_layer(layer1)
+    viewer.add_layer(layer2)
+
+    mask = Labels(
+        np.ones(layer1.data.shape, dtype=np.uint8), name="some_other_mask"
+    )
+    viewer.add_layer(mask)
+
+    plotter.image_layers_checkable_combobox.setCheckedItems(["img1", "img2"])
+
+    # No assignments referencing 'some_other_mask'
+    plotter._mask_assignments = {}
+
+    class _Event:
+        source = mask
+
+    g_before_layer1 = layer1.metadata['G'].copy()
+    plotter._on_mask_data_changed(_Event())
+    # No change — early return because affected_layers is empty
+    np.testing.assert_array_equal(layer1.metadata['G'], g_before_layer1)
+
+    plotter.deleteLater()

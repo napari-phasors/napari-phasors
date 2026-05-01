@@ -65,6 +65,7 @@ class FretWidget(QWidget):
         self.current_donor_circle = None
         self.current_background_circle = None
         self._updating_settings = False
+        self._needs_update = False  # Deferred update flag
 
         # Initialize parameters
         self.donor_background = 0.1
@@ -1585,6 +1586,11 @@ class FretWidget(QWidget):
 
     def _on_image_layer_changed(self):
         """Callback whenever the image layer with phasor features changes."""
+        self._teardown_on_layer_change()
+        self._restore_on_layer_change()
+
+    def _teardown_on_layer_change(self):
+        """Immediate cleanup: remove artists and disconnect signals."""
         if self.current_donor_line is not None:
             with contextlib.suppress(ValueError):
                 self.current_donor_line.remove()
@@ -1617,6 +1623,10 @@ class FretWidget(QWidget):
         self.colormap_contrast_limits = None
 
         self.histogram_widget.clear()
+
+    def _restore_on_layer_change(self):
+        """Deferred restore: update UI state from metadata."""
+        self._needs_update = False
 
         layer_name = self.parent_widget.get_primary_layer_name()
 

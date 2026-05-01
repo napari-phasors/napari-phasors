@@ -120,6 +120,7 @@ class ComponentsWidget(QWidget):
         # Flag to prevent clearing lifetime when updating from lifetime
         self._updating_from_lifetime = False
         self._updating_settings = False  # Flag to prevent recursive updates
+        self._needs_update = False  # Deferred update flag
 
         # Flag to track if analysis was attempted
         self._analysis_attempted = False
@@ -3149,6 +3150,11 @@ class ComponentsWidget(QWidget):
 
     def _on_image_layer_changed(self):
         """Callback whenever the image layer with phasor features changes."""
+        self._teardown_on_layer_change()
+        self._restore_on_layer_change()
+
+    def _teardown_on_layer_change(self):
+        """Immediate cleanup: remove artists and disconnect signals."""
         self.current_image_layer_name = (
             self.parent_widget.get_primary_layer_name()
         )
@@ -3187,6 +3193,10 @@ class ComponentsWidget(QWidget):
         self.comp2_fractions_layer = None
         self.fractions_colormap = None
         self.colormap_contrast_limits = None
+
+    def _restore_on_layer_change(self):
+        """Deferred restore: update UI state from metadata."""
+        self._needs_update = False
 
         self._update_lifetime_inputs_visibility()
 

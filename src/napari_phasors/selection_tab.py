@@ -111,6 +111,7 @@ class SelectionWidget(QWidget):
         # Initialize the current selection id to match the default
         self._current_selection_id = "None"
         self.selection_id = "None"
+        self._needs_update = False  # Deferred update flag
         self._phasors_selected_layer = None
 
         # Create refresh button and add it to the scroll area layout
@@ -132,10 +133,10 @@ class SelectionWidget(QWidget):
         if scroll_area_layout is not None:
             scroll_area_layout.addWidget(self.refresh_selection_button, 4, 3)
 
-        # Connect to multiple signals to handle both selection and text editing
-        self.selection_input_widget.phasor_selection_id_combobox.currentIndexChanged.connect(
-            self.on_selection_id_changed
-        )
+        # Connect to signals for user-initiated selection changes only.
+        # Use activated (user clicks dropdown) + editingFinished (user
+        # types in line edit).  Do NOT use currentIndexChanged — it fires
+        # on programmatic changes too, causing duplicate callbacks.
         self.selection_input_widget.phasor_selection_id_combobox.activated.connect(
             self.on_selection_id_changed
         )
@@ -468,6 +469,7 @@ class SelectionWidget(QWidget):
 
     def _on_image_layer_changed(self):
         """Callback when the image layer changes - restores cursors from metadata."""
+        self._needs_update = False
         self.circular_cursor_widget._on_image_layer_changed()
         self.polar_cursor_widget._on_image_layer_changed()
         self.elliptical_cursor_widget._on_image_layer_changed()
