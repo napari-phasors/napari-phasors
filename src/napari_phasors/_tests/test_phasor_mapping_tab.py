@@ -1840,3 +1840,106 @@ def test_mesh_overlay_range_edits_and_sliders(make_napari_viewer):
         assert min_v == int(0.2 * mapping_widget.modulation_range_factor)
         assert max_v == int(0.6 * mapping_widget.modulation_range_factor)
         mock_apply.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# Coverage tests for PR #268: deferred tab teardown/restore
+# ---------------------------------------------------------------------------
+
+
+def test_phasor_mapping_teardown_clears_state_when_no_layer(
+    make_napari_viewer,
+):
+    """_teardown_on_layer_change resets all per-layer state when no layer."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    # Pre-seed some state to ensure teardown clears it
+    mapping_widget.lifetime_data = np.array([1.0, 2.0])
+    mapping_widget.lifetime_data_original = np.array([1.0, 2.0])
+    mapping_widget.current_metric_data = np.array([3.0])
+    mapping_widget.current_metric_data_original = np.array([3.0])
+    mapping_widget.per_layer_lifetime_data = {"foo": np.array([1.0])}
+    mapping_widget.per_layer_lifetime_data_original = {"foo": np.array([1.0])}
+    mapping_widget.per_layer_metric_data = {"foo": np.array([1.0])}
+    mapping_widget.per_layer_metric_data_original = {"foo": np.array([1.0])}
+    mapping_widget.lifetime_layer = object()  # sentinel
+    mapping_widget.lifetime_layers = [object()]
+    mapping_widget.metric_layers = [object()]
+
+    # No layer added — get_primary_layer_name returns ""
+    mapping_widget._teardown_on_layer_change()
+
+    assert mapping_widget.lifetime_data is None
+    assert mapping_widget.lifetime_data_original is None
+    assert mapping_widget.current_metric_data is None
+    assert mapping_widget.current_metric_data_original is None
+    assert mapping_widget.per_layer_lifetime_data == {}
+    assert mapping_widget.per_layer_lifetime_data_original == {}
+    assert mapping_widget.per_layer_metric_data == {}
+    assert mapping_widget.per_layer_metric_data_original == {}
+    assert mapping_widget.lifetime_layer is None
+    assert mapping_widget.lifetime_layers == []
+    assert mapping_widget.metric_layers == []
+
+
+def test_phasor_mapping_teardown_no_op_when_layer_present(make_napari_viewer):
+    """_teardown_on_layer_change does NOT clear state when a layer is present."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    mapping_widget = parent.phasor_mapping_tab
+
+    sentinel = np.array([1.0, 2.0, 3.0])
+    mapping_widget.lifetime_data = sentinel
+
+    mapping_widget._teardown_on_layer_change()
+
+    # Should NOT have been cleared (layer is present)
+    assert mapping_widget.lifetime_data is sentinel
+
+
+def test_phasor_mapping_restore_with_layer_calls_lifetime_restore(
+    make_napari_viewer,
+):
+    """_restore_on_layer_change runs the with-layer branch."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    mapping_widget = parent.phasor_mapping_tab
+    mapping_widget._needs_update = True
+
+    with patch.object(
+        mapping_widget,
+        '_restore_lifetime_settings_from_metadata',
+    ) as mock_restore:
+        mapping_widget._restore_on_layer_change()
+        mock_restore.assert_called_once()
+
+    assert mapping_widget._needs_update is False
+
+
+def test_phasor_mapping_restore_without_layer_only_clears_flag(
+    make_napari_viewer,
+):
+    """_restore_on_layer_change clears _needs_update even with no layer."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+
+    mapping_widget = parent.phasor_mapping_tab
+    mapping_widget._needs_update = True
+
+    with patch.object(
+        mapping_widget,
+        '_restore_lifetime_settings_from_metadata',
+    ) as mock_restore:
+        mapping_widget._restore_on_layer_change()
+        mock_restore.assert_not_called()
+
+    # The flag is still cleared regardless
+    assert mapping_widget._needs_update is False
