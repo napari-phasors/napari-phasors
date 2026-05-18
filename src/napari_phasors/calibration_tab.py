@@ -381,39 +381,25 @@ class CalibrationWidget(QWidget):
     def _apply_existing_filters_and_thresholds(self, sample_layer):
         """Apply existing filter and threshold settings if they exist."""
         settings = sample_layer.metadata.get("settings", {})
-
         filter_settings = settings.get("filter", {})
-        filter_method = filter_settings.get("method")
-        filter_size = filter_settings.get("size")
-        filter_repeat = filter_settings.get("repeat")
-        sigma = filter_settings.get("sigma")
-        levels = filter_settings.get("levels")
 
-        threshold = settings.get("threshold")
-        threshold_upper = settings.get("threshold_upper")
-        threshold_method = settings.get("threshold_method")
+        # Build kwargs dict with only non-None values
+        kwargs = {}
+        for key, value in [
+            ("filter_method", filter_settings.get("method")),
+            ("size", filter_settings.get("size")),
+            ("repeat", filter_settings.get("repeat")),
+            ("sigma", filter_settings.get("sigma")),
+            ("levels", filter_settings.get("levels")),
+            ("threshold", settings.get("threshold")),
+            ("threshold_upper", settings.get("threshold_upper")),
+            ("threshold_method", settings.get("threshold_method")),
+        ]:
+            if value is not None:
+                kwargs[key] = value
 
-        if (
-            filter_method is not None
-            or filter_size is not None
-            or filter_repeat is not None
-            or sigma is not None
-            or levels is not None
-            or threshold is not None
-            or threshold_upper is not None
-            or threshold_method is not None
-        ):
-            apply_filter_and_threshold(
-                sample_layer,
-                threshold=threshold,
-                threshold_upper=threshold_upper,
-                threshold_method=threshold_method,
-                filter_method=filter_method,
-                size=filter_size,
-                repeat=filter_repeat,
-                sigma=sigma,
-                levels=levels,
-            )
+        if kwargs:
+            apply_filter_and_threshold(sample_layer, **kwargs)
 
     def _apply_phasor_transformation(self, sample_name, phi_zero, mod_zero):
         """Apply phasor transformation with given correction parameters."""

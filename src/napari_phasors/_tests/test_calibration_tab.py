@@ -491,3 +491,135 @@ def test_calibration_preserves_filters(make_napari_viewer):
     assert sample_layer.metadata["settings"]["threshold"] == 0.1
     assert sample_layer.metadata["settings"]["threshold_upper"] == 0.9
     assert sample_layer.metadata["settings"]["threshold_method"] == "Manual"
+
+
+def test_calibration_preserves_wavelet_sigma_filter(make_napari_viewer):
+    """Test that wavelet filters with sigma parameter are preserved during calibration/uncalibration."""
+    from napari_phasors._utils import apply_filter_and_threshold
+
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.calibration_tab
+
+    # Add uncalibrated layer
+    sample_layer = create_image_layer_with_phasors()
+    sample_layer.name = "sample_layer"
+    viewer.add_layer(sample_layer)
+
+    # Apply wavelet filter with sigma to the layer
+    apply_filter_and_threshold(
+        sample_layer,
+        threshold=0.05,
+        threshold_method="Otsu",
+        filter_method="wavelet",
+        sigma=2.5,
+        levels=2,
+    )
+
+    # Verify filter settings are stored
+    assert sample_layer.metadata["settings"]["filter"]["method"] == "wavelet"
+    assert sample_layer.metadata["settings"]["filter"]["sigma"] == 2.5
+    assert sample_layer.metadata["settings"]["filter"]["levels"] == 2
+    assert sample_layer.metadata["settings"]["threshold"] == 0.05
+    assert sample_layer.metadata["settings"]["threshold_method"] == "Otsu"
+
+    # Set up calibration
+    widget.calibration_widget.calibration_layer_combobox.setCurrentText(
+        "sample_layer"
+    )
+    widget.calibration_widget.frequency_input.setText("80")
+    widget.calibration_widget.lifetime_line_edit_widget.setText("2.0")
+
+    # Calibrate the layer
+    widget.calibration_widget.calibrate_push_button.click()
+
+    # Verify calibration happened
+    assert sample_layer.metadata["settings"]["calibrated"] is True
+
+    # Verify wavelet filter settings are still present after calibration
+    assert sample_layer.metadata["settings"]["filter"]["method"] == "wavelet"
+    assert sample_layer.metadata["settings"]["filter"]["sigma"] == 2.5
+    assert sample_layer.metadata["settings"]["filter"]["levels"] == 2
+    assert sample_layer.metadata["settings"]["threshold"] == 0.05
+    assert sample_layer.metadata["settings"]["threshold_method"] == "Otsu"
+
+    # Now uncalibrate the layer
+    widget.calibration_widget.calibrate_push_button.click()
+
+    # Verify uncalibration happened
+    assert sample_layer.metadata["settings"]["calibrated"] is False
+
+    # Verify wavelet filter settings are still preserved after uncalibration
+    assert sample_layer.metadata["settings"]["filter"]["method"] == "wavelet"
+    assert sample_layer.metadata["settings"]["filter"]["sigma"] == 2.5
+    assert sample_layer.metadata["settings"]["filter"]["levels"] == 2
+    assert sample_layer.metadata["settings"]["threshold"] == 0.05
+    assert sample_layer.metadata["settings"]["threshold_method"] == "Otsu"
+
+
+def test_calibration_preserves_wavelet_levels_filter(make_napari_viewer):
+    """Test that wavelet filters with different levels parameter are preserved during calibration/uncalibration."""
+    from napari_phasors._utils import apply_filter_and_threshold
+
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.calibration_tab
+
+    # Add uncalibrated layer
+    sample_layer = create_image_layer_with_phasors()
+    sample_layer.name = "sample_layer"
+    viewer.add_layer(sample_layer)
+
+    # Apply wavelet filter with different levels parameter
+    apply_filter_and_threshold(
+        sample_layer,
+        threshold=0.02,
+        threshold_upper=0.95,
+        threshold_method="Manual",
+        filter_method="wavelet",
+        sigma=1.5,
+        levels=4,
+    )
+
+    # Verify filter settings are stored with levels=4
+    assert sample_layer.metadata["settings"]["filter"]["method"] == "wavelet"
+    assert sample_layer.metadata["settings"]["filter"]["sigma"] == 1.5
+    assert sample_layer.metadata["settings"]["filter"]["levels"] == 4
+    assert sample_layer.metadata["settings"]["threshold"] == 0.02
+    assert sample_layer.metadata["settings"]["threshold_upper"] == 0.95
+    assert sample_layer.metadata["settings"]["threshold_method"] == "Manual"
+
+    # Set up calibration
+    widget.calibration_widget.calibration_layer_combobox.setCurrentText(
+        "sample_layer"
+    )
+    widget.calibration_widget.frequency_input.setText("80")
+    widget.calibration_widget.lifetime_line_edit_widget.setText("2.0")
+
+    # Calibrate the layer
+    widget.calibration_widget.calibrate_push_button.click()
+
+    # Verify calibration happened
+    assert sample_layer.metadata["settings"]["calibrated"] is True
+
+    # Verify wavelet filter settings with levels are preserved after calibration
+    assert sample_layer.metadata["settings"]["filter"]["method"] == "wavelet"
+    assert sample_layer.metadata["settings"]["filter"]["sigma"] == 1.5
+    assert sample_layer.metadata["settings"]["filter"]["levels"] == 4
+    assert sample_layer.metadata["settings"]["threshold"] == 0.02
+    assert sample_layer.metadata["settings"]["threshold_upper"] == 0.95
+    assert sample_layer.metadata["settings"]["threshold_method"] == "Manual"
+
+    # Now uncalibrate the layer
+    widget.calibration_widget.calibrate_push_button.click()
+
+    # Verify uncalibration happened
+    assert sample_layer.metadata["settings"]["calibrated"] is False
+
+    # Verify wavelet filter settings with levels are preserved after uncalibration
+    assert sample_layer.metadata["settings"]["filter"]["method"] == "wavelet"
+    assert sample_layer.metadata["settings"]["filter"]["sigma"] == 1.5
+    assert sample_layer.metadata["settings"]["filter"]["levels"] == 4
+    assert sample_layer.metadata["settings"]["threshold"] == 0.02
+    assert sample_layer.metadata["settings"]["threshold_upper"] == 0.95
+    assert sample_layer.metadata["settings"]["threshold_method"] == "Manual"
