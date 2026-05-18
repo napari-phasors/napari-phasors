@@ -2892,12 +2892,9 @@ class StatisticsTableWidget(QTableWidget):
 
                 if bin_centers is not None and bin_edges is not None:
                     counts, _ = np.histogram(valid, bins=bin_edges)
-                    total = counts.sum()
-                    com_val = (
-                        float(np.sum(bin_centers * counts) / total)
-                        if total > 0
-                        else float("nan")
-                    )
+                    com_val = np.average(bin_centers, weights=counts)
+                    print(bin_centers.shape)
+                    print(counts.shape)
                 else:
                     com_val = mean_val
             else:
