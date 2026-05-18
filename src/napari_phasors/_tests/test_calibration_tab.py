@@ -423,3 +423,71 @@ def test_on_image_layer_changed_with_frequency(make_napari_viewer):
 
     parent._sync_frequency_inputs_from_metadata()
     assert widget.calibration_widget.frequency_input.text() == "80.0"
+
+
+def test_calibration_preserves_filters(make_napari_viewer):
+    """Test that filters and thresholds are preserved during calibration/uncalibration."""
+    from napari_phasors._utils import apply_filter_and_threshold
+
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    widget = parent.calibration_tab
+
+    # Add uncalibrated layer
+    sample_layer = create_image_layer_with_phasors()
+    sample_layer.name = "sample_layer"
+    viewer.add_layer(sample_layer)
+
+    # Apply median filter with threshold to the layer
+    apply_filter_and_threshold(
+        sample_layer,
+        threshold=0.1,
+        threshold_upper=0.9,
+        threshold_method="Manual",
+        filter_method="median",
+        size=3,
+        repeat=1,
+    )
+
+    # Verify filter settings are stored
+    assert sample_layer.metadata["settings"]["filter"]["method"] == "median"
+    assert sample_layer.metadata["settings"]["filter"]["size"] == 3
+    assert sample_layer.metadata["settings"]["filter"]["repeat"] == 1
+    assert sample_layer.metadata["settings"]["threshold"] == 0.1
+    assert sample_layer.metadata["settings"]["threshold_upper"] == 0.9
+    assert sample_layer.metadata["settings"]["threshold_method"] == "Manual"
+
+    # Set up calibration
+    widget.calibration_widget.calibration_layer_combobox.setCurrentText(
+        "sample_layer"
+    )
+    widget.calibration_widget.frequency_input.setText("80")
+    widget.calibration_widget.lifetime_line_edit_widget.setText("2.0")
+
+    # Calibrate the layer
+    widget.calibration_widget.calibrate_push_button.click()
+
+    # Verify calibration happened
+    assert sample_layer.metadata["settings"]["calibrated"] is True
+
+    # Verify filter settings are still present after calibration
+    assert sample_layer.metadata["settings"]["filter"]["method"] == "median"
+    assert sample_layer.metadata["settings"]["filter"]["size"] == 3
+    assert sample_layer.metadata["settings"]["filter"]["repeat"] == 1
+    assert sample_layer.metadata["settings"]["threshold"] == 0.1
+    assert sample_layer.metadata["settings"]["threshold_upper"] == 0.9
+    assert sample_layer.metadata["settings"]["threshold_method"] == "Manual"
+
+    # Now uncalibrate the layer
+    widget.calibration_widget.calibrate_push_button.click()
+
+    # Verify uncalibration happened
+    assert sample_layer.metadata["settings"]["calibrated"] is False
+
+    # Verify threshold and filter settings are still preserved after uncalibration
+    assert sample_layer.metadata["settings"]["filter"]["method"] == "median"
+    assert sample_layer.metadata["settings"]["filter"]["size"] == 3
+    assert sample_layer.metadata["settings"]["filter"]["repeat"] == 1
+    assert sample_layer.metadata["settings"]["threshold"] == 0.1
+    assert sample_layer.metadata["settings"]["threshold_upper"] == 0.9
+    assert sample_layer.metadata["settings"]["threshold_method"] == "Manual"

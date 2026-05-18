@@ -383,21 +383,36 @@ class CalibrationWidget(QWidget):
         settings = sample_layer.metadata.get("settings", {})
 
         filter_settings = settings.get("filter", {})
+        filter_method = filter_settings.get("method")
         filter_size = filter_settings.get("size")
         filter_repeat = filter_settings.get("repeat")
+        sigma = filter_settings.get("sigma")
+        levels = filter_settings.get("levels")
 
         threshold = settings.get("threshold")
+        threshold_upper = settings.get("threshold_upper")
+        threshold_method = settings.get("threshold_method")
 
         if (
-            filter_size is not None
+            filter_method is not None
+            or filter_size is not None
             or filter_repeat is not None
+            or sigma is not None
+            or levels is not None
             or threshold is not None
+            or threshold_upper is not None
+            or threshold_method is not None
         ):
             apply_filter_and_threshold(
                 sample_layer,
                 threshold=threshold,
+                threshold_upper=threshold_upper,
+                threshold_method=threshold_method,
+                filter_method=filter_method,
                 size=filter_size,
                 repeat=filter_repeat,
+                sigma=sigma,
+                levels=levels,
             )
 
     def _apply_phasor_transformation(self, sample_name, phi_zero, mod_zero):
