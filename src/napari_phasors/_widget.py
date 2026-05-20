@@ -11,7 +11,7 @@ import glob
 import json
 import logging
 import os
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
@@ -336,7 +336,15 @@ class PhasorTransform(QWidget):
         for i in reversed(range(self.dynamic_widget_layout.count())):
             widget = self.dynamic_widget_layout.takeAt(i).widget()
             if widget is not None:
+                with suppress(Exception):
+                    widget.close()
                 widget.deleteLater()
+
+    def closeEvent(self, event):
+        """Close any dynamic widgets before the parent is destroyed."""
+        self._clear_dynamic_widgets()
+        event.accept()
+        super().closeEvent(event)
 
     def _show_path_text(self, text: str):
         """Show one-line path/status text and hide the multi-path list."""
@@ -738,6 +746,18 @@ class AdvancedOptionsWidget(QWidget):
         """Get signal data based on file type and current parameters.
         This method should be overridden by subclasses."""
         raise NotImplementedError("Subclasses must implement _get_signal_data")
+
+    def closeEvent(self, event):
+        """Dispose the matplotlib canvas before Qt tears down the widget."""
+        with suppress(Exception):
+            self.canvas.close()
+        with suppress(Exception):
+            plt.close(self.figure)
+        with suppress(Exception):
+            self.canvas.deleteLater()
+
+        event.accept()
+        super().closeEvent(event)
 
     def _frame_widget(self):
         """Add the frame widget to main layout."""
@@ -2337,6 +2357,20 @@ class WriterWidget(QWidget):
             self.export_layer_combobox.addItem(layer.name)
         # Update display to show placeholder if no items are checked
         self.export_layer_combobox._update_display_text()
+
+    def closeEvent(self, event):
+        """Disconnect viewer signals before the widget is destroyed."""
+        with suppress(ValueError, AttributeError):
+            self.viewer.layers.events.inserted.disconnect(
+                self._populate_combobox
+            )
+        with suppress(ValueError, AttributeError):
+            self.viewer.layers.events.removed.disconnect(
+                self._populate_combobox
+            )
+
+        event.accept()
+        super().closeEvent(event)
 
     def _save_file(
         self,
