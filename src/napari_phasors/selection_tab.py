@@ -468,7 +468,6 @@ class SelectionWidget(QWidget):
 
     def _on_image_layer_changed(self):
         """Callback when the image layer changes - restores cursors from metadata."""
-        self._needs_update = False
         self.circular_cursor_widget._on_image_layer_changed()
         self.polar_cursor_widget._on_image_layer_changed()
         self.elliptical_cursor_widget._on_image_layer_changed()

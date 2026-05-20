@@ -862,12 +862,8 @@ def test_components_fraction_range_updates_layer_and_is_reversible(
 def test_components_on_image_layer_changed_runs_teardown_and_restore(
     make_napari_viewer,
 ):
-    """_on_image_layer_changed wires teardown + restore (PR #268 refactor).
-
-    The refactor split the old monolithic handler into two methods. The
-    public _on_image_layer_changed now just calls them in order. This
-    direct invocation covers both call sites.
-    """
+    """test that _on_image_layer_changed calls both teardown and 
+    restore methods to properly handle layer changes"""
     viewer = make_napari_viewer()
     parent = PlotterWidget(viewer)
     layer = create_image_layer_with_phasors()

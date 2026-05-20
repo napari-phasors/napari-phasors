@@ -1108,7 +1108,7 @@ def test_filter_widget_no_duplicate_signal_connections(make_napari_viewer):
 
 
 def test_apply_threshold_invalidates_features_cache(make_napari_viewer):
-    """Regression test for #268: applying threshold must update the phasor plot.
+    """Regression test for applying threshold must update the phasor plot.
 
     The plotter caches merged features keyed on (selected layer names,
     harmonic). After applying a filter/threshold, the layer's G/S arrays
@@ -1147,7 +1147,7 @@ def test_apply_threshold_invalidates_features_cache(make_napari_viewer):
 
 
 def test_apply_threshold_marks_deferred_tabs_for_update(make_napari_viewer):
-    """Regression test for #268: deferred tabs must be marked stale after
+    """Regression test deferred tabs must be marked stale after
     a filter/threshold is applied so they refresh when next visible.
     """
     viewer = make_napari_viewer()

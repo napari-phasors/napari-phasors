@@ -2783,12 +2783,6 @@ def test_phasor_center_grouped_median_uses_pooled_samples(make_napari_viewer):
     plotter.deleteLater()
 
 
-# ---------------------------------------------------------------------------
-# Coverage tests for PR #268: deferred tab updates, cache invalidation,
-# grid-view no-op skip, mask data path, common-harmonics edges
-# ---------------------------------------------------------------------------
-
-
 def test_run_deferred_tab_update_restore_branch(make_napari_viewer):
     """_run_deferred_tab_update calls _restore_on_layer_change on dirty current tab."""
     viewer = make_napari_viewer()
@@ -3293,7 +3287,7 @@ def test_apply_layer_data_marks_other_tabs_needs_update(make_napari_viewer):
 
 
 def test_on_harmonic_changed_invalidates_features_cache(make_napari_viewer):
-    """Changing harmonic invalidates the features cache (PR #268)."""
+    """Changing harmonic invalidates the features cache."""
     viewer = make_napari_viewer()
     plotter = PlotterWidget(viewer)
     layer = create_image_layer_with_phasors()

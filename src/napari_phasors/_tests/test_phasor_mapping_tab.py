@@ -1842,11 +1842,6 @@ def test_mesh_overlay_range_edits_and_sliders(make_napari_viewer):
         mock_apply.assert_called()
 
 
-# ---------------------------------------------------------------------------
-# Coverage tests for PR #268: deferred tab teardown/restore
-# ---------------------------------------------------------------------------
-
-
 def test_phasor_mapping_teardown_clears_state_when_no_layer(
     make_napari_viewer,
 ):
