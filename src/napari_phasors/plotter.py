@@ -5612,10 +5612,6 @@ class PlotterWidget(QWidget):
 
         mask_layer = event.source
 
-        # Clear labels on NaN pixels before applying the mask
-        for image_layer in affected_layers:
-            self._clear_labels_on_nan_pixels(mask_layer, image_layer)
-
         for image_layer in affected_layers:
             invert = self._mask_invert_assignments.get(image_layer.name, False)
             self._restore_original_phasor_data(image_layer)
@@ -5635,34 +5631,6 @@ class PlotterWidget(QWidget):
                 self.filter_tab.apply_button_clicked()
 
         self.refresh_current_plot()
-
-    def _clear_labels_on_nan_pixels(self, mask_layer, image_layer):
-        """Clear labels on pixels where original image data is NaN.
-
-        Parameters
-        ----------
-        mask_layer : napari.layers.Labels
-            The mask labels layer to modify.
-        image_layer : napari.layers.Image
-            The image layer whose original data defines NaN pixels.
-        """
-        if not isinstance(mask_layer, Labels):
-            return
-
-        # Use original data to find true NaN pixels
-        original = image_layer.metadata.get('original_mean')
-        if original is None:
-            original = image_layer.data
-
-        nan_mask = np.isnan(original)
-        if not nan_mask.any():
-            return
-
-        # Only modify if there are labels on NaN pixels
-        if np.any(mask_layer.data[nan_mask] != 0):
-            new_data = mask_layer.data.copy()
-            new_data[nan_mask] = 0
-            mask_layer.data = new_data
 
     def _on_mask_invert_changed(self, checked):
         """Handle invert checkbox state change."""

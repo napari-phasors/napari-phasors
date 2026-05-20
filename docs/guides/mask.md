@@ -46,10 +46,6 @@ You can invert a mask so that pixels **outside** the drawn region are included i
 
 When using the **Assign Masks** dialog (for multiple image layers), each layer has its own **Invert** checkbox, allowing independent inversion per layer.
 
-## NaN-aware mask painting
-
-When painting a labels layer to use as a mask, pixels that have no intensity data (NaN values) are automatically excluded. This means the paint bucket tool will not label background pixels that lack signal data, ensuring only meaningful regions are included in the mask.
-
 ## Assigning masks to image layers
 
 - You can assign a mask to a single image layer, restricting phasor analysis to that region only.

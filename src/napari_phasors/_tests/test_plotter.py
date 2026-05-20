@@ -2786,7 +2786,7 @@ def test_phasor_center_grouped_median_uses_pooled_samples(make_napari_viewer):
 
 
 # ------------------------------------------------------------------ #
-#  Tests for Issue #257: Mask inversion & NaN-aware mask painting     #
+#  Tests for Issue #257: Mask inversion                              #
 # ------------------------------------------------------------------ #
 
 
@@ -2983,87 +2983,7 @@ def test_apply_mask_assignments_with_invert(make_napari_viewer):
     assert np.isnan(g2_2d[shape[0] // 2 :, :]).all()
 
 
-# --- Feature 2: NaN-aware mask painting ---
-
-
-def test_nan_pixels_cleared_after_mask_paint(make_napari_viewer):
-    """Test labels on NaN-intensity pixels cleared after paint."""
-    viewer = make_napari_viewer()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-    plotter = PlotterWidget(viewer)
-
-    # Set first row to NaN in original data
-    layer.metadata['original_mean'] = layer.data.copy()
-    layer.data[0, :] = np.nan
-    layer.metadata['original_mean'][0, :] = np.nan
-
-    shape = _make_mask_shape(layer)
-    mask_data = np.ones(shape, dtype=int)
-    labels_layer = viewer.add_labels(mask_data, name="paint_mask")
-
-    plotter.mask_layer_combobox.setCurrentText("paint_mask")
-
-    # Simulate paint event
-    labels_layer.data[:] = 1
-    event = type('Event', (), {'source': labels_layer})()
-    plotter._on_mask_data_changed(event)
-
-    # NaN pixels (first row) should have labels cleared
-    assert np.all(labels_layer.data[0, :] == 0)
-    # Non-NaN pixels should retain labels
-    assert np.all(labels_layer.data[1:, :] == 1)
-
-
-def test_nan_pixel_clearing_no_infinite_recursion(
-    make_napari_viewer,
-):
-    """Test NaN clearing does not trigger infinite recursion."""
-    viewer = make_napari_viewer()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-    plotter = PlotterWidget(viewer)
-
-    shape = _make_mask_shape(layer)
-    mask_data = np.ones(shape, dtype=int)
-    labels_layer = viewer.add_labels(mask_data, name="paint_mask")
-
-    plotter.mask_layer_combobox.setCurrentText("paint_mask")
-
-    # Call multiple times — should not recurse
-    event = type('Event', (), {'source': labels_layer})()
-    for _ in range(5):
-        plotter._on_mask_data_changed(event)
-
-
-def test_nan_pixel_clearing_uses_original_data(
-    make_napari_viewer,
-):
-    """Test NaN clearing uses original data, not masked data."""
-    viewer = make_napari_viewer()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-    plotter = PlotterWidget(viewer)
-
-    # Set only first row as originally NaN
-    original_data = layer.data.copy()
-    original_data[0, :] = np.nan
-    layer.metadata['original_mean'] = original_data.copy()
-    layer.data = original_data.copy()
-
-    shape = _make_mask_shape(layer)
-    mask_data = np.ones(shape, dtype=int)
-    labels_layer = viewer.add_labels(mask_data, name="paint_mask")
-
-    plotter.mask_layer_combobox.setCurrentText("paint_mask")
-
-    # Simulate mask making row 1 NaN too (not original)
-    layer.data[1, :] = np.nan
-
-    # Only original NaN (row 0) should be cleared
-    plotter._clear_labels_on_nan_pixels(labels_layer, layer)
-    assert np.all(labels_layer.data[0, :] == 0)
-    assert np.all(labels_layer.data[1, :] == 1)
+# --- NaN-aware mask painting removed (moved to a follow-up PR per #257) ---
 
 
 # --- Coverage gap tests for issue #257 ---
@@ -3204,53 +3124,6 @@ def test_on_mask_data_changed_multi_layer_no_affected(
     # Should return early — no masks applied
     assert "mask" not in layer1.metadata
     assert "mask" not in layer2.metadata
-
-
-def test_clear_labels_on_nan_skips_non_labels(
-    make_napari_viewer,
-):
-    """Test _clear_labels_on_nan_pixels skips non-Labels layers."""
-    viewer = make_napari_viewer()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-    plotter = PlotterWidget(viewer)
-
-    shape = _make_mask_shape(layer)
-    rect = np.array(
-        [[0, 0], [0, shape[1]], [shape[0], shape[1]], [shape[0], 0]]
-    )
-    shapes_layer = viewer.add_shapes(
-        [rect], shape_type="polygon", name="shape_mask"
-    )
-
-    # Should return early without error
-    plotter._clear_labels_on_nan_pixels(shapes_layer, layer)
-
-
-def test_clear_labels_on_nan_uses_current_data_fallback(
-    make_napari_viewer,
-):
-    """Test _clear_labels_on_nan_pixels uses image data when
-    original_mean is absent."""
-    viewer = make_napari_viewer()
-    layer = create_image_layer_with_phasors()
-    viewer.add_layer(layer)
-    plotter = PlotterWidget(viewer)
-
-    # Remove original_mean so the fallback is used
-    layer.metadata.pop("original_mean", None)
-
-    # Set first row to NaN directly in current data
-    layer.data[0, :] = np.nan
-
-    shape = _make_mask_shape(layer)
-    labels_layer = viewer.add_labels(np.ones(shape, dtype=int), name="mask")
-
-    plotter._clear_labels_on_nan_pixels(labels_layer, layer)
-
-    # First row NaN pixels should have labels cleared
-    assert np.all(labels_layer.data[0, :] == 0)
-    assert np.all(labels_layer.data[1:, :] == 1)
 
 
 def test_open_mask_assignment_dialog_applies_invert(
