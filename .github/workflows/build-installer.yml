@@ -53,6 +53,24 @@ jobs:
         shell: bash -el {0}
         run: |
           cd installer
+          # constructor's license_file requires ASCII-only content. The
+          # LICENSE contains a non-ASCII character ('í' in an author
+          # name) so we transliterate it to ASCII first. Per Bruno's
+          # review suggestion on PR #219.
+          python - <<'PY'
+          import unicodedata
+          from pathlib import Path
+
+          source = Path("../LICENSE")
+          target = Path("LICENSE.ascii.txt")
+          text = source.read_text(encoding="utf-8")
+          ascii_text = (
+              unicodedata.normalize("NFKD", text)
+              .encode("ascii", "ignore")
+              .decode("ascii")
+          )
+          target.write_text(ascii_text, encoding="ascii")
+          PY
           cat > construct.yaml <<'ENDOFYAML'
           name: napari-phasors
           version: VERSION_PLACEHOLDER
@@ -66,7 +84,7 @@ jobs:
             - pyqt6
             - pip
           post_install: POST_INSTALL_PLACEHOLDER
-          license_file: ../LICENSE
+          license_file: LICENSE.ascii.txt
           ENDOFYAML
           # YAML literal block scalar (|) already strips leading
           # indentation, so the heredoc content is at column 0.
