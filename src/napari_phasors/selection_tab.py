@@ -111,7 +111,6 @@ class SelectionWidget(QWidget):
         # Initialize the current selection id to match the default
         self._current_selection_id = "None"
         self.selection_id = "None"
-        self._needs_update = False  # Deferred update flag
         self._phasors_selected_layer = None
 
         # Create refresh button and add it to the scroll area layout
