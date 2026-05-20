@@ -16,7 +16,6 @@ import numpy as np
 import pandas as pd
 from matplotlib.colors import LinearSegmentedColormap
 from napari.layers import Image
-from napari.utils.notifications import show_info
 from phasorpy.io import phasor_to_ometiff
 
 from ._utils import show_activity_progress
@@ -192,85 +191,88 @@ def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
                 metadata_dict['PhysicalSizeXUnit'] = 'µm'
 
     pbr = show_activity_progress(desc="Saving OME-TIFF...", total=2)
+    try:
+        if has_phasor_data:
+            # Export with phasor data
+            mean = metadata["original_mean"]
+            G = metadata["G_original"]
+            S = metadata["S_original"]
+            harmonics = metadata["harmonics"]
+            if "settings" in metadata:
+                settings = metadata["settings"].copy()
+            else:
+                settings = {}
+            if "summed_signal" in metadata:
+                summed = metadata["summed_signal"]
+                settings["summed_signal"] = (
+                    summed.tolist() if hasattr(summed, 'tolist') else summed
+                )
+            if z_spacing_um is not None:
+                settings["z_spacing_um"] = z_spacing_um
 
-    if has_phasor_data:
-        # Export with phasor data
-        mean = metadata["original_mean"]
-        G = metadata["G_original"]
-        S = metadata["S_original"]
-        harmonics = metadata["harmonics"]
-        if "settings" in metadata:
-            settings = metadata["settings"].copy()
-        else:
-            settings = {}
-        if "summed_signal" in metadata:
-            summed = metadata["summed_signal"]
-            settings["summed_signal"] = (
-                summed.tolist() if hasattr(summed, 'tolist') else summed
+            # Convert NumPy arrays in selections to lists for JSON serialization
+            if "selections" in settings:
+                # Make a copy of selections dict to avoid mutating the layer's metadata
+                settings["selections"] = settings["selections"].copy()
+                if "manual_selections" in settings["selections"]:
+                    # Note: The following code is commented out to avoid saving large selection maps.
+                    # manual_selections = {}
+                    # for sel_id, sel_array in settings["selections"]["manual_selections"].items():
+                    #     manual_selections[sel_id] = (
+                    #         sel_array.tolist() if hasattr(sel_array, 'tolist') else sel_array
+                    #     )
+                    # settings["selections"]["manual_selections"] = manual_selections
+                    del settings["selections"]["manual_selections"]
+
+            settings["version"] = str(
+                importlib.metadata.version('napari-phasors')
             )
-        if z_spacing_um is not None:
-            settings["z_spacing_um"] = z_spacing_um
+            settings = _convert_numpy_types(settings)
+            description = json.dumps(
+                {"napari_phasors_settings": json.dumps(settings)}
+            )
+            pbr.set_description("Writing phasor data...")
+            pbr.update(1)
+            phasor_to_ometiff(
+                path,
+                mean,
+                G,
+                S,
+                harmonic=harmonics,
+                description=description,
+                dims=dims,
+                metadata=metadata_dict,
+            )
+        else:
+            # Export without phasor data - just save the raw image data
+            import tifffile
 
-        # Convert NumPy arrays in selections to lists for JSON serialization
-        if "selections" in settings:
-            # Make a copy of selections dict to avoid mutating the layer's metadata
-            settings["selections"] = settings["selections"].copy()
-            if "manual_selections" in settings["selections"]:
-                # Note: The following code is commented out to avoid saving large selection maps.
-                # manual_selections = {}
-                # for sel_id, sel_array in settings["selections"]["manual_selections"].items():
-                #     manual_selections[sel_id] = (
-                #         sel_array.tolist() if hasattr(sel_array, 'tolist') else sel_array
-                #     )
-                # settings["selections"]["manual_selections"] = manual_selections
-                del settings["selections"]["manual_selections"]
+            # Prepare basic metadata
+            settings = {}
+            if "settings" in metadata:
+                settings = metadata["settings"].copy()
+            if z_spacing_um is not None:
+                settings["z_spacing_um"] = z_spacing_um
 
-        settings["version"] = str(importlib.metadata.version('napari-phasors'))
-        settings = _convert_numpy_types(settings)
-        description = json.dumps(
-            {"napari_phasors_settings": json.dumps(settings)}
-        )
-        pbr.set_description("Writing phasor data...")
-        pbr.update(1)
-        phasor_to_ometiff(
-            path,
-            mean,
-            G,
-            S,
-            harmonic=harmonics,
-            description=description,
-            dims=dims,
-            metadata=metadata_dict,
-        )
-    else:
-        # Export without phasor data - just save the raw image data
-        import tifffile
+            settings["version"] = str(
+                importlib.metadata.version('napari-phasors')
+            )
+            settings = _convert_numpy_types(settings)
+            description = json.dumps(
+                {"napari_phasors_settings": json.dumps(settings)}
+            )
 
-        # Prepare basic metadata
-        settings = {}
-        if "settings" in metadata:
-            settings = metadata["settings"].copy()
-        if z_spacing_um is not None:
-            settings["z_spacing_um"] = z_spacing_um
+            if dims:
+                metadata_dict['axes'] = dims
 
-        settings["version"] = str(importlib.metadata.version('napari-phasors'))
-        settings = _convert_numpy_types(settings)
-        description = json.dumps(
-            {"napari_phasors_settings": json.dumps(settings)}
-        )
-
-        if dims:
-            metadata_dict['axes'] = dims
-
-        tifffile.imwrite(
-            path,
-            data,
-            metadata=metadata_dict if metadata_dict else None,
-            description=description,
-        )
-
-    pbr.close()
-    show_info("Saved OME-TIFF")
+            tifffile.imwrite(
+                path,
+                data,
+                metadata=metadata_dict if metadata_dict else None,
+                description=description,
+            )
+    finally:
+        pbr.close()
     return [path]
 
 
