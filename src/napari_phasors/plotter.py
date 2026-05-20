@@ -7118,6 +7118,41 @@ class PlotterWidget(QWidget):
                 self.reset_layer_choices
             )
 
+        # Disconnect the per-layer event handlers that
+        # ``reset_layer_choices`` connected. Without this, those
+        # callbacks keep references to this (closing) PlotterWidget,
+        # and napari teardown can crash when those events fire on a
+        # half-destroyed widget — observed as a segmentation fault in
+        # _vispy/canvas.py under PySide6 + Python 3.14.
+        for layer in list(self.viewer.layers):
+            if isinstance(layer, Image):
+                with contextlib.suppress(
+                    TypeError, ValueError, AttributeError, RuntimeError
+                ):
+                    layer.events.name.disconnect(self.reset_layer_choices)
+            if isinstance(layer, (Shapes, Labels)):
+                with contextlib.suppress(
+                    TypeError, ValueError, AttributeError, RuntimeError
+                ):
+                    layer.events.name.disconnect(self.reset_layer_choices)
+            if isinstance(layer, Shapes):
+                with contextlib.suppress(
+                    TypeError, ValueError, AttributeError, RuntimeError
+                ):
+                    layer.events.data.disconnect(self._on_mask_data_changed)
+            if isinstance(layer, Labels):
+                with contextlib.suppress(
+                    TypeError, ValueError, AttributeError, RuntimeError
+                ):
+                    layer.events.paint.disconnect(self._on_mask_data_changed)
+                with contextlib.suppress(
+                    TypeError, ValueError, AttributeError, RuntimeError
+                ):
+                    layer.events.set_data.disconnect(
+                        self._on_mask_data_changed
+                    )
+        self._connected_layer_ids.clear()
+
         # Disconnect combobox-driven callbacks.
         combo = getattr(self, 'image_layers_checkable_combobox', None)
         if combo is not None:
