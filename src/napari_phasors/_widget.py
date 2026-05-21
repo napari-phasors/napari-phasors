@@ -2,7 +2,7 @@
 This module contains widgets to:
 
     - Transform FLIM and hyperspectral images into phasor space from
-      the following file formats: FBD, PTU, LSM, SDT, TIF, OME-TIFF.
+      the following file formats: FBD, PTU, LSM, SDT, TIF, OME-TIFF, H5.
     - Export phasor data to OME-TIFF or CSV files.
 
 """
@@ -132,6 +132,7 @@ class PhasorTransform(QWidget):
             ".ifli": IfliWidget,
             ".lif": LifWidget,
             ".json": JsonWidget,
+            ".h5": H5Widget,
         }
 
     def _open_file_dialog(self):
@@ -143,7 +144,7 @@ class PhasorTransform(QWidget):
         supported_filter = (
             "All files (*.tif *.tiff *.ome.tif *.ome.tiff *.ptu *.fbd *.sdt "
             "*.lsm *.czi *.flif *.bh *.b&h *.bhz *.bin *.r64 *.ref *.ifli "
-            "*.lif *.json)"
+            "*.lif *.json *.h5)"
         )
         selected_files, _ = QFileDialog.getOpenFileNames(
             self,
@@ -234,6 +235,7 @@ class PhasorTransform(QWidget):
             "*.ifli",
             "*.lif",
             "*.json",
+            "*.h5",
         )
 
         selected_entries, _ = QFileDialog.getOpenFileNames(
@@ -2149,6 +2151,160 @@ class ProcessedOnlyWidget(AdvancedOptionsWidget):
 
 class SimfcsWidget(ProcessedOnlyWidget):
     """Widget for SimFCS referenced phasor files (.r64, .ref)."""
+
+
+class H5Widget(AdvancedOptionsWidget):
+    """Widget for HDF5 histogram files (.h5)."""
+
+    def __init__(self, viewer, path):
+        """Initialize the widget."""
+        self.all_repetitions = 1
+        self.all_z = 1
+        self.all_channels = 1
+        self._read_h5_shape(path)
+        super().__init__(viewer, path)
+
+    def _read_h5_shape(self, path):
+        """Read available repetition, z, and channel counts."""
+        try:
+            import h5py
+
+            with h5py.File(path, "r") as h5:
+                data = h5["data"]
+                if data.ndim != 6:
+                    return
+                self.all_repetitions = int(data.shape[0])
+                self.all_z = int(data.shape[1])
+                self.all_channels = int(data.shape[5])
+        except Exception:  # noqa: BLE001
+            pass
+
+    def initUI(self):
+        """Initialize the user interface."""
+        self.mainLayout = QVBoxLayout()
+        self.setLayout(self.mainLayout)
+
+        self.mainLayout.addWidget(self.canvas)
+        self._harmonic_widget()
+        self._h5_selection_widgets()
+
+        self.btn = QPushButton("Phasor Transform")
+        self.btn.clicked.connect(
+            lambda: self._on_click(
+                self.path, self.reader_options, self.harmonics
+            )
+        )
+        self.mainLayout.addWidget(self.btn)
+
+        self.btn_data_calibration = QPushButton(
+            "Phasor Transform Data + REF/IRF"
+        )
+        self.btn_data_calibration.clicked.connect(
+            lambda: self._on_click_data_and_calibration(
+                self.path, self.reader_options, self.harmonics
+            )
+        )
+        self.mainLayout.addWidget(self.btn_data_calibration)
+
+        self._sync_h5_reader_options()
+        self._update_signal_plot()
+
+    def _h5_selection_widgets(self):
+        """Add HDF5 repetition, z, and channel selectors."""
+        self.repetition_combo = self._add_h5_index_combo(
+            "Repetition",
+            self.all_repetitions,
+        )
+        self.z_combo = self._add_h5_index_combo("Z", self.all_z)
+        self.channel_combo = self._add_h5_index_combo(
+            "Channel",
+            self.all_channels,
+        )
+
+        calibration_layout = QHBoxLayout()
+        self.reference_checkbox = QCheckBox("Acquire calibration")
+        self.reference_checkbox.stateChanged.connect(
+            self._on_h5_selection_changed
+        )
+        calibration_layout.addWidget(self.reference_checkbox)
+
+        calibration_layout.addWidget(QLabel("Use: "))
+        self.calibration_combo = QComboBox()
+        self.calibration_combo.addItems(["REF", "IRF"])
+        self.calibration_combo.currentIndexChanged.connect(
+            self._on_h5_selection_changed
+        )
+        calibration_layout.addWidget(self.calibration_combo)
+        calibration_layout.addStretch()
+        self.mainLayout.addLayout(calibration_layout)
+
+    def _add_h5_index_combo(self, label, count):
+        """Add one zero-based HDF5 index selector."""
+        layout = QHBoxLayout()
+        layout.addWidget(QLabel(f"{label}: "))
+
+        combo = QComboBox()
+        for index in range(max(1, int(count))):
+            combo.addItem(str(index))
+        combo.currentIndexChanged.connect(self._on_h5_selection_changed)
+
+        layout.addWidget(combo)
+        layout.addStretch()
+        self.mainLayout.addLayout(layout)
+        return combo
+
+    def _sync_h5_reader_options(self):
+        """Sync HDF5 selector state into reader options."""
+        self.reader_options["repetition"] = (
+            self.repetition_combo.currentIndex()
+        )
+        self.reader_options["z"] = self.z_combo.currentIndex()
+        self.reader_options["channel"] = self.channel_combo.currentIndex()
+        calibration = self.reference_checkbox.isChecked()
+        self.reader_options["reference"] = calibration
+        self.reader_options["irf"] = (
+            self.calibration_combo.currentText() == "IRF"
+        )
+        self.repetition_combo.setEnabled(not calibration)
+        self.z_combo.setEnabled(not calibration)
+
+    def _on_h5_selection_changed(self, index):
+        """Callback whenever HDF5 selection changes."""
+        self._sync_h5_reader_options()
+        self._update_signal_plot()
+
+    def _get_signal_data(self):
+        """Get selected HDF5 histogram signal."""
+        from phasorpy.io import signal_from_h5
+
+        try:
+            return signal_from_h5(self.path, **self.reader_options.copy())
+        except Exception as e:  # noqa: BLE001
+            show_error(f"Error reading HDF5 signal: {str(e)}")
+            return None
+
+    def _on_click(self, path, reader_options, harmonics):
+        """Callback whenever the calculate phasor button is clicked."""
+        self._sync_h5_reader_options()
+        super()._on_click(path, reader_options, harmonics)
+
+    def _on_click_data_and_calibration(
+        self, path, reader_options, harmonics
+    ):
+        """Import selected HDF5 data and matching REF or IRF."""
+        self._sync_h5_reader_options()
+
+        data_options = reader_options.copy()
+        data_options["reference"] = False
+        data_options["irf"] = False
+        super()._on_click(path, data_options, harmonics)
+
+        calibration_options = reader_options.copy()
+        calibration_options["reference"] = True
+        calibration_options["irf"] = (
+            self.calibration_combo.currentText() == "IRF"
+        )
+        super()._on_click(path, calibration_options, harmonics)
 
 
 class IfliWidget(ProcessedOnlyWidget):

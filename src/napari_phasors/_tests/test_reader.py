@@ -568,6 +568,117 @@ def test_reader_json_imaging():
     assert "G" in layer_data[1]["metadata"]
 
 
+def test_reader_h5_raw(monkeypatch):
+    """Test reading an HDF5 raw histogram file."""
+    signal = xr.DataArray(
+        np.ones((2, 2, 8), dtype=np.uint16),
+        dims=("Y", "X", "H"),
+        attrs={
+            "h5_selection": {
+                "repetition": 1,
+                "z": 2,
+                "channel": 3,
+            }
+        },
+    )
+
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".h5",
+        lambda path, reader_options: signal,
+    )
+
+    reader = napari_get_reader("example.h5", harmonics=[1])
+    assert callable(reader)
+
+    layer_data_list = reader("example.h5")
+    assert isinstance(layer_data_list, list) and len(layer_data_list) == 1
+    layer_data = layer_data_list[0]
+    assert "G" in layer_data[1]["metadata"]
+    assert "S" in layer_data[1]["metadata"]
+    assert layer_data[1]["metadata"]["settings"] == {
+        "repetition": 1,
+        "z": 2,
+        "channel": 3,
+    }
+
+
+def test_reader_h5_reference(monkeypatch):
+    """Test reading an HDF5 reference histogram file."""
+    signal = xr.DataArray(
+        np.ones((1, 1, 8), dtype=np.float32),
+        dims=("Y", "X", "H"),
+        attrs={
+            "h5_selection": {
+                "reference": True,
+                "channel": 3,
+            }
+        },
+    )
+
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".h5",
+        lambda path, reader_options: signal,
+    )
+
+    reader = napari_get_reader(
+        "example.h5",
+        reader_options={"reference": True, "channel": 3},
+        harmonics=[1],
+    )
+    assert callable(reader)
+
+    layer_data_list = reader("example.h5")
+    assert isinstance(layer_data_list, list) and len(layer_data_list) == 1
+    layer_data = layer_data_list[0]
+    assert layer_data[0].shape == (1, 1)
+    assert layer_data[1]["name"] == "example Reference: Channel 3"
+    assert layer_data[1]["metadata"]["settings"] == {
+        "reference": True,
+        "channel": 3,
+    }
+
+
+def test_reader_h5_irf(monkeypatch):
+    """Test reading an HDF5 IRF histogram file."""
+    signal = xr.DataArray(
+        np.ones((1, 1, 8), dtype=np.float32),
+        dims=("Y", "X", "H"),
+        attrs={
+            "h5_selection": {
+                "reference": True,
+                "irf": True,
+                "channel": 3,
+            }
+        },
+    )
+
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".h5",
+        lambda path, reader_options: signal,
+    )
+
+    reader = napari_get_reader(
+        "example.h5",
+        reader_options={"irf": True, "channel": 3},
+        harmonics=[1],
+    )
+    assert callable(reader)
+
+    layer_data_list = reader("example.h5")
+    assert isinstance(layer_data_list, list) and len(layer_data_list) == 1
+    layer_data = layer_data_list[0]
+    assert layer_data[0].shape == (1, 1)
+    assert layer_data[1]["name"] == "example IRF: Channel 3"
+    assert layer_data[1]["metadata"]["settings"] == {
+        "reference": True,
+        "irf": True,
+        "channel": 3,
+    }
+
+
 def test_reader_json_phasor():
     """Test reading a JSON phasor file."""
     json_file = fetch("Convallaria_m2_1740751781_phasor_ch1.json")

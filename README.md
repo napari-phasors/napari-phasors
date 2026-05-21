@@ -25,7 +25,7 @@ available at **[https://napari-phasors.readthedocs.io](https://napari-phasors.re
     - **Raw data formats:**
         - `.ptu`, `.fbd`, `.sdt`, `.lsm`, `.tif`, `.tiff`, `.czi`, `.flif`, `.bh`, `.b&h`, `.bhz`, `.lif`, `.bin`, `.json`
     - **Processed data formats:**
-        - `.ome.tif`, `.ome.tiff`, `.r64`, `.ref`, `.ifli`, `.lif`, `.json`
+        - `.ome.tif`, `.ome.tiff`, `.r64`, `.ref`, `.ifli`, `.lif`, `.json`, `.h5`
 - **Phasor analysis** on multiple layers simultaneously, including support for stacking multiple raw data files
 - **Calibration** using reference images with known lifetimes
 - **Filtering** with median, wavelet, and automatic thresholding (Otsu, Li, Yen)
