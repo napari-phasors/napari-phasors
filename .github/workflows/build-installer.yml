@@ -5,6 +5,9 @@ on:
     types: [published]
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build-installer:
     name: Build installer (${{ matrix.os }})
@@ -24,13 +27,12 @@ jobs:
             post_install: post_install.bat
 
     steps:
-      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+      - uses: actions/checkout@v4
 
       - name: Set up Miniforge
-        uses: conda-incubator/setup-miniconda@a4260408e20b96e80095f42ff7f1a15b27dd94ca # v3.0.4
+        uses: conda-incubator/setup-miniconda@v3
         with:
           miniforge-version: latest
-          conda-remove-defaults: "true"
 
       - name: Install constructor
         shell: bash -el {0}
