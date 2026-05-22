@@ -158,6 +158,23 @@ def test_statistics_table_widget_populates_rows(qtbot):
     assert row_names == {"Layer A", "Layer B"}
 
 
+def test_statistics_table_widget_handles_empty_histogram_bins(qtbot):
+    """StatisticsTableWidget should not crash when histogram counts are zero."""
+    table = StatisticsTableWidget()
+    qtbot.addWidget(table)
+
+    datasets = {"Layer A": np.array([10.0, 11.0, 12.0])}
+    bin_edges = np.array([0.0, 1.0, 2.0])
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
+
+    table.update_statistics(
+        datasets, bin_centers=bin_centers, bin_edges=bin_edges
+    )
+
+    assert table.rowCount() == 1
+    assert table.item(0, 1).text() == "nan"
+
+
 def test_statistics_dock_widget_updates_for_single_and_grouped_data(qtbot):
     """StatisticsDockWidget should toggle sections by histogram mode/data."""
     histogram_widget = HistogramWidget(bins=12)
