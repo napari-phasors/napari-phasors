@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from napari.layers import Image
+from napari.layers import Image, Labels
 from napari.utils.notifications import show_error, show_info
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QDoubleValidator, QIntValidator
@@ -2351,7 +2351,9 @@ class WriterWidget(QWidget):
         """Populate combobox with image layers."""
         self.export_layer_combobox.clear()
         image_layers = [
-            layer for layer in self.viewer.layers if isinstance(layer, Image)
+            layer
+            for layer in self.viewer.layers
+            if isinstance(layer, (Image, Labels))
         ]
         for layer in image_layers:
             self.export_layer_combobox.addItem(layer.name)
