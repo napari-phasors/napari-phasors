@@ -55,10 +55,6 @@ jobs:
         shell: bash -el {0}
         run: |
           cd installer
-          # constructor's license_file requires ASCII-only content. The
-          # LICENSE contains a non-ASCII character ('í' in an author
-          # name) so we transliterate it to ASCII first. Per Bruno's
-          # review suggestion on PR #219.
           python - <<'PY'
           import unicodedata
           from pathlib import Path
