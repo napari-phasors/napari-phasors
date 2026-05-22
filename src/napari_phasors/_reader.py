@@ -91,6 +91,18 @@ extension_mapping = {
             {"channel": (0, False), "dtype": (None, False)},
             reader_options,
         ),
+        ".h5": lambda path, reader_options: _parse_and_call_io_function(
+            path,
+            io.signal_from_h5,
+            {
+                "repetition": (0, False),
+                "z": (0, False),
+                "channel": (0, False),
+                "reference": (False, False),
+                "irf": (False, False),
+            },
+            reader_options,
+        ),
     },
     "processed": {
         ".ome.tif": lambda path, reader_options: _parse_and_call_io_function(
@@ -141,6 +153,7 @@ iter_index_mapping = {
     ".lif": None,
     ".bin": None,
     ".json": "C",
+    ".h5": None,
 }
 """This dictionary contains the mapping for the axis to iterate over
 when calculating phasor coordinates in the file.
@@ -308,12 +321,11 @@ def raw_file_reader(
         )
 
     settings = {}
-    if (
-        file_extension != '.fbd'
-        and hasattr(raw_data, "attrs")
-        and 'frequency' in raw_data.attrs
-    ):
-        settings['frequency'] = raw_data.attrs['frequency']
+    if hasattr(raw_data, "attrs"):
+        if file_extension != '.fbd' and 'frequency' in raw_data.attrs:
+            settings['frequency'] = raw_data.attrs['frequency']
+        if file_extension == ".h5":
+            settings.update(raw_data.attrs.get("h5_selection", {}))
 
     layers = []
     iter_axis = iter_index_mapping[file_extension]
@@ -344,17 +356,37 @@ def raw_file_reader(
             summed_signal = summed_signal.values
 
         # Only set channel for files that actually have channels (FLIM files)
-        if file_extension not in [".lsm", ".tif", ".tiff"]:
+        if (
+            file_extension not in [".lsm", ".tif", ".tiff"]
+            and "channel" not in settings
+        ):
             settings['channel'] = 0
 
         mean_intensity_image, G_image, S_image = phasor_from_signal(
             raw_data, axis=axis, harmonic=harmonics
         )
-        channel_suffix = (
-            " Intensity Image"
-            if iter_axis is None
-            else " Intensity Image: Channel 0"
-        )
+        if file_extension == ".h5" and settings.get("reference"):
+            calibration_name = "IRF" if settings.get("irf") else "Reference"
+            channel_suffix = (
+                f" {calibration_name}: Channel {settings.get('channel', 0)}"
+            )
+        elif file_extension == ".h5" and {
+            "repetition",
+            "z",
+            "channel",
+        }.issubset(settings):
+            channel_suffix = (
+                " Intensity Image: "
+                f"Rep {settings['repetition']}, "
+                f"Z {settings['z']}, "
+                f"Channel {settings['channel']}"
+            )
+        else:
+            channel_suffix = (
+                " Intensity Image"
+                if iter_axis is None
+                else " Intensity Image: Channel 0"
+            )
         add_kwargs = {
             "name": f"{filename}{channel_suffix}",
             "metadata": {

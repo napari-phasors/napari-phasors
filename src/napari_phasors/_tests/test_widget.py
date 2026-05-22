@@ -27,6 +27,7 @@ from napari_phasors._widget import (
     CziWidget,
     FbdWidget,
     LsmWidget,
+    H5Widget,
     OmeTifWidget,
     PhasorTransform,
     PtuWidget,
@@ -40,6 +41,7 @@ TEST_FORMATS = [
     (".lsm", LsmWidget),
     (".sdt", SdtWidget),
     (".ome.tif", None),
+    (".h5", H5Widget),
 ]
 
 
@@ -65,6 +67,8 @@ def test_phasor_transform_widget(make_napari_viewer):
             test_file_path = get_test_file_path("test_file.ptu")
         elif extension == ".ome.tif":
             test_file_path = get_test_file_path("test_file.ome.tif")
+        elif extension == ".h5":
+            test_file_path = "test_file.h5"
         elif extension == ".czi":
             test_file_path = get_test_file_path("test_file.czi")
         else:
@@ -800,6 +804,24 @@ def test_phasor_transform_with_ome_tif_reader_option(make_napari_viewer):
         assert widget.dynamic_widget_layout.count() == 1
         added_widget = widget.dynamic_widget_layout.itemAt(0).widget()
         assert isinstance(added_widget, OmeTifWidget)
+
+
+def test_phasor_transform_with_h5_reader_option(make_napari_viewer):
+    """Test PhasorTransform widget includes H5Widget in reader options."""
+    viewer = make_napari_viewer()
+    widget = PhasorTransform(viewer)
+
+    assert ".h5" in widget.reader_options
+
+    with patch(
+        "napari_phasors._widget.QFileDialog.getOpenFileNames",
+        return_value=(["test_file.h5"], ""),
+    ):
+        widget.search_button.click()
+
+        assert widget.dynamic_widget_layout.count() == 1
+        added_widget = widget.dynamic_widget_layout.itemAt(0).widget()
+        assert isinstance(added_widget, H5Widget)
 
 
 def test_signal_plot_canvas_properties(make_napari_viewer):
