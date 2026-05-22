@@ -3480,7 +3480,6 @@ def test_on_mask_data_changed_multi_layer_no_assignments_returns(
     plotter.deleteLater()
 
 
-
 def _make_mask_shape(layer):
     """Get the spatial shape for creating a mask from a layer."""
     G = layer.metadata["G"]
