@@ -170,8 +170,6 @@ jobs:
           # into the .app Resources so the app has an icon.
           if [ -f "${APP_DIR}/Contents/Resources/env/app.icns" ]; then
             cp "${APP_DIR}/Contents/Resources/env/app.icns" "${APP_DIR}/Contents/Resources/app.icns"
-          elif [ -f "${INSTALL_DIR}/app.icns" ]; then
-            cp "${INSTALL_DIR}/app.icns" "${APP_DIR}/Contents/Resources/app.icns"
           fi
           echo "=== Fixing shebangs in bundled env ==="
           ENV_BIN="${APP_DIR}/Contents/Resources/env/bin"
@@ -183,12 +181,30 @@ jobs:
           else
             PY_BIN="${ENV_BIN}/python"
           fi
-          # Rewrite python shebangs to point to the env python
+          # Rewrite python shebangs to point to the env python safely
           if [ -d "${ENV_BIN}" ]; then
-            find "${ENV_BIN}" -maxdepth 1 -type f -perm +111 -print0 \
-              | xargs -0 -I{} perl -pi.bak -e 's{^#!.*python.*}{#!'"${PY_BIN}"'}' {} || true
-            # remove backup files left by perl
-            find "${ENV_BIN}" -name '*.bak' -delete || true
+            python3 -c '
+          import os, sys
+          env_bin = sys.argv[1]
+          py_bin = sys.argv[2]
+          for filename in os.listdir(env_bin):
+              filepath = os.path.join(env_bin, filename)
+              if not os.path.isfile(filepath) or os.path.islink(filepath):
+                  continue
+              try:
+                  with open(filepath, "rb") as f:
+                      first_line = f.readline()
+                  if first_line.startswith(b"#!") and b"python" in first_line.lower():
+                      with open(filepath, "rb") as f:
+                          content = f.read()
+                      newline_pos = content.find(b"\n")
+                      new_first_line = b"#!" + py_bin.encode("utf-8") + b"\n"
+                      new_content = new_first_line + content[newline_pos+1:] if newline_pos != -1 else new_first_line
+                      with open(filepath, "wb") as f:
+                          f.write(new_content)
+              except Exception as e:
+                  print(f"Skipping {filepath}: {e}")
+          ' "${ENV_BIN}" "${PY_BIN}"
             chmod -R +x "${ENV_BIN}" || true
           fi
           # Remove absolute 'home' entries in pyvenv.cfg if present
