@@ -1511,6 +1511,80 @@ def test_phasor_mapping_widget_phase_modulation_layer_display(
     assert modulation_layer.colormap.name == "plasma"
 
 
+def test_phase_output_wraps_to_full_circle_in_full_polar_mode(
+    make_napari_viewer,
+):
+    """Phase output should be wrapped to [0, 2pi] in full polar mode."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    # Build a minimal layer with known negative phase values from phasor_to_polar.
+    # S < 0 yields negative angles that must wrap in full polar mode.
+    real = np.array([[[0.5, -0.5], [0.25, -0.25]]], dtype=float)
+    imag = np.array([[[-0.5, -0.5], [-0.25, -0.25]]], dtype=float)
+    layer = Image(
+        np.ones((2, 2), dtype=float),
+        name="PhaseWrapLayer",
+        metadata={
+            "original_mean": np.ones((2, 2), dtype=float),
+            "settings": {},
+            "G": real,
+            "S": imag,
+            "G_original": real.copy(),
+            "S_original": imag.copy(),
+            "harmonics": np.array([1]),
+        },
+    )
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+
+    expected_phase, _ = phasor_to_polar(real[0], imag[0])
+    expected_wrapped = np.mod(expected_phase, 2.0 * np.pi).flatten()
+
+    # Full Polar Plot toggle ON means full-circle mode.
+    parent.plotter_inputs_widget.semi_circle_checkbox.setChecked(True)
+    mapping_widget.output_mode_combobox.setCurrentText("Phase")
+    mapping_widget.calculate_output_data()
+
+    np.testing.assert_allclose(
+        mapping_widget.current_metric_data_original,
+        expected_wrapped,
+        rtol=1e-6,
+        atol=1e-6,
+    )
+    assert np.all(mapping_widget.current_metric_data_original >= 0.0)
+    assert np.all(mapping_widget.current_metric_data_original <= 2.0 * np.pi)
+
+
+def test_phase_range_defaults_to_0_2pi_in_full_polar_mode(
+    make_napari_viewer,
+):
+    """Phase map slider range should initialize to 0..2pi in full polar mode."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+
+    # Full Polar Plot toggle ON means full-circle mode.
+    parent.plotter_inputs_widget.semi_circle_checkbox.setChecked(True)
+    mapping_widget.output_mode_combobox.setCurrentText("Phase")
+    mapping_widget._on_calculate_lifetime_clicked()
+
+    expected_max = int(2.0 * np.pi * mapping_widget.lifetime_range_factor)
+    min_slider, max_slider = mapping_widget.lifetime_range_slider.value()
+
+    assert mapping_widget.lifetime_range_slider.minimum() == 0
+    assert mapping_widget.lifetime_range_slider.maximum() == expected_max
+    assert min_slider == 0
+    assert max_slider == expected_max
+    assert abs(mapping_widget.min_lifetime - 0.0) < 1e-9
+    assert abs(mapping_widget.max_lifetime - (2.0 * np.pi)) < 1e-6
+
+
 def test_phasor_mapping_widget_select_color_uses_napari_colormap(
     make_napari_viewer,
 ):
@@ -1840,3 +1914,101 @@ def test_mesh_overlay_range_edits_and_sliders(make_napari_viewer):
         assert min_v == int(0.2 * mapping_widget.modulation_range_factor)
         assert max_v == int(0.6 * mapping_widget.modulation_range_factor)
         mock_apply.assert_called()
+
+
+def test_phasor_mapping_teardown_clears_state_when_no_layer(
+    make_napari_viewer,
+):
+    """_teardown_on_layer_change resets all per-layer state when no layer."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    # Pre-seed some state to ensure teardown clears it
+    mapping_widget.lifetime_data = np.array([1.0, 2.0])
+    mapping_widget.lifetime_data_original = np.array([1.0, 2.0])
+    mapping_widget.current_metric_data = np.array([3.0])
+    mapping_widget.current_metric_data_original = np.array([3.0])
+    mapping_widget.per_layer_lifetime_data = {"foo": np.array([1.0])}
+    mapping_widget.per_layer_lifetime_data_original = {"foo": np.array([1.0])}
+    mapping_widget.per_layer_metric_data = {"foo": np.array([1.0])}
+    mapping_widget.per_layer_metric_data_original = {"foo": np.array([1.0])}
+    mapping_widget.lifetime_layer = object()  # sentinel
+    mapping_widget.lifetime_layers = [object()]
+    mapping_widget.metric_layers = [object()]
+
+    # No layer added — get_primary_layer_name returns ""
+    mapping_widget._teardown_on_layer_change()
+
+    assert mapping_widget.lifetime_data is None
+    assert mapping_widget.lifetime_data_original is None
+    assert mapping_widget.current_metric_data is None
+    assert mapping_widget.current_metric_data_original is None
+    assert mapping_widget.per_layer_lifetime_data == {}
+    assert mapping_widget.per_layer_lifetime_data_original == {}
+    assert mapping_widget.per_layer_metric_data == {}
+    assert mapping_widget.per_layer_metric_data_original == {}
+    assert mapping_widget.lifetime_layer is None
+    assert mapping_widget.lifetime_layers == []
+    assert mapping_widget.metric_layers == []
+
+
+def test_phasor_mapping_teardown_no_op_when_layer_present(make_napari_viewer):
+    """_teardown_on_layer_change does NOT clear state when a layer is present."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    mapping_widget = parent.phasor_mapping_tab
+
+    sentinel = np.array([1.0, 2.0, 3.0])
+    mapping_widget.lifetime_data = sentinel
+
+    mapping_widget._teardown_on_layer_change()
+
+    # Should NOT have been cleared (layer is present)
+    assert mapping_widget.lifetime_data is sentinel
+
+
+def test_phasor_mapping_restore_with_layer_calls_lifetime_restore(
+    make_napari_viewer,
+):
+    """_restore_on_layer_change runs the with-layer branch."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    mapping_widget = parent.phasor_mapping_tab
+    mapping_widget._needs_update = True
+
+    with patch.object(
+        mapping_widget,
+        '_restore_lifetime_settings_from_metadata',
+    ) as mock_restore:
+        mapping_widget._restore_on_layer_change()
+        mock_restore.assert_called_once()
+
+    assert mapping_widget._needs_update is False
+
+
+def test_phasor_mapping_restore_without_layer_only_clears_flag(
+    make_napari_viewer,
+):
+    """_restore_on_layer_change clears _needs_update even with no layer."""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+
+    mapping_widget = parent.phasor_mapping_tab
+    mapping_widget._needs_update = True
+
+    with patch.object(
+        mapping_widget,
+        '_restore_lifetime_settings_from_metadata',
+    ) as mock_restore:
+        mapping_widget._restore_on_layer_change()
+        mock_restore.assert_not_called()
+
+    # The flag is still cleared regardless
+    assert mapping_widget._needs_update is False

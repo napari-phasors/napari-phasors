@@ -20,7 +20,7 @@ from phasorpy.phasor import phasor_center as _phasor_center
 from phasorpy.phasor import phasor_to_polar
 from qtpy import uic
 from qtpy.QtCore import QEvent, Qt, QTimer
-from qtpy.QtGui import QColor
+from qtpy.QtGui import QColor, QCursor
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -130,14 +130,61 @@ def _patch_biaplotter_safe_toggle_sender():
     ):
         return
 
-    original = CanvasWidget._on_toggle_button
-
     def _on_toggle_button_safe(self, checked: bool):
         sender_obj = self.sender()
         sender_name = None
+        active_button_name = None
+
+        active_selector = getattr(self, 'active_selector', None)
+        if active_selector is not None:
+            for name, selector in getattr(self, 'selectors', {}).items():
+                if selector is active_selector:
+                    active_button_name = name
+                    break
+
         if sender_obj is not None:
             with contextlib.suppress(AttributeError, RuntimeError, TypeError):
                 sender_name = sender_obj.text()
+
+        # Non-Qt pan/zoom signals do not carry a sender, but they should still
+        # deactivate any active selector before we try to infer a toolbar button.
+        if (
+            sender_name is None
+            and checked
+            and self.toolbar.mode in {'pan/zoom', 'zoom rect'}
+        ):
+            self._deactivate_and_remove_all_selectors()
+            return
+
+        if sender_name is None and hasattr(self, 'selection_toolbar'):
+            checked_selector_names = [
+                name
+                for name, button in self.selection_toolbar.buttons.items()
+                if button.isCheckable() and button.isChecked()
+            ]
+
+            if checked:
+                if len(checked_selector_names) == 1:
+                    sender_name = checked_selector_names[0]
+                elif (
+                    active_button_name is not None
+                    and active_button_name in checked_selector_names
+                ):
+                    candidates = [
+                        name
+                        for name in checked_selector_names
+                        if name != active_button_name
+                    ]
+                    if len(candidates) == 1:
+                        sender_name = candidates[0]
+            else:
+                if (
+                    len(checked_selector_names) == 1
+                    and checked_selector_names[0] != active_button_name
+                ):
+                    sender_name = checked_selector_names[0]
+                elif not checked_selector_names and active_button_name:
+                    sender_name = active_button_name
 
         # Non-Qt emitters (psygnal) can call this with sender=None.
         # Preserve expected behavior for toolbar pan/zoom toggles.
@@ -146,7 +193,38 @@ def _patch_biaplotter_safe_toggle_sender():
                 self._deactivate_and_remove_all_selectors()
             return
 
-        return original(self, checked)
+        # Reproduce the original biaplotter behavior using the resolved sender.
+        if sender_name in self.selection_toolbar.buttons:
+            if checked:
+                if self.toolbar.mode == 'zoom rect':
+                    with self.toolbar.zoom_toggled_signal.blocked():
+                        self.toolbar.zoom()
+                elif self.toolbar.mode == 'pan/zoom':
+                    with self.toolbar.pan_toggled_signal.blocked():
+                        self.toolbar.pan()
+                self._deactivate_and_remove_all_selectors(
+                    except_this_button_name=sender_name
+                )
+                self.active_selector = sender_name
+            else:
+                checked_selector_names = [
+                    name
+                    for name, button in self.selection_toolbar.buttons.items()
+                    if button.isCheckable() and button.isChecked()
+                ]
+                if (
+                    len(checked_selector_names) == 1
+                    and checked_selector_names[0] != sender_name
+                ):
+                    self._deactivate_and_remove_all_selectors(
+                        except_this_button_name=checked_selector_names[0]
+                    )
+                    self.active_selector = checked_selector_names[0]
+                else:
+                    self._remove_all_selectors()
+                    self.canvas.setCursor(QCursor(Qt.ArrowCursor))
+        elif sender_name in ['Pan', 'Zoom'] and checked:
+            self._deactivate_and_remove_all_selectors()
 
     CanvasWidget._on_toggle_button = _on_toggle_button_safe
     CanvasWidget._napari_phasors_safe_toggle_sender_patch = True
@@ -1440,6 +1518,17 @@ class PlotterWidget(QWidget):
         self._mask_assignments = {}
         # Per-layer invert state: {image_layer_name: bool}
         self._mask_invert_assignments = {}
+
+        # Cache for get_merged_features() — avoids re-extracting phasor
+        # data when only visual parameters (bins, colormap, etc.) change.
+        self._features_cache = None
+        self._features_cache_key = None
+
+        # Track layer ids whose name/data events we've already wired up so
+        # ``reset_layer_choices`` doesn't reconnect every layer on every
+        # layer add/remove (which is O(N) per add → O(N²) overall during
+        # bulk loads).
+        self._connected_layer_ids = set()
 
         # Mask label and combobox (shown when 0-1 layers selected)
         self.mask_layer_label = QLabel("Mask Layer:")
@@ -3064,6 +3153,10 @@ class PlotterWidget(QWidget):
         """Handle tab change events to show/hide tab-specific lines."""
         current_tab = self.tab_widget.widget(index)
 
+        # Run deferred tab updates BEFORE visibility changes
+        # to avoid stale state being briefly visible.
+        self._run_deferred_tab_update(current_tab)
+
         if hasattr(self, 'phasor_mapping_tab'):
             self.phasor_mapping_tab.on_tab_visibility_changed(
                 current_tab == self.phasor_mapping_tab
@@ -3081,6 +3174,26 @@ class PlotterWidget(QWidget):
             self.filter_tab._update_histogram_if_needed()
 
         self.canvas_widget.figure.canvas.draw_idle()
+
+    def _run_deferred_tab_update(self, current_tab):
+        """Run deferred _on_image_layer_changed for the given tab."""
+        deferrable_tabs = []
+        for attr in (
+            'phasor_mapping_tab',
+            'components_tab',
+            'fret_tab',
+        ):
+            tab = getattr(self, attr, None)
+            if tab is not None:
+                deferrable_tabs.append(tab)
+
+        for tab in deferrable_tabs:
+            if tab is current_tab and getattr(tab, '_needs_update', False):
+                if hasattr(tab, '_restore_on_layer_change'):
+                    tab._restore_on_layer_change()
+                else:
+                    tab._on_image_layer_changed()
+                tab._needs_update = False
 
     def _hide_all_tab_artists(self):
         """Hide all tab-specific artists."""
@@ -3317,6 +3430,7 @@ class PlotterWidget(QWidget):
 
     def _on_harmonic_changed(self, value):
         """Callback for harmonic spinbox change."""
+        self._invalidate_features_cache()
         self._update_setting_in_metadata('harmonic', value)
         if not self._updating_settings:
             self.refresh_current_plot()
@@ -5102,35 +5216,32 @@ class PlotterWidget(QWidget):
                 else:
                     self._on_mask_layer_changed("None")
 
-            # Connect layer name change events (disconnect first to avoid duplicates)
+            # Connect layer name change events for layers we haven't
+            # wired up yet. Tracking by ``id(layer)`` avoids the O(N) per
+            # add reconnection that previously made bulk layer loads
+            # quadratic. We also drop ids of layers that have been
+            # removed so the set doesn't grow unbounded.
+            current_layer_ids = {
+                id(self.viewer.layers[name])
+                for name in layer_names + mask_layer_names
+            }
+            self._connected_layer_ids.intersection_update(current_layer_ids)
+
             for layer_name in layer_names + mask_layer_names:
                 layer = self.viewer.layers[layer_name]
+                layer_id = id(layer)
+                if layer_id in self._connected_layer_ids:
+                    continue
                 if isinstance(layer, Image):
-                    with contextlib.suppress(TypeError, ValueError):
-                        layer.events.name.disconnect(self.reset_layer_choices)
                     layer.events.name.connect(self.reset_layer_choices)
                 if isinstance(layer, (Shapes, Labels)):
-                    with contextlib.suppress(TypeError, ValueError):
-                        layer.events.name.disconnect(self.reset_layer_choices)
                     layer.events.name.connect(self.reset_layer_choices)
                 if isinstance(layer, Shapes):
-                    with contextlib.suppress(TypeError, ValueError):
-                        layer.events.data.disconnect(
-                            self._on_mask_data_changed
-                        )
                     layer.events.data.connect(self._on_mask_data_changed)
                 if isinstance(layer, Labels):
-                    try:
-                        layer.events.paint.disconnect(
-                            self._on_mask_data_changed
-                        )
-                        layer.events.set_data.disconnect(
-                            self._on_mask_data_changed
-                        )
-                    except (TypeError, ValueError):
-                        pass  # Not connected, ignore
                     layer.events.paint.connect(self._on_mask_data_changed)
                     layer.events.set_data.connect(self._on_mask_data_changed)
+                self._connected_layer_ids.add(layer_id)
 
             self._mask_layers_by_id = mask_layers_by_id
 
@@ -5152,107 +5263,19 @@ class PlotterWidget(QWidget):
         contribute to the merged plot.
 
         This is the full handler used for initial load and layer list updates.
-        For incremental changes, use _on_primary_layer_changed or _on_selection_changed.
+        For incremental changes, use _on_primary_layer_changed or
+        _on_selection_changed.
         """
         if getattr(self, "_in_on_image_layer_changed", False):
             return
         self._in_on_image_layer_changed = True
         try:
-            selected_layers = self.get_selected_layers()
-
-            self._update_grid_view(selected_layers)
-
             layer_name = self.get_primary_layer_name()
-            if layer_name == "":
-                self._g_array = None
-                self._s_array = None
-                self._g_original_array = None
-                self._s_original_array = None
-                self._harmonics_array = None
-                # Clear phasor data artists (histogram/scatter) but keep
-                # the semicircle/polar plot and axes styling intact.
-                for artist in self.canvas_widget.artists.values():
-                    artist._remove_artists()
-                self._remove_colorbar()
-                # Clear tab-specific artists
-                self._clear_all_tab_artists()
-                # Redraw circle/semicircle and axes
-                self.set_axes_labels()
-                self._update_plot_bg_color()
-                if self.toggle_semi_circle:
-                    self._update_semi_circle_plot(self.canvas_widget.axes)
-                else:
-                    self._update_polar_plot(self.canvas_widget.axes)
-                self._redefine_axes_limits()
-                self.canvas_widget.figure.canvas.draw_idle()
-                return
-
-            layer = self.viewer.layers[layer_name]
-            layer_metadata = layer.metadata
-
-            # On a fresh layer load, reset any user-defined zoom so the
-            # view auto-fits to the new data.
-            self._user_axes_limits = None
-
-            self._g_array = layer_metadata.get("G")
-            self._s_array = layer_metadata.get("S")
-            self._g_original_array = layer_metadata.get("G_original")
-            self._s_original_array = layer_metadata.get("S_original")
-            self._harmonics_array = layer_metadata.get("harmonics")
-
-            if len(selected_layers) > 1:
-                common_harmonics = self._get_common_harmonics(selected_layers)
-                if common_harmonics is not None and len(common_harmonics) > 0:
-                    min_harmonic = int(np.min(common_harmonics))
-                    max_harmonic = int(np.max(common_harmonics))
-                    self.harmonic_spinbox.setRange(min_harmonic, max_harmonic)
-            elif self._harmonics_array is not None:
-                self._harmonics_array = np.atleast_1d(self._harmonics_array)
-                min_harmonic = int(np.min(self._harmonics_array))
-                max_harmonic = int(np.max(self._harmonics_array))
-                self.harmonic_spinbox.setRange(min_harmonic, max_harmonic)
-
-            # Reset masks
-            self._mask_assignments.clear()
-            self._mask_invert_assignments.clear()
-            self.mask_layer_combobox.blockSignals(True)
-            self.mask_layer_combobox.setCurrentText("None")
-            self.mask_layer_combobox.blockSignals(False)
-            self.mask_invert_checkbox.setChecked(False)
-            self.mask_invert_checkbox.setEnabled(False)
-            self._update_mask_ui_mode()
-            self._update_contour_controls_visibility()
-
-            self._initialize_plot_settings_in_metadata(layer)
-
-            self._restore_plot_settings_from_metadata()
-
-            self._sync_frequency_inputs_from_metadata()
-
-            if hasattr(self, 'filter_tab'):
-                self.filter_tab._on_image_layer_changed()
-
-            if hasattr(self, 'calibration_tab'):
-                self.calibration_tab._on_image_layer_changed()
-
-            if hasattr(self, 'selection_tab'):
-                self.selection_tab._on_image_layer_changed()
-
-            if hasattr(self, 'phasor_mapping_tab'):
-                self.phasor_mapping_tab._on_image_layer_changed()
-
-            if hasattr(self, 'components_tab'):
-                self.components_tab._on_image_layer_changed()
-
-            if hasattr(self, 'fret_tab'):
-                self.fret_tab._on_image_layer_changed()
-
-            self.plot()
-
-            # Enforce tab-specific artist visibility based on current tab
-            current_tab_index = self.tab_widget.currentIndex()
-            self._on_tab_changed(current_tab_index)
-
+            self._apply_layer_data(
+                layer_name,
+                reset_zoom=True,
+                sync_frequency=True,
+            )
         finally:
             self._in_on_image_layer_changed = False
 
@@ -5271,89 +5294,131 @@ class PlotterWidget(QWidget):
             return
         self._in_on_primary_layer_changed = True
         try:
-            selected_layers = self.get_selected_layers()
-            self._update_grid_view(selected_layers)
-
-            if not new_primary_name:
-                self._g_array = None
-                self._s_array = None
-                self._g_original_array = None
-                self._s_original_array = None
-                self._harmonics_array = None
-                for artist in self.canvas_widget.artists.values():
-                    artist._remove_artists()
-                self._remove_colorbar()
-                self._clear_all_tab_artists()
-                self.set_axes_labels()
-                self._update_plot_bg_color()
-                if self.toggle_semi_circle:
-                    self._update_semi_circle_plot(self.canvas_widget.axes)
-                else:
-                    self._update_polar_plot(self.canvas_widget.axes)
-                self._redefine_axes_limits()
-                self.canvas_widget.figure.canvas.draw_idle()
-                return
-
-            layer = self.viewer.layers[new_primary_name]
-            layer_metadata = layer.metadata
-
-            self._g_array = layer_metadata.get("G")
-            self._s_array = layer_metadata.get("S")
-            self._g_original_array = layer_metadata.get("G_original")
-            self._s_original_array = layer_metadata.get("S_original")
-            self._harmonics_array = layer_metadata.get("harmonics")
-
-            if len(selected_layers) > 1:
-                common_harmonics = self._get_common_harmonics(selected_layers)
-                if common_harmonics is not None and len(common_harmonics) > 0:
-                    min_harmonic = int(np.min(common_harmonics))
-                    max_harmonic = int(np.max(common_harmonics))
-                    self.harmonic_spinbox.setRange(min_harmonic, max_harmonic)
-            elif self._harmonics_array is not None:
-                self._harmonics_array = np.atleast_1d(self._harmonics_array)
-                min_harmonic = int(np.min(self._harmonics_array))
-                max_harmonic = int(np.max(self._harmonics_array))
-                self.harmonic_spinbox.setRange(min_harmonic, max_harmonic)
-
-            # Reset masks
-            self._mask_assignments.clear()
-            self._mask_invert_assignments.clear()
-            self.mask_layer_combobox.blockSignals(True)
-            self.mask_layer_combobox.setCurrentText("None")
-            self.mask_layer_combobox.blockSignals(False)
-            self.mask_invert_checkbox.setChecked(False)
-            self.mask_invert_checkbox.setEnabled(False)
-            self._update_mask_ui_mode()
-            self._update_contour_controls_visibility()
-
-            self._initialize_plot_settings_in_metadata(layer)
-            self._restore_plot_settings_from_metadata()
-
-            if hasattr(self, 'filter_tab'):
-                self.filter_tab._on_image_layer_changed()
-
-            if hasattr(self, 'calibration_tab'):
-                self.calibration_tab._on_image_layer_changed()
-
-            if hasattr(self, 'selection_tab'):
-                self.selection_tab._on_image_layer_changed()
-
-            if hasattr(self, 'phasor_mapping_tab'):
-                self.phasor_mapping_tab._on_image_layer_changed()
-
-            if hasattr(self, 'components_tab'):
-                self.components_tab._on_image_layer_changed()
-
-            if hasattr(self, 'fret_tab'):
-                self.fret_tab._on_image_layer_changed()
-
-            self.plot()
-
-            current_tab_index = self.tab_widget.currentIndex()
-            self._on_tab_changed(current_tab_index)
-
+            self._apply_layer_data(
+                new_primary_name,
+                reset_zoom=False,
+                sync_frequency=False,
+            )
         finally:
             self._in_on_primary_layer_changed = False
+
+    def _apply_layer_data(
+        self, layer_name, *, reset_zoom=False, sync_frequency=False
+    ):
+        """Shared logic for loading layer data and updating all tabs.
+
+        Parameters
+        ----------
+        layer_name : str
+            Name of the primary layer (empty string means no layer).
+        reset_zoom : bool
+            If True, reset user-defined zoom to auto-fit new data.
+        sync_frequency : bool
+            If True, synchronise frequency inputs from metadata.
+        """
+        selected_layers = self.get_selected_layers()
+        self._update_grid_view(selected_layers)
+
+        # Invalidate features cache — layer data changed.
+        self._invalidate_features_cache()
+
+        if not layer_name:
+            self._g_array = None
+            self._s_array = None
+            self._g_original_array = None
+            self._s_original_array = None
+            self._harmonics_array = None
+            for artist in self.canvas_widget.artists.values():
+                artist._remove_artists()
+            self._remove_colorbar()
+            self._clear_all_tab_artists()
+            self.set_axes_labels()
+            self._update_plot_bg_color()
+            if self.toggle_semi_circle:
+                self._update_semi_circle_plot(self.canvas_widget.axes)
+            else:
+                self._update_polar_plot(self.canvas_widget.axes)
+            self._redefine_axes_limits()
+            self.canvas_widget.figure.canvas.draw_idle()
+            return
+
+        layer = self.viewer.layers[layer_name]
+        layer_metadata = layer.metadata
+
+        if reset_zoom:
+            self._user_axes_limits = None
+
+        self._g_array = layer_metadata.get("G")
+        self._s_array = layer_metadata.get("S")
+        self._g_original_array = layer_metadata.get("G_original")
+        self._s_original_array = layer_metadata.get("S_original")
+        self._harmonics_array = layer_metadata.get("harmonics")
+
+        if len(selected_layers) > 1:
+            common_harmonics = self._get_common_harmonics(selected_layers)
+            if common_harmonics is not None and len(common_harmonics) > 0:
+                min_harmonic = int(np.min(common_harmonics))
+                max_harmonic = int(np.max(common_harmonics))
+                self.harmonic_spinbox.setRange(min_harmonic, max_harmonic)
+        elif self._harmonics_array is not None:
+            self._harmonics_array = np.atleast_1d(self._harmonics_array)
+            min_harmonic = int(np.min(self._harmonics_array))
+            max_harmonic = int(np.max(self._harmonics_array))
+            self.harmonic_spinbox.setRange(min_harmonic, max_harmonic)
+
+        # Reset masks
+        self._mask_assignments.clear()
+        self._mask_invert_assignments.clear()
+        self.mask_layer_combobox.blockSignals(True)
+        self.mask_layer_combobox.setCurrentText("None")
+        self.mask_layer_combobox.blockSignals(False)
+        self.mask_invert_checkbox.setChecked(False)
+        self.mask_invert_checkbox.setEnabled(False)
+        self._update_mask_ui_mode()
+        self._update_contour_controls_visibility()
+
+        self._initialize_plot_settings_in_metadata(layer)
+        self._restore_plot_settings_from_metadata()
+
+        if sync_frequency:
+            self._sync_frequency_inputs_from_metadata()
+
+        if hasattr(self, 'filter_tab'):
+            self.filter_tab._on_image_layer_changed()
+
+        if hasattr(self, 'calibration_tab'):
+            self.calibration_tab._on_image_layer_changed()
+
+        current_tab = self.tab_widget.currentWidget()
+
+        if hasattr(self, 'selection_tab'):
+            self.selection_tab._on_image_layer_changed()
+
+        if hasattr(self, 'phasor_mapping_tab'):
+            self.phasor_mapping_tab._teardown_on_layer_change()
+            if current_tab is self.phasor_mapping_tab:
+                self.phasor_mapping_tab._restore_on_layer_change()
+            else:
+                self.phasor_mapping_tab._needs_update = True
+
+        if hasattr(self, 'components_tab'):
+            self.components_tab._teardown_on_layer_change()
+            if current_tab is self.components_tab:
+                self.components_tab._restore_on_layer_change()
+            else:
+                self.components_tab._needs_update = True
+
+        if hasattr(self, 'fret_tab'):
+            self.fret_tab._teardown_on_layer_change()
+            if current_tab is self.fret_tab:
+                self.fret_tab._restore_on_layer_change()
+            else:
+                self.fret_tab._needs_update = True
+
+        self.plot()
+
+        current_tab_index = self.tab_widget.currentIndex()
+        self._on_tab_changed(current_tab_index)
 
     def _on_selection_changed(self):
         """Handle changes to layer selection (adding/removing layers).
@@ -5415,6 +5480,11 @@ class PlotterWidget(QWidget):
         selected layers visible. When only one layer is selected,
         disables grid mode.
 
+        Skips no-op writes to ``layer.visible`` so napari doesn't emit
+        redundant redraw events on every selection change. With many
+        layers (10+) the no-op skip alone removes the dominant per-layer
+        cost in the selection-change path.
+
         Parameters
         ----------
         selected_layers : list of napari.layers.Image
@@ -5423,7 +5493,8 @@ class PlotterWidget(QWidget):
         selected_names = {layer.name for layer in selected_layers}
 
         if len(selected_layers) > 1:
-            self.viewer.grid.enabled = True
+            if not self.viewer.grid.enabled:
+                self.viewer.grid.enabled = True
 
             for layer in self.viewer.layers:
                 if (
@@ -5433,11 +5504,14 @@ class PlotterWidget(QWidget):
                     and "G_original" in layer.metadata
                     and "S_original" in layer.metadata
                 ):
-                    layer.visible = layer.name in selected_names
+                    desired_visible = layer.name in selected_names
+                    if layer.visible != desired_visible:
+                        layer.visible = desired_visible
         else:
-            self.viewer.grid.enabled = False
+            if self.viewer.grid.enabled:
+                self.viewer.grid.enabled = False
 
-            if selected_layers:
+            if selected_layers and not selected_layers[0].visible:
                 selected_layers[0].visible = True
 
     def _get_common_harmonics(self, layers):
@@ -5482,6 +5556,7 @@ class PlotterWidget(QWidget):
         image_layer.metadata['G'] = image_layer.metadata['G_original']
         image_layer.metadata['S'] = image_layer.metadata['S_original']
         image_layer.data = image_layer.metadata["original_mean"].copy()
+        self._invalidate_features_cache()
 
     def _apply_mask_to_phasor_data(
         self, mask_layer, image_layer, invert=False
@@ -5530,6 +5605,8 @@ class PlotterWidget(QWidget):
         else:
             image_layer.metadata['G'] = np.where(mask_invalid, np.nan, g_array)
             image_layer.metadata['S'] = np.where(mask_invalid, np.nan, s_array)
+
+        self._invalidate_features_cache()
 
     def _on_mask_layer_changed(self, text):
         """Handle changes to the mask layer combo box (single-layer mode)."""
@@ -5810,7 +5887,28 @@ class PlotterWidget(QWidget):
         if self._harmonics_array is not None:
             self._harmonics_array = np.atleast_1d(self._harmonics_array)
 
+        # Invalidate features cache — layer data has been updated
+        # (e.g. by filter/threshold), so the cached features are stale.
+        self._invalidate_features_cache()
+
         self.plot()
+
+        # Notify deferred tabs that data has changed and they need to update.
+        # When a deferrable tab is currently visible, restore it immediately so
+        # the user sees fresh state. Otherwise, mark it for restore on tab
+        # switch.
+        current_tab = self.tab_widget.currentWidget()
+        for tab_attr in ['phasor_mapping_tab', 'components_tab', 'fret_tab']:
+            if hasattr(self, tab_attr):
+                tab = getattr(self, tab_attr)
+                if tab is None:
+                    continue
+                if tab is current_tab and hasattr(
+                    tab, '_restore_on_layer_change'
+                ):
+                    tab._restore_on_layer_change()
+                elif hasattr(tab, '_needs_update'):
+                    tab._needs_update = True
 
     def has_phasor_data(self):
         """Check if valid phasor data is loaded.
@@ -5928,6 +6026,17 @@ class PlotterWidget(QWidget):
             return g, s, valid
         return g, s
 
+    def _invalidate_features_cache(self):
+        """Invalidate the merged-features cache.
+
+        Call this whenever a layer's G/S arrays are mutated (filter,
+        threshold, calibration, mask application/restoration, etc.) so
+        that the next call to :meth:`get_merged_features` recomputes
+        from the layer metadata instead of returning stale data.
+        """
+        self._features_cache = None
+        self._features_cache_key = None
+
     def get_features(self):
         """Get the G and S features for the selected harmonic.
 
@@ -5949,6 +6058,10 @@ class PlotterWidget(QWidget):
         for unified plotting. Each layer's data is extracted at the current
         harmonic and merged together.
 
+        Results are cached and reused when the selected layers and harmonic
+        haven't changed (e.g. when only visual parameters like bins or
+        colormap are modified).
+
         Returns
         -------
         tuple or None
@@ -5957,6 +6070,16 @@ class PlotterWidget(QWidget):
         selected_layers = self.get_selected_layers()
         if not selected_layers:
             return None
+
+        cache_key = (
+            tuple(layer.name for layer in selected_layers),
+            self.harmonic,
+        )
+        if (
+            self._features_cache is not None
+            and self._features_cache_key == cache_key
+        ):
+            return self._features_cache
 
         all_g = []
         all_s = []
@@ -5996,15 +6119,22 @@ class PlotterWidget(QWidget):
             all_s.append(s_flat[valid])
 
         if not all_g:
+            self._features_cache = None
+            self._features_cache_key = cache_key
             return None
 
         g_merged = np.concatenate(all_g)
         s_merged = np.concatenate(all_s)
 
         if len(g_merged) == 0:
+            self._features_cache = None
+            self._features_cache_key = cache_key
             return None
 
-        return g_merged, s_merged
+        result = (g_merged, s_merged)
+        self._features_cache = result
+        self._features_cache_key = cache_key
+        return result
 
     def _on_scroll_zoom(self, event):
         """Zoom the phasor plot axes centered on the mouse cursor.
@@ -7187,6 +7317,41 @@ class PlotterWidget(QWidget):
             self.viewer.layers.events.removed.disconnect(
                 self.reset_layer_choices
             )
+
+        # Disconnect the per-layer event handlers that
+        # ``reset_layer_choices`` connected. Without this, those
+        # callbacks keep references to this (closing) PlotterWidget,
+        # and napari teardown can crash when those events fire on a
+        # half-destroyed widget — observed as a segmentation fault in
+        # _vispy/canvas.py under PySide6 + Python 3.14.
+        for layer in list(self.viewer.layers):
+            if isinstance(layer, Image):
+                with contextlib.suppress(
+                    TypeError, ValueError, AttributeError, RuntimeError
+                ):
+                    layer.events.name.disconnect(self.reset_layer_choices)
+            if isinstance(layer, (Shapes, Labels)):
+                with contextlib.suppress(
+                    TypeError, ValueError, AttributeError, RuntimeError
+                ):
+                    layer.events.name.disconnect(self.reset_layer_choices)
+            if isinstance(layer, Shapes):
+                with contextlib.suppress(
+                    TypeError, ValueError, AttributeError, RuntimeError
+                ):
+                    layer.events.data.disconnect(self._on_mask_data_changed)
+            if isinstance(layer, Labels):
+                with contextlib.suppress(
+                    TypeError, ValueError, AttributeError, RuntimeError
+                ):
+                    layer.events.paint.disconnect(self._on_mask_data_changed)
+                with contextlib.suppress(
+                    TypeError, ValueError, AttributeError, RuntimeError
+                ):
+                    layer.events.set_data.disconnect(
+                        self._on_mask_data_changed
+                    )
+        self._connected_layer_ids.clear()
 
         # Disconnect combobox-driven callbacks.
         combo = getattr(self, 'image_layers_checkable_combobox', None)
