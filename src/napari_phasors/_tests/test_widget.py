@@ -1,3 +1,5 @@
+import contextlib
+import gc
 import json
 import logging
 import os
@@ -6,6 +8,7 @@ from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
+import pytest
 from phasorpy.datasets import fetch
 from phasorpy.io import (
     phasor_from_ometiff,
@@ -41,6 +44,21 @@ TEST_FORMATS = [
     (".sdt", SdtWidget),
     (".ome.tif", None),
 ]
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_widgets_after_test():
+    """Ensure all Phasor widgets instantiated during the test are properly deleted.
+
+    This avoids PySide6 segmentation faults caused by Python GC order vs Qt's C++ object tree deletion.
+    """
+    yield
+    for obj in gc.get_objects():
+        if isinstance(
+            obj, (PhasorTransform, WriterWidget, AdvancedOptionsWidget)
+        ):
+            with contextlib.suppress(Exception):
+                obj.deleteLater()
 
 
 def test_phasor_transform_widget(make_napari_viewer):
