@@ -857,3 +857,28 @@ def test_components_fraction_range_updates_layer_and_is_reversible(
         atol=1e-9,
         equal_nan=True,
     )
+
+
+def test_components_on_image_layer_changed_runs_teardown_and_restore(
+    make_napari_viewer,
+):
+    """test that _on_image_layer_changed calls both teardown and
+    restore methods to properly handle layer changes"""
+    viewer = make_napari_viewer()
+    parent = PlotterWidget(viewer)
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    comp_widget = parent.components_tab
+
+    from unittest.mock import patch as _patch
+
+    with (
+        _patch.object(
+            comp_widget, '_teardown_on_layer_change'
+        ) as mock_teardown,
+        _patch.object(comp_widget, '_restore_on_layer_change') as mock_restore,
+    ):
+        comp_widget._on_image_layer_changed()
+        mock_teardown.assert_called_once()
+        mock_restore.assert_called_once()
