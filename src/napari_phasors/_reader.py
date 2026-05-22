@@ -21,6 +21,8 @@ from napari.utils.colormaps.colormap_utils import CYMRGB, MAGENTA_GREEN
 from napari.utils.notifications import show_error
 from phasorpy.phasor import phasor_from_signal
 
+from ._utils import show_activity_progress
+
 extension_mapping = {
     "raw": {
         ".ptu": lambda path, reader_options: _parse_and_call_io_function(
@@ -320,108 +322,62 @@ def raw_file_reader(
     has_dims = hasattr(raw_data, 'dims')
     raw_dims = tuple(raw_data.dims) if has_dims else ()
 
-    if iter_axis is None or iter_axis not in raw_dims:
-        # Handle files without iteration axis or when keepdims=False squeezed it out
-        if file_extension in [".tif", ".tiff"]:
-            axis = 0
-        elif has_dims and "H" in raw_dims:
-            axis = raw_dims.index("H")
-        elif has_dims and "C" in raw_dims:
-            axis = raw_dims.index("C")
-        else:
-            axis = 0
-
-        if file_extension in [".lsm", ".tif", ".tiff"]:
-            axes_to_sum = tuple(range(1, len(raw_data.shape)))
-        else:
-            axes_to_sum = tuple(
-                i for i in range(len(raw_data.shape)) if i != axis
-            )
-
-        summed_signal = np.sum(raw_data, axis=axes_to_sum)
-
-        if hasattr(summed_signal, 'values'):
-            summed_signal = summed_signal.values
-
-        # Only set channel for files that actually have channels (FLIM files)
-        if file_extension not in [".lsm", ".tif", ".tiff"]:
-            settings['channel'] = 0
-
-        mean_intensity_image, G_image, S_image = phasor_from_signal(
-            raw_data, axis=axis, harmonic=harmonics
-        )
-        channel_suffix = (
-            " Intensity Image"
-            if iter_axis is None
-            else " Intensity Image: Channel 0"
-        )
-        add_kwargs = {
-            "name": f"{filename}{channel_suffix}",
-            "metadata": {
-                "original_mean": mean_intensity_image,
-                "settings": settings,
-                "summed_signal": (
-                    summed_signal.tolist()
-                    if hasattr(summed_signal, 'tolist')
-                    else summed_signal
-                ),
-                "G": G_image,
-                "S": S_image,
-                "G_original": G_image.copy(),
-                "S_original": S_image.copy(),
-                "harmonics": harmonics,
-            },
-        }
-        layers.append((mean_intensity_image, add_kwargs))
+    # Determine the number of steps for the progress bar
+    if iter_axis is not None and iter_axis in raw_dims:
+        iter_axis_index = raw_dims.index(iter_axis)
+        n_steps = raw_data.shape[iter_axis_index]
     else:
-        # Handle multi-channel files with iteration axis
-        iter_axis_index = raw_data.dims.index(iter_axis)
-        channel_coord = raw_data.coords.get(iter_axis)
-        if (
-            channel_coord is not None
-            and len(channel_coord) == raw_data.shape[iter_axis_index]
-        ):
-            channel_labels = list(channel_coord.values)
-        else:
-            channel_labels = list(range(raw_data.shape[iter_axis_index]))
+        n_steps = len(harmonics) if isinstance(harmonics, list) else 1
 
-        for channel_pos, channel_label in enumerate(channel_labels):
-            channel_data = raw_data.isel({iter_axis: channel_pos})
-            histogram_axis = channel_data.dims.index("H")
+    pbr = show_activity_progress(
+        desc=f"Reading {filename}...", total=n_steps + 1
+    )
 
-            # Calculate summed signal over spatial dimensions for this channel
-            axes_to_sum = tuple(
-                i
-                for i in range(len(channel_data.shape))
-                if i != histogram_axis
-            )
-            summed_signal = np.sum(channel_data, axis=axes_to_sum)
+    try:
+        if iter_axis is None or iter_axis not in raw_dims:
+            # Handle files without iteration axis or when keepdims=False squeezed it out
+            if file_extension in [".tif", ".tiff"]:
+                axis = 0
+            elif has_dims and "H" in raw_dims:
+                axis = raw_dims.index("H")
+            elif has_dims and "C" in raw_dims:
+                axis = raw_dims.index("C")
+            else:
+                axis = 0
 
-            # Convert xarray DataArray to numpy array before converting to list
+            if file_extension in [".lsm", ".tif", ".tiff"]:
+                axes_to_sum = tuple(range(1, len(raw_data.shape)))
+            else:
+                axes_to_sum = tuple(
+                    i for i in range(len(raw_data.shape)) if i != axis
+                )
+
+            pbr.set_description("Summing signal...")
+            pbr.update(1)
+            summed_signal = np.sum(raw_data, axis=axes_to_sum)
+
             if hasattr(summed_signal, 'values'):
                 summed_signal = summed_signal.values
 
-            # Create settings dict for this channel
-            channel_settings = settings.copy()
-            try:
-                channel_settings['channel'] = int(
-                    np.asarray(channel_label).item()
-                )
-            except (TypeError, ValueError):
-                channel_settings['channel'] = channel_label
+            # Only set channel for files that actually have channels (FLIM files)
+            if file_extension not in [".lsm", ".tif", ".tiff"]:
+                settings['channel'] = 0
 
+            pbr.set_description("Computing phasor transform...")
             mean_intensity_image, G_image, S_image = phasor_from_signal(
-                channel_data,
-                axis=histogram_axis,
-                harmonic=harmonics,
+                raw_data, axis=axis, harmonic=harmonics
+            )
+            pbr.update(n_steps)
+            channel_suffix = (
+                " Intensity Image"
+                if iter_axis is None
+                else " Intensity Image: Channel 0"
             )
             add_kwargs = {
-                "name": (
-                    f"{filename} Intensity Image: Channel {channel_label}"
-                ),
+                "name": f"{filename}{channel_suffix}",
                 "metadata": {
                     "original_mean": mean_intensity_image,
-                    "settings": channel_settings,
+                    "settings": settings,
                     "summed_signal": (
                         summed_signal.tolist()
                         if hasattr(summed_signal, 'tolist')
@@ -435,6 +391,73 @@ def raw_file_reader(
                 },
             }
             layers.append((mean_intensity_image, add_kwargs))
+        else:
+            # Handle multi-channel files with iteration axis
+            iter_axis_index = raw_data.dims.index(iter_axis)
+            channel_coord = raw_data.coords.get(iter_axis)
+            if (
+                channel_coord is not None
+                and len(channel_coord) == raw_data.shape[iter_axis_index]
+            ):
+                channel_labels = list(channel_coord.values)
+            else:
+                channel_labels = list(range(raw_data.shape[iter_axis_index]))
+
+            n_channels = len(channel_labels)
+            for channel_pos, channel_label in enumerate(channel_labels):
+                pbr.set_description(f"Channel {channel_pos + 1}/{n_channels}")
+                pbr.update(1)
+                channel_data = raw_data.isel({iter_axis: channel_pos})
+                histogram_axis = channel_data.dims.index("H")
+
+                # Calculate summed signal over spatial dimensions for this channel
+                axes_to_sum = tuple(
+                    i
+                    for i in range(len(channel_data.shape))
+                    if i != histogram_axis
+                )
+                summed_signal = np.sum(channel_data, axis=axes_to_sum)
+
+                # Convert xarray DataArray to numpy array before converting to list
+                if hasattr(summed_signal, 'values'):
+                    summed_signal = summed_signal.values
+
+                # Create settings dict for this channel
+                channel_settings = settings.copy()
+                try:
+                    channel_settings['channel'] = int(
+                        np.asarray(channel_label).item()
+                    )
+                except (TypeError, ValueError):
+                    channel_settings['channel'] = channel_label
+
+                mean_intensity_image, G_image, S_image = phasor_from_signal(
+                    channel_data,
+                    axis=histogram_axis,
+                    harmonic=harmonics,
+                )
+                add_kwargs = {
+                    "name": (
+                        f"{filename} Intensity Image: Channel {channel_label}"
+                    ),
+                    "metadata": {
+                        "original_mean": mean_intensity_image,
+                        "settings": channel_settings,
+                        "summed_signal": (
+                            summed_signal.tolist()
+                            if hasattr(summed_signal, 'tolist')
+                            else summed_signal
+                        ),
+                        "G": G_image,
+                        "S": S_image,
+                        "G_original": G_image.copy(),
+                        "S_original": S_image.copy(),
+                        "harmonics": harmonics,
+                    },
+                }
+                layers.append((mean_intensity_image, add_kwargs))
+    finally:
+        pbr.close()
     # Set colormaps if multichannel image
     if len(layers) == 2:
         # add colormaps MAGENTA_GREEN
@@ -646,123 +669,131 @@ def processed_file_reader(
     if harmonics is None:
         harmonics = 'all'
     filename, file_extension = _get_filename_extension(path)
-    reader_options = reader_options or {"harmonic": harmonics}
-    mean_intensity_image, real, imag, attrs = extension_mapping["processed"][
-        file_extension
-    ](path, reader_options)
-    if "description" in attrs:
-        # HTML-unescape the description to handle tifffile HTML encoding
-        description_str = html.unescape(attrs["description"])
-        description = json.loads(description_str)
-        if len(json.dumps(description)) > 512 * 512:  # Threshold: 256 KB
-            raise ValueError("Description dictionary is too large.")
-        if "napari_phasors_settings" in description:
-            settings = json.loads(description["napari_phasors_settings"])
-            if "calibrated" in settings:
-                settings["calibrated"] = bool(settings["calibrated"])
-    else:
-        settings = {}
-    if "frequency" in attrs:
-        settings["frequency"] = attrs["frequency"]
-    harmonics_read = attrs.get("harmonic", None)
+    pbr = show_activity_progress(desc=f"Loading {filename}...", total=3)
+    try:
+        reader_options = reader_options or {"harmonic": harmonics}
+        mean_intensity_image, real, imag, attrs = extension_mapping[
+            "processed"
+        ][file_extension](path, reader_options)
+        pbr.update(1)
+        if "description" in attrs:
+            # HTML-unescape the description to handle tifffile HTML encoding
+            description_str = html.unescape(attrs["description"])
+            description = json.loads(description_str)
+            if len(json.dumps(description)) > 512 * 512:  # Threshold: 256 KB
+                raise ValueError("Description dictionary is too large.")
+            if "napari_phasors_settings" in description:
+                settings = json.loads(description["napari_phasors_settings"])
+                if "calibrated" in settings:
+                    settings["calibrated"] = bool(settings["calibrated"])
+        else:
+            settings = {}
+        if "frequency" in attrs:
+            settings["frequency"] = attrs["frequency"]
+        harmonics_read = attrs.get("harmonic", None)
 
-    original_mean_intensity_image = mean_intensity_image.copy()
-    g_original = real.copy()
-    s_original = imag.copy()
+        original_mean_intensity_image = mean_intensity_image.copy()
+        g_original = real.copy()
+        s_original = imag.copy()
 
-    should_apply_processing = False
-    filter_params = {}
-    threshold_value = 0
-    threshold_upper_value = None
+        should_apply_processing = False
+        filter_params = {}
+        threshold_value = 0
+        threshold_upper_value = None
 
-    if "filter" in settings:
-        filter_settings = settings["filter"]
-        if filter_settings.get("repeat", 0) > 0:
+        if "filter" in settings:
+            filter_settings = settings["filter"]
+            if filter_settings.get("repeat", 0) > 0:
+                should_apply_processing = True
+                filter_params = {
+                    "filter_method": filter_settings.get("method", "median"),
+                    "size": filter_settings.get("size", 3),
+                    "repeat": filter_settings.get("repeat", 1),
+                    "sigma": filter_settings.get("sigma", 1.0),
+                    "levels": filter_settings.get("levels", 3),
+                }
+
+        if "threshold" in settings and settings["threshold"] is not None:
             should_apply_processing = True
-            filter_params = {
-                "filter_method": filter_settings.get("method", "median"),
-                "size": filter_settings.get("size", 3),
-                "repeat": filter_settings.get("repeat", 1),
-                "sigma": filter_settings.get("sigma", 1.0),
-                "levels": filter_settings.get("levels", 3),
-            }
+            threshold_value = settings["threshold"]
 
-    if "threshold" in settings and settings["threshold"] is not None:
-        should_apply_processing = True
-        threshold_value = settings["threshold"]
+        if (
+            "threshold_upper" in settings
+            and settings["threshold_upper"] is not None
+        ):
+            should_apply_processing = True
+            threshold_upper_value = settings["threshold_upper"]
 
-    if (
-        "threshold_upper" in settings
-        and settings["threshold_upper"] is not None
-    ):
-        should_apply_processing = True
-        threshold_upper_value = settings["threshold_upper"]
+        if should_apply_processing:
+            pbr.set_description("Applying filters...")
+            pbr.update(1)
+            from ._utils import _apply_filter_and_threshold_to_phasor_arrays
 
-    if should_apply_processing:
-        from ._utils import _apply_filter_and_threshold_to_phasor_arrays
-
-        mean_intensity_image, real, imag = (
-            _apply_filter_and_threshold_to_phasor_arrays(
-                mean_intensity_image,
-                real,
-                imag,
-                harmonics_read,
-                threshold=threshold_value,
-                threshold_upper=threshold_upper_value,
-                **filter_params,
+            mean_intensity_image, real, imag = (
+                _apply_filter_and_threshold_to_phasor_arrays(
+                    mean_intensity_image,
+                    real,
+                    imag,
+                    harmonics_read,
+                    threshold=threshold_value,
+                    threshold_upper=threshold_upper_value,
+                    **filter_params,
+                )
             )
-        )
 
-        if "settings" not in settings:
-            settings["settings"] = {}
-        settings["filter"] = {
-            "method": filter_params.get("filter_method", "median"),
-            "size": filter_params.get("size", 3),
-            "repeat": filter_params.get("repeat", 1),
-            "sigma": filter_params.get("sigma", 1.0),
-            "levels": filter_params.get("levels", 3),
+            if "settings" not in settings:
+                settings["settings"] = {}
+            settings["filter"] = {
+                "method": filter_params.get("filter_method", "median"),
+                "size": filter_params.get("size", 3),
+                "repeat": filter_params.get("repeat", 1),
+                "sigma": filter_params.get("sigma", 1.0),
+                "levels": filter_params.get("levels", 3),
+            }
+            settings["threshold"] = threshold_value
+            if threshold_upper_value is not None:
+                settings["threshold_upper"] = threshold_upper_value
+
+        layers = []
+
+        add_kwargs = {
+            "name": filename + " Intensity Image",
+            "metadata": {
+                "original_mean": original_mean_intensity_image,
+                "settings": settings,
+                "G": real,
+                "S": imag,
+                "G_original": g_original,
+                "S_original": s_original,
+                "harmonics": harmonics_read,
+            },
         }
-        settings["threshold"] = threshold_value
-        if threshold_upper_value is not None:
-            settings["threshold_upper"] = threshold_upper_value
 
-    layers = []
+        if "dims" in attrs:
+            add_kwargs["axis_labels"] = tuple(attrs["dims"])
+        elif "axes" in attrs:
+            add_kwargs["axis_labels"] = tuple(attrs["axes"])
 
-    add_kwargs = {
-        "name": filename + " Intensity Image",
-        "metadata": {
-            "original_mean": original_mean_intensity_image,
-            "settings": settings,
-            "G": real,
-            "S": imag,
-            "G_original": g_original,
-            "S_original": s_original,
-            "harmonics": harmonics_read,
-        },
-    }
+        z_spacing_um = settings.get("z_spacing_um")
+        if z_spacing_um is not None and mean_intensity_image.ndim >= 3:
+            try:
+                z_idx = 0
+                if "axis_labels" in add_kwargs:
+                    labels = [
+                        str(label).upper()
+                        for label in add_kwargs["axis_labels"]
+                    ]
+                    if 'Z' in labels:
+                        z_idx = labels.index('Z')
+                scale = [1.0] * mean_intensity_image.ndim
+                scale[z_idx] = float(z_spacing_um)
+                add_kwargs["scale"] = tuple(scale)
+            except (ValueError, TypeError):
+                pass
 
-    if "dims" in attrs:
-        add_kwargs["axis_labels"] = tuple(attrs["dims"])
-    elif "axes" in attrs:
-        add_kwargs["axis_labels"] = tuple(attrs["axes"])
-
-    z_spacing_um = settings.get("z_spacing_um")
-    if z_spacing_um is not None and mean_intensity_image.ndim >= 3:
-        try:
-            z_idx = 0
-            if "axis_labels" in add_kwargs:
-                labels = [
-                    str(label).upper() for label in add_kwargs["axis_labels"]
-                ]
-                if 'Z' in labels:
-                    z_idx = labels.index('Z')
-            scale = [1.0] * mean_intensity_image.ndim
-            scale[z_idx] = float(z_spacing_um)
-            add_kwargs["scale"] = tuple(scale)
-        except (ValueError, TypeError):
-            pass
-
-    layers.append((mean_intensity_image, add_kwargs))
+        layers.append((mean_intensity_image, add_kwargs))
+    finally:
+        pbr.close()
     return layers
 
 
