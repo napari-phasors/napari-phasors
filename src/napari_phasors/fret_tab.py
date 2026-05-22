@@ -1498,6 +1498,14 @@ class FretWidget(QWidget):
                 self.fret_colormap = self.fret_layer.colormap.colors
                 self.colormap_contrast_limits = self.fret_layer.contrast_limits
 
+    def rename_layer(self, old_name: str, new_name: str):
+        """Rename derived layers when base layer is renamed."""
+        fret_layer_name = f"FRET efficiency: {old_name}"
+        if fret_layer_name in self.viewer.layers:
+            self.viewer.layers[fret_layer_name].name = (
+                f"FRET efficiency: {new_name}"
+            )
+
     def _update_fret_histogram(self):
         """Update the FRET efficiency histogram from all selected FRET layers."""
         if not self.fret_layers:

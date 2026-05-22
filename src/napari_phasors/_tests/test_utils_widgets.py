@@ -256,3 +256,35 @@ def test_histogram_widget_respects_range_slider_limits(qtbot):
     xlim = widget.ax.get_xlim()
     assert xlim[0] == 2.0
     assert xlim[1] == 3.0
+
+
+def test_histogram_widget_rename_dataset(qtbot):
+    """HistogramWidget should update internal tracking dicts when a dataset is renamed."""
+    widget = HistogramWidget(bins=10)
+    qtbot.addWidget(widget)
+
+    datasets = {
+        "Layer A": np.array([1, 2, 3], dtype=float),
+    }
+    widget.update_multi_data(datasets)
+
+    # Simulate user changing some settings for the layer
+    widget._layer_colors["Layer A"] = (1.0, 0.0, 0.0)
+    widget._group_assignments["Layer A"] = 2
+
+    # Rename the dataset
+    widget.rename_dataset("Layer A", "Layer B")
+
+    assert "Layer A" not in widget._datasets
+    assert "Layer B" in widget._datasets
+
+    assert "Layer A" not in widget._counts_per_dataset
+    assert "Layer B" in widget._counts_per_dataset
+
+    assert "Layer A" not in widget._layer_colors
+    assert "Layer B" in widget._layer_colors
+    assert widget._layer_colors["Layer B"] == (1.0, 0.0, 0.0)
+
+    assert "Layer A" not in widget._group_assignments
+    assert "Layer B" in widget._group_assignments
+    assert widget._group_assignments["Layer B"] == 2

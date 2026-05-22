@@ -1438,6 +1438,33 @@ class PhasorMappingWidget(QWidget):
         else:
             self.histogram_widget.update_data(self.current_metric_data)
 
+    def rename_layer(self, old_name: str, new_name: str):
+        """Update internal dictionaries and rename derived layers when a layer is renamed."""
+        for dict_attr in [
+            'per_layer_metric_data_original',
+            'per_layer_metric_data',
+            'per_layer_lifetime_data_original',
+            'per_layer_lifetime_data',
+        ]:
+            if hasattr(self, dict_attr):
+                dict_obj = getattr(self, dict_attr)
+                if dict_obj is not None and old_name in dict_obj:
+                    dict_obj[new_name] = dict_obj.pop(old_name)
+
+        # Rename derived layers
+        for output_type in [
+            "Phase",
+            "Modulation",
+            "Apparent Phase Lifetime",
+            "Apparent Modulation Lifetime",
+            "Normal Lifetime",
+        ]:
+            layer_name = f"{output_type}: {old_name}"
+            if layer_name in self.viewer.layers:
+                self.viewer.layers[layer_name].name = (
+                    f"{output_type}: {new_name}"
+                )
+
     def create_output_layers(self):
         """Create or update output layers for all selected layers."""
         selected_layers = self.parent_widget.get_selected_layers()

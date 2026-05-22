@@ -2242,6 +2242,25 @@ class HistogramWidget(QWidget):
         self.show()
         self.dataChanged.emit()
 
+    def rename_dataset(self, old_name: str, new_name: str) -> None:
+        """Handle renaming of a dataset to preserve colors and groupings."""
+        if old_name in self._datasets:
+            self._datasets[new_name] = self._datasets.pop(old_name)
+        if old_name in self._counts_per_dataset:
+            self._counts_per_dataset[new_name] = self._counts_per_dataset.pop(
+                old_name
+            )
+        if old_name in self._layer_colors:
+            self._layer_colors[new_name] = self._layer_colors.pop(old_name)
+        if old_name in self._group_assignments:
+            self._group_assignments[new_name] = self._group_assignments.pop(
+                old_name
+            )
+
+        if self._datasets:
+            self._render()
+            self.fig.canvas.draw_idle()
+
     def update_colormap(
         self,
         colormap_colors: np.ndarray = None,
