@@ -2260,6 +2260,7 @@ class HistogramWidget(QWidget):
         if self._datasets:
             self._render()
             self.fig.canvas.draw_idle()
+            self.dataChanged.emit()
 
     def update_colormap(
         self,

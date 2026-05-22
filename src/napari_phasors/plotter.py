@@ -5200,6 +5200,18 @@ class PlotterWidget(QWidget):
                     renamed_images.get(name, name)
                     for name in previously_selected
                 ]
+                self._mask_assignments = {
+                    renamed_images.get(
+                        image_layer_name, image_layer_name
+                    ): mask_name
+                    for image_layer_name, mask_name in self._mask_assignments.items()
+                }
+                self._mask_invert_assignments = {
+                    renamed_images.get(
+                        image_layer_name, image_layer_name
+                    ): invert
+                    for image_layer_name, invert in self._mask_invert_assignments.items()
+                }
                 self._notify_tabs_of_renamed_layers(renamed_images)
             self._image_layers_by_id = image_layers_by_id
 

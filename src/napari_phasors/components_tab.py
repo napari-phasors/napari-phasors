@@ -3899,8 +3899,6 @@ class ComponentsWidget(QWidget):
 
     def rename_layer(self, old_name: str, new_name: str):
         """Rename derived layers when base layer is renamed."""
-        from napari.layers import Image
-
         for layer in self.viewer.layers:
             if not isinstance(layer, Image):
                 continue
