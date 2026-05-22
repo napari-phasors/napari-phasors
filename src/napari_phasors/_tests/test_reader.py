@@ -355,6 +355,35 @@ def test_reader_tiff_extension():
     assert callable(reader)
 
 
+def test_raw_reader_tiff_ignores_widget_axis_option(monkeypatch):
+    """TIFF raw loading should ignore widget-only axis options passed via reader_options."""
+
+    def fake_imread(path):
+        return np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+
+    def fake_phasor_from_signal(signal, axis, harmonic):
+        mean_image = np.zeros((2, 4), dtype=np.float32)
+        g_image = np.zeros((2, 2, 4), dtype=np.float32)
+        s_image = np.zeros((2, 2, 4), dtype=np.float32)
+        return mean_image, g_image, s_image
+
+    monkeypatch.setattr(reader_module.tifffile, "imread", fake_imread)
+    monkeypatch.setattr(
+        reader_module,
+        "phasor_from_signal",
+        fake_phasor_from_signal,
+    )
+
+    layers = reader_module.raw_file_reader(
+        "example.tif",
+        reader_options={"phasor_axis": 1},
+    )
+
+    assert len(layers) == 1
+    assert layers[0][0].shape == (2, 4)
+    assert layers[0][1]["metadata"]["harmonics"] == [1]
+
+
 def test_reader_multi_file_raw_dispatches_to_stack_reader(monkeypatch):
     """Test that a list of raw files is handled via raw_file_stack_reader."""
     paths = ["slice_01.lsm", "slice_02.lsm", "slice_03.lsm"]
