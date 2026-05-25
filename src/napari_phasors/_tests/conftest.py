@@ -15,12 +15,14 @@ def _hide_qdialog(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _cleanup_widgets_after_test():
+def _cleanup_widgets_after_test(request):
     """Ensure all Phasor widgets instantiated during the test are properly deleted.
 
     This avoids PySide6 segmentation faults and background timer leaks caused by
     unclean widget lifecycles in PySide6.
     """
+    if "make_napari_viewer" in request.fixturenames:
+        request.getfixturevalue("make_napari_viewer")
     yield
     import contextlib
 
