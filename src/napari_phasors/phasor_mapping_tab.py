@@ -2289,9 +2289,9 @@ class PhasorMappingWidget(QWidget):
 
         # Disconnect all lifetime layer events
         for layer in self.metric_layers:
-            with contextlib.suppress(ValueError, AttributeError):
+            with contextlib.suppress(TypeError, ValueError, AttributeError):
                 layer.events.colormap.disconnect(self._on_colormap_changed)
-            with contextlib.suppress(ValueError, AttributeError):
+            with contextlib.suppress(TypeError, ValueError, AttributeError):
                 layer.events.contrast_limits.disconnect(
                     self._on_colormap_changed
                 )

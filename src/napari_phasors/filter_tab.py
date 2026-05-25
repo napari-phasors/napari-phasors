@@ -1050,7 +1050,7 @@ class FilterWidget(QWidget):
         if hasattr(self, 'parent_widget') and hasattr(
             self.parent_widget, 'image_layer_with_phasor_features_combobox'
         ):
-            with contextlib.suppress(ValueError, AttributeError):
+            with contextlib.suppress(TypeError, ValueError, AttributeError):
                 self.parent_widget.image_layer_with_phasor_features_combobox.currentIndexChanged.disconnect(
                     self._on_image_layer_changed
                 )

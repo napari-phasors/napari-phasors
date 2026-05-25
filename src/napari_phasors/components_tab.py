@@ -4150,7 +4150,7 @@ class ComponentsWidget(QWidget):
         """Clean up signal connections before closing."""
         # Disconnect parent widget signal if present
         if hasattr(self, 'parent_widget') and self.parent_widget:
-            with contextlib.suppress(ValueError, AttributeError):
+            with contextlib.suppress(TypeError, ValueError, AttributeError):
                 self.parent_widget.harmonic_spinbox.valueChanged.disconnect(
                     self._on_harmonic_changed
                 )
