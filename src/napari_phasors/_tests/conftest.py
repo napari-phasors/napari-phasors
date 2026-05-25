@@ -12,3 +12,83 @@ def _hide_qdialog(monkeypatch):
         orig_show(self)
 
     monkeypatch.setattr(QDialog, "show", hidden_show)
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_widgets_after_test():
+    """Ensure all Phasor widgets instantiated during the test are properly deleted.
+
+    This avoids PySide6 segmentation faults and background timer leaks caused by
+    unclean widget lifecycles in PySide6.
+    """
+    yield
+    import contextlib
+
+    import matplotlib.pyplot as plt
+    from qtpy.QtWidgets import QApplication
+
+    from napari_phasors._utils import CollapsibleSection
+    from napari_phasors._widget import (
+        AdvancedOptionsWidget,
+        PhasorTransform,
+        WriterWidget,
+    )
+    from napari_phasors.plotter import PlotterWidget
+
+    widgets = []
+    with contextlib.suppress(Exception):
+        widgets = QApplication.allWidgets()
+
+    phasor_widgets = []
+    for w in widgets:
+        if isinstance(
+            w,
+            (
+                PhasorTransform,
+                WriterWidget,
+                AdvancedOptionsWidget,
+                CollapsibleSection,
+                PlotterWidget,
+            ),
+        ):
+            phasor_widgets.append(w)
+
+    # 1. Break parent relationships to avoid double-free/deletion issues in PySide6
+    for w in phasor_widgets:
+        with contextlib.suppress(Exception):
+            w.setParent(None)
+
+    # 2. Clean up Matplotlib canvases and figures
+    for w in phasor_widgets:
+        if hasattr(w, "figure") and w.figure is not None:
+            with contextlib.suppress(Exception):
+                plt.close(w.figure)
+        if hasattr(w, "canvas") and w.canvas is not None:
+            with contextlib.suppress(Exception):
+                w.canvas.setParent(None)
+                w.canvas.deleteLater()
+
+    # 3. Safely stop timers, close, and delete our widgets
+    for w in phasor_widgets:
+        if isinstance(w, PlotterWidget):
+            for attr in (
+                '_dock_check_timer',
+                '_analysis_dock_init_timer',
+                '_dock_resize_timer',
+                '_layer_selection_timer',
+                '_bins_timer',
+            ):
+                with contextlib.suppress(AttributeError):
+                    timer = getattr(w, attr, None)
+                    if timer is not None:
+                        timer.stop()
+
+        with contextlib.suppress(Exception):
+            w.close()
+            w.deleteLater()
+
+    # 4. Process all pending Qt events to execute deleteLater calls
+    from qtpy.QtCore import QCoreApplication
+
+    with contextlib.suppress(Exception):
+        QCoreApplication.processEvents()
