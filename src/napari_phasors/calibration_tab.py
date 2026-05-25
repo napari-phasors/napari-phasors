@@ -451,11 +451,11 @@ class CalibrationWidget(QWidget):
     def closeEvent(self, event):
         """Clean up signal connections before closing."""
         # Disconnect viewer events
-        with contextlib.suppress(ValueError, AttributeError):
+        with contextlib.suppress(TypeError, ValueError, AttributeError):
             self.viewer.layers.events.inserted.disconnect(
                 self._populate_comboboxes
             )
-        with contextlib.suppress(ValueError, AttributeError):
+        with contextlib.suppress(TypeError, ValueError, AttributeError):
             self.viewer.layers.events.removed.disconnect(
                 self._populate_comboboxes
             )
@@ -464,13 +464,13 @@ class CalibrationWidget(QWidget):
         if hasattr(self, 'parent_widget') and hasattr(
             self.parent_widget, 'image_layer_with_phasor_features_combobox'
         ):
-            with contextlib.suppress(ValueError, AttributeError):
+            with contextlib.suppress(TypeError, ValueError, AttributeError):
                 self.parent_widget.image_layer_with_phasor_features_combobox.currentTextChanged.disconnect(
                     self._update_button_state
                 )
 
         # Disconnect layer name change events
-        with contextlib.suppress(ValueError, AttributeError):
+        with contextlib.suppress(TypeError, ValueError, AttributeError):
             for layer in self.viewer.layers:
                 with contextlib.suppress(TypeError, ValueError):
                     layer.events.name.disconnect(self._populate_comboboxes)
