@@ -2,22 +2,21 @@ import pytest
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import QDialog
 
-# Patch PySide6 QObject.eventFilter signature validation bug where QWidgetItem
-# (which does not inherit from QObject) is passed to eventFilter.
+# Patch napari's _QtMainWindow.eventFilter to guard against PySide6 passing
+# QWidgetItem (a non-QObject) as the `watched` argument, which causes a
+# TypeError / infinite recursion under PySide6 + Python 3.14.
 try:
+    from napari._qt.qt_main_window import _QtMainWindow
     from qtpy.QtCore import QObject
 
-    _orig_eventFilter = QObject.eventFilter
+    _orig_QtMainWindow_eventFilter = _QtMainWindow.eventFilter
 
-    def _patched_eventFilter(self, watched, event):
-        if not isinstance(watched, QObject):
+    def _safe_eventFilter(self, source, event):
+        if not isinstance(source, QObject):
             return False
-        try:
-            return _orig_eventFilter(self, watched, event)
-        except TypeError:
-            return False
+        return _orig_QtMainWindow_eventFilter(self, source, event)
 
-    QObject.eventFilter = _patched_eventFilter
+    _QtMainWindow.eventFilter = _safe_eventFilter
 except (AttributeError, ImportError, TypeError):
     pass
 
@@ -48,7 +47,6 @@ def _cleanup_widgets_after_test(request):
     import matplotlib.pyplot as plt
     from qtpy.QtWidgets import QApplication
 
-    from napari_phasors._utils import CollapsibleSection
     from napari_phasors._widget import (
         AdvancedOptionsWidget,
         PhasorTransform,
@@ -68,7 +66,6 @@ def _cleanup_widgets_after_test(request):
                 PhasorTransform,
                 WriterWidget,
                 AdvancedOptionsWidget,
-                CollapsibleSection,
                 PlotterWidget,
             ),
         ):
