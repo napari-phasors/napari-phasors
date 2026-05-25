@@ -2,6 +2,25 @@ import pytest
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import QDialog
 
+# Patch PySide6 QObject.eventFilter signature validation bug where QWidgetItem
+# (which does not inherit from QObject) is passed to eventFilter.
+try:
+    from qtpy.QtCore import QObject
+
+    _orig_eventFilter = QObject.eventFilter
+
+    def _patched_eventFilter(self, watched, event):
+        if not isinstance(watched, QObject):
+            return False
+        try:
+            return _orig_eventFilter(self, watched, event)
+        except TypeError:
+            return False
+
+    QObject.eventFilter = _patched_eventFilter
+except (AttributeError, ImportError, TypeError):
+    pass
+
 
 @pytest.fixture(autouse=True)
 def _hide_qdialog(monkeypatch):
