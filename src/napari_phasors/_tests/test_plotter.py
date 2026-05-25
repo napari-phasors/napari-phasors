@@ -1723,6 +1723,83 @@ def test_mask_layer_rename_updates_combobox_and_assignments(
     assert plotter.mask_layer_combobox.currentText() == "mask_after_rename"
 
 
+def test_image_layer_rename_updates_combobox(make_napari_viewer):
+    """Test that renaming an image layer keeps it selected and updates the name in the checkable combobox."""
+    viewer = make_napari_viewer()
+    layer1 = create_image_layer_with_phasors()
+    viewer.add_layer(layer1)
+
+    plotter = PlotterWidget(viewer)
+
+    # Select the layer
+    plotter.image_layers_checkable_combobox.setCheckedItems([layer1.name])
+    assert plotter.get_selected_layer_names() == [layer1.name]
+
+    # Rename the layer
+    old_name = layer1.name
+    new_name = "renamed_image_layer"
+    layer1.name = new_name
+
+    assert plotter.get_selected_layer_names() == [new_name]
+    assert new_name in plotter.image_layers_checkable_combobox.allItems()
+    assert old_name not in plotter.image_layers_checkable_combobox.allItems()
+
+
+def test_image_layer_rename_without_initial_phasors(make_napari_viewer):
+    """Test that renaming an image layer that starts without phasor metadata correctly tracks rename when it later gets phasors."""
+    viewer = make_napari_viewer()
+    # Create image layer without phasors
+    layer1 = Image(np.ones((10, 10)), name="raw_image")
+    viewer.add_layer(layer1)
+
+    plotter = PlotterWidget(viewer)
+
+    # It should not be in the combobox yet
+    assert (
+        "raw_image" not in plotter.image_layers_checkable_combobox.allItems()
+    )
+
+    # Rename the layer before it has phasor metadata
+    layer1.name = "renamed_raw_image"
+
+    # Set phasor metadata to simulate calibration/calculation
+    layer1.metadata = {
+        "G": np.ones((10, 10)),
+        "S": np.ones((10, 10)),
+        "G_original": np.ones((10, 10)),
+        "S_original": np.ones((10, 10)),
+        "harmonics": [1],
+    }
+
+    # Trigger reset_layer_choices (e.g. simulation of tab change or manual refresh)
+    plotter.reset_layer_choices()
+
+    # It should now be in the combobox with the renamed name
+    assert (
+        "renamed_raw_image"
+        in plotter.image_layers_checkable_combobox.allItems()
+    )
+
+    # If we select it
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        ["renamed_raw_image"]
+    )
+
+    # Rename it again (while it has phasor metadata and is selected)
+    layer1.name = "final_image_name"
+
+    # It should keep being selected and update the name in the combobox
+    assert plotter.get_selected_layer_names() == ["final_image_name"]
+    assert (
+        "final_image_name"
+        in plotter.image_layers_checkable_combobox.allItems()
+    )
+    assert (
+        "renamed_raw_image"
+        not in plotter.image_layers_checkable_combobox.allItems()
+    )
+
+
 def test_mask_ui_switches_to_button_when_multiple_layers_selected(
     make_napari_viewer,
 ):

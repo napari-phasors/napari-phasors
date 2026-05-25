@@ -3897,6 +3897,17 @@ class ComponentsWidget(QWidget):
         except Exception as e:  # noqa: BLE001
             show_error(f"Analysis failed: {str(e)}")
 
+    def rename_layer(self, old_name: str, new_name: str):
+        """Rename derived layers when base layer is renamed."""
+        for layer in self.viewer.layers:
+            if not isinstance(layer, Image):
+                continue
+            name = layer.name
+            for sep in (" fractions: ", " fraction: "):
+                if name.endswith(sep + old_name):
+                    comp_part = name[: -len(sep + old_name)]
+                    layer.name = f"{comp_part}{sep}{new_name}"
+
     def _get_fraction_layers_for_component(self, component_name):
         """Get all fraction layers in the viewer for a given component name.
 
