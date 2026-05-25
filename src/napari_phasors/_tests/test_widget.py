@@ -1,5 +1,4 @@
 import contextlib
-import gc
 import json
 import logging
 import os
@@ -47,18 +46,59 @@ TEST_FORMATS = [
 
 
 @pytest.fixture(autouse=True)
-def _cleanup_widgets_after_test():
+def _cleanup_widgets_after_test(make_napari_viewer):
     """Ensure all Phasor widgets instantiated during the test are properly deleted.
 
     This avoids PySide6 segmentation faults caused by Python GC order vs Qt's C++ object tree deletion.
     """
     yield
-    for obj in gc.get_objects():
+    import matplotlib.pyplot as plt
+    from qtpy.QtWidgets import QApplication
+
+    widgets = []
+    with contextlib.suppress(Exception):
+        widgets = QApplication.allWidgets()
+
+    # Collect only our custom widget types to avoid messing with standard napari/Qt widgets
+    phasor_widgets = []
+    for w in widgets:
         if isinstance(
-            obj, (PhasorTransform, WriterWidget, AdvancedOptionsWidget)
+            w,
+            (
+                PhasorTransform,
+                WriterWidget,
+                AdvancedOptionsWidget,
+                CollapsibleSection,
+            ),
         ):
+            phasor_widgets.append(w)
+
+    # 1. Break parent relationships to avoid double-free/deletion issues in PySide6
+    for w in phasor_widgets:
+        with contextlib.suppress(Exception):
+            w.setParent(None)
+
+    # 2. Clean up Matplotlib canvases and figures
+    for w in phasor_widgets:
+        if hasattr(w, "figure") and w.figure is not None:
             with contextlib.suppress(Exception):
-                obj.deleteLater()
+                plt.close(w.figure)
+        if hasattr(w, "canvas") and w.canvas is not None:
+            with contextlib.suppress(Exception):
+                w.canvas.setParent(None)
+                w.canvas.deleteLater()
+
+    # 3. Safely close and delete our widgets
+    for w in phasor_widgets:
+        with contextlib.suppress(Exception):
+            w.close()
+            w.deleteLater()
+
+    # 4. Process all pending Qt events to execute deleteLater calls
+    from qtpy.QtCore import QCoreApplication
+
+    with contextlib.suppress(Exception):
+        QCoreApplication.processEvents()
 
 
 def test_phasor_transform_widget(make_napari_viewer):
