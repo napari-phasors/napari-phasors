@@ -819,22 +819,25 @@ def test_phasor_transform_with_ome_tif_reader_option(make_napari_viewer):
     viewer = make_napari_viewer()
     widget = PhasorTransform(viewer)
 
-    # Verify OME-TIF reader option is included
-    assert ".ome.tif" in widget.reader_options
+    try:
+        # Verify OME-TIF reader option is included
+        assert ".ome.tif" in widget.reader_options
 
-    # Test with OME-TIF file
-    test_file_path = get_test_file_path("test_file.ome.tif")
+        # Test with OME-TIF file
+        test_file_path = get_test_file_path("test_file.ome.tif")
 
-    with patch(
-        "napari_phasors._widget.QFileDialog.getOpenFileNames",
-        return_value=([test_file_path], ""),
-    ):
-        widget.search_button.click()
+        with patch(
+            "napari_phasors._widget.QFileDialog.getOpenFileNames",
+            return_value=([test_file_path], ""),
+        ):
+            widget.search_button.click()
 
-        # Verify OmeTifWidget was added
-        assert widget.dynamic_widget_layout.count() == 1
-        added_widget = widget.dynamic_widget_layout.itemAt(0).widget()
-        assert isinstance(added_widget, OmeTifWidget)
+            # Verify OmeTifWidget was added
+            assert widget.dynamic_widget_layout.count() == 1
+            added_widget = widget.dynamic_widget_layout.itemAt(0).widget()
+            assert isinstance(added_widget, OmeTifWidget)
+    finally:
+        widget.deleteLater()
 
 
 def test_signal_plot_canvas_properties(make_napari_viewer):

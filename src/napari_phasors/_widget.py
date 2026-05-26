@@ -2482,11 +2482,11 @@ class WriterWidget(QWidget):
 
     def closeEvent(self, event):
         """Disconnect viewer signals before the widget is destroyed."""
-        with suppress(ValueError, AttributeError):
+        with suppress(TypeError, ValueError, AttributeError):
             self.viewer.layers.events.inserted.disconnect(
                 self._populate_combobox
             )
-        with suppress(ValueError, AttributeError):
+        with suppress(TypeError, ValueError, AttributeError):
             self.viewer.layers.events.removed.disconnect(
                 self._populate_combobox
             )

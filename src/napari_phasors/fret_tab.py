@@ -1498,6 +1498,17 @@ class FretWidget(QWidget):
                 self.fret_colormap = self.fret_layer.colormap.colors
                 self.colormap_contrast_limits = self.fret_layer.contrast_limits
 
+    def rename_layer(self, old_name: str, new_name: str):
+        """Rename derived layers when base layer is renamed."""
+        fret_layer_name = f"FRET efficiency: {old_name}"
+        if fret_layer_name in self.viewer.layers:
+            new_fret_layer_name = f"FRET efficiency: {new_name}"
+            self.viewer.layers[fret_layer_name].name = new_fret_layer_name
+            if hasattr(self, 'histogram_widget'):
+                self.histogram_widget.rename_dataset(
+                    fret_layer_name, new_fret_layer_name
+                )
+
     def _update_fret_histogram(self):
         """Update the FRET efficiency histogram from all selected FRET layers."""
         if not self.fret_layers:
@@ -1885,17 +1896,17 @@ class FretWidget(QWidget):
     def closeEvent(self, event):
         """Clean up signal connections before closing."""
         # Disconnect viewer events
-        with contextlib.suppress(ValueError, AttributeError):
+        with contextlib.suppress(TypeError, ValueError, AttributeError):
             self.viewer.layers.events.inserted.disconnect(
                 self._on_layer_changed
             )
-        with contextlib.suppress(ValueError, AttributeError):
+        with contextlib.suppress(TypeError, ValueError, AttributeError):
             self.viewer.layers.events.removed.disconnect(
                 self._on_layer_changed
             )
 
         # Disconnect all layer name change events
-        with contextlib.suppress(ValueError, AttributeError):
+        with contextlib.suppress(TypeError, ValueError, AttributeError):
             for layer in self.viewer.layers:
                 with contextlib.suppress(TypeError, ValueError):
                     layer.events.name.disconnect(
