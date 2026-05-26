@@ -362,3 +362,68 @@ def test_write_ometif_does_not_save_z_spacing_for_2d_layer(tmp_path):
         description = json.loads(tif.pages[0].description)
         settings = json.loads(description["napari_phasors_settings"])
         assert "z_spacing_um" not in settings
+
+
+def test_write_ometif_masked(tmp_path):
+    """Test that write_ome_tiff with export_masked=True applies the mask."""
+    time_constants = [0.1, 1, 10]
+    raw_flim_data = make_raw_flim_data(time_constants=time_constants)
+    harmonic = [1, 2, 3]
+    intensity_image_layer = make_intensity_layer_with_phasors(
+        raw_flim_data, harmonic=harmonic
+    )
+
+    mask = np.ones((2, 5), dtype=int)
+    mask[0, 0] = 0
+    intensity_image_layer.metadata["mask"] = mask
+    intensity_image_layer.metadata["mask_invert"] = False
+
+    # 1. Export with export_masked=True
+    filepath_masked = os.path.join(tmp_path, "test_masked.ome.tif")
+    write_ome_tiff(
+        filepath_masked,
+        [
+            (
+                intensity_image_layer.data,
+                {"metadata": intensity_image_layer.metadata},
+            )
+        ],
+        export_masked=True,
+    )
+
+    assert os.path.exists(filepath_masked)
+
+    # Read back and verify G, S, and mean have NaN at [0,0]
+    reader = napari_get_reader(filepath_masked, harmonics=harmonic)
+    layer_data_list = reader(filepath_masked)
+    metadata_masked = layer_data_list[0][1]["metadata"]
+    mean_masked = layer_data_list[0][0]
+
+    assert np.isnan(mean_masked[0, 0])
+    assert np.isnan(metadata_masked["G"][:, 0, 0]).all()
+    assert np.isnan(metadata_masked["S"][:, 0, 0]).all()
+
+    # The rest should not be NaN
+    assert not np.isnan(mean_masked[0, 1:]).any()
+    assert not np.isnan(metadata_masked["G"][:, 0, 1:]).any()
+
+    # 2. Export with export_masked=False
+    filepath_unmasked = os.path.join(tmp_path, "test_unmasked.ome.tif")
+    write_ome_tiff(
+        filepath_unmasked,
+        [
+            (
+                intensity_image_layer.data,
+                {"metadata": intensity_image_layer.metadata},
+            )
+        ],
+        export_masked=False,
+    )
+
+    reader_unmasked = napari_get_reader(filepath_unmasked, harmonics=harmonic)
+    layer_data_list_unmasked = reader_unmasked(filepath_unmasked)
+    metadata_unmasked = layer_data_list_unmasked[0][1]["metadata"]
+    mean_unmasked = layer_data_list_unmasked[0][0]
+
+    assert not np.isnan(mean_unmasked[0, 0])
+    assert not np.isnan(metadata_unmasked["G"][:, 0, 0]).any()

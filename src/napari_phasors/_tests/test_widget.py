@@ -1375,3 +1375,56 @@ def test_export_labels_layer_as_colored_image(make_napari_viewer, tmp_path):
         img_data[..., 1] != img_data[..., 2]
     )
     assert is_colored, "Exported labels image is grayscale or black and white!"
+
+
+def test_writer_widget_mask_checkbox(make_napari_viewer, tmp_path):
+    """Test that WriterWidget mask checkbox behaves dynamically based on layer mask presence."""
+    viewer = make_napari_viewer()
+
+    # 1. Create a layer without phasor/mask data
+    data = np.random.random((10, 10))
+    layer = viewer.add_image(data, name="test_image")
+
+    widget = WriterWidget(viewer)
+
+    # Select layer
+    widget.export_layer_combobox.selectAll()
+
+    # Verify checkbox is hidden
+    assert widget.mask_checkbox.isVisible() is False
+
+    # 2. Add a mask to the metadata and trigger metadata event
+    layer.metadata["mask"] = np.ones((10, 10))
+    layer.events.metadata()
+
+    # Verify checkbox is visible
+    assert widget.mask_checkbox.isVisible() is True
+
+    # 3. Remove the mask and trigger metadata event
+    del layer.metadata["mask"]
+    layer.events.metadata()
+
+    # Verify checkbox is hidden again
+    assert widget.mask_checkbox.isVisible() is False
+
+    # 4. Check saving calls write_ome_tiff with correct export_masked parameter
+    # Restore mask
+    layer.metadata["mask"] = np.ones((10, 10))
+    layer.events.metadata()
+    widget.mask_checkbox.setChecked(True)
+
+    with patch("napari_phasors._widget.write_ome_tiff") as mock_write:
+        widget._save_file(
+            str(tmp_path / "output.ome.tif"),
+            "Phasor as OME-TIFF (*.ome.tif)",
+            selected_layers=["test_image"],
+            export_masked=True,
+        )
+        mock_write.assert_called_once_with(
+            str(tmp_path / "output.ome.tif"),
+            layer,
+            export_masked=True,
+        )
+
+    # Clean up
+    widget.close()

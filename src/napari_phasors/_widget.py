@@ -2285,6 +2285,15 @@ class WriterWidget(QWidget):
         self.colorbar_checkbox.setChecked(True)
         self.main_layout.addWidget(self.colorbar_checkbox)
 
+        self.mask_checkbox = QCheckBox("Export masked OME-TIFF")
+        self.mask_checkbox.setChecked(True)
+        self.mask_checkbox.hide()
+        self.main_layout.addWidget(self.mask_checkbox)
+
+        self.export_layer_combobox.selectionChanged.connect(
+            self._update_mask_checkbox_visibility
+        )
+
         self.search_button = QPushButton("Select Export Location and Name")
         self.search_button.clicked.connect(self._open_file_dialog)
         self.main_layout.addWidget(self.search_button)
@@ -2343,9 +2352,29 @@ class WriterWidget(QWidget):
 
         if file_path:
             include_colorbar = self.colorbar_checkbox.isChecked()
-            self._save_file(
-                file_path, selected_filter, include_colorbar, selected_layers
+            export_masked = (
+                self.mask_checkbox.isVisible()
+                and self.mask_checkbox.isChecked()
             )
+            self._save_file(
+                file_path,
+                selected_filter,
+                include_colorbar,
+                selected_layers,
+                export_masked=export_masked,
+            )
+
+    def _update_mask_checkbox_visibility(self):
+        """Show/hide the mask checkbox based on whether any selected layer has a mask."""
+        selected_layers = self.export_layer_combobox.checkedItems()
+        any_masked = False
+        for name in selected_layers:
+            if name in self.viewer.layers:
+                layer = self.viewer.layers[name]
+                if 'mask' in getattr(layer, 'metadata', {}):
+                    any_masked = True
+                    break
+        self.mask_checkbox.setVisible(any_masked)
 
     def _populate_combobox(self):
         """Populate combobox with image layers."""
@@ -2358,6 +2387,26 @@ class WriterWidget(QWidget):
         # Update display to show placeholder if no items are checked
         self.export_layer_combobox._update_display_text()
 
+        # Connect to metadata changes for newly populated layers
+        if not hasattr(self, '_connected_metadata_layers'):
+            self._connected_metadata_layers = set()
+
+        for layer in list(self._connected_metadata_layers):
+            with suppress(Exception):
+                layer.events.metadata.disconnect(
+                    self._update_mask_checkbox_visibility
+                )
+        self._connected_metadata_layers.clear()
+
+        for layer in image_layers:
+            with suppress(Exception):
+                layer.events.metadata.connect(
+                    self._update_mask_checkbox_visibility
+                )
+                self._connected_metadata_layers.add(layer)
+
+        self._update_mask_checkbox_visibility()
+
     def closeEvent(self, event):
         """Disconnect viewer signals before the widget is destroyed."""
         with suppress(TypeError, ValueError, AttributeError):
@@ -2368,6 +2417,13 @@ class WriterWidget(QWidget):
             self.viewer.layers.events.removed.disconnect(
                 self._populate_combobox
             )
+        if hasattr(self, '_connected_metadata_layers'):
+            for layer in list(self._connected_metadata_layers):
+                with suppress(Exception):
+                    layer.events.metadata.disconnect(
+                        self._update_mask_checkbox_visibility
+                    )
+            self._connected_metadata_layers.clear()
 
         event.accept()
         super().closeEvent(event)
@@ -2378,6 +2434,7 @@ class WriterWidget(QWidget):
         selected_filter,
         include_colorbar=False,
         selected_layers=None,
+        export_masked=False,
     ):
         """Callback whenever the export location and name are specified."""
         if selected_layers is None:
@@ -2436,7 +2493,9 @@ class WriterWidget(QWidget):
 
             try:
                 if selected_filter == "Phasor as OME-TIFF (*.ome.tif)":
-                    write_ome_tiff(final_path, export_layer)
+                    write_ome_tiff(
+                        final_path, export_layer, export_masked=export_masked
+                    )
                 elif selected_filter == "Layer data as CSV (*.csv)":
                     export_layer_as_csv(final_path, export_layer)
                 elif selected_filter in [
@@ -2470,7 +2529,11 @@ class WriterWidget(QWidget):
                     layer_file_path = os.path.join(directory, filename)
 
                     if selected_filter == "Phasor as OME-TIFF (*.ome.tif)":
-                        write_ome_tiff(layer_file_path, export_layer)
+                        write_ome_tiff(
+                            layer_file_path,
+                            export_layer,
+                            export_masked=export_masked,
+                        )
                     elif selected_filter == "Layer data as CSV (*.csv)":
                         export_layer_as_csv(layer_file_path, export_layer)
                     elif selected_filter in [

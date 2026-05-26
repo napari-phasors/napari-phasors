@@ -105,7 +105,11 @@ def _extract_z_spacing_um(
     return value if value > 0 else None
 
 
-def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
+def write_ome_tiff(
+    path: str,
+    image_layer: Any,
+    export_masked: bool = False,
+) -> list[str]:
     """Save image layer with phasor coordinates as 'OME-TIFF'.
 
     For layers with phasor metadata, saves mean intensity and phasor coordinates.
@@ -198,6 +202,22 @@ def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
             G = metadata["G_original"]
             S = metadata["S_original"]
             harmonics = metadata["harmonics"]
+
+            if export_masked and "mask" in metadata:
+                mask_data = metadata["mask"]
+                invert = metadata.get("mask_invert", False)
+                mask_invalid = mask_data > 0 if invert else mask_data <= 0
+
+                mean = np.where(mask_invalid, np.nan, mean.copy())
+
+                if G.ndim > mask_invalid.ndim:
+                    mask_invalid_expanded = mask_invalid[np.newaxis, ...]
+                    G = np.where(mask_invalid_expanded, np.nan, G.copy())
+                    S = np.where(mask_invalid_expanded, np.nan, S.copy())
+                else:
+                    G = np.where(mask_invalid, np.nan, G.copy())
+                    S = np.where(mask_invalid, np.nan, S.copy())
+
             if "settings" in metadata:
                 settings = metadata["settings"].copy()
             else:
@@ -264,6 +284,22 @@ def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
 
             if dims:
                 metadata_dict['axes'] = dims
+
+            if export_masked and "mask" in metadata:
+                mask_data = metadata["mask"]
+                invert = metadata.get("mask_invert", False)
+                mask_invalid = mask_data > 0 if invert else mask_data <= 0
+
+                if data.ndim > mask_invalid.ndim:
+                    expanded_shape = [1] * (
+                        data.ndim - mask_invalid.ndim
+                    ) + list(mask_invalid.shape)
+                    mask_invalid_expanded = mask_invalid.reshape(
+                        expanded_shape
+                    )
+                    data = np.where(mask_invalid_expanded, np.nan, data.copy())
+                else:
+                    data = np.where(mask_invalid, np.nan, data.copy())
 
             tifffile.imwrite(
                 path,
