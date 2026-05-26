@@ -337,6 +337,20 @@ def raw_file_reader(
         in 'metadata' contain phasor coordinates as columns 'G' and 'S'.
 
     """
+    # Set default harmonics if None is passed
+    if harmonics is None:
+        harmonics = [1, 2]
+
+    # Extract phasor_axis from reader_options (widget-level parameter)
+    # This should not be passed to IO functions
+    axis_override = None
+    filtered_reader_options = reader_options.copy() if reader_options else {}
+    if 'phasor_axis' in filtered_reader_options:
+        try:
+            axis_override = int(filtered_reader_options.pop('phasor_axis'))
+        except (KeyError, ValueError, TypeError):
+            filtered_reader_options.pop('phasor_axis', None)
+
     filename, file_extension = _get_filename_extension(path)
 
     # Read SDT multi-file special case
@@ -378,10 +392,6 @@ def raw_file_reader(
     has_dims = hasattr(raw_data, 'dims')
     raw_dims = tuple(raw_data.dims) if has_dims else ()
 
-    # Set default harmonics if None is passed
-    if harmonics is None:
-        harmonics = [1, 2]
-
     # Determine progress bar steps: per-channel if iter_axis present, else per-harmonic
     if iter_axis is not None and iter_axis in raw_dims:
         try:
@@ -410,7 +420,8 @@ def raw_file_reader(
             if axis_override is not None:
                 axis = axis_override
             elif file_extension in [".tif", ".tiff"]:
-                axis = 0
+                # Use explicit override from reader_options (set by widget), otherwise default to 0
+                axis = axis_override if axis_override is not None else 0
             elif has_dims and "H" in raw_dims:
                 axis = raw_dims.index("H")
             elif has_dims and "C" in raw_dims:
@@ -492,11 +503,15 @@ def raw_file_reader(
                 pbr.set_description(f"Channel {channel_pos + 1}/{n_channels}")
                 pbr.update(1)
                 channel_data = raw_data.isel({iter_axis: channel_pos})
-                histogram_axis = (
-                    channel_data.dims.index("H")
-                    if "H" in channel_data.dims
-                    else 0
-                )
+                # Allow override of histogram axis via reader options
+                if axis_override is not None:
+                    histogram_axis = axis_override
+                else:
+                    histogram_axis = (
+                        channel_data.dims.index("H")
+                        if "H" in channel_data.dims
+                        else 0
+                    )
 
                 # Calculate summed signal over spatial dimensions for this channel
                 axes_to_sum = tuple(

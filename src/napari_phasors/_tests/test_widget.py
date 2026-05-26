@@ -481,6 +481,42 @@ def test_lsm_widget_axis_selection_updates_signal_plot(
     assert not np.array_equal(initial_plot, updated_plot)
 
 
+def test_tiff_widget_axis_selection_updates_signal_plot(
+    make_napari_viewer, monkeypatch
+):
+    """Changing the axis combobox for a TIFF file should update the selected axis and refresh the preview plot."""
+    viewer = make_napari_viewer()
+    fake_signal = xr.DataArray(
+        np.arange(24, dtype=np.float32).reshape(2, 3, 4),
+        dims=("Z", "Y", "H"),
+    )
+
+    # LsmWidget handles both LSM and TIFF files; passing a TIFF extension (like "example.tif")
+    # will set self._is_lsm = False.
+    widget = LsmWidget(viewer, path="example.tif")
+    monkeypatch.setattr(
+        widget, "_get_preview_signal_data", lambda: fake_signal
+    )
+    widget._update_axis_options()
+    widget._update_signal_plot()
+
+    assert widget.axis_combo is not None
+    assert widget.axis_combo.currentText() == "Auto"
+    assert widget.reader_options.get("phasor_axis") is None
+    assert widget.axis_combo.count() == 4
+
+    initial_plot = widget.ax.get_lines()[0].get_ydata().copy()
+
+    widget.axis_combo.setCurrentIndex(2)
+
+    assert widget.reader_options["phasor_axis"] == 1
+    updated_plot = widget.ax.get_lines()[0].get_ydata()
+    expected_plot = fake_signal.values.sum(axis=(0, 2))
+
+    np.testing.assert_array_equal(updated_plot, expected_plot)
+    assert not np.array_equal(initial_plot, updated_plot)
+
+
 def test_phasor_transform_czi_widget(make_napari_viewer):
     """Test CziWidget from PhasorTransform widget."""
     viewer = make_napari_viewer()
