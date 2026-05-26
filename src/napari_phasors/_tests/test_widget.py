@@ -1391,21 +1391,21 @@ def test_writer_widget_mask_checkbox(make_napari_viewer, tmp_path):
     widget.export_layer_combobox.selectAll()
 
     # Verify checkbox is hidden
-    assert widget.mask_checkbox.isVisible() is False
+    assert widget.mask_checkbox.isHidden() is True
 
     # 2. Add a mask to the metadata and trigger metadata event
     layer.metadata["mask"] = np.ones((10, 10))
     layer.events.metadata()
 
     # Verify checkbox is visible
-    assert widget.mask_checkbox.isVisible() is True
+    assert widget.mask_checkbox.isHidden() is False
 
     # 3. Remove the mask and trigger metadata event
     del layer.metadata["mask"]
     layer.events.metadata()
 
     # Verify checkbox is hidden again
-    assert widget.mask_checkbox.isVisible() is False
+    assert widget.mask_checkbox.isHidden() is True
 
     # 4. Check saving calls write_ome_tiff with correct export_masked parameter
     # Restore mask
