@@ -388,7 +388,9 @@ def test_circular_cursor_add_cursor(make_napari_viewer):
     assert 'color' in cursor
     assert 'patch' in cursor
     assert cursor['g'] == 0.5
-    assert cursor['s'] == 0.5  # Default s value
+    assert (
+        cursor['s'] == 0.3
+    )  # Default s value (center of current view y-axis [-0.1, 0.7])
     assert cursor['radius'] == 0.05  # Default radius
 
     # Add second cursor
@@ -478,7 +480,9 @@ def test_circular_cursor_table_updates(make_napari_viewer):
 
     # Check initial values
     assert g_spinbox.value() == 0.5
-    assert s_spinbox.value() == 0.5  # Default s value
+    assert (
+        s_spinbox.value() == 0.3
+    )  # Default s value (center of current view y-axis [-0.1, 0.7])
     assert radius_spinbox.value() == 0.05  # Default radius
 
     # Change values
@@ -1862,10 +1866,10 @@ def test_polar_cursor_add_cursor(make_napari_viewer):
 
     # Check new defaults
     cursor = widget._cursors[0]
-    assert cursor['phase_min'] == 10.0
-    assert cursor['phase_max'] == 30.0
-    assert cursor['modulation_min'] == 0.4
-    assert cursor['modulation_max'] == 0.6
+    assert np.allclose(cursor['phase_min'], 20.96375653)
+    assert np.allclose(cursor['phase_max'], 40.96375653)
+    assert np.allclose(cursor['modulation_min'], 0.483095189)
+    assert np.allclose(cursor['modulation_max'], 0.683095189)
 
 
 def test_elliptical_cursor_widget_initialization(make_napari_viewer):
@@ -1902,7 +1906,7 @@ def test_elliptical_cursor_add_cursor(make_napari_viewer):
     # Check properties
     cursor = widget._cursors[0]
     assert cursor['g'] == 0.5
-    assert cursor['s'] == 0.5
+    assert cursor['s'] == 0.3
     assert cursor['radius'] == 0.1
     assert cursor['radius_minor'] == 0.05
     assert cursor['angle'] == 0.0
@@ -2003,3 +2007,38 @@ def test_labels_layer_visibility_on_tab_toggle(make_napari_viewer):
     widget._set_labels_layer_visibility(True)
     assert viewer.layers[man_layer_name].visible is False
     assert viewer.layers[circ_layer_name].visible is True
+
+
+def test_cursor_added_at_custom_limits(make_napari_viewer):
+    """Test that cursors are added at the center of custom/zoomed plot limits."""
+    viewer = make_napari_viewer()
+    intensity_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_layer)
+    parent = PlotterWidget(viewer)
+
+    # Set custom axes limits
+    parent.canvas_widget.axes.set_xlim([0.2, 0.8])
+    parent.canvas_widget.axes.set_ylim([0.1, 0.5])
+
+    # 1. Test Circular Cursor
+    circular_widget = parent.selection_tab.circular_cursor_widget
+    circular_widget._add_cursor()
+    assert circular_widget._cursors[0]['g'] == 0.5  # (0.2 + 0.8) / 2
+    assert circular_widget._cursors[0]['s'] == 0.3  # (0.1 + 0.5) / 2
+
+    # 2. Test Elliptical Cursor
+    elliptical_widget = parent.selection_tab.elliptical_cursor_widget
+    elliptical_widget._add_cursor()
+    assert elliptical_widget._cursors[0]['g'] == 0.5
+    assert elliptical_widget._cursors[0]['s'] == 0.3
+
+    # 3. Test Polar Cursor
+    polar_widget = parent.selection_tab.polar_cursor_widget
+    polar_widget._add_cursor()
+    # Expected center is g=0.5, s=0.3
+    # center_phase_deg = np.rad2deg(np.arctan2(0.3, 0.5)) ~ 30.96375653
+    # center_modulation = np.sqrt(0.34) ~ 0.583095189
+    assert np.allclose(polar_widget._cursors[0]['phase_min'], 20.96375653)
+    assert np.allclose(polar_widget._cursors[0]['phase_max'], 40.96375653)
+    assert np.allclose(polar_widget._cursors[0]['modulation_min'], 0.483095189)
+    assert np.allclose(polar_widget._cursors[0]['modulation_max'], 0.683095189)
