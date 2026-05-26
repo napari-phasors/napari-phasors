@@ -5091,6 +5091,57 @@ class PlotterWidget(QWidget):
                 self.selection_tab.manual_selection_changed
             )
 
+    def _notify_tabs_of_renamed_layers(self, renamed_images: dict):
+        """Notify all tabs and histogram widgets that image layers were renamed."""
+        for old_name, new_name in renamed_images.items():
+            # Notify Phasor Mapping Tab
+            if hasattr(self, 'phasor_mapping_tab') and self.phasor_mapping_tab:
+                if hasattr(self.phasor_mapping_tab, 'rename_layer'):
+                    self.phasor_mapping_tab.rename_layer(old_name, new_name)
+                if hasattr(
+                    self.phasor_mapping_tab, 'histogram_widget'
+                ) and hasattr(
+                    self.phasor_mapping_tab.histogram_widget, 'rename_dataset'
+                ):
+                    self.phasor_mapping_tab.histogram_widget.rename_dataset(
+                        old_name, new_name
+                    )
+
+            # Notify Components Tab
+            if hasattr(self, 'components_tab') and self.components_tab:
+                if hasattr(self.components_tab, 'rename_layer'):
+                    self.components_tab.rename_layer(old_name, new_name)
+                if hasattr(
+                    self.components_tab, 'histogram_widget'
+                ) and hasattr(
+                    self.components_tab.histogram_widget, 'rename_dataset'
+                ):
+                    self.components_tab.histogram_widget.rename_dataset(
+                        old_name, new_name
+                    )
+
+            # Notify FRET Tab
+            if hasattr(self, 'fret_tab') and self.fret_tab:
+                if hasattr(self.fret_tab, 'rename_layer'):
+                    self.fret_tab.rename_layer(old_name, new_name)
+                if hasattr(self.fret_tab, 'histogram_widget') and hasattr(
+                    self.fret_tab.histogram_widget, 'rename_dataset'
+                ):
+                    self.fret_tab.histogram_widget.rename_dataset(
+                        old_name, new_name
+                    )
+
+            # Notify Filter Tab
+            if (
+                hasattr(self, 'filter_tab')
+                and self.filter_tab
+                and hasattr(self.filter_tab, 'histogram_widget')
+                and hasattr(self.filter_tab.histogram_widget, 'rename_dataset')
+            ):
+                self.filter_tab.histogram_widget.rename_dataset(
+                    old_name, new_name
+                )
+
     def reset_layer_choices(self):
         """Reset the image layer checkable combobox choices."""
         if getattr(self, '_resetting_layer_choices', False):
@@ -5120,6 +5171,11 @@ class PlotterWidget(QWidget):
                 and "G_original" in layer.metadata
                 and "S_original" in layer.metadata
             ]
+            image_layers_by_id = {
+                id(layer): layer.name
+                for layer in self.viewer.layers
+                if isinstance(layer, Image)
+            }
             mask_layer_names = [
                 layer.name
                 for layer in self.viewer.layers
@@ -5131,6 +5187,34 @@ class PlotterWidget(QWidget):
                 if isinstance(layer, (Labels, Shapes))
             }
 
+            # If image layers were renamed, update selections and notify tabs
+            old_image_layers_by_id = getattr(self, '_image_layers_by_id', {})
+            renamed_images = {
+                old_name: new_name
+                for layer_id, new_name in image_layers_by_id.items()
+                if layer_id in old_image_layers_by_id
+                and (old_name := old_image_layers_by_id[layer_id]) != new_name
+            }
+            if renamed_images:
+                previously_selected = [
+                    renamed_images.get(name, name)
+                    for name in previously_selected
+                ]
+                self._mask_assignments = {
+                    renamed_images.get(
+                        image_layer_name, image_layer_name
+                    ): mask_name
+                    for image_layer_name, mask_name in self._mask_assignments.items()
+                }
+                self._mask_invert_assignments = {
+                    renamed_images.get(
+                        image_layer_name, image_layer_name
+                    ): invert
+                    for image_layer_name, invert in self._mask_invert_assignments.items()
+                }
+                self._notify_tabs_of_renamed_layers(renamed_images)
+            self._image_layers_by_id = image_layers_by_id
+
             # If mask layers were renamed, keep combobox and assignments synced
             # by matching layer object identity across updates.
             old_mask_layers_by_id = getattr(self, '_mask_layers_by_id', {})
@@ -5140,6 +5224,7 @@ class PlotterWidget(QWidget):
                 if layer_id in old_mask_layers_by_id
                 and old_mask_layers_by_id[layer_id] != new_name
             }
+            self._mask_layers_by_id = mask_layers_by_id
 
             if mask_layer_combobox_current_text in renamed_masks:
                 mask_layer_combobox_current_text = renamed_masks[
@@ -5222,26 +5307,29 @@ class PlotterWidget(QWidget):
             # quadratic. We also drop ids of layers that have been
             # removed so the set doesn't grow unbounded.
             current_layer_ids = {
-                id(self.viewer.layers[name])
-                for name in layer_names + mask_layer_names
+                id(layer)
+                for layer in self.viewer.layers
+                if isinstance(layer, (Image, Labels, Shapes))
             }
             self._connected_layer_ids.intersection_update(current_layer_ids)
 
-            for layer_name in layer_names + mask_layer_names:
-                layer = self.viewer.layers[layer_name]
+            for layer in self.viewer.layers:
                 layer_id = id(layer)
                 if layer_id in self._connected_layer_ids:
                     continue
                 if isinstance(layer, Image):
                     layer.events.name.connect(self.reset_layer_choices)
-                if isinstance(layer, (Shapes, Labels)):
+                    self._connected_layer_ids.add(layer_id)
+                elif isinstance(layer, (Shapes, Labels)):
                     layer.events.name.connect(self.reset_layer_choices)
-                if isinstance(layer, Shapes):
-                    layer.events.data.connect(self._on_mask_data_changed)
-                if isinstance(layer, Labels):
-                    layer.events.paint.connect(self._on_mask_data_changed)
-                    layer.events.set_data.connect(self._on_mask_data_changed)
-                self._connected_layer_ids.add(layer_id)
+                    if isinstance(layer, Shapes):
+                        layer.events.data.connect(self._on_mask_data_changed)
+                    elif isinstance(layer, Labels):
+                        layer.events.paint.connect(self._on_mask_data_changed)
+                        layer.events.set_data.connect(
+                            self._on_mask_data_changed
+                        )
+                    self._connected_layer_ids.add(layer_id)
 
             self._mask_layers_by_id = mask_layers_by_id
 

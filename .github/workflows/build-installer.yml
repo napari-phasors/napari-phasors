@@ -5,6 +5,9 @@ on:
     types: [published]
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build-installer:
     name: Build installer (${{ matrix.os }})
@@ -30,12 +33,11 @@ jobs:
         uses: conda-incubator/setup-miniconda@v3
         with:
           miniforge-version: latest
-          conda-remove-defaults: "true"
 
       - name: Install constructor
         shell: bash -el {0}
         run: |
-          conda install -y constructor
+          conda install -y constructor pillow
 
       - name: Determine version
         id: version
@@ -53,10 +55,6 @@ jobs:
         shell: bash -el {0}
         run: |
           cd installer
-          # constructor's license_file requires ASCII-only content. The
-          # LICENSE contains a non-ASCII character ('í' in an author
-          # name) so we transliterate it to ASCII first. Per Bruno's
-          # review suggestion on PR #219.
           python - <<'PY'
           import unicodedata
           from pathlib import Path
@@ -91,8 +89,13 @@ jobs:
           sed -i.bak "s/VERSION_PLACEHOLDER/${{ steps.version.outputs.version }}/" construct.yaml
           sed -i.bak "s/POST_INSTALL_PLACEHOLDER/${{ matrix.post_install }}/" construct.yaml
           if [ -f icon.png ]; then
+            python -c "from PIL import Image; img = Image.open('icon.png'); img.save('icon.ico', format='ICO'); img.save('app.icns', format='ICNS')"
             echo "icon_image: icon.png" >> construct.yaml
-            echo "Found icon.png — adding icon_image to construct.yaml"
+            echo "extra_files:" >> construct.yaml
+            echo "  - icon.png" >> construct.yaml
+            echo "  - icon.ico" >> construct.yaml
+            echo "  - app.icns" >> construct.yaml
+            echo "Found icon.png — adding icon_image and extra_files to construct.yaml"
           else
             echo "No icon.png found — skipping icon_image"
           fi
@@ -145,6 +148,8 @@ jobs:
               <string>APPL</string>
               <key>CFBundleShortVersionString</key>
               <string>${VERSION}</string>
+              <key>CFBundleIconFile</key>
+              <string>app.icns</string>
             </dict>
           </plist>
           PLIST
@@ -154,12 +159,61 @@ jobs:
           SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
           ENV_DIR="${SCRIPT_DIR}/../Resources/env"
           source "${ENV_DIR}/bin/activate"
-          exec "${ENV_DIR}/bin/napari" "$@"
+          exec "${ENV_DIR}/bin/python" -m napari "$@"
           LAUNCHER
           chmod +x "${APP_DIR}/Contents/MacOS/napari-phasors"
 
           echo "=== Moving conda env into .app bundle ==="
           mv "${INSTALL_DIR}" "${APP_DIR}/Contents/Resources/env"
+
+          # If the installer shipped an app.icns at the install root, copy it
+          # into the .app Resources so the app has an icon.
+          if [ -f "${APP_DIR}/Contents/Resources/env/app.icns" ]; then
+            cp "${APP_DIR}/Contents/Resources/env/app.icns" "${APP_DIR}/Contents/Resources/app.icns"
+          fi
+          echo "=== Fixing shebangs in bundled env ==="
+          ENV_BIN="${APP_DIR}/Contents/Resources/env/bin"
+          # prefer a specific python binary if present
+          if [ -x "${ENV_BIN}/python3.12" ]; then
+            PY_BIN="${ENV_BIN}/python3.12"
+          elif [ -x "${ENV_BIN}/python3" ]; then
+            PY_BIN="${ENV_BIN}/python3"
+          else
+            PY_BIN="${ENV_BIN}/python"
+          fi
+          # Rewrite python shebangs to point to the env python safely
+          if [ -d "${ENV_BIN}" ]; then
+            python3 -c '
+          import os, sys
+          env_bin = sys.argv[1]
+          py_bin = sys.argv[2]
+          for filename in os.listdir(env_bin):
+              filepath = os.path.join(env_bin, filename)
+              if not os.path.isfile(filepath) or os.path.islink(filepath):
+                  continue
+              try:
+                  with open(filepath, "rb") as f:
+                      first_line = f.readline()
+                  if first_line.startswith(b"#!") and b"python" in first_line.lower():
+                      with open(filepath, "rb") as f:
+                          content = f.read()
+                      newline_pos = content.find(b"\n")
+                      new_first_line = b"#!" + py_bin.encode("utf-8") + b"\n"
+                      new_content = new_first_line + content[newline_pos+1:] if newline_pos != -1 else new_first_line
+                      with open(filepath, "wb") as f:
+                          f.write(new_content)
+              except Exception as e:
+                  print(f"Skipping {filepath}: {e}")
+          ' "${ENV_BIN}" "${PY_BIN}"
+            chmod -R +x "${ENV_BIN}" || true
+          fi
+          # Remove absolute 'home' entries in pyvenv.cfg if present
+          PVF="${APP_DIR}/Contents/Resources/env/pyvenv.cfg"
+          if [ -f "$PVF" ]; then
+            sed -i.bak '/^home = /d' "$PVF" || true
+            rm -f "$PVF.bak" || true
+          fi
+
 
           ln -s /Applications "${DMG_CONTENTS}/Applications"
 
@@ -177,7 +231,7 @@ jobs:
           ls -la installer/napari-phasors-*
 
       - name: Upload installer as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
         with:
           name: installer-${{ matrix.platform }}
           path: installer/napari-phasors-*
@@ -185,6 +239,6 @@ jobs:
 
       - name: Upload to GitHub Release
         if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@4fabdc8bec0ad32a2eb09fb8fd1d04fd30a75562 # v2.0.5
         with:
           files: installer/napari-phasors-*
