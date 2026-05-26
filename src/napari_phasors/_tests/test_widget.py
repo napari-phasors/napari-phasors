@@ -266,7 +266,7 @@ def test_phasor_transform_fbd_widget(make_napari_viewer):
     # Click button of phasor transform and check layers
     widget.btn.click()
     assert len(viewer.layers) == 1
-    assert viewer.layers[0].name == "test_file$EI0S Intensity Image: Channel 0"
+    assert viewer.layers[0].name == "test_file$EI0S Intensity Image"
     assert viewer.layers[0].data.shape == (256, 256)
     # Check phasor data in metadata
     assert "G" in viewer.layers[0].metadata

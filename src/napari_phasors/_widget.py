@@ -427,9 +427,6 @@ class AdvancedOptionsWidget(QWidget):
         # Axis selection for phasor calculation (updated from preview)
         self._axis_widget()
 
-        # Axis selection for phasor calculation (updated from preview)
-        self._axis_widget()
-
     def _add_shape_preview_widget(self):
         """Add a label showing estimated output shape for current options."""
         self.shape_preview_label = QLabel("Estimated output shape: N/A")

@@ -277,8 +277,10 @@ def _clamp_harmonics(
             res.append(v)
 
     if not res:
-        # fallback to harmonic 1 when possible
-        return [1]
+        raise ValueError(
+            f"No valid harmonics remain for {n_samples} samples. "
+            f"Requested harmonics: {harmonics}."
+        )
     return res
 
 
@@ -370,11 +372,6 @@ def raw_file_reader(
             ), "Shapes from files in .sdt do not match!"
         raw_data = xr.concat(raw_list, dim="C")
     else:
-        # Remove widget-level option 'phasor_axis' before calling IO
-        filtered_reader_options = (
-            reader_options.copy() if reader_options else {}
-        )
-        filtered_reader_options.pop('phasor_axis', None)
         raw_data = extension_mapping["raw"][file_extension](
             path, filtered_reader_options
         )
@@ -409,19 +406,10 @@ def raw_file_reader(
     try:
         if iter_axis is None or iter_axis not in raw_dims:
             # Handle files without iteration axis or when keepdims=False squeezed it out
-            # Allow explicit override of histogram axis via reader options
-            axis_override = None
-            if reader_options and 'phasor_axis' in reader_options:
-                try:
-                    axis_override = int(reader_options.get('phasor_axis'))
-                except (TypeError, ValueError):
-                    axis_override = None
-
             if axis_override is not None:
                 axis = axis_override
             elif file_extension in [".tif", ".tiff"]:
-                # Use explicit override from reader_options (set by widget), otherwise default to 0
-                axis = axis_override if axis_override is not None else 0
+                axis = 0
             elif has_dims and "H" in raw_dims:
                 axis = raw_dims.index("H")
             elif has_dims and "C" in raw_dims:
