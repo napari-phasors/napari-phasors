@@ -19,10 +19,7 @@ def test_convallaria_FLIM_sample_data(make_napari_viewer):
     )
     assert layer_data_tuple[0].shape == (256, 256)
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
-    assert (
-        layer_data_tuple[1]["name"]
-        == "Convallaria_$EI0S Intensity Image: Channel 0"
-    )
+    assert layer_data_tuple[1]["name"] == "Convallaria_$EI0S Intensity Image"
     metadata = layer_data_tuple[1]["metadata"]
     assert "G" in metadata
     assert "S" in metadata
@@ -47,7 +44,7 @@ def test_convallaria_FLIM_sample_data(make_napari_viewer):
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert (
         layer_data_tuple[1]["name"]
-        == "Calibration_Rhodamine110_$EI0S Intensity Image: Channel 0"
+        == "Calibration_Rhodamine110_$EI0S Intensity Image"
     )
     metadata = layer_data_tuple[1]["metadata"]
     assert "G" in metadata
