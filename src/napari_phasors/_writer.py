@@ -331,8 +331,16 @@ def export_layer_as_image(
         data_2d = data
 
     if is_labels:
-        cmap = 'nipy_spectral'
-        clim = [0, data_2d.max() if data_2d.max() > 0 else 1]
+        include_colorbar = False
+        if colormap is not None and hasattr(colormap, 'map'):
+            try:
+                data_2d = colormap.map(data_2d)
+            except Exception:  # noqa: BLE001
+                cmap = 'nipy_spectral'
+                clim = [0, data_2d.max() if data_2d.max() > 0 else 1]
+        else:
+            cmap = 'nipy_spectral'
+            clim = [0, data_2d.max() if data_2d.max() > 0 else 1]
     else:
         napari_cmap = colormap
         if hasattr(napari_cmap, "colors"):
@@ -352,7 +360,7 @@ def export_layer_as_image(
         )
 
     # Calculate aspect ratio from data shape
-    height, width = data_2d.shape
+    height, width = data_2d.shape[:2]
     aspect_ratio = width / height
 
     base_height = 8
@@ -373,14 +381,16 @@ def export_layer_as_image(
             figsize=(base_width, base_height), facecolor="black"
         )
 
-    im = ax.imshow(
-        data_2d,
-        cmap=cmap,
-        vmin=clim[0],
-        vmax=clim[1],
-        interpolation="nearest",
-        aspect="auto",
-    )
+    imshow_kwargs = {
+        "interpolation": "nearest",
+        "aspect": "auto",
+    }
+    if data_2d.ndim == 2:
+        imshow_kwargs["cmap"] = cmap
+        imshow_kwargs["vmin"] = clim[0]
+        imshow_kwargs["vmax"] = clim[1]
+
+    im = ax.imshow(data_2d, **imshow_kwargs)
     ax.axis("off")
 
     if include_colorbar:

@@ -1325,3 +1325,53 @@ def test_writer_widget_csv_coordinates_consistency_2d(
     # Check (1,1) -> 40
     val_11 = df[(df['y'] == 1) & (df['x'] == 1)]['value'].values[0]
     assert val_11 == 40
+
+
+def test_writer_widget_excludes_labels_layer(make_napari_viewer):
+    """Test that WriterWidget excludes Labels layers from populate combobox."""
+    viewer = make_napari_viewer()
+    viewer.add_image(np.random.random((10, 10)), name="my_image")
+    viewer.add_labels(np.zeros((10, 10), dtype=int), name="my_labels")
+
+    widget = WriterWidget(viewer)
+
+    items = [
+        widget.export_layer_combobox.itemText(i)
+        for i in range(widget.export_layer_combobox.count())
+    ]
+    assert "my_image" in items
+    assert "my_labels" not in items
+
+
+def test_export_labels_layer_as_colored_image(make_napari_viewer, tmp_path):
+    """Test that Labels layers are exported as colored images without colorbar."""
+    from PIL import Image as PILImage
+
+    from napari_phasors._writer import export_layer_as_image
+
+    viewer = make_napari_viewer()
+
+    # Create a labels layer with distinct labels
+    labels_data = np.zeros((10, 10), dtype=np.int32)
+    labels_data[2:5, 2:5] = 1
+    labels_data[6:9, 6:9] = 2
+    labels_layer = viewer.add_labels(labels_data, name="test_labels")
+
+    # Export labels layer as image
+    export_path = str(tmp_path / "test_labels_export.png")
+    export_layer_as_image(export_path, labels_layer, include_colorbar=True)
+
+    assert os.path.exists(export_path)
+
+    # Open and verify the image has color representation (not black and white)
+    img = PILImage.open(export_path)
+    img_data = np.array(img)
+
+    assert img_data.ndim == 3
+    assert img_data.shape[-1] in (3, 4)
+
+    # Check that it's colored (not grayscale where R=G=B for all pixels)
+    is_colored = np.any(img_data[..., 0] != img_data[..., 1]) or np.any(
+        img_data[..., 1] != img_data[..., 2]
+    )
+    assert is_colored, "Exported labels image is grayscale or black and white!"
