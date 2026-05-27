@@ -14,7 +14,7 @@ These methods open files with default reader parameters for the detected file fo
 When you open a file this way, the phasor coordinates and mean intensity image are automatically calculated and stored in the image layer metadata.
 By default, standard opening reads the first 1<sup>st</sup> and second 2<sup>nd</sup> harmonics, when available.
 
-Use the **Phasor Custom Import** widget when you need to override those defaults (for example, choose a specific channel/frame, set LIF image/dimension, or build a custom 3D stack with z spacing and axis order).
+Use the **Phasor Custom Import** widget when you need to override those defaults (for example, choose a specific channel/frame, set LIF image/dimension, select the phasor axis, or build a custom 3D stack with z spacing and axis order).
 
 The **Phasor Custom Import** widget (**PhasorTransformWidget**) provides format-aware import options for FLIM and hyperspectral files.
 
@@ -60,6 +60,7 @@ Notes:
 
 - Detects file format and shows relevant import options
 - Previews signal data before transformation
+- Allows choosing a custom **Phasor axis** along which to compute the phasor transform (with "Auto" mode detecting it automatically based on the file format)
 - Supports importing one file, multiple separate files, or a stacked 3D volume
 
 ## Example 1: Import one file or multiple separate files
@@ -68,7 +69,7 @@ Use this when you want each selected file to become its own layer.
 
 1. Click **Select file(s) to be read**.
 2. Choose one or more supported files.
-3. Adjust per-format options (for example channel, frame, harmonics) in the
+3. Adjust per-format options (for example channel, frame, harmonics, and phasor axis) in the
    widget panel.
 4. Click **Phasor Transform**.
 
