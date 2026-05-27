@@ -110,7 +110,7 @@ def write_ome_tiff(
     image_layer: Any,
     export_masked: bool = False,
 ) -> list[str]:
-    """Save image layer with phasor coordinates as 'OME-TIFF'.
+    """Save layer with phasor coordinates as 'OME-TIFF'.
 
     For layers with phasor metadata, saves mean intensity and phasor coordinates.
     For layers without phasor metadata, saves the raw layer data as OME-TIFF.
@@ -119,12 +119,13 @@ def write_ome_tiff(
     ----------
     path : str
         A string path indicating where to save the image file.
-    image_layer : napari.layers.Image
-        Napari image layer or a list with the mean intensity image as the
-        first element and as second element a dict with `metadata` as key.
-        The value associated to 'metadata' must be a dict containing
-        `G_original`, `S_original`, and `harmonics` keys with NumPy arrays
-        for phasor data, or just raw image data for non-phasor layers.
+    image_layer : napari.layers.Layer or tuple or list
+        Napari layer-like object (such as Image or Labels) or a list/tuple
+        representing a napari writer layer-data tuple (with the layer data as
+        the first element and a dict with `metadata` as the second element).
+        The metadata must contain `G_original`, `S_original`, and `harmonics`
+        keys with NumPy arrays for phasor data, or just raw layer data for
+        non-phasor layers.
 
     Returns
     -------
@@ -148,7 +149,9 @@ def write_ome_tiff(
         and "harmonics" in metadata
     )
 
-    if not path.endswith(".ome.tif"):
+    if not (
+        path.lower().endswith(".ome.tif") or path.lower().endswith(".ome.tiff")
+    ):
         path += ".ome.tif"
 
     dims = None

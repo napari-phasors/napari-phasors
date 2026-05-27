@@ -143,6 +143,21 @@ def test_write_ometif(tmp_path):
     assert os.path.exists(
         os.path.join(tmp_path, "test_file_extension.ome.tif")
     )
+    write_ome_tiff(
+        os.path.join(tmp_path, "test_file_extension.ome.tiff"),
+        [
+            (
+                intensity_image_layer.data,
+                {"metadata": intensity_image_layer.metadata},
+            )
+        ],
+    )
+    assert os.path.exists(
+        os.path.join(tmp_path, "test_file_extension.ome.tiff")
+    )
+    assert not os.path.exists(
+        os.path.join(tmp_path, "test_file_extension.ome.tiff.ome.tif")
+    )
     reader = napari_get_reader(
         os.path.join(tmp_path, "test_file.ome.tif"), harmonics=harmonic
     )
@@ -427,3 +442,112 @@ def test_write_ometif_masked(tmp_path):
 
     assert not np.isnan(mean_unmasked[0, 0])
     assert not np.isnan(metadata_unmasked["G"][:, 0, 0]).any()
+
+
+def test_write_ometif_masked_phasor_same_ndim(tmp_path):
+    """Test write_ome_tiff with export_masked=True, has_phasor_data=True, and G.ndim == mask.ndim."""
+    from unittest.mock import patch
+
+    mean = np.ones((2, 5))
+    G = np.ones((2, 5))
+    S = np.ones((2, 5))
+    mask = np.ones((2, 5), dtype=int)
+    mask[0, 0] = 0  # invalid
+
+    metadata = {
+        "original_mean": mean,
+        "G_original": G,
+        "S_original": S,
+        "harmonics": [1],
+        "mask": mask,
+        "mask_invert": False,
+    }
+
+    filepath = os.path.join(tmp_path, "test_same_ndim.ome.tif")
+
+    with patch(
+        "napari_phasors._writer.phasor_to_ometiff"
+    ) as mock_phasor_to_ometiff:
+        write_ome_tiff(
+            filepath,
+            [(mean, {"metadata": metadata})],
+            export_masked=True,
+        )
+
+        mock_phasor_to_ometiff.assert_called_once()
+        args, kwargs = mock_phasor_to_ometiff.call_args
+
+        called_mean = args[1]
+        called_G = args[2]
+        called_S = args[3]
+
+        assert np.isnan(called_mean[0, 0])
+        assert np.isnan(called_G[0, 0])
+        assert np.isnan(called_S[0, 0])
+
+        assert not np.isnan(called_mean[0, 1:]).any()
+        assert not np.isnan(called_G[0, 1:]).any()
+        assert not np.isnan(called_S[0, 1:]).any()
+
+
+def test_write_ometif_masked_non_phasor(tmp_path):
+    """Test write_ome_tiff with export_masked=True for non-phasor layers."""
+    from unittest.mock import patch
+
+    from napari.layers import Image
+
+    # Case 1: data.ndim > mask_invalid.ndim
+    data_3d = np.ones((3, 2, 5))
+    mask_2d = np.ones((2, 5), dtype=int)
+    mask_2d[0, 0] = 0  # invalid
+
+    layer_3d = Image(data_3d, name="layer_3d")
+    layer_3d.metadata = {
+        "mask": mask_2d,
+        "mask_invert": False,
+    }
+
+    filepath_3d = os.path.join(tmp_path, "test_non_phasor_3d.ome.tif")
+
+    with patch("tifffile.imwrite") as mock_imwrite:
+        write_ome_tiff(
+            filepath_3d,
+            layer_3d,
+            export_masked=True,
+        )
+
+        mock_imwrite.assert_called_once()
+        args, kwargs = mock_imwrite.call_args
+        written_data = args[1]
+
+        assert written_data.shape == (3, 2, 5)
+        assert np.isnan(written_data[:, 0, 0]).all()
+        assert not np.isnan(written_data[:, 0, 1:]).any()
+
+    # Case 2: data.ndim == mask_invalid.ndim with mask_invert = True
+    data_2d = np.ones((2, 5))
+    mask_2d_invert = np.zeros((2, 5), dtype=int)
+    mask_2d_invert[0, 0] = 1  # invalid when invert=True
+
+    layer_2d = Image(data_2d, name="layer_2d")
+    layer_2d.metadata = {
+        "mask": mask_2d_invert,
+        "mask_invert": True,
+    }
+
+    filepath_2d = os.path.join(tmp_path, "test_non_phasor_2d.ome.tif")
+
+    with patch("tifffile.imwrite") as mock_imwrite:
+        write_ome_tiff(
+            filepath_2d,
+            layer_2d,
+            export_masked=True,
+        )
+
+        mock_imwrite.assert_called_once()
+        args, kwargs = mock_imwrite.call_args
+        written_data = args[1]
+
+        assert written_data.shape == (2, 5)
+        assert np.isnan(written_data[0, 0])
+        assert not np.isnan(written_data[0, 1:]).any()

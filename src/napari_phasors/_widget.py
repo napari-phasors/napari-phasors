@@ -2364,7 +2364,7 @@ class WriterWidget(QWidget):
                 export_masked=export_masked,
             )
 
-    def _update_mask_checkbox_visibility(self):
+    def _update_mask_checkbox_visibility(self, event=None):
         """Show/hide the mask checkbox based on whether any selected layer has a mask."""
         selected_layers = self.export_layer_combobox.checkedItems()
         any_masked = False
