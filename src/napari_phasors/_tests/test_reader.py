@@ -32,9 +32,7 @@ def test_reader_ptu():
     )
     assert layer_data_tuple[0].shape == (256, 256)
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
-    assert (
-        layer_data_tuple[1]["name"] == "test_file Intensity Image: Channel 0"
-    )
+    assert layer_data_tuple[1]["name"] == "test_file Intensity Image"
     metadata = layer_data_tuple[1]["metadata"]
     assert "G" in metadata
     assert "S" in metadata
@@ -355,6 +353,37 @@ def test_reader_tiff_extension():
     assert callable(reader)
 
 
+def test_raw_reader_tiff_does_not_forward_widget_axis_option_to_imread(
+    monkeypatch,
+):
+    """TIFF raw loading should not forward widget-only options (e.g. `phasor_axis`) into the IO/read layer."""
+
+    def fake_imread(path):
+        return np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+
+    def fake_phasor_from_signal(signal, axis, harmonic):
+        mean_image = np.zeros((2, 4), dtype=np.float32)
+        g_image = np.zeros((2, 2, 4), dtype=np.float32)
+        s_image = np.zeros((2, 2, 4), dtype=np.float32)
+        return mean_image, g_image, s_image
+
+    monkeypatch.setattr(reader_module.tifffile, "imread", fake_imread)
+    monkeypatch.setattr(
+        reader_module,
+        "phasor_from_signal",
+        fake_phasor_from_signal,
+    )
+
+    layers = reader_module.raw_file_reader(
+        "example.tif",
+        reader_options={"phasor_axis": 1},
+    )
+
+    assert len(layers) == 1
+    assert layers[0][0].shape == (2, 4)
+    assert layers[0][1]["metadata"]["harmonics"] == [1]
+
+
 def test_reader_multi_file_raw_dispatches_to_stack_reader(monkeypatch):
     """Test that a list of raw files is handled via raw_file_stack_reader."""
     paths = ["slice_01.lsm", "slice_02.lsm", "slice_03.lsm"]
@@ -617,6 +646,37 @@ def test_ambiguous_file_reader_raises_combined_error(monkeypatch):
     assert "processed_file_reader error" in message
     assert "raw exploded" in message
     assert "processed exploded" in message
+
+
+def test_clamp_harmonics():
+    from napari_phasors._reader import _clamp_harmonics
+
+    # None defaults to [1, 2]
+    assert _clamp_harmonics(None, 4) == [1, 2]
+    # 'all' returns all up to n_samples // 2
+    assert _clamp_harmonics("all", 6) == [1, 2, 3]
+    # Integer clamps to max_h
+    assert _clamp_harmonics(3, 4) == [2]
+    # List of valid harmonics
+    assert _clamp_harmonics([1, 2], 6) == [1, 2]
+    # Clamping down excessive harmonics
+    assert _clamp_harmonics([1, 4], 4) == [1, 2]
+    # Handling duplicates and sorting
+    assert _clamp_harmonics([2, 1, 2], 6) == [2, 1]
+
+    # ValueError raised when no valid harmonics remain
+    with pytest.raises(ValueError, match="No valid harmonics remain"):
+        _clamp_harmonics([], 4)
+
+    with pytest.raises(ValueError, match="No valid harmonics remain"):
+        _clamp_harmonics([-1, -2], 4)
+
+    with pytest.raises(ValueError, match="No valid harmonics remain"):
+        _clamp_harmonics(["invalid"], 4)
+
+    # ValueError raised when not enough samples
+    with pytest.raises(ValueError, match="Not enough samples"):
+        _clamp_harmonics([1], 1)
 
 
 # TODO: Add tests for .tif files

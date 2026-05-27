@@ -424,6 +424,9 @@ class AdvancedOptionsWidget(QWidget):
 
         self.mainLayout.addWidget(self.canvas)
 
+        # Axis selection for phasor calculation (updated from preview)
+        self._axis_widget()
+
     def _add_shape_preview_widget(self):
         """Add a label showing estimated output shape for current options."""
         self.shape_preview_label = QLabel("Estimated output shape: N/A")
@@ -435,6 +438,92 @@ class AdvancedOptionsWidget(QWidget):
                 )
                 return
         self.mainLayout.addWidget(self.shape_preview_label)
+
+    def _axis_widget(self):
+        """Add axis selection combobox to choose which axis to compute phasor along."""
+        axis_layout = QHBoxLayout()
+        axis_layout.addWidget(QLabel("Phasor axis: "))
+
+        self.axis_combo = QComboBox()
+        self.axis_combo.addItem("Auto")
+        self.axis_combo.currentIndexChanged.connect(self._on_axis_changed)
+        axis_layout.addWidget(self.axis_combo)
+        axis_layout.addStretch()
+        self.mainLayout.addLayout(axis_layout)
+
+    def _update_axis_options(self):
+        """Refresh axis options based on preview signal shape and dims."""
+        if not hasattr(self, 'axis_combo'):
+            return
+
+        preview = self._get_preview_signal_data()
+        # Determine shape and labels
+        if preview is None:
+            shape = ()
+            labels = []
+        else:
+            if hasattr(preview, 'dims'):
+                labels = [str(d).upper() for d in preview.dims]
+                shape = tuple(preview.shape)
+            else:
+                arr = np.asarray(preview)
+                shape = arr.shape
+                labels = _default_axis_labels(len(shape))
+
+        # Build items: prefer dimension name, show size
+        items = ["Auto"]
+        for i, s in enumerate(shape):
+            name = labels[i] if i < len(labels) else f"Axis {i}"
+            items.append(f"{name} (size={s})")
+
+        # Preserve previous selection text if possible
+        prev_text = (
+            self.axis_combo.currentText()
+            if self.axis_combo.count() > 0
+            else None
+        )
+
+        self.axis_combo.blockSignals(True)
+        self.axis_combo.clear()
+        for it in items:
+            self.axis_combo.addItem(it)
+        self.axis_combo.blockSignals(False)
+
+        # Restore selection if still available
+        if prev_text and prev_text in items:
+            self.axis_combo.setCurrentText(prev_text)
+        else:
+            # default to Auto
+            self.axis_combo.setCurrentIndex(0)
+
+        # Update reader_options with current selection
+        self._apply_axis_selection_to_options()
+
+    def _on_axis_changed(self, index):
+        self._apply_axis_selection_to_options()
+        self._update_shape_preview()
+        # Update signal plot if available to reflect new axis selection
+        if hasattr(self, '_update_signal_plot'):
+            self._update_signal_plot()
+
+    def _apply_axis_selection_to_options(self):
+        """Store selected axis index into `self.reader_options['phasor_axis']`.
+
+        Use `None` for Auto.
+        """
+        if not hasattr(self, 'axis_combo'):
+            return
+        txt = self.axis_combo.currentText()
+        if not txt or txt == "Auto":
+            self.reader_options.pop('phasor_axis', None)
+            return
+        # extract axis index from format "NAME (size=...)" -> find first occurrence of '(' and infer index via position
+        # We assume items are in order, so index = combo index - 1
+        idx = self.axis_combo.currentIndex() - 1
+        if idx >= 0:
+            self.reader_options['phasor_axis'] = idx
+        else:
+            self.reader_options.pop('phasor_axis', None)
 
     def _update_shape_preview(self):
         """Update estimated output shape when reader options change."""
@@ -600,6 +689,7 @@ class AdvancedOptionsWidget(QWidget):
                     title = 'Signal Preview'
 
             self._update_harmonic_slider()
+            self._update_axis_options()
 
             self.ax.set_xlabel('Time / Histogram Bin')
             self.ax.set_ylabel('Total Signal (sum over pixels)')
@@ -1475,6 +1565,10 @@ class LsmWidget(AdvancedOptionsWidget):
 
         self._harmonic_widget()
 
+        # Add axis selection widget before the transform button
+        self._axis_widget()
+        self._update_axis_options()
+
         self.btn = QPushButton("Phasor Transform")
         self.btn.clicked.connect(
             lambda: self._on_click(
@@ -1502,6 +1596,34 @@ class LsmWidget(AdvancedOptionsWidget):
                 f"Error reading {'LSM' if self._is_lsm else 'TIFF'} signal: {str(e)}"
             )
             return None
+
+    def _collapse_signal_for_plot(self, signal):
+        """Collapse signal to 1-D for plotting, respecting selected axis.
+
+        This override ensures the signal plot uses the user-selected axis
+        from the axis combobox.
+        """
+        array = np.asarray(signal)
+        if array.ndim == 0:
+            return np.array([float(array)])
+        if array.ndim == 1:
+            return array
+
+        # Get selected axis from reader_options, default to auto-detection
+        selected_axis = self.reader_options.get('phasor_axis', None)
+
+        if selected_axis is not None:
+            # Use user-selected axis
+            signal_axis = selected_axis
+        else:
+            # Use auto-detection
+            axis_labels = None
+            if hasattr(signal, "dims"):
+                axis_labels = tuple(signal.dims)
+            signal_axis = self._choose_signal_axis(array.shape, axis_labels)
+
+        axes_to_sum = tuple(i for i in range(array.ndim) if i != signal_axis)
+        return np.sum(array, axis=axes_to_sum)
 
     def _update_signal_plot(self):
         """Update the signal plot for LSM/TIFF files (spectral data)."""

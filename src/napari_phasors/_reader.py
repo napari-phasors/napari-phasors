@@ -228,6 +228,62 @@ def napari_get_reader(
         return None
 
 
+def _clamp_harmonics(
+    harmonics: Union[int, Sequence[int], None], n_samples: int
+):
+    """Clamp or convert the requested harmonics to what's valid for n_samples.
+
+    The maximum usable harmonic is `n_samples // 2`. If `harmonics` is None,
+    it defaults to `[1, 2]`. If the requested harmonics exceed the maximum,
+    they are clamped down. If no valid harmonics remain, a ValueError is
+    raised.
+    """
+    max_h = n_samples // 2
+    if max_h < 1:
+        raise ValueError(
+            f"Not enough samples ({n_samples}) to compute phasor harmonics; need at least 2 samples."
+        )
+
+    # Default harmonics
+    if harmonics is None:
+        harmonics = [1, 2]
+
+    # 'all' means 1..max_h
+    if harmonics == "all":
+        return list(range(1, max_h + 1))
+
+    # Single int -> list
+    if isinstance(harmonics, int):
+        h = min(harmonics, max_h)
+        return [h]
+
+    # Iterable of ints
+    out = []
+    for h in harmonics:
+        try:
+            hi = int(h)
+        except (TypeError, ValueError):
+            continue
+        if hi <= 0:
+            continue
+        out.append(min(hi, max_h))
+
+    # Remove duplicates while preserving order
+    seen = set()
+    res = []
+    for v in out:
+        if v not in seen:
+            seen.add(v)
+            res.append(v)
+
+    if not res:
+        raise ValueError(
+            f"No valid harmonics remain for {n_samples} samples. "
+            f"Requested harmonics: {harmonics}."
+        )
+    return res
+
+
 def ambiguous_file_reader(
     path: str,
     reader_options: dict | None = None,
@@ -286,27 +342,38 @@ def raw_file_reader(
     # Set default harmonics if None is passed
     if harmonics is None:
         harmonics = [1, 2]
+
+    # Extract phasor_axis from reader_options (widget-level parameter)
+    # This should not be passed to IO functions
+    axis_override = None
+    filtered_reader_options = reader_options.copy() if reader_options else {}
+    if 'phasor_axis' in filtered_reader_options:
+        try:
+            axis_override = int(filtered_reader_options.pop('phasor_axis'))
+        except (KeyError, ValueError, TypeError):
+            filtered_reader_options.pop('phasor_axis', None)
+
     filename, file_extension = _get_filename_extension(path)
+
+    # Read SDT multi-file special case
     if file_extension == ".sdt":
-        # Try reading .sdt with increasing 'index' numbers to collect all files as channels
         i = 0
-        raw_data = []
+        raw_list = []
         while True:
             try:
                 _data = extension_mapping["raw"][".sdt"](path, {"index": i})
-                raw_data.append(_data)
+                raw_list.append(_data)
                 i += 1
             except IndexError:
                 break
-        # Stack list of xarrays in a new axis "C" (shapes must match)
-        for _data in raw_data:
+        for _d in raw_list:
             assert (
-                _data.shape == raw_data[0].shape
+                _d.shape == raw_list[0].shape
             ), "Shapes from files in .sdt do not match!"
-        raw_data = xr.concat(raw_data, dim="C")
+        raw_data = xr.concat(raw_list, dim="C")
     else:
         raw_data = extension_mapping["raw"][file_extension](
-            path, reader_options
+            path, filtered_reader_options
         )
 
     settings = {}
@@ -322,12 +389,15 @@ def raw_file_reader(
     has_dims = hasattr(raw_data, 'dims')
     raw_dims = tuple(raw_data.dims) if has_dims else ()
 
-    # Determine the number of steps for the progress bar
+    # Determine progress bar steps: per-channel if iter_axis present, else per-harmonic
     if iter_axis is not None and iter_axis in raw_dims:
-        iter_axis_index = raw_dims.index(iter_axis)
-        n_steps = raw_data.shape[iter_axis_index]
+        try:
+            iter_axis_index = raw_dims.index(iter_axis)
+            n_steps = int(raw_data.shape[iter_axis_index])
+        except (ValueError, IndexError, TypeError):
+            n_steps = 1
     else:
-        n_steps = len(harmonics) if isinstance(harmonics, list) else 1
+        n_steps = len(harmonics) if isinstance(harmonics, (list, tuple)) else 1
 
     pbr = show_activity_progress(
         desc=f"Reading {filename}...", total=n_steps + 1
@@ -336,7 +406,9 @@ def raw_file_reader(
     try:
         if iter_axis is None or iter_axis not in raw_dims:
             # Handle files without iteration axis or when keepdims=False squeezed it out
-            if file_extension in [".tif", ".tiff"]:
+            if axis_override is not None:
+                axis = axis_override
+            elif file_extension in [".tif", ".tiff"]:
                 axis = 0
             elif has_dims and "H" in raw_dims:
                 axis = raw_dims.index("H")
@@ -363,16 +435,27 @@ def raw_file_reader(
             if file_extension not in [".lsm", ".tif", ".tiff"]:
                 settings['channel'] = 0
 
+            # Determine number of histogram samples along selected axis
+            try:
+                n_samples = raw_data.shape[axis]
+            except (IndexError, TypeError, AttributeError):
+                try:
+                    n_samples = raw_data.values.shape[axis]
+                except (IndexError, TypeError, AttributeError):
+                    n_samples = 0
+
+            try:
+                harmonics_to_use = _clamp_harmonics(harmonics, int(n_samples))
+            except (ValueError, TypeError) as e:
+                show_error(str(e))
+                return []
+
             pbr.set_description("Computing phasor transform...")
             mean_intensity_image, G_image, S_image = phasor_from_signal(
-                raw_data, axis=axis, harmonic=harmonics
+                raw_data, axis=axis, harmonic=harmonics_to_use
             )
             pbr.update(n_steps)
-            channel_suffix = (
-                " Intensity Image"
-                if iter_axis is None
-                else " Intensity Image: Channel 0"
-            )
+            channel_suffix = " Intensity Image"
             add_kwargs = {
                 "name": f"{filename}{channel_suffix}",
                 "metadata": {
@@ -387,7 +470,7 @@ def raw_file_reader(
                     "S": S_image,
                     "G_original": G_image.copy(),
                     "S_original": S_image.copy(),
-                    "harmonics": harmonics,
+                    "harmonics": harmonics_to_use,
                 },
             }
             layers.append((mean_intensity_image, add_kwargs))
@@ -408,7 +491,15 @@ def raw_file_reader(
                 pbr.set_description(f"Channel {channel_pos + 1}/{n_channels}")
                 pbr.update(1)
                 channel_data = raw_data.isel({iter_axis: channel_pos})
-                histogram_axis = channel_data.dims.index("H")
+                # Allow override of histogram axis via reader options
+                if axis_override is not None:
+                    histogram_axis = axis_override
+                else:
+                    histogram_axis = (
+                        channel_data.dims.index("H")
+                        if "H" in channel_data.dims
+                        else 0
+                    )
 
                 # Calculate summed signal over spatial dimensions for this channel
                 axes_to_sum = tuple(
@@ -431,15 +522,30 @@ def raw_file_reader(
                 except (TypeError, ValueError):
                     channel_settings['channel'] = channel_label
 
+                # Determine samples for this histogram axis and clamp harmonics
+                try:
+                    n_samples = channel_data.shape[histogram_axis]
+                except (IndexError, TypeError, AttributeError):
+                    try:
+                        n_samples = channel_data.values.shape[histogram_axis]
+                    except (IndexError, TypeError, AttributeError):
+                        n_samples = 0
+
+                try:
+                    harmonics_to_use = _clamp_harmonics(
+                        harmonics, int(n_samples)
+                    )
+                except (ValueError, TypeError) as e:
+                    show_error(str(e))
+                    return []
+
                 mean_intensity_image, G_image, S_image = phasor_from_signal(
                     channel_data,
                     axis=histogram_axis,
-                    harmonic=harmonics,
+                    harmonic=harmonics_to_use,
                 )
                 add_kwargs = {
-                    "name": (
-                        f"{filename} Intensity Image: Channel {channel_label}"
-                    ),
+                    "name": f"{filename} Intensity Image: Channel {channel_label}",
                     "metadata": {
                         "original_mean": mean_intensity_image,
                         "settings": channel_settings,
@@ -452,12 +558,13 @@ def raw_file_reader(
                         "S": S_image,
                         "G_original": G_image.copy(),
                         "S_original": S_image.copy(),
-                        "harmonics": harmonics,
+                        "harmonics": harmonics_to_use,
                     },
                 }
                 layers.append((mean_intensity_image, add_kwargs))
     finally:
         pbr.close()
+
     # Set colormaps if multichannel image
     if len(layers) == 2:
         # add colormaps MAGENTA_GREEN
@@ -669,12 +776,18 @@ def processed_file_reader(
     if harmonics is None:
         harmonics = 'all'
     filename, file_extension = _get_filename_extension(path)
+
+    # Prepare reader options: remove widget-only keys and ensure harmonic present
+    filtered_reader_options = reader_options.copy() if reader_options else {}
+    filtered_reader_options.pop('phasor_axis', None)
+    if 'harmonic' not in filtered_reader_options:
+        filtered_reader_options['harmonic'] = harmonics
+
     pbr = show_activity_progress(desc=f"Loading {filename}...", total=3)
     try:
-        reader_options = reader_options or {"harmonic": harmonics}
         mean_intensity_image, real, imag, attrs = extension_mapping[
             "processed"
-        ][file_extension](path, reader_options)
+        ][file_extension](path, filtered_reader_options)
         pbr.update(1)
         if "description" in attrs:
             # HTML-unescape the description to handle tifffile HTML encoding
