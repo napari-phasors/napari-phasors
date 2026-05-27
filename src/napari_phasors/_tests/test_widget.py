@@ -1396,3 +1396,106 @@ def test_writer_widget_csv_coordinates_consistency_2d(
     # Check (1,1) -> 40
     val_11 = df[(df['y'] == 1) & (df['x'] == 1)]['value'].values[0]
     assert val_11 == 40
+
+
+def test_writer_widget_excludes_labels_layer(make_napari_viewer):
+    """Test that WriterWidget excludes Labels layers from populate combobox."""
+    viewer = make_napari_viewer()
+    viewer.add_image(np.random.random((10, 10)), name="my_image")
+    viewer.add_labels(np.zeros((10, 10), dtype=int), name="my_labels")
+
+    widget = WriterWidget(viewer)
+
+    items = [
+        widget.export_layer_combobox.itemText(i)
+        for i in range(widget.export_layer_combobox.count())
+    ]
+    assert "my_image" in items
+    assert "my_labels" not in items
+
+
+def test_export_labels_layer_as_colored_image(make_napari_viewer, tmp_path):
+    """Test that Labels layers are exported as colored images without colorbar."""
+    from PIL import Image as PILImage
+
+    from napari_phasors._writer import export_layer_as_image
+
+    viewer = make_napari_viewer()
+
+    # Create a labels layer with distinct labels
+    labels_data = np.zeros((10, 10), dtype=np.int32)
+    labels_data[2:5, 2:5] = 1
+    labels_data[6:9, 6:9] = 2
+    labels_layer = viewer.add_labels(labels_data, name="test_labels")
+
+    # Export labels layer as image
+    export_path = str(tmp_path / "test_labels_export.png")
+    export_layer_as_image(export_path, labels_layer, include_colorbar=True)
+
+    assert os.path.exists(export_path)
+
+    # Open and verify the image has color representation (not black and white)
+    img = PILImage.open(export_path)
+    img_data = np.array(img)
+
+    assert img_data.ndim == 3
+    assert img_data.shape[-1] in (3, 4)
+
+    # Check that it's colored (not grayscale where R=G=B for all pixels)
+    is_colored = np.any(img_data[..., 0] != img_data[..., 1]) or np.any(
+        img_data[..., 1] != img_data[..., 2]
+    )
+    assert is_colored, "Exported labels image is grayscale or black and white!"
+
+
+def test_writer_widget_mask_checkbox(make_napari_viewer, tmp_path):
+    """Test that WriterWidget mask checkbox behaves dynamically based on layer mask presence."""
+    viewer = make_napari_viewer()
+
+    # 1. Create a layer without phasor/mask data
+    data = np.random.random((10, 10))
+    layer = viewer.add_image(data, name="test_image")
+
+    widget = WriterWidget(viewer)
+
+    # Select layer
+    widget.export_layer_combobox.selectAll()
+
+    # Verify checkbox is hidden
+    assert widget.mask_checkbox.isHidden() is True
+
+    # 2. Add a mask to the metadata and trigger metadata event
+    layer.metadata["mask"] = np.ones((10, 10))
+    layer.events.metadata()
+
+    # Verify checkbox is visible
+    assert widget.mask_checkbox.isHidden() is False
+
+    # 3. Remove the mask and trigger metadata event
+    del layer.metadata["mask"]
+    layer.events.metadata()
+
+    # Verify checkbox is hidden again
+    assert widget.mask_checkbox.isHidden() is True
+
+    # 4. Check saving calls write_ome_tiff with correct export_masked parameter
+    # Restore mask
+    layer.metadata["mask"] = np.ones((10, 10))
+    layer.events.metadata()
+    widget.mask_checkbox.setChecked(True)
+
+    with patch("napari_phasors._widget.write_ome_tiff") as mock_write:
+        widget._save_file(
+            str(tmp_path / "output.ome.tif"),
+            "Phasor as OME-TIFF (*.ome.tif)",
+            selected_layers=["test_image"],
+            export_masked=True,
+        )
+        mock_write.assert_called_once_with(
+            str(tmp_path / "output.ome.tif"),
+            layer,
+            export_masked=True,
+        )
+
+    # Clean up
+    widget.close()

@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.colors import LinearSegmentedColormap
-from napari.layers import Image
+from napari.layers import Labels
 from phasorpy.io import phasor_to_ometiff
 
 from ._utils import show_activity_progress
@@ -105,8 +105,12 @@ def _extract_z_spacing_um(
     return value if value > 0 else None
 
 
-def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
-    """Save image layer with phasor coordinates as 'OME-TIFF'.
+def write_ome_tiff(
+    path: str,
+    image_layer: Any,
+    export_masked: bool = False,
+) -> list[str]:
+    """Save layer with phasor coordinates as 'OME-TIFF'.
 
     For layers with phasor metadata, saves mean intensity and phasor coordinates.
     For layers without phasor metadata, saves the raw layer data as OME-TIFF.
@@ -115,23 +119,24 @@ def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
     ----------
     path : str
         A string path indicating where to save the image file.
-    image_layer : napari.layers.Image
-        Napari image layer or a list with the mean intensity image as the
-        first element and as second element a dict with `metadata` as key.
-        The value associated to 'metadata' must be a dict containing
-        `G_original`, `S_original`, and `harmonics` keys with NumPy arrays
-        for phasor data, or just raw image data for non-phasor layers.
+    image_layer : napari.layers.Layer or tuple or list
+        Napari layer-like object (such as Image or Labels) or a list/tuple
+        representing a napari writer layer-data tuple (with the layer data as
+        the first element and a dict with `metadata` as the second element).
+        The metadata must contain `G_original`, `S_original`, and `harmonics`
+        keys with NumPy arrays for phasor data, or just raw layer data for
+        non-phasor layers.
 
     Returns
     -------
     A list containing the string path to the saved file.
     """
     # Extract metadata depending on input type
-    if isinstance(image_layer, Image):
+    if hasattr(image_layer, 'data') and hasattr(image_layer, 'metadata'):
         metadata = image_layer.metadata
         data = image_layer.data
     else:
-        metadata = image_layer[0][1]["metadata"]
+        metadata = image_layer[0][1].get("metadata", {})
         data = image_layer[0][0]
 
     z_spacing_um = _extract_z_spacing_um(image_layer, data, metadata)
@@ -144,11 +149,13 @@ def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
         and "harmonics" in metadata
     )
 
-    if not path.endswith(".ome.tif"):
+    if not (
+        path.lower().endswith(".ome.tif") or path.lower().endswith(".ome.tiff")
+    ):
         path += ".ome.tif"
 
     dims = None
-    if isinstance(image_layer, Image):
+    if hasattr(image_layer, 'axis_labels'):
         labels = getattr(image_layer, 'axis_labels', None)
         if labels is not None and len(labels) == data.ndim:
             dims = "".join(str(label).upper()[0] for label in labels)
@@ -171,7 +178,7 @@ def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
         metadata_dict['PhysicalSizeZ'] = z_spacing_um
         metadata_dict['PhysicalSizeZUnit'] = 'µm'
 
-    if isinstance(image_layer, Image):
+    if hasattr(image_layer, 'scale'):
         scale = getattr(image_layer, 'scale', None)
         if scale is not None:
             y_idx, x_idx = -2, -1
@@ -198,6 +205,22 @@ def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
             G = metadata["G_original"]
             S = metadata["S_original"]
             harmonics = metadata["harmonics"]
+
+            if export_masked and "mask" in metadata:
+                mask_data = metadata["mask"]
+                invert = metadata.get("mask_invert", False)
+                mask_invalid = mask_data > 0 if invert else mask_data <= 0
+
+                mean = np.where(mask_invalid, np.nan, mean.copy())
+
+                if G.ndim > mask_invalid.ndim:
+                    mask_invalid_expanded = mask_invalid[np.newaxis, ...]
+                    G = np.where(mask_invalid_expanded, np.nan, G.copy())
+                    S = np.where(mask_invalid_expanded, np.nan, S.copy())
+                else:
+                    G = np.where(mask_invalid, np.nan, G.copy())
+                    S = np.where(mask_invalid, np.nan, S.copy())
+
             if "settings" in metadata:
                 settings = metadata["settings"].copy()
             else:
@@ -265,6 +288,22 @@ def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
             if dims:
                 metadata_dict['axes'] = dims
 
+            if export_masked and "mask" in metadata:
+                mask_data = metadata["mask"]
+                invert = metadata.get("mask_invert", False)
+                mask_invalid = mask_data > 0 if invert else mask_data <= 0
+
+                if data.ndim > mask_invalid.ndim:
+                    expanded_shape = [1] * (
+                        data.ndim - mask_invalid.ndim
+                    ) + list(mask_invalid.shape)
+                    mask_invalid_expanded = mask_invalid.reshape(
+                        expanded_shape
+                    )
+                    data = np.where(mask_invalid_expanded, np.nan, data.copy())
+                else:
+                    data = np.where(mask_invalid, np.nan, data.copy())
+
             tifffile.imwrite(
                 path,
                 data,
@@ -278,11 +317,11 @@ def write_ome_tiff(path: str, image_layer: Any) -> list[str]:
 
 def export_layer_as_image(
     path: str,
-    image_layer: Image,
+    image_layer: Any,
     include_colorbar: bool = True,
     current_step: Sequence[int] | None = None,
-) -> None:
-    """Export an image layer as an image file using its colormap and contrast limits.
+) -> list[str]:
+    """Export an image or labels layer as an image file using its colormap and contrast limits.
 
     The function extracts a 2D slice from the provided ``image_layer`` and saves it
     using Matplotlib, preserving the napari colormap and contrast limits. For
@@ -294,8 +333,8 @@ def export_layer_as_image(
     path : str
         Output file path. The extension determines the image format (e.g. ``.png``,
         ``.jpg``, ``.tif``).
-    image_layer : napari.layers.Image
-        Image layer to export.
+    image_layer : Any
+        Image or Labels layer to export, or layer data tuple from napari writer.
     include_colorbar : bool, optional
         If ``True``, include a colorbar in the exported figure. Default is ``True``.
     current_step : sequence of int, optional
@@ -304,7 +343,17 @@ def export_layer_as_image(
         provided and the data is multi-dimensional, the first index (0) is used
         for each non-spatial dimension.
     """
-    data = image_layer.data
+    if hasattr(image_layer, 'data'):
+        data = image_layer.data
+        is_labels = isinstance(image_layer, Labels)
+        colormap = getattr(image_layer, 'colormap', None)
+        contrast_limits = getattr(image_layer, 'contrast_limits', None)
+    else:
+        data = image_layer[0][0]
+        attributes = image_layer[0][1]
+        is_labels = image_layer[0][2] == 'labels'
+        colormap = attributes.get('colormap', None)
+        contrast_limits = attributes.get('contrast_limits', None)
 
     if data.ndim > 2:
         if current_step is not None:
@@ -320,21 +369,37 @@ def export_layer_as_image(
     else:
         data_2d = data
 
-    napari_cmap = image_layer.colormap
-    if hasattr(napari_cmap, "colors"):
-        cmap = LinearSegmentedColormap.from_list(
-            napari_cmap.name, napari_cmap.colors
-        )
+    if is_labels:
+        include_colorbar = False
+        if colormap is not None and hasattr(colormap, 'map'):
+            try:
+                data_2d = colormap.map(data_2d)
+            except Exception:  # noqa: BLE001
+                cmap = 'nipy_spectral'
+                clim = [0, data_2d.max() if data_2d.max() > 0 else 1]
+        else:
+            cmap = 'nipy_spectral'
+            clim = [0, data_2d.max() if data_2d.max() > 0 else 1]
     else:
-        try:
-            cmap = plt.get_cmap(napari_cmap.name)
-        except (AttributeError, ValueError):
-            cmap = plt.get_cmap("gray")
-
-    clim = image_layer.contrast_limits
+        napari_cmap = colormap
+        if hasattr(napari_cmap, "colors"):
+            cmap = LinearSegmentedColormap.from_list(
+                napari_cmap.name, napari_cmap.colors
+            )
+        else:
+            try:
+                name = getattr(napari_cmap, "name", napari_cmap) or "gray"
+                cmap = plt.get_cmap(name)
+            except (AttributeError, ValueError, TypeError):
+                cmap = plt.get_cmap("gray")
+        clim = (
+            contrast_limits
+            if contrast_limits is not None
+            else [data_2d.min(), data_2d.max()]
+        )
 
     # Calculate aspect ratio from data shape
-    height, width = data_2d.shape
+    height, width = data_2d.shape[:2]
     aspect_ratio = width / height
 
     base_height = 8
@@ -355,14 +420,16 @@ def export_layer_as_image(
             figsize=(base_width, base_height), facecolor="black"
         )
 
-    im = ax.imshow(
-        data_2d,
-        cmap=cmap,
-        vmin=clim[0],
-        vmax=clim[1],
-        interpolation="nearest",
-        aspect="auto",
-    )
+    imshow_kwargs = {
+        "interpolation": "nearest",
+        "aspect": "auto",
+    }
+    if data_2d.ndim == 2:
+        imshow_kwargs["cmap"] = cmap
+        imshow_kwargs["vmin"] = clim[0]
+        imshow_kwargs["vmax"] = clim[1]
+
+    im = ax.imshow(data_2d, **imshow_kwargs)
     ax.axis("off")
 
     if include_colorbar:
@@ -390,9 +457,10 @@ def export_layer_as_image(
         facecolor=fig.get_facecolor(),
     )
     plt.close(fig)
+    return [path]
 
 
-def export_layer_as_csv(path: str, image_layer: Image) -> None:
+def export_layer_as_csv(path: str, image_layer: Any) -> list[str]:
     """Export layer data or phasor features as a CSV file.
 
     The function has two behaviors depending on whether the layer has
@@ -407,21 +475,26 @@ def export_layer_as_csv(path: str, image_layer: Image) -> None:
     ----------
     path : str
         Output CSV file path.
-    image_layer : napari.layers.Image
-        Image layer whose data or phasor features will be exported.
+    image_layer : Any
+        Image or Labels layer to export, or layer data tuple from napari writer.
     """
+    if hasattr(image_layer, 'data'):
+        data = image_layer.data
+        metadata = getattr(image_layer, 'metadata', {})
+    else:
+        data = image_layer[0][0]
+        metadata = image_layer[0][1].get("metadata", {})
+
     has_phasor_data = (
-        "G" in image_layer.metadata
-        and "S" in image_layer.metadata
-        and "harmonics" in image_layer.metadata
+        "G" in metadata and "S" in metadata and "harmonics" in metadata
     )
 
     if has_phasor_data:
-        G = image_layer.metadata["G"]
-        S = image_layer.metadata["S"]
-        G_original = image_layer.metadata.get("G_original", G)
-        S_original = image_layer.metadata.get("S_original", S)
-        harmonics = np.atleast_1d(image_layer.metadata["harmonics"])
+        G = metadata["G"]
+        S = metadata["S"]
+        G_original = metadata.get("G_original", G)
+        S_original = metadata.get("S_original", S)
+        harmonics = np.atleast_1d(metadata["harmonics"])
 
         # Get spatial shape (last 2 dimensions)
         spatial_shape = G.shape[-2:]
@@ -461,7 +534,6 @@ def export_layer_as_csv(path: str, image_layer: Image) -> None:
         df = pd.DataFrame(rows)
         df.to_csv(path, index=False)
     else:
-        data = image_layer.data
         if data.ndim == 2:
             rows, cols = data.shape
             y_coords, x_coords = np.meshgrid(
@@ -481,3 +553,4 @@ def export_layer_as_csv(path: str, image_layer: Image) -> None:
             df = pd.DataFrame(df_dict)
 
         df.to_csv(path, index=False)
+    return [path]

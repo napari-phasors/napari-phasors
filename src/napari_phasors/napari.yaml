@@ -24,6 +24,12 @@ contributions:
     - id: napari-phasors.write_ome_tiff
       python_name: napari_phasors:write_ome_tiff
       title: Write OME-TIFF
+    - id: napari-phasors.export_layer_as_csv
+      python_name: napari_phasors._writer:export_layer_as_csv
+      title: Export Layer to CSV
+    - id: napari-phasors.export_layer_as_image
+      python_name: napari_phasors._writer:export_layer_as_image
+      title: Export Layer as Image
     - id: napari-phasors.PhasorTransform
       python_name: napari_phasors:PhasorTransform
       title: Phasor Custom Import
@@ -38,7 +44,15 @@ contributions:
     - command: napari-phasors.write_ome_tiff
       display_name: Export Phasor to OME-TIFF
       layer_types: ['image*','labels*']
-      filename_extensions: []
+      filename_extensions: ['.ome.tif']
+    - command: napari-phasors.export_layer_as_csv
+      display_name: Export Layer to CSV
+      layer_types: ['image*','labels*']
+      filename_extensions: ['.csv']
+    - command: napari-phasors.export_layer_as_image
+      display_name: Export Layer as Image
+      layer_types: ['image*','labels*']
+      filename_extensions: ['.png', '.jpg', '.jpeg', '.tif']
   sample_data:
     - command: napari-phasors.convallaria_FLIM_sample_data
       display_name: Convallaria FLIM
