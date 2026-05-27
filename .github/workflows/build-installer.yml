@@ -12,6 +12,8 @@ jobs:
   build-installer:
     name: Build installer (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
