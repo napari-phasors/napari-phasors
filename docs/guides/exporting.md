@@ -11,11 +11,11 @@ Multiple layers can be selected and exported simultaneously in a single operatio
 
 ## CSV export
 
-Phasor coordinates and selections can be exported as CSV files using the **Export Phasor** widget. Analysis results — such as lifetime, FRET efficiency, and component fractions — can also be exported to CSV.
+Phasor coordinates and selections can be exported as CSV files using the **Export Phasor** widget. Analysis results — such as lifetime, FRET efficiency, and component fractions — can also be exported to CSV. Similarly, labels layers can be exported to CSV, where the pixel coordinates and corresponding label values/IDs are saved.
 
 ## Image export
 
-The colormapped image layer can be exported with or without its associated colorbar.
+The colormapped image layer can be exported with or without its associated colorbar. Labels layers can also be exported as images using their colored representation.
 
 <video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/export.gif">
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/export.mp4" type="video/mp4">
