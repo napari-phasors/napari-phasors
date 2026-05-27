@@ -387,8 +387,12 @@ def test_circular_cursor_add_cursor(make_napari_viewer):
     assert 'radius' in cursor
     assert 'color' in cursor
     assert 'patch' in cursor
-    assert cursor['g'] == 0.5
-    assert cursor['s'] == 0.5  # Default s value
+    xlim = parent.canvas_widget.axes.get_xlim()
+    ylim = parent.canvas_widget.axes.get_ylim()
+    expected_g = max(-1.5, min(1.5, (xlim[0] + xlim[1]) / 2.0))
+    expected_s = max(-1.5, min(1.5, (ylim[0] + ylim[1]) / 2.0))
+    assert np.isclose(cursor['g'], expected_g)
+    assert np.isclose(cursor['s'], expected_s)
     assert cursor['radius'] == 0.05  # Default radius
 
     # Add second cursor
@@ -476,10 +480,13 @@ def test_circular_cursor_table_updates(make_napari_viewer):
     assert isinstance(s_spinbox, QDoubleSpinBox)
     assert isinstance(radius_spinbox, QDoubleSpinBox)
 
-    # Check initial values
-    assert g_spinbox.value() == 0.5
-    assert s_spinbox.value() == 0.5  # Default s value
-    assert radius_spinbox.value() == 0.05  # Default radius
+    xlim = parent.canvas_widget.axes.get_xlim()
+    ylim = parent.canvas_widget.axes.get_ylim()
+    expected_g = max(-1.5, min(1.5, (xlim[0] + xlim[1]) / 2.0))
+    expected_s = max(-1.5, min(1.5, (ylim[0] + ylim[1]) / 2.0))
+    assert np.isclose(g_spinbox.value(), expected_g)
+    assert np.isclose(s_spinbox.value(), expected_s)
+    assert np.isclose(radius_spinbox.value(), 0.05)  # Default radius
 
     # Change values
     g_spinbox.setValue(0.7)
@@ -1862,10 +1869,29 @@ def test_polar_cursor_add_cursor(make_napari_viewer):
 
     # Check new defaults
     cursor = widget._cursors[0]
-    assert cursor['phase_min'] == 10.0
-    assert cursor['phase_max'] == 30.0
-    assert cursor['modulation_min'] == 0.4
-    assert cursor['modulation_max'] == 0.6
+    xlim = parent.canvas_widget.axes.get_xlim()
+    ylim = parent.canvas_widget.axes.get_ylim()
+    center_g = (xlim[0] + xlim[1]) / 2.0
+    center_s = (ylim[0] + ylim[1]) / 2.0
+    center_phase = np.rad2deg(np.arctan2(center_s, center_g))
+    center_modulation = np.sqrt(center_g**2 + center_s**2)
+
+    expected_phase_min = center_phase - 10.0
+    expected_phase_max = center_phase + 10.0
+    expected_mod_min = max(0.0, min(1.0, center_modulation - 0.1))
+    expected_mod_max = max(0.0, min(1.0, center_modulation + 0.1))
+    if expected_mod_min > expected_mod_max:
+        expected_mod_min, expected_mod_max = expected_mod_max, expected_mod_min
+    if abs(expected_mod_max - expected_mod_min) < 1e-5:
+        if abs(expected_mod_max - 1.0) < 1e-5:
+            expected_mod_min = 0.99
+        else:
+            expected_mod_max = expected_mod_min + 0.01
+
+    assert np.allclose(cursor['phase_min'], expected_phase_min)
+    assert np.allclose(cursor['phase_max'], expected_phase_max)
+    assert np.allclose(cursor['modulation_min'], expected_mod_min)
+    assert np.allclose(cursor['modulation_max'], expected_mod_max)
 
 
 def test_elliptical_cursor_widget_initialization(make_napari_viewer):
@@ -1901,8 +1927,12 @@ def test_elliptical_cursor_add_cursor(make_napari_viewer):
 
     # Check properties
     cursor = widget._cursors[0]
-    assert cursor['g'] == 0.5
-    assert cursor['s'] == 0.5
+    xlim = parent.canvas_widget.axes.get_xlim()
+    ylim = parent.canvas_widget.axes.get_ylim()
+    expected_g = max(-1.5, min(1.5, (xlim[0] + xlim[1]) / 2.0))
+    expected_s = max(-1.5, min(1.5, (ylim[0] + ylim[1]) / 2.0))
+    assert np.isclose(cursor['g'], expected_g)
+    assert np.isclose(cursor['s'], expected_s)
     assert cursor['radius'] == 0.1
     assert cursor['radius_minor'] == 0.05
     assert cursor['angle'] == 0.0
@@ -2003,3 +2033,122 @@ def test_labels_layer_visibility_on_tab_toggle(make_napari_viewer):
     widget._set_labels_layer_visibility(True)
     assert viewer.layers[man_layer_name].visible is False
     assert viewer.layers[circ_layer_name].visible is True
+
+
+def test_cursor_added_at_custom_limits(make_napari_viewer):
+    """Test that cursors are added at the center of custom/zoomed plot limits."""
+    viewer = make_napari_viewer()
+    intensity_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_layer)
+    parent = PlotterWidget(viewer)
+
+    # Set custom axes limits
+    parent.canvas_widget.axes.set_xlim([0.2, 0.8])
+    parent.canvas_widget.axes.set_ylim([0.1, 0.5])
+
+    xlim = parent.canvas_widget.axes.get_xlim()
+    ylim = parent.canvas_widget.axes.get_ylim()
+    expected_g = max(-1.5, min(1.5, (xlim[0] + xlim[1]) / 2.0))
+    expected_s = max(-1.5, min(1.5, (ylim[0] + ylim[1]) / 2.0))
+
+    # 1. Test Circular Cursor
+    circular_widget = parent.selection_tab.circular_cursor_widget
+    circular_widget._add_cursor()
+    assert np.isclose(circular_widget._cursors[0]['g'], expected_g)
+    assert np.isclose(circular_widget._cursors[0]['s'], expected_s)
+
+    # 2. Test Elliptical Cursor
+    elliptical_widget = parent.selection_tab.elliptical_cursor_widget
+    elliptical_widget._add_cursor()
+    assert np.isclose(elliptical_widget._cursors[0]['g'], expected_g)
+    assert np.isclose(elliptical_widget._cursors[0]['s'], expected_s)
+
+    # 3. Test Polar Cursor
+    polar_widget = parent.selection_tab.polar_cursor_widget
+    polar_widget._add_cursor()
+    center_g = (xlim[0] + xlim[1]) / 2.0
+    center_s = (ylim[0] + ylim[1]) / 2.0
+    center_phase = np.rad2deg(np.arctan2(center_s, center_g))
+    center_modulation = np.sqrt(center_g**2 + center_s**2)
+
+    expected_phase_min = center_phase - 10.0
+    expected_phase_max = center_phase + 10.0
+    expected_mod_min = max(0.0, min(1.0, center_modulation - 0.1))
+    expected_mod_max = max(0.0, min(1.0, center_modulation + 0.1))
+    if expected_mod_min > expected_mod_max:
+        expected_mod_min, expected_mod_max = expected_mod_max, expected_mod_min
+    if abs(expected_mod_max - expected_mod_min) < 1e-5:
+        if abs(expected_mod_max - 1.0) < 1e-5:
+            expected_mod_min = 0.99
+        else:
+            expected_mod_max = expected_mod_min + 0.01
+
+    assert np.allclose(
+        polar_widget._cursors[0]['phase_min'], expected_phase_min
+    )
+    assert np.allclose(
+        polar_widget._cursors[0]['phase_max'], expected_phase_max
+    )
+    assert np.allclose(
+        polar_widget._cursors[0]['modulation_min'], expected_mod_min
+    )
+    assert np.allclose(
+        polar_widget._cursors[0]['modulation_max'], expected_mod_max
+    )
+
+
+def test_polar_cursor_clamping_and_validation(make_napari_viewer):
+    """Test that polar cursor modulation ranges are clamped and validated correctly."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.polar_cursor_widget
+
+    # Case 1: modulation_min > modulation_max should be swapped
+    widget._add_cursor(modulation_min=0.8, modulation_max=0.4)
+    cursor = widget._cursors[-1]
+    assert cursor['modulation_min'] == 0.4
+    assert cursor['modulation_max'] == 0.8
+
+    # Case 2: modulation_min and modulation_max outside [0, 1] should be clamped
+    widget._add_cursor(modulation_min=-0.5, modulation_max=1.5)
+    cursor = widget._cursors[-1]
+    assert cursor['modulation_min'] == 0.0
+    assert cursor['modulation_max'] == 1.0
+
+    # Case 3: modulation_min > 1 and modulation_max clamped to 1
+    widget._add_cursor(modulation_min=1.2, modulation_max=1.0)
+    cursor = widget._cursors[-1]
+    assert cursor['modulation_min'] == 0.99
+    assert cursor['modulation_max'] == 1.0
+
+    # Case 4: equal modulations should be shrunk to a small width
+    widget._add_cursor(modulation_min=0.5, modulation_max=0.5)
+    cursor = widget._cursors[-1]
+    assert np.isclose(cursor['modulation_min'], 0.5)
+    assert np.isclose(cursor['modulation_max'], 0.51)
+
+
+def test_circular_and_elliptical_cursor_coordinate_clipping(
+    make_napari_viewer,
+):
+    """Test that circular and elliptical cursor center coordinates are clipped to [-1.5, 1.5]."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+
+    # 1. Test Circular Cursor clipping
+    circular_widget = parent.selection_tab.circular_cursor_widget
+    circular_widget._add_cursor(g=2.0, s=-2.0)
+    circular_cursor = circular_widget._cursors[-1]
+    assert circular_cursor['g'] == 1.5
+    assert circular_cursor['s'] == -1.5
+
+    # 2. Test Elliptical Cursor clipping
+    elliptical_widget = parent.selection_tab.elliptical_cursor_widget
+    elliptical_widget._add_cursor(g=-2.5, s=3.0)
+    elliptical_cursor = elliptical_widget._cursors[-1]
+    assert elliptical_cursor['g'] == -1.5
+    assert elliptical_cursor['s'] == 1.5

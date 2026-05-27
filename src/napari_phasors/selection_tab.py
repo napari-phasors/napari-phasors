@@ -1859,8 +1859,38 @@ class CircularCursorWidget(QWidget):
             return self._cursors[-1]['radius']
         return 0.05  # Default radius
 
-    def _add_cursor(self, g=0.5, s=0.5, radius=None, color=None):
+    def _add_cursor(self, g=None, s=None, radius=None, color=None):
         """Add a new cursor to the table."""
+        if isinstance(g, bool):
+            g = None
+
+        if g is None or s is None:
+            if (
+                self.parent_widget is not None
+                and hasattr(self.parent_widget, 'canvas_widget')
+                and self.parent_widget.canvas_widget is not None
+                and hasattr(self.parent_widget.canvas_widget, 'axes')
+                and self.parent_widget.canvas_widget.axes is not None
+            ):
+                xlim = self.parent_widget.canvas_widget.axes.get_xlim()
+                ylim = self.parent_widget.canvas_widget.axes.get_ylim()
+                center_g = (xlim[0] + xlim[1]) / 2.0
+                center_s = (ylim[0] + ylim[1]) / 2.0
+            else:
+                center_g = 0.5
+                center_s = 0.5
+
+            if g is None:
+                g = center_g
+            if s is None:
+                s = center_s
+
+        # Clip g and s to the allowed spinbox range [-1.5, 1.5]
+        if g is not None:
+            g = max(-1.5, min(1.5, g))
+        if s is not None:
+            s = max(-1.5, min(1.5, s))
+
         if color is None:
             color = self._get_next_color()
         if radius is None:
@@ -2837,13 +2867,71 @@ class PolarCursorWidget(QWidget):
 
     def _add_cursor(
         self,
-        phase_min=10.0,
-        phase_max=30.0,
-        modulation_min=0.4,
-        modulation_max=0.6,
+        phase_min=None,
+        phase_max=None,
+        modulation_min=None,
+        modulation_max=None,
         color=None,
     ):
         """Add a new cursor to the table."""
+        if isinstance(phase_min, bool):
+            phase_min = None
+
+        if (
+            phase_min is None
+            or phase_max is None
+            or modulation_min is None
+            or modulation_max is None
+        ):
+            if (
+                self.parent_widget is not None
+                and hasattr(self.parent_widget, 'canvas_widget')
+                and self.parent_widget.canvas_widget is not None
+                and hasattr(self.parent_widget.canvas_widget, 'axes')
+                and self.parent_widget.canvas_widget.axes is not None
+            ):
+                xlim = self.parent_widget.canvas_widget.axes.get_xlim()
+                ylim = self.parent_widget.canvas_widget.axes.get_ylim()
+                center_g = (xlim[0] + xlim[1]) / 2.0
+                center_s = (ylim[0] + ylim[1]) / 2.0
+
+                center_phase_rad = np.arctan2(center_s, center_g)
+                center_phase_deg = np.rad2deg(center_phase_rad)
+                center_modulation = np.sqrt(center_g**2 + center_s**2)
+
+                if phase_min is None:
+                    phase_min = center_phase_deg - 10.0
+                if phase_max is None:
+                    phase_max = center_phase_deg + 10.0
+                if modulation_min is None:
+                    modulation_min = max(0.0, center_modulation - 0.1)
+                if modulation_max is None:
+                    modulation_max = min(1.0, center_modulation + 0.1)
+            else:
+                if phase_min is None:
+                    phase_min = 10.0
+                if phase_max is None:
+                    phase_max = 30.0
+                if modulation_min is None:
+                    modulation_min = 0.4
+                if modulation_max is None:
+                    modulation_max = 0.6
+
+        # Clamp modulation range to [0, 1] and ensure modulation_min <= modulation_max
+        if modulation_min is not None:
+            modulation_min = max(0.0, min(1.0, modulation_min))
+        if modulation_max is not None:
+            modulation_max = max(0.0, min(1.0, modulation_max))
+
+        if modulation_min is not None and modulation_max is not None:
+            if modulation_min > modulation_max:
+                modulation_min, modulation_max = modulation_max, modulation_min
+            if abs(modulation_max - modulation_min) < 1e-5:
+                if abs(modulation_max - 1.0) < 1e-5:
+                    modulation_min = 0.99
+                else:
+                    modulation_max = modulation_min + 0.01
+
         if color is None:
             color = self._get_next_color()
 
@@ -3703,14 +3791,44 @@ class EllipticalCursorWidget(QWidget):
 
     def _add_cursor(
         self,
-        g=0.5,
-        s=0.5,
+        g=None,
+        s=None,
         radius=0.1,
         radius_minor=0.05,
         angle=0.0,
         color=None,
     ):
         """Add a new cursor to the table."""
+        if isinstance(g, bool):
+            g = None
+
+        if g is None or s is None:
+            if (
+                self.parent_widget is not None
+                and hasattr(self.parent_widget, 'canvas_widget')
+                and self.parent_widget.canvas_widget is not None
+                and hasattr(self.parent_widget.canvas_widget, 'axes')
+                and self.parent_widget.canvas_widget.axes is not None
+            ):
+                xlim = self.parent_widget.canvas_widget.axes.get_xlim()
+                ylim = self.parent_widget.canvas_widget.axes.get_ylim()
+                center_g = (xlim[0] + xlim[1]) / 2.0
+                center_s = (ylim[0] + ylim[1]) / 2.0
+            else:
+                center_g = 0.5
+                center_s = 0.5
+
+            if g is None:
+                g = center_g
+            if s is None:
+                s = center_s
+
+        # Clip g and s to the allowed spinbox range [-1.5, 1.5]
+        if g is not None:
+            g = max(-1.5, min(1.5, g))
+        if s is not None:
+            s = max(-1.5, min(1.5, s))
+
         if color is None:
             color = self._get_next_color()
 
