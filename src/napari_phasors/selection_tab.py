@@ -1885,6 +1885,12 @@ class CircularCursorWidget(QWidget):
             if s is None:
                 s = center_s
 
+        # Clip g and s to the allowed spinbox range [-1.5, 1.5]
+        if g is not None:
+            g = max(-1.5, min(1.5, g))
+        if s is not None:
+            s = max(-1.5, min(1.5, s))
+
         if color is None:
             color = self._get_next_color()
         if radius is None:
@@ -2911,6 +2917,21 @@ class PolarCursorWidget(QWidget):
                 if modulation_max is None:
                     modulation_max = 0.6
 
+        # Clamp modulation range to [0, 1] and ensure modulation_min <= modulation_max
+        if modulation_min is not None:
+            modulation_min = max(0.0, min(1.0, modulation_min))
+        if modulation_max is not None:
+            modulation_max = max(0.0, min(1.0, modulation_max))
+
+        if modulation_min is not None and modulation_max is not None:
+            if modulation_min > modulation_max:
+                modulation_min, modulation_max = modulation_max, modulation_min
+            if abs(modulation_max - modulation_min) < 1e-5:
+                if abs(modulation_max - 1.0) < 1e-5:
+                    modulation_min = 0.99
+                else:
+                    modulation_max = modulation_min + 0.01
+
         if color is None:
             color = self._get_next_color()
 
@@ -3801,6 +3822,12 @@ class EllipticalCursorWidget(QWidget):
                 g = center_g
             if s is None:
                 s = center_s
+
+        # Clip g and s to the allowed spinbox range [-1.5, 1.5]
+        if g is not None:
+            g = max(-1.5, min(1.5, g))
+        if s is not None:
+            s = max(-1.5, min(1.5, s))
 
         if color is None:
             color = self._get_next_color()
