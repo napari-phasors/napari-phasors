@@ -1007,6 +1007,31 @@ def test_phasor_plotter_log_scale_checkbox(make_napari_viewer):
     assert log_scale_checkbox.isChecked() == initial_log_state
 
 
+def test_density_plot_log_scale_warning_suppression(make_napari_viewer):
+    """Test that warnings related to log normalization and non-positive ylim are suppressed in HISTOGRAM2D mode."""
+    viewer = make_napari_viewer()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    plotter = PlotterWidget(viewer)
+
+    # Enable Density Plot mode and log scale
+    plotter.plot_type = 'HISTOGRAM2D'
+    plotter.histogram_log_scale = True
+
+    with warnings.catch_warnings(record=True) as caught_warnings:
+        # Trigger plot update while log scale is active
+        plotter.plot()
+
+        # Verify that none of the suppressed warnings were raised
+        for w in caught_warnings:
+            msg = str(w.message)
+            if (
+                "Log normalization applied" in msg
+                or "non-positive ylim" in msg
+            ):
+                pytest.fail(f"Warning was not suppressed: {msg}")
+
+
 def test_phasor_plotter_white_background_checkbox(make_napari_viewer):
     """Test white background checkbox functionality."""
     viewer = make_napari_viewer()

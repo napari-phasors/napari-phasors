@@ -6572,81 +6572,104 @@ class PlotterWidget(QWidget):
 
     def _update_histogram_plot(self, x_data, y_data, selection_id_data=None):
         """Update the histogram plot with new data."""
-        plot_data = np.column_stack((x_data, y_data))
-        histogram_artist = self.canvas_widget.artists['HISTOGRAM2D']
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="Log normalization applied to color indices*",
+                category=UserWarning,
+            )
+            warnings.filterwarnings(
+                "ignore",
+                message="Attempt to set non-positive ylim on a log-scaled axis will be ignored*",
+                category=UserWarning,
+            )
+            plot_data = np.column_stack((x_data, y_data))
+            histogram_artist = self.canvas_widget.artists['HISTOGRAM2D']
 
-        histogram_artist.data = plot_data
-        histogram_artist.cmin = 1
+            histogram_artist.data = plot_data
+            histogram_artist.cmin = 1
 
-        if self._last_histogram_bins != self.histogram_bins:
-            histogram_artist.bins = self.histogram_bins
-            self._last_histogram_bins = self.histogram_bins
+            if self._last_histogram_bins != self.histogram_bins:
+                histogram_artist.bins = self.histogram_bins
+                self._last_histogram_bins = self.histogram_bins
 
-        histogram_is_solid = self._histogram_style == 'solid'
-        if histogram_is_solid:
-            cache_key = f"solid:{tuple(self._histogram_color)}"
-        else:
-            cache_key = self.histogram_colormap
-
-        if self._last_histogram_colormap != cache_key:
+            histogram_is_solid = self._histogram_style == 'solid'
             if histogram_is_solid:
-                selected_histogram_colormap = self._make_solid_contour_cmap(
-                    "histogram_solid",
-                    self._histogram_color,
+                cache_key = f"solid:{tuple(self._histogram_color)}"
+            else:
+                cache_key = self.histogram_colormap
+
+            if self._last_histogram_colormap != cache_key:
+                if histogram_is_solid:
+                    selected_histogram_colormap = (
+                        self._make_solid_contour_cmap(
+                            "histogram_solid",
+                            self._histogram_color,
+                        )
+                    )
+                else:
+                    selected_histogram_colormap = colormaps.ALL_COLORMAPS[
+                        self.histogram_colormap
+                    ]
+                    selected_histogram_colormap = (
+                        LinearSegmentedColormap.from_list(
+                            self.histogram_colormap,
+                            selected_histogram_colormap.colors,
+                        )
+                    )
+                histogram_artist.histogram_colormap = (
+                    selected_histogram_colormap
+                )
+                self._last_histogram_colormap = cache_key
+                self._last_histogram_colormap_object = (
+                    selected_histogram_colormap
                 )
             else:
-                selected_histogram_colormap = colormaps.ALL_COLORMAPS[
-                    self.histogram_colormap
-                ]
                 selected_histogram_colormap = (
-                    LinearSegmentedColormap.from_list(
-                        self.histogram_colormap,
-                        selected_histogram_colormap.colors,
+                    self._last_histogram_colormap_object
+                )
+
+            if histogram_artist.histogram is not None:
+                current_norm = "log" if self.histogram_log_scale else "linear"
+                if self._last_histogram_norm != current_norm:
+                    histogram_artist.histogram_color_normalization_method = (
+                        current_norm
                     )
-                )
-            histogram_artist.histogram_colormap = selected_histogram_colormap
-            self._last_histogram_colormap = cache_key
-            self._last_histogram_colormap_object = selected_histogram_colormap
-        else:
-            selected_histogram_colormap = self._last_histogram_colormap_object
+                    self._last_histogram_norm = current_norm
 
-        if histogram_artist.histogram is not None:
-            current_norm = "log" if self.histogram_log_scale else "linear"
-            if self._last_histogram_norm != current_norm:
-                histogram_artist.histogram_color_normalization_method = (
-                    current_norm
-                )
-                self._last_histogram_norm = current_norm
+            target_color_indices = (
+                selection_id_data if selection_id_data is not None else 0
+            )
 
-        target_color_indices = (
-            selection_id_data if selection_id_data is not None else 0
-        )
+            indices_changed = False
+            if isinstance(target_color_indices, np.ndarray):
+                if (
+                    self._last_histogram_color_indices is None
+                    or not isinstance(
+                        self._last_histogram_color_indices, np.ndarray
+                    )
+                    or not np.array_equal(
+                        self._last_histogram_color_indices,
+                        target_color_indices,
+                    )
+                ):
+                    indices_changed = True
+            else:
+                if (
+                    self._last_histogram_color_indices is None
+                    or isinstance(
+                        self._last_histogram_color_indices, np.ndarray
+                    )
+                    or self._last_histogram_color_indices
+                    != target_color_indices
+                ):
+                    indices_changed = True
 
-        indices_changed = False
-        if isinstance(target_color_indices, np.ndarray):
-            if (
-                self._last_histogram_color_indices is None
-                or not isinstance(
-                    self._last_histogram_color_indices, np.ndarray
-                )
-                or not np.array_equal(
-                    self._last_histogram_color_indices, target_color_indices
-                )
-            ):
-                indices_changed = True
-        else:
-            if (
-                self._last_histogram_color_indices is None
-                or isinstance(self._last_histogram_color_indices, np.ndarray)
-                or self._last_histogram_color_indices != target_color_indices
-            ):
-                indices_changed = True
+            if indices_changed:
+                histogram_artist.color_indices = target_color_indices
+                self._last_histogram_color_indices = target_color_indices
 
-        if indices_changed:
-            histogram_artist.color_indices = target_color_indices
-            self._last_histogram_color_indices = target_color_indices
-
-        self._update_colorbar(selected_histogram_colormap)
+            self._update_colorbar(selected_histogram_colormap)
 
     def _clear_contour_plot(self):
         """Clear all contour collections from the plot."""
