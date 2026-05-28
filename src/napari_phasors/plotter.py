@@ -6782,18 +6782,16 @@ class PlotterWidget(QWidget):
         return tuple(arr[:3])
 
     def _make_solid_contour_cmap(self, name, target_color):
-        """Create a subtle ramp for solid contour style.
+        """Create a gradient ramp for solid contour style.
 
-        Uses an off-white start so the lowest contour is still visible on
-        white backgrounds while preserving the selected hue progression.
+        Blends the target color with white for the lower end to preserve
+        hue while providing a good visible range of the gradient.
         """
         target = np.asarray(self._normalize_rgb(target_color), dtype=float)
 
-        # Slightly below white with a tiny tint toward the target color.
-        # This keeps low levels visible on white backgrounds.
-        low_gray = 0.92
-        tint = 0.08
-        low_color = np.clip((1.0 - tint) * low_gray + tint * target, 0.0, 1.0)
+        # Start from a lighter version of the color (e.g., 50% mixed with white)
+        # to prevent too many white/gray contours at low levels.
+        low_color = np.clip(target + (1.0 - target) * 0.5, 0.0, 1.0)
 
         return LinearSegmentedColormap.from_list(
             name,
@@ -7038,35 +7036,36 @@ class PlotterWidget(QWidget):
                     )
                 )
 
-            for member_idx, (_layer_name, gx, gy) in enumerate(
-                grouped_data[gid]
-            ):
-                h, xedges, yedges = self._compute_contour_histogram(
-                    gx, gy, bins, range_xlim, range_ylim
-                )
-                if style_mode == "colormap":
-                    cs = ax.contour(
-                        xedges,
-                        yedges,
-                        h.T,
-                        levels=levels,
-                        linewidths=linewidths,
-                        cmap=style_cmap,
-                        norm='log' if use_log_norm else None,
-                    )
-                else:
-                    cs = ax.contour(
-                        xedges,
-                        yedges,
-                        h.T,
-                        levels=levels,
-                        linewidths=linewidths,
-                        cmap=solid_cmap,
-                        norm='log' if use_log_norm else None,
-                    )
+            gx_all = np.concatenate([gx for _, gx, _ in grouped_data[gid]])
+            gy_all = np.concatenate([gy for _, _, gy in grouped_data[gid]])
 
-                _tag_contour_set(cs, group_label if member_idx == 0 else None)
-                self._contour_collections.append(cs)
+            h, xedges, yedges = self._compute_contour_histogram(
+                gx_all, gy_all, bins, range_xlim, range_ylim
+            )
+
+            if style_mode == "colormap":
+                cs = ax.contour(
+                    xedges,
+                    yedges,
+                    h.T,
+                    levels=levels,
+                    linewidths=linewidths,
+                    cmap=style_cmap,
+                    norm='log' if use_log_norm else None,
+                )
+            else:
+                cs = ax.contour(
+                    xedges,
+                    yedges,
+                    h.T,
+                    levels=levels,
+                    linewidths=linewidths,
+                    cmap=solid_cmap,
+                    norm='log' if use_log_norm else None,
+                )
+
+            _tag_contour_set(cs, group_label)
+            self._contour_collections.append(cs)
 
             legend_labels.append(group_label)
 
