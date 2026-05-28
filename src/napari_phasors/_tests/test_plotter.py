@@ -851,13 +851,13 @@ def test_make_solid_contour_cmap():
     # The method _make_solid_contour_cmap doesn't use instance state.
     # We'll just call it on an uninitialized instance or dummy instance.
     class DummyPlotter:
-        _normalize_rgb = PlotterWidget._normalize_rgb
+        _normalize_rgb = staticmethod(PlotterWidget._normalize_rgb)
         _make_solid_contour_cmap = PlotterWidget._make_solid_contour_cmap
 
     dummy = DummyPlotter()
 
     target_color = (1.0, 0.0, 0.0)  # Red
-    cmap = dummy._make_solid_contour_cmap(dummy, "test_cmap", target_color)
+    cmap = dummy._make_solid_contour_cmap("test_cmap", target_color)
 
     # Low color should be 50% white blended with red
     # low_color = np.clip([1, 0, 0] + (1 - [1, 0, 0]) * 0.5, 0, 1) = [1, 0.5, 0.5]
