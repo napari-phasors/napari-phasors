@@ -551,3 +551,49 @@ def test_write_ometif_masked_non_phasor(tmp_path):
         assert written_data.shape == (2, 5)
         assert np.isnan(written_data[0, 0])
         assert not np.isnan(written_data[0, 1:]).any()
+
+
+def test_export_layer_as_image_tuple_colormap(tmp_path):
+    """Test export_layer_as_image with a layer data tuple containing a dict colormap."""
+    from PIL import Image as PILImage
+
+    from napari_phasors._writer import export_layer_as_image
+
+    # Use a gradient data array to ensure we span the colormap
+    data = np.linspace(0, 1, 100).reshape((10, 10))
+
+    # A custom colormap dict with different red and blue endpoints
+    colormap_dict = {
+        "name": "custom_red_blue",
+        "colors": [
+            [1.0, 0.0, 0.0, 1.0],  # Red at 0
+            [0.0, 0.0, 1.0, 1.0],  # Blue at 1
+        ],
+    }
+
+    layer_tuple = (
+        data,
+        {
+            "name": "test_image",
+            "colormap": colormap_dict,
+            "contrast_limits": [0.0, 1.0],
+            "metadata": {},
+        },
+        "image",
+    )
+
+    export_path = os.path.join(tmp_path, "test_image_export.png")
+    export_layer_as_image(export_path, layer_tuple, include_colorbar=False)
+
+    assert os.path.exists(export_path)
+
+    # Open and verify the image has color representation (not black and white)
+    img = PILImage.open(export_path)
+    img_data = np.array(img)
+
+    assert img_data.ndim == 3
+    assert img_data.shape[-1] in (3, 4)
+
+    # Verify that the image is colored (R != B, since some parts are red, some blue)
+    is_colored = np.any(img_data[..., 0] != img_data[..., 2])
+    assert is_colored, "Exported image is grayscale!"
