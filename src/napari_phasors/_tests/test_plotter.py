@@ -807,6 +807,66 @@ def test_contour_plot_creates_and_cleans_collections(make_napari_viewer):
     plotter.deleteLater()
 
 
+def test_contour_plot_grouped_mode(make_napari_viewer):
+    """Test that grouped mode creates one contour collection per group."""
+    viewer = make_napari_viewer()
+    layer1 = create_image_layer_with_phasors()
+    layer2 = create_image_layer_with_phasors()
+    viewer.add_layer(layer1)
+    viewer.add_layer(layer2)
+    plotter = PlotterWidget(viewer)
+
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [layer1.name, layer2.name]
+    )
+    plotter._process_layer_selection_change()
+
+    # Configure grouped mode
+    plotter.plot_type = 'CONTOUR'
+    plotter._contour_display_mode = "Grouped"
+    plotter._contour_group_assignments = {layer1.name: 1, layer2.name: 1}
+    plotter._contour_group_names = {1: "Group 1"}
+
+    plotter.plot()
+
+    # Should only create one contour collection for the entire group
+    assert len(plotter._contour_collections) == 1
+
+    artists = [
+        artist
+        for artist in plotter.canvas_widget.axes.collections
+        if artist.get_label() == 'contour_plot_element'
+    ]
+    assert len(artists) > 0
+
+    plotter.deleteLater()
+
+
+def test_make_solid_contour_cmap():
+    """Test that the solid contour colormap blends the target color with 50% white."""
+    # We don't need a full widget, just the method
+    from napari_phasors.plotter import PlotterWidget
+
+    # Create an instance without initializing a viewer (or use a mock)
+    # The method _make_solid_contour_cmap doesn't use instance state.
+    # We'll just call it on an uninitialized instance or dummy instance.
+    class DummyPlotter:
+        _normalize_rgb = PlotterWidget._normalize_rgb
+        _make_solid_contour_cmap = PlotterWidget._make_solid_contour_cmap
+
+    dummy = DummyPlotter()
+
+    target_color = (1.0, 0.0, 0.0)  # Red
+    cmap = dummy._make_solid_contour_cmap(dummy, "test_cmap", target_color)
+
+    # Low color should be 50% white blended with red
+    # low_color = np.clip([1, 0, 0] + (1 - [1, 0, 0]) * 0.5, 0, 1) = [1, 0.5, 0.5]
+    np.testing.assert_allclose(cmap(0.0)[:3], (1.0, 0.5, 0.5))
+
+    # High color should be the target color
+    np.testing.assert_allclose(cmap(1.0)[:3], target_color)
+
+
 def test_add_layer_without_phasor_features_does_not_trigger_plot_or_combobox(
     make_napari_viewer,
 ):
