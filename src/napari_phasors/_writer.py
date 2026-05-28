@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import os
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Union
 
@@ -110,10 +111,9 @@ def _get_export_path(
     layer_name: str,
     layers_to_export: list[Any],
     layer_names: list[str],
+    default_ext: str = "",
 ) -> str:
     """Determine the file path for a layer, preventing overwrites during multi-layer exports."""
-    import os
-
     import napari
 
     directory = os.path.dirname(path)
@@ -128,6 +128,8 @@ def _get_export_path(
         ext = ".ome.tiff"
     else:
         base_name, ext = os.path.splitext(full_basename)
+        if not ext and default_ext:
+            ext = default_ext
 
     # Try to detect if we are saving multiple selected layers via the napari GUI
     viewer = napari.current_viewer()
@@ -223,7 +225,11 @@ def write_ome_tiff(
             layer_name = current_layer[1].get("name", f"layer_{i}")
 
         current_path = _get_export_path(
-            path, layer_name, layers_to_export, layer_names
+            path,
+            layer_name,
+            layers_to_export,
+            layer_names,
+            default_ext=".ome.tif",
         )
 
         z_spacing_um = _extract_z_spacing_um(current_layer, data, metadata)
@@ -472,8 +478,14 @@ def export_layer_as_image(
             contrast_limits = attributes.get('contrast_limits', None)
             layer_name = attributes.get('name', f"layer_{i}")
 
+        _, ext = os.path.splitext(path)
+        ext_fallback = ext if ext else ".png"
         current_path = _get_export_path(
-            path, layer_name, layers_to_export, layer_names
+            path,
+            layer_name,
+            layers_to_export,
+            layer_names,
+            default_ext=ext_fallback,
         )
 
         if data.ndim > 2:
@@ -658,7 +670,11 @@ def export_layer_as_csv(path: str, image_layer: Any) -> list[str]:
             layer_name = current_layer[1].get("name", f"layer_{i}")
 
         current_path = _get_export_path(
-            path, layer_name, layers_to_export, layer_names
+            path,
+            layer_name,
+            layers_to_export,
+            layer_names,
+            default_ext=".csv",
         )
 
         has_phasor_data = (
@@ -727,7 +743,7 @@ def export_layer_as_csv(path: str, image_layer: Any) -> list[str]:
             else:
                 coords = np.unravel_index(np.arange(data.size), data.shape)
                 df_dict = {
-                    f"dim_{i}": coord for i_dim, coord in enumerate(coords)
+                    f"dim_{i_dim}": coord for i_dim, coord in enumerate(coords)
                 }
                 df_dict["value"] = data.ravel()
                 df = pd.DataFrame(df_dict)
