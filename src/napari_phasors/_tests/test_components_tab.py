@@ -882,3 +882,382 @@ def test_components_on_image_layer_changed_runs_teardown_and_restore(
         comp_widget._on_image_layer_changed()
         mock_teardown.assert_called_once()
         mock_restore.assert_called_once()
+
+
+def test_components_selection_calculates_lifetime(make_napari_viewer):
+    """Test that selecting/clicking or dragging a component calculates and updates the lifetime."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    layer.metadata["settings"] = {"frequency": 80.0}
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+
+    comp = comp_widget.components[0]
+
+    # 1. Test selection via _handle_component_selection_event
+    class DummyEvent:
+        inaxes = True
+        xdata = 0.5
+        ydata = 0.5
+
+    event = DummyEvent()
+    comp_widget._select_component(0)
+    comp_widget._handle_component_selection_event(event)
+
+    from phasorpy.lifetime import phasor_to_normal_lifetime
+
+    expected_lifetime = phasor_to_normal_lifetime(0.5, 0.5, frequency=80.0)
+
+    assert comp.lifetime_edit.text() != ""
+    assert abs(float(comp.lifetime_edit.text()) - expected_lifetime) < 1e-3
+
+    # 2. Test dragging via _on_motion
+    comp_widget.dragging_component_idx = 0
+    if comp.dot is None:
+        comp_widget._create_component_at_coordinates(0, 0.5, 0.5)
+
+    class DragEvent:
+        inaxes = True
+        xdata = 0.2
+        ydata = 0.1
+
+    comp_widget._on_motion(DragEvent())
+
+    expected_drag_lifetime = phasor_to_normal_lifetime(
+        0.2, 0.1, frequency=80.0
+    )
+    assert comp.lifetime_edit.text() != ""
+    assert (
+        abs(float(comp.lifetime_edit.text()) - expected_drag_lifetime) < 1e-3
+    )
+
+
+def test_components_auto_placement_calculates_lifetime(make_napari_viewer):
+    """Test that auto-placing the second component calculates and updates the lifetime edit."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    layer.metadata["settings"] = {"frequency": 80.0}
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+
+    # Set first component's position
+    comp_widget.components[0].g_edit.setText("0.3")
+    comp_widget.components[0].s_edit.setText("0.2")
+    comp_widget._on_component_coords_changed(0)
+
+    # Trigger auto place for second component
+    comp_widget._auto_place_second_component()
+
+    # The lifetime edit for Component 2 should not be empty and should have a valid lifetime
+    comp2 = comp_widget.components[1]
+    assert comp2.lifetime_edit.text() != ""
+    assert float(comp2.lifetime_edit.text()) > 0
+
+
+def test_components_dropdown_menu_and_cursor_selection(make_napari_viewer):
+    """Test that the dropdown menu is populated correctly and selection from a cursor sets coordinates and lifetime."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    layer.metadata["settings"] = {"frequency": 80.0}
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+
+    # 1. Setup mock cursors in Selection tab
+    selection_tab = parent.selection_tab
+
+    # A. Circular cursor
+    circ_widget = selection_tab.circular_cursor_widget
+    circ_widget._cursors.append(
+        {
+            'g': 0.4,
+            's': 0.3,
+            'radius': 0.05,
+            'harmonic': 1,
+            'color': circ_widget._get_next_color(),
+            'patch': None,
+        }
+    )
+
+    # B. Polar cursor
+    polar_widget = selection_tab.polar_cursor_widget
+    polar_widget._cursors.append(
+        {
+            'phase_min': 10.0,
+            'phase_max': 30.0,
+            'modulation_min': 0.4,
+            'modulation_max': 0.6,
+            'harmonic': 1,
+            'color': polar_widget._get_next_color(),
+            'patch': None,
+        }
+    )
+
+    # C. Elliptical cursor
+    ell_widget = selection_tab.elliptical_cursor_widget
+    ell_widget._cursors.append(
+        {
+            'g': 0.35,
+            's': 0.25,
+            'harmonic': 1,
+            'color': ell_widget._get_next_color(),
+            'patch': None,
+        }
+    )
+
+    # D. GMM Cluster
+    cluster_widget = selection_tab.automatic_clustering_widget
+    cluster_widget._clusters.append(
+        {
+            'g': 0.45,
+            's': 0.35,
+            'harmonic': 1,
+            'color': 'magenta',
+            'patch': None,
+        }
+    )
+
+    # 2. Re-populate/verify the select menu for Component 1 (idx=0)
+    from qtpy.QtWidgets import QMenu
+
+    menu = QMenu()
+    comp_widget._populate_select_menu(0, menu)
+
+    # Verify menu has the right actions/submenus
+    actions = menu.actions()
+    assert len(actions) > 0
+    assert actions[0].text() == "Select on plot"
+
+    # The third action is the "Select from cursor center" submenu
+    cursor_submenu = actions[2].menu()
+    assert cursor_submenu is not None
+
+    cursor_actions = cursor_submenu.actions()
+    assert len(cursor_actions) == 4
+    assert "Circular 1" in cursor_actions[0].text()
+    assert "Polar 1" in cursor_actions[1].text()
+    assert "Elliptical 1" in cursor_actions[2].text()
+    assert "Cluster 1" in cursor_actions[3].text()
+
+    # 3. Trigger selecting from cursor center (each type)
+    comp_widget._set_component_coords_from_menu(0, 0.4, 0.3)
+    comp1 = comp_widget.components[0]
+    assert comp1.g_edit.text() == "0.400"
+    assert comp1.s_edit.text() == "0.300"
+    assert comp1.lifetime_edit.text() != ""
+    assert float(comp1.lifetime_edit.text()) > 0
+
+    comp_widget._set_component_coords_from_menu(0, 0.5, 0.4)
+    assert comp1.g_edit.text() == "0.500"
+    assert comp1.s_edit.text() == "0.400"
+
+
+def test_components_selection_escape_cancellation(make_napari_viewer):
+    """Test that pressing Escape cancels the active plot selection and restores button state."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+
+    comp = comp_widget.components[0]
+
+    # Test path 1: Matplotlib key press event 'escape'
+    comp_widget._select_component(0)
+    assert comp.select_button.text() == "Click on plot..."
+    assert not comp.select_button.isEnabled()
+    assert comp_widget._active_select_cid is not None
+    assert comp_widget._active_select_key_cid is not None
+    assert comp_widget._active_select_shortcut is not None
+    assert comp_widget._active_select_idx == 0
+
+    class DummyKeyEvent:
+        def __init__(self, key):
+            self.key = key
+
+    event = DummyKeyEvent('escape')
+    comp_widget._handle_select_key_press_event(event)
+
+    assert comp.select_button.text() == "Select"
+    assert comp.select_button.isEnabled()
+    assert comp_widget._active_select_cid is None
+    assert comp_widget._active_select_key_cid is None
+    assert comp_widget._active_select_shortcut is None
+    assert comp_widget._active_select_idx is None
+
+    # Test path 2: Qt QShortcut activated signal
+    comp_widget._select_component(0)
+    assert comp_widget._active_select_shortcut is not None
+
+    # Trigger shortcut activation
+    comp_widget._active_select_shortcut.activated.emit()
+
+    assert comp.select_button.text() == "Select"
+    assert comp.select_button.isEnabled()
+    assert comp_widget._active_select_cid is None
+    assert comp_widget._active_select_key_cid is None
+    assert comp_widget._active_select_shortcut is None
+
+
+def test_components_select_from_phasor_center_and_generalized_auto_place(
+    make_napari_viewer,
+):
+    """Test selection from phasor center dialog and generalized auto intersect placement."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    layer.metadata["settings"] = {"frequency": 80.0}
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+
+    # 1. Verify select menu options for idx=0 (Component 1) and idx=1 (Component 2)
+    from qtpy.QtWidgets import QMenu
+
+    menu0 = QMenu()
+    comp_widget._populate_select_menu(0, menu0)
+    texts0 = [a.text() for a in menu0.actions()]
+    assert "Select from phasor center..." in texts0
+    assert (
+        "Auto intersect semicircle" not in texts0
+    )  # idx=0 should NOT have auto intersect
+
+    menu1 = QMenu()
+    comp_widget._populate_select_menu(1, menu1)
+    texts1 = [a.text() for a in menu1.actions()]
+    assert "Select from phasor center..." in texts1
+    assert (
+        "Auto intersect semicircle" in texts1
+    )  # idx=1 should have auto intersect
+
+    # 2. Test select from phasor center using mock dialog
+    from unittest.mock import patch
+
+    from qtpy.QtWidgets import QDialog
+
+    # Mock the dialog execution
+    with patch(
+        "napari_phasors.components_tab.PhasorCenterSelectionDialog"
+    ) as MockDialog:
+        mock_dialog_instance = MockDialog.return_value
+        mock_dialog_instance.exec.return_value = QDialog.Accepted
+        mock_dialog_instance.get_selected_layers.return_value = [layer.name]
+
+        comp_widget._select_from_phasor_center(0)
+
+    # Verify component 1 coordinates are populated from the layer's phasor center
+    comp0 = comp_widget.components[0]
+    assert comp0.g_edit.text() != ""
+    assert comp0.s_edit.text() != ""
+    assert float(comp0.g_edit.text()) > 0
+    assert float(comp0.s_edit.text()) > 0
+
+    # 3. Add a third component and verify generalized auto-placement
+    comp_widget._add_component()  # Adds component 3 (idx=2)
+    assert len(comp_widget.components) == 3
+
+    # Set component 2 (idx=1) coordinates manually
+    comp_widget.components[1].g_edit.setText("0.6")
+    comp_widget.components[1].s_edit.setText("0.4")
+    comp_widget._on_component_coords_changed(1)
+
+    # Trigger auto-placement on component 3 (idx=2) which should intersect from component 2 (idx=1)
+    comp_widget._auto_place_component_by_index(2)
+
+    comp2 = comp_widget.components[2]
+    assert comp2.g_edit.text() != ""
+    assert comp2.s_edit.text() != ""
+    assert float(comp2.g_edit.text()) > 0
+
+
+def test_color_action_widget_and_dialog(make_napari_viewer):
+    """Test ColorActionWidget color conversions, mouse events, and PhasorCenterSelectionDialog."""
+    from qtpy.QtCore import QPointF, Qt
+    from qtpy.QtGui import QColor, QMouseEvent
+    from qtpy.QtWidgets import QMenu, QWidgetAction
+
+    from napari_phasors.components_tab import (
+        ColorActionWidget,
+        PhasorCenterSelectionDialog,
+    )
+
+    # 1. Test ColorActionWidget color representations
+    action = QWidgetAction(None)
+
+    # QColor
+    w1 = ColorActionWidget("Text", QColor(255, 0, 0), action)
+    assert "color: #ff0000" in w1.styleSheet().lower()
+
+    # FakeColor with getRgb but no name
+    class FakeColor:
+        def getRgb(self):
+            return (0, 255, 0, 255)
+
+    w2 = ColorActionWidget("Text", FakeColor(), action)
+    assert "color: rgba(0, 255, 0, 1.0)" in w2.styleSheet().lower()
+
+    # Float tuple
+    w3 = ColorActionWidget("Text", (0.0, 0.0, 1.0, 0.5), action)
+    assert "color: rgba(0, 0, 255, 0.5)" in w3.styleSheet().lower()
+
+    # Int tuple
+    w4 = ColorActionWidget("Text", (128, 128, 128, 255), action)
+    assert "color: rgba(128, 128, 128, 1.0)" in w4.styleSheet().lower()
+
+    # String color name
+    w5 = ColorActionWidget("Text", "yellow", action)
+    assert "color: yellow" in w5.styleSheet().lower()
+
+    # 2. Test ColorActionWidget mouse release event
+    from qtpy.QtWidgets import QWidget
+
+    parent_menu = QMenu()
+    action = QWidgetAction(parent_menu)
+    action_widget = ColorActionWidget("Text", "blue", action, parent_menu)
+    action.setDefaultWidget(action_widget)
+    # Nest action_widget inside a container widget under parent_menu to cover parent hierarchy traversal
+    container = QWidget(parent_menu)
+    action_widget.setParent(container)
+
+    # Track action trigger
+    triggered = False
+
+    def on_triggered():
+        nonlocal triggered
+        triggered = True
+
+    action.triggered.connect(on_triggered)
+
+    # Simulate left click
+    event = QMouseEvent(
+        QMouseEvent.Type.MouseButtonRelease,
+        QPointF(5, 5),
+        Qt.LeftButton,
+        Qt.LeftButton,
+        Qt.NoModifier,
+    )
+    action_widget.mouseReleaseEvent(event)
+    assert triggered is True
+
+    # 3. Test PhasorCenterSelectionDialog
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+
+    dialog = PhasorCenterSelectionDialog([layer.name], parent=comp_widget)
+    assert dialog.windowTitle() == "Select Phasor Center Layers"
+    # The active layer is automatically checked on init
+    assert layer.name in dialog.get_selected_layers()

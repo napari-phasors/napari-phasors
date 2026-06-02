@@ -12,8 +12,14 @@ from napari.layers import Image
 from napari.utils.colormaps import AVAILABLE_COLORMAPS, Colormap
 from napari.utils.notifications import show_error, show_info, show_warning
 from phasorpy.component import phasor_component_fit, phasor_component_fraction
-from phasorpy.lifetime import phasor_from_lifetime
+from phasorpy.lifetime import (
+    phasor_from_lifetime,
+    phasor_semicircle_intersect,
+    phasor_to_normal_lifetime,
+)
+from phasorpy.phasor import phasor_center
 from qtpy.QtCore import Qt
+from qtpy.QtGui import QKeySequence, QShortcut
 from qtpy.QtWidgets import (
     QCheckBox,
     QColorDialog,
@@ -24,15 +30,17 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
     QScrollArea,
     QSlider,
     QSpinBox,
     QVBoxLayout,
     QWidget,
+    QWidgetAction,
 )
 
-from ._utils import HistogramWidget
+from ._utils import CheckableComboBox, HistogramWidget
 
 if TYPE_CHECKING:
     import napari
@@ -51,6 +59,117 @@ class ComponentState:
     number_label: QLabel | None = None
     text_offset: tuple[float, float] = (0.02, 0.02)
     label: str = "Component"
+
+
+class ColorActionWidget(QLabel):
+    def __init__(self, text, color, action, parent=None):
+        super().__init__(text, parent)
+        self.action = action
+
+        # Determine CSS color representation
+        css_color = "black"
+        if color is not None:
+            if hasattr(color, 'name'):
+                css_color = color.name()
+            elif hasattr(color, 'getRgb'):
+                r, g, b, a = color.getRgb()
+                css_color = f"rgba({r}, {g}, {b}, {a/255.0})"
+            elif (
+                isinstance(color, (tuple, list, np.ndarray))
+                and len(color) >= 3
+            ):
+                if all(
+                    isinstance(c, (float, np.float32, np.float64))
+                    for c in color[:3]
+                ) and any(c <= 1.0 for c in color[:3]):
+                    r, g, b = [int(c * 255) for c in color[:3]]
+                    a = float(color[3]) if len(color) > 3 else 1.0
+                    css_color = f"rgba({r}, {g}, {b}, {a})"
+                else:
+                    r, g, b = color[:3]
+                    a = float(color[3]) if len(color) > 3 else 255.0
+                    css_color = f"rgba({r}, {g}, {b}, {a/255.0})"
+            else:
+                css_color = str(color)
+
+        self.setStyleSheet(f"""
+            QLabel {{
+                color: {css_color};
+                font-weight: bold;
+                padding: 6px 20px;
+                background-color: transparent;
+                font-size: 11px;
+            }}
+            QLabel:hover {{
+                background-color: #3b82f6;
+                color: white;
+            }}
+        """)
+        self.setMouseTracking(True)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.action.trigger()
+            parent = self.parent()
+            while parent:
+                if isinstance(parent, QMenu):
+                    parent.close()
+                    break
+                parent = parent.parent()
+
+
+class PhasorCenterSelectionDialog(QDialog):
+    def __init__(self, layers, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Select Phasor Center Layers")
+        self.setMinimumWidth(360)
+        self.resize(360, 150)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(12)
+
+        info_label = QLabel(
+            "Select the image layer(s) to calculate the phasor center from:"
+        )
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("font-size: 11px; color: #555555;")
+        layout.addWidget(info_label)
+
+        self.layer_combo = CheckableComboBox(
+            placeholder="Select layers...",
+            parent=self,
+            enable_primary_layer=False,
+        )
+        self.layer_combo.addItems(layers)
+
+        # Pre-select currently selected layers in napari / plotter widget if possible
+        if (
+            parent
+            and hasattr(parent, 'parent_widget')
+            and parent.parent_widget
+        ):
+            selected_names = parent.parent_widget.get_selected_layer_names()
+            checked = [name for name in selected_names if name in layers]
+            if checked:
+                self.layer_combo.setCheckedItems(checked)
+
+        layout.addWidget(self.layer_combo)
+
+        # Spacer
+        layout.addSpacing(4)
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        layout.addWidget(button_box)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+
+        self.setLayout(layout)
+
+    def get_selected_layers(self):
+        return self.layer_combo.checkedItems()
 
 
 class ComponentsWidget(QWidget):
@@ -133,6 +252,13 @@ class ComponentsWidget(QWidget):
         # Drag state
         self.dragging_component_idx = None
         self.dragging_label_idx = None
+
+        # Select listeners state
+        self._active_select_cid = None
+        self._active_select_key_cid = None
+        self._active_select_shortcut = None
+        self._active_select_idx = None
+        self._active_select_original_text = "Select"
 
         self.setup_ui()
         self._update_lifetime_inputs_visibility()
@@ -305,9 +431,16 @@ class ComponentsWidget(QWidget):
         select_button = QPushButton("Select")
         select_button.setMaximumWidth(70)
         select_button.setToolTip(
-            "Click here and then click on the phasor plot to select the component location."
+            "Click here to choose how to select the component location (on plot, from cursor, or auto intersect)."
         )
         comp_layout.addWidget(select_button)
+
+        # Create dynamic menu for the Select button
+        menu = QMenu(self)
+        menu.aboutToShow.connect(
+            lambda idx=idx, m=menu: self._populate_select_menu(idx, m)
+        )
+        select_button.setMenu(menu)
 
         # G coordinate
         comp_layout.addWidget(QLabel("G:"))
@@ -379,12 +512,200 @@ class ComponentsWidget(QWidget):
         lifetime_edit.editingFinished.connect(
             lambda: self._update_component_from_lifetime(idx)
         )
-        select_button.clicked.connect(lambda: self._select_component(idx))
+        # Select button action is handled by the dynamic QMenu
 
         comp.ui_elements = {
             'comp_layout': comp_layout,
             'lifetime_label': lifetime_label,
         }
+
+    def _auto_place_second_component(self):
+        """Auto-place Component 2 on the universal circle based on Component 1 and the data center."""
+        self._auto_place_component_by_index(1)
+
+    def _auto_place_component_by_index(self, idx):
+        """Auto-place Component idx on the universal circle based on the previous component and the data center."""
+        if idx <= 0 or idx >= len(self.components):
+            return
+
+        comp_prev = self.components[idx - 1]
+        comp_curr = self.components[idx]
+        if comp_prev is None or comp_curr is None:
+            return
+
+        # Get previous component's position
+        try:
+            prev_real = float(comp_prev.g_edit.text())
+            prev_imag = float(comp_prev.s_edit.text())
+        except ValueError:
+            show_warning(
+                f"Component {idx} must be set first to auto-place Component {idx + 1}."
+            )
+            return
+
+        if self.parent_widget is None:
+            return
+
+        # Get frequency
+        try:
+            frequency = self.parent_widget._get_frequency_from_layer()
+            if frequency is None:
+                show_warning(
+                    f"Frequency must be set to auto-place Component {idx + 1}."
+                )
+                return
+            current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
+            frequency = frequency * current_harmonic
+        except (AttributeError, TypeError):
+            show_warning(
+                f"Frequency must be set to auto-place Component {idx + 1}."
+            )
+            return
+
+        # Get data for center calculation
+        layer_name = self.parent_widget.get_primary_layer_name()
+        if not layer_name or layer_name not in self.viewer.layers:
+            show_warning("No active layer found.")
+            return
+
+        layer = self.viewer.layers[layer_name]
+        g_array = layer.metadata.get("G")
+        s_array = layer.metadata.get("S")
+        harmonics = layer.metadata.get("harmonics")
+        mean = layer.metadata.get("original_mean")
+
+        if g_array is None or s_array is None or harmonics is None:
+            show_warning(
+                "Active layer must have phasor data (G, S, harmonics) to calculate the center."
+            )
+            return
+
+        harmonics = np.atleast_1d(harmonics)
+        harmonic_idx = np.where(harmonics == current_harmonic)[0]
+        if len(harmonic_idx) == 0:
+            show_warning(
+                f"Harmonic {current_harmonic} not found in the layer data."
+            )
+            return
+        harmonic_idx = harmonic_idx[0]
+
+        if g_array.ndim > layer.data.ndim:
+            real = g_array[harmonic_idx]
+            imag = s_array[harmonic_idx]
+        else:
+            real = g_array
+            imag = s_array
+
+        try:
+            _, center_real, center_imag = phasor_center(mean, real, imag)
+        except (ValueError, TypeError) as e:
+            show_error(f"Error calculating phasor center: {e}")
+            return
+
+        # Intersect with the semicircle
+        try:
+            _, _, bound_real, bound_imag = phasor_semicircle_intersect(
+                prev_real, prev_imag, center_real, center_imag
+            )
+
+            # The intersection returns arrays, we extract the float
+            if np.ndim(bound_real) > 0:
+                bound_real = float(np.array(bound_real).ravel()[0])
+            if np.ndim(bound_imag) > 0:
+                bound_imag = float(np.array(bound_imag).ravel()[0])
+
+        except (ValueError, TypeError) as e:
+            show_error(f"Error calculating intersection: {e}")
+            return
+
+        # Calculate lifetime
+        try:
+            lifetime_bound = phasor_to_normal_lifetime(
+                bound_real, bound_imag, frequency=frequency
+            )
+            if np.ndim(lifetime_bound) > 0:
+                lifetime_bound = float(np.array(lifetime_bound).ravel()[0])
+        except (ValueError, TypeError):
+            lifetime_bound = None
+
+        # Set Component idx's position
+        self._updating_from_lifetime = True
+        try:
+            comp_curr.g_edit.setText(f"{bound_real:.3f}")
+            comp_curr.s_edit.setText(f"{bound_imag:.3f}")
+
+            if (
+                lifetime_bound is not None
+                and comp_curr.lifetime_edit is not None
+            ):
+                comp_curr.lifetime_edit.setText(f"{lifetime_bound:.3f}")
+
+            self._on_component_coords_changed(idx)
+            self._update_component_lifetime(
+                idx, current_harmonic, lifetime_bound
+            )
+        finally:
+            self._updating_from_lifetime = False
+
+    def _select_from_phasor_center(self, idx):
+        """Open a dialog to select layer(s) and compute their pooled phasor center."""
+        if self.parent_widget is None:
+            return
+
+        available_layers = [
+            layer.name
+            for layer in self.viewer.layers
+            if isinstance(layer, Image)
+            and "G" in layer.metadata
+            and "S" in layer.metadata
+            and "G_original" in layer.metadata
+            and "S_original" in layer.metadata
+        ]
+
+        if not available_layers:
+            show_warning("No active layers with phasor data found.")
+            return
+
+        dialog = PhasorCenterSelectionDialog(available_layers, parent=self)
+        if dialog.exec() == QDialog.Accepted:
+            selected_layer_names = dialog.get_selected_layers()
+            if not selected_layer_names:
+                show_warning("No layers selected.")
+                return
+
+            pooled_mean_list = []
+            pooled_g_list = []
+            pooled_s_list = []
+
+            for name in selected_layer_names:
+                layer = self.viewer.layers[name]
+                samples = self.parent_widget._get_layer_phasor_samples(layer)
+                if samples is not None:
+                    mean_flat, g_flat, s_flat = samples
+                    pooled_mean_list.append(mean_flat)
+                    pooled_g_list.append(g_flat)
+                    pooled_s_list.append(s_flat)
+
+            if not pooled_mean_list:
+                show_warning(
+                    "Failed to retrieve phasor samples from selected layers."
+                )
+                return
+
+            pooled_mean = np.concatenate(pooled_mean_list)
+            pooled_g = np.concatenate(pooled_g_list)
+            pooled_s = np.concatenate(pooled_s_list)
+
+            center = self.parent_widget._compute_center_from_samples(
+                pooled_mean, pooled_g, pooled_s
+            )
+            if center is not None:
+                g_c, s_c = center
+                self._set_component_coords_from_menu(idx, g_c, s_c)
+            else:
+                show_error(
+                    "Failed to compute phasor center for selected layer(s)."
+                )
 
     def _add_component(self):
         """Add a new component (up to maximum allowed based on harmonics)."""
@@ -1804,6 +2125,202 @@ class ComponentsWidget(QWidget):
 
         self._updating_from_lifetime = False
 
+    def _get_lifetime_from_coords(self, x, y, harmonic):
+        """Calculate normal lifetime from coordinates x, y at a given harmonic."""
+        if self.parent_widget is None:
+            return None
+        try:
+            freq = self.parent_widget._get_frequency_from_layer()
+            if freq is None:
+                return None
+            frequency = freq * harmonic
+            lifetime = phasor_to_normal_lifetime(x, y, frequency=frequency)
+            if np.ndim(lifetime) > 0:
+                lifetime = float(np.array(lifetime).ravel()[0])
+            if np.isfinite(lifetime):
+                return lifetime
+        except (ValueError, TypeError, AttributeError):
+            pass
+        return None
+
+    def _populate_select_menu(self, idx, menu):
+        """Dynamically populate the select button menu with available cursor/intersect options."""
+        menu.clear()
+
+        # 1. Option: Select on plot
+        select_plot_action = menu.addAction("Select on plot")
+        select_plot_action.triggered.connect(
+            lambda: self._select_component(idx)
+        )
+
+        # 2. Option: Select from phasor center
+        select_center_action = menu.addAction("Select from phasor center...")
+        select_center_action.triggered.connect(
+            lambda _, curr_idx=idx: self._select_from_phasor_center(curr_idx)
+        )
+
+        # 3. Option: Select from cursor center (submenu)
+        cursor_menu = menu.addMenu("Select from cursor center")
+
+        # Gather all available cursors from SelectionWidget
+        cursors_added = False
+        selection_tab = getattr(self.parent_widget, 'selection_tab', None)
+        if selection_tab is not None:
+            # A. Circular cursors
+            circ_widget = getattr(
+                selection_tab, 'circular_cursor_widget', None
+            )
+            if circ_widget and hasattr(circ_widget, '_cursors'):
+                for i, cursor in enumerate(circ_widget._cursors):
+                    g = cursor.get('g')
+                    s = cursor.get('s')
+                    harmonic = cursor.get('harmonic', 1)
+                    color = cursor.get('color')
+                    if g is not None and s is not None:
+                        name = f"Circular {i + 1} (H{harmonic})"
+                        text = f"{name}: G={g:.3f}, S={s:.3f}"
+                        action = QWidgetAction(cursor_menu)
+                        action.setText(text)
+                        action_widget = ColorActionWidget(
+                            text, color, action, cursor_menu
+                        )
+                        action.setDefaultWidget(action_widget)
+                        action.triggered.connect(
+                            lambda _, g_val=g, s_val=s: self._set_component_coords_from_menu(
+                                idx, g_val, s_val
+                            )
+                        )
+                        cursor_menu.addAction(action)
+                        cursors_added = True
+
+            # B. Polar cursors
+            polar_widget = getattr(selection_tab, 'polar_cursor_widget', None)
+            if polar_widget and hasattr(polar_widget, '_cursors'):
+                for i, cursor in enumerate(polar_widget._cursors):
+                    phase_min = cursor.get('phase_min')
+                    phase_max = cursor.get('phase_max')
+                    mod_min = cursor.get('modulation_min')
+                    mod_max = cursor.get('modulation_max')
+                    harmonic = cursor.get('harmonic', 1)
+                    color = cursor.get('color')
+                    if all(
+                        v is not None
+                        for v in [phase_min, phase_max, mod_min, mod_max]
+                    ):
+                        phase_center = (phase_min + phase_max) / 2.0
+                        mod_center = (mod_min + mod_max) / 2.0
+                        g = mod_center * np.cos(np.deg2rad(phase_center))
+                        s = mod_center * np.sin(np.deg2rad(phase_center))
+                        name = f"Polar {i + 1} (H{harmonic})"
+                        text = f"{name}: G={g:.3f}, S={s:.3f}"
+                        action = QWidgetAction(cursor_menu)
+                        action.setText(text)
+                        action_widget = ColorActionWidget(
+                            text, color, action, cursor_menu
+                        )
+                        action.setDefaultWidget(action_widget)
+                        action.triggered.connect(
+                            lambda _, g_val=g, s_val=s: self._set_component_coords_from_menu(
+                                idx, g_val, s_val
+                            )
+                        )
+                        cursor_menu.addAction(action)
+                        cursors_added = True
+
+            # C. Elliptical cursors
+            ell_widget = getattr(
+                selection_tab, 'elliptical_cursor_widget', None
+            )
+            if ell_widget and hasattr(ell_widget, '_cursors'):
+                for i, cursor in enumerate(ell_widget._cursors):
+                    g = cursor.get('g')
+                    s = cursor.get('s')
+                    harmonic = cursor.get('harmonic', 1)
+                    color = cursor.get('color')
+                    if g is not None and s is not None:
+                        name = f"Elliptical {i + 1} (H{harmonic})"
+                        text = f"{name}: G={g:.3f}, S={s:.3f}"
+                        action = QWidgetAction(cursor_menu)
+                        action.setText(text)
+                        action_widget = ColorActionWidget(
+                            text, color, action, cursor_menu
+                        )
+                        action.setDefaultWidget(action_widget)
+                        action.triggered.connect(
+                            lambda _, g_val=g, s_val=s: self._set_component_coords_from_menu(
+                                idx, g_val, s_val
+                            )
+                        )
+                        cursor_menu.addAction(action)
+                        cursors_added = True
+
+            # D. GMM Clusters
+            cluster_widget = getattr(
+                selection_tab, 'automatic_clustering_widget', None
+            )
+            if cluster_widget and hasattr(cluster_widget, '_clusters'):
+                for i, cluster in enumerate(cluster_widget._clusters):
+                    g = cluster.get('g')
+                    s = cluster.get('s')
+                    harmonic = cluster.get('harmonic', 1)
+                    color = cluster.get('color')
+                    if g is not None and s is not None:
+                        name = f"Cluster {i + 1} (H{harmonic})"
+                        text = f"{name}: G={g:.3f}, S={s:.3f}"
+                        action = QWidgetAction(cursor_menu)
+                        action.setText(text)
+                        action_widget = ColorActionWidget(
+                            text, color, action, cursor_menu
+                        )
+                        action.setDefaultWidget(action_widget)
+                        action.triggered.connect(
+                            lambda _, g_val=g, s_val=s: self._set_component_coords_from_menu(
+                                idx, g_val, s_val
+                            )
+                        )
+                        cursor_menu.addAction(action)
+                        cursors_added = True
+
+        if not cursors_added:
+            empty_action = cursor_menu.addAction("No active cursors")
+            empty_action.setEnabled(False)
+
+        # 4. Option: Auto intersect (For all components except the first one)
+        if idx > 0:
+            auto_action = menu.addAction("Auto intersect semicircle")
+            auto_action.triggered.connect(
+                lambda _, curr_idx=idx: self._auto_place_component_by_index(
+                    curr_idx
+                )
+            )
+
+    def _set_component_coords_from_menu(self, idx, g, s):
+        """Set component coordinates from a selection option, including lifetime calculation."""
+        comp = self.components[idx]
+        if comp is None:
+            return
+
+        comp.g_edit.setText(f"{g:.3f}")
+        comp.s_edit.setText(f"{s:.3f}")
+
+        current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
+        lifetime = self._get_lifetime_from_coords(g, s, current_harmonic)
+
+        self._updating_from_lifetime = True
+        try:
+            if comp.lifetime_edit is not None:
+                if lifetime is not None:
+                    comp.lifetime_edit.setText(f"{lifetime:.3f}")
+                else:
+                    comp.lifetime_edit.clear()
+
+            self._on_component_coords_changed(idx)
+            self._update_component_lifetime(idx, current_harmonic, lifetime)
+        finally:
+            self._updating_from_lifetime = False
+
+        self._redraw(force=True)
+
     def _on_component_coords_changed(self, idx: int):
         """Handle changes to component G/S coordinates from text inputs."""
         comp = self.components[idx]
@@ -2066,14 +2583,17 @@ class ComponentsWidget(QWidget):
                     if item.widget():
                         item.widget().setVisible(True)
 
-    def _select_component(self, idx: int):
-        """Activate selection mode for a component to pick its location."""
+    def _select_component(self, idx):
+        """Prepare for selecting a component by clicking on the plot."""
         if self.parent_widget is None:
             return
 
-        self.parent_widget.canvas_widget._on_escape(None)
+        # If there's an active select listener, disconnect it first
+        self._cancel_active_selection()
 
         comp = self.components[idx]
+        if comp is None:
+            return
 
         if comp.dot is not None:
             comp.dot.set_visible(False)
@@ -2083,33 +2603,137 @@ class ComponentsWidget(QWidget):
             self.component_line.set_visible(False)
         self._redraw(force=True)
 
-        original_text = comp.select_button.text()
+        original_text = "Select"
         comp.select_button.setText("Click on plot...")
         comp.select_button.setEnabled(False)
 
-        temp_cid = self.parent_widget.canvas_widget.canvas.mpl_connect(
-            'button_press_event',
-            lambda event: self._handle_component_selection(
-                event, idx, temp_cid, original_text
-            ),
+        # Store original text and idx so we can restore them later
+        self._active_select_original_text = original_text
+        self._active_select_idx = idx
+
+        # Connect click event
+        self._active_select_cid = (
+            self.parent_widget.canvas_widget.canvas.mpl_connect(
+                'button_press_event', self._handle_component_selection_event
+            )
         )
 
-    def _handle_component_selection(self, event, idx, temp_cid, original_text):
-        """Handle the selection of a component by clicking on the plot."""
+        # Connect key press event (Esc key)
+        self._active_select_key_cid = (
+            self.parent_widget.canvas_widget.canvas.mpl_connect(
+                'key_press_event', self._handle_select_key_press_event
+            )
+        )
+
+        # Connect Escape key shortcut at Qt level so it cancels even if canvas does not have focus
+        self._active_select_shortcut = QShortcut(
+            QKeySequence(Qt.Key_Escape), self
+        )
+        self._active_select_shortcut.activated.connect(
+            self._cancel_active_selection
+        )
+
+        # Focus the canvas so key_press_event has a chance of working as well
+        with contextlib.suppress(Exception):
+            self.parent_widget.canvas_widget.canvas.setFocus()
+
+    def _handle_select_key_press_event(self, event):
+        """Handle key press events during component selection on plot."""
+        if event.key == 'escape':
+            self._cancel_active_selection()
+
+    def _cancel_active_selection(self):
+        """Cancel the active plot selection and restore button states."""
+        if self.parent_widget is None:
+            return
+
+        if self._active_select_cid is not None:
+            with contextlib.suppress(Exception):
+                self.parent_widget.canvas_widget.canvas.mpl_disconnect(
+                    self._active_select_cid
+                )
+            self._active_select_cid = None
+
+        if self._active_select_key_cid is not None:
+            with contextlib.suppress(Exception):
+                self.parent_widget.canvas_widget.canvas.mpl_disconnect(
+                    self._active_select_key_cid
+                )
+            self._active_select_key_cid = None
+
+        if getattr(self, '_active_select_shortcut', None) is not None:
+            self._active_select_shortcut.setEnabled(False)
+            self._active_select_shortcut.setParent(None)
+            self._active_select_shortcut = None
+
+        if getattr(self, '_active_select_idx', None) is not None:
+            idx = self._active_select_idx
+            comp = self.components[idx]
+            if comp is not None:
+                comp.select_button.setText(
+                    getattr(self, '_active_select_original_text', "Select")
+                )
+                comp.select_button.setEnabled(True)
+
+                if comp.dot is not None:
+                    comp.dot.set_visible(self.show_component_dots)
+                    if comp.text is not None:
+                        comp.text.set_visible(True)
+                self.draw_line_between_components()
+                self._redraw(force=True)
+
+            self._active_select_idx = None
+
+    def _handle_component_selection_event(self, event):
+        """Wrapper event handler for clicking on the plot to select a component."""
         if not event.inaxes:
             return
 
-        comp = self.components[idx]
+        idx = getattr(self, '_active_select_idx', None)
+        if idx is None:
+            return
+
         x, y = event.xdata, event.ydata
+        comp = self.components[idx]
+        if comp is None:
+            return
+
+        # Disable listeners first
+        cid = self._active_select_cid
+        key_cid = self._active_select_key_cid
+        shortcut = getattr(self, '_active_select_shortcut', None)
+        original_text = getattr(self, '_active_select_original_text', "Select")
+
+        self._active_select_cid = None
+        self._active_select_key_cid = None
+        self._active_select_shortcut = None
+        self._active_select_idx = None
+
+        if cid is not None:
+            with contextlib.suppress(Exception):
+                self.parent_widget.canvas_widget.canvas.mpl_disconnect(cid)
+        if key_cid is not None:
+            with contextlib.suppress(Exception):
+                self.parent_widget.canvas_widget.canvas.mpl_disconnect(key_cid)
+        if shortcut is not None:
+            shortcut.setEnabled(False)
+            shortcut.setParent(None)
+
+        # Set values
         comp.g_edit.setText(f"{x:.3f}")
         comp.s_edit.setText(f"{y:.3f}")
 
-        if comp.lifetime_edit is not None:
-            comp.lifetime_edit.clear()
-
         current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
+        lifetime = self._get_lifetime_from_coords(x, y, current_harmonic)
+
+        if comp.lifetime_edit is not None:
+            if lifetime is not None:
+                comp.lifetime_edit.setText(f"{lifetime:.3f}")
+            else:
+                comp.lifetime_edit.clear()
+
         self._update_component_gs_coords(idx, current_harmonic, x, y)
-        self._update_component_lifetime(idx, current_harmonic, None)
+        self._update_component_lifetime(idx, current_harmonic, lifetime)
 
         was_new_location = comp.dot is None
 
@@ -2143,7 +2767,6 @@ class ComponentsWidget(QWidget):
 
             self.draw_line_between_components()
 
-        self.parent_widget.canvas_widget.canvas.mpl_disconnect(temp_cid)
         comp.select_button.setText(original_text)
         comp.select_button.setEnabled(True)
 
@@ -2939,11 +3562,19 @@ class ComponentsWidget(QWidget):
             comp.lifetime_edit.clear()
 
         current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
+        lifetime = self._get_lifetime_from_coords(x, y, current_harmonic)
+
+        if comp.lifetime_edit is not None:
+            if lifetime is not None:
+                comp.lifetime_edit.setText(f"{lifetime:.3f}")
+            else:
+                comp.lifetime_edit.clear()
+
         self._update_component_gs_coords(
             self.dragging_component_idx, current_harmonic, x, y
         )
         self._update_component_lifetime(
-            self.dragging_component_idx, current_harmonic, None
+            self.dragging_component_idx, current_harmonic, lifetime
         )
 
         if comp.text is not None:
