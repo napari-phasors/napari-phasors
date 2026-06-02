@@ -11,6 +11,7 @@ import glob
 import json
 import logging
 import os
+import warnings
 from contextlib import contextmanager, suppress
 from typing import TYPE_CHECKING
 
@@ -1370,9 +1371,11 @@ class FbdWidget(AdvancedOptionsWidget):
         """Initialize the widget."""
         from fbdfile import FbdFile
 
-        with FbdFile(path) as fbd:
-            self.all_frames = len(fbd.frames(None)[1])
-            self.all_channels = fbd.channels
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            with FbdFile(path) as fbd:
+                self.all_frames = len(fbd.frames(None)[1])
+                self.all_channels = fbd.channels
 
         super().__init__(viewer, path)
         self.reader_options["frame"] = -1
@@ -1400,7 +1403,7 @@ class FbdWidget(AdvancedOptionsWidget):
         self.laser_factor.setValidator(QDoubleValidator())
         laser_factor_completer = QCompleter(["0.00022", "2.50012", "2.50016"])
         self.laser_factor.setCompleter(laser_factor_completer)
-        self.laser_factor.textChanged.connect(
+        self.laser_factor.editingFinished.connect(
             lambda: self._update_signal_plot()
         )
         laser_layout.addWidget(self.laser_factor)
@@ -1426,7 +1429,9 @@ class FbdWidget(AdvancedOptionsWidget):
             options["laser_factor"] = float(self.laser_factor.text())
 
         try:
-            signal = signal_from_fbd(self.path, **options)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                signal = signal_from_fbd(self.path, **options)
             return signal
         except Exception as e:  # noqa: BLE001
             show_error(f"Error reading FBD signal: {str(e)}")
@@ -1486,7 +1491,7 @@ class PtuWidget(AdvancedOptionsWidget):
             "If < 0, integrate delay time axis."
             "If > 0, return up to specified bin."
         )
-        self.dtime.textChanged.connect(lambda: self._update_signal_plot())
+        self.dtime.editingFinished.connect(lambda: self._update_signal_plot())
         dtime_layout.addWidget(self.dtime)
         dtime_layout.addStretch()
         self.mainLayout.addLayout(dtime_layout)
@@ -1697,7 +1702,7 @@ class SdtWidget(AdvancedOptionsWidget):
             "Index of dataset to read in case the file contains multiple "
             "datasets. By default, the first dataset is read."
         )
-        self.index.textChanged.connect(lambda: self._update_signal_plot())
+        self.index.editingFinished.connect(lambda: self._update_signal_plot())
         index_layout.addWidget(self.index)
         index_layout.addStretch()
         self.mainLayout.addLayout(index_layout)
@@ -2100,7 +2105,7 @@ class LifWidget(AdvancedOptionsWidget):
         image_layout.addWidget(QLabel("Image (regex/index): "))
         self.image = QLineEdit()
         self.image.setToolTip("Index or regex pattern of image to return.")
-        self.image.textChanged.connect(self._on_lif_options_changed)
+        self.image.editingFinished.connect(self._on_lif_options_changed)
         image_layout.addWidget(self.image)
         image_layout.addStretch()
         self.mainLayout.addLayout(image_layout)
@@ -2207,7 +2212,9 @@ class JsonWidget(AdvancedOptionsWidget):
         self.channel_entry.setToolTip(
             "Index of channel or empty for all channel reading."
         )
-        self.channel_entry.textChanged.connect(self._on_json_channel_changed)
+        self.channel_entry.editingFinished.connect(
+            self._on_json_channel_changed
+        )
         chan_layout.addWidget(self.channel_entry)
         chan_layout.addStretch()
         self.mainLayout.addLayout(chan_layout)
