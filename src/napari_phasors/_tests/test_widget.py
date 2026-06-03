@@ -629,6 +629,82 @@ def test_phasor_transform_ome_tif_preserves_axis_kwargs(make_napari_viewer):
         )
 
 
+def test_fbd_laser_factor_triggers_plot_only_on_editing_finished(
+    make_napari_viewer,
+):
+    """FbdWidget laser_factor should only update the signal plot on editingFinished, not on each keystroke."""
+    viewer = make_napari_viewer()
+    test_file_path = get_test_file_path("test_file$EI0S.fbd")
+    widget = FbdWidget(viewer, path=test_file_path)
+
+    with patch.object(widget, "_update_signal_plot") as mock_update:
+        # Simulate typing character by character (textChanged-like)
+        widget.laser_factor.setText("0")
+        widget.laser_factor.setText("0.")
+        widget.laser_factor.setText("0.0")
+        # None of the setText calls should have triggered a redraw
+        mock_update.assert_not_called()
+
+        # Finishing the edit should trigger exactly one redraw
+        widget.laser_factor.editingFinished.emit()
+        mock_update.assert_called_once()
+
+
+def test_ptu_dtime_triggers_plot_only_on_editing_finished(
+    make_napari_viewer, caplog
+):
+    """PtuWidget dtime should only update the signal plot on editingFinished, not on each keystroke."""
+    viewer = make_napari_viewer()
+    test_file_path = get_test_file_path("test_file.ptu")
+    caplog.set_level(logging.ERROR, logger="ptufile")
+    widget = PtuWidget(viewer, path=test_file_path)
+
+    with patch.object(widget, "_update_signal_plot") as mock_update:
+        widget.dtime.setText("1")
+        widget.dtime.setText("10")
+        widget.dtime.setText("100")
+        mock_update.assert_not_called()
+
+        widget.dtime.editingFinished.emit()
+        mock_update.assert_called_once()
+
+
+def test_sdt_index_triggers_plot_only_on_editing_finished(make_napari_viewer):
+    """SdtWidget index should only update the signal plot on editingFinished, not on each keystroke."""
+    viewer = make_napari_viewer()
+    file_path = get_test_file_path("seminal_receptacle_FLIM_single_image.sdt")
+    widget = SdtWidget(viewer, path=file_path)
+
+    with patch.object(widget, "_update_signal_plot") as mock_update:
+        widget.index.setText("0")
+        widget.index.setText("1")
+        mock_update.assert_not_called()
+
+        widget.index.editingFinished.emit()
+        mock_update.assert_called_once()
+
+
+def test_json_channel_triggers_plot_only_on_editing_finished(
+    make_napari_viewer,
+):
+    """JsonWidget channel_entry should only update the signal plot on editingFinished, not on each keystroke."""
+    from phasorpy.datasets import fetch
+
+    from napari_phasors._widget import JsonWidget
+
+    viewer = make_napari_viewer()
+    file_path = fetch("Fluorescein_Calibration_m2_1740751189_imaging.json")
+    widget = JsonWidget(viewer, path=file_path)
+
+    with patch.object(widget, "_update_signal_plot") as mock_update:
+        widget.channel_entry.setText("0")
+        widget.channel_entry.setText("1")
+        mock_update.assert_not_called()
+
+        widget.channel_entry.editingFinished.emit()
+        mock_update.assert_called_once()
+
+
 def test_harmonic_range_slider_functionality(make_napari_viewer):
     """Test QRangeSlider functionality for harmonics in all widget types."""
     viewer = make_napari_viewer()
