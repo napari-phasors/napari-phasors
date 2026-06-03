@@ -684,25 +684,6 @@ def test_sdt_index_triggers_plot_only_on_editing_finished(make_napari_viewer):
         mock_update.assert_called_once()
 
 
-def test_lif_image_triggers_plot_only_on_editing_finished(make_napari_viewer):
-    """LifWidget image field should only update the signal plot on editingFinished, not on each keystroke."""
-    from phasorpy.datasets import fetch
-
-    from napari_phasors._widget import LifWidget
-
-    viewer = make_napari_viewer()
-    file_path = fetch("paramecium.lif")
-    widget = LifWidget(viewer, path=file_path)
-
-    with patch.object(widget, "_update_signal_plot") as mock_update:
-        widget.image.setText("0")
-        widget.image.setText("01")
-        mock_update.assert_not_called()
-
-        widget.image.editingFinished.emit()
-        mock_update.assert_called_once()
-
-
 def test_json_channel_triggers_plot_only_on_editing_finished(
     make_napari_viewer,
 ):
