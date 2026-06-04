@@ -228,6 +228,7 @@ class PhasorMappingWidget(QWidget):
             range_slider_enabled=True,
             range_label_prefix="Lifetime range (ns)",
             range_factor=self.lifetime_range_factor,
+            viewer=self.viewer,
             parent=self,
         )
 

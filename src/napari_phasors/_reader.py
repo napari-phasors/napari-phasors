@@ -211,15 +211,16 @@ def napari_get_reader(
     extensions_both = set(extension_mapping["raw"].keys()).intersection(
         extension_mapping["processed"].keys()
     )
-    if path.endswith(tuple(extensions_both)):
+    path_lower = path.lower()
+    if path_lower.endswith(tuple(extensions_both)):
         return lambda path: ambiguous_file_reader(
             path, reader_options=reader_options, harmonics=harmonics
         )
-    elif path.endswith(tuple(extension_mapping["processed"].keys())):
+    elif path_lower.endswith(tuple(extension_mapping["processed"].keys())):
         return lambda path: processed_file_reader(
             path, reader_options=reader_options, harmonics=harmonics
         )
-    elif path.endswith(tuple(extension_mapping["raw"].keys())):
+    elif path_lower.endswith(tuple(extension_mapping["raw"].keys())):
         return lambda path: raw_file_reader(
             path, reader_options=reader_options, harmonics=harmonics
         )

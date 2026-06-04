@@ -781,6 +781,172 @@ def update_frequency_in_metadata(
     image_layer.metadata["settings"]["frequency"] = frequency
 
 
+def _get_layer_group_entry(layer):
+    """Return the ``group`` dict for *layer*, or ``None`` if absent.
+
+    Reads from ``layer.metadata['settings']['group']`` (the location that
+    survives OME-TIFF round-trips) and falls back to the top-level
+    ``layer.metadata['group']`` key for backward compatibility with layers
+    that were tagged before this convention was established.
+    """
+    g = layer.metadata.get('settings', {}).get('group')
+    if g:
+        return g
+    return layer.metadata.get('group')
+
+
+def build_groups_from_layer_metadata(viewer, layer_names):
+    """Build group assignment dicts from per-layer ``settings['group']`` metadata.
+
+    Each layer carries ``layer.metadata['settings']['group']`` with keys
+    ``name`` (str), ``color`` (RGB 3-tuple of 0–1 floats), and optionally
+    ``colormap``/``style`` (written by the contour dialog).  Because group
+    data lives inside the ``settings`` dict it is automatically included when
+    the layer is saved as OME-TIFF and restored when the file is re-opened.
+
+    This function reconstructs the ``(assignments, names, colors)`` triple
+    expected by ``HistogramSettingsDialog`` and
+    ``PhasorCenterLayerSettingsDialog`` from those individual entries.
+
+    Parameters
+    ----------
+    viewer : napari.Viewer
+    layer_names : list of str
+
+    Returns
+    -------
+    assignments : dict {layer_name: gid}
+    names : dict {gid: str}
+    colors : dict {gid: tuple}
+    """
+    name_to_gid = {}
+    assignments = {}
+    names = {}
+    colors = {}
+    next_gid = 1
+
+    for layer_name in layer_names:
+        try:
+            layer = viewer.layers[layer_name]
+        except KeyError:
+            continue
+        g = _get_layer_group_entry(layer)
+        if not g or not g.get('name'):
+            continue
+        gname = g['name']
+        gcolor = g.get('color')
+        if gname not in name_to_gid:
+            name_to_gid[gname] = next_gid
+            names[next_gid] = gname
+            if gcolor is not None:
+                colors[next_gid] = tuple(gcolor)
+            next_gid += 1
+        assignments[layer_name] = name_to_gid[gname]
+
+    return assignments, names, colors
+
+
+def build_group_styles_from_layer_metadata(viewer, layer_names):
+    """Like :func:`build_groups_from_layer_metadata` but also returns
+    ``group_styles`` for ``ContourLayerSettingsDialog``.
+
+    Returns
+    -------
+    assignments, names, colors, styles : dicts
+        ``styles`` maps ``{gid: {'style': str, 'colormap': str, 'color': tuple}}``.
+    """
+    name_to_gid = {}
+    assignments = {}
+    names = {}
+    colors = {}
+    styles = {}
+    next_gid = 1
+
+    for layer_name in layer_names:
+        try:
+            layer = viewer.layers[layer_name]
+        except KeyError:
+            continue
+        g = _get_layer_group_entry(layer)
+        if not g or not g.get('name'):
+            continue
+        gname = g['name']
+        gcolor = g.get('color')
+        gcmap = g.get('colormap')
+        gstyle = g.get('style', 'colormap' if gcmap else 'solid')
+        if gname not in name_to_gid:
+            name_to_gid[gname] = next_gid
+            names[next_gid] = gname
+            c = tuple(gcolor) if gcolor is not None else (1.0, 0.0, 0.0)
+            colors[next_gid] = c
+            styles[next_gid] = {
+                'style': gstyle,
+                'colormap': gcmap or 'turbo',
+                'color': c,
+            }
+            next_gid += 1
+        assignments[layer_name] = name_to_gid[gname]
+
+    return assignments, names, colors, styles
+
+
+def save_groups_to_layer_metadata(
+    viewer,
+    layer_names,
+    group_assignments,
+    group_names,
+    group_colors,
+    group_styles=None,
+):
+    """Write group assignments back to each layer's ``settings['group']`` entry.
+
+    Storing the group inside the ``settings`` dict (rather than at the
+    top level of ``metadata``) means the information is automatically
+    serialised into the ``napari_phasors_settings`` JSON block when the layer
+    is exported as OME-TIFF and restored when the file is re-opened.
+
+    Any grouped-mode dialog (histogram, phasor center, contour) that calls
+    :func:`build_groups_from_layer_metadata` will therefore find the previous
+    grouping pre-populated without the user having to re-enter it.
+
+    Parameters
+    ----------
+    viewer : napari.Viewer
+    layer_names : list of str
+    group_assignments : dict {layer_name: gid}
+    group_names : dict {gid: str}
+    group_colors : dict {gid: tuple}
+    group_styles : dict {gid: dict}, optional
+        Contour-specific style data with keys ``style``, ``colormap``,
+        ``color``.  When provided the ``colormap`` and ``style`` keys are
+        also persisted so the contour dialog can restore them.
+    """
+    for layer_name in layer_names:
+        try:
+            layer = viewer.layers[layer_name]
+        except KeyError:
+            continue
+        if 'settings' not in layer.metadata:
+            layer.metadata['settings'] = {}
+        gid = group_assignments.get(layer_name)
+        if gid is None:
+            layer.metadata['settings'].pop('group', None)
+            continue
+        gname = group_names.get(gid, f'Group {gid}')
+        gcolor = group_colors.get(gid)
+        group_data = {
+            'name': gname,
+            'color': list(gcolor) if gcolor is not None else None,
+        }
+        if group_styles:
+            style_data = group_styles.get(gid, {})
+            gstyle = style_data.get('style', 'solid')
+            group_data['style'] = gstyle
+            if gstyle == 'colormap':
+                group_data['colormap'] = style_data.get('colormap', 'turbo')
+        layer.metadata['settings']['group'] = group_data
+
+
 class _ColormapDelegate(QStyledItemDelegate):
     """Custom delegate to ensure colormap icons have vertical spacing in dropdowns."""
 
@@ -1771,6 +1937,11 @@ class HistogramWidget(QWidget):
     exclude_nonpositive : bool, optional
         If ``True``, values ``<= 0`` are removed before histogramming.
         If ``False`` (default), only NaN/Inf values are removed.
+    viewer : napari.Viewer, optional
+        Napari viewer instance used to look up layer metadata for restoring
+        group assignments across analyses.  When provided, grouped-mode
+        settings are automatically populated from and persisted to each
+        layer's ``metadata['group']`` entry.
     parent : QWidget, optional
         Parent widget.
     """
@@ -1792,6 +1963,7 @@ class HistogramWidget(QWidget):
         range_label_prefix: str = "Range",
         range_factor: int = 1000,
         exclude_nonpositive: bool = False,
+        viewer=None,
         parent: QWidget = None,
     ):
         super().__init__(parent)
@@ -1800,6 +1972,7 @@ class HistogramWidget(QWidget):
         self.bins = bins
         self.default_colormap_name = default_colormap_name
         self._exclude_nonpositive = exclude_nonpositive
+        self._viewer = viewer
 
         # Histogram state
         self.counts = None
@@ -2203,16 +2376,26 @@ class HistogramWidget(QWidget):
     def _open_settings_dialog(self):
         """Open the histogram settings dialog."""
         layer_labels = list(self._datasets.keys()) if self._datasets else None
+
+        # Pre-populate groups from per-layer metadata when none are set yet
+        group_assignments = self._group_assignments
+        group_names = self._group_names
+        group_colors = self._group_colors
+        if self._viewer is not None and not group_assignments and layer_labels:
+            group_assignments, group_names, group_colors = (
+                build_groups_from_layer_metadata(self._viewer, layer_labels)
+            )
+
         dlg = HistogramSettingsDialog(
             display_mode=self._display_mode,
             show_sd=self._show_sd,
             central_tendency=self._central_tendency,
             show_legend=self._show_legend,
             layer_labels=layer_labels,
-            group_assignments=self._group_assignments,
+            group_assignments=group_assignments,
             layer_colors=self._layer_colors,
-            group_colors=self._group_colors,
-            group_names=self._group_names,
+            group_colors=group_colors,
+            group_names=group_names,
             parent=self,
         )
         dlg.white_bg_checkbox.setChecked(self._white_background)
@@ -2229,6 +2412,14 @@ class HistogramWidget(QWidget):
                 self._group_assignments = dlg.get_group_assignments()
                 self._group_colors = dlg.get_group_colors()
                 self._group_names = dlg.get_group_names()
+                if self._viewer is not None and layer_labels:
+                    save_groups_to_layer_metadata(
+                        self._viewer,
+                        layer_labels,
+                        self._group_assignments,
+                        self._group_names,
+                        self._group_colors,
+                    )
             if dlg._layer_color_buttons:
                 self._layer_colors = dlg.get_layer_colors()
             if self.counts is not None:
