@@ -54,8 +54,11 @@ from ._utils import (
     StatisticsDockWidget,
     StatisticsTableWidget,
     apply_filter_and_threshold,
+    build_group_styles_from_layer_metadata,
+    build_groups_from_layer_metadata,
     populate_colormap_combobox,
     resolve_colormap_by_name,
+    save_groups_to_layer_metadata,
     update_frequency_in_metadata,
 )
 from .calibration_tab import CalibrationWidget
@@ -3565,6 +3568,19 @@ class PlotterWidget(QWidget):
             for k, v in (self._contour_group_styles or {}).items()
         }
 
+        # Fall back to per-layer group metadata when no assignments exist yet
+        if not current_assignments and selected_names:
+            meta_a, meta_n, meta_c, meta_s = (
+                build_group_styles_from_layer_metadata(
+                    self.viewer, selected_names
+                )
+            )
+            if meta_a:
+                current_assignments = meta_a
+                current_group_names = meta_n
+                current_group_colors = meta_c
+                current_group_styles = meta_s
+
         merged_colormap = self._contour_multi_layer_colormap
         if not merged_colormap:
             merged_colormap = (
@@ -3637,6 +3653,17 @@ class PlotterWidget(QWidget):
             'contour_show_legend', self._contour_show_legend
         )
 
+        # Also persist groups to each individual layer for cross-analysis restore
+        if self._contour_group_assignments:
+            save_groups_to_layer_metadata(
+                self.viewer,
+                selected_names,
+                self._contour_group_assignments,
+                self._contour_group_names,
+                self._contour_group_colors,
+                group_styles=self._contour_group_styles,
+            )
+
         if self.plot_type == 'CONTOUR':
             self.plot()
 
@@ -3692,6 +3719,16 @@ class PlotterWidget(QWidget):
             for k, v in (self._phasor_center_group_names or {}).items()
         }
 
+        # Fall back to per-layer group metadata when no assignments exist yet
+        if not current_assignments and selected_names:
+            meta_a, meta_n, meta_c = build_groups_from_layer_metadata(
+                self.viewer, selected_names
+            )
+            if meta_a:
+                current_assignments = meta_a
+                current_group_names = meta_n
+                current_group_colors = meta_c
+
         dialog = PhasorCenterLayerSettingsDialog(
             display_mode=self._phasor_center_display_mode,
             center_method=self._phasor_center_method,
@@ -3719,7 +3756,7 @@ class PlotterWidget(QWidget):
         self._phasor_center_group_colors = dialog.get_group_colors()
         self._phasor_center_group_names = dialog.get_group_names()
 
-        # Save all to metadata
+        # Save all to primary layer metadata
         for key in (
             'phasor_center_display_mode',
             'phasor_center_method',
@@ -3732,6 +3769,16 @@ class PlotterWidget(QWidget):
             'phasor_center_group_names',
         ):
             self._update_setting_in_metadata(key, getattr(self, f'_{key}'))
+
+        # Also persist groups to each individual layer for cross-analysis restore
+        if self._phasor_center_group_assignments:
+            save_groups_to_layer_metadata(
+                self.viewer,
+                selected_names,
+                self._phasor_center_group_assignments,
+                self._phasor_center_group_names,
+                self._phasor_center_group_colors,
+            )
 
         if self._phasor_center_enabled:
             self._update_phasor_centers()
