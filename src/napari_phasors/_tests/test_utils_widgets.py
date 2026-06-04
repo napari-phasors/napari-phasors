@@ -282,6 +282,9 @@ def test_histogram_widget_rename_dataset(qtbot):
     assert "Layer B" in widget._counts_per_dataset
 
     assert "Layer A" not in widget._layer_colors
+    assert "Layer B" in widget._layer_colors
+    assert widget._layer_colors["Layer B"] == (1.0, 0.0, 0.0)
+
     assert "Layer A" not in widget._group_assignments
     assert "Layer B" in widget._group_assignments
     assert widget._group_assignments["Layer B"] == 2
@@ -575,12 +578,11 @@ class TestCheckableComboBoxDisplayText:
         assert combo.lineEdit().placeholderText() == "All Labels"
 
 
-def test_check_state_value_handles_none():
-    """Verify that _check_state_value normalises None, Checked, and Unchecked states correctly."""
+def test_check_state_value_normalises_qt_enum():
+    """_check_state_value returns the integer value for both PyQt5 ints and PyQt6 enums."""
     from qtpy.QtCore import Qt
 
     from napari_phasors._utils import _check_state_value
 
-    assert _check_state_value(None) is None
     assert _check_state_value(Qt.Checked) == 2
     assert _check_state_value(Qt.Unchecked) == 0

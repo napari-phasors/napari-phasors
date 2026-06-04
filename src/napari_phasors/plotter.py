@@ -276,13 +276,15 @@ class MaskAssignmentDialog(QDialog):
         if mask_layers is not None:
             self._mask_layers = {layer.name: layer for layer in mask_layers}
         elif mask_layer_names is not None:
-
-            class DummyLayer:
+            # Backward-compat: callers that pass only names get plain objects.
+            # These won't be napari Labels instances, so label-filtering UI
+            # won't appear — pass mask_layers for full functionality.
+            class _NameOnlyLayer:
                 def __init__(self, name):
                     self.name = name
 
             self._mask_layers = {
-                name: DummyLayer(name) for name in mask_layer_names
+                name: _NameOnlyLayer(name) for name in mask_layer_names
             }
 
         layout = QVBoxLayout(self)
@@ -5837,8 +5839,9 @@ class PlotterWidget(QWidget):
             If True, invert the mask so pixels inside the mask
             are excluded instead of those outside.
         labels : list of int, optional
-            List of labels to use as the mask. If empty or None, all labels
-            > 0 are used.
+            Labels whose pixels are considered valid (non-NaN). ``None``
+            means all non-zero pixels are valid. An empty list means no
+            masking is applied (all pixels shown).
         """
         if isinstance(mask_layer, Shapes) and len(mask_layer.data) > 0:
             mask_data = mask_layer.to_labels(
@@ -5953,7 +5956,8 @@ class PlotterWidget(QWidget):
             # Normalize: all checked == "All Labels" == None
             labels = None if len(checked) == all_count else checked
         else:
-            labels = []
+            # Non-Labels mask (e.g. Shapes): no label filtering
+            labels = None
 
         # In single-layer mode, apply the same mask to all selected
         # layers and update the assignments dict accordingly

@@ -73,8 +73,6 @@ def _check_state_value(state):
     This helper normalises both cases so comparisons work with either
     binding.
     """
-    if state is None:
-        return None
     return state.value if hasattr(state, 'value') else int(state)
 
 
@@ -796,9 +794,9 @@ class _PrimaryLayerDelegate(QStyledItemDelegate):
     """Custom delegate that renders items with a "Set as primary" action or
     a "Primary layer" indicator on the right side of each row."""
 
-    # Role used to store whether an item is the primary layer.
-    # Use a plain int to avoid psygnal inspecting Qt enum values as type hints.
-    PRIMARY_ROLE = 356  # Qt.UserRole (256) + 100, well outside standard roles
+    # Use a plain int rather than Qt.UserRole + 100 to avoid psygnal
+    # inspecting Qt enum values as type hints.
+    PRIMARY_ROLE = int(Qt.UserRole) + 100
 
     def __init__(self, parent=None, enable_primary_layer=True):
         super().__init__(parent)
@@ -968,9 +966,9 @@ class CheckableComboBox(QComboBox):
     primaryLayerChanged = Signal(str)
     """Signal emitted with the name of the new primary (main) layer."""
 
-    # Custom data role used to tag "All" / "None" header control rows.
-    # Use a plain int to avoid psygnal inspecting Qt enum values as type hints.
-    _CONTROL_ROLE = 277  # Qt.UserRole (256) + 21, well outside standard roles
+    # Use a plain int rather than Qt.UserRole + 21 to avoid psygnal
+    # inspecting Qt enum values as type hints.
+    _CONTROL_ROLE = int(Qt.UserRole) + 21
 
     def __init__(
         self,
@@ -1160,7 +1158,9 @@ class CheckableComboBox(QComboBox):
         """Add multiple items to the combobox."""
         for text in texts:
             self.addItem(text)
-        # Add All/None header rows the first time items are added
+        # Insert All/None header rows at the top after data rows are appended.
+        # _add_header_controls uses insertRow(0/1) so they end up before data.
+        # Only call on the first addItems invocation (_header_count == 0).
         if self._show_select_all_none and self._header_count == 0 and texts:
             self._add_header_controls()
 
@@ -1335,10 +1335,7 @@ class CheckableComboBox(QComboBox):
                 line_edit.setText(f"{primary}  + {others} {suffix}")
             else:
                 # Without primary layer, show count with the configured unit
-                unit = (
-                    self._unit if len(checked) > 1 else self._unit.rstrip('s')
-                )
-                line_edit.setText(f"{len(checked)} {unit} selected")
+                line_edit.setText(f"{len(checked)} {self._unit} selected")
 
     def showPopup(self):
         """Show the popup and track visibility."""
