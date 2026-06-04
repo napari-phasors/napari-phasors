@@ -7,6 +7,9 @@ from napari_phasors._utils import (
     HistogramWidget,
     StatisticsDockWidget,
     StatisticsTableWidget,
+    build_group_styles_from_layer_metadata,
+    build_groups_from_layer_metadata,
+    save_groups_to_layer_metadata,
 )
 
 
@@ -288,3 +291,462 @@ def test_histogram_widget_rename_dataset(qtbot):
     assert "Layer A" not in widget._group_assignments
     assert "Layer B" in widget._group_assignments
     assert widget._group_assignments["Layer B"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Helpers shared by group-metadata tests
+# ---------------------------------------------------------------------------
+
+
+class _FakeLayer:
+    """Minimal stand-in for a napari layer."""
+
+    def __init__(self, metadata=None):
+        self.metadata = metadata if metadata is not None else {}
+
+
+class _FakeLayerList:
+    def __init__(self, layers):
+        self._layers = layers
+
+    def __getitem__(self, name):
+        return self._layers[name]
+
+
+class _FakeViewer:
+    def __init__(self, layers):
+        self.layers = _FakeLayerList(layers)
+
+
+# ---------------------------------------------------------------------------
+# build_groups_from_layer_metadata
+# ---------------------------------------------------------------------------
+
+
+def test_build_groups_from_layer_metadata_basic():
+    """Layers with settings['group'] are grouped by name and assigned IDs."""
+    layers = {
+        'A': _FakeLayer(
+            {
+                'settings': {
+                    'group': {'name': 'Control', 'color': [1.0, 0.0, 0.0]}
+                }
+            }
+        ),
+        'B': _FakeLayer(
+            {
+                'settings': {
+                    'group': {'name': 'Treatment', 'color': [0.0, 0.0, 1.0]}
+                }
+            }
+        ),
+        'C': _FakeLayer(
+            {
+                'settings': {
+                    'group': {'name': 'Control', 'color': [1.0, 0.0, 0.0]}
+                }
+            }
+        ),
+    }
+    viewer = _FakeViewer(layers)
+
+    assignments, names, colors = build_groups_from_layer_metadata(
+        viewer, ['A', 'B', 'C']
+    )
+
+    assert assignments == {'A': 1, 'C': 1, 'B': 2}
+    assert names == {1: 'Control', 2: 'Treatment'}
+    assert colors[1] == (1.0, 0.0, 0.0)
+    assert colors[2] == (0.0, 0.0, 1.0)
+
+
+def test_build_groups_from_layer_metadata_skips_missing():
+    """Layers without group metadata are silently skipped."""
+    layers = {
+        'A': _FakeLayer(
+            {'settings': {'group': {'name': 'Ctrl', 'color': [1.0, 0.0, 0.0]}}}
+        ),
+        'B': _FakeLayer({}),
+        'C': _FakeLayer({'settings': {}}),
+    }
+    viewer = _FakeViewer(layers)
+
+    assignments, names, colors = build_groups_from_layer_metadata(
+        viewer, ['A', 'B', 'C']
+    )
+
+    assert list(assignments.keys()) == ['A']
+    assert 'B' not in assignments
+    assert 'C' not in assignments
+
+
+def test_build_groups_from_layer_metadata_missing_layer_name():
+    """Layer names that don't exist in the viewer are silently skipped."""
+    layers = {
+        'A': _FakeLayer(
+            {'settings': {'group': {'name': 'G', 'color': [0.0, 1.0, 0.0]}}}
+        ),
+    }
+    viewer = _FakeViewer(layers)
+
+    assignments, names, colors = build_groups_from_layer_metadata(
+        viewer, ['A', 'nonexistent']
+    )
+
+    assert 'nonexistent' not in assignments
+    assert 'A' in assignments
+
+
+def test_build_groups_from_layer_metadata_empty_input():
+    """Empty layer-name list returns three empty dicts."""
+    viewer = _FakeViewer({})
+    assignments, names, colors = build_groups_from_layer_metadata(viewer, [])
+    assert assignments == {}
+    assert names == {}
+    assert colors == {}
+
+
+def test_build_groups_from_layer_metadata_backward_compat_top_level():
+    """Layers tagged at the top-level metadata['group'] key are still read."""
+    layers = {
+        'X': _FakeLayer(
+            {'group': {'name': 'Legacy', 'color': [0.5, 0.5, 0.0]}}
+        ),
+    }
+    viewer = _FakeViewer(layers)
+
+    assignments, names, colors = build_groups_from_layer_metadata(
+        viewer, ['X']
+    )
+
+    assert assignments == {'X': 1}
+    assert names == {1: 'Legacy'}
+    assert colors[1] == (0.5, 0.5, 0.0)
+
+
+def test_build_groups_from_layer_metadata_settings_takes_priority():
+    """settings['group'] takes priority over top-level metadata['group']."""
+    layers = {
+        'X': _FakeLayer(
+            {
+                'group': {'name': 'OldName', 'color': [0.0, 0.0, 0.0]},
+                'settings': {
+                    'group': {'name': 'NewName', 'color': [1.0, 1.0, 1.0]}
+                },
+            }
+        ),
+    }
+    viewer = _FakeViewer(layers)
+
+    assignments, names, _ = build_groups_from_layer_metadata(viewer, ['X'])
+
+    assert names[1] == 'NewName'
+
+
+# ---------------------------------------------------------------------------
+# build_group_styles_from_layer_metadata
+# ---------------------------------------------------------------------------
+
+
+def test_build_group_styles_colormap():
+    """Layers with colormap style produce correct group_styles dict."""
+    layers = {
+        'A': _FakeLayer(
+            {
+                'settings': {
+                    'group': {
+                        'name': 'G1',
+                        'color': [1.0, 0.0, 0.0],
+                        'colormap': 'turbo',
+                        'style': 'colormap',
+                    }
+                }
+            }
+        ),
+        'B': _FakeLayer(
+            {
+                'settings': {
+                    'group': {
+                        'name': 'G2',
+                        'color': [0.0, 1.0, 0.0],
+                        'style': 'solid',
+                    }
+                }
+            }
+        ),
+    }
+    viewer = _FakeViewer(layers)
+
+    assignments, names, colors, styles = (
+        build_group_styles_from_layer_metadata(viewer, ['A', 'B'])
+    )
+
+    assert styles[1]['style'] == 'colormap'
+    assert styles[1]['colormap'] == 'turbo'
+    assert styles[2]['style'] == 'solid'
+
+
+def test_build_group_styles_defaults_to_solid_when_no_style_field():
+    """Layers without a 'style' key default to 'solid' when no colormap."""
+    layers = {
+        'A': _FakeLayer(
+            {'settings': {'group': {'name': 'G', 'color': [1.0, 0.0, 0.0]}}}
+        ),
+    }
+    viewer = _FakeViewer(layers)
+
+    _, _, _, styles = build_group_styles_from_layer_metadata(viewer, ['A'])
+
+    assert styles[1]['style'] == 'solid'
+
+
+# ---------------------------------------------------------------------------
+# save_groups_to_layer_metadata
+# ---------------------------------------------------------------------------
+
+
+def test_save_groups_writes_to_settings():
+    """save_groups_to_layer_metadata stores data inside metadata['settings']."""
+    layers = {
+        'A': _FakeLayer({}),
+        'B': _FakeLayer({'settings': {}}),
+    }
+    viewer = _FakeViewer(layers)
+
+    save_groups_to_layer_metadata(
+        viewer,
+        ['A', 'B'],
+        {'A': 1, 'B': 2},
+        {1: 'Alpha', 2: 'Beta'},
+        {1: (1.0, 0.0, 0.0), 2: (0.0, 1.0, 0.0)},
+    )
+
+    assert 'settings' in layers['A'].metadata
+    grp_a = layers['A'].metadata['settings']['group']
+    assert grp_a['name'] == 'Alpha'
+    assert grp_a['color'] == [1.0, 0.0, 0.0]
+
+    grp_b = layers['B'].metadata['settings']['group']
+    assert grp_b['name'] == 'Beta'
+    assert grp_b['color'] == [0.0, 1.0, 0.0]
+
+
+def test_save_groups_unassigned_layer_clears_group():
+    """A layer not in group_assignments has its group entry removed."""
+    layers = {
+        'A': _FakeLayer({'settings': {'group': {'name': 'Old'}}}),
+    }
+    viewer = _FakeViewer(layers)
+
+    save_groups_to_layer_metadata(viewer, ['A'], {}, {}, {})
+
+    assert 'group' not in layers['A'].metadata['settings']
+
+
+def test_save_groups_with_colormap_style():
+    """When group_styles is provided, colormap and style are persisted."""
+    layers = {'A': _FakeLayer({})}
+    viewer = _FakeViewer(layers)
+
+    save_groups_to_layer_metadata(
+        viewer,
+        ['A'],
+        {'A': 1},
+        {1: 'G1'},
+        {1: (1.0, 0.0, 0.0)},
+        group_styles={
+            1: {
+                'style': 'colormap',
+                'colormap': 'plasma',
+                'color': (1.0, 0.0, 0.0),
+            }
+        },
+    )
+
+    grp = layers['A'].metadata['settings']['group']
+    assert grp['style'] == 'colormap'
+    assert grp['colormap'] == 'plasma'
+
+
+def test_save_groups_solid_style_omits_colormap():
+    """Solid-style groups do not store a colormap key."""
+    layers = {'A': _FakeLayer({})}
+    viewer = _FakeViewer(layers)
+
+    save_groups_to_layer_metadata(
+        viewer,
+        ['A'],
+        {'A': 1},
+        {1: 'G1'},
+        {1: (0.0, 1.0, 0.0)},
+        group_styles={
+            1: {
+                'style': 'solid',
+                'colormap': 'turbo',
+                'color': (0.0, 1.0, 0.0),
+            }
+        },
+    )
+
+    grp = layers['A'].metadata['settings']['group']
+    assert grp['style'] == 'solid'
+    assert 'colormap' not in grp
+
+
+def test_save_groups_skips_nonexistent_layer():
+    """save_groups_to_layer_metadata silently ignores unknown layer names."""
+    layers = {'A': _FakeLayer({})}
+    viewer = _FakeViewer(layers)
+
+    # 'ghost' is not in the viewer — should not raise
+    save_groups_to_layer_metadata(
+        viewer,
+        ['A', 'ghost'],
+        {'A': 1, 'ghost': 1},
+        {1: 'G'},
+        {1: (1.0, 0.0, 0.0)},
+    )
+
+    assert layers['A'].metadata['settings']['group']['name'] == 'G'
+
+
+def test_save_then_build_roundtrip():
+    """save followed by build restores identical assignments, names, and colors."""
+    layers = {'A': _FakeLayer({}), 'B': _FakeLayer({})}
+    viewer = _FakeViewer(layers)
+
+    original_assignments = {'A': 1, 'B': 2}
+    original_names = {1: 'Control', 2: 'Treated'}
+    original_colors = {1: (1.0, 0.0, 0.0), 2: (0.0, 0.0, 1.0)}
+
+    save_groups_to_layer_metadata(
+        viewer,
+        ['A', 'B'],
+        original_assignments,
+        original_names,
+        original_colors,
+    )
+
+    assignments, names, colors = build_groups_from_layer_metadata(
+        viewer, ['A', 'B']
+    )
+
+    assert assignments == original_assignments
+    assert names == original_names
+    assert colors[1] == (1.0, 0.0, 0.0)
+    assert colors[2] == (0.0, 0.0, 1.0)
+
+
+# ---------------------------------------------------------------------------
+# HistogramWidget — group metadata integration
+# ---------------------------------------------------------------------------
+
+
+def test_histogram_widget_restores_groups_from_layer_metadata(
+    qtbot, monkeypatch
+):
+    """When no group assignments exist, the settings dialog is pre-populated
+    from each layer's settings['group'] metadata."""
+    from qtpy.QtWidgets import QDialog
+
+    layers = {
+        'LayerA': _FakeLayer(
+            {'settings': {'group': {'name': 'Ctrl', 'color': [1.0, 0.0, 0.0]}}}
+        ),
+        'LayerB': _FakeLayer(
+            {'settings': {'group': {'name': 'Trt', 'color': [0.0, 0.0, 1.0]}}}
+        ),
+    }
+    viewer = _FakeViewer(layers)
+
+    widget = HistogramWidget(bins=10, viewer=viewer)
+    qtbot.addWidget(widget)
+
+    data = {'LayerA': np.array([1.0, 2.0]), 'LayerB': np.array([3.0, 4.0])}
+    widget.update_multi_data(data)
+
+    captured = {}
+
+    def fake_exec(self):
+        # Record what group_assignments the dialog received
+        captured['assignments'] = {
+            row['name_edit'].text(): row['layer_combo'].checkedItems()
+            for row in self._group_row_data
+        }
+        return QDialog.Rejected  # don't apply, just inspect
+
+    from napari_phasors._utils import HistogramSettingsDialog
+
+    monkeypatch.setattr(HistogramSettingsDialog, 'exec', fake_exec)
+
+    widget._open_settings_dialog()
+
+    # Dialog should have been pre-populated with the two groups
+    assert 'Ctrl' in captured['assignments']
+    assert 'Trt' in captured['assignments']
+    assert 'LayerA' in captured['assignments']['Ctrl']
+    assert 'LayerB' in captured['assignments']['Trt']
+
+
+def test_histogram_widget_saves_groups_to_layer_metadata(qtbot, monkeypatch):
+    """After the settings dialog is accepted, each layer receives a
+    settings['group'] entry matching the user's selections."""
+    from qtpy.QtWidgets import QDialog
+
+    layers = {
+        'LayerA': _FakeLayer({}),
+        'LayerB': _FakeLayer({}),
+    }
+    viewer = _FakeViewer(layers)
+
+    widget = HistogramWidget(bins=10, viewer=viewer)
+    qtbot.addWidget(widget)
+
+    data = {'LayerA': np.array([1.0, 2.0]), 'LayerB': np.array([3.0, 4.0])}
+    widget.update_multi_data(data)
+
+    def fake_exec(self):
+        # Simulate user choosing Grouped mode and confirming
+        self.mode_combo.setCurrentText('Grouped')
+        return QDialog.Accepted
+
+    from napari_phasors._utils import HistogramSettingsDialog
+
+    monkeypatch.setattr(HistogramSettingsDialog, 'exec', fake_exec)
+
+    # Pre-load group state as if the dialog had been filled in
+    widget._group_assignments = {'LayerA': 1, 'LayerB': 2}
+    widget._group_names = {1: 'GroupX', 2: 'GroupY'}
+    widget._group_colors = {1: (1.0, 0.0, 0.0), 2: (0.0, 1.0, 0.0)}
+
+    widget._open_settings_dialog()
+
+    grp_a = layers['LayerA'].metadata['settings']['group']
+    grp_b = layers['LayerB'].metadata['settings']['group']
+    assert grp_a['name'] == 'GroupX'
+    assert grp_b['name'] == 'GroupY'
+    assert grp_a['color'] == [1.0, 0.0, 0.0]
+
+
+def test_histogram_widget_no_viewer_does_not_crash(qtbot, monkeypatch):
+    """HistogramWidget without a viewer still opens the settings dialog normally."""
+    from qtpy.QtWidgets import QDialog
+
+    widget = HistogramWidget(bins=10)  # no viewer
+    qtbot.addWidget(widget)
+
+    widget.update_multi_data(
+        {
+            'A': np.array([1.0, 2.0]),
+            'B': np.array([3.0, 4.0]),
+        }
+    )
+
+    from napari_phasors._utils import HistogramSettingsDialog
+
+    monkeypatch.setattr(
+        HistogramSettingsDialog, 'exec', lambda self: QDialog.Rejected
+    )
+
+    # Should not raise even though _viewer is None
+    widget._open_settings_dialog()

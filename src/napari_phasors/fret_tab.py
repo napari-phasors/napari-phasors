@@ -342,6 +342,7 @@ class FretWidget(QWidget):
             range_slider_enabled=True,
             range_label_prefix="FRET efficiency range",
             range_factor=1000,
+            viewer=self.viewer,
             parent=self,
         )
 

@@ -396,6 +396,7 @@ class ComponentsWidget(QWidget):
             range_slider_enabled=True,
             range_label_prefix="Fraction range",
             range_factor=1000,
+            viewer=self.viewer,
             parent=self,
         )
         self.histogram_widget.rangeChanged.connect(
