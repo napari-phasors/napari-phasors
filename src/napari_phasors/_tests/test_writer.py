@@ -114,6 +114,77 @@ def test_write_ometif_with_numpy_settings(tmp_path):
     assert "1" in positions or 1 in positions
 
 
+def test_write_ometif_group_metadata_roundtrip(tmp_path):
+    """Group metadata stored in settings['group'] survives an OME-TIFF roundtrip.
+
+    This verifies the end-to-end OME-TIFF persistence path:
+    1. A layer has group info in metadata['settings']['group'].
+    2. write_ome_tiff serialises that settings dict into the file.
+    3. The reader deserialises it back and the group entry is intact.
+    """
+    time_constants = [0.1, 1, 10]
+    raw_flim_data = make_raw_flim_data(time_constants=time_constants)
+    harmonic = [1, 2, 3]
+    layer = make_intensity_layer_with_phasors(raw_flim_data, harmonic=harmonic)
+
+    if "settings" not in layer.metadata:
+        layer.metadata["settings"] = {}
+    layer.metadata["settings"]["group"] = {
+        "name": "Control",
+        "color": [1.0, 0.0, 0.0],
+    }
+
+    filepath = str(tmp_path / "group_roundtrip.ome.tif")
+    write_ome_tiff(
+        filepath,
+        [(layer.data, {"metadata": layer.metadata})],
+    )
+
+    assert os.path.exists(filepath)
+
+    reader = napari_get_reader(filepath, harmonics=harmonic)
+    layer_data_list = reader(filepath)
+    restored_settings = layer_data_list[0][1]["metadata"]["settings"]
+
+    assert "group" in restored_settings
+    grp = restored_settings["group"]
+    assert grp["name"] == "Control"
+    assert grp["color"] == [1.0, 0.0, 0.0]
+
+
+def test_write_ometif_group_metadata_with_colormap_roundtrip(tmp_path):
+    """Group metadata that includes a colormap/style entry (from the contour
+    dialog) also survives an OME-TIFF roundtrip."""
+    time_constants = [0.1, 1, 10]
+    raw_flim_data = make_raw_flim_data(time_constants=time_constants)
+    harmonic = [1]
+    layer = make_intensity_layer_with_phasors(raw_flim_data, harmonic=harmonic)
+
+    if "settings" not in layer.metadata:
+        layer.metadata["settings"] = {}
+    layer.metadata["settings"]["group"] = {
+        "name": "Treated",
+        "color": [0.0, 0.5, 1.0],
+        "style": "colormap",
+        "colormap": "plasma",
+    }
+
+    filepath = str(tmp_path / "group_colormap_roundtrip.ome.tif")
+    write_ome_tiff(
+        filepath,
+        [(layer.data, {"metadata": layer.metadata})],
+    )
+
+    reader = napari_get_reader(filepath, harmonics=harmonic)
+    layer_data_list = reader(filepath)
+    grp = layer_data_list[0][1]["metadata"]["settings"]["group"]
+
+    assert grp["name"] == "Treated"
+    assert grp["style"] == "colormap"
+    assert grp["colormap"] == "plasma"
+    assert grp["color"] == [0.0, 0.5, 1.0]
+
+
 def test_write_ometif(tmp_path):
     time_constants = [0.1, 1, 10]
     raw_flim_data = make_raw_flim_data(time_constants=time_constants)

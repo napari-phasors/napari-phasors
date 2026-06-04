@@ -767,15 +767,32 @@ def update_frequency_in_metadata(
     image_layer.metadata["settings"]["frequency"] = frequency
 
 
-def build_groups_from_layer_metadata(viewer, layer_names):
-    """Build group assignment dicts from per-layer ``'group'`` metadata.
+def _get_layer_group_entry(layer):
+    """Return the ``group`` dict for *layer*, or ``None`` if absent.
 
-    Each layer may carry ``layer.metadata['group']`` with keys ``name``
-    (str), ``color`` (RGB 3-tuple of 0–1 floats), and optionally
-    ``colormap``/``style`` (written by the contour dialog).  This function
-    reconstructs the ``(assignments, names, colors)`` triple expected by
-    ``HistogramSettingsDialog`` and ``PhasorCenterLayerSettingsDialog`` from
-    those individual entries.
+    Reads from ``layer.metadata['settings']['group']`` (the location that
+    survives OME-TIFF round-trips) and falls back to the top-level
+    ``layer.metadata['group']`` key for backward compatibility with layers
+    that were tagged before this convention was established.
+    """
+    g = layer.metadata.get('settings', {}).get('group')
+    if g:
+        return g
+    return layer.metadata.get('group')
+
+
+def build_groups_from_layer_metadata(viewer, layer_names):
+    """Build group assignment dicts from per-layer ``settings['group']`` metadata.
+
+    Each layer carries ``layer.metadata['settings']['group']`` with keys
+    ``name`` (str), ``color`` (RGB 3-tuple of 0–1 floats), and optionally
+    ``colormap``/``style`` (written by the contour dialog).  Because group
+    data lives inside the ``settings`` dict it is automatically included when
+    the layer is saved as OME-TIFF and restored when the file is re-opened.
+
+    This function reconstructs the ``(assignments, names, colors)`` triple
+    expected by ``HistogramSettingsDialog`` and
+    ``PhasorCenterLayerSettingsDialog`` from those individual entries.
 
     Parameters
     ----------
@@ -799,7 +816,7 @@ def build_groups_from_layer_metadata(viewer, layer_names):
             layer = viewer.layers[layer_name]
         except KeyError:
             continue
-        g = layer.metadata.get('group')
+        g = _get_layer_group_entry(layer)
         if not g or not g.get('name'):
             continue
         gname = g['name']
@@ -836,7 +853,7 @@ def build_group_styles_from_layer_metadata(viewer, layer_names):
             layer = viewer.layers[layer_name]
         except KeyError:
             continue
-        g = layer.metadata.get('group')
+        g = _get_layer_group_entry(layer)
         if not g or not g.get('name'):
             continue
         gname = g['name']
@@ -867,11 +884,16 @@ def save_groups_to_layer_metadata(
     group_colors,
     group_styles=None,
 ):
-    """Write group assignments back to each layer's ``'group'`` metadata entry.
+    """Write group assignments back to each layer's ``settings['group']`` entry.
 
-    This makes group configuration portable: any grouped-mode dialog that
-    reads ``layer.metadata['group']`` can restore the previous grouping
-    without the user having to re-enter it.
+    Storing the group inside the ``settings`` dict (rather than at the
+    top level of ``metadata``) means the information is automatically
+    serialised into the ``napari_phasors_settings`` JSON block when the layer
+    is exported as OME-TIFF and restored when the file is re-opened.
+
+    Any grouped-mode dialog (histogram, phasor center, contour) that calls
+    :func:`build_groups_from_layer_metadata` will therefore find the previous
+    grouping pre-populated without the user having to re-enter it.
 
     Parameters
     ----------
@@ -890,15 +912,17 @@ def save_groups_to_layer_metadata(
             layer = viewer.layers[layer_name]
         except KeyError:
             continue
+        if 'settings' not in layer.metadata:
+            layer.metadata['settings'] = {}
         gid = group_assignments.get(layer_name)
         if gid is None:
-            layer.metadata.pop('group', None)
+            layer.metadata['settings'].pop('group', None)
             continue
         gname = group_names.get(gid, f'Group {gid}')
         gcolor = group_colors.get(gid)
         group_data = {
             'name': gname,
-            'color': tuple(gcolor) if gcolor is not None else None,
+            'color': list(gcolor) if gcolor is not None else None,
         }
         if group_styles:
             style_data = group_styles.get(gid, {})
@@ -906,7 +930,7 @@ def save_groups_to_layer_metadata(
             group_data['style'] = gstyle
             if gstyle == 'colormap':
                 group_data['colormap'] = style_data.get('colormap', 'turbo')
-        layer.metadata['group'] = group_data
+        layer.metadata['settings']['group'] = group_data
 
 
 class _ColormapDelegate(QStyledItemDelegate):
