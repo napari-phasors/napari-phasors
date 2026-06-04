@@ -136,7 +136,7 @@ iter_index_mapping = {
     ".tif": None,
     ".tiff": None,
     '.sdt': "C",
-    ".czi": "C",
+    ".czi": None,
     ".flif": None,
     ".bh": None,
     ".b&h": None,
