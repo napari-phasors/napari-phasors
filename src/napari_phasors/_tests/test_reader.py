@@ -578,12 +578,14 @@ def test_reader_bhz():
 def test_reader_r64():
     """Test reading a r64 file."""
     r64_file = fetch("simfcs.r64")
-    reader = napari_get_reader(r64_file)
-    assert callable(reader)
-    layer_data_list = reader(r64_file)
-    assert isinstance(layer_data_list, list) and len(layer_data_list) > 0
-    layer_data = layer_data_list[0]
-    assert "G" in layer_data[1]["metadata"]
+    for filename in (r64_file, r64_file.replace(".r64", ".R64")):
+        reader = napari_get_reader(filename)
+        assert callable(reader)
+        # Note: we call the reader with the actual existing file path (r64_file)
+        layer_data_list = reader(r64_file)
+        assert isinstance(layer_data_list, list) and len(layer_data_list) > 0
+        layer_data = layer_data_list[0]
+        assert "G" in layer_data[1]["metadata"]
 
 
 def test_reader_json_imaging():
