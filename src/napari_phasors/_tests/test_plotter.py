@@ -4010,3 +4010,428 @@ def test_open_mask_assignment_dialog_applies_invert(
 
     # layer1 should have inverted mask applied
     assert plotter._mask_invert_assignments.get(layer1.name, False)
+
+
+def test_mask_labels_combobox_interaction(make_napari_viewer):
+    """Test selecting labels in mask_labels_combobox correctly applies and preserves labels."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    # Add image layer with phasors
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [intensity_image_layer.name]
+    )
+
+    # Create a labels layer with multiple label IDs (e.g. 1, 2, 3)
+    G_original = intensity_image_layer.metadata["G"]
+    shape = G_original.shape[1:] if G_original.ndim == 3 else G_original.shape
+    labels_data = np.zeros(shape, dtype=int)
+    # Divide image into 3 vertical bands of labels
+    h, w = shape
+    labels_data[:, : w // 3] = 1
+    labels_data[:, w // 3 : 2 * (w // 3)] = 2
+    labels_data[:, 2 * (w // 3) :] = 3
+
+    viewer.add_labels(labels_data, name="test_labels_mask")
+
+    # Select the mask layer in the plotter combobox
+    plotter.mask_layer_combobox.setCurrentText("test_labels_mask")
+
+    # Verify that the mask labels combobox is visible and populated with labels '1', '2', '3'
+    assert not plotter.mask_labels_combobox.isHidden()
+    assert plotter.mask_labels_combobox.allItems() == ["1", "2", "3"]
+
+    # Initially no labels are checked in metadata assignment (defaults to all labels > 0, which is represented by None)
+    assert (
+        plotter._mask_label_assignments.get(intensity_image_layer.name) is None
+    )
+
+    # Check label '2'
+    plotter.mask_labels_combobox.setCheckedItems(["2"])
+
+    # Verify that the label assignment was saved
+    assert plotter._mask_label_assignments[intensity_image_layer.name] == [2]
+
+    # Verify that the checked items in the combobox were preserved (i.e. '2' is still checked)
+    assert plotter.mask_labels_combobox.checkedItems() == ["2"]
+
+    # Verify that G/S data is masked to only label '2'
+    # Pixels where label is 1 or 3 should be NaN, pixels where label is 2 should be preserved
+    g_data = intensity_image_layer.metadata["G"]
+    if g_data.ndim == 3:
+        g_data = g_data[0]
+
+    np.testing.assert_array_equal(np.isnan(g_data), (labels_data != 2))
+
+    # Toggling the invert checkbox should invert the selection and preserve the label selection '2'
+    plotter.mask_invert_checkbox.setChecked(True)
+    assert plotter._mask_invert_assignments[intensity_image_layer.name] is True
+    assert plotter._mask_label_assignments[intensity_image_layer.name] == [2]
+    assert plotter.mask_labels_combobox.checkedItems() == ["2"]
+
+    # Inverted mask with label '2' selected means pixels where label is 2 should be NaN, others (1, 3) preserved
+    g_data_inverted = intensity_image_layer.metadata["G"]
+    if g_data_inverted.ndim == 3:
+        g_data_inverted = g_data_inverted[0]
+    np.testing.assert_array_equal(
+        np.isnan(g_data_inverted), (labels_data == 2)
+    )
+
+
+def _setup_plotter_with_labels(make_napari_viewer, n_labels=3):
+    """Return (viewer, plotter, image_layer, labels_layer, labels_data)."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+
+    image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(image_layer)
+    plotter.image_layers_checkable_combobox.setCheckedItems([image_layer.name])
+
+    G = image_layer.metadata["G"]
+    shape = G.shape[1:] if G.ndim == 3 else G.shape
+    h, w = shape
+    labels_data = np.zeros(shape, dtype=int)
+    for idx in range(n_labels):
+        col_start = idx * (w // n_labels)
+        col_end = (idx + 1) * (w // n_labels) if idx < n_labels - 1 else w
+        labels_data[:, col_start:col_end] = idx + 1
+
+    labels_layer = viewer.add_labels(labels_data, name="lbl")
+    plotter.mask_layer_combobox.setCurrentText("lbl")
+    return viewer, plotter, image_layer, labels_layer, labels_data
+
+
+# ---------------------------------------------------------------------------
+# 1. Default all-checked state when mask layer is first selected
+# ---------------------------------------------------------------------------
+
+
+def test_mask_labels_combobox_defaults_to_all_checked(make_napari_viewer):
+    """mask_labels_combobox should have all labels checked by default."""
+    _, plotter, _, _, _ = _setup_plotter_with_labels(make_napari_viewer)
+
+    assert not plotter.mask_labels_combobox.isHidden()
+    all_items = plotter.mask_labels_combobox.allItems()
+    checked = plotter.mask_labels_combobox.checkedItems()
+    assert all_items == ["1", "2", "3"]
+    assert checked == all_items, "All label items should be checked by default"
+
+
+def test_mask_labels_combobox_has_external_all_none_labels(make_napari_viewer):
+    """mask_labels_container should contain 'All' and 'None' clickable labels."""
+    _, plotter, _, _, _ = _setup_plotter_with_labels(make_napari_viewer)
+
+    assert (
+        plotter.mask_labels_select_all.text()
+        == '<a href="all" style="color: gray;">All</a>'
+    )
+    assert (
+        plotter.mask_labels_select_none.text()
+        == '<a href="none" style="color: gray;">None</a>'
+    )
+
+
+# ---------------------------------------------------------------------------
+# 2. Display text for all selection states
+# ---------------------------------------------------------------------------
+
+
+def test_mask_labels_display_all_labels_when_all_checked(make_napari_viewer):
+    """When all labels are checked, combobox should show 'All Labels' placeholder."""
+    _, plotter, _, _, _ = _setup_plotter_with_labels(make_napari_viewer)
+
+    combo = plotter.mask_labels_combobox
+    combo.selectAll()
+    assert combo.lineEdit().text() == ""
+    assert combo.lineEdit().placeholderText() == "All Labels"
+
+
+def test_mask_labels_display_no_labels_when_none_checked(make_napari_viewer):
+    """When no labels are checked, combobox should show 'No labels'."""
+    _, plotter, _, _, _ = _setup_plotter_with_labels(make_napari_viewer)
+
+    combo = plotter.mask_labels_combobox
+    combo.deselectAll()
+    assert combo.lineEdit().text() == "No labels"
+
+
+def test_mask_labels_display_count_for_partial_selection(make_napari_viewer):
+    """When some (but not all) labels are checked, combobox shows 'N labels selected'."""
+    _, plotter, _, _, _ = _setup_plotter_with_labels(make_napari_viewer)
+
+    combo = plotter.mask_labels_combobox
+    combo.setCheckedItems(["1", "3"])
+    assert combo.lineEdit().text() == "2 labels selected"
+
+
+# ---------------------------------------------------------------------------
+# 3. Normalization: all-checked is canonically equal to empty list
+# ---------------------------------------------------------------------------
+
+
+def test_mask_label_assignment_is_empty_when_all_checked(make_napari_viewer):
+    """When all labels are checked the assignment stored should be None (all-labels)."""
+    _, plotter, image_layer, _, _ = _setup_plotter_with_labels(
+        make_napari_viewer
+    )
+    # Ensure all are checked (default)
+    plotter.mask_labels_combobox.selectAll()
+    # The on_mask_labels_changed handler normalises all-checked → None
+    assignment = plotter._mask_label_assignments.get(
+        image_layer.name, "MISSING"
+    )
+    assert assignment is None, "All-labels selection should be stored as None"
+
+
+def test_mask_label_assignment_is_specific_when_partial(make_napari_viewer):
+    """A partial label selection should be stored as the exact list of selected labels."""
+    _, plotter, image_layer, _, _ = _setup_plotter_with_labels(
+        make_napari_viewer
+    )
+    plotter.mask_labels_combobox.setCheckedItems(["2"])
+    assignment = plotter._mask_label_assignments.get(image_layer.name, None)
+    assert assignment == [2]
+
+
+# ---------------------------------------------------------------------------
+# 4. _extract_phasor_arrays_from_layer: mask_labels and mask_invert
+# ---------------------------------------------------------------------------
+
+
+def test_extract_phasor_arrays_no_mask(make_napari_viewer):
+    """Without a mask in metadata, arrays are returned unchanged."""
+    from napari_phasors._utils import _extract_phasor_arrays_from_layer
+
+    image_layer = create_image_layer_with_phasors()
+    make_napari_viewer().add_layer(image_layer)
+
+    mean, real, imag, harmonics = _extract_phasor_arrays_from_layer(
+        image_layer
+    )
+    np.testing.assert_array_equal(mean, image_layer.metadata["original_mean"])
+    assert not np.any(np.isnan(mean))
+
+
+def test_extract_phasor_arrays_with_mask_all_labels(make_napari_viewer):
+    """mask_labels=None treats all non-zero pixels as valid."""
+    from napari_phasors._utils import _extract_phasor_arrays_from_layer
+
+    image_layer = create_image_layer_with_phasors()
+    viewer = make_napari_viewer()
+    viewer.add_layer(image_layer)
+
+    G = image_layer.metadata["G"]
+    shape = G.shape[1:] if G.ndim == 3 else G.shape
+    mask_data = np.zeros(shape, dtype=int)
+    mask_data[:, : shape[1] // 2] = 1  # left half label 1
+    mask_data[:, shape[1] // 2 :] = 2  # right half label 2
+
+    image_layer.metadata["mask"] = mask_data
+    image_layer.metadata["mask_labels"] = None  # all labels valid
+    image_layer.metadata["mask_invert"] = False
+
+    _, real, _, _ = _extract_phasor_arrays_from_layer(image_layer)
+    # Background (0) pixels → NaN; label pixels → valid
+    expected_nan = mask_data <= 0
+    np.testing.assert_array_equal(np.isnan(real[0]), expected_nan)
+
+
+def test_extract_phasor_arrays_with_mask_no_labels(make_napari_viewer):
+    """mask_labels=[] treats all pixels as valid (no masking applied)."""
+    from napari_phasors._utils import _extract_phasor_arrays_from_layer
+
+    image_layer = create_image_layer_with_phasors()
+    viewer = make_napari_viewer()
+    viewer.add_layer(image_layer)
+
+    G = image_layer.metadata["G"]
+    shape = G.shape[1:] if G.ndim == 3 else G.shape
+    mask_data = np.zeros(shape, dtype=int)
+    mask_data[:, : shape[1] // 2] = 1
+    mask_data[:, shape[1] // 2 :] = 2
+
+    image_layer.metadata["mask"] = mask_data
+    image_layer.metadata["mask_labels"] = []  # no labels selected -> no mask
+    image_layer.metadata["mask_invert"] = False
+
+    _, real, _, _ = _extract_phasor_arrays_from_layer(image_layer)
+    # No pixels should be NaN (unmasked)
+    assert not np.any(np.isnan(real[0]))
+
+
+def test_extract_phasor_arrays_with_specific_mask_labels(make_napari_viewer):
+    """mask_labels=[1] makes only pixels with label 1 valid; label 2 → NaN."""
+    from napari_phasors._utils import _extract_phasor_arrays_from_layer
+
+    image_layer = create_image_layer_with_phasors()
+    viewer = make_napari_viewer()
+    viewer.add_layer(image_layer)
+
+    G = image_layer.metadata["G"]
+    shape = G.shape[1:] if G.ndim == 3 else G.shape
+    mask_data = np.zeros(shape, dtype=int)
+    mask_data[:, : shape[1] // 2] = 1
+    mask_data[:, shape[1] // 2 :] = 2
+
+    image_layer.metadata["mask"] = mask_data
+    image_layer.metadata["mask_labels"] = [1]
+    image_layer.metadata["mask_invert"] = False
+
+    _, real, _, _ = _extract_phasor_arrays_from_layer(image_layer)
+    # Only label-1 pixels are valid; label-2 and background → NaN
+    expected_nan = mask_data != 1
+    np.testing.assert_array_equal(np.isnan(real[0]), expected_nan)
+
+
+def test_extract_phasor_arrays_with_inverted_mask_labels(make_napari_viewer):
+    """mask_invert=True with mask_labels=[1] makes label-1 pixels NaN."""
+    from napari_phasors._utils import _extract_phasor_arrays_from_layer
+
+    image_layer = create_image_layer_with_phasors()
+    viewer = make_napari_viewer()
+    viewer.add_layer(image_layer)
+
+    G = image_layer.metadata["G"]
+    shape = G.shape[1:] if G.ndim == 3 else G.shape
+    mask_data = np.zeros(shape, dtype=int)
+    mask_data[:, : shape[1] // 2] = 1
+    mask_data[:, shape[1] // 2 :] = 2
+
+    image_layer.metadata["mask"] = mask_data
+    image_layer.metadata["mask_labels"] = [1]
+    image_layer.metadata["mask_invert"] = True
+
+    _, real, _, _ = _extract_phasor_arrays_from_layer(image_layer)
+    # Inverted: label-1 pixels → NaN; label-2 (and background) → valid
+    expected_nan = np.isin(mask_data, [1])
+    np.testing.assert_array_equal(np.isnan(real[0]), expected_nan)
+
+
+def test_extract_phasor_arrays_inverted_all_labels(make_napari_viewer):
+    """mask_invert=True with mask_labels=None inverts the all-non-zero rule."""
+    from napari_phasors._utils import _extract_phasor_arrays_from_layer
+
+    image_layer = create_image_layer_with_phasors()
+    viewer = make_napari_viewer()
+    viewer.add_layer(image_layer)
+
+    G = image_layer.metadata["G"]
+    shape = G.shape[1:] if G.ndim == 3 else G.shape
+    mask_data = np.zeros(shape, dtype=int)
+    mask_data[:, : shape[1] // 2] = 1
+
+    image_layer.metadata["mask"] = mask_data
+    image_layer.metadata["mask_labels"] = None
+    image_layer.metadata["mask_invert"] = True
+
+    _, real, _, _ = _extract_phasor_arrays_from_layer(image_layer)
+    # Inverted all-labels: non-zero pixels → NaN; background (0) → valid
+    expected_nan = mask_data > 0
+    np.testing.assert_array_equal(np.isnan(real[0]), expected_nan)
+
+
+def test_extract_phasor_arrays_inverted_no_labels(make_napari_viewer):
+    """mask_invert=True with mask_labels=[] leaves all pixels unmasked."""
+    from napari_phasors._utils import _extract_phasor_arrays_from_layer
+
+    image_layer = create_image_layer_with_phasors()
+    viewer = make_napari_viewer()
+    viewer.add_layer(image_layer)
+
+    G = image_layer.metadata["G"]
+    shape = G.shape[1:] if G.ndim == 3 else G.shape
+    mask_data = np.zeros(shape, dtype=int)
+    mask_data[:, : shape[1] // 2] = 1
+
+    image_layer.metadata["mask"] = mask_data
+    image_layer.metadata["mask_labels"] = []
+    image_layer.metadata["mask_invert"] = True
+
+    _, real, _, _ = _extract_phasor_arrays_from_layer(image_layer)
+    # No pixels should be NaN (unmasked)
+    assert not np.any(np.isnan(real[0]))
+
+
+# ---------------------------------------------------------------------------
+# 5. MaskAssignmentDialog: defaults and get_label_assignments normalisation
+# ---------------------------------------------------------------------------
+
+
+def test_mask_assignment_dialog_defaults_all_checked(make_napari_viewer):
+    """MaskAssignmentDialog label comboboxes default to all labels checked."""
+    viewer = make_napari_viewer()
+    layer1 = create_image_layer_with_phasors()
+    layer2 = create_image_layer_with_phasors()
+    viewer.add_layer(layer1)
+    viewer.add_layer(layer2)
+
+    G = layer1.metadata["G"]
+    shape = G.shape[1:] if G.ndim == 3 else G.shape
+    mask_data = np.zeros(shape, dtype=int)
+    mask_data[:, : shape[1] // 2] = 1
+    mask_data[:, shape[1] // 2 :] = 2
+    labels_layer = viewer.add_labels(mask_data, name="labels_for_dialog")
+
+    dialog = MaskAssignmentDialog(
+        image_layer_names=[layer1.name, layer2.name],
+        mask_layer_names=["None", "labels_for_dialog"],
+        mask_layers=[labels_layer],
+        current_assignments={layer1.name: "None", layer2.name: "None"},
+        current_label_assignments={},
+        current_invert_assignments={},
+        parent=None,
+    )
+
+    # Trigger the label combobox for layer1 by selecting the labels layer
+    dialog._combos[layer1.name].setCurrentText("labels_for_dialog")
+
+    label_combo = dialog._label_combos.get(layer1.name)
+    assert label_combo is not None
+    assert not label_combo.isHidden(), "Label combo should be visible"
+    # All label items should be checked by default
+    all_items = label_combo.allItems()
+    checked = label_combo.checkedItems()
+    assert all_items == ["1", "2"], "Expected labels 1 and 2"
+    assert checked == all_items, "All labels should be checked by default"
+
+    dialog.close()
+
+
+def test_mask_assignment_dialog_get_label_assignments_normalises_all_checked(
+    make_napari_viewer,
+):
+    """get_label_assignments normalises all-checked state to None."""
+    viewer = make_napari_viewer()
+    layer1 = create_image_layer_with_phasors()
+    viewer.add_layer(layer1)
+
+    G = layer1.metadata["G"]
+    shape = G.shape[1:] if G.ndim == 3 else G.shape
+    mask_data = np.zeros(shape, dtype=int)
+    mask_data[:, : shape[1] // 2] = 1
+    mask_data[:, shape[1] // 2 :] = 2
+    labels_layer = viewer.add_labels(mask_data, name="lbl2")
+
+    dialog = MaskAssignmentDialog(
+        image_layer_names=[layer1.name],
+        mask_layer_names=["None", "lbl2"],
+        mask_layers=[labels_layer],
+        current_assignments={layer1.name: "lbl2"},
+        current_label_assignments={layer1.name: None},
+        current_invert_assignments={},
+        parent=None,
+    )
+
+    # The combo for layer1 already starts at "lbl2"; label_combo is populated
+    label_combo = dialog._label_combos.get(layer1.name)
+    assert label_combo is not None
+    # Make sure all items are checked (default)
+    label_combo.selectAll()
+    assignments = dialog.get_label_assignments()
+    assert (
+        assignments.get(layer1.name, "MISSING") is None
+    ), "All-checked labels should normalise to None in get_label_assignments"
+
+    dialog.close()

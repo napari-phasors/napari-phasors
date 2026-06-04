@@ -254,10 +254,12 @@ class MaskAssignmentDialog(QDialog):
     def __init__(
         self,
         image_layer_names,
-        mask_layer_names,
+        mask_layers=None,
         current_assignments=None,
         current_invert_assignments=None,
+        current_label_assignments=None,
         parent=None,
+        mask_layer_names=None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Assign Mask Layers")
@@ -267,6 +269,21 @@ class MaskAssignmentDialog(QDialog):
             current_assignments = {}
         if current_invert_assignments is None:
             current_invert_assignments = {}
+        if current_label_assignments is None:
+            current_label_assignments = {}
+
+        self._mask_layers = {}
+        if mask_layers is not None:
+            self._mask_layers = {layer.name: layer for layer in mask_layers}
+        elif mask_layer_names is not None:
+
+            class DummyLayer:
+                def __init__(self, name):
+                    self.name = name
+
+            self._mask_layers = {
+                name: DummyLayer(name) for name in mask_layer_names
+            }
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Assign a mask layer to each image layer:"))
@@ -280,7 +297,8 @@ class MaskAssignmentDialog(QDialog):
 
         self._combos = {}  # image_layer_name -> QComboBox
         self._invert_checks = {}  # image_layer_name -> QCheckBox
-        mask_options = ["None"] + list(mask_layer_names)
+        self._label_combos = {}  # image_layer_name -> CheckableComboBox
+        mask_options = ["None"] + list(self._mask_layers.keys())
 
         for name in image_layer_names:
             row_widget = QWidget()
@@ -297,6 +315,55 @@ class MaskAssignmentDialog(QDialog):
             self._combos[name] = combo
             row_layout.addWidget(combo, 1)
 
+            # Container for the label combobox and its All/None links
+            label_container = QWidget()
+            label_container_layout = QHBoxLayout(label_container)
+            label_container_layout.setContentsMargins(0, 0, 0, 0)
+            label_container_layout.setSpacing(5)
+
+            label_combo = CheckableComboBox(
+                placeholder="All Labels",
+                enable_primary_layer=False,
+                unit="labels",
+                show_select_all_none=False,  # DO NOT show select all/none as items in checklist
+                no_selection_text="No labels",
+            )
+            label_combo.setToolTip("Select specific labels for the mask.")
+            self._label_combos[name] = label_combo
+            label_container_layout.addWidget(label_combo, 1)
+
+            # Clickable All / None labels
+            select_all_lbl = QLabel(
+                '<a href="all" style="color: gray;">All</a>'
+            )
+            select_all_lbl.setTextFormat(Qt.RichText)
+            select_all_lbl.setCursor(Qt.PointingHandCursor)
+            select_all_lbl.setToolTip("Select all labels")
+            label_container_layout.addWidget(select_all_lbl)
+
+            sep_lbl = QLabel("|")
+            sep_lbl.setStyleSheet("color: gray;")
+            label_container_layout.addWidget(sep_lbl)
+
+            select_none_lbl = QLabel(
+                '<a href="none" style="color: gray;">None</a>'
+            )
+            select_none_lbl.setTextFormat(Qt.RichText)
+            select_none_lbl.setCursor(Qt.PointingHandCursor)
+            select_none_lbl.setToolTip("Deselect all labels")
+            label_container_layout.addWidget(select_none_lbl)
+
+            select_all_lbl.linkActivated.connect(
+                lambda _, lc=label_combo: lc.selectAll()
+            )
+            select_none_lbl.linkActivated.connect(
+                lambda _, lc=label_combo: lc.deselectAll()
+            )
+
+            label_container.setVisible(False)
+            label_combo.setVisible(False)
+            row_layout.addWidget(label_container, 1)
+
             invert_check = QCheckBox("Invert")
             invert_check.setChecked(
                 current_invert_assignments.get(name, False)
@@ -305,10 +372,45 @@ class MaskAssignmentDialog(QDialog):
             self._invert_checks[name] = invert_check
             row_layout.addWidget(invert_check)
 
-            # Enable/disable invert when mask changes
-            combo.currentTextChanged.connect(
-                lambda text, cb=invert_check: cb.setEnabled(text != "None")
-            )
+            # Function to update UI based on selected mask layer
+            def _on_mask_changed(
+                text,
+                name=name,
+                cb=invert_check,
+                lc=label_combo,
+                container=label_container,
+            ):
+                cb.setEnabled(text != "None")
+                layer = self._mask_layers.get(text)
+                if isinstance(layer, Labels):
+                    container.setVisible(True)
+                    lc.setVisible(True)
+                    lc.blockSignals(True)
+                    lc.clear()
+                    unique_labels = np.unique(layer.data)
+                    valid_labels = [
+                        str(lbl) for lbl in unique_labels if lbl > 0
+                    ]
+                    lc.addItems(valid_labels)
+                    # Restore previous selection if applicable
+                    if text == current_assignments.get(name, "None"):
+                        prev_labels = current_label_assignments.get(name)
+                        if prev_labels is None:
+                            lc.selectAll()
+                        else:
+                            lc.setCheckedItems(
+                                [str(lbl) for lbl in prev_labels]
+                            )
+                    else:
+                        lc.selectAll()  # Default to all labels checked
+                    lc.blockSignals(False)
+                else:
+                    container.setVisible(False)
+                    lc.setVisible(False)
+
+            combo.currentTextChanged.connect(_on_mask_changed)
+            # Initialize label combobox state
+            _on_mask_changed(combo.currentText())
 
             form_layout.addRow(QLabel(name), row_widget)
 
@@ -367,6 +469,25 @@ class MaskAssignmentDialog(QDialog):
         return {
             name: cb.isChecked() for name, cb in self._invert_checks.items()
         }
+
+    def get_label_assignments(self):
+        """Return the label assignments as a dict.
+
+        Returns
+        -------
+        dict
+            Mapping of image layer name -> list of selected labels.
+        """
+        assignments = {}
+        for name, combo in self._label_combos.items():
+            if not combo.isHidden():
+                checked = [int(lbl) for lbl in combo.checkedItems()]
+                all_count = combo.model().rowCount() - combo._header_count
+                # Normalize: if all labels are checked, store None (= "all labels")
+                assignments[name] = (
+                    None if len(checked) == all_count else checked
+                )
+        return assignments
 
 
 class _ListWidgetCompatWrapper:
@@ -1518,6 +1639,8 @@ class PlotterWidget(QWidget):
         self._mask_assignments = {}
         # Per-layer invert state: {image_layer_name: bool}
         self._mask_invert_assignments = {}
+        # Per-layer mask labels assignments: {image_layer_name: list[int]}
+        self._mask_label_assignments = {}
 
         # Cache for get_merged_features() — avoids re-extracting phasor
         # data when only visual parameters (bins, colormap, etc.) change.
@@ -1541,6 +1664,59 @@ class PlotterWidget(QWidget):
         )
         self.mask_layer_combobox.addItem("None")
         harmonics_and_mask_container.addWidget(self.mask_layer_combobox, 1)
+
+        # Mask labels container (combobox and its All/None buttons)
+        self.mask_labels_container = QWidget()
+        mask_labels_layout = QHBoxLayout(self.mask_labels_container)
+        mask_labels_layout.setContentsMargins(0, 0, 0, 0)
+        mask_labels_layout.setSpacing(5)
+
+        self.mask_labels_combobox = CheckableComboBox(
+            placeholder="All Labels",
+            enable_primary_layer=False,
+            unit="labels",
+            show_select_all_none=False,  # DO NOT show select all/none as items in checklist
+            no_selection_text="No labels",
+        )
+        self.mask_labels_combobox.setToolTip(
+            "Select specific labels to use as the mask. If none are selected, all are used."
+        )
+        self.mask_labels_combobox.selectionChanged.connect(
+            self._on_mask_labels_changed
+        )
+        mask_labels_layout.addWidget(self.mask_labels_combobox, 1)
+
+        # Clickable All / None labels
+        self.mask_labels_select_all = QLabel(
+            '<a href="all" style="color: gray;">All</a>'
+        )
+        self.mask_labels_select_all.setTextFormat(Qt.RichText)
+        self.mask_labels_select_all.setCursor(Qt.PointingHandCursor)
+        self.mask_labels_select_all.setToolTip("Select all labels")
+        mask_labels_layout.addWidget(self.mask_labels_select_all)
+
+        self.mask_labels_separator = QLabel("|")
+        self.mask_labels_separator.setStyleSheet("color: gray;")
+        mask_labels_layout.addWidget(self.mask_labels_separator)
+
+        self.mask_labels_select_none = QLabel(
+            '<a href="none" style="color: gray;">None</a>'
+        )
+        self.mask_labels_select_none.setTextFormat(Qt.RichText)
+        self.mask_labels_select_none.setCursor(Qt.PointingHandCursor)
+        self.mask_labels_select_none.setToolTip("Deselect all labels")
+        mask_labels_layout.addWidget(self.mask_labels_select_none)
+
+        self.mask_labels_select_all.linkActivated.connect(
+            lambda _: self.mask_labels_combobox.selectAll()
+        )
+        self.mask_labels_select_none.linkActivated.connect(
+            lambda _: self.mask_labels_combobox.deselectAll()
+        )
+
+        self.mask_labels_container.setVisible(False)
+        self.mask_labels_combobox.setVisible(False)
+        harmonics_and_mask_container.addWidget(self.mask_labels_container, 1)
 
         # Invert mask checkbox (next to combobox)
         self.mask_invert_checkbox = QCheckBox("Invert")
@@ -5647,7 +5823,7 @@ class PlotterWidget(QWidget):
         self._invalidate_features_cache()
 
     def _apply_mask_to_phasor_data(
-        self, mask_layer, image_layer, invert=False
+        self, mask_layer, image_layer, invert=False, labels=None
     ):
         """Apply mask to phasor data by setting values outside mask to NaN.
 
@@ -5660,6 +5836,9 @@ class PlotterWidget(QWidget):
         invert : bool
             If True, invert the mask so pixels inside the mask
             are excluded instead of those outside.
+        labels : list of int, optional
+            List of labels to use as the mask. If empty or None, all labels
+            > 0 are used.
         """
         if isinstance(mask_layer, Shapes) and len(mask_layer.data) > 0:
             mask_data = mask_layer.to_labels(
@@ -5674,8 +5853,23 @@ class PlotterWidget(QWidget):
 
         image_layer.metadata['mask'] = mask_data.copy()
         image_layer.metadata['mask_invert'] = invert
+        if labels is not None:
+            image_layer.metadata['mask_labels'] = labels
+        elif 'mask_labels' in image_layer.metadata:
+            del image_layer.metadata['mask_labels']
 
-        mask_invalid = mask_data > 0 if invert else mask_data <= 0
+        if isinstance(mask_layer, Labels) and labels is not None:
+            if len(labels) > 0:
+                if invert:
+                    mask_invalid = np.isin(mask_data, labels)
+                else:
+                    mask_invalid = ~np.isin(mask_data, labels)
+            else:
+                # No labels selected -> display data as if it was without a mask
+                mask_invalid = np.zeros(mask_data.shape, dtype=bool)
+        else:
+            # No label selection (labels is None): all non-zero pixels are valid
+            mask_invalid = mask_data > 0 if invert else mask_data <= 0
 
         image_layer.data = np.where(mask_invalid, np.nan, image_layer.data)
 
@@ -5696,20 +5890,70 @@ class PlotterWidget(QWidget):
 
         self._invalidate_features_cache()
 
-    def _on_mask_layer_changed(self, text):
+    def _set_mask_labels_visible(self, visible):
+        """Set the visibility of the mask labels combobox and its container."""
+        self.mask_labels_container.setVisible(visible)
+        self.mask_labels_combobox.setVisible(visible)
+
+    def _on_mask_layer_changed(self, text, update_labels_list=True):
         """Handle changes to the mask layer combo box (single-layer mode)."""
         selected_layers = self.get_selected_layers()
         if not selected_layers:
             return
 
-        # Update invert checkbox state
+        # Update invert checkbox state and labels combobox
         if text == "None":
             self.mask_invert_checkbox.setChecked(False)
             self.mask_invert_checkbox.setEnabled(False)
+            self._set_mask_labels_visible(False)
         else:
             self.mask_invert_checkbox.setEnabled(True)
+            layer = self.viewer.layers[text]
+            if isinstance(layer, Labels):
+                self._set_mask_labels_visible(True)
+                if update_labels_list:
+                    self.mask_labels_combobox.blockSignals(True)
+                    self.mask_labels_combobox.clear()
+                    unique_labels = np.unique(layer.data)
+                    valid_labels = [
+                        str(lbl) for lbl in unique_labels if lbl > 0
+                    ]
+                    self.mask_labels_combobox.addItems(valid_labels)
+                    # Keep previously selected labels if applicable
+                    current_labels = None
+                    for image_layer in selected_layers:
+                        if (
+                            self._mask_assignments.get(image_layer.name)
+                            == text
+                        ):
+                            current_labels = self._mask_label_assignments.get(
+                                image_layer.name, None
+                            )
+                            break
+                    if current_labels is None:
+                        # No specific labels stored — default to all checked
+                        self.mask_labels_combobox.selectAll()
+                    else:
+                        self.mask_labels_combobox.setCheckedItems(
+                            [str(lbl) for lbl in current_labels]
+                        )
+                    self.mask_labels_combobox.blockSignals(False)
+            else:
+                self._set_mask_labels_visible(False)
 
         invert = self.mask_invert_checkbox.isChecked()
+        if not self.mask_labels_combobox.isHidden():
+            checked = [
+                int(lbl) for lbl in self.mask_labels_combobox.checkedItems()
+            ]
+            all_count = (
+                self.mask_labels_combobox.model().rowCount()
+                - self.mask_labels_combobox._header_count
+            )
+            # Normalize: all checked == "All Labels" == None
+            labels = None if len(checked) == all_count else checked
+        else:
+            labels = []
 
         # In single-layer mode, apply the same mask to all selected
         # layers and update the assignments dict accordingly
@@ -5721,15 +5965,19 @@ class PlotterWidget(QWidget):
                     del image_layer.metadata['mask']
                 if 'mask_invert' in image_layer.metadata:
                     del image_layer.metadata['mask_invert']
+                if 'mask_labels' in image_layer.metadata:
+                    del image_layer.metadata['mask_labels']
                 self._mask_assignments.pop(image_layer.name, None)
                 self._mask_invert_assignments.pop(image_layer.name, None)
+                self._mask_label_assignments.pop(image_layer.name, None)
             else:
                 mask_layer = self.viewer.layers[text]
                 self._apply_mask_to_phasor_data(
-                    mask_layer, image_layer, invert=invert
+                    mask_layer, image_layer, invert=invert, labels=labels
                 )
                 self._mask_assignments[image_layer.name] = text
                 self._mask_invert_assignments[image_layer.name] = invert
+                self._mask_label_assignments[image_layer.name] = labels
 
         if hasattr(self, 'filter_tab'):
             self.filter_tab._on_image_layer_changed()
@@ -5779,9 +6027,10 @@ class PlotterWidget(QWidget):
 
         for image_layer in affected_layers:
             invert = self._mask_invert_assignments.get(image_layer.name, False)
+            labels = self._mask_label_assignments.get(image_layer.name, None)
             self._restore_original_phasor_data(image_layer)
             self._apply_mask_to_phasor_data(
-                mask_layer, image_layer, invert=invert
+                mask_layer, image_layer, invert=invert, labels=labels
             )
 
         if hasattr(self, 'filter_tab'):
@@ -5802,7 +6051,14 @@ class PlotterWidget(QWidget):
         text = self.mask_layer_combobox.currentText()
         if text == "None":
             return
-        self._on_mask_layer_changed(text)
+        self._on_mask_layer_changed(text, update_labels_list=False)
+
+    def _on_mask_labels_changed(self):
+        """Handle mask labels checkbox selection change."""
+        text = self.mask_layer_combobox.currentText()
+        if text == "None":
+            return
+        self._on_mask_layer_changed(text, update_labels_list=False)
 
     def _update_mask_ui_mode(self):
         """Switch between single combobox and assign-masks button based on selection count."""
@@ -5811,6 +6067,7 @@ class PlotterWidget(QWidget):
             # Multi-layer mode: show button, hide combobox
             self.mask_layer_label.setVisible(False)
             self.mask_layer_combobox.setVisible(False)
+            self._set_mask_labels_visible(False)
             self.mask_invert_checkbox.setVisible(False)
             self.mask_assign_button.setVisible(True)
             self._update_mask_assign_button_text()
@@ -5818,6 +6075,7 @@ class PlotterWidget(QWidget):
             # Single-layer mode: show combobox, hide button
             self.mask_layer_label.setVisible(True)
             self.mask_layer_combobox.setVisible(True)
+            # mask_labels_combobox visibility is managed by _on_mask_layer_changed
             self.mask_invert_checkbox.setVisible(True)
             self.mask_assign_button.setVisible(False)
             # Sync the combobox with current assignment for the single selected layer
@@ -5836,10 +6094,38 @@ class PlotterWidget(QWidget):
                 self.mask_layer_combobox.blockSignals(True)
                 self.mask_layer_combobox.setCurrentText(current_mask)
                 self.mask_layer_combobox.blockSignals(False)
-                # Sync invert checkbox
+                # Sync invert checkbox and labels
                 invert = self._mask_invert_assignments.get(selected[0], False)
                 self.mask_invert_checkbox.setChecked(invert)
                 self.mask_invert_checkbox.setEnabled(current_mask != "None")
+
+                if (
+                    current_mask != "None"
+                    and current_mask in self.viewer.layers
+                    and isinstance(self.viewer.layers[current_mask], Labels)
+                ):
+                    self._set_mask_labels_visible(True)
+                    self.mask_labels_combobox.blockSignals(True)
+                    self.mask_labels_combobox.clear()
+                    layer = self.viewer.layers[current_mask]
+                    unique_labels = np.unique(layer.data)
+                    valid_labels = [
+                        str(lbl) for lbl in unique_labels if lbl > 0
+                    ]
+                    self.mask_labels_combobox.addItems(valid_labels)
+                    labels = self._mask_label_assignments.get(
+                        selected[0], None
+                    )
+                    if labels is None:
+                        # No specific labels stored — default to all checked
+                        self.mask_labels_combobox.selectAll()
+                    else:
+                        self.mask_labels_combobox.setCheckedItems(
+                            [str(lbl) for lbl in labels]
+                        )
+                    self.mask_labels_combobox.blockSignals(False)
+                else:
+                    self._set_mask_labels_visible(False)
 
     def _update_mask_assign_button_text(self):
         """Update the mask assign button text to show assignment summary."""
@@ -5862,29 +6148,34 @@ class PlotterWidget(QWidget):
         if not selected_names:
             return
 
-        mask_layer_names = [
-            layer.name
+        mask_layers = [
+            layer
             for layer in self.viewer.layers
             if isinstance(layer, (Labels, Shapes))
         ]
 
         dialog = MaskAssignmentDialog(
             image_layer_names=selected_names,
-            mask_layer_names=mask_layer_names,
+            mask_layers=mask_layers,
             current_assignments=self._mask_assignments,
             current_invert_assignments=(self._mask_invert_assignments),
+            current_label_assignments=self._mask_label_assignments,
             parent=self,
         )
 
         if dialog.exec() == QDialog.Accepted:
             new_assignments = dialog.get_assignments()
             new_invert = dialog.get_invert_assignments()
+            new_labels = dialog.get_label_assignments()
             self._apply_mask_assignments(
                 new_assignments,
                 invert_assignments=new_invert,
+                label_assignments=new_labels,
             )
 
-    def _apply_mask_assignments(self, assignments, invert_assignments=None):
+    def _apply_mask_assignments(
+        self, assignments, invert_assignments=None, label_assignments=None
+    ):
         """Apply per-layer mask assignments.
 
         Parameters
@@ -5894,15 +6185,22 @@ class PlotterWidget(QWidget):
             (or "None").
         invert_assignments : dict, optional
             Mapping of image layer name -> bool (invert flag).
+        label_assignments : dict, optional
+            Mapping of image layer name -> list of labels.
         """
         if invert_assignments is None:
             invert_assignments = {}
+        if label_assignments is None:
+            label_assignments = {}
 
         self._mask_assignments = {
             k: v for k, v in assignments.items() if v != "None"
         }
         self._mask_invert_assignments = {
             k: invert_assignments.get(k, False) for k in self._mask_assignments
+        }
+        self._mask_label_assignments = {
+            k: label_assignments.get(k) for k in self._mask_assignments
         }
 
         selected_layers = self.get_selected_layers()
@@ -5915,11 +6213,14 @@ class PlotterWidget(QWidget):
                     del image_layer.metadata['mask']
                 if 'mask_invert' in image_layer.metadata:
                     del image_layer.metadata['mask_invert']
+                if 'mask_labels' in image_layer.metadata:
+                    del image_layer.metadata['mask_labels']
             else:
                 invert = invert_assignments.get(image_layer.name, False)
+                labels = label_assignments.get(image_layer.name)
                 mask_layer = self.viewer.layers[mask_name]
                 self._apply_mask_to_phasor_data(
-                    mask_layer, image_layer, invert=invert
+                    mask_layer, image_layer, invert=invert, labels=labels
                 )
 
         if hasattr(self, 'filter_tab'):

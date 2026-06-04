@@ -73,6 +73,8 @@ def _check_state_value(state):
     This helper normalises both cases so comparisons work with either
     binding.
     """
+    if state is None:
+        return None
     return state.value if hasattr(state, 'value') else int(state)
 
 
@@ -543,8 +545,22 @@ def _extract_phasor_arrays_from_layer(
     # Apply mask if present in metadata
     if 'mask' in layer.metadata:
         mask = layer.metadata['mask']
-        # Apply mask: set values to NaN where mask <= 0
-        mask_invalid = mask <= 0
+        mask_labels = layer.metadata.get('mask_labels')
+        invert = layer.metadata.get('mask_invert', False)
+        # Build mask_invalid respecting label-specific selection
+        if mask_labels is not None:
+            if len(mask_labels) > 0:
+                # Only the selected labels are valid
+                if invert:
+                    mask_invalid = np.isin(mask, mask_labels)
+                else:
+                    mask_invalid = ~np.isin(mask, mask_labels)
+            else:
+                # No labels selected -> display data as if it was without a mask
+                mask_invalid = np.zeros(mask.shape, dtype=bool)
+        else:
+            # No label selection: all non-zero pixels are valid
+            mask_invalid = mask <= 0 if not invert else mask > 0
         mean = np.where(mask_invalid, np.nan, mean)
         for h in range(len(harmonics)):
             real[h] = np.where(mask_invalid, np.nan, real[h])
@@ -780,8 +796,9 @@ class _PrimaryLayerDelegate(QStyledItemDelegate):
     """Custom delegate that renders items with a "Set as primary" action or
     a "Primary layer" indicator on the right side of each row."""
 
-    # Role used to store whether an item is the primary layer
-    PRIMARY_ROLE = Qt.UserRole + 100
+    # Role used to store whether an item is the primary layer.
+    # Use a plain int to avoid psygnal inspecting Qt enum values as type hints.
+    PRIMARY_ROLE = 356  # Qt.UserRole (256) + 100, well outside standard roles
 
     def __init__(self, parent=None, enable_primary_layer=True):
         super().__init__(parent)
@@ -939,6 +956,10 @@ class CheckableComboBox(QComboBox):
         Parent widget.
     enable_primary_layer : bool, optional
         Whether to enable primary layer functionality (default: True).
+    show_select_all_none : bool, optional
+        When True, prepend "All" and "None" shortcut rows at the top of
+        the dropdown so the user can select or deselect all items with
+        one click (default: False).
     """
 
     selectionChanged = Signal()
@@ -947,17 +968,28 @@ class CheckableComboBox(QComboBox):
     primaryLayerChanged = Signal(str)
     """Signal emitted with the name of the new primary (main) layer."""
 
+    # Custom data role used to tag "All" / "None" header control rows.
+    # Use a plain int to avoid psygnal inspecting Qt enum values as type hints.
+    _CONTROL_ROLE = 277  # Qt.UserRole (256) + 21, well outside standard roles
+
     def __init__(
         self,
         parent=None,
         enable_primary_layer=True,
         placeholder="Select Layers...",
+        unit="layers",
+        show_select_all_none=False,
+        no_selection_text=None,
     ):
         super().__init__(parent)
         self.setModel(QStandardItemModel(self))
         self.setEditable(True)
         self.lineEdit().setReadOnly(True)
         self._placeholder_text = placeholder
+        self._unit = unit
+        self._show_select_all_none = show_select_all_none
+        self._no_selection_text = no_selection_text
+        self._header_count = 0  # number of non-checkable header rows at top
         self.lineEdit().setPlaceholderText(self._placeholder_text)
 
         self._enable_primary_layer = enable_primary_layer
@@ -990,21 +1022,57 @@ class CheckableComboBox(QComboBox):
         self.view().viewport().installEventFilter(self)
         self.view().setMouseTracking(True)
 
+    # ------------------------------------------------------------------
+    # Header control helpers
+    # ------------------------------------------------------------------
+
+    def _add_header_controls(self):
+        """Prepend 'All' and 'None' control rows at the top of the model."""
+        for row_idx, (label, action) in enumerate(
+            [("All", "all"), ("None", "none")]
+        ):
+            item = QStandardItem(label)
+            # Not checkable — acts as a button
+            item.setFlags(Qt.ItemIsEnabled)
+            item.setData(action, self._CONTROL_ROLE)
+            font = item.font()
+            font.setBold(True)
+            item.setFont(font)
+            self.model().insertRow(row_idx, item)
+        self._header_count = 2
+
+    def _is_header_row(self, row):
+        """Return True if *row* is a header control row (not a data item)."""
+        item = self.model().item(row)
+        return item is not None and item.data(self._CONTROL_ROLE) is not None
+
     def selectAll(self):
         """Check all items (emits one selectionChanged)."""
-        self.blockSignals(True)
-        for i in range(self.model().rowCount()):
+        already_blocked = self.signalsBlocked()
+        if not already_blocked:
+            self.blockSignals(True)
+        for i in range(self._header_count, self.model().rowCount()):
             self.model().item(i).setCheckState(Qt.Checked)
-        self.blockSignals(False)
-        self._refresh_primary_and_notify()
+        if not already_blocked:
+            self.blockSignals(False)
+            self._refresh_primary_and_notify()
+        else:
+            # Signals are blocked by caller — still update the display
+            self._update_display_text()
 
     def deselectAll(self):
         """Uncheck all items (emits one selectionChanged)."""
-        self.blockSignals(True)
-        for i in range(self.model().rowCount()):
+        already_blocked = self.signalsBlocked()
+        if not already_blocked:
+            self.blockSignals(True)
+        for i in range(self._header_count, self.model().rowCount()):
             self.model().item(i).setCheckState(Qt.Unchecked)
-        self.blockSignals(False)
-        self._refresh_primary_and_notify()
+        if not already_blocked:
+            self.blockSignals(False)
+            self._refresh_primary_and_notify()
+        else:
+            # Signals are blocked by caller — still update the display
+            self._update_display_text()
 
     def eventFilter(self, obj, event):
         """Filter events to make line edit clickable and handle item clicks."""
@@ -1028,6 +1096,15 @@ class CheckableComboBox(QComboBox):
             elif event.type() == QEvent.MouseButtonRelease:
                 index = self.view().indexAt(event.pos())
                 if index.isValid():
+                    # Check if this is a header control row (All / None)
+                    control = index.data(self._CONTROL_ROLE)
+                    if control == "all":
+                        self.selectAll()
+                        return True
+                    if control == "none":
+                        self.deselectAll()
+                        return True
+
                     vis_rect = self.view().visualRect(index)
                     option = QStyleOptionViewItem()
                     option.rect = vis_rect
@@ -1073,6 +1150,7 @@ class CheckableComboBox(QComboBox):
             Qt.Checked if checked else Qt.Unchecked, Qt.CheckStateRole
         )
         item.setData(False, _PrimaryLayerDelegate.PRIMARY_ROLE)
+        # Always append after any header rows
         self.model().appendRow(item)
         if checked and not self._primary_layer_name:
             self._set_primary_by_name(text, emit=False)
@@ -1082,10 +1160,14 @@ class CheckableComboBox(QComboBox):
         """Add multiple items to the combobox."""
         for text in texts:
             self.addItem(text)
+        # Add All/None header rows the first time items are added
+        if self._show_select_all_none and self._header_count == 0 and texts:
+            self._add_header_controls()
 
     def clear(self):
         """Clear all items."""
         self.model().clear()
+        self._header_count = 0
         self._primary_layer_name = ""
         self._last_emitted_primary = ""
         self._update_display_text()
@@ -1093,7 +1175,7 @@ class CheckableComboBox(QComboBox):
     def checkedItems(self):
         """Return list of checked item texts in list order (top to bottom)."""
         checked = []
-        for i in range(self.model().rowCount()):
+        for i in range(self._header_count, self.model().rowCount()):
             item = self.model().item(i)
             if item and item.checkState() == Qt.Checked:
                 checked.append(item.text())
@@ -1103,7 +1185,7 @@ class CheckableComboBox(QComboBox):
         """Return list of all item texts in list order."""
         return [
             self.model().item(i).text()
-            for i in range(self.model().rowCount())
+            for i in range(self._header_count, self.model().rowCount())
             if self.model().item(i)
         ]
 
@@ -1132,7 +1214,7 @@ class CheckableComboBox(QComboBox):
         if not signals_were_blocked:
             self.blockSignals(True)
 
-        for i in range(self.model().rowCount()):
+        for i in range(self._header_count, self.model().rowCount()):
             item = self.model().item(i)
             if item.text() in texts:
                 item.setCheckState(Qt.Checked)
@@ -1224,7 +1306,19 @@ class CheckableComboBox(QComboBox):
             line_edit.removeAction(self._star_action)
             self._star_action = None
 
+        all_count = self.model().rowCount() - self._header_count
         if not checked:
+            if self._no_selection_text is not None:
+                line_edit.setText(self._no_selection_text)
+            else:
+                line_edit.setText("")
+                line_edit.setPlaceholderText(self._placeholder_text)
+        elif (
+            not self._enable_primary_layer
+            and all_count > 0
+            and len(checked) == all_count
+        ):
+            # All items checked — show placeholder (e.g. "All Labels")
             line_edit.setText("")
             line_edit.setPlaceholderText(self._placeholder_text)
         elif len(checked) == 1:
@@ -1240,9 +1334,11 @@ class CheckableComboBox(QComboBox):
                 suffix = "selected layer" if others == 1 else "selected layers"
                 line_edit.setText(f"{primary}  + {others} {suffix}")
             else:
-                # Without primary layer, just show count
-                suffix = "layers" if len(checked) > 1 else "layer"
-                line_edit.setText(f"{len(checked)} {suffix} selected")
+                # Without primary layer, show count with the configured unit
+                unit = (
+                    self._unit if len(checked) > 1 else self._unit.rstrip('s')
+                )
+                line_edit.setText(f"{len(checked)} {unit} selected")
 
     def showPopup(self):
         """Show the popup and track visibility."""
