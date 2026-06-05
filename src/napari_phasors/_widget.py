@@ -1768,9 +1768,9 @@ class CziWidget(AdvancedOptionsWidget):
     def _get_signal_data(self):
         """Get signal data for CZI files."""
         try:
-            from ._reader import read_czi
+            from phasorpy.io import signal_from_czi
 
-            return read_czi(self.path)
+            return signal_from_czi(self.path)
         except Exception as e:  # noqa: BLE001
             show_error(f"Error reading CZI signal: {str(e)}")
             return None
