@@ -954,8 +954,12 @@ def _parse_and_call_io_function(
     # Validate arguments against the function's signature
     valid_args = {}
     sig = inspect.signature(func)
+    has_kwargs = any(
+        p.kind == inspect.Parameter.VAR_KEYWORD
+        for p in sig.parameters.values()
+    )
     for arg, value in args.items():
-        if arg in sig.parameters:
+        if arg in sig.parameters or has_kwargs:
             valid_args[arg] = value
         else:
             raise ValueError(

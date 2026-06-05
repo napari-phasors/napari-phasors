@@ -1575,3 +1575,189 @@ def test_writer_widget_mask_checkbox(make_napari_viewer, tmp_path):
 
     # Clean up
     widget.close()
+
+
+def test_advanced_options_widget_kwargs(make_napari_viewer):
+    """Test the dynamic kwargs functionality in AdvancedOptionsWidget."""
+    viewer = make_napari_viewer()
+    widget = FbdWidget(viewer, path=get_test_file_path("test_file$EI0S.fbd"))
+
+    # Initially, kwargs_widgets should be empty
+    assert hasattr(widget, "kwargs_widgets")
+    assert len(widget.kwargs_widgets) == 0
+
+    # 1. Add a kwarg row
+    widget.add_kwarg_btn.click()
+    assert len(widget.kwargs_widgets) == 1
+
+    key_edit, val_edit, row_widget = widget.kwargs_widgets[0]
+    key_edit.setText("test_key")
+    val_edit.setText("123")
+
+    options = {}
+    widget._apply_kwargs(options)
+    assert options == {"test_key": 123}
+
+    # 2. Add another kwarg row with a list
+    widget.add_kwarg_btn.click()
+    assert len(widget.kwargs_widgets) == 2
+
+    key_edit2, val_edit2, row_widget2 = widget.kwargs_widgets[1]
+    key_edit2.setText("list_key")
+    val_edit2.setText("[1, 2, 'three']")
+
+    options = {}
+    widget._apply_kwargs(options)
+    assert options == {
+        "test_key": 123,
+        "list_key": [1, 2, "three"],
+    }
+
+    # 3. Add one more with string value that fails ast.literal_eval
+    widget.add_kwarg_btn.click()
+    key_edit3, val_edit3, row_widget3 = widget.kwargs_widgets[2]
+    key_edit3.setText("str_key")
+    val_edit3.setText("hello_world")
+
+    options = {}
+    widget._apply_kwargs(options)
+    assert options == {
+        "test_key": 123,
+        "list_key": [1, 2, "three"],
+        "str_key": "hello_world",
+    }
+
+    # 4. Remove a kwarg row (the first one)
+    layout = row_widget.layout()
+    del_btn = layout.itemAt(2).widget()
+    del_btn.click()
+
+    assert len(widget.kwargs_widgets) == 2
+    # Verify the remaining widgets are row_widget2 and row_widget3
+    assert widget.kwargs_widgets[0][2] == row_widget2
+    assert widget.kwargs_widgets[1][2] == row_widget3
+
+    options = {}
+    widget._apply_kwargs(options)
+    assert options == {
+        "list_key": [1, 2, "three"],
+        "str_key": "hello_world",
+    }
+
+    widget.close()
+
+
+def test_ifli_widget(make_napari_viewer):
+    """Test IfliWidget UI initialization and kwargs integration."""
+    from napari_phasors._widget import IfliWidget, ProcessedOnlyWidget
+
+    viewer = make_napari_viewer()
+    widget = IfliWidget(viewer, path="dummy.ifli")
+
+    # Check that UI elements are correctly set up
+    assert widget.channel_entry.text() == "0"
+    assert widget.reader_options["channel"] == 0
+    assert hasattr(widget, "kwargs_widgets")
+
+    # Add a kwarg row
+    widget.add_kwarg_btn.click()
+    key_edit, val_edit, _ = widget.kwargs_widgets[0]
+    key_edit.setText("ifli_kwarg")
+    val_edit.setText("'yes'")
+
+    # Change the channel entry
+    widget.channel_entry.setText("2")
+
+    # Mock super()._on_click to see what arguments it receives
+    with patch.object(ProcessedOnlyWidget, "_on_click") as mock_on_click:
+        widget.btn.click()
+
+        mock_on_click.assert_called_once()
+        args, kwargs = mock_on_click.call_args
+        assert args[0] == "dummy.ifli"
+        assert args[1]["channel"] == 2
+        assert args[1]["ifli_kwarg"] == "yes"
+
+    # Test fallback to channel 0 when channel entry is empty
+    widget.channel_entry.setText("")
+    with patch.object(ProcessedOnlyWidget, "_on_click") as mock_on_click:
+        widget.btn.click()
+        assert widget.reader_options["channel"] == 0
+        assert widget.channel_entry.text() == ""
+
+    # Test fallback to channel 0 when channel entry is invalid
+    widget.channel_entry.setText("abc")
+    with patch.object(ProcessedOnlyWidget, "_on_click") as mock_on_click:
+        widget.btn.click()
+        assert widget.reader_options["channel"] == 0
+        assert widget.channel_entry.text() == "0"
+
+    widget.close()
+
+
+def test_lsm_widget_get_signal_data_with_kwargs(make_napari_viewer):
+    """Test that LSM file reading forwards kwargs."""
+    viewer = make_napari_viewer()
+    widget = LsmWidget(viewer, path="dummy.lsm")
+    widget._is_lsm = True
+
+    # Add a custom kwarg row
+    widget.add_kwarg_btn.click()
+    key_edit, val_edit, _ = widget.kwargs_widgets[0]
+    key_edit.setText("custom_param")
+    val_edit.setText("99")
+
+    with patch("phasorpy.io.signal_from_lsm") as mock_signal_from_lsm:
+        mock_signal_from_lsm.return_value = np.zeros((2, 2, 2))
+        widget._get_signal_data()
+
+        mock_signal_from_lsm.assert_called_once_with(
+            "dummy.lsm", custom_param=99
+        )
+
+    widget.close()
+
+
+def test_tiff_widget_get_signal_data_with_kwargs(make_napari_viewer):
+    """Test that TIFF file reading forwards kwargs."""
+    viewer = make_napari_viewer()
+    widget = LsmWidget(viewer, path="dummy.tif")
+    widget._is_lsm = False
+
+    # Add a custom kwarg row
+    widget.add_kwarg_btn.click()
+    key_edit, val_edit, _ = widget.kwargs_widgets[0]
+    key_edit.setText("custom_tiff_param")
+    val_edit.setText("True")
+
+    with patch("tifffile.imread") as mock_imread:
+        mock_imread.return_value = np.zeros((2, 2, 2))
+        widget._get_signal_data()
+
+        mock_imread.assert_called_once_with(
+            "dummy.tif", custom_tiff_param=True
+        )
+
+    widget.close()
+
+
+def test_czi_widget_get_signal_data_with_kwargs(make_napari_viewer):
+    """Test that CZI file reading forwards kwargs."""
+    viewer = make_napari_viewer()
+    widget = CziWidget(viewer, path="dummy.czi")
+
+    # Add a custom kwarg row
+    widget.add_kwarg_btn.click()
+    key_edit, val_edit, _ = widget.kwargs_widgets[0]
+    key_edit.setText("czi_param")
+    val_edit.setText("4.5")
+
+    with patch("phasorpy.io.signal_from_czi") as mock_signal_from_czi:
+        mock_signal_from_czi.return_value = np.zeros((2, 2, 2))
+        widget._get_signal_data()
+
+        mock_signal_from_czi.assert_called_once_with(
+            "dummy.czi", czi_param=4.5
+        )
+
+    widget.close()
