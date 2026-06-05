@@ -681,4 +681,36 @@ def test_clamp_harmonics():
         _clamp_harmonics([1], 1)
 
 
+def test_parse_and_call_io_function():
+    from napari_phasors._reader import _parse_and_call_io_function
+
+    def func_with_kwargs(path, a=1, **kwargs):
+        return {"path": path, "a": a, "kwargs": kwargs}
+
+    def func_without_kwargs(path, a=1):
+        return {"path": path, "a": a}
+
+    # Test function that accepts kwargs - custom kwargs should be passed through
+    res = _parse_and_call_io_function(
+        "dummy_path",
+        func_with_kwargs,
+        args_defaults={"a": (1, False)},
+        reader_options={"a": 42, "custom_kwarg": "hello", "another": [1, 2]},
+    )
+    assert res == {
+        "path": "dummy_path",
+        "a": 42,
+        "kwargs": {"custom_kwarg": "hello", "another": [1, 2]},
+    }
+
+    # Test function that does NOT accept kwargs - custom kwargs should raise ValueError
+    with pytest.raises(ValueError, match="Invalid argument 'custom_kwarg'"):
+        _parse_and_call_io_function(
+            "dummy_path",
+            func_without_kwargs,
+            args_defaults={"a": (1, False)},
+            reader_options={"a": 42, "custom_kwarg": "hello"},
+        )
+
+
 # TODO: Add tests for .tif files

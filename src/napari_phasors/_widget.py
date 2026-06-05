@@ -452,6 +452,103 @@ class AdvancedOptionsWidget(QWidget):
         axis_layout.addStretch()
         self.mainLayout.addLayout(axis_layout)
 
+    def _kwargs_widget(self):
+        """Widget to add arbitrary kwargs."""
+        self.kwargs_widgets = []
+
+        self.kwargs_layout = QVBoxLayout()
+        self.kwargs_layout.setAlignment(Qt.AlignTop)
+        self.kwargs_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.kwargs_container = QWidget()
+        self.kwargs_container.setLayout(self.kwargs_layout)
+
+        self.add_kwarg_btn = QPushButton("+")
+        self.add_kwarg_btn.setFixedWidth(30)
+        self.add_kwarg_btn.clicked.connect(self._add_kwarg_row)
+
+        self.kwargs_section = CollapsibleSection(
+            "Additional kwargs",
+            initially_collapsed=True,
+            text_color="#c7c7c7",
+        )
+        self.kwargs_section.add_widget(self.kwargs_container)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.setContentsMargins(0, 5, 0, 0)
+        btn_layout.addWidget(self.add_kwarg_btn)
+        btn_layout.addStretch()
+        btn_widget = QWidget()
+        btn_widget.setLayout(btn_layout)
+
+        self.kwargs_section.add_widget(btn_widget)
+
+        self.mainLayout.addWidget(self.kwargs_section)
+
+    def _add_kwarg_row(self):
+        row_widget = QWidget()
+        row_layout = QHBoxLayout(row_widget)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+
+        key_edit = QLineEdit()
+        key_edit.setPlaceholderText("Name")
+        key_edit.editingFinished.connect(
+            lambda: (
+                self._update_signal_plot()
+                if hasattr(self, '_update_signal_plot')
+                else None
+            )
+        )
+
+        val_edit = QLineEdit()
+        val_edit.setPlaceholderText("Value")
+        val_edit.editingFinished.connect(
+            lambda: (
+                self._update_signal_plot()
+                if hasattr(self, '_update_signal_plot')
+                else None
+            )
+        )
+
+        del_btn = QPushButton("X")
+        del_btn.setFixedWidth(30)
+
+        row_layout.addWidget(key_edit)
+        row_layout.addWidget(val_edit)
+        row_layout.addWidget(del_btn)
+
+        self.kwargs_layout.addWidget(row_widget)
+
+        kwarg_entry = (key_edit, val_edit, row_widget)
+        self.kwargs_widgets.append(kwarg_entry)
+
+        del_btn.clicked.connect(lambda: self._remove_kwarg_row(kwarg_entry))
+
+    def _remove_kwarg_row(self, kwarg_entry):
+        if kwarg_entry in self.kwargs_widgets:
+            self.kwargs_widgets.remove(kwarg_entry)
+        key_edit, val_edit, row_widget = kwarg_entry
+        self.kwargs_layout.removeWidget(row_widget)
+        row_widget.deleteLater()
+        if hasattr(self, '_update_signal_plot'):
+            self._update_signal_plot()
+
+    def _apply_kwargs(self, options):
+        """Apply dynamic kwargs to the provided options dict."""
+        import ast
+
+        if not hasattr(self, 'kwargs_widgets'):
+            return
+        for key_edit, val_edit, _ in self.kwargs_widgets:
+            key = key_edit.text().strip()
+            val_str = val_edit.text().strip()
+            if key and val_str:
+                try:
+                    val = ast.literal_eval(val_str)
+                except (ValueError, TypeError, SyntaxError, MemoryError):
+                    val = val_str
+                options[key] = val
+
     def _update_axis_options(self):
         """Refresh axis options based on preview signal shape and dims."""
         if not hasattr(self, 'axis_combo'):
@@ -1091,6 +1188,8 @@ class AdvancedOptionsWidget(QWidget):
         If ``_multi_file_paths`` is set, all files are stacked into a
         single 3D layer via :func:`raw_file_stack_reader`.
         """
+        if hasattr(self, '_apply_kwargs'):
+            self._apply_kwargs(reader_options)
         grouped_paths = getattr(self, '_grouped_file_paths', None)
         multi_paths = getattr(self, '_multi_file_paths', None)
         self._on_stack_z_spacing_changed()
@@ -1410,6 +1509,8 @@ class FbdWidget(AdvancedOptionsWidget):
         laser_layout.addStretch()
         self.mainLayout.addLayout(laser_layout)
 
+        self._kwargs_widget()
+
         self.btn = QPushButton("Phasor Transform")
         self.btn.clicked.connect(
             lambda: self._on_click(
@@ -1427,6 +1528,7 @@ class FbdWidget(AdvancedOptionsWidget):
         options = self.reader_options.copy()
         if self.laser_factor.text():
             options["laser_factor"] = float(self.laser_factor.text())
+        self._apply_kwargs(options)
 
         try:
             with warnings.catch_warnings():
@@ -1451,6 +1553,7 @@ class FbdWidget(AdvancedOptionsWidget):
         """Callback whenever the calculate phasor button is clicked."""
         if self.laser_factor.text():
             reader_options["laser_factor"] = float(self.laser_factor.text())
+        self._apply_kwargs(reader_options)
         super()._on_click(path, reader_options, harmonics)
 
 
@@ -1496,6 +1599,8 @@ class PtuWidget(AdvancedOptionsWidget):
         dtime_layout.addStretch()
         self.mainLayout.addLayout(dtime_layout)
 
+        self._kwargs_widget()
+
         self.btn = QPushButton("Phasor Transform")
         self.btn.clicked.connect(
             lambda: self._on_click(
@@ -1513,6 +1618,7 @@ class PtuWidget(AdvancedOptionsWidget):
         options = self.reader_options.copy()
         if self.dtime.text():
             options["dtime"] = float(self.dtime.text())
+        self._apply_kwargs(options)
 
         try:
             with _silence_ptufile_logger():
@@ -1536,6 +1642,7 @@ class PtuWidget(AdvancedOptionsWidget):
         """Callback whenever the calculate phasor button is clicked."""
         if self.dtime.text():
             reader_options["dtime"] = float(self.dtime.text())
+        self._apply_kwargs(reader_options)
         with _silence_ptufile_logger():
             super()._on_click(path, reader_options, harmonics)
 
@@ -1574,6 +1681,8 @@ class LsmWidget(AdvancedOptionsWidget):
         self._axis_widget()
         self._update_axis_options()
 
+        self._kwargs_widget()
+
         self.btn = QPushButton("Phasor Transform")
         self.btn.clicked.connect(
             lambda: self._on_click(
@@ -1587,14 +1696,19 @@ class LsmWidget(AdvancedOptionsWidget):
     def _get_signal_data(self):
         """Get signal data for LSM or TIFF files."""
         try:
+            options = self.reader_options.copy()
+            self._apply_kwargs(options)
+            # Remove keys that shouldn't be passed to io functions
+            options.pop('phasor_axis', None)
+
             if self._is_lsm:
                 from phasorpy.io import signal_from_lsm
 
-                return signal_from_lsm(self.path)
+                return signal_from_lsm(self.path, **options)
             else:
                 import tifffile
 
-                signal = tifffile.imread(self.path)
+                signal = tifffile.imread(self.path, **options)
                 return signal
         except Exception as e:  # noqa: BLE001
             show_error(
@@ -1755,6 +1869,8 @@ class CziWidget(AdvancedOptionsWidget):
 
         self._harmonic_widget()
 
+        self._kwargs_widget()
+
         self.btn = QPushButton("Phasor Transform")
         self.btn.clicked.connect(
             lambda: self._on_click(
@@ -1770,7 +1886,9 @@ class CziWidget(AdvancedOptionsWidget):
         try:
             from phasorpy.io import signal_from_czi
 
-            return signal_from_czi(self.path)
+            options = self.reader_options.copy()
+            self._apply_kwargs(options)
+            return signal_from_czi(self.path, **options)
         except Exception as e:  # noqa: BLE001
             show_error(f"Error reading CZI signal: {str(e)}")
             return None
@@ -2315,6 +2433,12 @@ class IfliWidget(ProcessedOnlyWidget):
         chan_layout.addStretch()
         self.mainLayout.insertLayout(1, chan_layout)
 
+        self._kwargs_widget()
+        # insert before the button which is the last widget
+        self.mainLayout.insertWidget(
+            self.mainLayout.count() - 1, self.kwargs_section
+        )
+
     def _on_click(self, path, reader_options, harmonics):
         """Callback whenever the calculate phasor button is clicked."""
         txt = self.channel_entry.text().strip()
@@ -2323,6 +2447,7 @@ class IfliWidget(ProcessedOnlyWidget):
         except ValueError:
             reader_options["channel"] = 0
             self.channel_entry.setText("0")
+        self._apply_kwargs(reader_options)
         super()._on_click(path, reader_options, harmonics)
 
 
