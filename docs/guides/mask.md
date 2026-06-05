@@ -20,10 +20,20 @@ You can use a labels layer (e.g., from manual annotation or segmentation) as a m
 
 1. Add or load a labels layer where each label value defines a region.
 2. In the **Phasor Plot** widget, select the labels layer as the mask source.
-3. You can restrict analysis to a specific label value or include all nonzero labels.
+3. Use the label selection dropdown next to the mask source selection to select specific label values to include in the analysis (by default, all labels are selected).
+   - Use the **All** or **None** shortcuts next to the dropdown to quickly check or uncheck all labels.
+   - Check the **Invert** checkbox next to the mask selection to exclude the selected labels instead of including them.
 
 <video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/mask%20labels.gif">
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/mask%20labels.mp4" type="video/mp4">
+</video>
+
+### Selecting specific labels
+
+When masking with a labels layer, the label selection dropdown allows you to restrict the analysis to a subset of labels in the layer.
+
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/filter%20labels%20mask.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/filter%20labels%20mask.mp4" type="video/mp4">
 </video>
 
 ## Masking with cursor selection
