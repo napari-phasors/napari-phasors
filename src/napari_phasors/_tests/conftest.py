@@ -21,6 +21,33 @@ except (AttributeError, ImportError, TypeError):
     pass
 
 
+# Harden superqt's SliderLabel against the same PySide6 + Python 3.14 shiboken
+# wrapper-corruption bug: under address reuse, `widget.style()` can return a
+# transient QWidgetItem instead of a QStyle, so `_get_size()` raises
+# `AttributeError: 'QWidgetItem' object has no attribute 'sizeFromContents'`.
+# This is triggered deep inside napari's layer-controls creation (via
+# `viewer.add_image`), aborts the `events.inserted` callback, and cascades into
+# KeyError on layer removal at teardown and a leaked QtViewer in the next test.
+# `_update_size` only sets a cosmetic fixed size, so swallowing a corrupted-
+# style failure and keeping the current size is safe.
+try:
+    from superqt.sliders._labeled import SliderLabel
+
+    _orig_SliderLabel_update_size = SliderLabel._update_size
+
+    def _safe_update_size(self, *args):
+        try:
+            return _orig_SliderLabel_update_size(self, *args)
+        except (AttributeError, TypeError):
+            # PySide6/shiboken handed back a non-QStyle object; skip the
+            # cosmetic resize rather than letting it abort widget creation.
+            return None
+
+    SliderLabel._update_size = _safe_update_size
+except (AttributeError, ImportError, TypeError):
+    pass
+
+
 @pytest.fixture(autouse=True)
 def _hide_qdialog(monkeypatch):
     orig_show = QDialog.show
