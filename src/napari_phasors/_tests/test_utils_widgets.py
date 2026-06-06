@@ -822,6 +822,39 @@ class TestCheckableComboBoxBasics:
         assert combo.allItems() == []
         assert combo.checkedItems() == []
 
+    def test_primary_layer_delegate_paint_custom_color(self, qtbot):
+        """Test that _PrimaryLayerDelegate.paint handles custom ForegroundRole colors without crashing."""
+        from qtpy.QtCore import Qt
+        from qtpy.QtGui import QColor, QImage, QPainter
+        from qtpy.QtWidgets import QStyleOptionViewItem
+
+        from napari_phasors._utils import CheckableComboBox
+
+        combo = CheckableComboBox()
+        qtbot.addWidget(combo)
+        combo.addItems(["test_item"])
+
+        item = combo.model().item(0)
+        item.setForeground(QColor(255, 0, 0))
+        item.setCheckState(Qt.Checked)
+
+        delegate = combo.itemDelegate()
+        option = QStyleOptionViewItem()
+        option.widget = combo
+        option.rect = combo.rect()
+
+        image = QImage(100, 30, QImage.Format_ARGB32)
+        painter = QPainter(image)
+        try:
+            # Should paint without crashing (handles the custom color path, checked)
+            delegate.paint(painter, option, combo.model().index(0, 0))
+
+            # Handles the custom color path, unchecked
+            item.setCheckState(Qt.Unchecked)
+            delegate.paint(painter, option, combo.model().index(0, 0))
+        finally:
+            painter.end()
+
 
 class TestCheckableComboBoxHeaderControls:
     """Tests for the show_select_all_none 'All' / 'None' header rows."""

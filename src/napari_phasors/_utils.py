@@ -999,11 +999,49 @@ class _PrimaryLayerDelegate(QStyledItemDelegate):
             cb_size,
             cb_size,
         )
-        if _check_state_value(check_state) == _check_state_value(Qt.Checked):
-            cb_option.state = QStyle.State_On | QStyle.State_Enabled
+        is_checked = _check_state_value(check_state) == _check_state_value(
+            Qt.Checked
+        )
+        item_color = index.data(Qt.ForegroundRole)
+        if hasattr(item_color, "color"):
+            item_color = item_color.color()
+
+        if isinstance(item_color, QColor) and item_color.isValid():
+            painter.save()
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            if is_checked:
+                painter.setBrush(item_color)
+                painter.setPen(Qt.NoPen)
+                painter.drawRoundedRect(cb_option.rect, 3, 3)
+
+                painter.setPen(
+                    QPen(Qt.white, 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+                )
+                painter.drawLine(
+                    cb_option.rect.left() + 4,
+                    cb_option.rect.top() + 8,
+                    cb_option.rect.left() + 7,
+                    cb_option.rect.top() + 11,
+                )
+                painter.drawLine(
+                    cb_option.rect.left() + 7,
+                    cb_option.rect.top() + 11,
+                    cb_option.rect.left() + 12,
+                    cb_option.rect.top() + 4,
+                )
+            else:
+                light_color = QColor(item_color)
+                light_color.setAlpha(100)
+                painter.setBrush(light_color)
+                painter.setPen(Qt.NoPen)
+                painter.drawRoundedRect(cb_option.rect, 3, 3)
+            painter.restore()
         else:
-            cb_option.state = QStyle.State_Off | QStyle.State_Enabled
-        style.drawControl(QStyle.CE_CheckBox, cb_option, painter)
+            if is_checked:
+                cb_option.state = QStyle.State_On | QStyle.State_Enabled
+            else:
+                cb_option.state = QStyle.State_Off | QStyle.State_Enabled
+            style.drawControl(QStyle.CE_CheckBox, cb_option, painter)
 
         text_left = rect.left() + cb_margin + cb_size + cb_margin
 

@@ -237,6 +237,30 @@ _patch_nap_plot_tools_safe_disconnect()
 _patch_biaplotter_safe_toggle_sender()
 
 
+def _apply_label_colors_to_combo(combo, labels_layer, unique_labels):
+    """Set foreground color and light background on each item in *combo*.
+
+    Colors are derived from *labels_layer* for each positive label value in
+    *unique_labels*.  A semi-transparent light background is added so the
+    colored text stays readable against napari's dark theme.
+    """
+    bg = QColor(160, 160, 160, 160)
+    offset = combo._header_count
+    for i, lbl in enumerate(lbl for lbl in unique_labels if lbl > 0):
+        rgba = labels_layer.get_color(lbl)
+        if rgba is None:
+            continue
+        r, g, b = (int(c * 255) for c in rgba[:3])
+        item = combo.model().item(offset + i)
+        if item is None:
+            continue
+        item.setForeground(QColor(r, g, b))
+        item.setBackground(bg)
+        font = item.font()
+        font.setBold(True)
+        item.setFont(font)
+
+
 class MaskAssignmentDialog(QDialog):
     """Dialog to assign a mask layer to each selected image layer.
 
@@ -397,6 +421,7 @@ class MaskAssignmentDialog(QDialog):
                         str(lbl) for lbl in unique_labels if lbl > 0
                     ]
                     lc.addItems(valid_labels)
+                    _apply_label_colors_to_combo(lc, layer, unique_labels)
                     # Restore previous selection if applicable
                     if text == current_assignments.get(name, "None"):
                         prev_labels = current_label_assignments.get(name)
@@ -5969,6 +5994,9 @@ class PlotterWidget(QWidget):
                         str(lbl) for lbl in unique_labels if lbl > 0
                     ]
                     self.mask_labels_combobox.addItems(valid_labels)
+                    _apply_label_colors_to_combo(
+                        self.mask_labels_combobox, layer, unique_labels
+                    )
                     # Keep previously selected labels if applicable
                     current_labels = None
                     for image_layer in selected_layers:
@@ -6076,6 +6104,9 @@ class PlotterWidget(QWidget):
 
         mask_layer = event.source
 
+        if len(selected_layers) <= 1 and isinstance(mask_layer, Labels):
+            self._refresh_mask_labels_combobox(mask_layer)
+
         for image_layer in affected_layers:
             invert = self._mask_invert_assignments.get(image_layer.name, False)
             labels = self._mask_label_assignments.get(image_layer.name, None)
@@ -6096,6 +6127,32 @@ class PlotterWidget(QWidget):
                 self.filter_tab.apply_button_clicked()
 
         self.refresh_current_plot()
+
+    def _refresh_mask_labels_combobox(self, layer):
+        """Repopulate mask_labels_combobox if the label set in *layer* changed.
+
+        Preserves the user's checked selection where possible: items that were
+        checked and still exist in the new label set remain checked; brand-new
+        labels are added unchecked unless all labels are newly checked, in which
+        case selectAll is called to keep the "All Labels" default.
+        """
+        unique_labels = np.unique(layer.data)
+        new_valid = [str(lbl) for lbl in unique_labels if lbl > 0]
+        if new_valid == self.mask_labels_combobox.allItems():
+            return
+        previously_checked = set(self.mask_labels_combobox.checkedItems())
+        self.mask_labels_combobox.blockSignals(True)
+        self.mask_labels_combobox.clear()
+        self.mask_labels_combobox.addItems(new_valid)
+        _apply_label_colors_to_combo(
+            self.mask_labels_combobox, layer, unique_labels
+        )
+        still_checked = [lbl for lbl in new_valid if lbl in previously_checked]
+        if not still_checked or set(still_checked) == set(new_valid):
+            self.mask_labels_combobox.selectAll()
+        else:
+            self.mask_labels_combobox.setCheckedItems(still_checked)
+        self.mask_labels_combobox.blockSignals(False)
 
     def _on_mask_invert_changed(self, checked):
         """Handle invert checkbox state change."""
