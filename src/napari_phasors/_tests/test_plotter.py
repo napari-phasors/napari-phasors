@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from biaplotter.plotter import CanvasWidget
 from napari.layers import Image
+from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -28,6 +29,7 @@ from napari_phasors.plotter import (
     MaskAssignmentDialog,
     PhasorCenterLayerSettingsDialog,
     PlotterWidget,
+    _apply_label_colors_to_combo,
 )
 from napari_phasors.selection_tab import SelectionWidget
 
@@ -4435,3 +4437,217 @@ def test_mask_assignment_dialog_get_label_assignments_normalises_all_checked(
     ), "All-checked labels should normalise to None in get_label_assignments"
 
     dialog.close()
+
+
+def test_mask_assignment_dialog_label_items_colored_by_layer(
+    make_napari_viewer,
+):
+    """Label combo items get foreground color and background matching the Labels layer."""
+    viewer = make_napari_viewer()
+    layer1 = create_image_layer_with_phasors()
+    viewer.add_layer(layer1)
+
+    G = layer1.metadata["G"]
+    shape = G.shape[1:] if G.ndim == 3 else G.shape
+    mask_data = np.zeros(shape, dtype=int)
+    mask_data[:, : shape[1] // 2] = 1
+    mask_data[:, shape[1] // 2 :] = 2
+    labels_layer = viewer.add_labels(mask_data, name="colored_labels")
+
+    dialog = MaskAssignmentDialog(
+        image_layer_names=[layer1.name],
+        mask_layer_names=["None", "colored_labels"],
+        mask_layers=[labels_layer],
+        current_assignments={layer1.name: "None"},
+        current_label_assignments={},
+        current_invert_assignments={},
+        parent=None,
+    )
+
+    # Trigger mask selection to populate label combo with colored items
+    dialog._combos[layer1.name].setCurrentText("colored_labels")
+
+    label_combo = dialog._label_combos[layer1.name]
+    model = label_combo.model()
+    offset = label_combo._header_count
+
+    expected_bg = QColor(160, 160, 160, 160)
+    for i, lbl in enumerate([1, 2]):
+        item = model.item(offset + i)
+        assert item is not None, f"Item for label {lbl} is missing"
+        rgba = labels_layer.get_color(lbl)
+        assert rgba is not None, f"Labels layer has no color for label {lbl}"
+        r, g, b = (int(c * 255) for c in rgba[:3])
+        assert item.foreground().color() == QColor(
+            r, g, b
+        ), f"Label {lbl}: wrong foreground color"
+        assert (
+            item.background().color() == expected_bg
+        ), f"Label {lbl}: wrong background color"
+
+    dialog.close()
+
+
+def test_single_layer_mask_label_items_colored_by_layer(make_napari_viewer):
+    """mask_labels_combobox items get label colors in single-layer mode."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    G = layer.metadata["G"]
+    shape = G.shape[1:] if G.ndim == 3 else G.shape
+    mask_data = np.zeros(shape, dtype=int)
+    mask_data[:, : shape[1] // 2] = 1
+    mask_data[:, shape[1] // 2 :] = 2
+    labels_layer = viewer.add_labels(mask_data, name="single_colored_labels")
+
+    plotter = PlotterWidget(viewer)
+    # Select the image layer so single-layer mode is active
+    plotter.image_layers_checkable_combobox.setCheckedItems([layer.name])
+
+    # Selecting the labels layer triggers _on_mask_layer_changed
+    plotter.mask_layer_combobox.setCurrentText("single_colored_labels")
+
+    combo = plotter.mask_labels_combobox
+    model = combo.model()
+    offset = combo._header_count
+
+    expected_bg = QColor(160, 160, 160, 160)
+    for i, lbl in enumerate([1, 2]):
+        item = model.item(offset + i)
+        assert item is not None, f"Item for label {lbl} is missing"
+        rgba = labels_layer.get_color(lbl)
+        assert rgba is not None, f"Labels layer has no color for label {lbl}"
+        r, g, b = (int(c * 255) for c in rgba[:3])
+        assert item.foreground().color() == QColor(
+            r, g, b
+        ), f"Label {lbl}: wrong foreground color in single-layer mode"
+        assert (
+            item.background().color() == expected_bg
+        ), f"Label {lbl}: wrong background color in single-layer mode"
+
+
+def test_apply_label_colors_to_combo(make_napari_viewer):
+    """_apply_label_colors_to_combo sets foreground and background on items."""
+    from napari_phasors._utils import CheckableComboBox
+
+    viewer = make_napari_viewer()
+    mask_data = np.array([[0, 1], [2, 3]], dtype=int)
+    labels_layer = viewer.add_labels(mask_data, name="helper_test_labels")
+
+    combo = CheckableComboBox(
+        placeholder="All Labels",
+        enable_primary_layer=False,
+        unit="labels",
+        show_select_all_none=False,
+        no_selection_text="No labels",
+    )
+    unique_labels = np.unique(labels_layer.data)
+    valid_labels = [str(lbl) for lbl in unique_labels if lbl > 0]
+    combo.addItems(valid_labels)
+
+    _apply_label_colors_to_combo(combo, labels_layer, unique_labels)
+
+    expected_bg = QColor(160, 160, 160, 160)
+    offset = combo._header_count
+    for i, lbl in enumerate([1, 2, 3]):
+        item = combo.model().item(offset + i)
+        assert item is not None
+        rgba = labels_layer.get_color(lbl)
+        if rgba is not None:
+            r, g, b = (int(c * 255) for c in rgba[:3])
+            assert item.foreground().color() == QColor(r, g, b)
+            assert item.background().color() == expected_bg
+
+
+def test_refresh_mask_labels_combobox_adds_new_label(make_napari_viewer):
+    """_refresh_mask_labels_combobox adds a new label and preserves selection."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    G = layer.metadata["G"]
+    shape = G.shape[1:] if G.ndim == 3 else G.shape
+    mask_data = np.zeros(shape, dtype=int)
+    mask_data[:, : shape[1] // 2] = 1
+    labels_layer = viewer.add_labels(mask_data, name="refresh_labels")
+
+    plotter = PlotterWidget(viewer)
+    plotter.image_layers_checkable_combobox.setCheckedItems([layer.name])
+    plotter.mask_layer_combobox.setCurrentText("refresh_labels")
+
+    combo = plotter.mask_labels_combobox
+    assert combo.allItems() == ["1"], "Should start with only label 1"
+    # Check only label 1 (simulates user deselecting nothing — all checked)
+    combo.selectAll()
+
+    # Add a new label to the layer data
+    new_data = mask_data.copy()
+    new_data[: shape[0] // 2, shape[1] // 2 :] = 2
+    labels_layer.data = new_data
+
+    plotter._refresh_mask_labels_combobox(labels_layer)
+
+    assert combo.allItems() == ["1", "2"], "Label 2 should be added"
+    # New label 2 should be unchecked (previously_checked only had "1")
+    checked = combo.checkedItems()
+    assert "1" in checked, "Previously checked label 1 should remain checked"
+
+
+def test_refresh_mask_labels_combobox_noop_when_unchanged(make_napari_viewer):
+    """_refresh_mask_labels_combobox does nothing when label set is unchanged."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    G = layer.metadata["G"]
+    shape = G.shape[1:] if G.ndim == 3 else G.shape
+    mask_data = np.zeros(shape, dtype=int)
+    mask_data[:, : shape[1] // 2] = 1
+    mask_data[:, shape[1] // 2 :] = 2
+    labels_layer = viewer.add_labels(mask_data, name="noop_labels")
+
+    plotter = PlotterWidget(viewer)
+    plotter.image_layers_checkable_combobox.setCheckedItems([layer.name])
+    plotter.mask_layer_combobox.setCurrentText("noop_labels")
+
+    combo = plotter.mask_labels_combobox
+    assert combo.allItems() == ["1", "2"]
+    combo.setCheckedItems(["1"])  # user selects only label 1
+
+    # Call refresh with the same data — should be a no-op
+    plotter._refresh_mask_labels_combobox(labels_layer)
+
+    assert combo.checkedItems() == ["1"], "Selection should be unchanged"
+
+
+def test_on_mask_data_changed_refreshes_label_combo(make_napari_viewer):
+    """Paint event on Labels layer updates mask_labels_combobox items."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    G = layer.metadata["G"]
+    shape = G.shape[1:] if G.ndim == 3 else G.shape
+    mask_data = np.zeros(shape, dtype=int)
+    mask_data[:, : shape[1] // 2] = 1
+    labels_layer = viewer.add_labels(mask_data, name="paint_event_labels")
+
+    plotter = PlotterWidget(viewer)
+    plotter.image_layers_checkable_combobox.setCheckedItems([layer.name])
+    plotter.mask_layer_combobox.setCurrentText("paint_event_labels")
+
+    combo = plotter.mask_labels_combobox
+    assert combo.allItems() == ["1"]
+
+    # Simulate painting a new label by modifying data and calling the handler
+    new_data = mask_data.copy()
+    new_data[: shape[0] // 2, shape[1] // 2 :] = 2
+    labels_layer.data = new_data
+
+    # Fire the paint-event handler directly
+    plotter._refresh_mask_labels_combobox(labels_layer)
+
+    assert (
+        "2" in combo.allItems()
+    ), "New label 2 should appear after data change"
