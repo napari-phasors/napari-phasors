@@ -1243,6 +1243,11 @@ class CheckableComboBox(QComboBox):
             self.model().insertRow(row_idx, item)
         self._header_count = 2
 
+    @property
+    def header_count(self):
+        """Number of non-checkable header rows at the top of the dropdown."""
+        return self._header_count
+
     def _is_header_row(self, row):
         """Return True if *row* is a header control row (not a data item)."""
         item = self.model().item(row)

@@ -245,7 +245,7 @@ def _apply_label_colors_to_combo(combo, labels_layer, unique_labels):
     colored text stays readable against napari's dark theme.
     """
     bg = QColor(160, 160, 160, 160)
-    offset = combo._header_count
+    offset = combo.header_count
     for i, lbl in enumerate(lbl for lbl in unique_labels if lbl > 0):
         rgba = labels_layer.get_color(lbl)
         if rgba is None:
@@ -6153,6 +6153,21 @@ class PlotterWidget(QWidget):
         else:
             self.mask_labels_combobox.setCheckedItems(still_checked)
         self.mask_labels_combobox.blockSignals(False)
+
+        # The label set changed, so the checked selection above may differ
+        # from what was stored before (e.g. "all" -> a subset, or vice
+        # versa). Resync _mask_label_assignments so the filter the caller
+        # applies right after matches what the combobox now shows.
+        checked = [
+            int(lbl) for lbl in self.mask_labels_combobox.checkedItems()
+        ]
+        all_count = (
+            self.mask_labels_combobox.model().rowCount()
+            - self.mask_labels_combobox.header_count
+        )
+        labels = None if len(checked) == all_count else checked
+        for image_layer in self.get_selected_layers():
+            self._mask_label_assignments[image_layer.name] = labels
 
     def _on_mask_invert_changed(self, checked):
         """Handle invert checkbox state change."""
