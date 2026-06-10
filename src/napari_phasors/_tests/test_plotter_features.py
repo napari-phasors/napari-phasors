@@ -1187,7 +1187,7 @@ def test_on_mask_data_changed_multi_layer_no_assignments_returns(
 
 def test_contour_layer_settings_clicked(make_viewer_model, monkeypatch):
     """Test _on_contour_layer_settings_clicked callback."""
-    from PySide6.QtWidgets import QDialog
+    from qtpy.QtWidgets import QDialog
 
     from napari_phasors.plotter import PlotterWidget
 
@@ -1251,7 +1251,7 @@ def test_contour_layer_settings_clicked(make_viewer_model, monkeypatch):
 
 def test_phasor_center_settings_clicked(make_viewer_model, monkeypatch):
     """Test _on_phasor_center_settings_clicked callback."""
-    from PySide6.QtWidgets import QDialog
+    from qtpy.QtWidgets import QDialog
 
     from napari_phasors.plotter import PlotterWidget
 
@@ -1321,7 +1321,7 @@ def test_phasor_center_settings_clicked(make_viewer_model, monkeypatch):
 
 def test_single_contour_color_clicked(make_viewer_model, monkeypatch):
     """Test _on_single_contour_color_clicked in HISTOGRAM2D and CONTOUR modes."""
-    from PySide6.QtGui import QColor
+    from qtpy.QtGui import QColor
 
     from napari_phasors.plotter import PlotterWidget
 
