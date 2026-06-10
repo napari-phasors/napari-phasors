@@ -2067,3 +2067,40 @@ def test_fret_calculate_donor_lifetime_from_layers(make_viewer_model, qtbot):
         # A finite averaged lifetime is computed and shown in the UI.
         assert w.donor_lifetime is not None and w.donor_lifetime > 0
         assert w.donor_line_edit.text() != ""
+
+
+def test_fret_harmonics_none_fallback(make_viewer_model, qtbot):
+    """Cover FRET calculations when harmonics metadata is None (e.g. loaded .R64 files)."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    layer.metadata["settings"] = {"frequency": 80.0}
+    # Simulate a .R64 file where harmonics is None and G/S are 2D arrays
+    layer.metadata["harmonics"] = None
+    layer.metadata["G"] = layer.metadata["G"][0]
+    layer.metadata["S"] = layer.metadata["S"][0]
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    w = parent.fret_tab
+    parent.tab_widget.setCurrentWidget(w)
+
+    w.frequency_input.setText("80")
+
+    # 1. Test _calculate_background_position with harmonics is None
+    w.bg_source_selector.setCurrentText("From layer(s)")
+    w._update_background_combobox()
+    w.background_image_combobox.setCheckedItems([layer.name])
+    w._calculate_background_position()
+    assert len(w.background_positions_by_harmonic) > 0
+
+    # 2. Test _calculate_donor_lifetime with harmonics is None
+    w.donor_source_selector.setCurrentIndex(1)  # From layer(s)
+    w._update_donor_lifetime_combobox()
+    w.donor_lifetime_combobox.setCheckedItems([layer.name])
+    w.lifetime_type_combobox.setCurrentText("Normal Lifetime")
+    w._calculate_donor_lifetime()
+    assert w.donor_lifetime is not None and w.donor_lifetime > 0
+
+    # 3. Test main FRET efficiency trajectory calculation loop with harmonics is None
+    w.calculate_fret_efficiency()
+    assert w.fret_layer is not None

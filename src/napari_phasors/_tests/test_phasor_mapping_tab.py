@@ -2123,3 +2123,32 @@ def test_phasor_mapping_custom_color_mesh_and_frequency(
     pm.output_mode_combobox.setCurrentText("Lifetime")
     pm.frequency_input.setText("80")
     pm._on_frequency_changed()
+
+
+def test_phasor_mapping_harmonics_none_fallback(make_viewer_model, qtbot):
+    """Cover phasor mapping calculations when harmonics metadata is None (e.g. loaded .R64 files)."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    layer.metadata["settings"] = {"frequency": 80.0}
+    # Simulate a .R64 file where harmonics is None and G/S are 2D arrays
+    layer.metadata["harmonics"] = None
+    layer.metadata["G"] = layer.metadata["G"][0]
+    layer.metadata["S"] = layer.metadata["S"][0]
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    pm = parent.phasor_mapping_tab
+    parent.tab_widget.setCurrentWidget(pm)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+
+    # 1. Phase output mode
+    pm.output_mode_combobox.setCurrentText("Phase")
+    pm.calculate_output_data()
+    # Confirm output layers/data created successfully
+    assert pm.current_metric_data_original is not None
+
+    # 2. Lifetime output mode
+    pm.output_mode_combobox.setCurrentText("Lifetime")
+    pm.calculate_output_data()
+    # Confirm output layers/data created successfully
+    assert pm.current_metric_data_original is not None
