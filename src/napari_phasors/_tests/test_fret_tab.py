@@ -2164,6 +2164,9 @@ def test_fret_widget_exceptions(make_viewer_model, qtbot):
     w._calculate_donor_lifetime()
 
     # 3. Main trajectory loop exceptions
+    # Reset G/S to valid matching shapes before triggering plotter update via combobox
+    layer.metadata["G"] = np.ones((2, 10, 10))
+    layer.metadata["S"] = np.ones((2, 10, 10))
     parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
     layer.metadata["G"] = None
     w.calculate_fret_efficiency()
