@@ -44,9 +44,9 @@ TEST_FORMATS = [
 ]
 
 
-def test_phasor_transform_widget(make_napari_viewer):
+def test_phasor_transform_widget(make_viewer_model, qtbot):
     """Test PhasorTransform widget behavior with mocked QFileDialog."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     widget = PhasorTransform(viewer)
 
     assert widget.viewer is viewer
@@ -95,9 +95,11 @@ def test_phasor_transform_widget(make_napari_viewer):
                 assert widget.dynamic_widget_layout.count() == 0
 
 
-def test_phasor_transform_widget_multi_file_grouped_mode(make_napari_viewer):
+def test_phasor_transform_widget_multi_file_grouped_mode(
+    make_viewer_model, qtbot
+):
     """Test grouped mode creates collapsible widgets and a scrollable path list."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     widget = PhasorTransform(viewer)
 
     file_paths = [
@@ -163,7 +165,7 @@ def test_phasor_transform_widget_multi_file_grouped_mode(make_napari_viewer):
         assert isinstance(group_widget, expected_type)
 
 
-def test_collapsible_group_container_toggle(make_napari_viewer):
+def test_collapsible_group_container_toggle(make_viewer_model, qtbot):
     """Test collapsible group container hides and shows its content."""
     container = CollapsibleSection(
         title="Group .ptu (2 file(s))",
@@ -184,9 +186,9 @@ def test_collapsible_group_container_toggle(make_napari_viewer):
     assert container._content.isHidden() is False
 
 
-def test_multi_file_preview_is_averaged(make_napari_viewer):
+def test_multi_file_preview_is_averaged(make_viewer_model, qtbot):
     """Test grouped preview signal averages over all selected files."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     widget = LsmWidget(viewer, path=get_test_file_path("test_file.lsm"))
 
     file_paths = ["file_a.lsm", "file_b.lsm"]
@@ -212,9 +214,9 @@ def test_multi_file_preview_is_averaged(make_napari_viewer):
     np.testing.assert_array_equal(preview, np.array([2.0, 3.0, 4.0]))
 
 
-def test_phasor_transform_fbd_widget(make_napari_viewer):
+def test_phasor_transform_fbd_widget(make_viewer_model, qtbot):
     """Test FbdWidget from PhasorTransfrom widget."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     PhasorTransform(viewer)
     test_file_path = get_test_file_path("test_file$EI0S.fbd")
     widget = FbdWidget(viewer, path=test_file_path)
@@ -286,9 +288,9 @@ def test_phasor_transform_fbd_widget(make_napari_viewer):
     # TODO: test laser factor parameter
 
 
-def test_phasor_transform_ptu_widget(make_napari_viewer, caplog):
+def test_phasor_transform_ptu_widget(make_viewer_model, qtbot, caplog):
     """Test PtuWidget from PhasorTransfrom widget."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     PhasorTransform(viewer)
     test_file_path = get_test_file_path("test_file.ptu")
     caplog.set_level(logging.ERROR, logger="ptufile")
@@ -355,9 +357,9 @@ def test_phasor_transform_ptu_widget(make_napari_viewer, caplog):
     # TODO: test dtime parameter
 
 
-def test_phasor_transform_sdt_widget(make_napari_viewer):
+def test_phasor_transform_sdt_widget(make_viewer_model, qtbot):
     """Test SdtWidget from PhasorTransfrom widget."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     file_path = get_test_file_path("seminal_receptacle_FLIM_single_image.sdt")
     PhasorTransform(viewer)
     widget = SdtWidget(viewer, path=file_path)
@@ -406,9 +408,9 @@ def test_phasor_transform_sdt_widget(make_napari_viewer):
     # TODO: test index parameter
 
 
-def test_phasor_transform_lsm_widget(make_napari_viewer):
+def test_phasor_transform_lsm_widget(make_viewer_model, qtbot):
     """Test LsmWidget from PhasorTransfrom widget."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     PhasorTransform(viewer)
     test_file_path = get_test_file_path("test_file.lsm")
     widget = LsmWidget(viewer, path=test_file_path)
@@ -448,10 +450,10 @@ def test_phasor_transform_lsm_widget(make_napari_viewer):
 
 
 def test_lsm_widget_axis_selection_updates_signal_plot(
-    make_napari_viewer, monkeypatch
+    make_viewer_model, qtbot, monkeypatch
 ):
     """Changing the axis combobox should update the selected axis and refresh the preview plot."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     fake_signal = xr.DataArray(
         np.arange(24, dtype=np.float32).reshape(2, 3, 4),
         dims=("Z", "Y", "H"),
@@ -482,10 +484,10 @@ def test_lsm_widget_axis_selection_updates_signal_plot(
 
 
 def test_tiff_widget_axis_selection_updates_signal_plot(
-    make_napari_viewer, monkeypatch
+    make_viewer_model, qtbot, monkeypatch
 ):
     """Changing the axis combobox for a TIFF file should update the selected axis and refresh the preview plot."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     fake_signal = xr.DataArray(
         np.arange(24, dtype=np.float32).reshape(2, 3, 4),
         dims=("Z", "Y", "H"),
@@ -517,9 +519,9 @@ def test_tiff_widget_axis_selection_updates_signal_plot(
     assert not np.array_equal(initial_plot, updated_plot)
 
 
-def test_phasor_transform_czi_widget(make_napari_viewer):
+def test_phasor_transform_czi_widget(make_viewer_model, qtbot):
     """Test CziWidget from PhasorTransform widget."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     test_file_path = get_test_file_path("test_file.czi")
     widget = CziWidget(viewer, path=test_file_path)
     try:
@@ -565,9 +567,9 @@ def test_phasor_transform_czi_widget(make_napari_viewer):
         widget.deleteLater()
 
 
-def test_phasor_transform_ome_tif_widget(make_napari_viewer):
+def test_phasor_transform_ome_tif_widget(make_viewer_model, qtbot):
     """Test OmeTifWidget from PhasorTransform widget."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     PhasorTransform(viewer)
     test_file_path = get_test_file_path("test_file.ome.tif")
     widget = OmeTifWidget(viewer, path=test_file_path)
@@ -600,9 +602,11 @@ def test_phasor_transform_ome_tif_widget(make_napari_viewer):
     assert list(viewer.layers[0].metadata["harmonics"]) == [2]
 
 
-def test_phasor_transform_ome_tif_preserves_axis_kwargs(make_napari_viewer):
+def test_phasor_transform_ome_tif_preserves_axis_kwargs(
+    make_viewer_model, qtbot
+):
     """OME-TIFF loaded from widget should preserve reader axis kwargs."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     test_file_path = get_test_file_path("test_file.ome.tif")
 
     reader = napari_get_reader(test_file_path, harmonics=[1])
@@ -630,10 +634,11 @@ def test_phasor_transform_ome_tif_preserves_axis_kwargs(make_napari_viewer):
 
 
 def test_fbd_laser_factor_triggers_plot_only_on_editing_finished(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """FbdWidget laser_factor should only update the signal plot on editingFinished, not on each keystroke."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     test_file_path = get_test_file_path("test_file$EI0S.fbd")
     widget = FbdWidget(viewer, path=test_file_path)
 
@@ -651,10 +656,10 @@ def test_fbd_laser_factor_triggers_plot_only_on_editing_finished(
 
 
 def test_ptu_dtime_triggers_plot_only_on_editing_finished(
-    make_napari_viewer, caplog
+    make_viewer_model, qtbot, caplog
 ):
     """PtuWidget dtime should only update the signal plot on editingFinished, not on each keystroke."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     test_file_path = get_test_file_path("test_file.ptu")
     caplog.set_level(logging.ERROR, logger="ptufile")
     widget = PtuWidget(viewer, path=test_file_path)
@@ -669,9 +674,11 @@ def test_ptu_dtime_triggers_plot_only_on_editing_finished(
         mock_update.assert_called_once()
 
 
-def test_sdt_index_triggers_plot_only_on_editing_finished(make_napari_viewer):
+def test_sdt_index_triggers_plot_only_on_editing_finished(
+    make_viewer_model, qtbot
+):
     """SdtWidget index should only update the signal plot on editingFinished, not on each keystroke."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     file_path = get_test_file_path("seminal_receptacle_FLIM_single_image.sdt")
     widget = SdtWidget(viewer, path=file_path)
 
@@ -685,14 +692,15 @@ def test_sdt_index_triggers_plot_only_on_editing_finished(make_napari_viewer):
 
 
 def test_json_channel_triggers_plot_only_on_editing_finished(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """JsonWidget channel_entry should only update the signal plot on editingFinished, not on each keystroke."""
     from phasorpy.datasets import fetch
 
     from napari_phasors._widget import JsonWidget
 
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     file_path = fetch("Fluorescein_Calibration_m2_1740751189_imaging.json")
     widget = JsonWidget(viewer, path=file_path)
 
@@ -705,9 +713,9 @@ def test_json_channel_triggers_plot_only_on_editing_finished(
         mock_update.assert_called_once()
 
 
-def test_harmonic_range_slider_functionality(make_napari_viewer):
+def test_harmonic_range_slider_functionality(make_viewer_model, qtbot):
     """Test QRangeSlider functionality for harmonics in all widget types."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     test_file_path = get_test_file_path("test_file$EI0S.fbd")
     widget = FbdWidget(viewer, path=test_file_path)
 
@@ -734,9 +742,9 @@ def test_harmonic_range_slider_functionality(make_napari_viewer):
     assert widget.harmonics == [3, 4, 5]
 
 
-def test_signal_plot_fbd_single_channel_all_frames(make_napari_viewer):
+def test_signal_plot_fbd_single_channel_all_frames(make_viewer_model, qtbot):
     """Test signal plot for FBD widget with single channel, all frames."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     test_file_path = get_test_file_path("test_file$EI0S.fbd")
     widget = FbdWidget(viewer, path=test_file_path)
 
@@ -766,9 +774,9 @@ def test_signal_plot_fbd_single_channel_all_frames(make_napari_viewer):
     assert len(plot_x_data) == len(signal_data)
 
 
-def test_signal_plot_fbd_single_channel_single_frame(make_napari_viewer):
+def test_signal_plot_fbd_single_channel_single_frame(make_viewer_model, qtbot):
     """Test signal plot for FBD widget with single channel, single frame."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     test_file_path = get_test_file_path("test_file$EI0S.fbd")
     widget = FbdWidget(viewer, path=test_file_path)
 
@@ -791,9 +799,9 @@ def test_signal_plot_fbd_single_channel_single_frame(make_napari_viewer):
     np.testing.assert_array_almost_equal(plot_y_data, signal_data)
 
 
-def test_signal_plot_fbd_all_channels_single_frame(make_napari_viewer):
+def test_signal_plot_fbd_all_channels_single_frame(make_viewer_model, qtbot):
     """Test signal plot for FBD widget with all channels, single frame."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     test_file_path = get_test_file_path("test_file$EI0S.fbd")
     widget = FbdWidget(viewer, path=test_file_path)
 
@@ -829,9 +837,9 @@ def test_signal_plot_fbd_all_channels_single_frame(make_napari_viewer):
         np.testing.assert_array_almost_equal(plot_y_data, signal_data[i])
 
 
-def test_signal_plot_sdt_widget(make_napari_viewer):
+def test_signal_plot_sdt_widget(make_viewer_model, qtbot):
     """Test signal plot for SDT widget."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     file_path = get_test_file_path("seminal_receptacle_FLIM_single_image.sdt")
     widget = SdtWidget(viewer, path=file_path)
 
@@ -849,9 +857,9 @@ def test_signal_plot_sdt_widget(make_napari_viewer):
     np.testing.assert_array_almost_equal(plot_y_data, signal_data)
 
 
-def test_signal_plot_ometif_widget(make_napari_viewer):
+def test_signal_plot_ometif_widget(make_viewer_model, qtbot):
     """Test signal plot for OME-TIF widget."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     test_file_path = get_test_file_path("test_file.ome.tif")
     widget = OmeTifWidget(viewer, path=test_file_path)
 
@@ -888,9 +896,9 @@ def test_signal_plot_ometif_widget(make_napari_viewer):
     assert widget.harmonic_slider.maximum() == np.max(harmonics)
 
 
-def test_signal_plot_lsm_widget(make_napari_viewer):
+def test_signal_plot_lsm_widget(make_viewer_model, qtbot):
     """Test signal plot for LSM widget."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     test_file_path = get_test_file_path("test_file.lsm")
     widget = LsmWidget(viewer, path=test_file_path)
 
@@ -908,9 +916,9 @@ def test_signal_plot_lsm_widget(make_napari_viewer):
     np.testing.assert_array_almost_equal(plot_y_data, signal_data)
 
 
-def test_signal_plot_error_handling(make_napari_viewer):
+def test_signal_plot_error_handling(make_viewer_model, qtbot):
     """Test signal plot error handling when data cannot be loaded."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     test_file_path = get_test_file_path("test_file$EI0S.fbd")
     widget = FbdWidget(viewer, path=test_file_path)
 
@@ -918,17 +926,14 @@ def test_signal_plot_error_handling(make_napari_viewer):
     with patch.object(
         widget, '_get_signal_data', side_effect=Exception("Test error")
     ):
-        # Should not raise exception, should handle gracefully
+        # Should not raise; the plot must end up with no data lines.
         widget._update_signal_plot()
-
-        # Plot should be cleared or show error state
-        widget.ax.get_lines()
-        # Should either be empty or show error message
+        assert len(widget.ax.get_lines()) == 0
 
 
-def test_phasor_transform_with_ome_tif_reader_option(make_napari_viewer):
+def test_phasor_transform_with_ome_tif_reader_option(make_viewer_model, qtbot):
     """Test PhasorTransform widget includes OmeTifWidget in reader options."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     widget = PhasorTransform(viewer)
 
     try:
@@ -952,9 +957,9 @@ def test_phasor_transform_with_ome_tif_reader_option(make_napari_viewer):
         widget.deleteLater()
 
 
-def test_signal_plot_canvas_properties(make_napari_viewer):
+def test_signal_plot_canvas_properties(make_viewer_model, qtbot):
     """Test signal plot canvas has correct properties."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     test_file_path = get_test_file_path("test_file$EI0S.fbd")
     widget = FbdWidget(viewer, path=test_file_path)
 
@@ -978,9 +983,9 @@ def test_signal_plot_canvas_properties(make_napari_viewer):
     assert widget.ax.title.get_color() == 'grey'
 
 
-def test_signal_plot_data_consistency_across_widgets(make_napari_viewer):
+def test_signal_plot_data_consistency_across_widgets(make_viewer_model, qtbot):
     """Test signal plot data consistency across different widget types."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
 
     # Test each widget type has consistent signal data format
     test_files = [
@@ -1008,8 +1013,8 @@ def test_signal_plot_data_consistency_across_widgets(make_napari_viewer):
         assert not np.isnan(signal_array).all()
 
 
-def test_phasor_transform_flif_widget(make_napari_viewer):
-    viewer = make_napari_viewer()
+def test_phasor_transform_flif_widget(make_viewer_model, qtbot):
+    viewer = make_viewer_model()
     file_path = fetch("flimfast.flif")
     PhasorTransform(viewer)
     from napari_phasors._widget import FlifWidget
@@ -1019,8 +1024,8 @@ def test_phasor_transform_flif_widget(make_napari_viewer):
     assert len(viewer.layers) > 0
 
 
-def test_phasor_transform_bh_widget(make_napari_viewer):
-    viewer = make_napari_viewer()
+def test_phasor_transform_bh_widget(make_viewer_model, qtbot):
+    viewer = make_viewer_model()
     file_path = fetch("simfcs.b&h")
     PhasorTransform(viewer)
     from napari_phasors._widget import BhWidget
@@ -1030,8 +1035,8 @@ def test_phasor_transform_bh_widget(make_napari_viewer):
     assert len(viewer.layers) > 0
 
 
-def test_phasor_transform_bhz_widget(make_napari_viewer):
-    viewer = make_napari_viewer()
+def test_phasor_transform_bhz_widget(make_viewer_model, qtbot):
+    viewer = make_viewer_model()
     file_path = fetch("simfcs.bhz")
     PhasorTransform(viewer)
     from napari_phasors._widget import BhWidget
@@ -1041,8 +1046,8 @@ def test_phasor_transform_bhz_widget(make_napari_viewer):
     assert len(viewer.layers) > 0
 
 
-def test_phasor_transform_json_widget(make_napari_viewer):
-    viewer = make_napari_viewer()
+def test_phasor_transform_json_widget(make_viewer_model, qtbot):
+    viewer = make_viewer_model()
     file_path = fetch("Fluorescein_Calibration_m2_1740751189_imaging.json")
     PhasorTransform(viewer)
     from napari_phasors._widget import JsonWidget
@@ -1052,8 +1057,8 @@ def test_phasor_transform_json_widget(make_napari_viewer):
     assert len(viewer.layers) > 0
 
 
-def test_phasor_transform_simfcs_widget(make_napari_viewer):
-    viewer = make_napari_viewer()
+def test_phasor_transform_simfcs_widget(make_viewer_model, qtbot):
+    viewer = make_viewer_model()
     file_path = fetch("simfcs.r64")
     PhasorTransform(viewer)
     from napari_phasors._widget import SimfcsWidget
@@ -1063,10 +1068,10 @@ def test_phasor_transform_simfcs_widget(make_napari_viewer):
     assert len(viewer.layers) > 0
 
 
-def test_writer_widget(make_napari_viewer, tmp_path):
+def test_writer_widget(make_viewer_model, qtbot, tmp_path):
     """Test the WriterWidget class."""
     # Intialize viewer and add intensity image layer with phasors data
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     main_widget = WriterWidget(viewer)
     assert main_widget.viewer is viewer
     assert isinstance(main_widget, QWidget)
@@ -1165,9 +1170,9 @@ def test_writer_widget(make_napari_viewer, tmp_path):
         )
 
 
-def test_writer_widget_image_exports(make_napari_viewer, tmp_path):
+def test_writer_widget_image_exports(make_viewer_model, qtbot, tmp_path):
     """Test image export functionality in WriterWidget."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     main_widget = WriterWidget(viewer)
 
     # Create synthetic data
@@ -1260,11 +1265,11 @@ def test_writer_widget_image_exports(make_napari_viewer, tmp_path):
         )
 
 
-def test_writer_widget_colormap_applied(make_napari_viewer, tmp_path):
+def test_writer_widget_colormap_applied(make_viewer_model, qtbot, tmp_path):
     """Test that the napari layer's colormap is correctly applied to exported images."""
     from PIL import Image
 
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     main_widget = WriterWidget(viewer)
 
     # Create synthetic data
@@ -1294,14 +1299,16 @@ def test_writer_widget_colormap_applied(make_napari_viewer, tmp_path):
         assert os.path.exists(export_path)
 
         # Verify the image was created and is not empty
-        img = Image.open(export_path)
-        assert img.size[0] > 0
-        assert img.size[1] > 0
+        with Image.open(export_path) as img:
+            assert img.size[0] > 0
+            assert img.size[1] > 0
 
 
-def test_writer_widget_file_extension_handling(make_napari_viewer, tmp_path):
+def test_writer_widget_file_extension_handling(
+    make_viewer_model, qtbot, tmp_path
+):
     """Test that file extensions are correctly handled for all export formats."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     main_widget = WriterWidget(viewer)
 
     # Create synthetic data
@@ -1343,9 +1350,9 @@ def test_writer_widget_file_extension_handling(make_napari_viewer, tmp_path):
             ), f"Failed for {input_name} -> {expected_output}"
 
 
-def test_writer_widget_colorbar_checkbox_state(make_napari_viewer):
+def test_writer_widget_colorbar_checkbox_state(make_viewer_model, qtbot):
     """Test that the colorbar checkbox is properly initialized and responsive."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     main_widget = WriterWidget(viewer)
 
     # Check initial state
@@ -1363,9 +1370,11 @@ def test_writer_widget_colorbar_checkbox_state(make_napari_viewer):
     assert main_widget.colorbar_checkbox.isChecked() is True
 
 
-def test_writer_widget_csv_export_2d_no_phasor(make_napari_viewer, tmp_path):
+def test_writer_widget_csv_export_2d_no_phasor(
+    make_viewer_model, qtbot, tmp_path
+):
     """Test CSV export for 2D image without phasor metadata."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     widget = WriterWidget(viewer)
 
     # Create a simple 2D image layer without phasor metadata
@@ -1400,9 +1409,11 @@ def test_writer_widget_csv_export_2d_no_phasor(make_napari_viewer, tmp_path):
     np.testing.assert_array_equal(df['value'].values, expected_values)
 
 
-def test_writer_widget_csv_export_4d_no_phasor(make_napari_viewer, tmp_path):
+def test_writer_widget_csv_export_4d_no_phasor(
+    make_viewer_model, qtbot, tmp_path
+):
     """Test CSV export for 4D image without phasor metadata."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     widget = WriterWidget(viewer)
 
     # Create a 4D image layer
@@ -1435,10 +1446,10 @@ def test_writer_widget_csv_export_4d_no_phasor(make_napari_viewer, tmp_path):
 
 
 def test_writer_widget_csv_coordinates_consistency_2d(
-    make_napari_viewer, tmp_path
+    make_viewer_model, qtbot, tmp_path
 ):
     """Test that CSV export maintains coordinate consistency for 2D images."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     widget = WriterWidget(viewer)
 
     # Create 2D image with known pattern
@@ -1474,9 +1485,9 @@ def test_writer_widget_csv_coordinates_consistency_2d(
     assert val_11 == 40
 
 
-def test_writer_widget_excludes_labels_layer(make_napari_viewer):
+def test_writer_widget_excludes_labels_layer(make_viewer_model, qtbot):
     """Test that WriterWidget excludes Labels layers from populate combobox."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     viewer.add_image(np.random.random((10, 10)), name="my_image")
     viewer.add_labels(np.zeros((10, 10), dtype=int), name="my_labels")
 
@@ -1490,13 +1501,15 @@ def test_writer_widget_excludes_labels_layer(make_napari_viewer):
     assert "my_labels" not in items
 
 
-def test_export_labels_layer_as_colored_image(make_napari_viewer, tmp_path):
+def test_export_labels_layer_as_colored_image(
+    make_viewer_model, qtbot, tmp_path
+):
     """Test that Labels layers are exported as colored images without colorbar."""
     from PIL import Image as PILImage
 
     from napari_phasors._writer import export_layer_as_image
 
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
 
     # Create a labels layer with distinct labels
     labels_data = np.zeros((10, 10), dtype=np.int32)
@@ -1511,8 +1524,8 @@ def test_export_labels_layer_as_colored_image(make_napari_viewer, tmp_path):
     assert os.path.exists(export_path)
 
     # Open and verify the image has color representation (not black and white)
-    img = PILImage.open(export_path)
-    img_data = np.array(img)
+    with PILImage.open(export_path) as img:
+        img_data = np.array(img)
 
     assert img_data.ndim == 3
     assert img_data.shape[-1] in (3, 4)
@@ -1524,9 +1537,9 @@ def test_export_labels_layer_as_colored_image(make_napari_viewer, tmp_path):
     assert is_colored, "Exported labels image is grayscale or black and white!"
 
 
-def test_writer_widget_mask_checkbox(make_napari_viewer, tmp_path):
+def test_writer_widget_mask_checkbox(make_viewer_model, qtbot, tmp_path):
     """Test that WriterWidget mask checkbox behaves dynamically based on layer mask presence."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
 
     # 1. Create a layer without phasor/mask data
     data = np.random.random((10, 10))
@@ -1577,9 +1590,9 @@ def test_writer_widget_mask_checkbox(make_napari_viewer, tmp_path):
     widget.close()
 
 
-def test_advanced_options_widget_kwargs(make_napari_viewer):
+def test_advanced_options_widget_kwargs(make_viewer_model, qtbot):
     """Test the dynamic kwargs functionality in AdvancedOptionsWidget."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     widget = FbdWidget(viewer, path=get_test_file_path("test_file$EI0S.fbd"))
 
     # Initially, kwargs_widgets should be empty
@@ -1647,11 +1660,11 @@ def test_advanced_options_widget_kwargs(make_napari_viewer):
     widget.close()
 
 
-def test_ifli_widget(make_napari_viewer):
+def test_ifli_widget(make_viewer_model, qtbot):
     """Test IfliWidget UI initialization and kwargs integration."""
     from napari_phasors._widget import IfliWidget, ProcessedOnlyWidget
 
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     widget = IfliWidget(viewer, path="dummy.ifli")
 
     # Check that UI elements are correctly set up
@@ -1695,9 +1708,9 @@ def test_ifli_widget(make_napari_viewer):
     widget.close()
 
 
-def test_lsm_widget_get_signal_data_with_kwargs(make_napari_viewer):
+def test_lsm_widget_get_signal_data_with_kwargs(make_viewer_model, qtbot):
     """Test that LSM file reading forwards kwargs."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     widget = LsmWidget(viewer, path="dummy.lsm")
     widget._is_lsm = True
 
@@ -1718,9 +1731,9 @@ def test_lsm_widget_get_signal_data_with_kwargs(make_napari_viewer):
     widget.close()
 
 
-def test_tiff_widget_get_signal_data_with_kwargs(make_napari_viewer):
+def test_tiff_widget_get_signal_data_with_kwargs(make_viewer_model, qtbot):
     """Test that TIFF file reading forwards kwargs."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     widget = LsmWidget(viewer, path="dummy.tif")
     widget._is_lsm = False
 
@@ -1741,9 +1754,9 @@ def test_tiff_widget_get_signal_data_with_kwargs(make_napari_viewer):
     widget.close()
 
 
-def test_czi_widget_get_signal_data_with_kwargs(make_napari_viewer):
+def test_czi_widget_get_signal_data_with_kwargs(make_viewer_model, qtbot):
     """Test that CZI file reading forwards kwargs."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     widget = CziWidget(viewer, path="dummy.czi")
 
     # Add a custom kwarg row
@@ -1761,3 +1774,442 @@ def test_czi_widget_get_signal_data_with_kwargs(make_napari_viewer):
         )
 
     widget.close()
+
+
+def test_bh_widget_init(make_viewer_model, qtbot):
+    from unittest.mock import patch
+
+    from napari_phasors._widget import BhWidget
+
+    viewer = make_viewer_model()
+    with patch("napari_phasors._widget.BhWidget._update_signal_plot"):
+        widget = BhWidget(viewer, path="test.bh")
+    assert widget.path == "test.bh"
+    assert widget.reader_options == {}
+
+
+def test_pqbin_widget_init(make_viewer_model, qtbot):
+    from unittest.mock import patch
+
+    from napari_phasors._widget import PqbinWidget
+
+    viewer = make_viewer_model()
+    with patch("napari_phasors._widget.PqbinWidget._update_signal_plot"):
+        widget = PqbinWidget(viewer, path="test.bin")
+    assert widget.path == "test.bin"
+
+
+def test_simfcs_widget_init(make_viewer_model, qtbot):
+    from unittest.mock import patch
+
+    from napari_phasors._widget import SimfcsWidget
+
+    viewer = make_viewer_model()
+    with patch("napari_phasors._widget.SimfcsWidget._update_signal_plot"):
+        widget = SimfcsWidget(viewer, path="test.r64")
+    assert widget.path == "test.r64"
+
+
+def test_ifli_widget_init(make_viewer_model, qtbot):
+    from unittest.mock import patch
+
+    from napari_phasors._widget import IfliWidget
+
+    viewer = make_viewer_model()
+    with patch("napari_phasors._widget.IfliWidget._update_signal_plot"):
+        widget = IfliWidget(viewer, path="test.ifli")
+    assert widget.path == "test.ifli"
+
+
+def test_flif_widget_init(make_viewer_model, qtbot):
+    from unittest.mock import patch
+
+    from napari_phasors._widget import FlifWidget
+
+    viewer = make_viewer_model()
+    with patch("napari_phasors._widget.FlifWidget._update_signal_plot"):
+        widget = FlifWidget(viewer, path="test.flif")
+    assert widget.path == "test.flif"
+
+
+def test_lif_widget_init(make_viewer_model, qtbot):
+    from unittest.mock import patch
+
+    from napari_phasors._widget import LifWidget
+
+    viewer = make_viewer_model()
+    with patch("napari_phasors._widget.LifWidget._update_signal_plot"):
+        widget = LifWidget(viewer, path="test.lif")
+    assert widget.path == "test.lif"
+
+
+def test_json_widget_init(make_viewer_model, qtbot):
+    from unittest.mock import patch
+
+    from napari_phasors._widget import JsonWidget
+
+    viewer = make_viewer_model()
+    with patch("napari_phasors._widget.JsonWidget._update_signal_plot"):
+        widget = JsonWidget(viewer, path="test.json")
+    assert widget.path == "test.json"
+
+
+def test_phasor_transform_open_multi_file_dialog_single_file(
+    make_viewer_model, qtbot, monkeypatch
+):
+    from unittest.mock import patch
+
+    from napari_phasors._widget import PhasorTransform
+
+    viewer = make_viewer_model()
+    widget = PhasorTransform(viewer)
+
+    mock_files = (["/fake/path/test1.lsm"], "")
+    monkeypatch.setattr(
+        "napari_phasors._widget.QFileDialog.getOpenFileNames",
+        lambda *args, **kwargs: mock_files,
+    )
+
+    class MockFileOrderDialog:
+        Accepted = 1
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def exec(self):
+            return 1
+
+        def get_ordered_paths(self):
+            return ["/fake/path/test1.lsm"]
+
+        def get_z_spacing(self):
+            return 1.0
+
+        def get_axis_order(self):
+            return [0, 1]
+
+        def get_axis_labels(self):
+            return ["Y", "X"]
+
+    monkeypatch.setattr(
+        "napari_phasors._widget.FileOrderDialog", MockFileOrderDialog
+    )
+    monkeypatch.setattr("os.path.isfile", lambda p: True)
+
+    with patch("napari_phasors._widget.LsmWidget._update_signal_plot"):
+        widget.multi_file_button.click()
+
+    assert widget.dynamic_widget_layout.count() == 1
+
+
+def test_phasor_transform_open_multi_file_dialog_multiple_files(
+    make_viewer_model, qtbot, monkeypatch
+):
+    from unittest.mock import patch
+
+    from napari_phasors._widget import PhasorTransform
+
+    viewer = make_viewer_model()
+    widget = PhasorTransform(viewer)
+
+    mock_files = (["/fake/path/test2.lsm", "/fake/path/test1.lsm"], "")
+    monkeypatch.setattr(
+        "napari_phasors._widget.QFileDialog.getOpenFileNames",
+        lambda *args, **kwargs: mock_files,
+    )
+
+    class MockFileOrderDialog:
+        Accepted = 1
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def exec(self):
+            return 1
+
+        def get_ordered_paths(self):
+            return ["/fake/path/test1.lsm", "/fake/path/test2.lsm"]
+
+        def get_z_spacing(self):
+            return 1.0
+
+        def get_axis_order(self):
+            return [0, 1]
+
+        def get_axis_labels(self):
+            return ["Y", "X"]
+
+    monkeypatch.setattr(
+        "napari_phasors._widget.FileOrderDialog", MockFileOrderDialog
+    )
+    monkeypatch.setattr("os.path.isfile", lambda p: True)
+
+    with patch("napari_phasors._widget.LsmWidget._update_signal_plot"):
+        widget.multi_file_button.click()
+
+    assert widget.dynamic_widget_layout.count() == 1
+    added_widget = widget.dynamic_widget_layout.itemAt(0).widget()
+    assert added_widget._multi_file_paths == [
+        "/fake/path/test1.lsm",
+        "/fake/path/test2.lsm",
+    ]
+
+
+def test_phasor_transform_open_multi_file_dialog_cancel(
+    make_viewer_model, qtbot, monkeypatch
+):
+    from napari_phasors._widget import PhasorTransform
+
+    viewer = make_viewer_model()
+    widget = PhasorTransform(viewer)
+
+    mock_files = (["/fake/path/test1.lsm"], "")
+    monkeypatch.setattr(
+        "napari_phasors._widget.QFileDialog.getOpenFileNames",
+        lambda *args, **kwargs: mock_files,
+    )
+
+    class MockFileOrderDialog:
+        Accepted = 1
+        Rejected = 0
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def exec(self):
+            return 0
+
+    monkeypatch.setattr(
+        "napari_phasors._widget.FileOrderDialog", MockFileOrderDialog
+    )
+    monkeypatch.setattr("os.path.isfile", lambda p: True)
+
+    widget.multi_file_button.click()
+    assert widget.dynamic_widget_layout.count() == 0
+
+
+def test_phasor_transform_open_multi_file_dialog_mismatched_extensions(
+    make_viewer_model, qtbot, monkeypatch
+):
+    from unittest.mock import MagicMock
+
+    from napari_phasors._widget import PhasorTransform
+
+    viewer = make_viewer_model()
+    widget = PhasorTransform(viewer)
+
+    mock_files = (["/fake/path/test1.lsm", "/fake/path/test2.ptu"], "")
+    monkeypatch.setattr(
+        "napari_phasors._widget.QFileDialog.getOpenFileNames",
+        lambda *args, **kwargs: mock_files,
+    )
+    monkeypatch.setattr("os.path.isfile", lambda p: True)
+
+    mock_show_error = MagicMock()
+    monkeypatch.setattr("napari_phasors._widget.show_error", mock_show_error)
+
+    widget.multi_file_button.click()
+    mock_show_error.assert_called_once()
+    assert (
+        "All selected files must have the same extension"
+        in mock_show_error.call_args[0][0]
+    )
+
+
+def test_writer_widget_export_multiple_layers(
+    make_viewer_model, qtbot, monkeypatch, tmp_path
+):
+    from unittest.mock import patch
+
+    import numpy as np
+
+    from napari_phasors._widget import WriterWidget
+
+    viewer = make_viewer_model()
+    viewer.add_image(np.random.rand(10, 10), name="Layer1")
+    viewer.add_image(np.random.rand(10, 10), name="Layer2")
+
+    widget = WriterWidget(viewer)
+
+    # Mock file dialog to return a directory and base name
+    mock_save_path = str(tmp_path / "export_test")
+    monkeypatch.setattr(
+        "napari_phasors._widget.QFileDialog.getSaveFileName",
+        lambda *args, **kwargs: (mock_save_path, "Layer data as CSV (*.csv)"),
+    )
+
+    # Select multiple layers
+    widget.export_layer_combobox.setCheckedItems(["Layer1", "Layer2"])
+
+    with patch("napari_phasors._widget.export_layer_as_csv") as mock_csv:
+        widget._open_file_dialog()
+        assert mock_csv.call_count == 2
+
+    # Also test error handling
+    mock_save_path2 = str(tmp_path / "export_test2")
+    monkeypatch.setattr(
+        "napari_phasors._widget.QFileDialog.getSaveFileName",
+        lambda *args, **kwargs: (mock_save_path2, "Layer data as CSV (*.csv)"),
+    )
+    with patch(
+        "napari_phasors._widget.export_layer_as_csv",
+        side_effect=Exception("Test Error"),
+    ):
+        with patch("napari_phasors._widget.show_error") as mock_error:
+            widget._open_file_dialog()
+            assert mock_error.call_count == 2
+
+
+def test_widget_pure_helpers(tmp_path):
+    """Consolidated coverage of widget-free helper functions: axis
+    transform, z-scale, OME-TIFF z-spacing readout and axis labels."""
+    import numpy as np
+    import tifffile
+
+    from napari_phasors._widget import (
+        AdvancedOptionsWidget,
+        _default_axis_labels,
+        _estimate_result_shape,
+        _try_get_z_spacing_from_ome_tiff,
+    )
+
+    # --- _apply_axis_transform ---
+    data = np.arange(24).reshape(2, 3, 4)
+    meta = {
+        "original_mean": data.copy(),
+        "G": np.stack([data, data]),  # ndim + 1 (harmonic axis)
+        "S": None,
+    }
+    kwargs = {"metadata": meta}
+    out = AdvancedOptionsWidget._apply_axis_transform(
+        kwargs, data, axis_order=[2, 0, 1], axis_labels=["A", "B", "C"]
+    )
+    assert out.shape == (4, 2, 3)
+    assert meta["original_mean"].shape == (4, 2, 3)
+    assert meta["G"].shape == (2, 4, 2, 3)
+    assert kwargs["axis_labels"] == ("A", "B", "C")
+    # Identity order and invalid order are no-ops.
+    same = AdvancedOptionsWidget._apply_axis_transform(
+        {"metadata": {}}, data, axis_order=[0, 1, 2], axis_labels=None
+    )
+    assert same.shape == data.shape
+    bad = AdvancedOptionsWidget._apply_axis_transform(
+        {"metadata": {}}, data, axis_order=[0, 0, 1], axis_labels=None
+    )
+    assert bad.shape == data.shape
+
+    # --- _set_layer_z_scale ---
+    kw = {}
+    AdvancedOptionsWidget._set_layer_z_scale(kw, np.ones((3, 4, 4)), 2.5)
+    assert kw["scale"] == (2.5, 1.0, 1.0)
+    # Existing scale shorter than ndim is padded; longer is truncated.
+    kw = {"scale": (1.0,)}
+    AdvancedOptionsWidget._set_layer_z_scale(kw, np.ones((3, 4, 4)), 2.0)
+    assert kw["scale"] == (2.0, 1.0, 1.0)
+    kw = {"scale": (1.0, 1.0, 1.0, 1.0)}
+    AdvancedOptionsWidget._set_layer_z_scale(kw, np.ones((3, 4, 4)), 2.0)
+    assert len(kw["scale"]) == 3
+    # Guards: None, 2D data, non-numeric, non-positive.
+    for args in (
+        ({}, np.ones((3, 4, 4)), None),
+        ({}, np.ones((4, 4)), 2.0),
+        ({}, np.ones((3, 4, 4)), "abc"),
+        ({}, np.ones((3, 4, 4)), -1.0),
+    ):
+        kw = args[0]
+        AdvancedOptionsWidget._set_layer_z_scale(*args)
+        assert "scale" not in kw
+
+    # --- _try_get_z_spacing_from_ome_tiff ---
+    assert _try_get_z_spacing_from_ome_tiff("file.ptu") is None
+    # OME metadata with PhysicalSizeZ (written like the project writer does).
+    from phasorpy.io import phasor_to_ometiff
+
+    p1 = str(tmp_path / "z1.ome.tif")
+    phasor_to_ometiff(
+        p1,
+        np.ones((2, 4, 4)),
+        np.zeros((1, 2, 4, 4)),
+        np.zeros((1, 2, 4, 4)),
+        harmonic=[1],
+        dims="ZYX",
+        metadata={"PhysicalSizeZ": 3.5, "PhysicalSizeZUnit": "µm"},
+    )
+    assert _try_get_z_spacing_from_ome_tiff(p1) == 3.5
+    # Fallback to napari-phasors settings in the description.
+    import json as _json
+
+    p2 = str(tmp_path / "z2.ome.tif")
+    desc = _json.dumps(
+        {"napari_phasors_settings": _json.dumps({"z_spacing_um": 4.5})}
+    )
+    tifffile.imwrite(p2, np.ones((4, 4), dtype=np.float32), description=desc)
+    assert _try_get_z_spacing_from_ome_tiff(p2) == 4.5
+    # Unreadable file returns None.
+    p3 = str(tmp_path / "junk.ome.tif")
+    with open(p3, "w") as fh:
+        fh.write("not a tiff")
+    assert _try_get_z_spacing_from_ome_tiff(p3) is None
+
+    # --- _default_axis_labels ---
+    assert _default_axis_labels(2) == ["Y", "X"]
+    assert _default_axis_labels(3) == ["Z", "Y", "X"]
+    assert _default_axis_labels(4) == ["T", "Z", "Y", "X"]
+    assert _default_axis_labels(5)[0] == "Axis 0"
+
+    # --- _estimate_result_shape guards ---
+    assert _estimate_result_shape([]) is None
+    assert _estimate_result_shape(["nope.unsupported"]) is None
+
+
+def test_fbd_widget_stack_z_spacing_and_harmonic_edits(
+    make_viewer_model, qtbot
+):
+    """Piggyback on one FbdWidget build to cover stack z-spacing UI
+    lifecycle and harmonic line-edit clamping branches."""
+    viewer = make_viewer_model()
+    test_file_path = get_test_file_path("test_file$EI0S.fbd")
+    widget = FbdWidget(viewer, path=test_file_path)
+
+    # --- stack z-spacing editor: created in stack mode, removed otherwise ---
+    widget._multi_file_paths = ["a.fbd", "b.fbd"]
+    widget._sync_stack_z_spacing_widget_visibility()
+    assert widget._stack_z_spacing_layout is not None
+    assert widget._stack_z_spacing_edit is not None
+
+    # Valid, invalid and non-positive edits.
+    widget._stack_z_spacing_edit.setText("2.5")
+    widget._on_stack_z_spacing_changed()
+    assert widget._stack_z_spacing == 2.5
+    widget._stack_z_spacing_edit.setText("oops")
+    widget._on_stack_z_spacing_changed()
+    assert widget._stack_z_spacing == 1.0
+    widget._stack_z_spacing_edit.setText("-3")
+    widget._on_stack_z_spacing_changed()
+    assert widget._stack_z_spacing == 1.0
+
+    # Leaving stack mode tears the editor down.
+    widget._multi_file_paths = []
+    widget._sync_stack_z_spacing_widget_visibility()
+    assert widget._stack_z_spacing_layout is None
+
+    # --- harmonic line edits: clamping below 1, above max, start > end ---
+    if widget.harmonic_start_edit is not None:
+        widget.harmonic_start_edit.setText("0")
+        widget.harmonic_end_edit.setText("2")
+        widget._on_harmonic_edit_changed()
+        assert widget.harmonics[0] == 1
+
+        widget.harmonic_end_edit.setText(str(widget.max_harmonic + 10))
+        widget._on_harmonic_edit_changed()
+        assert widget.harmonics[-1] == widget.max_harmonic
+
+        widget.harmonic_start_edit.setText("5")
+        widget.harmonic_end_edit.setText("2")
+        widget._on_harmonic_edit_changed()
+        assert widget.harmonics[0] <= widget.harmonics[-1]
+
+        # Non-numeric input falls back to the slider values.
+        widget.harmonic_start_edit.setText("abc")
+        widget._on_harmonic_edit_changed()
+        assert len(widget.harmonics) >= 1

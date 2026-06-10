@@ -7,7 +7,7 @@ from napari_phasors._sample_data import (
 )
 
 
-def test_convallaria_FLIM_sample_data(make_napari_viewer):
+def test_convallaria_FLIM_sample_data(make_viewer_model, qtbot):
     """Test the convallaria FLIM sample data"""
     layer_data_list = convallaria_FLIM_sample_data()
     assert isinstance(layer_data_list, list) and len(layer_data_list) == 2
@@ -62,7 +62,7 @@ def test_convallaria_FLIM_sample_data(make_napari_viewer):
     assert list(metadata["harmonics"]) == [1, 2]
 
 
-def test_embryo_FLIM_sample_data(make_napari_viewer):
+def test_embryo_FLIM_sample_data(make_viewer_model, qtbot):
     """Test the embryo FLIM sample data"""
     layer_data_list = embryo_FLIM_sample_data()
     assert isinstance(layer_data_list, list) and len(layer_data_list) == 2
@@ -114,7 +114,7 @@ def test_embryo_FLIM_sample_data(make_napari_viewer):
     assert list(metadata["harmonics"]) == [1, 2]
 
 
-def test_paramecium_HSI_sample_data(make_napari_viewer):
+def test_paramecium_HSI_sample_data(make_viewer_model, qtbot):
     """Test the paramecium HSI sample data"""
     layer_data_list = paramecium_HSI_sample_data()
     assert isinstance(layer_data_list, list) and len(layer_data_list) == 1

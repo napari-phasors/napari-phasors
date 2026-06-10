@@ -49,6 +49,7 @@ testing = [
     "pytest",  # https://docs.pytest.org/en/latest/contents.html
     "pytest-cov",  # https://pytest-cov.readthedocs.io/en/latest/
     "pytest-qt",  # https://pytest-qt.readthedocs.io/en/latest/
+    "pytest-xdist",  # https://pytest-xdist.readthedocs.io/ (parallel test runs)
     "napari",
     "qtpy",
     "scikit-image",
@@ -68,6 +69,34 @@ testing = [
     "scipy",
     "czifile",
     "lfdfiles"
+]
+
+[tool.pytest.ini_options]
+# Run the (Qt-heavy) test suite in parallel across all CPU cores.
+# ``--dist loadfile`` keeps every test from the same file on a single worker,
+# which avoids PySide6 teardown segfaults caused by interleaving tests from
+# different modules on one worker. Override with ``-n0`` for serial debugging.
+addopts = "-n auto --dist loadfile"
+# Silence benign, unavoidable third-party teardown/rendering warnings so the
+# test output stays readable. Genuine deprecations in our own code are fixed
+# rather than filtered. Each entry below is library noise we cannot act on:
+filterwarnings = [
+    # PySide6 emits a RuntimeWarning when a *defensive* signal.disconnect()
+    # targets a slot that is not (or no longer) connected. Our teardown code
+    # already wraps these in contextlib.suppress(); PySide6 only warns instead
+    # of raising, so this is the dominant (thousands of) benign messages.
+    "ignore:libpyside:RuntimeWarning",
+    # napari DirectLabelColormap without an explicit ``None`` default: missing
+    # labels are intentionally rendered transparent in our selection overlays.
+    "ignore:color_dict did not provide a default color:UserWarning",
+    # Matplotlib rendering of degenerate/empty data in widget tests.
+    "ignore:No artists with labels found to put in legend:UserWarning",
+    "ignore:Attempting to set identical low and high:UserWarning",
+    # tifffile's upcoming default change for non-RGB arrays whose leading or
+    # trailing dimension happens to be 3/4 (our phasor stacks are not RGB).
+    "ignore:<tifffile.TiffWriter.write>",
+    # Pydantic v2 deprecation emitted from napari's own models on import.
+    "ignore:.*json_encoders.*:DeprecationWarning",
 ]
 
 [project.entry-points."napari.manifest"]

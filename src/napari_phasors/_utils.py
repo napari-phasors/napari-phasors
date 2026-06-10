@@ -71,8 +71,12 @@ def _check_state_value(state):
     In PyQt5 ``Qt.Checked`` is already an int; in PyQt6 it is a
     ``Qt.CheckState`` enum member whose integer value is in ``.value``.
     This helper normalises both cases so comparisons work with either
-    binding.
+    binding. Items without a check state (e.g. the non-checkable
+    "All"/"None" header rows) yield ``None`` from
+    ``index.data(Qt.CheckStateRole)`` and are treated as unchecked.
     """
+    if state is None:
+        return 0
     return state.value if hasattr(state, 'value') else int(state)
 
 
@@ -2714,7 +2718,7 @@ class HistogramWidget(QWidget):
     def _get_cmap_and_norm(self):
         """Return (cmap, norm) from current colormap state."""
         if self.colormap_colors is None or self.contrast_limits is None:
-            cmap = plt.cm.get_cmap(self.default_colormap_name)
+            cmap = plt.get_cmap(self.default_colormap_name)
             norm = plt.Normalize(
                 vmin=(
                     np.min(self.bin_centers)

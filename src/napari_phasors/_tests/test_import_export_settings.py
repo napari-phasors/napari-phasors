@@ -79,9 +79,9 @@ def create_ome_tiff_with_settings(
     return filepath, settings if include_settings else None
 
 
-def test_import_from_layer_dialog_accepted(make_napari_viewer):
+def test_import_from_layer_dialog_accepted(make_viewer_model, qtbot):
     """Test that accepting the layer selection dialog proceeds to the next step."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer1 = create_image_layer_with_phasors()
     layer2 = create_layer_with_custom_settings()
     layer1.name = "layer1"
@@ -132,9 +132,9 @@ def test_import_from_layer_dialog_accepted(make_napari_viewer):
                 mock_show_import_dialog.assert_called_once()
 
 
-def test_import_from_layer_no_other_layers(make_napari_viewer):
+def test_import_from_layer_no_other_layers(make_viewer_model, qtbot):
     """Test import when there are no other layers available."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer1 = create_image_layer_with_phasors()
     layer1.name = "layer1"
     viewer.add_layer(layer1)
@@ -177,9 +177,9 @@ def test_import_from_layer_no_other_layers(make_napari_viewer):
                 mock_show_import_dialog.assert_not_called()
 
 
-def test_import_all_settings_from_layer(make_napari_viewer):
+def test_import_all_settings_from_layer(make_viewer_model, qtbot):
     """Test importing all settings from another layer."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer1 = create_image_layer_with_phasors()
     layer2 = create_layer_with_custom_settings()
     layer1.name = "layer1"
@@ -219,9 +219,9 @@ def test_import_all_settings_from_layer(make_napari_viewer):
     assert layer1.metadata['settings']['colormap'] == 'viridis'
 
 
-def test_import_partial_settings_from_layer(make_napari_viewer):
+def test_import_partial_settings_from_layer(make_viewer_model, qtbot):
     """Test importing only selected settings from another layer."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer1 = create_image_layer_with_phasors()
     layer2 = create_layer_with_custom_settings()
     layer1.name = "layer1"
@@ -246,9 +246,9 @@ def test_import_partial_settings_from_layer(make_napari_viewer):
     assert layer1.metadata['settings']['harmonic'] == 2
 
 
-def test_import_frequency_only(make_napari_viewer):
+def test_import_frequency_only(make_viewer_model, qtbot):
     """Test importing only frequency from another layer."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer1 = create_image_layer_with_phasors()
     layer2 = create_layer_with_custom_settings()
     layer1.name = "layer1"
@@ -265,9 +265,9 @@ def test_import_frequency_only(make_napari_viewer):
     assert layer1.metadata['settings']['frequency'] == 80.0
 
 
-def test_import_with_calibration(make_napari_viewer):
+def test_import_with_calibration(make_viewer_model, qtbot):
     """Test importing calibration settings applies the phasor transform."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer1 = create_image_layer_with_phasors()
     layer2 = create_layer_with_custom_settings()
     layer1.name = "layer1"
@@ -292,9 +292,11 @@ def test_import_with_calibration(make_napari_viewer):
     assert not np.allclose(layer1.metadata['S_original'], s_original_before)
 
 
-def test_import_with_filter_applies_threshold_and_filter(make_napari_viewer):
+def test_import_with_filter_applies_threshold_and_filter(
+    make_viewer_model, qtbot
+):
     """Test importing filter settings applies them to the target layer."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer1 = create_image_layer_with_phasors()
     layer2 = create_image_layer_with_phasors()
     layer1.name = "layer1"
@@ -330,18 +332,18 @@ def test_import_with_filter_applies_threshold_and_filter(make_napari_viewer):
     assert not np.allclose(layer1.data, data_before, equal_nan=True)
 
 
-def test_import_from_file_button_exists(make_napari_viewer):
+def test_import_from_file_button_exists(make_viewer_model, qtbot):
     """Test that import from file button exists."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     plotter = PlotterWidget(viewer)
 
     assert hasattr(plotter, 'import_from_file_button')
     assert plotter.import_from_file_button.text() == "OME-TIFF File"
 
 
-def test_import_from_file_dialog_opens(make_napari_viewer):
+def test_import_from_file_dialog_opens(make_viewer_model, qtbot):
     """Test that clicking import from file button opens file dialog."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer1 = create_image_layer_with_phasors()
     layer1.name = "layer1"
     viewer.add_layer(layer1)
@@ -359,9 +361,9 @@ def test_import_from_file_dialog_opens(make_napari_viewer):
         mock_dialog.assert_called_once()
 
 
-def test_import_from_file_cancel(make_napari_viewer):
+def test_import_from_file_cancel(make_viewer_model, qtbot):
     """Test canceling file import dialog."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer1 = create_image_layer_with_phasors()
     layer1.name = "layer1"
     viewer.add_layer(layer1)
@@ -373,13 +375,15 @@ def test_import_from_file_cancel(make_napari_viewer):
     ) as mock_dialog:
         mock_dialog.return_value = ("", "")  # Canceled
 
-        # Should not crash or show error
+        settings_before = dict(layer1.metadata.get("settings", {}))
+        # Should not crash, show an error, or modify layer settings.
         plotter._import_settings_from_file()
+        assert dict(layer1.metadata.get("settings", {})) == settings_before
 
 
-def test_import_all_settings_from_ome_tiff(make_napari_viewer, tmp_path):
+def test_import_all_settings_from_ome_tiff(make_viewer_model, qtbot, tmp_path):
     """Test importing all settings from an OME-TIFF file."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer1 = create_image_layer_with_phasors()
     layer1.name = "layer1"
     viewer.add_layer(layer1)
@@ -430,9 +434,11 @@ def test_import_all_settings_from_ome_tiff(make_napari_viewer, tmp_path):
     )
 
 
-def test_import_partial_settings_from_ome_tiff(make_napari_viewer, tmp_path):
+def test_import_partial_settings_from_ome_tiff(
+    make_viewer_model, qtbot, tmp_path
+):
     """Test importing only selected settings from OME-TIFF."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer1 = create_image_layer_with_phasors()
     layer1.name = "layer1"
     viewer.add_layer(layer1)
@@ -463,9 +469,9 @@ def test_import_partial_settings_from_ome_tiff(make_napari_viewer, tmp_path):
     )
 
 
-def test_import_from_file_without_settings(make_napari_viewer, tmp_path):
+def test_import_from_file_without_settings(make_viewer_model, qtbot, tmp_path):
     """Test importing from OME-TIFF file without napari-phasors settings or frequency."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer1 = create_image_layer_with_phasors()
     layer1.name = "layer1"
     viewer.add_layer(layer1)
@@ -509,9 +515,9 @@ def test_import_from_file_without_settings(make_napari_viewer, tmp_path):
                 mock_show_import_dialog.assert_not_called()
 
 
-def test_import_from_invalid_file(make_napari_viewer, tmp_path):
+def test_import_from_invalid_file(make_viewer_model, qtbot, tmp_path):
     """Test importing from invalid file."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer1 = create_image_layer_with_phasors()
     layer1.name = "layer1"
     viewer.add_layer(layer1)
@@ -538,9 +544,9 @@ def test_import_from_invalid_file(make_napari_viewer, tmp_path):
             mock_warning.assert_called_once()
 
 
-def test_show_import_dialog_all_options(make_napari_viewer):
+def test_show_import_dialog_all_options(make_viewer_model, qtbot):
     """Test import dialog shows all available options."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     plotter = PlotterWidget(viewer)
 
     with patch('napari_phasors.plotter.QDialog') as mock_dialog_class:
@@ -560,9 +566,9 @@ def test_show_import_dialog_all_options(make_napari_viewer):
             mock_dialog_instance.exec.assert_called_once()
 
 
-def test_show_import_dialog_default_all_checked(make_napari_viewer):
+def test_show_import_dialog_default_all_checked(make_viewer_model, qtbot):
     """Test that all checkboxes are checked by default."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     plotter = PlotterWidget(viewer)
 
     with (
@@ -587,9 +593,9 @@ def test_show_import_dialog_default_all_checked(make_napari_viewer):
         assert mock_checkbox.call_count > 0
 
 
-def test_show_import_dialog_partial_selection(make_napari_viewer):
+def test_show_import_dialog_partial_selection(make_viewer_model, qtbot):
     """Test selecting only some options in import dialog."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     plotter = PlotterWidget(viewer)
 
     # This test would require more complex mocking of the dialog interaction
@@ -612,9 +618,9 @@ def test_show_import_dialog_partial_selection(make_napari_viewer):
 
 
 # Settings Metadata tests
-def test_initialize_plot_settings_in_metadata(make_napari_viewer):
+def test_initialize_plot_settings_in_metadata(make_viewer_model, qtbot):
     """Test that settings are initialized in layer metadata."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
 
@@ -627,9 +633,9 @@ def test_initialize_plot_settings_in_metadata(make_napari_viewer):
     assert 'plot_type' in layer.metadata['settings']
 
 
-def test_restore_plot_settings_from_metadata(make_napari_viewer):
+def test_restore_plot_settings_from_metadata(make_viewer_model, qtbot):
     """Test restoring plot settings from metadata."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer = create_layer_with_custom_settings()
     viewer.add_layer(layer)
 
@@ -643,9 +649,9 @@ def test_restore_plot_settings_from_metadata(make_napari_viewer):
     assert not plotter.white_background
 
 
-def test_update_setting_in_metadata(make_napari_viewer):
+def test_update_setting_in_metadata(make_viewer_model, qtbot):
     """Test that changing settings updates metadata."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
 
