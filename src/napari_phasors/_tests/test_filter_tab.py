@@ -22,9 +22,9 @@ from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
 from napari_phasors.plotter import PlotterWidget
 
 
-def test_filter_widget_initialization_values(make_napari_viewer):
+def test_filter_widget_initialization_values(make_viewer_model, qtbot):
     """Test the initialization of the Filter Widget."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
@@ -140,9 +140,9 @@ def test_filter_widget_initialization_values(make_napari_viewer):
     assert filter_widget.wavelet_filter_widget.isHidden()
 
 
-def test_filter_method_switching(make_napari_viewer):
+def test_filter_method_switching(make_viewer_model, qtbot):
     """Test switching between median and wavelet filter methods."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
@@ -169,9 +169,9 @@ def test_filter_method_switching(make_napari_viewer):
     assert filter_widget.wavelet_filter_widget.isHidden()
 
 
-def test_threshold_method_none_option(make_napari_viewer):
+def test_threshold_method_none_option(make_viewer_model, qtbot):
     """Test the 'None' threshold method option."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -190,9 +190,9 @@ def test_threshold_method_none_option(make_napari_viewer):
     assert filter_widget.min_threshold_edit.text() == "0.00"
 
 
-def test_automatic_threshold_methods(make_napari_viewer):
+def test_automatic_threshold_methods(make_viewer_model, qtbot):
     """Test automatic threshold calculation methods."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -217,9 +217,9 @@ def test_automatic_threshold_methods(make_napari_viewer):
     assert len(set(values)) >= 1
 
 
-def test_manual_threshold_switching(make_napari_viewer):
+def test_manual_threshold_switching(make_viewer_model, qtbot):
     """Test that manually changing slider switches to Manual mode."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -235,9 +235,9 @@ def test_manual_threshold_switching(make_napari_viewer):
     assert filter_widget.threshold_method_combobox.currentText() == "Manual"
 
 
-def test_none_threshold_slider_behavior(make_napari_viewer):
+def test_none_threshold_slider_behavior(make_viewer_model, qtbot):
     """Test that None threshold doesn't switch to Manual when slider is at full range."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -265,9 +265,9 @@ def create_image_layer_with_incompatible_harmonics():
     return layer
 
 
-def test_wavelet_harmonics_validation_compatible(make_napari_viewer):
+def test_wavelet_harmonics_validation_compatible(make_viewer_model, qtbot):
     """Test wavelet harmonics validation with compatible harmonics."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
 
     # Set compatible harmonics (consecutive: 1, 2)
@@ -284,9 +284,9 @@ def test_wavelet_harmonics_validation_compatible(make_napari_viewer):
     assert not filter_widget.wavelet_params_widget.isHidden()
 
 
-def test_wavelet_harmonics_validation_incompatible(make_napari_viewer):
+def test_wavelet_harmonics_validation_incompatible(make_viewer_model, qtbot):
     """Test wavelet harmonics validation with incompatible harmonics."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_incompatible_harmonics()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -303,9 +303,9 @@ def test_wavelet_harmonics_validation_incompatible(make_napari_viewer):
     assert "not compatible" in warning_text
 
 
-def test_apply_button_with_wavelet_filter(make_napari_viewer):
+def test_apply_button_with_wavelet_filter(make_viewer_model, qtbot):
     """Test apply button with wavelet filter method."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
 
     # Set compatible harmonics (consecutive: 1, 2)
@@ -342,9 +342,9 @@ def test_apply_button_with_wavelet_filter(make_napari_viewer):
         mock_plot.assert_called_once()
 
 
-def test_apply_button_with_median_filter(make_napari_viewer):
+def test_apply_button_with_median_filter(make_viewer_model, qtbot):
     """Test apply button with median filter method."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -374,9 +374,9 @@ def test_apply_button_with_median_filter(make_napari_viewer):
         assert call_args[1]['repeat'] == 2
 
 
-def test_threshold_method_storage_in_metadata(make_napari_viewer):
+def test_threshold_method_storage_in_metadata(make_viewer_model, qtbot):
     """Test that threshold method is stored in layer metadata when applying."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -397,9 +397,9 @@ def test_threshold_method_storage_in_metadata(make_napari_viewer):
         assert call_args[1]['threshold_method'] == "Li"
 
 
-def test_calculate_automatic_threshold(make_napari_viewer):
+def test_calculate_automatic_threshold(make_viewer_model, qtbot):
     """Test automatic threshold calculation methods."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
@@ -425,9 +425,9 @@ def test_calculate_automatic_threshold(make_napari_viewer):
     assert lower == 0
 
 
-def test_settings_restoration_with_wavelet(make_napari_viewer):
+def test_settings_restoration_with_wavelet(make_viewer_model, qtbot):
     """Test that wavelet settings are properly restored from metadata."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     harmonics = [1, 2]
     intensity_image_layer = create_image_layer_with_phasors(harmonic=harmonics)
 
@@ -468,9 +468,11 @@ def test_settings_restoration_with_wavelet(make_napari_viewer):
     assert upper_val == expected_upper
 
 
-def test_settings_restoration_with_incompatible_wavelet(make_napari_viewer):
+def test_settings_restoration_with_incompatible_wavelet(
+    make_viewer_model, qtbot
+):
     """Test that incompatible wavelet settings fall back to median."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_incompatible_harmonics()
 
     intensity_image_layer.metadata["settings"] = {
@@ -488,11 +490,11 @@ def test_settings_restoration_with_incompatible_wavelet(make_napari_viewer):
     assert filter_widget.filter_method_combobox.currentText() == "Median"
 
 
-def test_filter_widget_histogram_styling(make_napari_viewer):
+def test_filter_widget_histogram_styling(make_viewer_model, qtbot):
     """Test that histogram styling is applied correctly."""
     import matplotlib.colors as mcolors
 
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
@@ -510,9 +512,9 @@ def test_filter_widget_histogram_styling(make_napari_viewer):
     assert filter_widget.hist_ax.get_xlabel() == "Mean Intensity"
 
 
-def test_filter_widget_with_layer_data(make_napari_viewer):
+def test_filter_widget_with_layer_data(make_viewer_model, qtbot):
     """Test filter widget behavior with actual layer data."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
 
@@ -539,9 +541,9 @@ def test_filter_widget_with_layer_data(make_napari_viewer):
     assert filter_widget.threshold_method_combobox.currentText() == "None"
 
 
-def test_filter_widget_threshold_slider_callback(make_napari_viewer):
+def test_filter_widget_threshold_slider_callback(make_viewer_model, qtbot):
     """Test threshold slider callback functionality."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
@@ -558,9 +560,9 @@ def test_filter_widget_threshold_slider_callback(make_napari_viewer):
     assert filter_widget.max_threshold_edit.text() == expected_max_text
 
 
-def test_filter_widget_kernel_size_callback(make_napari_viewer):
+def test_filter_widget_kernel_size_callback(make_viewer_model, qtbot):
     """Test kernel size spinbox callback functionality."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
@@ -572,9 +574,9 @@ def test_filter_widget_kernel_size_callback(make_napari_viewer):
     assert filter_widget.median_filter_label.text() == expected_text
 
 
-def test_spinbox_and_slider_do_not_call_plot(make_napari_viewer):
+def test_spinbox_and_slider_do_not_call_plot(make_viewer_model, qtbot):
     """Changing spinbox or slider does not call parent.plot() unless apply is clicked."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
@@ -585,9 +587,9 @@ def test_spinbox_and_slider_do_not_call_plot(make_napari_viewer):
         mock_plot.assert_not_called()
 
 
-def test_slider_value_modifies_threshold_line(make_napari_viewer):
+def test_slider_value_modifies_threshold_line(make_viewer_model, qtbot):
     """Changing the slider value updates the threshold line position."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -619,9 +621,9 @@ def test_slider_value_modifies_threshold_line(make_napari_viewer):
     )
 
 
-def test_no_plot_called_if_combobox_empty(make_napari_viewer):
+def test_no_plot_called_if_combobox_empty(make_viewer_model, qtbot):
     """If combobox is empty, plot methods are not called."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
@@ -635,10 +637,11 @@ def test_no_plot_called_if_combobox_empty(make_napari_viewer):
 
 
 def test_slider_and_histogram_update_on_layer_add_and_select(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Adding a new layer updates slider range, threshold line, and histogram only when selected."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
@@ -687,9 +690,9 @@ def test_slider_and_histogram_update_on_layer_add_and_select(
     assert len(filter_widget.hist_ax.patches) > 0
 
 
-def test_layer_with_no_phasor_features_does_nothing(make_napari_viewer):
+def test_layer_with_no_phasor_features_does_nothing(make_viewer_model, qtbot):
     """If a layer with no phasor features is added, nothing should happen."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
@@ -711,9 +714,9 @@ def test_layer_with_no_phasor_features_does_nothing(make_napari_viewer):
     assert filter_widget.threshold_line_upper is None
 
 
-def test_filter_widget_layer_with_settings(make_napari_viewer):
+def test_filter_widget_layer_with_settings(make_viewer_model, qtbot):
     """Test filter widget behavior when layer has existing settings."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
 
     intensity_image_layer.metadata["settings"] = {
@@ -744,9 +747,9 @@ def test_filter_widget_layer_with_settings(make_napari_viewer):
     assert filter_widget.threshold_method_combobox.currentText() == "Li"
 
 
-def test_filter_widget_plot_histogram_no_layer(make_napari_viewer):
+def test_filter_widget_plot_histogram_no_layer(make_viewer_model, qtbot):
     """Test plotting histogram when no layer is available."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
@@ -757,9 +760,11 @@ def test_filter_widget_plot_histogram_no_layer(make_napari_viewer):
     assert children_before >= 0
 
 
-def test_filter_widget_update_threshold_line_no_layer(make_napari_viewer):
+def test_filter_widget_update_threshold_line_no_layer(
+    make_viewer_model, qtbot
+):
     """Test updating threshold line when no layer is available."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
     filter_widget.update_threshold_lines()
@@ -768,9 +773,9 @@ def test_filter_widget_update_threshold_line_no_layer(make_napari_viewer):
     assert filter_widget.threshold_line_upper is None
 
 
-def test_filter_widget_ui_layout(make_napari_viewer):
+def test_filter_widget_ui_layout(make_viewer_model, qtbot):
     """Test the UI layout structure."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
@@ -789,11 +794,11 @@ def test_filter_widget_ui_layout(make_napari_viewer):
     assert len(h_layouts) >= 5
 
 
-def test_filter_widget_canvas_properties(make_napari_viewer):
+def test_filter_widget_canvas_properties(make_viewer_model, qtbot):
     """Test canvas and figure properties."""
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
@@ -809,9 +814,9 @@ def test_filter_widget_canvas_properties(make_napari_viewer):
     assert canvas.height() == 150
 
 
-def test_log_scale_checkbox_functionality(make_napari_viewer):
+def test_log_scale_checkbox_functionality(make_viewer_model, qtbot):
     """Test log scale checkbox functionality."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -833,9 +838,9 @@ def test_log_scale_checkbox_functionality(make_napari_viewer):
     assert filter_widget.hist_ax.get_yscale() == 'linear'
 
 
-def test_log_scale_persists_after_new_layer_redraw(make_napari_viewer):
+def test_log_scale_persists_after_new_layer_redraw(make_viewer_model, qtbot):
     """Test that histogram redraws keep the current log scale setting."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     first_layer = create_image_layer_with_phasors()
     viewer.add_layer(first_layer)
     parent = PlotterWidget(viewer)
@@ -859,9 +864,9 @@ def test_log_scale_persists_after_new_layer_redraw(make_napari_viewer):
     assert filter_widget.hist_ax.get_yscale() == 'log'
 
 
-def test_log_scale_checkbox_with_no_layer(make_napari_viewer):
+def test_log_scale_checkbox_with_no_layer(make_viewer_model, qtbot):
     """Test log scale checkbox when no layer is selected."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
@@ -873,9 +878,11 @@ def test_log_scale_checkbox_with_no_layer(make_napari_viewer):
     assert filter_widget.log_scale_checkbox.isChecked()
 
 
-def test_filter_widget_uses_masked_region_for_threshold(make_napari_viewer):
+def test_filter_widget_uses_masked_region_for_threshold(
+    make_viewer_model, qtbot
+):
     """Test that filter widget uses masked region when calculating max_mean_value."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -893,9 +900,9 @@ def test_filter_widget_uses_masked_region_for_threshold(make_napari_viewer):
     assert filter_widget.threshold_slider.maximum() > 0
 
 
-def test_filter_widget_without_mask_uses_full_image(make_napari_viewer):
+def test_filter_widget_without_mask_uses_full_image(make_viewer_model, qtbot):
     """Test filter widget uses full image when no mask is present."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -912,9 +919,9 @@ def test_filter_widget_without_mask_uses_full_image(make_napari_viewer):
     assert filter_widget.threshold_slider.maximum() > 0
 
 
-def test_min_threshold_edit_changes_slider(make_napari_viewer):
+def test_min_threshold_edit_changes_slider(make_viewer_model, qtbot):
     """Test that editing min threshold text field updates the slider."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -940,9 +947,9 @@ def test_min_threshold_edit_changes_slider(make_napari_viewer):
     assert filter_widget.threshold_method_combobox.currentText() == "Manual"
 
 
-def test_max_threshold_edit_changes_slider(make_napari_viewer):
+def test_max_threshold_edit_changes_slider(make_viewer_model, qtbot):
     """Test that editing max threshold text field updates the slider."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -966,9 +973,9 @@ def test_max_threshold_edit_changes_slider(make_napari_viewer):
     assert filter_widget.threshold_method_combobox.currentText() == "Manual"
 
 
-def test_min_threshold_edit_clamped_to_max(make_napari_viewer):
+def test_min_threshold_edit_clamped_to_max(make_viewer_model, qtbot):
     """Test that min threshold cannot exceed max threshold."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -987,9 +994,9 @@ def test_min_threshold_edit_clamped_to_max(make_napari_viewer):
     assert lower_val <= upper_val
 
 
-def test_max_threshold_edit_clamped_to_min(make_napari_viewer):
+def test_max_threshold_edit_clamped_to_min(make_viewer_model, qtbot):
     """Test that max threshold cannot go below min threshold."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -1008,9 +1015,9 @@ def test_max_threshold_edit_clamped_to_min(make_napari_viewer):
     assert upper_val >= lower_val
 
 
-def test_invalid_threshold_edit_resets_to_current(make_napari_viewer):
+def test_invalid_threshold_edit_resets_to_current(make_viewer_model, qtbot):
     """Test that invalid input in threshold edits resets to current value."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -1031,9 +1038,9 @@ def test_invalid_threshold_edit_resets_to_current(make_napari_viewer):
     assert filter_widget.max_threshold_edit.text() == expected_max
 
 
-def test_threshold_edit_updates_histogram_lines(make_napari_viewer):
+def test_threshold_edit_updates_histogram_lines(make_viewer_model, qtbot):
     """Test that editing threshold values updates the histogram lines."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -1059,14 +1066,16 @@ def test_threshold_edit_updates_histogram_lines(make_napari_viewer):
     assert abs(line_data[0] - expected_x) < 0.01
 
 
-def test_filter_widget_no_duplicate_signal_connections(make_napari_viewer):
+def test_filter_widget_no_duplicate_signal_connections(
+    make_viewer_model, qtbot
+):
     """Test that switching tabs does not accumulate signal connections.
 
     Regression test: _update_histogram_if_needed() previously connected
     signals every time it was called (on each tab switch), causing
     callbacks to fire N times after N tab switches.
     """
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
@@ -1107,7 +1116,7 @@ def test_filter_widget_no_duplicate_signal_connections(make_napari_viewer):
     )
 
 
-def test_apply_threshold_invalidates_features_cache(make_napari_viewer):
+def test_apply_threshold_invalidates_features_cache(make_viewer_model, qtbot):
     """Regression test for applying threshold must update the phasor plot.
 
     The plotter caches merged features keyed on (selected layer names,
@@ -1115,7 +1124,7 @@ def test_apply_threshold_invalidates_features_cache(make_napari_viewer):
     change but the cache key stays the same, so the cached stale features
     must be invalidated by ``refresh_phasor_data``.
     """
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -1146,11 +1155,13 @@ def test_apply_threshold_invalidates_features_cache(make_napari_viewer):
     )
 
 
-def test_apply_threshold_marks_deferred_tabs_for_update(make_napari_viewer):
+def test_apply_threshold_marks_deferred_tabs_for_update(
+    make_viewer_model, qtbot
+):
     """Regression test deferred tabs must be marked stale after
     a filter/threshold is applied so they refresh when next visible.
     """
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -1175,3 +1186,74 @@ def test_apply_threshold_marks_deferred_tabs_for_update(make_napari_viewer):
                 f"{tab_attr} was not marked for deferred update after "
                 f"filter/threshold was applied."
             )
+
+
+def test_filter_threshold_line_mouse_drag(make_viewer_model, qtbot):
+    """Cover the threshold-line press/move/release mouse handlers."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    fw = parent.filter_tab
+    fw._on_image_layer_changed()
+    fw.plot_mean_histogram()
+    fw.threshold_slider.setValue((5, 20))
+    fw.on_threshold_slider_change()
+    factor = fw.threshold_factor
+
+    class Ev:
+        def __init__(self, x, inaxes):
+            self.xdata = x
+            self.ydata = 0.0
+            self.inaxes = inaxes
+            self.button = 1
+
+    lower_x = 5 / factor
+    upper_x = 20 / factor
+
+    # Press on the lower line, drag it, release.
+    fw.on_mouse_press(Ev(lower_x, fw.hist_ax))
+    assert fw._dragging_line == "lower"
+    fw.on_mouse_move(Ev(10 / factor, fw.hist_ax))
+    fw.on_mouse_release(Ev(10 / factor, fw.hist_ax))
+    assert fw._dragging_line is None
+
+    # Press on the upper line, drag it, release.
+    fw.on_mouse_press(Ev(upper_x, fw.hist_ax))
+    assert fw._dragging_line == "upper"
+    fw.on_mouse_move(Ev(15 / factor, fw.hist_ax))
+    fw.on_mouse_release(Ev(15 / factor, fw.hist_ax))
+    assert fw._dragging_line is None
+
+    # Press outside the axes does nothing.
+    fw.on_mouse_press(Ev(lower_x, None))
+    assert fw._dragging_line is None
+    # Move while not dragging is a no-op.
+    fw.on_mouse_move(Ev(lower_x, fw.hist_ax))
+
+
+def test_filter_on_image_layer_changed_restores_full_settings(
+    make_viewer_model, qtbot
+):
+    """A layer carrying full filter+threshold settings restores all widgets."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    layer.metadata["settings"] = {
+        "filter": {
+            "method": "wavelet",
+            "size": 5,
+            "repeat": 2,
+            "sigma": 3.0,
+            "levels": 4,
+        },
+        "threshold": 2.0,
+        "threshold_upper": 8.0,
+    }
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    fw = parent.filter_tab
+    fw._on_image_layer_changed()
+    assert fw.median_filter_spinbox.value() == 5
+    assert fw.median_filter_repetition_spinbox.value() == 2
+    assert fw.wavelet_sigma_spinbox.value() == 3.0
+    assert fw.wavelet_levels_spinbox.value() == 4

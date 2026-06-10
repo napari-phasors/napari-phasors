@@ -659,8 +659,8 @@ def test_export_layer_as_image_tuple_colormap(tmp_path):
     assert os.path.exists(export_path)
 
     # Open and verify the image has color representation (not black and white)
-    img = PILImage.open(export_path)
-    img_data = np.array(img)
+    with PILImage.open(export_path) as img:
+        img_data = np.array(img)
 
     assert img_data.ndim == 3
     assert img_data.shape[-1] in (3, 4)
@@ -668,3 +668,415 @@ def test_export_layer_as_image_tuple_colormap(tmp_path):
     # Verify that the image is colored (R != B, since some parts are red, some blue)
     is_colored = np.any(img_data[..., 0] != img_data[..., 2])
     assert is_colored, "Exported image is grayscale!"
+
+
+# ---------------------------------------------------------------------------
+# export_layer_as_csv
+# ---------------------------------------------------------------------------
+
+
+def test_export_csv_phasor_multiharmonic(tmp_path):
+    """CSV export of a phasor layer with multiple harmonics (3D G/S)."""
+    import pandas as pd
+    from napari.layers import Image
+
+    from napari_phasors._writer import export_layer_as_csv
+
+    mean = np.ones((4, 4))
+    rng = np.random.default_rng(0)
+    G = rng.random((2, 4, 4))
+    S = rng.random((2, 4, 4))
+    # A fully-NaN pixel must be skipped in the output.
+    G[:, 0, 0] = np.nan
+    S[:, 0, 0] = np.nan
+    layer = Image(
+        mean,
+        name="phasor_img",
+        metadata={
+            "G": G,
+            "S": S,
+            "G_original": G.copy(),
+            "S_original": S.copy(),
+            "harmonics": [1, 2],
+        },
+    )
+    out = export_layer_as_csv(str(tmp_path / "out.csv"), layer)
+    assert len(out) == 1 and os.path.exists(out[0])
+    df = pd.read_csv(out[0])
+    assert {
+        "harmonic",
+        "G",
+        "S",
+        "G_original",
+        "S_original",
+        "dim_0",
+        "dim_1",
+    }.issubset(df.columns)
+    # 2 harmonics * (16 - 1 NaN pixel) rows.
+    assert len(df) == 2 * 15
+
+
+def test_export_csv_phasor_single_harmonic_2d(tmp_path):
+    """CSV export with 2D G/S arrays (single harmonic)."""
+    import pandas as pd
+    from napari.layers import Image
+
+    from napari_phasors._writer import export_layer_as_csv
+
+    G = np.random.default_rng(1).random((4, 4))
+    S = np.random.default_rng(2).random((4, 4))
+    layer = Image(
+        np.ones((4, 4)),
+        name="phasor2d",
+        metadata={"G": G, "S": S, "harmonics": 1},
+    )
+    out = export_layer_as_csv(str(tmp_path / "out2d.csv"), layer)
+    df = pd.read_csv(out[0])
+    assert len(df) == 16
+    assert list(df["harmonic"].unique()) == [1]
+
+
+def test_export_csv_no_phasor_2d(tmp_path):
+    """CSV export of a plain 2D layer produces y/x/value columns."""
+    import pandas as pd
+    from napari.layers import Image
+
+    from napari_phasors._writer import export_layer_as_csv
+
+    layer = Image(np.arange(16).reshape(4, 4), name="raw2d")
+    out = export_layer_as_csv(str(tmp_path / "raw2d.csv"), layer)
+    df = pd.read_csv(out[0])
+    assert list(df.columns) == ["y", "x", "value"]
+    assert len(df) == 16
+
+
+def test_export_csv_no_phasor_nd_tuple(tmp_path):
+    """CSV export of an N-D (>2) layer-data tuple uses dim_* columns."""
+    import pandas as pd
+
+    from napari_phasors._writer import export_layer_as_csv
+
+    data = np.arange(24).reshape(2, 3, 4)
+    layer_tuple = (data, {"name": "vol", "metadata": {}})
+    out = export_layer_as_csv(str(tmp_path / "vol.csv"), layer_tuple)
+    df = pd.read_csv(out[0])
+    assert {"dim_0", "dim_1", "dim_2", "value"}.issubset(df.columns)
+    assert len(df) == 24
+
+
+# ---------------------------------------------------------------------------
+# export_layer_as_image — additional branches
+# ---------------------------------------------------------------------------
+
+
+def test_export_image_labels_layer(tmp_path):
+    """Labels layers are mapped through their colormap and exported."""
+    from napari.layers import Labels
+
+    from napari_phasors._writer import export_layer_as_image
+
+    labels = Labels(np.array([[0, 1, 2], [3, 0, 1]], dtype=int), name="lbls")
+    out = export_layer_as_image(
+        str(tmp_path / "lbls.png"), labels, include_colorbar=True
+    )
+    assert os.path.exists(out[0])
+
+
+def test_export_image_colormap_object_with_colorbar(tmp_path):
+    """A napari Colormap object (with .colors) and a colorbar are handled."""
+    from napari.layers import Image
+
+    from napari_phasors._writer import export_layer_as_image
+
+    img = Image(
+        np.linspace(0, 1, 16).reshape(4, 4),
+        name="vir",
+        colormap="viridis",
+    )
+    out = export_layer_as_image(
+        str(tmp_path / "vir.png"), img, include_colorbar=True
+    )
+    assert os.path.exists(out[0])
+
+
+def test_export_image_jpeg_output(tmp_path):
+    """JPEG export switches the figure to a white facecolor."""
+    from napari.layers import Image
+
+    from napari_phasors._writer import export_layer_as_image
+
+    img = Image(np.linspace(0, 1, 16).reshape(4, 4), name="g", colormap="gray")
+    out = export_layer_as_image(
+        str(tmp_path / "g.jpg"), img, include_colorbar=True
+    )
+    assert os.path.exists(out[0])
+
+
+def test_export_image_multidim_uses_current_step(tmp_path):
+    """Multi-dimensional layers slice according to current_step."""
+    from napari.layers import Image
+
+    from napari_phasors._writer import export_layer_as_image
+
+    img = Image(
+        np.random.default_rng(3).random((3, 4, 4)),
+        name="stack",
+        colormap="gray",
+    )
+    out = export_layer_as_image(
+        str(tmp_path / "stack.png"),
+        img,
+        current_step=[1, 0, 0],
+        include_colorbar=False,
+    )
+    assert os.path.exists(out[0])
+
+
+# ---------------------------------------------------------------------------
+# write_ome_tiff — dims / physical-size branches
+# ---------------------------------------------------------------------------
+
+
+def test_write_ometif_4d_and_5d_raw_dims(tmp_path):
+    """Raw (non-phasor) layers get TZYX/TZCYX dims for 4D/5D data."""
+
+    import tifffile
+    from napari.layers import Image
+
+    for ndim, shape, expected in (
+        (4, (2, 2, 4, 4), "TZYX"),
+        (5, (2, 2, 2, 4, 4), "TZCYX"),
+    ):
+        layer = Image(np.ones(shape), name=f"vol{ndim}")
+        paths = write_ome_tiff(str(tmp_path / f"vol{ndim}.ome.tif"), layer)
+        assert os.path.exists(paths[0])
+        with tifffile.TiffFile(paths[0]) as tif:
+            axes = tif.series[0].axes
+        assert axes == expected
+
+
+def test_write_ometif_physical_size_from_scale(tmp_path):
+    """Layer scale and Y/X axis labels populate PhysicalSizeX/Y in OME-XML."""
+    import tifffile
+    from napari.layers import Image
+
+    mean = np.ones((4, 4))
+    G = np.zeros((1, 4, 4))
+    S = np.zeros((1, 4, 4))
+    layer = Image(
+        mean,
+        name="scaled",
+        scale=(2.0, 3.0),
+        metadata={
+            "original_mean": mean.copy(),
+            "G_original": G,
+            "S_original": S,
+            "harmonics": [1],
+        },
+    )
+    layer.axis_labels = ("y", "x")
+    paths = write_ome_tiff(str(tmp_path / "scaled.ome.tif"), layer)
+    assert os.path.exists(paths[0])
+    with tifffile.TiffFile(paths[0]) as tif:
+        meta = tif.ome_metadata or ""
+    assert "PhysicalSizeY" in meta and "PhysicalSizeX" in meta
+
+
+def _make_phasor_3d_layer(scale, settings=None):
+    from napari.layers import Image
+
+    mean = np.ones((3, 4, 4))
+    G = np.zeros((1, 3, 4, 4))
+    S = np.zeros((1, 3, 4, 4))
+    metadata = {
+        "original_mean": mean.copy(),
+        "G_original": G,
+        "S_original": S,
+        "harmonics": [1],
+    }
+    if settings is not None:
+        metadata["settings"] = settings
+    layer = Image(mean, name="zstack", scale=scale, metadata=metadata)
+    layer.axis_labels = ("z", "y", "x")
+    return layer
+
+
+def test_write_ometif_z_spacing_from_z_axis_label(tmp_path):
+    """A 'z' axis label with a positive scale sets PhysicalSizeZ."""
+    import tifffile
+
+    layer = _make_phasor_3d_layer(scale=(5.0, 1.0, 1.0))
+    paths = write_ome_tiff(str(tmp_path / "zlabel.ome.tif"), layer)
+    with tifffile.TiffFile(paths[0]) as tif:
+        meta = tif.ome_metadata or ""
+    assert "PhysicalSizeZ" in meta
+
+
+def test_write_ometif_z_spacing_falls_back_to_settings(tmp_path):
+    """A layer-data tuple (no scale attr) uses z_spacing_um from settings."""
+    import tifffile
+
+    mean = np.ones((3, 4, 4))
+    G = np.zeros((1, 3, 4, 4))
+    layer_tuple = (
+        mean,
+        {
+            "name": "zsettings",
+            "metadata": {
+                "original_mean": mean.copy(),
+                "G_original": G,
+                "S_original": G.copy(),
+                "harmonics": [1],
+                "settings": {"z_spacing_um": 4.0},
+            },
+        },
+    )
+    paths = write_ome_tiff(str(tmp_path / "zsettings.ome.tif"), layer_tuple)
+    with tifffile.TiffFile(paths[0]) as tif:
+        meta = tif.ome_metadata or ""
+    assert "PhysicalSizeZ" in meta
+
+
+def test_export_image_list_of_layers(tmp_path):
+    """Passing a list of layers exports each one."""
+    from napari.layers import Image
+
+    from napari_phasors._writer import export_layer_as_image
+
+    layers = [
+        Image(np.linspace(0, 1, 16).reshape(4, 4), name="a", colormap="gray"),
+        Image(np.linspace(0, 1, 16).reshape(4, 4), name="b", colormap="gray"),
+    ]
+    out = export_layer_as_image(
+        str(tmp_path / "multi.png"), layers, include_colorbar=False
+    )
+    assert len(out) == 2 and all(os.path.exists(p) for p in out)
+
+
+def test_export_csv_list_of_layers(tmp_path):
+    """Passing a list of layers exports a CSV per layer."""
+    from napari.layers import Image
+
+    from napari_phasors._writer import export_layer_as_csv
+
+    layers = [
+        Image(np.arange(16).reshape(4, 4), name="a"),
+        Image(np.arange(16).reshape(4, 4), name="b"),
+    ]
+    out = export_layer_as_csv(str(tmp_path / "multi.csv"), layers)
+    assert len(out) == 2 and all(os.path.exists(p) for p in out)
+
+
+def test_export_image_multidim_without_current_step(tmp_path):
+    """Multi-dimensional layers without current_step default to index 0."""
+    from napari.layers import Image
+
+    from napari_phasors._writer import export_layer_as_image
+
+    img = Image(
+        np.random.default_rng(4).random((3, 4, 4)),
+        name="stack",
+        colormap="gray",
+    )
+    out = export_layer_as_image(
+        str(tmp_path / "nostep.png"), img, include_colorbar=False
+    )
+    assert os.path.exists(out[0])
+
+
+def test_export_image_dict_colormap_without_colors(tmp_path):
+    """A dict colormap with colors=None falls back to a named matplotlib cmap."""
+    from napari_phasors._writer import export_layer_as_image
+
+    data = np.linspace(0, 1, 16).reshape(4, 4)
+    layer_tuple = (
+        data,
+        {
+            "name": "x",
+            "colormap": {"name": "viridis", "colors": None},
+            "metadata": {},
+        },
+        "image",
+    )
+    out = export_layer_as_image(
+        str(tmp_path / "dictcmap.png"), layer_tuple, include_colorbar=False
+    )
+    assert os.path.exists(out[0])
+
+
+def test_export_image_string_colormap(tmp_path):
+    """A plain string colormap is resolved via matplotlib."""
+    from napari_phasors._writer import export_layer_as_image
+
+    data = np.linspace(0, 1, 16).reshape(4, 4)
+    layer_tuple = (
+        data,
+        {"name": "x", "colormap": "plasma", "metadata": {}},
+        "image",
+    )
+    out = export_layer_as_image(
+        str(tmp_path / "strcmap.png"), layer_tuple, include_colorbar=False
+    )
+    assert os.path.exists(out[0])
+
+
+def _phasor_image(name):
+    from napari.layers import Image
+
+    mean = np.ones((4, 4))
+    G = np.zeros((1, 4, 4))
+    return Image(
+        mean,
+        name=name,
+        metadata={
+            "original_mean": mean.copy(),
+            "G_original": G,
+            "S_original": G.copy(),
+            "harmonics": [1],
+        },
+    )
+
+
+def test_write_ometif_manual_selections_stripped(tmp_path):
+    """manual_selections are removed from persisted settings on write."""
+    raw_flim_data = make_raw_flim_data(time_constants=[0.1, 1, 10])
+    layer = make_intensity_layer_with_phasors(raw_flim_data, harmonic=[1, 2])
+    layer.metadata.setdefault("settings", {})["selections"] = {
+        "manual_selections": [1, 2, 3],
+        "circular_cursors": [
+            {"g": 0.5, "s": 0.3, "radius": 0.1, "color": (255, 0, 0, 255)}
+        ],
+    }
+    filepath = str(tmp_path / "sel.ome.tif")
+    write_ome_tiff(filepath, layer)
+
+    reader = napari_get_reader(filepath, harmonics=[1, 2])
+    metadata = reader(filepath)[0][1]["metadata"]
+    selections = metadata["settings"]["selections"]
+    assert "manual_selections" not in selections
+    assert "circular_cursors" in selections
+
+
+def test_write_ometif_multilayer_list_naming(tmp_path):
+    """Exporting a list of >1 layers disambiguates filenames per layer."""
+    layers = [_phasor_image("img1"), _phasor_image("img2")]
+    # Custom base name (not a layer name) -> "<base>_<layer>.ome.tif".
+    paths = write_ome_tiff(str(tmp_path / "custom.ome.tif"), layers)
+    assert len(paths) == 2
+    names = {os.path.basename(p) for p in paths}
+    assert names == {"custom_img1.ome.tif", "custom_img2.ome.tif"}
+
+
+def test_write_ometif_multi_save_via_viewer(make_napari_viewer, tmp_path):
+    """A single-layer call while multiple layers are selected in the viewer
+    triggers the multi-save naming path."""
+    viewer = make_napari_viewer()
+    l1 = viewer.add_layer(_phasor_image("img1"))
+    l2 = viewer.add_layer(_phasor_image("img2"))
+    viewer.layers.selection = {l1, l2}
+    # Custom base name -> "<base>_<layer>.ome.tif".
+    paths = write_ome_tiff(str(tmp_path / "custom.ome.tif"), l1)
+    assert os.path.basename(paths[0]) == "custom_img1.ome.tif"
+    # Base name matching the layer name -> just "<layer>.ome.tif".
+    paths = write_ome_tiff(str(tmp_path / "img1.ome.tif"), l1)
+    assert os.path.basename(paths[0]) == "img1.ome.tif"

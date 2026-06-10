@@ -72,7 +72,7 @@ def test_validate_harmonics_for_wavelet():
     assert validate_harmonics_for_wavelet(harmonics_with_duplicates)
 
 
-def test_apply_filter_and_threshold_median(make_napari_viewer):
+def test_apply_filter_and_threshold_median(make_viewer_model, qtbot):
     """Test apply_filter_and_threshold function with median filter."""
     raw_flim_data = make_raw_flim_data(shape=(5, 5))
     harmonic = [1, 2]
@@ -87,7 +87,7 @@ def test_apply_filter_and_threshold_median(make_napari_viewer):
         == intensity_image_layer.metadata['original_mean']
     )
     assert not np.any(np.isnan(intensity_image_layer.data))
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     viewer.add_layer(intensity_image_layer)
     threshold = 0.02
 
@@ -135,7 +135,9 @@ def test_apply_filter_and_threshold_median(make_napari_viewer):
     assert intensity_image_layer.metadata["settings"]["threshold"] == threshold
 
 
-def test_apply_filter_and_threshold_median_3d_xy_slices(make_napari_viewer):
+def test_apply_filter_and_threshold_median_3d_xy_slices(
+    make_viewer_model, qtbot
+):
     """Median filtering on 3D data should run per-XY slice (skip Z axis)."""
     raw_flim_data = make_raw_flim_data(shape=(3, 5, 5))
     harmonic = [1, 2]
@@ -146,7 +148,7 @@ def test_apply_filter_and_threshold_median_3d_xy_slices(make_napari_viewer):
     original_g = intensity_image_layer.metadata['G'].copy()
     original_s = intensity_image_layer.metadata['S'].copy()
 
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     viewer.add_layer(intensity_image_layer)
 
     apply_filter_and_threshold(
@@ -176,7 +178,9 @@ def test_apply_filter_and_threshold_median_3d_xy_slices(make_napari_viewer):
     )
 
 
-def test_apply_filter_and_threshold_with_upper_threshold(make_napari_viewer):
+def test_apply_filter_and_threshold_with_upper_threshold(
+    make_viewer_model, qtbot
+):
     """Test apply_filter_and_threshold function with both lower and upper thresholds."""
     raw_flim_data = make_raw_flim_data(shape=(5, 5))
     harmonic = [1, 2]
@@ -187,7 +191,7 @@ def test_apply_filter_and_threshold_with_upper_threshold(make_napari_viewer):
     original_g = intensity_image_layer.metadata['G'].copy()
     original_s = intensity_image_layer.metadata['S'].copy()
 
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     viewer.add_layer(intensity_image_layer)
 
     threshold_lower = 0.01
@@ -235,7 +239,9 @@ def test_apply_filter_and_threshold_with_upper_threshold(make_napari_viewer):
     assert np.allclose(expected_s, filtered_s, equal_nan=True)
 
 
-def test_apply_filter_and_threshold_wavelet_compatible(make_napari_viewer):
+def test_apply_filter_and_threshold_wavelet_compatible(
+    make_viewer_model, qtbot
+):
     """Test apply_filter_and_threshold function with compatible wavelet harmonics."""
     raw_flim_data = make_raw_flim_data(shape=(5, 5))
     harmonic = [1, 2]  # Compatible harmonics
@@ -246,7 +252,7 @@ def test_apply_filter_and_threshold_wavelet_compatible(make_napari_viewer):
     original_g = intensity_image_layer.metadata['G_original'].copy()
     original_s = intensity_image_layer.metadata['S_original'].copy()
 
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     viewer.add_layer(intensity_image_layer)
 
     threshold = 0.02
@@ -293,7 +299,9 @@ def test_apply_filter_and_threshold_wavelet_compatible(make_napari_viewer):
     assert intensity_image_layer.metadata["settings"]["threshold"] == threshold
 
 
-def test_apply_filter_and_threshold_wavelet_incompatible(make_napari_viewer):
+def test_apply_filter_and_threshold_wavelet_incompatible(
+    make_viewer_model, qtbot
+):
     """Test apply_filter_and_threshold function with incompatible wavelet harmonics."""
     raw_flim_data = make_raw_flim_data(shape=(5, 5))
     # Create layer with incompatible harmonics
@@ -304,7 +312,7 @@ def test_apply_filter_and_threshold_wavelet_incompatible(make_napari_viewer):
     original_g = intensity_image_layer.metadata['G_original'].copy()
     original_s = intensity_image_layer.metadata['S_original'].copy()
 
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     viewer.add_layer(intensity_image_layer)
 
     threshold = 0.02
@@ -542,7 +550,7 @@ def test_colormap_to_dict():
     assert all(i in result_more_colors for i in [1, 2, 3, 4, 5])
 
 
-def test_update_frequency_in_metadata(make_napari_viewer):
+def test_update_frequency_in_metadata(make_viewer_model, qtbot):
     """Test update_frequency_in_metadata function."""
     # Create a test image layer
     raw_flim_data = make_raw_flim_data(n_time_bins=10)

@@ -1081,3 +1081,543 @@ def test_check_state_value_normalises_qt_enum():
 
     assert _check_state_value(Qt.Checked) == 2
     assert _check_state_value(Qt.Unchecked) == 0
+
+
+# ---------------------------------------------------------------------------
+# natural_sort_key
+# ---------------------------------------------------------------------------
+
+
+def test_natural_sort_key_orders_numerically():
+    from napari_phasors._utils import natural_sort_key
+
+    paths = ["/d/img10.tif", "/d/img2.tif", "/d/img1.tif"]
+    assert sorted(paths, key=natural_sort_key) == [
+        "/d/img1.tif",
+        "/d/img2.tif",
+        "/d/img10.tif",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# FileOrderDialog
+# ---------------------------------------------------------------------------
+
+
+def test_file_order_dialog_reorder_and_getters(qtbot):
+    from napari_phasors._utils import FileOrderDialog
+
+    paths = ["/d/a.lsm", "/d/b.lsm", "/d/c.lsm"]
+    dlg = FileOrderDialog(paths, estimated_shape=(3, 4, 4))
+    qtbot.addWidget(dlg)
+
+    assert dlg.file_list.count() == 3
+    assert dlg.get_ordered_paths() == paths
+    assert dlg.get_axis_labels() == ["Z", "Y", "X"]
+    assert dlg.get_axis_order() is None
+    assert dlg.get_z_spacing() == 1.0
+    assert "(3, 4, 4)" in dlg.shape_label.text()
+
+    # Move the first item down.
+    dlg.file_list.setCurrentRow(0)
+    dlg._move_down()
+    assert dlg.get_ordered_paths() == ["/d/b.lsm", "/d/a.lsm", "/d/c.lsm"]
+
+    # Move the last item up.
+    dlg.file_list.setCurrentRow(2)
+    dlg._move_up()
+    assert dlg.get_ordered_paths() == ["/d/b.lsm", "/d/c.lsm", "/d/a.lsm"]
+
+    # Boundary no-ops: move-up on first row and move-down on last row.
+    dlg.file_list.setCurrentRow(0)
+    dlg._move_up()
+    dlg.file_list.setCurrentRow(2)
+    dlg._move_down()
+    assert dlg.get_ordered_paths() == ["/d/b.lsm", "/d/c.lsm", "/d/a.lsm"]
+
+
+def test_file_order_dialog_axis_label_defaults(qtbot):
+    from napari_phasors._utils import FileOrderDialog
+
+    d2 = FileOrderDialog(["a.tif", "b.tif"], estimated_shape=(4, 4))
+    qtbot.addWidget(d2)
+    assert d2.get_axis_labels() == ["Y", "X"]
+
+    d4 = FileOrderDialog(["a"], estimated_shape=(2, 3, 4, 4))
+    qtbot.addWidget(d4)
+    assert d4.get_axis_labels() == ["T", "Z", "Y", "X"]
+
+    d5 = FileOrderDialog(["a"], estimated_shape=(2, 2, 3, 4, 4))
+    qtbot.addWidget(d5)
+    assert d5.get_axis_labels()[0].startswith("Axis")
+
+    # No estimated shape -> empty labels edit -> None, and "Unavailable" shape.
+    dn = FileOrderDialog(["a"])
+    qtbot.addWidget(dn)
+    assert dn.get_axis_labels() is None
+    assert "Unavailable" in dn.shape_label.text()
+
+    # Empty axis labels edit returns None.
+    d4.axis_labels_edit.setText("   ")
+    assert d4.get_axis_labels() is None
+
+
+def test_file_order_dialog_z_spacing_parsing(qtbot):
+    from napari_phasors._utils import FileOrderDialog
+
+    dlg = FileOrderDialog(["a"], initial_z_spacing=2.5)
+    qtbot.addWidget(dlg)
+    assert dlg.get_z_spacing() == 2.5
+
+    dlg.z_spacing_edit.setText("not-a-number")
+    assert dlg.get_z_spacing() == 1.0
+
+    dlg.z_spacing_edit.setText("-3")
+    assert dlg.get_z_spacing() == 1.0
+
+
+# ---------------------------------------------------------------------------
+# StatisticsTableWidget - copy / context menu / key handling
+# ---------------------------------------------------------------------------
+
+
+def test_statistics_table_copy_all_and_selection(qtbot):
+    from qtpy.QtWidgets import QApplication
+
+    table = StatisticsTableWidget()
+    qtbot.addWidget(table)
+    table.update_statistics({"A": np.array([1.0, 2.0, 3.0])})
+
+    # No selection -> copy the whole table.
+    table.clearSelection()
+    table._copy_selection()
+    clip = QApplication.clipboard().text()
+    assert "A" in clip
+
+    # With headers.
+    table.selectAll()
+    table._copy_selection(include_headers=True)
+    clip = QApplication.clipboard().text()
+    assert "Name" in clip.splitlines()[0]
+
+
+def test_statistics_table_keypress_shortcuts(qtbot):
+    from qtpy.QtCore import Qt
+    from qtpy.QtGui import QKeyEvent
+    from qtpy.QtWidgets import QApplication
+
+    table = StatisticsTableWidget()
+    qtbot.addWidget(table)
+    table.update_statistics({"A": np.array([1.0, 2.0])})
+
+    # Ctrl+A selects all.
+    ev_a = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_A, Qt.ControlModifier)
+    table.keyPressEvent(ev_a)
+    assert len(table.selectedItems()) > 0
+
+    # Ctrl+C copies the selection to the clipboard.
+    ev_c = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_C, Qt.ControlModifier)
+    table.keyPressEvent(ev_c)
+    assert "A" in QApplication.clipboard().text()
+
+    # A non-shortcut key is passed through without error.
+    ev_x = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_X, Qt.NoModifier)
+    table.keyPressEvent(ev_x)
+
+
+def test_statistics_table_context_menu_actions(qtbot, monkeypatch):
+    from qtpy.QtCore import QPoint
+    from qtpy.QtWidgets import QApplication, QMenu
+
+    import napari_phasors._utils as utils_mod
+
+    table = StatisticsTableWidget()
+    qtbot.addWidget(table)
+    table.update_statistics({"A": np.array([1.0, 2.0])})
+    table.selectAll()
+
+    # Patching ``QMenu.exec`` on the class does not intercept PySide6's
+    # native menu (the real menu would open and block ~20s per call), so
+    # replace the QMenu *name* used inside _utils with a Python subclass
+    # whose exec returns the requested action without showing anything.
+    class _NonBlockingMenu(QMenu):
+        chosen = None
+
+        def exec(self, *args, **kwargs):  # noqa: A003
+            for act in self.actions():
+                if act.text() == _NonBlockingMenu.chosen:
+                    return act
+            return None
+
+    monkeypatch.setattr(utils_mod, "QMenu", _NonBlockingMenu)
+
+    for label in ("Copy", "Copy with Headers", "Select All"):
+        _NonBlockingMenu.chosen = label
+        table._show_context_menu(QPoint(1, 1))
+
+    assert "A" in QApplication.clipboard().text()
+
+
+def test_statistics_table_update_group_statistics(qtbot):
+    table = StatisticsTableWidget()
+    qtbot.addWidget(table)
+    datasets = {
+        "l1": np.array([1.0, 2.0, 3.0]),
+        "l2": np.array([4.0, 5.0, 6.0]),
+        "l3": np.array([7.0, 8.0, 9.0]),
+    }
+    assignments = {"l1": 1, "l2": 1, "l3": 2}
+    table.update_group_statistics(
+        datasets, assignments, group_names={1: "First", 2: "Second"}
+    )
+    assert table.rowCount() == 2
+    names = {table.item(r, 0).text() for r in range(table.rowCount())}
+    assert names == {"First", "Second"}
+
+
+# ---------------------------------------------------------------------------
+# Colormap helper functions
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_colormap_by_name_variants(qtbot):
+    from matplotlib.colors import Colormap
+
+    from napari_phasors._utils import resolve_colormap_by_name
+
+    # Sentinel / None / non-string -> None.
+    assert resolve_colormap_by_name("Select color...") is None
+    assert resolve_colormap_by_name(None) is None
+    assert resolve_colormap_by_name(123) is None
+    # A matplotlib colormap name resolves to a Colormap.
+    assert isinstance(resolve_colormap_by_name("viridis"), Colormap)
+    # An unknown name returns None.
+    assert resolve_colormap_by_name("definitely-not-a-cmap") is None
+
+
+def test_create_colormaps_from_qcolor(qtbot):
+    from matplotlib.colors import LinearSegmentedColormap
+    from qtpy.QtGui import QColor
+
+    from napari_phasors._utils import (
+        create_mpl_colormap_from_qcolor,
+        create_napari_colormap_from_qcolor,
+    )
+
+    color = QColor(255, 0, 0, 255)
+    nap = create_napari_colormap_from_qcolor(color, name="red")
+    assert nap.name == "red"
+    assert len(nap.colors) == 2
+
+    mpl = create_mpl_colormap_from_qcolor(color, name="red")
+    assert isinstance(mpl, LinearSegmentedColormap)
+
+
+def test_resolve_napari_layer_colormap(qtbot):
+    from qtpy.QtGui import QColor
+
+    from napari_phasors._utils import resolve_napari_layer_colormap
+
+    # A normal name passes through unchanged.
+    assert resolve_napari_layer_colormap("viridis") == "viridis"
+    # Sentinel with a custom colour returns a Colormap object.
+    cmap = resolve_napari_layer_colormap(
+        "Select color...", custom_color=QColor(0, 255, 0, 255)
+    )
+    assert hasattr(cmap, "colors")
+    # Sentinel without a colour returns None.
+    assert (
+        resolve_napari_layer_colormap("Select color...", custom_color=None)
+        is None
+    )
+
+
+def test_create_colormap_icon(qtbot):
+    from qtpy.QtGui import QIcon
+
+    from napari_phasors._utils import create_colormap_icon
+
+    # Valid colormap -> a non-null icon.
+    icon = create_colormap_icon("viridis", width=20, height=8)
+    assert isinstance(icon, QIcon)
+    assert not icon.isNull()
+    # Invalid colormap still returns an (empty) icon without raising.
+    assert isinstance(create_colormap_icon("nope-cmap"), QIcon)
+
+
+def test_populate_colormap_combobox(qtbot):
+    from qtpy.QtWidgets import QComboBox
+
+    from napari_phasors._utils import populate_colormap_combobox
+
+    combo = QComboBox()
+    qtbot.addWidget(combo)
+    populate_colormap_combobox(
+        combo,
+        include_select_color=True,
+        available_colormaps=["viridis", "magma"],
+        selected="magma",
+    )
+    assert combo.itemText(0) == "Select color..."
+    assert combo.currentText() == "magma"
+
+    # Without the sentinel entry and with default selection.
+    combo2 = QComboBox()
+    qtbot.addWidget(combo2)
+    populate_colormap_combobox(
+        combo2,
+        include_select_color=False,
+        available_colormaps=["viridis", "magma"],
+    )
+    assert combo2.count() == 2
+    assert combo2.currentIndex() == 0
+
+
+def test_colormap_legend_proxy_and_handler(qtbot):
+    import matplotlib.pyplot as plt
+    from matplotlib.transforms import IdentityTransform
+
+    from napari_phasors._utils import (
+        ColormapLegendHandler,
+        ColormapLegendProxy,
+    )
+
+    cmap = plt.get_cmap("viridis")
+    # n_colors is clamped to a minimum of 2.
+    proxy = ColormapLegendProxy(cmap, linewidth=2, style="full", n_colors=1)
+    assert proxy.n_colors == 2
+
+    handler = ColormapLegendHandler()
+    common = {
+        "legend": None,
+        "xdescent": 0.0,
+        "ydescent": 0.0,
+        "width": 10.0,
+        "height": 4.0,
+        "fontsize": 8,
+        "trans": IdentityTransform(),
+    }
+    full_artists = handler.create_artists(orig_handle=proxy, **common)
+    assert len(full_artists) == 1
+
+    cat_proxy = ColormapLegendProxy(
+        cmap, linewidth=2, style="categorical", n_colors=5
+    )
+    cat_artists = handler.create_artists(orig_handle=cat_proxy, **common)
+    assert len(cat_artists) == 1
+
+
+# ---------------------------------------------------------------------------
+# HistogramWidget rendering modes & central tendency
+# ---------------------------------------------------------------------------
+
+
+def test_histogram_compute_central_tendency():
+    data = np.array([1.0, 2.0, 3.0, 4.0])
+    edges = np.linspace(0.0, 5.0, 6)
+    centers = (edges[:-1] + edges[1:]) / 2.0
+
+    assert HistogramWidget._compute_central_tendency(data, "Mean") == 2.5
+    assert HistogramWidget._compute_central_tendency(data, "Median") == 2.5
+    com = HistogramWidget._compute_central_tendency(
+        data, "Center of mass", centers, edges
+    )
+    assert com is not None
+    # Center of mass without bins falls back to the mean.
+    assert (
+        HistogramWidget._compute_central_tendency(data, "Center of mass")
+        == 2.5
+    )
+    # Empty data and unknown methods return None.
+    assert (
+        HistogramWidget._compute_central_tendency(np.array([]), "Mean") is None
+    )
+    assert HistogramWidget._compute_central_tendency(data, "Nope") is None
+
+
+def test_histogram_widget_render_all_modes(qtbot):
+    """Exercise every display mode and central-tendency option."""
+    widget = HistogramWidget(bins=5)
+    qtbot.addWidget(widget)
+    datasets = {
+        "A": np.array([1.0, 2.0, 3.0, 4.0, 5.0]),
+        "B": np.array([2.0, 3.0, 4.0, 5.0, 6.0]),
+    }
+    widget.update_multi_data(datasets)
+    widget._group_assignments = {"A": 1, "B": 2}
+    widget._group_names = {1: "G1", 2: "G2"}
+
+    # Toggle background and SD shading (each triggers a re-render).
+    widget.show_sd = True
+    widget.white_background = True
+    widget.white_background = False
+
+    for ct in ("Mean", "Median", "Center of mass"):
+        widget._central_tendency = ct
+        for mode in ("Individual layers", "Grouped", "Merged"):
+            widget.display_mode = mode
+            widget._render()
+
+    assert widget.counts is not None
+
+
+def test_histogram_widget_render_single_dataset_central_tendency(qtbot):
+    """A single-dataset render with central tendency draws a marker line."""
+    widget = HistogramWidget(bins=5)
+    qtbot.addWidget(widget)
+    widget.update_data(np.array([1.0, 2.0, 3.0, 4.0, 5.0]))
+    widget._central_tendency = "Mean"
+    widget._render()
+    assert widget.counts is not None
+
+
+def test_statistics_dock_export_csv(qtbot, tmp_path, monkeypatch):
+    """Export the statistics tables to CSV (and handle the cancel path)."""
+    import os
+
+    from qtpy.QtWidgets import QFileDialog
+
+    hw = HistogramWidget(bins=12)
+    qtbot.addWidget(hw)
+    dock = StatisticsDockWidget(hw)
+    qtbot.addWidget(dock)
+    hw.update_data(np.array([1.0, 2.0, 3.0, 4.0]))
+
+    # The low-level writer produces a CSV with header + rows.
+    out = str(tmp_path / "stats.csv")
+    dock._write_table_to_csv(dock.layer_stats_table, out)
+    assert os.path.exists(out)
+    with open(out) as f:
+        assert f.readline().strip() != ""
+
+    # The export entry point (sections are not on-screen in headless mode,
+    # so it just walks the branch logic) plus the cancelled-dialog no-op.
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        lambda *a, **k: (str(tmp_path / "e"), ""),
+    )
+    dock._export_table_csv_impl()
+    monkeypatch.setattr(
+        QFileDialog, "getSaveFileName", lambda *a, **k: ("", "")
+    )
+    dock._export_table_csv_impl()
+
+
+def test_histogram_widget_save_png(qtbot, tmp_path, monkeypatch):
+    """Save the histogram figure as a PNG (and handle the cancel path)."""
+    from qtpy.QtWidgets import QFileDialog
+
+    w = HistogramWidget(bins=5)
+    qtbot.addWidget(w)
+    w.update_data(np.array([1.0, 2.0, 3.0, 4.0, 5.0]))
+
+    out = tmp_path / "hist.png"
+    monkeypatch.setattr(
+        QFileDialog, "getSaveFileName", lambda *a, **k: (str(out), "")
+    )
+    w._save_histogram_png()
+    assert out.exists()
+
+    monkeypatch.setattr(
+        QFileDialog, "getSaveFileName", lambda *a, **k: ("", "")
+    )
+    w._save_histogram_png()
+
+
+def test_checkable_combobox_event_filter(qtbot):
+    """Drive the CheckableComboBox event filter: line-edit clicks, hover,
+    header All/None clicks, item toggle and leave."""
+    from qtpy.QtCore import QEvent, QPointF, Qt
+    from qtpy.QtGui import QMouseEvent
+
+    combo = _make_combo(
+        qtbot, items=["a", "b", "c"], show_select_all_none=True
+    )
+    le = combo.lineEdit()
+
+    def mouse(etype, x, y):
+        # Pass globalPos explicitly to select the non-deprecated overload.
+        return QMouseEvent(
+            etype,
+            QPointF(x, y),
+            QPointF(x, y),
+            Qt.LeftButton,
+            Qt.LeftButton,
+            Qt.NoModifier,
+        )
+
+    # Line-edit press/release branches (release opens the popup).
+    assert combo.eventFilter(le, mouse(QEvent.MouseButtonPress, 2, 2)) is True
+    assert (
+        combo.eventFilter(le, mouse(QEvent.MouseButtonRelease, 2, 2)) is True
+    )
+
+    combo.showPopup()
+    view = combo.view()
+    vp = view.viewport()
+
+    def center_of(row):
+        rect = view.visualRect(combo.model().index(row, 0))
+        c = rect.center()
+        return c.x(), c.y()
+
+    # Hover move over the viewport.
+    mx, my = center_of(combo._header_count)
+    combo.eventFilter(vp, mouse(QEvent.MouseMove, mx, my))
+
+    # Click the "All" then "None" header rows.
+    ax, ay = center_of(0)
+    combo.eventFilter(vp, mouse(QEvent.MouseButtonRelease, ax, ay))
+    nx, ny = center_of(1)
+    combo.eventFilter(vp, mouse(QEvent.MouseButtonRelease, nx, ny))
+
+    # Toggle a data item.
+    dx, dy = center_of(combo._header_count)
+    combo.eventFilter(vp, mouse(QEvent.MouseButtonRelease, dx, dy))
+
+    # Leave clears the hover state.
+    combo.eventFilter(vp, QEvent(QEvent.Leave))
+
+
+def test_primary_layer_delegate_paint(qtbot):
+    """Render the _PrimaryLayerDelegate for header, plain, coloured and
+    primary rows to cover its paint/sizeHint/labelRect code."""
+    from qtpy.QtCore import QRect, Qt
+    from qtpy.QtGui import QBrush, QColor, QImage, QPainter
+    from qtpy.QtWidgets import QStyleOptionViewItem
+
+    combo = _make_combo(qtbot, items=["a", "b"], show_select_all_none=True)
+    delegate = combo._delegate
+    model = combo.model()
+
+    img = QImage(200, 120, QImage.Format_ARGB32)
+    painter = QPainter(img)
+    try:
+        # Includes the "All"/"None" header rows, which have no check state:
+        # painting them used to raise TypeError in _check_state_value(None).
+        for row in range(model.rowCount()):
+            idx = model.index(row, 0)
+            opt = QStyleOptionViewItem()
+            opt.rect = QRect(0, 0, 200, 25)
+            delegate.paint(painter, opt, idx)
+            delegate.sizeHint(opt, idx)
+            delegate.labelRect(opt, idx)
+
+        # Give a data item an explicit colour + checked + primary, then repaint
+        # to cover the coloured-checkbox and primary-label branches.
+        combo.setCheckedItems(["a"])
+        data_row = combo._header_count
+        item = model.item(data_row)
+        item.setData(QBrush(QColor(255, 0, 0)), Qt.ForegroundRole)
+        combo._set_primary_by_name("a")
+        idx = model.index(data_row, 0)
+        opt = QStyleOptionViewItem()
+        opt.rect = QRect(0, 0, 200, 25)
+        delegate.paint(painter, opt, idx)
+
+        # An unchecked coloured item covers the faded-checkbox branch.
+        combo.setCheckedItems([])
+        delegate.paint(painter, opt, idx)
+    finally:
+        painter.end()

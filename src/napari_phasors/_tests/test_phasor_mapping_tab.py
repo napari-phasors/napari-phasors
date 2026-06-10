@@ -27,9 +27,9 @@ from napari_phasors._utils import HistogramWidget
 from napari_phasors.plotter import PlotterWidget
 
 
-def test_phasor_mapping_widget_initialization_values(make_napari_viewer):
+def test_phasor_mapping_widget_initialization_values(make_viewer_model, qtbot):
     """Test the initialization of the Lifetime Widget."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.phasor_mapping_tab
 
@@ -121,9 +121,9 @@ def test_phasor_mapping_widget_initialization_values(make_napari_viewer):
     )
 
 
-def test_phasor_mapping_widget_histogram_styling(make_napari_viewer):
+def test_phasor_mapping_widget_histogram_styling(make_viewer_model, qtbot):
     """Test that histogram styling is applied correctly."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
 
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.phasor_mapping_tab
@@ -144,9 +144,11 @@ def test_phasor_mapping_widget_histogram_styling(make_napari_viewer):
     assert lifetime_widget.histogram_widget.ax.get_xlabel() == "Lifetime (ns)"
 
 
-def test_mesh_alpha_map_is_cached_for_repeated_refreshes(make_napari_viewer):
+def test_mesh_alpha_map_is_cached_for_repeated_refreshes(
+    make_viewer_model, qtbot
+):
     """Test that the blurred mesh alpha map is reused for identical mesh state."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.phasor_mapping_tab
 
@@ -168,9 +170,11 @@ def test_mesh_alpha_map_is_cached_for_repeated_refreshes(make_napari_viewer):
     np.testing.assert_allclose(second, blurred_base * 0.25)
 
 
-def test_phasor_mapping_widget_frequency_input_validation(make_napari_viewer):
+def test_phasor_mapping_widget_frequency_input_validation(
+    make_viewer_model, qtbot
+):
     """Test frequency input validation."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.phasor_mapping_tab
 
@@ -183,9 +187,9 @@ def test_phasor_mapping_widget_frequency_input_validation(make_napari_viewer):
     assert lifetime_widget.frequency_input.text() == "80.0"
 
 
-def test_phasor_mapping_widget_slider_drag_state(make_napari_viewer):
+def test_phasor_mapping_widget_slider_drag_state(make_viewer_model, qtbot):
     """Test slider drag state tracking."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.phasor_mapping_tab
 
@@ -201,9 +205,9 @@ def test_phasor_mapping_widget_slider_drag_state(make_napari_viewer):
     assert lifetime_widget.histogram_widget._slider_being_dragged is False
 
 
-def test_phasor_mapping_widget_range_label_update(make_napari_viewer):
+def test_phasor_mapping_widget_range_label_update(make_viewer_model, qtbot):
     """Test lifetime range label update."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.phasor_mapping_tab
 
@@ -220,10 +224,11 @@ def test_phasor_mapping_widget_range_label_update(make_napari_viewer):
 
 
 def test_phasor_mapping_widget_calculate_lifetimes_no_layer(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Test calculate_lifetimes when no layer is available."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.phasor_mapping_tab
 
@@ -232,9 +237,11 @@ def test_phasor_mapping_widget_calculate_lifetimes_no_layer(
     assert lifetime_widget.lifetime_data_original is None
 
 
-def test_phasor_mapping_widget_plot_histogram_no_data(make_napari_viewer):
+def test_phasor_mapping_widget_plot_histogram_no_data(
+    make_viewer_model, qtbot
+):
     """Test plotting histogram when no data is available."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.phasor_mapping_tab
     parent.tab_widget.setCurrentWidget(lifetime_widget)
@@ -247,9 +254,9 @@ def test_phasor_mapping_widget_plot_histogram_no_data(make_napari_viewer):
     assert not lifetime_widget.histogram_widget.save_png_button.isEnabled()
 
 
-def test_phasor_mapping_widget_ui_layout(make_napari_viewer):
+def test_phasor_mapping_widget_ui_layout(make_viewer_model, qtbot):
     """Test the UI layout structure."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.phasor_mapping_tab
 
@@ -266,9 +273,9 @@ def test_phasor_mapping_widget_ui_layout(make_napari_viewer):
     assert len(h_layouts) >= 1  # At least one for the min/max edit controls
 
 
-def test_phasor_mapping_widget_canvas_properties(make_napari_viewer):
+def test_phasor_mapping_widget_canvas_properties(make_viewer_model, qtbot):
     """Test canvas and figure properties."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.phasor_mapping_tab
 
@@ -290,9 +297,11 @@ def test_phasor_mapping_widget_canvas_properties(make_napari_viewer):
     assert canvas.height() == 150  # Fixed height as set in setup_ui
 
 
-def test_phasor_mapping_widget_type_changed_no_frequency(make_napari_viewer):
+def test_phasor_mapping_widget_type_changed_no_frequency(
+    make_viewer_model, qtbot
+):
     """Test behavior when Calculate is clicked but no frequency is set."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
 
@@ -312,10 +321,11 @@ def test_phasor_mapping_widget_type_changed_no_frequency(make_napari_viewer):
 
 
 def test_phasor_mapping_widget_settings_initialization_in_metadata(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Test that lifetime settings are only initialized when analysis is performed."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
     parent = PlotterWidget(viewer)
@@ -359,9 +369,11 @@ def test_phasor_mapping_widget_settings_initialization_in_metadata(
     parent.deleteLater()
 
 
-def test_phasor_mapping_widget_settings_update_in_metadata(make_napari_viewer):
+def test_phasor_mapping_widget_settings_update_in_metadata(
+    make_viewer_model, qtbot
+):
     """Test that changing settings updates layer metadata."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
     parent = PlotterWidget(viewer)
@@ -392,10 +404,11 @@ def test_phasor_mapping_widget_settings_update_in_metadata(make_napari_viewer):
 
 
 def test_phasor_mapping_widget_settings_persistence_across_layer_switches(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Test that settings persist when switching between layers."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.phasor_mapping_tab
 
@@ -469,10 +482,11 @@ def test_phasor_mapping_widget_settings_persistence_across_layer_switches(
 
 
 def test_phasor_mapping_widget_adding_layer_without_settings_initializes_defaults(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Test that adding a layer without lifetime settings doesn't auto-initialize metadata."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.phasor_mapping_tab
 
@@ -522,10 +536,11 @@ def test_phasor_mapping_widget_adding_layer_without_settings_initializes_default
 
 
 def test_phasor_mapping_widget_settings_restored_after_recalculation(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Test that lifetime range settings are restored after recalculating lifetimes."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.phasor_mapping_tab
 
@@ -596,10 +611,11 @@ def test_phasor_mapping_widget_settings_restored_after_recalculation(
 
 
 def test_phasor_mapping_widget_adding_removing_layers_updates_settings(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Test that adding/removing layers properly manages settings."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.phasor_mapping_tab
 
@@ -656,10 +672,11 @@ def test_phasor_mapping_widget_adding_removing_layers_updates_settings(
 
 
 def test_phasor_mapping_widget_frequency_saved_on_lifetime_type_change(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Test that frequency is saved to metadata when Calculate is clicked."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.phasor_mapping_tab
 
@@ -685,10 +702,11 @@ def test_phasor_mapping_widget_frequency_saved_on_lifetime_type_change(
 
 
 def test_phasor_mapping_widget_no_recursive_updates_when_restoring_settings(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Test that restoring settings doesn't trigger recursive updates."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.phasor_mapping_tab
 
@@ -729,9 +747,9 @@ def test_phasor_mapping_widget_no_recursive_updates_when_restoring_settings(
     parent.deleteLater()
 
 
-def test_phasor_mapping_widget_slider_range_update(make_napari_viewer):
+def test_phasor_mapping_widget_slider_range_update(make_viewer_model, qtbot):
     """Test updating slider range based on lifetime data."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.phasor_mapping_tab
 
@@ -759,10 +777,11 @@ def test_phasor_mapping_widget_slider_range_update(make_napari_viewer):
 
 
 def test_phasor_mapping_widget_slider_range_update_no_valid_data(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Test updating slider range when no valid data exists."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.phasor_mapping_tab
 
@@ -778,9 +797,11 @@ def test_phasor_mapping_widget_slider_range_update_no_valid_data(
     assert lifetime_widget.lifetime_range_slider.maximum() == 10000
 
 
-def test_phasor_mapping_widget_min_max_edit_callbacks(make_napari_viewer):
+def test_phasor_mapping_widget_min_max_edit_callbacks(
+    make_viewer_model, qtbot
+):
     """Test manual entry of min/max values."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.phasor_mapping_tab
 
@@ -805,10 +826,11 @@ def test_phasor_mapping_widget_min_max_edit_callbacks(make_napari_viewer):
 
 
 def test_phasor_mapping_widget_image_layer_changed_with_settings(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Test behavior when image layer changes and has frequency settings."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     intensity_image_layer.metadata["settings"] = {"frequency": 80.0}
     viewer.add_layer(intensity_image_layer)
@@ -826,10 +848,11 @@ def test_phasor_mapping_widget_image_layer_changed_with_settings(
 
 
 def test_phasor_mapping_widget_image_layer_changed_no_layer(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Test behavior when no layer is selected."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.phasor_mapping_tab
 
@@ -846,9 +869,11 @@ def test_phasor_mapping_widget_image_layer_changed_no_layer(
     assert not lifetime_widget.histogram_widget.save_png_button.isEnabled()
 
 
-def test_phasor_mapping_widget_colormap_changed_callback(make_napari_viewer):
+def test_phasor_mapping_widget_colormap_changed_callback(
+    make_viewer_model, qtbot
+):
     """Test colormap change callback."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.phasor_mapping_tab
 
@@ -893,10 +918,11 @@ def test_phasor_mapping_widget_colormap_changed_callback(make_napari_viewer):
 
 
 def test_phasor_mapping_widget_calculate_lifetimes_with_real_data(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Test calculating different lifetime types with real phasor data and compare with expected values."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.phasor_mapping_tab
 
@@ -997,10 +1023,11 @@ def test_phasor_mapping_widget_calculate_lifetimes_with_real_data(
 
 
 def test_phasor_mapping_widget_full_workflow_with_real_calculations(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Test the complete workflow with real lifetime calculations and layer creation."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.phasor_mapping_tab
 
@@ -1104,10 +1131,11 @@ def test_phasor_mapping_widget_full_workflow_with_real_calculations(
 
 
 def test_phasor_mapping_widget_range_clipping_with_real_data(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Test range clipping functionality with real calculated lifetime data and slider interaction."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.phasor_mapping_tab
 
@@ -1291,10 +1319,11 @@ def test_phasor_mapping_widget_range_clipping_with_real_data(
 
 
 def test_phasor_mapping_widget_different_harmonics_and_frequencies(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Test lifetime calculations with different harmonic and frequency combinations."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.phasor_mapping_tab
 
@@ -1368,10 +1397,11 @@ def test_phasor_mapping_widget_different_harmonics_and_frequencies(
 
 
 def test_phasor_mapping_widget_output_mode_updates_button_text(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Button text should reflect the selected mapping parameter."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     mapping_widget = parent.phasor_mapping_tab
 
@@ -1393,10 +1423,11 @@ def test_phasor_mapping_widget_output_mode_updates_button_text(
 
 
 def test_phasor_mapping_widget_apply_2d_text_tracks_plot_type(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Checkbox text should follow the active plot artist type."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     mapping_widget = parent.phasor_mapping_tab
 
@@ -1437,10 +1468,11 @@ def test_phasor_mapping_widget_apply_2d_text_tracks_plot_type(
 
 
 def test_phasor_mapping_widget_phase_modulation_calculation(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Phase and modulation outputs should match phasor_to_polar values."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     mapping_widget = parent.phasor_mapping_tab
 
@@ -1481,10 +1513,11 @@ def test_phasor_mapping_widget_phase_modulation_calculation(
 
 
 def test_phasor_mapping_widget_phase_modulation_layer_display(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Display action should create/update phase and modulation map layers."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     mapping_widget = parent.phasor_mapping_tab
 
@@ -1512,10 +1545,11 @@ def test_phasor_mapping_widget_phase_modulation_layer_display(
 
 
 def test_phase_output_wraps_to_full_circle_in_full_polar_mode(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Phase output should be wrapped to [0, 2pi] in full polar mode."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     mapping_widget = parent.phasor_mapping_tab
 
@@ -1558,10 +1592,11 @@ def test_phase_output_wraps_to_full_circle_in_full_polar_mode(
 
 
 def test_phase_range_defaults_to_0_2pi_in_full_polar_mode(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Phase map slider range should initialize to 0..2pi in full polar mode."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     mapping_widget = parent.phasor_mapping_tab
 
@@ -1586,10 +1621,11 @@ def test_phase_range_defaults_to_0_2pi_in_full_polar_mode(
 
 
 def test_phasor_mapping_widget_select_color_uses_napari_colormap(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Sentinel colormap entry should resolve to a real napari colormap."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     mapping_widget = parent.phasor_mapping_tab
 
@@ -1630,10 +1666,11 @@ def test_phasor_mapping_widget_select_color_uses_napari_colormap(
 
 
 def test_phasor_mapping_histogram_overlay_checkbox_lifecycle(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Phase/Modulation overlay should be created and cleared via checkbox."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     mapping_widget = parent.phasor_mapping_tab
 
@@ -1670,10 +1707,11 @@ def test_phasor_mapping_histogram_overlay_checkbox_lifecycle(
 
 
 def test_phasor_mapping_histogram_overlay_tab_visibility_lifecycle(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Overlay should clear when tab is hidden and reapply when shown again."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     mapping_widget = parent.phasor_mapping_tab
 
@@ -1704,10 +1742,11 @@ def test_phasor_mapping_histogram_overlay_tab_visibility_lifecycle(
 
 
 def test_mesh_overlay_independent_from_apply_colormap_toggle(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Mesh should remain visible when colormap toggle is off."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     mapping_widget = parent.phasor_mapping_tab
 
@@ -1740,9 +1779,9 @@ def test_mesh_overlay_independent_from_apply_colormap_toggle(
     assert not histogram_img.get_visible()
 
 
-def test_mesh_settings_persist_across_layer_switches(make_napari_viewer):
+def test_mesh_settings_persist_across_layer_switches(make_viewer_model, qtbot):
     """Mesh toggle, alpha, and ranges should restore per layer."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     mapping_widget = parent.phasor_mapping_tab
 
@@ -1780,9 +1819,9 @@ def test_mesh_settings_persist_across_layer_switches(make_napari_viewer):
     assert mapping_widget.modulation_range_slider.value() == (10, 70)
 
 
-def test_full_circle_mesh_supports_phase_over_pi(make_napari_viewer):
+def test_full_circle_mesh_supports_phase_over_pi(make_viewer_model, qtbot):
     """Full-circle mode should keep mesh values for phases > pi."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     mapping_widget = parent.phasor_mapping_tab
 
@@ -1807,9 +1846,11 @@ def test_full_circle_mesh_supports_phase_over_pi(make_napari_viewer):
     assert np.isfinite(arr).any()
 
 
-def test_mesh_redraw_is_debounced_on_axes_limit_changes(make_napari_viewer):
+def test_mesh_redraw_is_debounced_on_axes_limit_changes(
+    make_viewer_model, qtbot
+):
     """Axes changes should schedule one deferred mesh redraw via timer."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     mapping_widget = parent.phasor_mapping_tab
 
@@ -1834,9 +1875,9 @@ def test_mesh_redraw_is_debounced_on_axes_limit_changes(make_napari_viewer):
         mock_apply.assert_called_once_with("Phase")
 
 
-def test_mesh_overlay_colorbar_and_alpha_updates(make_napari_viewer):
+def test_mesh_overlay_colorbar_and_alpha_updates(make_viewer_model, qtbot):
     """Mesh colorbar toggle and alpha updates should reflect dynamically."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     mapping_widget = parent.phasor_mapping_tab
 
@@ -1871,9 +1912,9 @@ def test_mesh_overlay_colorbar_and_alpha_updates(make_napari_viewer):
     assert parent.mapping_cax is None
 
 
-def test_mesh_overlay_range_edits_and_sliders(make_napari_viewer):
+def test_mesh_overlay_range_edits_and_sliders(make_viewer_model, qtbot):
     """Text edits to phase/modulation limits should synchronize with the sliders and trigger a redraw."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     mapping_widget = parent.phasor_mapping_tab
 
@@ -1917,10 +1958,11 @@ def test_mesh_overlay_range_edits_and_sliders(make_napari_viewer):
 
 
 def test_phasor_mapping_teardown_clears_state_when_no_layer(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """_teardown_on_layer_change resets all per-layer state when no layer."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     mapping_widget = parent.phasor_mapping_tab
 
@@ -1953,9 +1995,11 @@ def test_phasor_mapping_teardown_clears_state_when_no_layer(
     assert mapping_widget.metric_layers == []
 
 
-def test_phasor_mapping_teardown_no_op_when_layer_present(make_napari_viewer):
+def test_phasor_mapping_teardown_no_op_when_layer_present(
+    make_viewer_model, qtbot
+):
     """_teardown_on_layer_change does NOT clear state when a layer is present."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
@@ -1972,10 +2016,11 @@ def test_phasor_mapping_teardown_no_op_when_layer_present(make_napari_viewer):
 
 
 def test_phasor_mapping_restore_with_layer_calls_lifetime_restore(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """_restore_on_layer_change runs the with-layer branch."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
@@ -1994,10 +2039,11 @@ def test_phasor_mapping_restore_with_layer_calls_lifetime_restore(
 
 
 def test_phasor_mapping_restore_without_layer_only_clears_flag(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """_restore_on_layer_change clears _needs_update even with no layer."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
 
     mapping_widget = parent.phasor_mapping_tab
@@ -2012,3 +2058,68 @@ def test_phasor_mapping_restore_without_layer_only_clears_flag(
 
     # The flag is still cleared regardless
     assert mapping_widget._needs_update is False
+
+
+def test_phasor_mapping_apply_histogram_coloring(make_viewer_model, qtbot):
+    """Exercise 2D-colormap and mesh-overlay histogram coloring branches."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    pm = parent.phasor_mapping_tab
+    parent.tab_widget.setCurrentWidget(pm)
+    parent.plot()
+
+    pm.apply_2d_colormap_checkbox.setChecked(True)
+    pm.mesh_overlay_checkbox.setChecked(True)
+    pm._apply_histogram_coloring("Phase")
+    assert getattr(pm, "_mesh_overlay_imshow", None) is not None
+    pm._apply_histogram_coloring("Modulation")
+    assert getattr(pm, "_mesh_overlay_imshow", None) is not None
+
+    # Unchecked variants exercise the overlay-removal branches.
+    pm.apply_2d_colormap_checkbox.setChecked(False)
+    pm.mesh_overlay_checkbox.setChecked(False)
+    pm._apply_histogram_coloring("Phase")
+    assert getattr(pm, "_mesh_overlay_imshow", None) is None
+    assert getattr(pm, "_overlay_imshow", None) is None
+
+    # An invalid output type returns early.
+    pm._apply_histogram_coloring("Nope")
+
+
+def test_phasor_mapping_custom_color_mesh_and_frequency(
+    make_viewer_model, qtbot, monkeypatch
+):
+    """Cover custom-color dialog, mesh-overlay toggle and frequency change."""
+    from qtpy.QtGui import QColor
+    from qtpy.QtWidgets import QColorDialog
+
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    layer.metadata["settings"] = {"frequency": 80.0}
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    pm = parent.phasor_mapping_tab
+    parent.tab_widget.setCurrentWidget(pm)
+    parent.plot()
+
+    # Custom-color dialog returning a valid colour.
+    pm.custom_color_button.setStyleSheet("background-color: rgb(10, 20, 30);")
+    monkeypatch.setattr(
+        QColorDialog,
+        "getColor",
+        staticmethod(lambda *a, **k: QColor(200, 100, 50)),
+    )
+    pm._on_custom_color_clicked()
+    assert pm._custom_color.getRgb()[:3] == (200, 100, 50)
+
+    # Mesh overlay toggle in a Phase output mode.
+    pm.output_mode_combobox.setCurrentText("Phase")
+    pm._on_mesh_overlay_toggled(True)
+    pm._on_mesh_overlay_toggled(False)
+
+    # Frequency change in Lifetime mode runs the full recompute path.
+    pm.output_mode_combobox.setCurrentText("Lifetime")
+    pm.frequency_input.setText("80")
+    pm._on_frequency_changed()

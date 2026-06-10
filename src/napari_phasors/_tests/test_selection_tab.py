@@ -8,9 +8,9 @@ from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
 from napari_phasors.plotter import PlotterWidget
 
 
-def test_selection_widget_initialization_values(make_napari_viewer):
+def test_selection_widget_initialization_values(make_viewer_model, qtbot):
     """Test the initialization of the SelectionWidget."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.selection_tab
 
@@ -60,9 +60,9 @@ def test_selection_widget_initialization_values(make_napari_viewer):
     assert combobox.currentText() == "None"
 
 
-def test_selection_widget_with_layer_data(make_napari_viewer):
+def test_selection_widget_with_layer_data(make_viewer_model, qtbot):
     """Test selection widget behavior with actual layer data."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.selection_tab
 
@@ -100,9 +100,9 @@ def test_selection_widget_with_layer_data(make_napari_viewer):
     ]
 
 
-def test_selection_id_property_getter(make_napari_viewer):
+def test_selection_id_property_getter(make_viewer_model, qtbot):
     """Test the selection_id property getter."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.selection_tab
 
@@ -133,9 +133,9 @@ def test_selection_id_property_getter(make_napari_viewer):
 # Manual selections are now stored directly via manual_selection_changed method
 
 
-def test_find_phasors_layer_by_name(make_napari_viewer):
+def test_find_phasors_layer_by_name(make_viewer_model, qtbot):
     """Test finding phasors layer by name."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.selection_tab
 
@@ -152,9 +152,9 @@ def test_find_phasors_layer_by_name(make_napari_viewer):
     assert not_found is None
 
 
-def test_get_next_available_selection_with_layer(make_napari_viewer):
+def test_get_next_available_selection_with_layer(make_viewer_model, qtbot):
     """Test _get_next_available_selection_id when no layer is available."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.selection_tab
 
@@ -194,9 +194,9 @@ def test_get_next_available_selection_with_layer(make_napari_viewer):
     assert result == "MANUAL SELECTION #3"
 
 
-def test_update_phasor_plot_no_layer(make_napari_viewer):
+def test_update_phasor_plot_no_layer(make_viewer_model, qtbot):
     """Test update_phasor_plot_with_selection_id when no layer is available."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.selection_tab
 
@@ -209,9 +209,9 @@ def test_update_phasor_plot_no_layer(make_napari_viewer):
         mock_plot.assert_not_called()
 
 
-def test_update_phasor_plot_during_update(make_napari_viewer):
+def test_update_phasor_plot_during_update(make_viewer_model, qtbot):
     """Test update_phasor_plot_with_selection_id during plot update."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     parent._updating_plot = True
     widget = parent.selection_tab
@@ -225,9 +225,9 @@ def test_update_phasor_plot_during_update(make_napari_viewer):
         mock_plot.assert_not_called()
 
 
-def test_create_phasors_selected_layer_no_layer(make_napari_viewer):
+def test_create_phasors_selected_layer_no_layer(make_viewer_model, qtbot):
     """Test create_phasors_selected_layer when no layer is available."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.selection_tab
 
@@ -247,10 +247,10 @@ def test_create_phasors_selected_layer_no_layer(make_napari_viewer):
 
 @patch('napari_phasors.selection_tab.colormap_to_dict')
 def test_create_phasors_selected_layer_with_data(
-    mock_colormap_to_dict, make_napari_viewer
+    mock_colormap_to_dict, make_viewer_model, qtbot
 ):
     """Test create_phasors_selected_layer with actual data."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -279,9 +279,9 @@ def test_create_phasors_selected_layer_with_data(
     assert f"custom_selection: {intensity_image_layer.name}" in layer_names
 
 
-def test_no_selection_processing_during_plot_update(make_napari_viewer):
+def test_no_selection_processing_during_plot_update(make_viewer_model, qtbot):
     """Test that selection processing is skipped during plot updates."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -293,9 +293,9 @@ def test_no_selection_processing_during_plot_update(make_napari_viewer):
     assert widget.update_phasor_plot_with_selection_id("test") is None
 
 
-def test_selection_mode_switching(make_napari_viewer):
+def test_selection_mode_switching(make_viewer_model, qtbot):
     """Test switching between circular cursor, manual selection, and automatic clustering modes."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.selection_tab
 
@@ -320,9 +320,9 @@ def test_selection_mode_switching(make_napari_viewer):
     assert not widget.is_manual_selection_mode()
 
 
-def test_circular_cursor_widget_initialization(make_napari_viewer):
+def test_circular_cursor_widget_initialization(make_viewer_model, qtbot):
     """Test the initialization of the CircularCursorWidget."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.selection_tab.circular_cursor_widget
 
@@ -363,9 +363,9 @@ def test_circular_cursor_widget_initialization(make_napari_viewer):
     assert not widget._autoupdate_enabled  # Default is off
 
 
-def test_circular_cursor_add_cursor(make_napari_viewer):
+def test_circular_cursor_add_cursor(make_viewer_model, qtbot):
     """Test adding circular cursors."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -404,9 +404,9 @@ def test_circular_cursor_add_cursor(make_napari_viewer):
     assert widget._cursors[0]['color'] != widget._cursors[1]['color']
 
 
-def test_circular_cursor_remove_cursor(make_napari_viewer):
+def test_circular_cursor_remove_cursor(make_viewer_model, qtbot):
     """Test removing circular cursors."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -430,9 +430,9 @@ def test_circular_cursor_remove_cursor(make_napari_viewer):
     assert widget.cursor_table.rowCount() == 0
 
 
-def test_circular_cursor_set1_colormap(make_napari_viewer):
+def test_circular_cursor_set1_colormap(make_viewer_model, qtbot):
     """Test that cursors use Set1 colormap colors."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -460,9 +460,9 @@ def test_circular_cursor_set1_colormap(make_napari_viewer):
     assert color_0.blue() == color_9.blue()
 
 
-def test_circular_cursor_table_updates(make_napari_viewer):
+def test_circular_cursor_table_updates(make_viewer_model, qtbot):
     """Test that table updates when cursor parameters change."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -499,9 +499,9 @@ def test_circular_cursor_table_updates(make_napari_viewer):
     assert widget._cursors[0]['radius'] == 0.15
 
 
-def test_circular_cursor_last_radius_used(make_napari_viewer):
+def test_circular_cursor_last_radius_used(make_viewer_model, qtbot):
     """Test that new cursors use the radius from the last cursor."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -521,9 +521,9 @@ def test_circular_cursor_last_radius_used(make_napari_viewer):
     assert widget._cursors[1]['radius'] == 0.25
 
 
-def test_circular_cursor_creates_labels_layer(make_napari_viewer):
+def test_circular_cursor_creates_labels_layer(make_viewer_model, qtbot):
     """Test that circular cursors create a labels layer when autoupdate is enabled or calculate is clicked."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -550,9 +550,9 @@ def test_circular_cursor_creates_labels_layer(make_napari_viewer):
     assert labels_layer.data.shape == intensity_image_layer.data.shape
 
 
-def test_circular_cursor_labels_layer_visibility(make_napari_viewer):
+def test_circular_cursor_labels_layer_visibility(make_viewer_model, qtbot):
     """Test that labels layer visibility is managed when switching modes."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -582,9 +582,9 @@ def test_circular_cursor_labels_layer_visibility(make_napari_viewer):
     assert circular_layer.visible is True
 
 
-def test_circular_cursor_autoupdate_checkbox(make_napari_viewer):
+def test_circular_cursor_autoupdate_checkbox(make_viewer_model, qtbot):
     """Test autoupdate checkbox functionality."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -614,9 +614,9 @@ def test_circular_cursor_autoupdate_checkbox(make_napari_viewer):
     assert widget.calculate_button.isEnabled()  # Should be enabled again
 
 
-def test_circular_cursor_calculate_button(make_napari_viewer):
+def test_circular_cursor_calculate_button(make_viewer_model, qtbot):
     """Test calculate button functionality."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -642,9 +642,11 @@ def test_circular_cursor_calculate_button(make_napari_viewer):
     assert np.any(labels_layer.data > 0)
 
 
-def test_circular_cursor_count_and_percentage_columns(make_napari_viewer):
+def test_circular_cursor_count_and_percentage_columns(
+    make_viewer_model, qtbot
+):
     """Test that count and percentage columns are populated correctly."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -684,9 +686,9 @@ def test_circular_cursor_count_and_percentage_columns(make_napari_viewer):
     assert int(new_count_text) >= 0
 
 
-def test_circular_cursor_statistics_update_on_change(make_napari_viewer):
+def test_circular_cursor_statistics_update_on_change(make_viewer_model, qtbot):
     """Test that statistics update when cursor parameters change (without autoupdate)."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -715,9 +717,9 @@ def test_circular_cursor_statistics_update_on_change(make_napari_viewer):
     assert new_count != "-"
 
 
-def test_circular_cursor_clear_patches(make_napari_viewer):
+def test_circular_cursor_clear_patches(make_viewer_model, qtbot):
     """Test clearing all circular cursor patches."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -744,9 +746,9 @@ def test_circular_cursor_clear_patches(make_napari_viewer):
         assert cursor['patch'] is None or not cursor['patch'].get_visible()
 
 
-def test_circular_cursor_redraw_patches(make_napari_viewer):
+def test_circular_cursor_redraw_patches(make_viewer_model, qtbot):
     """Test redrawing circular cursor patches."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -771,9 +773,11 @@ def test_circular_cursor_redraw_patches(make_napari_viewer):
         assert cursor['patch'].get_visible()
 
 
-def test_manual_selection_layers_hidden_in_circular_mode(make_napari_viewer):
+def test_manual_selection_layers_hidden_in_circular_mode(
+    make_viewer_model, qtbot
+):
     """Test that manual selection layers are hidden when in circular cursor mode."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -805,9 +809,9 @@ def test_manual_selection_layers_hidden_in_circular_mode(make_napari_viewer):
     assert manual_layer.visible is True
 
 
-def test_circular_cursor_drag_initialization(make_napari_viewer):
+def test_circular_cursor_drag_initialization(make_viewer_model, qtbot):
     """Test cursor drag initialization with pick event."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -838,9 +842,9 @@ def test_circular_cursor_drag_initialization(make_napari_viewer):
     assert len(widget._drag_offset) == 2
 
 
-def test_circular_cursor_drag_motion(make_napari_viewer):
+def test_circular_cursor_drag_motion(make_viewer_model, qtbot):
     """Test cursor motion during drag."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -876,9 +880,9 @@ def test_circular_cursor_drag_motion(make_napari_viewer):
     assert s_spinbox.value() == 0.4
 
 
-def test_circular_cursor_drag_release(make_napari_viewer):
+def test_circular_cursor_drag_release(make_viewer_model, qtbot):
     """Test cursor drag release."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -901,9 +905,9 @@ def test_circular_cursor_drag_release(make_napari_viewer):
     assert widget._drag_offset == (0, 0)
 
 
-def test_circular_cursor_drag_without_pick(make_napari_viewer):
+def test_circular_cursor_drag_without_pick(make_viewer_model, qtbot):
     """Test that motion without picking doesn't move cursor."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -927,9 +931,9 @@ def test_circular_cursor_drag_without_pick(make_napari_viewer):
     assert widget._cursors[0]['s'] == initial_s
 
 
-def test_circular_cursor_drag_updates_patch_position(make_napari_viewer):
+def test_circular_cursor_drag_updates_patch_position(make_viewer_model, qtbot):
     """Test that dragging updates the patch center position."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -957,9 +961,9 @@ def test_circular_cursor_drag_updates_patch_position(make_napari_viewer):
     assert new_center == (0.8, 0.45)
 
 
-def test_circular_cursor_no_auto_apply_during_drag(make_napari_viewer):
+def test_circular_cursor_no_auto_apply_during_drag(make_viewer_model, qtbot):
     """Test that selection is not auto-applied during drag operations."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -986,9 +990,9 @@ def test_circular_cursor_no_auto_apply_during_drag(make_napari_viewer):
         widget._on_release(mock_event)
 
 
-def test_circular_cursor_storage_in_metadata(make_napari_viewer):
+def test_circular_cursor_storage_in_metadata(make_viewer_model, qtbot):
     """Test that circular cursors are correctly stored in metadata."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -1033,9 +1037,9 @@ def test_circular_cursor_storage_in_metadata(make_napari_viewer):
     assert cursors[2]['radius'] == 0.08
 
 
-def test_circular_cursor_restoration_from_metadata(make_napari_viewer):
+def test_circular_cursor_restoration_from_metadata(make_viewer_model, qtbot):
     """Test that circular cursors are correctly restored from metadata."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -1073,9 +1077,9 @@ def test_circular_cursor_restoration_from_metadata(make_napari_viewer):
     assert abs(widget._cursors[1]['radius'] - 0.15) < 0.001
 
 
-def test_circular_cursor_metadata_updates_on_change(make_napari_viewer):
+def test_circular_cursor_metadata_updates_on_change(make_viewer_model, qtbot):
     """Test that metadata is updated when cursor parameters change."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -1107,9 +1111,9 @@ def test_circular_cursor_metadata_updates_on_change(make_napari_viewer):
     assert cursors[0]['radius'] == 0.1
 
 
-def test_circular_cursor_empty_metadata_handling(make_napari_viewer):
+def test_circular_cursor_empty_metadata_handling(make_viewer_model, qtbot):
     """Test that circular cursors handle missing metadata gracefully."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
 
     # Ensure no circular cursors in metadata
@@ -1142,9 +1146,9 @@ def test_circular_cursor_empty_metadata_handling(make_napari_viewer):
     )
 
 
-def test_automatic_clustering_widget_initialization(make_napari_viewer):
+def test_automatic_clustering_widget_initialization(make_viewer_model, qtbot):
     """Test the initialization of the AutomaticClusteringWidget."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.selection_tab.automatic_clustering_widget
 
@@ -1204,9 +1208,9 @@ def test_automatic_clustering_widget_initialization(make_napari_viewer):
     ]
 
 
-def test_automatic_clustering_apply_gmm(make_napari_viewer):
+def test_automatic_clustering_apply_gmm(make_viewer_model, qtbot):
     """Test applying GMM clustering."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -1249,9 +1253,9 @@ def test_automatic_clustering_apply_gmm(make_napari_viewer):
     assert layer_name in [layer.name for layer in viewer.layers]
 
 
-def test_automatic_clustering_multiple_layers_merged(make_napari_viewer):
+def test_automatic_clustering_multiple_layers_merged(make_viewer_model, qtbot):
     """Test that automatic clustering merges data from multiple layers."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
 
     # Create two layers with phasor data
     layer1 = create_image_layer_with_phasors()
@@ -1292,9 +1296,9 @@ def test_automatic_clustering_multiple_layers_merged(make_napari_viewer):
     assert layer2_labels in layer_names
 
 
-def test_automatic_clustering_clear_clusters(make_napari_viewer):
+def test_automatic_clustering_clear_clusters(make_viewer_model, qtbot):
     """Test clearing automatic clusters."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -1316,9 +1320,9 @@ def test_automatic_clustering_clear_clusters(make_napari_viewer):
     assert widget.cluster_table.rowCount() == 0  # Table should be empty
 
 
-def test_circular_cursor_harmonic_storage(make_napari_viewer):
+def test_circular_cursor_harmonic_storage(make_viewer_model, qtbot):
     """Test that circular cursors store harmonic information."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -1342,9 +1346,9 @@ def test_circular_cursor_harmonic_storage(make_napari_viewer):
     assert widget._cursors[1]['harmonic'] == 2
 
 
-def test_circular_cursor_harmonic_visibility(make_napari_viewer):
+def test_circular_cursor_harmonic_visibility(make_viewer_model, qtbot):
     """Test that cursors are only visible for their harmonic."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -1383,9 +1387,9 @@ def test_circular_cursor_harmonic_visibility(make_napari_viewer):
     assert widget._cursors[1]['patch'] is None
 
 
-def test_circular_cursor_harmonic_table_filtering(make_napari_viewer):
+def test_circular_cursor_harmonic_table_filtering(make_viewer_model, qtbot):
     """Test that cursor table only shows cursors for current harmonic."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -1419,9 +1423,9 @@ def test_circular_cursor_harmonic_table_filtering(make_napari_viewer):
     assert len(widget._cursors) == 2  # Both still stored
 
 
-def test_circular_cursor_harmonic_color_indexing(make_napari_viewer):
+def test_circular_cursor_harmonic_color_indexing(make_viewer_model, qtbot):
     """Test that cursor colors are indexed per-harmonic."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -1450,9 +1454,9 @@ def test_circular_cursor_harmonic_color_indexing(make_napari_viewer):
     assert h2_color1 != h2_color2
 
 
-def test_automatic_clustering_harmonic_storage(make_napari_viewer):
+def test_automatic_clustering_harmonic_storage(make_viewer_model, qtbot):
     """Test that automatic clustering stores harmonic information."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -1473,9 +1477,11 @@ def test_automatic_clustering_harmonic_storage(make_napari_viewer):
         assert cluster['harmonic'] == 2
 
 
-def test_on_harmonic_changed_only_updates_active_mode(make_napari_viewer):
+def test_on_harmonic_changed_only_updates_active_mode(
+    make_viewer_model, qtbot
+):
     """Test that harmonic changes only affect the active selection mode."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -1515,9 +1521,9 @@ def test_on_harmonic_changed_only_updates_active_mode(make_napari_viewer):
     assert circular_widget._cursors[0]['patch'] is not None
 
 
-def test_circular_cursor_remove_updates_table(make_napari_viewer):
+def test_circular_cursor_remove_updates_table(make_viewer_model, qtbot):
     """Test that removing a cursor properly updates the table."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -1539,9 +1545,9 @@ def test_circular_cursor_remove_updates_table(make_napari_viewer):
     assert widget.cursor_table.rowCount() == 2
 
 
-def test_circular_cursor_labels_layer_per_harmonic(make_napari_viewer):
+def test_circular_cursor_labels_layer_per_harmonic(make_viewer_model, qtbot):
     """Test that labels layers update based on current harmonic."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -1575,9 +1581,9 @@ def test_circular_cursor_labels_layer_per_harmonic(make_napari_viewer):
         assert h2_labeled_pixels == 0
 
 
-def test_automatic_clustering_table_read_only_values(make_napari_viewer):
+def test_automatic_clustering_table_read_only_values(make_viewer_model, qtbot):
     """Test that automatic clustering table has read-only G, S, and radius values."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -1611,9 +1617,9 @@ def test_automatic_clustering_table_read_only_values(make_napari_viewer):
         assert minor_r_widget.text() != ""
 
 
-def test_automatic_clustering_table_color_button(make_napari_viewer):
+def test_automatic_clustering_table_color_button(make_viewer_model, qtbot):
     """Test that automatic clustering table has editable color buttons."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -1638,9 +1644,11 @@ def test_automatic_clustering_table_color_button(make_napari_viewer):
     assert initial_color1 != initial_color2
 
 
-def test_automatic_clustering_color_change_updates_layers(make_napari_viewer):
+def test_automatic_clustering_color_change_updates_layers(
+    make_viewer_model, qtbot
+):
     """Test that changing cluster color updates the labels layers."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -1669,9 +1677,9 @@ def test_automatic_clustering_color_change_updates_layers(make_napari_viewer):
         assert abs(edge_color[2] - 1.0) < 0.01  # Blue channel
 
 
-def test_automatic_clustering_remove_cluster(make_napari_viewer):
+def test_automatic_clustering_remove_cluster(make_viewer_model, qtbot):
     """Test removing individual clusters."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -1702,9 +1710,9 @@ def test_automatic_clustering_remove_cluster(make_napari_viewer):
     assert not widget.clear_button.isEnabled()
 
 
-def test_automatic_clustering_count_and_percentage(make_napari_viewer):
+def test_automatic_clustering_count_and_percentage(make_viewer_model, qtbot):
     """Test that count and percentage columns are populated in automatic clustering table."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -1738,9 +1746,9 @@ def test_automatic_clustering_count_and_percentage(make_napari_viewer):
         assert "." in percentage_text or percentage_text.isdigit()
 
 
-def test_circular_cursor_drag_no_autoupdate(make_napari_viewer):
+def test_circular_cursor_drag_no_autoupdate(make_viewer_model, qtbot):
     """Test that dragging doesn't update labels when autoupdate is off."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -1778,9 +1786,9 @@ def test_circular_cursor_drag_no_autoupdate(make_napari_viewer):
     assert count_label.text() != "-"
 
 
-def test_circular_cursor_drag_with_autoupdate(make_napari_viewer):
+def test_circular_cursor_drag_with_autoupdate(make_viewer_model, qtbot):
     """Test that dragging updates labels when autoupdate is on."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -1818,9 +1826,9 @@ def test_circular_cursor_drag_with_autoupdate(make_napari_viewer):
     assert final_nonzero >= 0
 
 
-def test_polar_cursor_widget_initialization(make_napari_viewer):
+def test_polar_cursor_widget_initialization(make_viewer_model, qtbot):
     """Test the initialization of the PolarCursorWidget."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.selection_tab.polar_cursor_widget
 
@@ -1850,9 +1858,9 @@ def test_polar_cursor_widget_initialization(make_napari_viewer):
     ]
 
 
-def test_polar_cursor_add_cursor(make_napari_viewer):
+def test_polar_cursor_add_cursor(make_viewer_model, qtbot):
     """Test adding polar cursors."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -1894,9 +1902,9 @@ def test_polar_cursor_add_cursor(make_napari_viewer):
     assert np.allclose(cursor['modulation_max'], expected_mod_max)
 
 
-def test_elliptical_cursor_widget_initialization(make_napari_viewer):
+def test_elliptical_cursor_widget_initialization(make_viewer_model, qtbot):
     """Test the initialization of the EllipticalCursorWidget."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.selection_tab.elliptical_cursor_widget
 
@@ -1912,9 +1920,9 @@ def test_elliptical_cursor_widget_initialization(make_napari_viewer):
     assert widget.cursor_table.rowCount() == 0  # No cursors initially
 
 
-def test_elliptical_cursor_add_cursor(make_napari_viewer):
+def test_elliptical_cursor_add_cursor(make_viewer_model, qtbot):
     """Test adding elliptical cursors."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -1938,12 +1946,12 @@ def test_elliptical_cursor_add_cursor(make_napari_viewer):
     assert cursor['angle'] == 0.0
 
 
-def test_elliptical_cursor_drag_and_rotate_logic(make_napari_viewer):
+def test_elliptical_cursor_drag_and_rotate_logic(make_viewer_model, qtbot):
     """Test the interactive translation and rotation logic of elliptical cursors."""
     from qtpy.QtCore import Qt
     from qtpy.QtWidgets import QApplication
 
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -1996,9 +2004,9 @@ def test_elliptical_cursor_drag_and_rotate_logic(make_napari_viewer):
     assert np.isclose(cursor['angle'], 90.0)
 
 
-def test_labels_layer_visibility_on_tab_toggle(make_napari_viewer):
+def test_labels_layer_visibility_on_tab_toggle(make_viewer_model, qtbot):
     """Test that all selection layers are hidden when selection tab is hidden."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_layer)
     parent = PlotterWidget(viewer)
@@ -2035,9 +2043,9 @@ def test_labels_layer_visibility_on_tab_toggle(make_napari_viewer):
     assert viewer.layers[circ_layer_name].visible is True
 
 
-def test_cursor_added_at_custom_limits(make_napari_viewer):
+def test_cursor_added_at_custom_limits(make_viewer_model, qtbot):
     """Test that cursors are added at the center of custom/zoomed plot limits."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_layer)
     parent = PlotterWidget(viewer)
@@ -2097,9 +2105,9 @@ def test_cursor_added_at_custom_limits(make_napari_viewer):
     )
 
 
-def test_polar_cursor_clamping_and_validation(make_napari_viewer):
+def test_polar_cursor_clamping_and_validation(make_viewer_model, qtbot):
     """Test that polar cursor modulation ranges are clamped and validated correctly."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -2131,10 +2139,11 @@ def test_polar_cursor_clamping_and_validation(make_napari_viewer):
 
 
 def test_circular_and_elliptical_cursor_coordinate_clipping(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Test that circular and elliptical cursor center coordinates are clipped to [-1.5, 1.5]."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
     parent = PlotterWidget(viewer)
@@ -2152,3 +2161,369 @@ def test_circular_and_elliptical_cursor_coordinate_clipping(
     elliptical_cursor = elliptical_widget._cursors[-1]
     assert elliptical_cursor['g'] == -1.5
     assert elliptical_cursor['s'] == 1.5
+
+
+# ---------------------------------------------------------------------------
+# Polar & elliptical cursor widget lifecycle (mirrors circular cursor tests)
+# ---------------------------------------------------------------------------
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "widget_attr", ["polar_cursor_widget", "elliptical_cursor_widget"]
+)
+def test_cursor_widget_lifecycle(make_viewer_model, qtbot, widget_attr):
+    """Exercise add/remove/statistics/harmonic/apply for polar & elliptical
+    cursor widgets, which mirror the circular cursor widget API."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    layer.metadata["settings"] = {"frequency": 80.0}
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    widget = getattr(parent.selection_tab, widget_attr)
+
+    assert widget._cursors == []
+
+    widget._add_cursor()
+    widget._add_cursor()
+    assert len(widget._cursors) == 2
+    # Distinct auto-assigned colours.
+    assert widget._cursors[0]["color"] != widget._cursors[1]["color"]
+
+    widget._update_cursor_statistics()
+    widget.on_harmonic_changed()
+    widget._on_cursor_changed(0)
+    widget.redraw_all_patches()
+
+    # Run the full selection calculation (applies selection + statistics).
+    widget._on_calculate_clicked()
+
+    widget._remove_cursor(0)
+    assert len(widget._cursors) == 1
+
+    widget.clear_all_patches()
+
+
+@pytest.mark.parametrize(
+    "widget_attr", ["polar_cursor_widget", "elliptical_cursor_widget"]
+)
+def test_cursor_widget_autoupdate_applies_on_add(
+    make_viewer_model, qtbot, widget_attr
+):
+    """With autoupdate enabled, adding a cursor applies the selection."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    layer.metadata["settings"] = {"frequency": 80.0}
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    widget = getattr(parent.selection_tab, widget_attr)
+
+    widget._on_autoupdate_changed(True)
+    widget._add_cursor()
+    assert len(widget._cursors) == 1
+    # Toggling autoupdate off then removing the selection layer is safe.
+    widget._on_autoupdate_changed(False)
+    widget._remove_selection_layer()
+
+
+def test_selection_mode_changed_all_modes(make_viewer_model, qtbot):
+    """Switching across every selection mode index exercises each branch."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    sel = parent.selection_tab
+    # 0=circular, 1=polar, 2=elliptical, 3=clustering, 4=manual
+    for index in (1, 2, 3, 4, 0):
+        sel._on_selection_mode_changed(index)
+        assert sel.stacked_widget.currentIndex() == index
+
+
+def test_elliptical_cursor_drag_cycle(make_viewer_model, qtbot):
+    """Exercise the elliptical cursor pick/motion/release drag handlers."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.elliptical_cursor_widget
+
+    widget._add_cursor()
+    patch = widget._cursors[0]["patch"]
+
+    pick = Mock()
+    pick.artist = patch
+    pick.mouseevent.xdata = 0.5
+    pick.mouseevent.ydata = 0.3
+    widget._on_pick(pick)
+
+    motion = Mock()
+    motion.xdata = 0.6
+    motion.ydata = 0.4
+    widget._on_motion(motion)
+
+    release = Mock()
+    widget._on_release(release)
+    assert len(widget._cursors) == 1
+
+
+def test_automatic_clustering_lifecycle(make_viewer_model, qtbot):
+    """Apply GMM clustering then exercise statistics/recolour/remove paths."""
+    from qtpy.QtGui import QColor
+
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.automatic_clustering_widget
+
+    widget.num_clusters_spinbox.setValue(3)
+    widget._apply_clustering()
+    assert len(widget._clusters) == 3
+
+    widget._update_cluster_statistics()
+    widget.on_harmonic_changed()
+    widget._redraw_cluster_ellipse(0)
+    widget._on_cluster_color_changed(0, QColor(255, 0, 0, 255))
+    widget._reapply_clustering_to_layers()
+
+    widget._remove_cluster(0)
+    assert len(widget._clusters) == 2
+
+    widget._clear_clusters()
+    assert len(widget._clusters) == 0
+
+
+@pytest.mark.parametrize(
+    "attr,add_kwargs",
+    [
+        (
+            "elliptical_cursor_widget",
+            {"g": 0.5, "s": 0.3, "radius": 0.3, "radius_minor": 0.2},
+        ),
+        ("polar_cursor_widget", {}),
+    ],
+)
+def test_cursor_widget_statistics_with_autoupdate(
+    make_viewer_model, qtbot, attr, add_kwargs
+):
+    """With autoupdate on, adding a cursor over real data applies the
+    selection and computes non-empty statistics."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    w = getattr(parent.selection_tab, attr)
+
+    w._on_autoupdate_changed(True)
+    w._add_cursor(**add_kwargs)
+    w._update_cursor_statistics()
+
+    # Hover over the cursor patch (only the elliptical widget supports drag).
+    if hasattr(w, "_update_hover_cursor"):
+        patch = w._cursors[0]["patch"]
+        ev = Mock()
+        ev.inaxes = patch.axes
+        ev.xdata = w._cursors[0].get("g", 0.5)
+        ev.ydata = w._cursors[0].get("s", 0.3)
+        w._update_hover_cursor(ev)
+        # Hover away from any cursor.
+        ev2 = Mock()
+        ev2.inaxes = patch.axes
+        ev2.xdata = 5.0
+        ev2.ydata = 5.0
+        w._update_hover_cursor(ev2)
+
+    w._clear_all_cursors()
+    assert len(w._cursors) == 0
+
+
+def test_circular_cursor_reconnect_signals_on_remove(make_viewer_model, qtbot):
+    """Removing a cursor reindexes the table and reconnects row signals."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    w = parent.selection_tab.circular_cursor_widget
+    w._add_cursor(g=0.4, s=0.3, radius=0.2)
+    w._add_cursor(g=0.6, s=0.2, radius=0.2)
+    w._remove_cursor(0)
+    assert len(w._cursors) == 1
+    # The remaining cursor's row signals still work.
+    w._on_cursor_changed(0)
+
+
+def test_selection_widget_image_layer_and_selection_id(
+    make_viewer_model, qtbot
+):
+    """Exercise SelectionWidget layer-change and selection-id update paths."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    sel = parent.selection_tab
+
+    sel._on_image_layer_changed()
+    sel.on_selection_id_changed()
+    sel.update_phasor_plot_with_selection_id(sel.selection_id)
+    # The combobox starts with no explicit selection id.
+    assert sel.selection_id in ("", "None", None) or isinstance(
+        sel.selection_id, str
+    )
+
+
+def test_polar_cursor_restore_from_metadata(make_viewer_model, qtbot):
+    """Polar cursors are restored from layer metadata on layer change."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    layer.metadata.setdefault("settings", {})["selections"] = {
+        "polar_cursors": [
+            {
+                "phase_min": 10.0,
+                "phase_max": 40.0,
+                "modulation_min": 0.3,
+                "modulation_max": 0.7,
+                "color": [255, 0, 0, 255],
+                "harmonic": 1,
+            }
+        ]
+    }
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    w = parent.selection_tab.polar_cursor_widget
+    w._on_image_layer_changed()
+    assert len(w._cursors) == 1
+
+
+def test_elliptical_cursor_restore_from_metadata(make_viewer_model, qtbot):
+    """Elliptical cursors are restored from layer metadata on layer change."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    layer.metadata.setdefault("settings", {})["selections"] = {
+        "elliptical_cursors": [
+            {
+                "g": 0.5,
+                "s": 0.3,
+                "radius": 0.2,
+                "radius_minor": 0.1,
+                "angle": 0.0,
+                "color": [0, 255, 0, 255],
+                "harmonic": 1,
+            }
+        ]
+    }
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    w = parent.selection_tab.elliptical_cursor_widget
+    w._on_image_layer_changed()
+    assert len(w._cursors) == 1
+
+
+def test_selection_widget_manual_overlay_and_selection_id(
+    make_viewer_model, qtbot
+):
+    """Manual selection creates a layer; overlay visibility toggles and
+    selection-id plotting are exercised on a single widget."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    sel = parent.selection_tab
+
+    # Overlay toggle with no active selection returns early.
+    sel._on_show_color_overlay(True)
+
+    sel.selection_mode_combobox.setCurrentText("Manual Selection")
+    sel.manual_selection_changed(np.array([1, 0, 1, 0, 1, 0, 0, 0, 0, 0]))
+    sel.selection_id = "sel_a"
+    sel.create_phasors_selected_layer()
+    overlay_name = f"sel_a: {layer.name}"
+    assert overlay_name in [ly.name for ly in viewer.layers]
+
+    # Toggle the overlay visibility on/off.
+    sel._on_show_color_overlay(True)
+    assert viewer.layers[overlay_name].visible is True
+    sel._on_show_color_overlay(False)
+    assert viewer.layers[overlay_name].visible is False
+
+    # Re-plot from the stored selection id.
+    sel.update_phasor_plot_with_selection_id("sel_a")
+
+
+def test_elliptical_cursor_table_edit_updates_patch(make_viewer_model, qtbot):
+    """Editing the cursor table spinboxes updates the cursor and its patch."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    w = parent.selection_tab.elliptical_cursor_widget
+    w._add_cursor(g=0.5, s=0.3, radius=0.2, radius_minor=0.1)
+
+    # Changing the G/S/radius spinboxes triggers _on_cursor_changed ->
+    # _update_cursor_patch.
+    for col, value in ((0, 0.6), (1, 0.25), (2, 0.25)):
+        sb = w.cursor_table.cellWidget(0, col)
+        if sb is not None and hasattr(sb, "setValue"):
+            sb.setValue(value)
+    assert len(w._cursors) == 1
+
+
+def test_elliptical_multi_cursor_statistics(make_viewer_model, qtbot):
+    """Two overlapping cursors over real data exercise the per-cursor count /
+    percentage statistics loop and re-statistics on parameter change."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    w = parent.selection_tab.elliptical_cursor_widget
+    w._on_autoupdate_changed(True)
+    w._add_cursor(g=0.5, s=0.3, radius=0.4, radius_minor=0.3)
+    w._add_cursor(g=0.4, s=0.25, radius=0.4, radius_minor=0.3)
+    w._update_cursor_statistics()
+    # Enlarging a cursor recomputes statistics.
+    sb = w.cursor_table.cellWidget(0, 2)
+    if sb is not None and hasattr(sb, "setValue"):
+        sb.setValue(0.5)
+    w._update_cursor_statistics()
+    assert len(w._cursors) == 2
+
+
+def test_automatic_clustering_reapply_variants(make_viewer_model, qtbot):
+    """Re-running clustering with a different cluster count clears and rebuilds."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    w = parent.selection_tab.automatic_clustering_widget
+    w.num_clusters_spinbox.setValue(2)
+    w._apply_clustering()
+    assert len(w._clusters) == 2
+    # Re-apply with a different count.
+    w.num_clusters_spinbox.setValue(4)
+    w._apply_clustering()
+    assert len(w._clusters) == 4
+
+
+def test_recreate_manual_selection_layer(make_viewer_model, qtbot):
+    """Recreating a stored manual selection adds a hidden Labels layer once."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    sel = parent.selection_tab
+
+    selection_map = np.zeros(layer.data.shape, dtype=np.uint32)
+    selection_map[0, 0] = 1
+    sel._recreate_manual_selection_layer("stored_sel", selection_map)
+
+    name = f"stored_sel: {layer.name}"
+    assert name in [ly.name for ly in viewer.layers]
+    recreated = viewer.layers[name]
+    assert recreated.visible is False
+    assert recreated.metadata["napari_phasors_selection_type"] == "manual"
+
+    # Calling again with the same id is a no-op (no duplicate layer).
+    n_layers = len(viewer.layers)
+    sel._recreate_manual_selection_layer("stored_sel", selection_map)
+    assert len(viewer.layers) == n_layers

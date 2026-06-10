@@ -11,9 +11,9 @@ from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
 from napari_phasors.plotter import PlotterWidget
 
 
-def test_fret_widget_initialization(make_napari_viewer):
+def test_fret_widget_initialization(make_viewer_model, qtbot):
     """Test the initialization of the FretWidget."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -75,9 +75,9 @@ def test_fret_widget_initialization(make_napari_viewer):
     assert widget.background_position_label.text() == "Background position:"
 
 
-def test_fret_widget_parameter_updates(make_napari_viewer):
+def test_fret_widget_parameter_updates(make_viewer_model, qtbot):
     """Test that parameters update correctly when UI changes."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -100,9 +100,9 @@ def test_fret_widget_parameter_updates(make_napari_viewer):
     assert widget.background_imag == 0.3
 
 
-def test_fret_widget_background_slider(make_napari_viewer):
+def test_fret_widget_background_slider(make_viewer_model, qtbot):
     """Test background slider functionality."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -114,9 +114,9 @@ def test_fret_widget_background_slider(make_napari_viewer):
     assert widget.background_label.text() == "0.25"
 
 
-def test_fret_widget_fretting_slider(make_napari_viewer):
+def test_fret_widget_fretting_slider(make_viewer_model, qtbot):
     """Test fretting proportion slider functionality."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -128,9 +128,9 @@ def test_fret_widget_fretting_slider(make_napari_viewer):
     assert widget.fretting_label.text() == "0.75"
 
 
-def test_fret_widget_colormap_checkbox(make_napari_viewer):
+def test_fret_widget_colormap_checkbox(make_viewer_model, qtbot):
     """Test colormap checkbox functionality."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -147,9 +147,9 @@ def test_fret_widget_colormap_checkbox(make_napari_viewer):
     assert widget.use_colormap is True
 
 
-def test_calculate_background_position_no_layer(make_napari_viewer):
+def test_calculate_background_position_no_layer(make_viewer_model, qtbot):
     """Test background calculation with no layer selected."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -164,9 +164,9 @@ def test_calculate_background_position_no_layer(make_napari_viewer):
     assert widget.background_imag_edit.text() == "0.0"
 
 
-def test_calculate_background_position_with_layer(make_napari_viewer):
+def test_calculate_background_position_with_layer(make_viewer_model, qtbot):
     """Test background calculation with a valid layer."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -228,9 +228,9 @@ def test_calculate_background_position_with_layer(make_napari_viewer):
     assert widget.background_position_label.text() == "Background position:"
 
 
-def test_plot_donor_trajectory_no_parameters(make_napari_viewer):
+def test_plot_donor_trajectory_no_parameters(make_viewer_model, qtbot):
     """Test plotting donor trajectory with missing parameters."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -241,9 +241,9 @@ def test_plot_donor_trajectory_no_parameters(make_napari_viewer):
     assert widget.current_donor_line is None
 
 
-def test_plot_donor_trajectory_with_parameters(make_napari_viewer):
+def test_plot_donor_trajectory_with_parameters(make_viewer_model, qtbot):
     """Test plotting donor trajectory with valid parameters."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -267,22 +267,24 @@ def test_plot_donor_trajectory_with_parameters(make_napari_viewer):
     assert ax_mock.plot.called
 
 
-def test_calculate_fret_efficiency_no_layer(make_napari_viewer):
+def test_calculate_fret_efficiency_no_layer(make_viewer_model, qtbot):
     """Test FRET efficiency calculation with no layer selected."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
     # No layer selected
     parent._labels_layer_with_phasor_features = None
 
-    # Should return without error
+    # Should return without error and create no FRET layer.
     widget.calculate_fret_efficiency()
+    assert widget.fret_layer is None
+    assert len(viewer.layers) == 0
 
 
-def test_calculate_fret_efficiency_with_layer(make_napari_viewer):
+def test_calculate_fret_efficiency_with_layer(make_viewer_model, qtbot):
     """Test FRET efficiency calculation with valid data."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -381,9 +383,9 @@ def test_calculate_fret_efficiency_with_layer(make_napari_viewer):
     assert_array_equal(fret_layer.data.flatten(), expected_fret_efficiency)
 
 
-def test_artist_management(make_napari_viewer):
+def test_artist_management(make_viewer_model, qtbot):
     """Test artist visibility and management."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -419,9 +421,9 @@ def test_artist_management(make_napari_viewer):
     viewer.add_layer(test_layer)
 
 
-def test_colormap_events(make_napari_viewer):
+def test_colormap_events(make_viewer_model, qtbot):
     """Test colormap and contrast limit event handling."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -491,9 +493,9 @@ def test_colormap_events(make_napari_viewer):
     )  # Should have changed
 
 
-def test_draw_colormap_trajectory(make_napari_viewer):
+def test_draw_colormap_trajectory(make_viewer_model, qtbot):
     """Test drawing trajectory with colormap."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -517,9 +519,9 @@ def test_draw_colormap_trajectory(make_napari_viewer):
     assert ax_mock.add_collection.called
 
 
-def test_fret_widget_layer_replacement(make_napari_viewer):
+def test_fret_widget_layer_replacement(make_viewer_model, qtbot):
     """Test that existing FRET layers are replaced when calculating new ones."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -557,9 +559,9 @@ def test_fret_widget_layer_replacement(make_napari_viewer):
     assert fret_layer_name in [layer.name for layer in viewer.layers]
 
 
-def test_harmonic_change_updates_trajectory(make_napari_viewer):
+def test_harmonic_change_updates_trajectory(make_viewer_model, qtbot):
     """Test that changing harmonics updates the donor trajectory."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -613,9 +615,9 @@ def test_harmonic_change_updates_trajectory(make_napari_viewer):
     assert widget.frequency == 240.0  # base_frequency * harmonic (80 * 3)
 
 
-def test_background_position_storage_by_harmonic(make_napari_viewer):
+def test_background_position_storage_by_harmonic(make_viewer_model, qtbot):
     """Test that background positions are stored and retrieved by harmonic."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -662,9 +664,11 @@ def test_background_position_storage_by_harmonic(make_napari_viewer):
     assert widget.current_harmonic == 1
 
 
-def test_trajectory_calculation_with_different_harmonics(make_napari_viewer):
+def test_trajectory_calculation_with_different_harmonics(
+    make_viewer_model, qtbot
+):
     """Test that trajectory calculations use effective frequency (base * harmonic)."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -721,9 +725,9 @@ def test_trajectory_calculation_with_different_harmonics(make_napari_viewer):
     assert not np.array_equal(trajectory_h2_real, trajectory_h3_real)
 
 
-def test_fret_efficiency_calculation_with_harmonics(make_napari_viewer):
+def test_fret_efficiency_calculation_with_harmonics(make_viewer_model, qtbot):
     """Test FRET efficiency calculation respects harmonic changes."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -760,10 +764,11 @@ def test_fret_efficiency_calculation_with_harmonics(make_napari_viewer):
 
 
 def test_background_position_manual_changes_stored_by_harmonic(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Test that manual background position changes are stored per harmonic."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -845,14 +850,15 @@ def test_background_position_manual_changes_stored_by_harmonic(
     ],
 )
 def test_calculate_fret_efficiency_invalid_inputs(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
     donor_lifetime,
     frequency,
     expected_message,
     message_type,
 ):
     """Test FRET efficiency calculation with various invalid inputs."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -886,9 +892,9 @@ def test_calculate_fret_efficiency_invalid_inputs(
     assert widget.fret_layer is None
 
 
-def test_donor_lifetime_combobox_initialization(make_napari_viewer):
+def test_donor_lifetime_combobox_initialization(make_viewer_model, qtbot):
     """Test that donor lifetime combobox is properly initialized."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -897,9 +903,9 @@ def test_donor_lifetime_combobox_initialization(make_napari_viewer):
     assert widget.donor_lifetime_combobox.currentText() == ""
 
 
-def test_donor_lifetime_combobox_updates_with_layers(make_napari_viewer):
+def test_donor_lifetime_combobox_updates_with_layers(make_viewer_model, qtbot):
     """Test that donor lifetime combobox updates when layers are added/removed."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -929,9 +935,9 @@ def test_donor_lifetime_combobox_updates_with_layers(make_napari_viewer):
     assert widget.donor_lifetime_combobox.count() == initial_count
 
 
-def test_lifetime_type_combobox_modes(make_napari_viewer):
+def test_lifetime_type_combobox_modes(make_viewer_model, qtbot):
     """Test the lifetime type combobox modes."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -954,9 +960,9 @@ def test_lifetime_type_combobox_modes(make_napari_viewer):
     )
 
 
-def test_calculate_donor_lifetime_no_layer_selected(make_napari_viewer):
+def test_calculate_donor_lifetime_no_layer_selected(make_viewer_model, qtbot):
     """Test donor lifetime calculation with no layer selected."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -972,9 +978,9 @@ def test_calculate_donor_lifetime_no_layer_selected(make_napari_viewer):
     assert widget.donor_line_edit.text() == initial_lifetime
 
 
-def test_calculate_donor_lifetime_no_frequency(make_napari_viewer):
+def test_calculate_donor_lifetime_no_frequency(make_viewer_model, qtbot):
     """Test donor lifetime calculation with no frequency set."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -996,9 +1002,9 @@ def test_calculate_donor_lifetime_no_frequency(make_napari_viewer):
     assert widget.donor_line_edit.text() == initial_lifetime
 
 
-def test_calculate_donor_lifetime_apparent_phase(make_napari_viewer):
+def test_calculate_donor_lifetime_apparent_phase(make_viewer_model, qtbot):
     """Test donor lifetime calculation using apparent phase lifetime."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -1025,9 +1031,11 @@ def test_calculate_donor_lifetime_apparent_phase(make_napari_viewer):
     assert widget.donor_lifetime == lifetime_value
 
 
-def test_calculate_donor_lifetime_apparent_modulation(make_napari_viewer):
+def test_calculate_donor_lifetime_apparent_modulation(
+    make_viewer_model, qtbot
+):
     """Test donor lifetime calculation using apparent modulation lifetime."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -1056,9 +1064,9 @@ def test_calculate_donor_lifetime_apparent_modulation(make_napari_viewer):
     assert widget.donor_lifetime == lifetime_value
 
 
-def test_calculate_donor_lifetime_normal_lifetime(make_napari_viewer):
+def test_calculate_donor_lifetime_normal_lifetime(make_viewer_model, qtbot):
     """Test donor lifetime calculation using normal lifetime."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -1085,9 +1093,11 @@ def test_calculate_donor_lifetime_normal_lifetime(make_napari_viewer):
     assert widget.donor_lifetime == lifetime_value
 
 
-def test_calculate_donor_lifetime_different_harmonics(make_napari_viewer):
+def test_calculate_donor_lifetime_different_harmonics(
+    make_viewer_model, qtbot
+):
     """Test donor lifetime calculation with different harmonics."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -1122,9 +1132,9 @@ def test_calculate_donor_lifetime_different_harmonics(make_napari_viewer):
     assert lifetime_h2 != lifetime_h3
 
 
-def test_calculate_donor_lifetime_mode_differences(make_napari_viewer):
+def test_calculate_donor_lifetime_mode_differences(make_viewer_model, qtbot):
     """Test that different lifetime modes give different results."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -1174,10 +1184,11 @@ def test_calculate_donor_lifetime_mode_differences(make_napari_viewer):
 
 
 def test_donor_lifetime_combobox_layer_selection_persistence(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Test that donor lifetime combobox checked selection persists when layers change."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -1216,9 +1227,9 @@ def test_donor_lifetime_combobox_layer_selection_persistence(
     assert widget.donor_lifetime_combobox.currentText() == ""
 
 
-def test_calculate_donor_lifetime_error_handling(make_napari_viewer):
+def test_calculate_donor_lifetime_error_handling(make_viewer_model, qtbot):
     """Test error handling in donor lifetime calculation."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -1245,9 +1256,9 @@ def test_calculate_donor_lifetime_error_handling(make_napari_viewer):
     assert widget.donor_line_edit.text() == initial_lifetime
 
 
-def test_donor_source_selector_functionality(make_napari_viewer):
+def test_donor_source_selector_functionality(make_viewer_model, qtbot):
     """Test the donor source selector switches between Manual and From layer(s) modes."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -1271,9 +1282,9 @@ def test_donor_source_selector_functionality(make_napari_viewer):
     assert widget.donor_label.text() == "Donor lifetime (ns):"
 
 
-def test_background_source_selector_functionality(make_napari_viewer):
+def test_background_source_selector_functionality(make_viewer_model, qtbot):
     """Test the background source selector switches between Manual and From layer(s) modes."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -1298,10 +1309,11 @@ def test_background_source_selector_functionality(make_napari_viewer):
 
 
 def test_donor_lifetime_label_updates_with_layer_calculation(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Test that donor lifetime label updates when calculated from layer."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -1338,10 +1350,11 @@ def test_donor_lifetime_label_updates_with_layer_calculation(
 
 
 def test_background_position_label_updates_with_layer_calculation(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Test that background position label updates when calculated from layer."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -1376,9 +1389,9 @@ def test_background_position_label_updates_with_layer_calculation(
     assert widget.background_position_label.text() == "Background position:"
 
 
-def test_layer_selection_with_no_valid_layers(make_napari_viewer):
+def test_layer_selection_with_no_valid_layers(make_viewer_model, qtbot):
     """Test behavior when no valid layers are available for selection."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -1398,9 +1411,9 @@ def test_layer_selection_with_no_valid_layers(make_napari_viewer):
     assert widget.background_image_combobox.count() == 0
 
 
-def test_calculate_values_with_select_layer_option(make_napari_viewer):
+def test_calculate_values_with_select_layer_option(make_viewer_model, qtbot):
     """Test calculation behavior when 'Select layer...' is selected."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -1435,9 +1448,9 @@ def test_calculate_values_with_select_layer_option(make_napari_viewer):
     assert widget.background_position_label.text() == initial_bg_label
 
 
-def test_ui_mode_switching_preserves_manual_values(make_napari_viewer):
+def test_ui_mode_switching_preserves_manual_values(make_viewer_model, qtbot):
     """Test that switching between modes preserves manually entered values."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -1463,9 +1476,9 @@ def test_ui_mode_switching_preserves_manual_values(make_napari_viewer):
     assert widget.background_imag_edit.text() == "0.4"
 
 
-def test_metadata_initialization(make_napari_viewer):
+def test_metadata_initialization(make_viewer_model, qtbot):
     """Test that FRET settings are only initialized when analysis is performed."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -1518,9 +1531,9 @@ def test_metadata_initialization(make_napari_viewer):
     assert fret_settings['colormap_settings']['colormap_changed'] is False
 
 
-def test_metadata_storage_manual_values(make_napari_viewer):
+def test_metadata_storage_manual_values(make_viewer_model, qtbot):
     """Test that manual values are correctly stored in metadata."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -1564,9 +1577,11 @@ def test_metadata_storage_manual_values(make_napari_viewer):
     assert fret_settings['background_positions_by_harmonic'][1]['imag'] == 0.25
 
 
-def test_metadata_storage_background_positions_by_harmonic(make_napari_viewer):
+def test_metadata_storage_background_positions_by_harmonic(
+    make_viewer_model, qtbot
+):
     """Test that background positions by harmonic are correctly stored."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -1607,9 +1622,9 @@ def test_metadata_storage_background_positions_by_harmonic(make_napari_viewer):
     assert bg_positions[2]['imag'] == 0.6
 
 
-def test_metadata_storage_from_layer_mode(make_napari_viewer):
+def test_metadata_storage_from_layer_mode(make_viewer_model, qtbot):
     """Test that 'From layer' mode settings are stored in metadata."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -1648,9 +1663,9 @@ def test_metadata_storage_from_layer_mode(make_napari_viewer):
     assert fret_settings['background_layer_names'] == ['bg_layer']
 
 
-def test_metadata_restoration_manual_values(make_napari_viewer):
+def test_metadata_restoration_manual_values(make_viewer_model, qtbot):
     """Test that manual values are correctly restored from metadata."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -1705,10 +1720,11 @@ def test_metadata_restoration_manual_values(make_napari_viewer):
 
 
 def test_metadata_restoration_background_positions_by_harmonic(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Test that background positions by harmonic are correctly restored."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -1767,9 +1783,9 @@ def test_metadata_restoration_background_positions_by_harmonic(
     assert float(widget.background_imag_edit.text()) == 0.6
 
 
-def test_metadata_restoration_from_layer_mode(make_napari_viewer):
+def test_metadata_restoration_from_layer_mode(make_viewer_model, qtbot):
     """Test that 'From layer' mode settings are correctly restored."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -1821,10 +1837,11 @@ def test_metadata_restoration_from_layer_mode(make_napari_viewer):
 
 
 def test_metadata_restoration_reverts_to_manual_when_layer_missing(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Test that settings revert to manual mode when selected layers are missing."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -1872,9 +1889,9 @@ def test_metadata_restoration_reverts_to_manual_when_layer_missing(
     assert widget.donor_source_selector.currentText() == "From layer(s)"
 
 
-def test_metadata_colormap_settings_storage(make_napari_viewer):
+def test_metadata_colormap_settings_storage(make_viewer_model, qtbot):
     """Test that colormap settings are correctly stored in metadata."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -1914,9 +1931,9 @@ def test_metadata_colormap_settings_storage(make_napari_viewer):
     assert colormap_settings['colormap_changed'] is True
 
 
-def test_metadata_persistence_across_layer_switches(make_napari_viewer):
+def test_metadata_persistence_across_layer_switches(make_viewer_model, qtbot):
     """Test that metadata persists correctly when switching between layers."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
@@ -1966,3 +1983,87 @@ def test_metadata_persistence_across_layer_switches(make_napari_viewer):
     assert widget.donor_line_edit.text() == "3.5"
     assert widget.frequency_input.text() == "90.0"
     assert widget.background_slider.value() == 50
+
+
+def test_fret_full_calculation_range_and_histogram(make_viewer_model, qtbot):
+    """Run a full FRET efficiency calculation then exercise range/histogram/
+    colormap downstream paths."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    w = parent.fret_tab
+
+    w.donor_line_edit.setText("2.0")
+    w.frequency_input.setText("80")
+    w.background_real_edit.setText("0.1")
+    w.background_imag_edit.setText("0.1")
+    w.calculate_fret_efficiency()
+    assert len(w.fret_layers) >= 1
+
+    # Clip the FRET layers to a sub-range and refresh the histogram.
+    w._on_fret_range_changed(0.1, 0.5)
+    w._update_fret_histogram()
+
+
+def test_fret_recreate_restore_and_colormap_from_metadata(
+    make_viewer_model, qtbot
+):
+    """Cover FRET metadata restore/recreate and saved-colormap application."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    w = parent.fret_tab
+
+    w.donor_line_edit.setText("2.0")
+    w.frequency_input.setText("80")
+    w.calculate_fret_efficiency()
+    assert w.fret_layer is not None
+
+    # Apply saved colormap settings to the existing FRET layer.
+    w._saved_colormap_name = "viridis"
+    w._saved_colormap_colors = None
+    w._saved_contrast_limits = (0.0, 1.0)
+    w._apply_saved_fret_colormap_settings()
+
+    # Inject colormap settings into metadata and restore them.
+    fret_settings = layer.metadata.setdefault("settings", {}).setdefault(
+        "fret", {}
+    )
+    fret_settings["colormap_settings"] = {
+        "colormap_name": "magma",
+        "colormap_colors": None,
+        "contrast_limits": (0.0, 1.0),
+        "colormap_changed": True,
+    }
+    w._restore_fret_settings_from_metadata()
+    assert w._saved_colormap_name == "magma"
+
+    # Recreate the FRET analysis from metadata (re-runs the calculation).
+    w._recreate_fret_from_metadata()
+
+
+def test_fret_calculate_donor_lifetime_from_layers(make_viewer_model, qtbot):
+    """Cover donor-lifetime computation from selected layers for each type."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    w = parent.fret_tab
+
+    w.frequency_input.setText("80")
+    w.donor_source_selector.setCurrentIndex(1)  # From layer(s)
+    w._update_donor_lifetime_combobox()
+    w.donor_lifetime_combobox.setCheckedItems([layer.name])
+
+    for lt in (
+        "Apparent Phase Lifetime",
+        "Apparent Modulation Lifetime",
+        "Normal Lifetime",
+    ):
+        w.lifetime_type_combobox.setCurrentText(lt)
+        w._calculate_donor_lifetime()
+        # A finite averaged lifetime is computed and shown in the UI.
+        assert w.donor_lifetime is not None and w.donor_lifetime > 0
+        assert w.donor_line_edit.text() != ""

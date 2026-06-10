@@ -713,4 +713,385 @@ def test_parse_and_call_io_function():
         )
 
 
+def test_parse_and_call_required_arg_missing():
+    """Required arguments missing from reader_options raise ValueError."""
+    from napari_phasors._reader import _parse_and_call_io_function
+
+    def func(path, a):
+        return a
+
+    with pytest.raises(ValueError, match="Required argument 'a' is missing"):
+        _parse_and_call_io_function(
+            "dummy", func, {"a": (None, True)}, reader_options={}
+        )
+
+
+# --------------------------------------------------------------------------
+# napari_get_reader dispatch / error branches
+# --------------------------------------------------------------------------
+
+
+def test_get_reader_empty_list_returns_none():
+    """An empty list of paths is rejected."""
+    assert napari_get_reader([]) is None
+
+
+def test_get_reader_mixed_extensions_returns_none():
+    """Multiple files with differing extensions are rejected."""
+    assert napari_get_reader(["a.ptu", "b.lsm"]) is None
+
+
+def test_get_reader_multifile_non_raw_extension_returns_none():
+    """Multi-file loading is only supported for raw formats."""
+    # .ome.tif is a processed-only extension.
+    assert napari_get_reader(["a.ome.tif", "b.ome.tif"]) is None
+
+
+def test_get_reader_unsupported_extension_returns_none():
+    """Unsupported single-file extensions return None."""
+    assert napari_get_reader("file.unsupported") is None
+
+
+def test_get_reader_single_element_list_unwraps_to_path():
+    """A single-element list is unwrapped and dispatched like a plain path."""
+    reader = napari_get_reader(["only.lsm"])
+    assert callable(reader)
+
+
+# --------------------------------------------------------------------------
+# raw_file_reader branch coverage (single-image, no iteration axis)
+# --------------------------------------------------------------------------
+
+
+def test_raw_reader_invalid_phasor_axis_option_is_dropped(monkeypatch):
+    """A non-integer ``phasor_axis`` option is discarded, not raised."""
+    data = xr.DataArray(
+        np.ones((4, 2, 2), dtype=np.uint16),
+        dims=("H", "Y", "X"),
+        coords={"H": [0, 1, 2, 3]},
+    )
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".lsm",
+        lambda path, opts: data,
+    )
+    layers = reader_module.raw_file_reader(
+        "ex.lsm", reader_options={"phasor_axis": "not-an-int"}
+    )
+    assert len(layers) == 1
+
+
+def test_raw_reader_tiff_default_axis_zero(monkeypatch):
+    """TIFF files without an axis override default to axis 0."""
+
+    def fake_imread(path):
+        return np.ones((4, 3, 3), dtype=np.float32)
+
+    monkeypatch.setattr(reader_module.tifffile, "imread", fake_imread)
+    layers = reader_module.raw_file_reader("ex.tif")
+    assert len(layers) == 1
+    # TIFF files do not carry channel settings.
+    assert "channel" not in layers[0][1]["metadata"]["settings"]
+
+
+def test_raw_reader_no_h_or_c_dims_defaults_axis_zero(monkeypatch):
+    """Files lacking H/C dims fall back to axis 0 and set channel 0."""
+    data = xr.DataArray(
+        np.ones((4, 2, 2), dtype=np.uint16),
+        dims=("T", "Y", "X"),
+        coords={"T": [0, 1, 2, 3]},
+    )
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".bin",
+        lambda path, opts: data,
+    )
+    layers = reader_module.raw_file_reader("ex.bin")
+    assert len(layers) == 1
+    assert layers[0][1]["metadata"]["settings"]["channel"] == 0
+
+
+def test_raw_reader_insufficient_samples_returns_empty(monkeypatch):
+    """Too few samples to compute harmonics returns an empty layer list."""
+    data = xr.DataArray(
+        np.ones((1, 2, 2), dtype=np.uint16),
+        dims=("H", "Y", "X"),
+        coords={"H": [0]},
+    )
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".lsm",
+        lambda path, opts: data,
+    )
+    assert reader_module.raw_file_reader("ex.lsm") == []
+
+
+# --------------------------------------------------------------------------
+# raw_file_reader branch coverage (multi-channel, iteration axis)
+# --------------------------------------------------------------------------
+
+
+def test_raw_reader_multichannel_without_coords_uses_indices(monkeypatch):
+    """A channel axis without coords falls back to positional labels and the
+    >2-channel colormap branch (CYMRGB)."""
+    data = xr.DataArray(
+        np.ones((3, 4, 2, 2), dtype=np.uint16),
+        dims=("C", "H", "Y", "X"),
+    )
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".ptu",
+        lambda path, opts: data,
+    )
+    layers = reader_module.raw_file_reader("ex.ptu")
+    assert len(layers) == 3
+    # >2 layers receive cycled colormaps and additive blending.
+    assert "colormap" in layers[0][1]
+    assert layers[0][1]["blending"] == "additive"
+
+
+def test_raw_reader_multichannel_axis_override_and_string_label(monkeypatch):
+    """Axis override is honoured per-channel and non-numeric channel labels
+    are stored verbatim."""
+    data = xr.DataArray(
+        np.ones((2, 2, 2, 4), dtype=np.uint16),
+        dims=("C", "Y", "X", "H"),
+        coords={"C": ["red", "green"]},
+    )
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".ptu",
+        lambda path, opts: data,
+    )
+    # Override points the histogram axis at H (index 2 after the C isel).
+    layers = reader_module.raw_file_reader(
+        "ex.ptu", reader_options={"phasor_axis": 2}
+    )
+    assert len(layers) == 2
+    assert layers[0][1]["metadata"]["settings"]["channel"] == "red"
+
+
+def test_raw_reader_multichannel_insufficient_samples_returns_empty(
+    monkeypatch,
+):
+    """Insufficient samples in a multi-channel file returns an empty list."""
+    data = xr.DataArray(
+        np.ones((2, 1, 2, 2), dtype=np.uint16),
+        dims=("C", "H", "Y", "X"),
+        coords={"C": [0, 1]},
+    )
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".ptu",
+        lambda path, opts: data,
+    )
+    assert reader_module.raw_file_reader("ex.ptu") == []
+
+
+# --------------------------------------------------------------------------
+# raw_file_stack_reader
+# --------------------------------------------------------------------------
+
+
+def _make_stack_layer(mean, g, s, name="f Intensity Image", summed=None):
+    meta = {
+        "original_mean": mean.copy(),
+        "settings": {"channel": 0},
+        "summed_signal": summed,
+        "G": g,
+        "S": s,
+        "G_original": g.copy(),
+        "S_original": s.copy(),
+        "harmonics": [1, 2],
+    }
+    return (mean, {"name": name, "metadata": meta})
+
+
+def test_stack_reader_empty_paths_returns_empty():
+    assert reader_module.raw_file_stack_reader([]) == []
+
+
+def test_stack_reader_mismatched_extensions_returns_empty():
+    assert reader_module.raw_file_stack_reader(["a.ptu", "b.lsm"]) == []
+
+
+def test_stack_reader_channel_count_mismatch_returns_empty(monkeypatch):
+    """Files producing different channel counts are rejected."""
+
+    def fake(path, reader_options=None, harmonics=None):
+        mean = np.ones((2, 2))
+        g = np.zeros((2, 2))
+        n = 1 if path.endswith("a.fbd") else 2
+        return [_make_stack_layer(mean, g, g) for _ in range(n)]
+
+    monkeypatch.setattr(reader_module, "raw_file_reader", fake)
+    assert reader_module.raw_file_stack_reader(["d/a.fbd", "d/b.fbd"]) == []
+
+
+def test_stack_reader_shape_mismatch_returns_empty(monkeypatch):
+    """Files with differing spatial shapes are rejected."""
+
+    def fake(path, reader_options=None, harmonics=None):
+        shape = (2, 2) if path.endswith("a.lsm") else (3, 3)
+        mean = np.ones(shape)
+        g = np.zeros(shape)
+        return [_make_stack_layer(mean, g, g)]
+
+    monkeypatch.setattr(reader_module, "raw_file_reader", fake)
+    assert reader_module.raw_file_stack_reader(["d/a.lsm", "d/b.lsm"]) == []
+
+
+def test_stack_reader_success_2d_phasors(monkeypatch):
+    """2D G/S arrays stack along a new leading axis."""
+    summed = [1, 2, 3, 4]
+
+    def fake(path, reader_options=None, harmonics=None):
+        mean = np.ones((2, 2))
+        g = np.zeros((2, 2))
+        return [_make_stack_layer(mean, g, g, summed=summed)]
+
+    monkeypatch.setattr(reader_module, "raw_file_reader", fake)
+    layers = reader_module.raw_file_stack_reader(
+        ["d/a.lsm", "d/b.lsm", "d/c.lsm"]
+    )
+    assert len(layers) == 1
+    stacked_mean, kwargs = layers[0]
+    assert stacked_mean.shape == (3, 2, 2)
+    meta = kwargs["metadata"]
+    assert meta["G"].shape == (3, 2, 2)
+    assert meta["stack_files"] == ["a.lsm", "b.lsm", "c.lsm"]
+    assert len(meta["summed_signal"]) == 3
+    assert "Stack Intensity Image" in kwargs["name"]
+
+
+def test_stack_reader_success_3d_phasors_preserves_colormap(monkeypatch):
+    """3D (harmonic, Y, X) G/S arrays stack along axis 1 and colormap and
+    blending are preserved; missing summed_signal yields None."""
+
+    def fake(path, reader_options=None, harmonics=None):
+        mean = np.ones((2, 2))
+        g = np.zeros((2, 2, 2))  # (n_harmonics, Y, X)
+        mean_, kwargs = _make_stack_layer(
+            mean, g, g, name="x Intensity Image: Channel 0", summed=None
+        )
+        kwargs["colormap"] = "green"
+        kwargs["blending"] = "additive"
+        return [(mean_, kwargs)]
+
+    monkeypatch.setattr(reader_module, "raw_file_reader", fake)
+    layers = reader_module.raw_file_stack_reader(["d/a.fbd", "d/b.fbd"])
+    assert len(layers) == 1
+    _, kwargs = layers[0]
+    assert kwargs["metadata"]["G"].shape == (2, 2, 2, 2)
+    assert kwargs["metadata"]["summed_signal"] is None
+    assert kwargs["colormap"] == "green"
+    assert kwargs["blending"] == "additive"
+
+
+# --------------------------------------------------------------------------
+# processed_file_reader branch coverage
+# --------------------------------------------------------------------------
+
+
+def _patch_processed(monkeypatch, mean, real, imag, attrs):
+    monkeypatch.setitem(
+        reader_module.extension_mapping["processed"],
+        ".ome.tif",
+        lambda path, opts: (mean, real, imag, attrs),
+    )
+
+
+def test_processed_reader_description_too_large_raises(monkeypatch):
+    """An oversized description dictionary raises a ValueError."""
+    mean = np.ones((4, 4))
+    real = np.zeros((1, 4, 4))
+    big = {"x": "a" * 300000}
+    attrs = {"description": json.dumps(big), "harmonic": [1]}
+    _patch_processed(monkeypatch, mean, real, real, attrs)
+    with pytest.raises(ValueError, match="too large"):
+        reader_module.processed_file_reader("x.ome.tif")
+
+
+def test_processed_reader_calibrated_and_frequency_settings(monkeypatch):
+    """``calibrated`` is coerced to bool and ``frequency`` is copied across."""
+    mean = np.ones((4, 4))
+    real = np.zeros((1, 4, 4))
+    settings = {"calibrated": 1}
+    description = {"napari_phasors_settings": json.dumps(settings)}
+    attrs = {
+        "description": json.dumps(description),
+        "harmonic": [1],
+        "frequency": 80.0,
+    }
+    _patch_processed(monkeypatch, mean, real, real, attrs)
+    layers = reader_module.processed_file_reader("x.ome.tif")
+    s = layers[0][1]["metadata"]["settings"]
+    assert s["calibrated"] is True
+    assert s["frequency"] == 80.0
+
+
+def test_processed_reader_applies_filter_and_threshold(monkeypatch):
+    """Stored filter/threshold settings are applied and persisted."""
+    mean = np.ones((4, 4), dtype=np.float64) * 5
+    real = np.zeros((1, 4, 4))
+    imag = np.zeros((1, 4, 4))
+    settings = {
+        "filter": {"repeat": 1, "method": "median", "size": 3},
+        "threshold": 1.0,
+        "threshold_upper": 10.0,
+    }
+    description = {"napari_phasors_settings": json.dumps(settings)}
+    attrs = {"description": json.dumps(description), "harmonic": [1]}
+    _patch_processed(monkeypatch, mean, real, imag, attrs)
+    layers = reader_module.processed_file_reader("x.ome.tif")
+    s = layers[0][1]["metadata"]["settings"]
+    assert s["threshold"] == 1.0
+    assert s["threshold_upper"] == 10.0
+    assert s["filter"]["repeat"] == 1
+
+
+def test_processed_reader_axes_attr_sets_axis_labels(monkeypatch):
+    """The ``axes`` attribute (without ``dims``) populates axis_labels."""
+    mean = np.ones((4, 4))
+    real = np.zeros((1, 4, 4))
+    attrs = {"harmonic": [1], "axes": "YX"}
+    _patch_processed(monkeypatch, mean, real, real, attrs)
+    layers = reader_module.processed_file_reader("x.ome.tif")
+    assert layers[0][1]["axis_labels"] == ("Y", "X")
+
+
+def test_processed_reader_z_spacing_sets_scale(monkeypatch):
+    """A ``z_spacing_um`` setting on 3D data sets the layer scale."""
+    mean = np.ones((3, 4, 4))
+    real = np.zeros((1, 3, 4, 4))
+    settings = {"z_spacing_um": 2.5}
+    description = {"napari_phasors_settings": json.dumps(settings)}
+    attrs = {
+        "description": json.dumps(description),
+        "harmonic": [1],
+        "dims": ["Z", "Y", "X"],
+    }
+    _patch_processed(monkeypatch, mean, real, real, attrs)
+    layers = reader_module.processed_file_reader("x.ome.tif")
+    assert layers[0][1]["axis_labels"] == ("Z", "Y", "X")
+    assert "scale" in layers[0][1]
+    assert layers[0][1]["scale"][0] == 2.5
+
+
+def test_processed_reader_invalid_z_spacing_is_ignored(monkeypatch):
+    """A non-numeric ``z_spacing_um`` does not raise and no scale is set."""
+    mean = np.ones((3, 4, 4))
+    real = np.zeros((1, 3, 4, 4))
+    settings = {"z_spacing_um": "not-a-number"}
+    description = {"napari_phasors_settings": json.dumps(settings)}
+    attrs = {
+        "description": json.dumps(description),
+        "harmonic": [1],
+        "dims": ["Z", "Y", "X"],
+    }
+    _patch_processed(monkeypatch, mean, real, real, attrs)
+    layers = reader_module.processed_file_reader("x.ome.tif")
+    assert "scale" not in layers[0][1]
+
+
 # TODO: Add tests for .tif files

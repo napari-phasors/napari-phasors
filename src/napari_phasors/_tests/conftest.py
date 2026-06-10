@@ -49,6 +49,17 @@ except (AttributeError, ImportError, TypeError):
 
 
 @pytest.fixture(autouse=True)
+def _ensure_qapp(qapp):
+    """Guarantee a QApplication exists for every test.
+
+    Many widget tests do not request ``qtbot``; in a full-file run they
+    piggyback on a QApplication created by an earlier test, but in isolation
+    constructing a QWidget without one aborts the process.
+    """
+    return qapp
+
+
+@pytest.fixture(autouse=True)
 def _hide_qdialog(monkeypatch):
     orig_show = QDialog.show
 
@@ -137,3 +148,21 @@ def _cleanup_widgets_after_test(request):
 
     with contextlib.suppress(Exception):
         QCoreApplication.processEvents()
+
+
+@pytest.fixture
+def make_viewer_model():
+    """Create a headless ViewerModel factory for faster testing."""
+    from napari.components.viewer_model import ViewerModel
+
+    viewers = []
+
+    def factory():
+        viewer = ViewerModel()
+        viewers.append(viewer)
+        return viewer
+
+    yield factory
+
+    for v in viewers:
+        v.layers.clear()

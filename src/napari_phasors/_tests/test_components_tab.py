@@ -7,8 +7,8 @@ from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
 from napari_phasors.plotter import PlotterWidget
 
 
-def test_components_widget_initialization_values(make_napari_viewer):
-    viewer = make_napari_viewer()
+def test_components_widget_initialization_values(make_viewer_model, qtbot):
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     comp_widget = parent.components_tab
     parent.tab_widget.setCurrentWidget(comp_widget)
@@ -50,9 +50,10 @@ def test_components_widget_initialization_values(make_napari_viewer):
 
 
 def test_components_widget_lifetime_inputs_visibility_no_frequency(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     # Ensure no frequency
     layer.metadata.pop("settings", None)
@@ -68,9 +69,10 @@ def test_components_widget_lifetime_inputs_visibility_no_frequency(
 
 
 def test_components_widget_lifetime_inputs_visibility_with_frequency(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     layer.metadata["settings"] = {"frequency": 80.0}
     viewer.add_layer(layer)
@@ -93,8 +95,10 @@ def test_components_widget_lifetime_inputs_visibility_with_frequency(
     assert abs(s_val - expected_s) < 1e-3
 
 
-def test_components_widget_component_creation_and_line(make_napari_viewer):
-    viewer = make_napari_viewer()
+def test_components_widget_component_creation_and_line(
+    make_viewer_model, qtbot
+):
+    viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
 
@@ -125,10 +129,11 @@ def test_components_widget_component_creation_and_line(make_napari_viewer):
 
 
 def test_components_widget_fraction_calculation_creates_both_layers(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Test that fraction calculation creates both comp1 and comp2 layers."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
 
@@ -208,9 +213,9 @@ def test_components_widget_fraction_calculation_creates_both_layers(
     assert isinstance(comp_widget.component_line, LineCollection)
 
 
-def test_components_widget_colormap_change(make_napari_viewer):
+def test_components_widget_colormap_change(make_viewer_model, qtbot):
     """Test that changing colormap on comp1 layer works correctly."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
     parent = PlotterWidget(viewer)
@@ -247,9 +252,9 @@ def test_components_widget_colormap_change(make_napari_viewer):
     assert comp_widget.comp2_fractions_layer is None
 
 
-def test_components_widget_colormap_update_legacy(make_napari_viewer):
+def test_components_widget_colormap_update_legacy(make_viewer_model, qtbot):
     """Legacy test updated for new dual-layer structure."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
     parent = PlotterWidget(viewer)
@@ -281,9 +286,11 @@ def test_components_widget_colormap_update_legacy(make_napari_viewer):
     assert not np.array_equal(orig_colors, comp_widget.fractions_colormap)
 
 
-def test_components_widget_colormap_fallback_handling(make_napari_viewer):
+def test_components_widget_colormap_fallback_handling(
+    make_viewer_model, qtbot
+):
     """Test that colormap sync handles colormaps without colors attribute gracefully."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
     parent = PlotterWidget(viewer)
@@ -310,8 +317,8 @@ def test_components_widget_colormap_fallback_handling(make_napari_viewer):
     assert comp_widget.comp2_fractions_layer is None
 
 
-def test_components_widget_visibility_toggle(make_napari_viewer):
-    viewer = make_napari_viewer()
+def test_components_widget_visibility_toggle(make_viewer_model, qtbot):
+    viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
     parent = PlotterWidget(viewer)
@@ -339,8 +346,10 @@ def test_components_widget_visibility_toggle(make_napari_viewer):
     assert comp_widget.components[0].dot.get_visible() is True
 
 
-def test_components_widget_line_settings_dialog_effects(make_napari_viewer):
-    viewer = make_napari_viewer()
+def test_components_widget_line_settings_dialog_effects(
+    make_viewer_model, qtbot
+):
+    viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
     parent = PlotterWidget(viewer)
@@ -384,8 +393,8 @@ def test_components_widget_line_settings_dialog_effects(make_napari_viewer):
     assert abs(comp_widget.line_alpha - 0.55) < 1e-6
 
 
-def test_components_widget_label_style_dialog(make_napari_viewer):
-    viewer = make_napari_viewer()
+def test_components_widget_label_style_dialog(make_viewer_model, qtbot):
+    viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
     parent = PlotterWidget(viewer)
@@ -414,9 +423,9 @@ def test_components_widget_label_style_dialog(make_napari_viewer):
     assert txt.get_fontstyle() == 'italic'
 
 
-def test_components_widget_add_remove_components(make_napari_viewer):
+def test_components_widget_add_remove_components(make_viewer_model, qtbot):
     """Test adding and removing components."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
 
@@ -441,9 +450,9 @@ def test_components_widget_add_remove_components(make_napari_viewer):
     assert not comp_widget.remove_component_btn.isEnabled()  # Back to minimum
 
 
-def test_components_widget_analysis_type_changes(make_napari_viewer):
+def test_components_widget_analysis_type_changes(make_viewer_model, qtbot):
     """Test analysis type changes based on component count."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
 
@@ -468,9 +477,9 @@ def test_components_widget_analysis_type_changes(make_napari_viewer):
     assert comp_widget.analysis_type_combo.itemText(0) == "Component Fit"
 
 
-def test_components_widget_multi_component_analysis(make_napari_viewer):
+def test_components_widget_multi_component_analysis(make_viewer_model, qtbot):
     """Test multi-component analysis with component fit."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
 
@@ -508,9 +517,9 @@ def test_components_widget_multi_component_analysis(make_napari_viewer):
     assert len(comp_widget.fraction_layers) == 3
 
 
-def test_components_widget_polygon_visualization(make_napari_viewer):
+def test_components_widget_polygon_visualization(make_viewer_model, qtbot):
     """Test that 3+ components create a polygon instead of a line."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
 
@@ -539,9 +548,11 @@ def test_components_widget_polygon_visualization(make_napari_viewer):
     assert comp_widget.component_line is None
 
 
-def test_components_widget_harmonic_storage_and_switching(make_napari_viewer):
+def test_components_widget_harmonic_storage_and_switching(
+    make_viewer_model, qtbot
+):
     """Test component storage across harmonic changes."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
 
@@ -590,9 +601,9 @@ def test_components_widget_harmonic_storage_and_switching(make_napari_viewer):
     assert comp_widget.components[0].name_edit.text() == "Test Component 1"
 
 
-def test_components_widget_clear_all_components(make_napari_viewer):
+def test_components_widget_clear_all_components(make_viewer_model, qtbot):
     """Test clearing all components."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
 
@@ -628,9 +639,11 @@ def test_components_widget_clear_all_components(make_napari_viewer):
     assert comp_widget.components[1].name_edit.text() == ""
 
 
-def test_components_widget_calculate_button_text_changes(make_napari_viewer):
+def test_components_widget_calculate_button_text_changes(
+    make_viewer_model, qtbot
+):
     """Test that calculate button text changes based on analysis type."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
 
@@ -657,9 +670,11 @@ def test_components_widget_calculate_button_text_changes(make_napari_viewer):
     )
 
 
-def test_components_widget_component_state_initialization(make_napari_viewer):
+def test_components_widget_component_state_initialization(
+    make_viewer_model, qtbot
+):
     """Test that ComponentState objects are properly initialized."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     comp_widget = parent.components_tab
 
@@ -680,9 +695,9 @@ def test_components_widget_component_state_initialization(make_napari_viewer):
     assert comp1.text_offset == (0.02, 0.02)
 
 
-def test_components_widget_ui_elements_stored(make_napari_viewer):
+def test_components_widget_ui_elements_stored(make_viewer_model, qtbot):
     """Test that ui_elements dictionary is properly stored in ComponentState."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     comp_widget = parent.components_tab
 
@@ -694,9 +709,11 @@ def test_components_widget_ui_elements_stored(make_napari_viewer):
     assert comp.ui_elements['comp_layout'] is not None
 
 
-def test_components_widget_default_settings_structure(make_napari_viewer):
+def test_components_widget_default_settings_structure(
+    make_viewer_model, qtbot
+):
     """Test the structure of default components settings."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     comp_widget = parent.components_tab
 
@@ -719,9 +736,11 @@ def test_components_widget_default_settings_structure(make_napari_viewer):
     assert 'color' in default_settings['label_settings']
 
 
-def test_components_widget_style_state_initialization(make_napari_viewer):
+def test_components_widget_style_state_initialization(
+    make_viewer_model, qtbot
+):
     """Test that style state variables are properly initialized."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     comp_widget = parent.components_tab
 
@@ -731,9 +750,11 @@ def test_components_widget_style_state_initialization(make_napari_viewer):
     assert comp_widget.label_color == 'black'
 
 
-def test_components_widget_line_settings_initialization(make_napari_viewer):
+def test_components_widget_line_settings_initialization(
+    make_viewer_model, qtbot
+):
     """Test that line settings are properly initialized."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     comp_widget = parent.components_tab
 
@@ -745,9 +766,9 @@ def test_components_widget_line_settings_initialization(make_napari_viewer):
     assert comp_widget.default_component_color == 'dimgray'
 
 
-def test_components_widget_flags_initialization(make_napari_viewer):
+def test_components_widget_flags_initialization(make_viewer_model, qtbot):
     """Test that internal flags are properly initialized."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     comp_widget = parent.components_tab
 
@@ -759,9 +780,9 @@ def test_components_widget_flags_initialization(make_napari_viewer):
     assert comp_widget.dragging_label_idx is None
 
 
-def test_components_widget_dialogs_initialization(make_napari_viewer):
+def test_components_widget_dialogs_initialization(make_viewer_model, qtbot):
     """Test that dialog references are initialized as None."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     comp_widget = parent.components_tab
 
@@ -769,9 +790,9 @@ def test_components_widget_dialogs_initialization(make_napari_viewer):
     assert comp_widget.style_dialog is None
 
 
-def test_components_widget_component_colors_list(make_napari_viewer):
+def test_components_widget_component_colors_list(make_viewer_model, qtbot):
     """Test that component colors lists are properly initialized."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     comp_widget = parent.components_tab
 
@@ -784,9 +805,11 @@ def test_components_widget_component_colors_list(make_napari_viewer):
     assert comp_widget.component_colormap_names[1] == 'cyan'
 
 
-def test_components_widget_harmonic_signal_connection(make_napari_viewer):
+def test_components_widget_harmonic_signal_connection(
+    make_viewer_model, qtbot
+):
     """Test that harmonic spinbox signal is connected."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     comp_widget = parent.components_tab
 
@@ -795,9 +818,9 @@ def test_components_widget_harmonic_signal_connection(make_napari_viewer):
     assert comp_widget.current_harmonic == 2
 
 
-def test_components_widget_scroll_area_exists(make_napari_viewer):
+def test_components_widget_scroll_area_exists(make_viewer_model, qtbot):
     """Test that a scroll area is created for the components widget."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     comp_widget = parent.components_tab
 
@@ -807,10 +830,11 @@ def test_components_widget_scroll_area_exists(make_napari_viewer):
 
 
 def test_components_fraction_range_updates_layer_and_is_reversible(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Range slider should clip fraction layer data from original values."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
 
@@ -860,11 +884,12 @@ def test_components_fraction_range_updates_layer_and_is_reversible(
 
 
 def test_components_on_image_layer_changed_runs_teardown_and_restore(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """test that _on_image_layer_changed calls both teardown and
     restore methods to properly handle layer changes"""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
@@ -884,9 +909,9 @@ def test_components_on_image_layer_changed_runs_teardown_and_restore(
         mock_restore.assert_called_once()
 
 
-def test_components_selection_calculates_lifetime(make_napari_viewer):
+def test_components_selection_calculates_lifetime(make_viewer_model, qtbot):
     """Test that selecting/clicking or dragging a component calculates and updates the lifetime."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     layer.metadata["settings"] = {"frequency": 80.0}
     viewer.add_layer(layer)
@@ -935,9 +960,11 @@ def test_components_selection_calculates_lifetime(make_napari_viewer):
     )
 
 
-def test_components_auto_placement_calculates_lifetime(make_napari_viewer):
+def test_components_auto_placement_calculates_lifetime(
+    make_viewer_model, qtbot
+):
     """Test that auto-placing the second component calculates and updates the lifetime edit."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     layer.metadata["settings"] = {"frequency": 80.0}
     viewer.add_layer(layer)
@@ -960,9 +987,11 @@ def test_components_auto_placement_calculates_lifetime(make_napari_viewer):
     assert float(comp2.lifetime_edit.text()) > 0
 
 
-def test_components_dropdown_menu_and_cursor_selection(make_napari_viewer):
+def test_components_dropdown_menu_and_cursor_selection(
+    make_viewer_model, qtbot
+):
     """Test that the dropdown menu is populated correctly and selection from a cursor sets coordinates and lifetime."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     layer.metadata["settings"] = {"frequency": 80.0}
     viewer.add_layer(layer)
@@ -1060,9 +1089,9 @@ def test_components_dropdown_menu_and_cursor_selection(make_napari_viewer):
     assert comp1.s_edit.text() == "0.400"
 
 
-def test_components_selection_escape_cancellation(make_napari_viewer):
+def test_components_selection_escape_cancellation(make_viewer_model, qtbot):
     """Test that pressing Escape cancels the active plot selection and restores button state."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
 
@@ -1110,10 +1139,11 @@ def test_components_selection_escape_cancellation(make_napari_viewer):
 
 
 def test_components_select_from_phasor_center_and_generalized_auto_place(
-    make_napari_viewer,
+    make_viewer_model,
+    qtbot,
 ):
     """Test selection from phasor center dialog and generalized auto intersect placement."""
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     layer.metadata["settings"] = {"frequency": 80.0}
     viewer.add_layer(layer)
@@ -1181,7 +1211,7 @@ def test_components_select_from_phasor_center_and_generalized_auto_place(
     assert float(comp2.g_edit.text()) > 0
 
 
-def test_color_action_widget_and_dialog(make_napari_viewer):
+def test_color_action_widget_and_dialog(make_viewer_model, qtbot):
     """Test ColorActionWidget color conversions, mouse events, and PhasorCenterSelectionDialog."""
     from qtpy.QtCore import QPointF, Qt
     from qtpy.QtGui import QColor, QMouseEvent
@@ -1239,9 +1269,10 @@ def test_color_action_widget_and_dialog(make_napari_viewer):
 
     action.triggered.connect(on_triggered)
 
-    # Simulate left click
+    # Simulate left click (pass globalPos for the non-deprecated overload)
     event = QMouseEvent(
         QMouseEvent.Type.MouseButtonRelease,
+        QPointF(5, 5),
         QPointF(5, 5),
         Qt.LeftButton,
         Qt.LeftButton,
@@ -1251,7 +1282,7 @@ def test_color_action_widget_and_dialog(make_napari_viewer):
     assert triggered is True
 
     # 3. Test PhasorCenterSelectionDialog
-    viewer = make_napari_viewer()
+    viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
     parent = PlotterWidget(viewer)
@@ -1261,3 +1292,436 @@ def test_color_action_widget_and_dialog(make_napari_viewer):
     assert dialog.windowTitle() == "Select Phasor Center Layers"
     # The active layer is automatically checked on init
     assert layer.name in dialog.get_selected_layers()
+
+
+# ---------------------------------------------------------------------------
+# Metadata restore, plot-settings reset, artists, lifetime, colormap helpers
+# ---------------------------------------------------------------------------
+
+
+def _setup_components(make_viewer_model, freq=80.0):
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    layer.metadata["settings"] = {"frequency": freq}
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    comp = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp)
+    return viewer, layer, parent, comp
+
+
+def _linear_projection_settings():
+    return {
+        "analysis_type": "Linear Projection",
+        "last_analysis_harmonic": 1,
+        "components": {
+            "0": {
+                "name": "Comp A",
+                "gs_harmonics": {"1": {"g": 0.6, "s": 0.3, "lifetime": 1.5}},
+            },
+            "1": {
+                "name": "Comp B",
+                "gs_harmonics": {"1": {"g": 0.3, "s": 0.2, "lifetime": 4.0}},
+            },
+        },
+        "line_settings": {
+            "show_colormap_line": False,
+            "show_component_dots": True,
+            "line_offset": 0.1,
+            "line_width": 2.0,
+            "line_alpha": 0.5,
+        },
+        "label_settings": {
+            "fontsize": 12,
+            "bold": True,
+            "italic": True,
+            "color": "red",
+        },
+    }
+
+
+def test_components_restore_ui_only_from_metadata(make_viewer_model, qtbot):
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    layer.metadata["settings"][
+        "component_analysis"
+    ] = _linear_projection_settings()
+
+    comp._restore_components_ui_only_from_metadata()
+
+    assert comp.components[0].name_edit.text() == "Comp A"
+    assert comp.components[1].name_edit.text() == "Comp B"
+    assert comp.label_color == "red"
+    assert comp.label_bold is True
+    assert comp.line_width == 2.0
+    assert comp.show_colormap_line is False
+
+
+def test_components_restore_and_recreate_linear_projection(
+    make_viewer_model, qtbot
+):
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    layer.metadata["settings"][
+        "component_analysis"
+    ] = _linear_projection_settings()
+
+    comp._restore_and_recreate_components_from_metadata()
+
+    assert comp.components[0].name_edit.text() == "Comp A"
+    # Two components were recreated with dots.
+    created = [
+        c for c in comp.components if c is not None and c.dot is not None
+    ]
+    assert len(created) == 2
+
+
+def test_components_restore_no_component_analysis_is_noop(
+    make_viewer_model, qtbot
+):
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    # No 'component_analysis' key -> both restore methods return early.
+    comp._restore_components_ui_only_from_metadata()
+    comp._restore_and_recreate_components_from_metadata()
+    assert len(comp.components) == 2
+
+
+def test_components_reset_plot_settings_and_artists(make_viewer_model, qtbot):
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    comp._create_component_at_coordinates(0, 0.6, 0.3)
+    comp._create_component_at_coordinates(1, 0.3, 0.2)
+    comp.draw_line_between_components()
+
+    artists = comp.get_all_artists()
+    assert len(artists) >= 2
+
+    comp.set_artists_visible(False)
+    comp.set_artists_visible(True)
+
+    # The reset routine manipulates widgets created by the settings dialog.
+    comp._open_plot_settings_dialog()
+    comp.line_width = 5.0
+    comp.line_alpha = 0.2
+    comp._reset_plot_settings()
+    assert comp.line_width == 3.0
+    assert comp.line_alpha == 1
+    assert comp.show_colormap_line is True
+
+    comp.clear_artists()
+
+
+def test_components_pure_helpers(make_viewer_model, qtbot):
+    """Consolidated coverage of pure helper methods using a single widget
+    build: per-harmonic coordinate/harmonic helpers, inverted colormap, and
+    lifetime->phasor conversion."""
+    import numpy as np
+    from napari.utils.colormaps import Colormap
+
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    # --- per-harmonic coordinate + harmonic-listing helpers ---
+    comp._create_component_at_coordinates(0, 0.5, 0.3)
+    comp._create_component_at_coordinates(1, 0.3, 0.2)
+    comp.components[0].name_edit.setText("A")
+    current = parent.harmonic
+    g, s, names = comp._get_component_coords_for_harmonic(current)
+    assert len(g) == 2 and len(s) == 2 and len(names) == 2
+    layer.metadata["settings"]["component_analysis"] = {
+        "components": {
+            "0": {"name": "A", "gs_harmonics": {"2": {"g": 0.4, "s": 0.25}}},
+            "1": {"name": "B", "gs_harmonics": {"2": {"g": 0.2, "s": 0.15}}},
+        }
+    }
+    comp.current_image_layer_name = layer.name
+    g2, _, _ = comp._get_component_coords_for_harmonic(2)
+    assert g2 == [0.4, 0.2]
+    assert current in comp._get_harmonics_with_components()
+
+    # --- inverted colormap (name, reversed name, Colormap object) ---
+    assert comp._get_inverted_colormap("viridis") is not None
+    assert comp._get_inverted_colormap("viridis_r") is not None
+    assert (
+        comp._get_inverted_colormap(
+            Colormap(
+                colors=np.array([[0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0, 1.0]]),
+                name="grayish",
+            )
+        )
+        is not None
+    )
+
+    # --- lifetime -> phasor (valid, non-numeric, missing frequency) ---
+    gg, ss = comp._compute_phasor_from_lifetime("2.0", harmonic=1)
+    assert gg is not None and ss is not None
+    assert comp._compute_phasor_from_lifetime("not-a-number") == (None, None)
+    layer.metadata["settings"].pop("frequency", None)
+    assert comp._compute_phasor_from_lifetime("2.0") == (None, None)
+
+
+def test_components_restore_on_layer_change_without_layer(
+    make_viewer_model, qtbot
+):
+    """With no primary layer, restore clears the component input fields."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    comp = parent.components_tab
+    comp.components[0].g_edit.setText("0.5")
+    comp.components[0].name_edit.setText("stale")
+
+    comp._restore_on_layer_change()
+
+    assert comp.components[0].g_edit.text() == ""
+    assert comp.components[0].name_edit.text() == ""
+
+
+def test_components_selection_event_updates_existing_dot(
+    make_viewer_model, qtbot
+):
+    """A second selection event updates the existing dot/label instead of
+    creating a new one."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    comp.components[0].name_edit.setText("First")
+    comp._select_component(0)
+
+    class _Event:
+        inaxes = True
+        xdata = 0.5
+        ydata = 0.4
+
+    comp._handle_component_selection_event(_Event())
+    assert comp.components[0].dot is not None
+
+    # Second event updates the existing dot (the else branch).
+    comp._select_component(0)
+    ev2 = _Event()
+    ev2.xdata, ev2.ydata = 0.3, 0.2
+    comp._handle_component_selection_event(ev2)
+    assert comp.components[0].dot is not None
+
+
+def test_components_component_fit_three_and_colors(make_viewer_model, qtbot):
+    """Run a 3-component Component Fit analysis and query component colours."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    comp._add_component()
+    comp.analysis_type_combo.setCurrentText("Component Fit")
+    for i, (g, s) in enumerate(
+        [("0.2", "0.1"), ("0.5", "0.3"), ("0.8", "0.5")]
+    ):
+        comp.components[i].g_edit.setText(g)
+        comp.components[i].s_edit.setText(s)
+        comp._on_component_coords_changed(i)
+
+    comp._run_analysis()
+    assert len(comp.fraction_layers) == 3
+
+    # Component-colour helper for both the Component Fit (>=2 layers) path
+    # and a smaller count.
+    assert comp._get_component_colors_for_count(3) is not None
+    assert comp._get_component_colors_for_count(2) is not None
+
+
+def test_components_auto_place_by_index(make_viewer_model, qtbot):
+    """Cover _auto_place_component_by_index guards and the success path."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    # Out-of-range indices return early.
+    comp._auto_place_component_by_index(0)
+    comp._auto_place_component_by_index(99)
+
+    # Previous component not set -> warning + early return.
+    comp._auto_place_component_by_index(1)
+
+    # Set component 0, then auto-place component 1 on the universal circle.
+    comp.components[0].g_edit.setText("0.5")
+    comp.components[0].s_edit.setText("0.3")
+    comp._on_component_coords_changed(0)
+    comp._auto_place_component_by_index(1)
+    assert comp.components[1].g_edit.text() != ""
+
+    # Without a frequency the method warns and returns.
+    layer.metadata["settings"].pop("frequency", None)
+    comp.components[0].g_edit.setText("0.4")
+    comp.components[0].s_edit.setText("0.2")
+    comp._auto_place_component_by_index(1)
+
+
+def test_components_fraction_layer_colormap_and_contrast_events(
+    make_viewer_model, qtbot
+):
+    """Changing the fraction layer's colormap/contrast triggers handlers."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    comp.components[0].g_edit.setText("0.2")
+    comp.components[0].s_edit.setText("0.1")
+    comp._on_component_coords_changed(0)
+    comp.components[1].g_edit.setText("0.8")
+    comp.components[1].s_edit.setText("0.5")
+    comp._on_component_coords_changed(1)
+    comp._run_analysis()
+
+    fl = comp.comp1_fractions_layer
+    assert fl is not None
+    fl.contrast_limits = (0.1, 0.9)
+    fl.colormap = "viridis"
+    assert comp.colormap_contrast_limits is not None
+
+
+def test_components_name_change_creates_and_moves_label(
+    make_viewer_model, qtbot
+):
+    """Setting/clearing a component name creates, repositions and removes its
+    text label."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    comp._create_component_at_coordinates(0, 0.5, 0.3)
+
+    comp.components[0].name_edit.setText("Alpha")
+    comp._on_component_name_changed(0)
+    assert comp.components[0].text is not None
+
+    # Renaming again exercises the previous-position branch.
+    comp.components[0].name_edit.setText("Beta")
+    comp._on_component_name_changed(0)
+    assert comp.components[0].text is not None
+
+    # Clearing the name removes the label.
+    comp.components[0].name_edit.setText("")
+    comp._on_component_name_changed(0)
+
+
+def test_components_component_fit_prompts_for_more_harmonics(
+    make_viewer_model, qtbot
+):
+    """A 4-component fit needs 2 harmonics; with locations only in harmonic 1
+    the analysis prompts the user to also place them in the next harmonic."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    comp._add_component()
+    comp._add_component()
+    assert len(comp.components) == 4
+    comp.analysis_type_combo.setCurrentText("Component Fit")
+
+    coords = [
+        ("0.2", "0.1"),
+        ("0.4", "0.25"),
+        ("0.6", "0.35"),
+        ("0.8", "0.45"),
+    ]
+    for i, (g, s) in enumerate(coords):
+        comp.components[i].g_edit.setText(g)
+        comp.components[i].s_edit.setText(s)
+        comp._on_component_coords_changed(i)
+
+    start_harmonic = parent.harmonic
+    comp._run_analysis()
+    # The widget advanced to the next harmonic to collect more locations.
+    assert parent.harmonic != start_harmonic
+
+
+def test_components_teardown_and_restore_for_harmonic(
+    make_viewer_model, qtbot
+):
+    """Cover teardown-on-layer-change and per-harmonic component restore."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    comp.components[0].g_edit.setText("0.2")
+    comp.components[0].s_edit.setText("0.1")
+    comp._on_component_coords_changed(0)
+    comp.components[1].g_edit.setText("0.8")
+    comp.components[1].s_edit.setText("0.5")
+    comp._on_component_coords_changed(1)
+    comp.components[0].name_edit.setText("A")
+    comp._on_component_name_changed(0)
+    comp._run_analysis()
+    assert comp.comp1_fractions_layer is not None
+
+    # Restore component coordinates stored for a different harmonic.
+    layer.metadata["settings"]["component_analysis"] = {
+        "components": {
+            "0": {"name": "A", "gs_harmonics": {"2": {"g": 0.4, "s": 0.25}}},
+            "1": {"name": "B", "gs_harmonics": {"2": {"g": 0.2, "s": 0.15}}},
+        }
+    }
+    comp.current_image_layer_name = layer.name
+    comp._restore_components_for_harmonic(2)
+
+    # Tearing down on a layer change removes all artists and disconnects events.
+    comp._teardown_on_layer_change()
+    assert comp.components[0].dot is None
+    assert comp.component_line is None
+
+
+def test_components_apply_saved_colormap_settings(make_viewer_model, qtbot):
+    """Apply saved colormap settings (name and explicit colours) to the
+    fraction layer."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    comp.components[0].g_edit.setText("0.2")
+    comp.components[0].s_edit.setText("0.1")
+    comp._on_component_coords_changed(0)
+    comp.components[1].g_edit.setText("0.8")
+    comp.components[1].s_edit.setText("0.5")
+    comp._on_component_coords_changed(1)
+    comp._run_analysis()
+    assert comp.comp1_fractions_layer is not None
+
+    # Saved as a named colormap.
+    comp._saved_colormap_name = "viridis"
+    comp._saved_colormap_colors = None
+    comp._saved_contrast_limits = (0.0, 1.0)
+    comp._apply_saved_colormap_settings()
+
+    # Saved as an explicit colour list.
+    comp._saved_colormap_colors = [[0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0, 1.0]]
+    comp._saved_contrast_limits = [0.0, 1.0]
+    comp._apply_saved_colormap_settings()
+
+
+def test_components_recreate_variants_and_colormaps(make_viewer_model, qtbot):
+    """One widget, two recreate flows: Linear Projection with fraction-layer
+    colormap restore, then Component Fit (which also adds a 3rd component)."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    settings = layer.metadata["settings"]
+
+    # 1. Linear Projection recreate with per-component colormap settings.
+    settings["component_analysis"] = {
+        "analysis_type": "Linear Projection",
+        "last_analysis_harmonic": 1,
+        "components": {
+            "0": {
+                "name": "A",
+                "gs_harmonics": {
+                    "1": {
+                        "g": 0.6,
+                        "s": 0.3,
+                        "colormap_name": "viridis",
+                        "contrast_limits": [0.0, 1.0],
+                    }
+                },
+            },
+            "1": {
+                "name": "B",
+                "gs_harmonics": {
+                    "1": {
+                        "g": 0.3,
+                        "s": 0.2,
+                        "colormap_colors": [
+                            [0.0, 0.0, 0.0, 1.0],
+                            [1.0, 1.0, 1.0, 1.0],
+                        ],
+                        "contrast_limits": [0.1, 0.9],
+                    }
+                },
+            },
+        },
+        "line_settings": {"show_colormap_line": True, "line_width": 2.0},
+        "label_settings": {"fontsize": 11, "color": "red"},
+    }
+    comp._restore_and_recreate_components_from_metadata()
+    assert comp.comp1_fractions_layer is not None
+
+    # 2. Component Fit recreate with three components (adds a component).
+    settings["component_analysis"] = {
+        "analysis_type": "Component Fit",
+        "last_analysis_harmonic": 1,
+        "components": {
+            "0": {"name": "C0", "gs_harmonics": {"1": {"g": 0.2, "s": 0.1}}},
+            "1": {"name": "C1", "gs_harmonics": {"1": {"g": 0.5, "s": 0.3}}},
+            "2": {"name": "C2", "gs_harmonics": {"1": {"g": 0.8, "s": 0.5}}},
+        },
+    }
+    comp._restore_and_recreate_components_from_metadata()
+    assert len(comp.fraction_layers) == 3
