@@ -2104,3 +2104,71 @@ def test_fret_harmonics_none_fallback(make_viewer_model, qtbot):
     # 3. Test main FRET efficiency trajectory calculation loop with harmonics is None
     w.calculate_fret_efficiency()
     assert w.fret_layer is not None
+
+
+def test_fret_widget_exceptions(make_viewer_model, qtbot):
+    """Test FRET module handles missing metadata, IndexError, and Exception gracefully."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    w = parent.fret_tab
+    parent.tab_widget.setCurrentWidget(w)
+
+    w.frequency_input.setText("80")
+
+    # 1. Background position exceptions
+    w.bg_source_selector.setCurrentText("From layer(s)")
+    w._update_background_combobox()
+    w.background_image_combobox.setCheckedItems([layer.name])
+
+    # Missing G/S arrays
+    layer.metadata["G"] = None
+    w._calculate_background_position()  # Should continue/return
+
+    # Harmonic not found
+    layer.metadata["G"] = np.ones((2, 10, 10))
+    layer.metadata["S"] = np.ones((2, 10, 10))
+    layer.metadata["harmonics"] = np.array([999])
+    w._calculate_background_position()  # Should continue/return
+
+    # Mismatched shapes causing Exception in phasor_center
+    layer.metadata["G"] = np.ones(
+        (10, 10)
+    )  # Intentionally 2D when expected 3D or vice versa
+    layer.metadata["S"] = np.ones((2, 10, 10))
+    layer.metadata["harmonics"] = np.array([1])
+    parent.harmonic = 1
+    w._calculate_background_position()  # Should catch Exception
+
+    # Same for harmonics is None
+    layer.metadata["harmonics"] = None
+    w._calculate_background_position()  # Should catch Exception
+
+    # 2. Donor lifetime exceptions
+    w.donor_source_selector.setCurrentIndex(1)  # From layer(s)
+    w._update_donor_lifetime_combobox()
+    w.donor_lifetime_combobox.setCheckedItems([layer.name])
+
+    layer.metadata["G"] = None
+    w._calculate_donor_lifetime()
+
+    layer.metadata["G"] = np.ones((2, 10, 10))
+    layer.metadata["harmonics"] = np.array([999])
+    w._calculate_donor_lifetime()
+
+    layer.metadata["G"] = np.ones((10, 10))
+    layer.metadata["S"] = np.ones((2, 10, 10))
+    layer.metadata["harmonics"] = np.array([1])
+    w._calculate_donor_lifetime()
+
+    # 3. Main trajectory loop exceptions
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    layer.metadata["G"] = None
+    w.calculate_fret_efficiency()
+
+    layer.metadata["G"] = np.ones((2, 10, 10))
+    layer.metadata["S"] = np.ones((2, 10, 10))
+    layer.metadata["harmonics"] = np.array([999])
+    w.calculate_fret_efficiency()

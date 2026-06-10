@@ -2152,3 +2152,25 @@ def test_phasor_mapping_harmonics_none_fallback(make_viewer_model, qtbot):
     pm.calculate_output_data()
     # Confirm output layers/data created successfully
     assert pm.current_metric_data_original is not None
+
+
+def test_phasor_mapping_exceptions(make_viewer_model, qtbot):
+    """Test Phasor Mapping module handles missing metadata and IndexError gracefully."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    pm = parent.phasor_mapping_tab
+    parent.tab_widget.setCurrentWidget(pm)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+
+    # Missing G/S arrays
+    layer.metadata["G"] = None
+    pm.calculate_output_data()  # Should return early
+
+    # Harmonic not found
+    layer.metadata["G"] = np.ones((2, 10, 10))
+    layer.metadata["S"] = np.ones((2, 10, 10))
+    layer.metadata["harmonics"] = np.array([999])
+    pm.calculate_output_data()  # Should return early
