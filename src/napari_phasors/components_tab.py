@@ -4063,20 +4063,23 @@ class ComponentsWidget(QWidget):
         s_array = layer.metadata.get('S')
         harmonics = layer.metadata.get('harmonics')
 
-        if g_array is None or s_array is None or harmonics is None:
+        if g_array is None or s_array is None:
             return
 
-        try:
-            harmonics_array = np.atleast_1d(harmonics)
-            harmonic_idx = np.where(
-                harmonics_array == self.parent_widget.harmonic
-            )[0][0]
-        except IndexError:
-            return
-
-        if g_array.ndim == layer.data.ndim + 1:
-            real = g_array[harmonic_idx]
-            imag = s_array[harmonic_idx]
+        if harmonics is not None:
+            try:
+                harmonics_array = np.atleast_1d(harmonics)
+                harmonic_idx = np.where(
+                    harmonics_array == self.parent_widget.harmonic
+                )[0][0]
+                if g_array.ndim == layer.data.ndim + 1:
+                    real = g_array[harmonic_idx]
+                    imag = s_array[harmonic_idx]
+                else:
+                    real = g_array
+                    imag = s_array
+            except IndexError:
+                return
         else:
             real = g_array
             imag = s_array
@@ -4315,14 +4318,19 @@ class ComponentsWidget(QWidget):
                 )
                 return
 
-            try:
-                harmonic_idx = np.where(harmonics == current_harmonic)[0][0]
-            except IndexError:
-                return
-
-            if g_array.ndim == layer.data.ndim + 1:
-                real = g_array[harmonic_idx]
-                imag = s_array[harmonic_idx]
+            if harmonics is not None:
+                try:
+                    harmonic_idx = np.where(harmonics == current_harmonic)[0][
+                        0
+                    ]
+                    if g_array.ndim == layer.data.ndim + 1:
+                        real = g_array[harmonic_idx]
+                        imag = s_array[harmonic_idx]
+                    else:
+                        real = g_array
+                        imag = s_array
+                except IndexError:
+                    return
             else:
                 real = g_array
                 imag = s_array

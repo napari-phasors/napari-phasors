@@ -29,7 +29,7 @@ jobs:
           - qt-backend: pyside6
             python-version: '3.12'
           - qt-backend: pyside6
-            python-version: '3.13'
+            python-version: '3.14'
 
     steps:
       - uses: actions/checkout@v3
@@ -71,6 +71,13 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: napari-phasors/napari-phasors
+
+      - name: Upload coverage report
+        if: matrix.platform == 'ubuntu-latest' && matrix.python-version == '3.13' && matrix.qt-backend == 'pyqt6'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
 
   static_analysis:
     name: Static code analysis

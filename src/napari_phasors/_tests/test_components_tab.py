@@ -1725,3 +1725,62 @@ def test_components_recreate_variants_and_colormaps(make_viewer_model, qtbot):
     }
     comp._restore_and_recreate_components_from_metadata()
     assert len(comp.fraction_layers) == 3
+
+
+def test_components_widget_harmonics_none_fallback(make_viewer_model, qtbot):
+    """Test component analysis when harmonics metadata is None (e.g. loaded .R64 files)."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    # Modify metadata to simulate a .R64 file where harmonics is None and G/S are 2D arrays (ndim matches data)
+    layer.metadata["harmonics"] = None
+    layer.metadata["G"] = layer.metadata["G"][0]
+    layer.metadata["S"] = layer.metadata["S"][0]
+
+    # 1. Test Linear Projection
+    comp.analysis_type_combo.setCurrentText("Linear Projection")
+    comp.components[0].g_edit.setText("0.2")
+    comp.components[0].s_edit.setText("0.1")
+    comp._on_component_coords_changed(0)
+    comp.components[1].g_edit.setText("0.8")
+    comp.components[1].s_edit.setText("0.5")
+    comp._on_component_coords_changed(1)
+
+    comp._run_analysis()
+    assert comp.comp1_fractions_layer is not None
+
+    # 2. Test Component Fit
+    comp._add_component()
+    comp.analysis_type_combo.setCurrentText("Component Fit")
+    comp.components[2].g_edit.setText("0.5")
+    comp.components[2].s_edit.setText("0.3")
+    comp._on_component_coords_changed(2)
+
+    comp._run_analysis()
+    assert len(comp.fraction_layers) == 3
+
+
+def test_components_widget_exceptions(make_viewer_model, qtbot):
+    """Test component analysis handles missing metadata and IndexError."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    # Test Linear Projection with missing G array
+    comp.analysis_type_combo.setCurrentText("Linear Projection")
+    layer.metadata["G"] = None
+    comp._run_analysis()  # Should return early
+
+    # Test Linear Projection with missing harmonic (IndexError)
+    layer.metadata["G"] = np.ones((2, 10, 10))
+    layer.metadata["S"] = np.ones((2, 10, 10))
+    layer.metadata["harmonics"] = np.array([999])
+    comp._run_analysis()  # Should return early
+
+    # Test Component Fit with missing G array
+    comp._add_component()
+    comp.analysis_type_combo.setCurrentText("Component Fit")
+    layer.metadata["G"] = None
+    comp._run_analysis()  # Should return early
+
+    # Test Component Fit with missing harmonic (IndexError)
+    layer.metadata["G"] = np.ones((2, 10, 10))
+    layer.metadata["harmonics"] = np.array([999])
+    comp._run_analysis()  # Should return early
