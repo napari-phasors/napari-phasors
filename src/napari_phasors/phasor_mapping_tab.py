@@ -1220,19 +1220,24 @@ class PhasorMappingWidget(QWidget):
         for layer in selected_layers:
             g_array = layer.metadata.get("G")
             s_array = layer.metadata.get("S")
-            harmonics = np.atleast_1d(layer.metadata.get("harmonics"))
+            harmonics = layer.metadata.get("harmonics")
 
             if g_array is None or s_array is None:
                 continue
 
-            try:
-                harmonic_index = np.where(
-                    harmonics == self.parent_widget.harmonic
-                )[0][0]
-                real = g_array[harmonic_index]
-                imag = s_array[harmonic_index]
-            except IndexError:
-                continue
+            if harmonics is not None:
+                try:
+                    harmonics = np.atleast_1d(harmonics)
+                    harmonic_index = np.where(
+                        harmonics == self.parent_widget.harmonic
+                    )[0][0]
+                    real = g_array[harmonic_index]
+                    imag = s_array[harmonic_index]
+                except IndexError:
+                    continue
+            else:
+                real = g_array
+                imag = s_array
 
             if self._output_requires_frequency(output_type):
                 effective_frequency = (

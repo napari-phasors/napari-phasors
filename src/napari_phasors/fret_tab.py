@@ -759,31 +759,45 @@ class FretWidget(QWidget):
                 harmonics = background_layer.metadata.get("harmonics")
                 mean = background_layer.metadata.get("original_mean")
 
-                if g_array is None or s_array is None or harmonics is None:
+                if g_array is None or s_array is None:
                     continue
 
             except (KeyError, AttributeError):
                 continue
 
-            harmonics = np.atleast_1d(harmonics)
-            for harmonic in harmonics:
-                try:
-                    harmonic_idx = np.where(harmonics == harmonic)[0]
-                    if len(harmonic_idx) == 0:
+            if harmonics is not None:
+                harmonics_arr = np.atleast_1d(harmonics)
+                for harmonic in harmonics_arr:
+                    try:
+                        harmonic_idx = np.where(harmonics_arr == harmonic)[0]
+                        if len(harmonic_idx) == 0:
+                            continue
+                        harmonic_idx = harmonic_idx[0]
+
+                        if g_array.ndim > background_layer.data.ndim:
+                            real = g_array[harmonic_idx]
+                            imag = s_array[harmonic_idx]
+                        else:
+                            real = g_array
+                            imag = s_array
+
+                        _, center_real, center_imag = phasor_center(
+                            mean, real, imag
+                        )
+
+                        if harmonic not in positions_by_harmonic:
+                            positions_by_harmonic[harmonic] = []
+                        positions_by_harmonic[harmonic].append(
+                            (center_real, center_imag)
+                        )
+                    except Exception:  # noqa: BLE001
                         continue
-                    harmonic_idx = harmonic_idx[0]
-
-                    if g_array.ndim > background_layer.data.ndim:
-                        real = g_array[harmonic_idx]
-                        imag = s_array[harmonic_idx]
-                    else:
-                        real = g_array
-                        imag = s_array
-
+            else:
+                try:
                     _, center_real, center_imag = phasor_center(
-                        mean, real, imag
+                        mean, g_array, s_array
                     )
-
+                    harmonic = self.parent_widget.harmonic
                     if harmonic not in positions_by_harmonic:
                         positions_by_harmonic[harmonic] = []
                     positions_by_harmonic[harmonic].append(
@@ -890,20 +904,24 @@ class FretWidget(QWidget):
                 harmonics = donor_layer.metadata.get("harmonics")
                 mean = donor_layer.metadata.get("original_mean")
 
-                if g_array is None or s_array is None or harmonics is None:
+                if g_array is None or s_array is None:
                     continue
 
-                harmonics = np.atleast_1d(harmonics)
-                harmonic_idx = np.where(harmonics == current_harmonic)[0]
+                if harmonics is not None:
+                    harmonics = np.atleast_1d(harmonics)
+                    harmonic_idx = np.where(harmonics == current_harmonic)[0]
 
-                if len(harmonic_idx) == 0:
-                    continue
+                    if len(harmonic_idx) == 0:
+                        continue
 
-                harmonic_idx = harmonic_idx[0]
+                    harmonic_idx = harmonic_idx[0]
 
-                if g_array.ndim > donor_layer.data.ndim:
-                    real = g_array[harmonic_idx]
-                    imag = s_array[harmonic_idx]
+                    if g_array.ndim > donor_layer.data.ndim:
+                        real = g_array[harmonic_idx]
+                        imag = s_array[harmonic_idx]
+                    else:
+                        real = g_array
+                        imag = s_array
                 else:
                     real = g_array
                     imag = s_array
@@ -1783,19 +1801,24 @@ class FretWidget(QWidget):
             # Retrieve arrays from metadata
             g_array = layer.metadata.get("G")
             s_array = layer.metadata.get("S")
-            harmonics = np.atleast_1d(layer.metadata.get("harmonics"))
+            harmonics = layer.metadata.get("harmonics")
 
             if g_array is None or s_array is None:
                 continue
 
-            try:
-                harmonic_index = np.where(
-                    harmonics == self.parent_widget.harmonic
-                )[0][0]
-                real = g_array[harmonic_index]
-                imag = s_array[harmonic_index]
-            except IndexError:
-                continue
+            if harmonics is not None:
+                try:
+                    harmonics = np.atleast_1d(harmonics)
+                    harmonic_index = np.where(
+                        harmonics == self.parent_widget.harmonic
+                    )[0][0]
+                    real = g_array[harmonic_index]
+                    imag = s_array[harmonic_index]
+                except IndexError:
+                    continue
+            else:
+                real = g_array
+                imag = s_array
 
             fret_efficiency = phasor_nearest_neighbor(
                 real,
