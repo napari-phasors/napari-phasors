@@ -36,6 +36,9 @@ contributions:
     - id: napari-phasors.WriterWidget
       python_name: napari_phasors:WriterWidget
       title: Export Phasor
+    - id: napari-phasors.BatchAnalysisWidget
+      python_name: napari_phasors:BatchAnalysisWidget
+      title: Batch Analysis
   readers:
     - command: napari-phasors.get_reader
       accepts_directories: false
@@ -70,6 +73,8 @@ contributions:
       display_name: Phasor Plot
     - command: napari-phasors.WriterWidget
       display_name: Export Phasor
+    - command: napari-phasors.BatchAnalysisWidget
+      display_name: Batch Analysis
 
   menus:
     napari/file/io_utilities:
@@ -84,6 +89,7 @@ contributions:
     io_phasors_submenu:
       - command: napari-phasors.PhasorTransform
       - command: napari-phasors.WriterWidget
+      - command: napari-phasors.BatchAnalysisWidget
 
   submenus:
     - id: phasor_plot_submenu

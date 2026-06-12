@@ -1,6 +1,5 @@
 import contextlib
 import copy
-import html
 import math
 import warnings
 from pathlib import Path
@@ -57,6 +56,7 @@ from ._utils import (
     build_group_styles_from_layer_metadata,
     build_groups_from_layer_metadata,
     populate_colormap_combobox,
+    read_ome_tiff_settings,
     resolve_colormap_by_name,
     save_groups_to_layer_metadata,
     update_frequency_in_metadata,
@@ -3211,29 +3211,7 @@ class PlotterWidget(QWidget):
         if not file_path:
             return
         try:
-            import json
-
-            from phasorpy import io
-
-            _, _, _, attrs = io.phasor_from_ometiff(file_path, harmonic='all')
-            settings = {}
-            if "frequency" in attrs:
-                settings["frequency"] = attrs["frequency"]
-            if "description" in attrs:
-                try:
-                    # HTML-unescape the description to handle tifffile HTML encoding
-                    description_str = html.unescape(attrs["description"])
-                    description = json.loads(description_str)
-                    if "napari_phasors_settings" in description:
-                        napari_phasors_settings = json.loads(
-                            description["napari_phasors_settings"]
-                        )
-                        for key, value in napari_phasors_settings.items():
-                            settings[key] = value
-                except (json.JSONDecodeError, KeyError):
-                    notifications.WarningNotification(
-                        "Failed to parse napari-phasors settings from file"
-                    )
+            settings = read_ome_tiff_settings(file_path)
             if settings:
                 selected_tabs = self._show_import_dialog(
                     source_settings=settings

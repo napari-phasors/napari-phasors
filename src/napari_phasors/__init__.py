@@ -3,6 +3,7 @@ try:
 except ImportError:
     __version__ = "unknown"
 
+from ._batch_analysis import BatchAnalysisWidget
 from ._reader import napari_get_reader
 from ._sample_data import (
     convallaria_FLIM_sample_data,
@@ -24,4 +25,5 @@ __all__ = (
     "PhasorTransform",
     "PlotterWidget",
     "WriterWidget",
+    "BatchAnalysisWidget",
 )

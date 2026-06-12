@@ -3747,3 +3747,162 @@ class FileOrderDialog(QDialog):
         except ValueError:
             return 1.0
         return value if value > 0 else 1.0
+
+
+def read_ome_tiff_settings(file_path):
+    """Read the napari-phasors settings bundle from an OME-TIFF file.
+
+    Extracts the frequency and any persisted ``napari_phasors_settings``
+    stored in the OME description of a phasor OME-TIFF, returning them as a
+    flat settings dictionary (the same structure stored under a layer's
+    ``metadata['settings']``).
+
+    Parameters
+    ----------
+    file_path : str
+        Path to an OME-TIFF file written by napari-phasors.
+
+    Returns
+    -------
+    dict
+        Settings dictionary. Empty if the file contains no recognizable
+        napari-phasors settings.
+    """
+    import html
+    import json
+
+    from phasorpy import io
+
+    _, _, _, attrs = io.phasor_from_ometiff(file_path, harmonic='all')
+    settings = {}
+    if "frequency" in attrs:
+        settings["frequency"] = attrs["frequency"]
+    if "description" in attrs:
+        try:
+            description_str = html.unescape(attrs["description"])
+            description = json.loads(description_str)
+            if "napari_phasors_settings" in description:
+                napari_phasors_settings = json.loads(
+                    description["napari_phasors_settings"]
+                )
+                for key, value in napari_phasors_settings.items():
+                    settings[key] = value
+        except (json.JSONDecodeError, KeyError):
+            pass
+    return settings
+
+
+def compute_calibration_parameters(
+    calibration_layer, frequency, reference_lifetime
+):
+    """Compute phase and modulation calibration parameters from a reference.
+
+    Mirrors the calculation performed interactively by
+    :class:`~napari_phasors.calibration_tab.CalibrationWidget`, but operates
+    purely on layer metadata so it can be reused headlessly (e.g. batch
+    processing).
+
+    Parameters
+    ----------
+    calibration_layer : napari.layers.Image
+        Reference layer with phasor metadata (``original_mean``,
+        ``G_original``, ``S_original``, ``harmonics``).
+    frequency : float
+        Laser/modulation frequency in MHz.
+    reference_lifetime : float
+        Known lifetime of the calibration reference, in nanoseconds.
+
+    Returns
+    -------
+    tuple of numpy.ndarray
+        ``(phi_zero, mod_zero)`` correction parameters.
+    """
+    from phasorpy.lifetime import (
+        phasor_from_lifetime,
+        polar_from_reference_phasor,
+    )
+    from phasorpy.phasor import phasor_center
+
+    metadata = calibration_layer.metadata
+    calibration_mean = metadata["original_mean"]
+    calibration_g = metadata["G_original"]
+    calibration_s = metadata["S_original"]
+    harmonics = metadata.get("harmonics")
+
+    _, measured_re, measured_im = phasor_center(
+        calibration_mean, calibration_g, calibration_s
+    )
+
+    harmonics_array = np.atleast_1d(harmonics)
+    known_re, known_im = phasor_from_lifetime(
+        frequency * harmonics_array, reference_lifetime
+    )
+    phi_zero, mod_zero = polar_from_reference_phasor(
+        measured_re, measured_im, known_re, known_im
+    )
+    return phi_zero, mod_zero
+
+
+def apply_calibration_correction(layer, phi_zero, mod_zero):
+    """Apply a phasor calibration correction to a layer in place.
+
+    Applies the polar correction ``(phi_zero, mod_zero)`` to both the
+    original and current phasor coordinates of ``layer`` and records the
+    calibration parameters in ``layer.metadata['settings']``.
+
+    Parameters
+    ----------
+    layer : napari.layers.Image
+        Layer with phasor metadata to calibrate.
+    phi_zero : float or numpy.ndarray
+        Phase correction parameter (per harmonic).
+    mod_zero : float or numpy.ndarray
+        Modulation correction parameter (per harmonic).
+    """
+    from phasorpy.phasor import phasor_transform
+
+    metadata = layer.metadata
+    harmonics = np.atleast_1d(metadata.get("harmonics"))
+    g_original = metadata["G_original"]
+    s_original = metadata["S_original"]
+    g_current = metadata["G"]
+    s_current = metadata["S"]
+
+    if isinstance(phi_zero, list):
+        phi_zero = np.array(phi_zero)
+    if isinstance(mod_zero, list):
+        mod_zero = np.array(mod_zero)
+
+    if g_original.ndim > 1 and len(harmonics) > 1:
+        spatial_dims = g_original.ndim - 1
+        expand_shape = (slice(None),) + (None,) * spatial_dims
+        if np.ndim(phi_zero) > 0:
+            phi_expanded = phi_zero[expand_shape]
+            mod_expanded = mod_zero[expand_shape]
+        else:
+            phi_expanded = phi_zero
+            mod_expanded = mod_zero
+    else:
+        phi_expanded = phi_zero
+        mod_expanded = mod_zero
+
+    real_original, imag_original = phasor_transform(
+        g_original, s_original, phi_expanded, mod_expanded
+    )
+    real, imag = phasor_transform(
+        g_current, s_current, phi_expanded, mod_expanded
+    )
+
+    metadata["G_original"] = real_original
+    metadata["S_original"] = imag_original
+    metadata["G"] = real
+    metadata["S"] = imag
+
+    settings = metadata.setdefault("settings", {})
+    settings["calibration_phase"] = (
+        phi_zero.tolist() if np.ndim(phi_zero) > 0 else float(phi_zero)
+    )
+    settings["calibration_modulation"] = (
+        mod_zero.tolist() if np.ndim(mod_zero) > 0 else float(mod_zero)
+    )
+    settings["calibrated"] = True
