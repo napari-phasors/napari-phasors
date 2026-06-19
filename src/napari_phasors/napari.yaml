@@ -67,10 +67,10 @@ contributions:
       display_name: Paramecium Hyperspectral Image
       key: unique_id.3
   widgets:
-    - command: napari-phasors.PhasorTransform
-      display_name: Phasor Custom Import
     - command: napari-phasors.plot_phasor
       display_name: Phasor Plot
+    - command: napari-phasors.PhasorTransform
+      display_name: Phasor Custom Import
     - command: napari-phasors.WriterWidget
       display_name: Export Phasor
     - command: napari-phasors.BatchAnalysisWidget

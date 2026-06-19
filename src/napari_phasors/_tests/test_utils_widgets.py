@@ -139,6 +139,40 @@ def test_histogram_widget_update_multi_data_autosd(qtbot):
     assert widget._show_sd is True
 
 
+def test_histogram_widget_grouped_sd_band(qtbot):
+    """Grouped mode draws a shaded SD band per multi-file group when enabled."""
+    from matplotlib.collections import PolyCollection
+
+    widget = HistogramWidget(bins=10)
+    qtbot.addWidget(widget)
+
+    rng = np.random.default_rng(0)
+    # Two files per group so an across-file standard deviation exists.
+    datasets = {
+        "G1::a": rng.normal(0.3, 0.05, 500),
+        "G1::b": rng.normal(0.32, 0.05, 500),
+        "G2::a": rng.normal(0.7, 0.05, 500),
+        "G2::b": rng.normal(0.68, 0.05, 500),
+    }
+    widget._group_assignments = {
+        "G1::a": 1,
+        "G1::b": 1,
+        "G2::a": 2,
+        "G2::b": 2,
+    }
+    widget._group_names = {1: "Group 1", 2: "Group 2"}
+    widget.display_mode = "Grouped"
+    widget.update_multi_data(datasets)
+
+    widget.show_sd = True
+    bands = [c for c in widget.ax.collections if isinstance(c, PolyCollection)]
+    assert len(bands) >= 2  # one SD band per group
+
+    widget.show_sd = False
+    bands = [c for c in widget.ax.collections if isinstance(c, PolyCollection)]
+    assert bands == []  # no bands when SD shading is off
+
+
 def test_statistics_table_widget_populates_rows(qtbot):
     """StatisticsTableWidget should populate rows for each dataset."""
     table = StatisticsTableWidget()

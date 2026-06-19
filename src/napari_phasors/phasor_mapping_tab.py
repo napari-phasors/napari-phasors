@@ -31,6 +31,7 @@ from scipy.stats import binned_statistic_2d
 from superqt import QRangeSlider, QToggleSwitch
 
 from ._utils import (
+    LIFETIME_OUTPUT_TYPES,
     HistogramWidget,
     create_mpl_colormap_from_qcolor,
     populate_colormap_combobox,
@@ -41,6 +42,191 @@ from ._utils import (
 
 if TYPE_CHECKING:
     import napari
+
+
+# Default grid resolution used when a precomputed mesh grid is not supplied.
+_DEFAULT_MESH_RESOLUTION = 300
+
+
+def compute_phasor_mesh_mask(
+    p_grid,
+    m_grid,
+    *,
+    semicircle=True,
+    phase_range=None,
+    modulation_range=None,
+    clip_semicircle=False,
+):
+    """Return the boolean mask of grid cells *excluded* from a phasor mesh.
+
+    A cell is masked (``True``) when it falls outside the requested phase or
+    modulation range, or -- when ``clip_semicircle`` is set in semicircle mode
+    -- outside the universal semicircle. ``p_grid``/``m_grid`` are the phase and
+    modulation arrays of a coordinate grid (see :func:`draw_phasor_mesh`).
+    """
+    mask = np.zeros(np.shape(p_grid), dtype=bool)
+    if phase_range is not None:
+        phase_min, phase_max = phase_range
+        mask |= ~((p_grid >= phase_min) & (p_grid <= phase_max))
+    if modulation_range is not None:
+        mod_min, mod_max = modulation_range
+        mask |= ~((m_grid >= mod_min) & (m_grid <= mod_max))
+    if clip_semicircle and semicircle:
+        with np.errstate(invalid="ignore"):
+            mask |= m_grid > np.cos(p_grid)
+    return mask
+
+
+def draw_phasor_mesh(
+    ax,
+    kind,
+    *,
+    semicircle=True,
+    colormap="hsv",
+    alpha=0.45,
+    alpha_map=None,
+    phase_range=None,
+    modulation_range=None,
+    clip_semicircle=False,
+    vmin=None,
+    vmax=None,
+    resolution=_DEFAULT_MESH_RESOLUTION,
+    x_limits=None,
+    y_limits=None,
+    p_grid=None,
+    m_grid=None,
+    mask=None,
+    extent=None,
+):
+    """Draw a phase/modulation mesh field behind the phasor data on ``ax``.
+
+    This is the single, viewer-independent implementation shared by the
+    interactive Phasor Mapping tab and the headless Batch Analysis export, so
+    both produce an identical-looking mesh. It only needs a Matplotlib axes.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axes to draw on.
+    kind : {"Phase", "Modulation"}
+        Quantity used to color the mesh.
+    semicircle : bool
+        Whether the plot is in semicircle (vs. full-quadrant) geometry. Used
+        for the default grid extent, phase wrapping and the semicircle clip.
+    colormap : str or matplotlib.colors.Colormap
+        Colormap (name or object) for the mesh.
+    alpha : float
+        Overall mesh opacity (ignored when ``alpha_map`` is given).
+    alpha_map : numpy.ndarray, optional
+        Precomputed per-pixel alpha array (already scaled). When omitted a
+        smoothed alpha map is derived from ``mask`` and ``alpha``.
+    phase_range, modulation_range : tuple of float, optional
+        ``(min, max)`` ranges restricting which mesh cells are shown.
+    clip_semicircle : bool
+        Hide mesh cells outside the universal semicircle (semicircle mode only).
+    vmin, vmax : float, optional
+        Color scaling limits. Default to the active range for ``kind`` (or the
+        visible field's min/max when no range is given).
+    resolution : int
+        Grid resolution used when ``p_grid``/``m_grid`` are not supplied.
+    x_limits, y_limits : tuple of float, optional
+        Grid extent used when computing the grid. Default to sensible bounds
+        for the current geometry.
+    p_grid, m_grid : numpy.ndarray, optional
+        Precomputed phase/modulation grids (e.g. cached by the caller). When
+        omitted they are computed from the limits and ``resolution``.
+    mask : numpy.ndarray, optional
+        Precomputed exclusion mask (see :func:`compute_phasor_mesh_mask`).
+    extent : list of float, optional
+        ``[xmin, xmax, ymin, ymax]`` matching the grid. Required if grids are
+        supplied; otherwise derived from the limits.
+
+    Returns
+    -------
+    matplotlib.image.AxesImage
+        The drawn mesh image.
+    """
+    if p_grid is None or m_grid is None or extent is None:
+        if x_limits is None or y_limits is None:
+            if semicircle:
+                x_limits = (-0.05, 1.05)
+                y_limits = (-0.05, 0.7)
+            else:
+                x_limits = (-1.05, 1.05)
+                y_limits = (-1.05, 1.05)
+        x_fine = np.linspace(x_limits[0], x_limits[1], resolution)
+        y_fine = np.linspace(y_limits[0], y_limits[1], resolution)
+        grid_x, grid_y = np.meshgrid(x_fine, y_fine)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            p_grid, m_grid = phasor_to_polar(grid_x, grid_y)
+        if not semicircle:
+            with np.errstate(invalid="ignore"):
+                p_grid = np.mod(p_grid, 2.0 * np.pi)
+        extent = [x_limits[0], x_limits[1], y_limits[0], y_limits[1]]
+
+    if mask is None:
+        mask = compute_phasor_mesh_mask(
+            p_grid,
+            m_grid,
+            semicircle=semicircle,
+            phase_range=phase_range,
+            modulation_range=modulation_range,
+            clip_semicircle=clip_semicircle,
+        )
+
+    field = p_grid if kind == "Phase" else m_grid
+    field_masked = np.ma.array(field, mask=mask)
+
+    if isinstance(colormap, str):
+        cmap = resolve_colormap_by_name(colormap)
+        if cmap is None:
+            cmap = resolve_colormap_by_name("viridis")
+    else:
+        cmap = colormap
+    mesh_cmap = cmap.copy()
+    mesh_cmap.set_bad((0, 0, 0, 0))
+
+    if alpha_map is None:
+        alpha_base = gaussian_filter(
+            (~mask).astype(float), sigma=1.2, mode="nearest"
+        )
+        alpha_map = np.clip(alpha_base, 0.0, 1.0) * alpha
+
+    if vmin is None or vmax is None:
+        if kind == "Phase" and phase_range is not None:
+            vmin, vmax = phase_range
+        elif kind == "Modulation" and modulation_range is not None:
+            vmin, vmax = modulation_range
+        else:
+            with np.errstate(invalid="ignore"):
+                visible = np.asarray(field)[~mask]
+                vmin = float(np.nanmin(visible)) if visible.size else 0.0
+                vmax = float(np.nanmax(visible)) if visible.size else 1.0
+
+    mesh_imshow_kwargs = {
+        "extent": extent,
+        "origin": "lower",
+        "cmap": mesh_cmap,
+        "vmin": vmin,
+        "vmax": vmax,
+        "interpolation": "lanczos",
+        "zorder": 0.1,  # Behind all phasor artists
+        "alpha": alpha_map,
+        "aspect": "auto",
+    }
+    try:
+        image = ax.imshow(
+            field_masked,
+            interpolation_stage="rgba",
+            **mesh_imshow_kwargs,
+        )
+    except TypeError:
+        image = ax.imshow(field_masked, **mesh_imshow_kwargs)
+    # Restore a 1:1 data aspect; ``aspect="auto"`` on imshow otherwise stretches
+    # the axes and distorts the phasor plot.
+    ax.set_aspect(1, adjustable="box")
+    return image
 
 
 class PhasorMappingWidget(QWidget):
@@ -311,7 +497,6 @@ class PhasorMappingWidget(QWidget):
 
         ph_row = QHBoxLayout()
         ph_row.addWidget(QLabel("Phase range (rad):"))
-        ph_row.addStretch(1)
         self.phase_min_edit = QLineEdit("0.00")
         self.phase_max_edit = QLineEdit("1.60")
         self.phase_min_edit.setValidator(QDoubleValidator())
@@ -323,6 +508,12 @@ class PhasorMappingWidget(QWidget):
         ph_row.addWidget(self.phase_min_edit)
         ph_row.addWidget(QLabel("to"))
         ph_row.addWidget(self.phase_max_edit)
+        self.phase_auto_btn = QPushButton("Auto")
+        self.phase_auto_btn.clicked.connect(
+            self._initialize_mesh_ranges_from_current_data
+        )
+        ph_row.addWidget(self.phase_auto_btn)
+        ph_row.addStretch(1)
         ph_cnt_layout.addLayout(ph_row)
         self.phase_range_slider = QRangeSlider(Qt.Orientation.Horizontal)
         self.phase_range_slider.setRange(0, 628)
@@ -337,7 +528,6 @@ class PhasorMappingWidget(QWidget):
 
         mod_row = QHBoxLayout()
         mod_row.addWidget(QLabel("Modulation range:"))
-        mod_row.addStretch(1)
         self.modulation_min_edit = QLineEdit("0.00")
         self.modulation_max_edit = QLineEdit("1.00")
         self.modulation_min_edit.setValidator(QDoubleValidator())
@@ -349,6 +539,12 @@ class PhasorMappingWidget(QWidget):
         mod_row.addWidget(self.modulation_min_edit)
         mod_row.addWidget(QLabel("to"))
         mod_row.addWidget(self.modulation_max_edit)
+        self.modulation_auto_btn = QPushButton("Auto")
+        self.modulation_auto_btn.clicked.connect(
+            self._initialize_mesh_ranges_from_current_data
+        )
+        mod_row.addWidget(self.modulation_auto_btn)
+        mod_row.addStretch(1)
         mod_cnt_layout.addLayout(mod_row)
         self.modulation_range_slider = QRangeSlider(Qt.Orientation.Horizontal)
         self.modulation_range_slider.setRange(0, 100)
@@ -782,11 +978,7 @@ class PhasorMappingWidget(QWidget):
 
     @staticmethod
     def _output_requires_frequency(output_type: str) -> bool:
-        return output_type in {
-            "Apparent Phase Lifetime",
-            "Apparent Modulation Lifetime",
-            "Normal Lifetime",
-        }
+        return output_type in LIFETIME_OUTPUT_TYPES
 
     def _get_selected_output_type(self) -> str:
         mode = self.output_mode_combobox.currentText()
@@ -2001,24 +2193,20 @@ class PhasorMappingWidget(QWidget):
             mod_min = mod_min_i / self.modulation_range_factor
             mod_max = mod_max_i / self.modulation_range_factor
 
-            phase_ok = (p_grid >= phase_min) & (p_grid <= phase_max)
-            mod_ok = (m_grid >= mod_min) & (m_grid <= mod_max)
-
-            mesh_mask = ~(phase_ok & mod_ok)
-
-            if (
+            clip_semicircle = (
                 self.mesh_clip_semicircle_checkbox.isChecked()
                 and self._is_semicircle_mode()
-            ):
-                with np.errstate(invalid='ignore'):
-                    is_outside_semi = m_grid > np.cos(p_grid)
-                    mesh_mask |= is_outside_semi
+            )
+            mesh_mask = compute_phasor_mesh_mask(
+                p_grid,
+                m_grid,
+                semicircle=self._is_semicircle_mode(),
+                phase_range=(phase_min, phase_max),
+                modulation_range=(mod_min, mod_max),
+                clip_semicircle=clip_semicircle,
+            )
 
-            stat_display = p_grid if output_type == "Phase" else m_grid
-            stat_display = np.ma.array(stat_display, mask=mesh_mask)
             extent = mesh_grid['extent']
-            mesh_cmap = cmap.copy()
-            mesh_cmap.set_bad((0, 0, 0, 0))
             mesh_alpha = float(self.mesh_alpha_spinbox.value())
             alpha_key = (
                 *self._make_mesh_grid_cache_key(ax, resolution),
@@ -2036,29 +2224,19 @@ class PhasorMappingWidget(QWidget):
 
             self._remove_mesh_overlay()
 
-            mesh_imshow_kwargs = {
-                "extent": extent,
-                "origin": "lower",
-                "cmap": mesh_cmap,
-                "vmin": vmin,
-                "vmax": vmax,
-                "interpolation": "lanczos",
-                "zorder": 0.1,  # Behind all phasor artists
-                "alpha": mesh_alpha_map,
-                "aspect": "auto",
-            }
-            try:
-                self._mesh_overlay_imshow = ax.imshow(
-                    stat_display,
-                    interpolation_stage="rgba",
-                    **mesh_imshow_kwargs,
-                )
-            except TypeError:
-                self._mesh_overlay_imshow = ax.imshow(
-                    stat_display,
-                    **mesh_imshow_kwargs,
-                )
-            ax.set_aspect(1, adjustable="box")
+            self._mesh_overlay_imshow = draw_phasor_mesh(
+                ax,
+                output_type,
+                semicircle=self._is_semicircle_mode(),
+                colormap=cmap,
+                alpha_map=mesh_alpha_map,
+                vmin=vmin,
+                vmax=vmax,
+                p_grid=p_grid,
+                m_grid=m_grid,
+                mask=mesh_mask,
+                extent=extent,
+            )
             pw.canvas_widget.figure.canvas.draw_idle()
 
             if not apply_plot_coloring:
