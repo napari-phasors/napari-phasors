@@ -504,7 +504,7 @@ def test_selection_stats_csv_export(qtbot, make_viewer_model, tmp_path):
 
     csv_path = (
         out_root
-        / "Selection Analysis"
+        / "Combined analysis"
         / "Statistics"
         / "selection_statistics.csv"
     )
@@ -777,6 +777,7 @@ def test_threaded_run_processes_all_files(qtbot, make_viewer_model, tmp_path):
     widget._export_folder = str(out_root)
     widget.export_ometiff_checkbox.setChecked(True)
     widget.threads_spin.setValue(3)
+    widget.suffix_edit.setText("_analyzed")
 
     widget.run_batch()
 
@@ -827,7 +828,10 @@ def test_streaming_aggregation_outputs(qtbot, make_viewer_model, tmp_path):
 
     # Streaming combined contour (disk-backed) per harmonic.
     assert (
-        out_root / "Phasor Plots" / "Combined" / "combined_contour_H1.png"
+        out_root
+        / "Combined analysis"
+        / "Phasor Plots"
+        / "combined_contour_H1.png"
     ).exists()
     # Grouped statistics computed exactly from the spilled data.
     grouped_csvs = list(
@@ -1009,6 +1013,7 @@ def test_run_batch_plot_settings_and_centers(
     widget.harmonics_edit.setText("1, 2")
     widget._export_folder = str(out_root)
     widget.export_ometiff_checkbox.setChecked(True)
+    widget.suffix_edit.setText("_analyzed")
 
     widget.plot_white_bg_checkbox.setChecked(True)
     widget.plot_colormap_combo.setCurrentText("viridis")
@@ -1276,18 +1281,10 @@ def test_run_batch_grouped_outputs(qtbot, make_viewer_model, tmp_path):
 
     # Combined per-group contour, one per harmonic; the phasor center is drawn
     # onto the contour plot itself rather than a separate centers PNG.
-    assert (
-        out_root / "Phasor Plots" / "Combined" / "combined_contour_H1.png"
-    ).exists()
-    assert (
-        out_root / "Phasor Plots" / "Combined" / "combined_contour_H2.png"
-    ).exists()
-    assert not (
-        out_root
-        / "Phasor Plots"
-        / "Combined"
-        / "combined_phasor_centers_H1.png"
-    ).exists()
+    combined_dir = out_root / "Combined analysis" / "Phasor Plots"
+    assert (combined_dir / "combined_contour_H1.png").exists()
+    assert (combined_dir / "combined_contour_H2.png").exists()
+    assert not (combined_dir / "combined_phasor_centers_H1.png").exists()
     # Grouped histogram + grouped statistics (one row per group).
     assert list(out_root.rglob("phasor_mapping_*_grouped_histogram.png"))
     grouped_csvs = list(
@@ -1436,6 +1433,7 @@ def test_run_batch_with_masks(qtbot, make_viewer_model, tmp_path):
     widget.harmonics_edit.setText("1, 2")
     widget._export_folder = str(out_root)
     widget.export_ometiff_checkbox.setChecked(True)
+    widget.suffix_edit.setText("_analyzed")
     widget.masks_group.setChecked(True)
     widget._mask_folders = [str(masks)]
     widget._scan_mask_files()
@@ -1507,6 +1505,7 @@ def test_run_batch_end_to_end(qtbot, make_viewer_model, tmp_path):
     widget.export_ometiff_checkbox.setChecked(True)
     widget.export_csv_checkbox.setChecked(True)
     widget.export_image_checkbox.setChecked(False)
+    widget.suffix_edit.setText("_analyzed")
 
     widget.filter_group.setChecked(True)
     widget.filter_method_combo.setCurrentText("Median")
@@ -1546,6 +1545,7 @@ def test_run_batch_exports_extra_layers(qtbot, make_viewer_model, tmp_path):
     widget.export_ometiff_checkbox.setChecked(True)
     widget.export_csv_checkbox.setChecked(False)
     widget.export_image_checkbox.setChecked(False)
+    widget.suffix_edit.setText("_analyzed")
 
     # Mapping and selection both produce extra exported layers.
     widget.mapping_group.setChecked(True)
@@ -1559,7 +1559,12 @@ def test_run_batch_exports_extra_layers(qtbot, make_viewer_model, tmp_path):
     ome_files = [p.name for p in out_root.rglob("*.ome.tif")]
     assert any(name.startswith("a_analyzed") for name in ome_files)
     mapping_images = list(
-        (out_root / "Phasor Mapping" / "Individual" / "Images").glob("*.png")
+        (
+            out_root
+            / "Phasor Mapping"
+            / "Individual image analysis"
+            / "Images"
+        ).glob("*.png")
     )
     assert mapping_images
 
@@ -1692,7 +1697,10 @@ def test_combined_merged_histogram_exported(
     widget.run_batch()
 
     assert (
-        out_root / "Phasor Plots" / "Combined" / "combined_phasor_H1.png"
+        out_root
+        / "Combined analysis"
+        / "Phasor Plots"
+        / "combined_phasor_H1.png"
     ).exists()
 
 
@@ -1728,7 +1736,10 @@ def test_individual_checkbox_gates_per_file_plots(
     assert per_file == []
     # Combined output is still produced.
     assert (
-        out_root / "Phasor Plots" / "Combined" / "combined_phasor_H1.png"
+        out_root
+        / "Combined analysis"
+        / "Phasor Plots"
+        / "combined_phasor_H1.png"
     ).exists()
 
 
@@ -1773,7 +1784,10 @@ def test_combined_contour_grouped_with_styles(
     widget.run_batch()
 
     assert (
-        out_root / "Phasor Plots" / "Combined" / "combined_contour_H1.png"
+        out_root
+        / "Combined analysis"
+        / "Phasor Plots"
+        / "combined_contour_H1.png"
     ).exists()
 
 
@@ -2105,10 +2119,9 @@ def test_run_batch_exports_zoomed_section(qtbot, make_viewer_model, tmp_path):
 
     widget.run_batch()
 
-    full = out_root / "Phasor Plots" / "Individual" / "a_phasor_plot_H1.png"
-    zoom = (
-        out_root / "Phasor Plots" / "Individual" / "a_phasor_plot_H1_zoom.png"
-    )
+    individual_dir = out_root / "Individual image analysis" / "Phasor Plots"
+    full = individual_dir / "a_phasor_plot_H1.png"
+    zoom = individual_dir / "a_phasor_plot_H1_zoom.png"
     assert full.exists()
     assert zoom.exists()
 
@@ -2234,13 +2247,21 @@ def test_export_subfolder_structure(qtbot, make_viewer_model, tmp_path):
         out_root / "OME-TIFF",
         out_root / "CSV",
         out_root / "Intensity Images",
-        out_root / "Phasor Plots" / "Individual",
-        out_root / "Phasor Plots" / "Combined",
+        out_root / "Individual image analysis" / "Phasor Plots",
+        out_root / "Combined analysis" / "Phasor Plots",
         out_root / "Phasor Centers" / "phasor_centers.csv",
-        out_root / "Phasor Mapping" / "Statistics",
-        out_root / "Phasor Mapping" / "Individual" / "Images",
-        out_root / "Phasor Mapping" / "Individual" / "Histograms" / "PNG",
-        out_root / "Phasor Mapping" / "Individual" / "Histograms" / "CSV",
+        out_root / "Phasor Mapping" / "Combined analysis" / "Statistics",
+        out_root / "Phasor Mapping" / "Individual image analysis" / "Images",
+        out_root
+        / "Phasor Mapping"
+        / "Individual image analysis"
+        / "Histograms"
+        / "PNG",
+        out_root
+        / "Phasor Mapping"
+        / "Individual image analysis"
+        / "Histograms"
+        / "CSV",
     ]
     for path in expected:
         assert path.exists(), f"missing {path}"
@@ -2315,9 +2336,12 @@ def test_analysis_runs_once_per_file(
     assert calls["n"] == 2
     # Deferred per-file fraction images were written for both files.
     images = list(
-        (out_root / "Component Analysis" / "Individual" / "Images").glob(
-            "*.png"
-        )
+        (
+            out_root
+            / "Component Analysis"
+            / "Individual image analysis"
+            / "Images"
+        ).glob("*.png")
     )
     assert len(images) >= 2
     # The shared range was computed once and applied.
@@ -2386,7 +2410,7 @@ def test_per_tab_image_format_csv_only(qtbot, make_viewer_model, tmp_path):
 
     widget.run_batch()
 
-    img_dir = out_root / "Phasor Mapping" / "Individual"
+    img_dir = out_root / "Phasor Mapping" / "Individual image analysis"
     assert list((img_dir / "CSV").glob("*.csv"))
     # No colormapped PNG image was written.
     assert not (img_dir / "Images").exists()
@@ -2482,7 +2506,7 @@ def test_combined_all_groups_plot_exported(qtbot, make_viewer_model, tmp_path):
 
     widget.run_batch()
 
-    combined = out_root / "Phasor Plots" / "Combined"
+    combined = out_root / "Combined analysis" / "Phasor Plots"
     assert (combined / "combined_phasor_all_groups_H1.png").exists()
     # Per-group plots are still exported alongside the all-groups plot.
     per_group = [
@@ -2554,7 +2578,9 @@ def test_tab_combined_contour_all_groups_exported(
 
     widget.run_batch()
 
-    combined = out_root / "Phasor Mapping" / "Combined"
+    combined = (
+        out_root / "Phasor Mapping" / "Combined analysis" / "Phasor Plots"
+    )
     assert (combined / "combined_mapping_phasor_all_groups_H1.png").exists()
     per_group = [
         p
@@ -2643,3 +2669,11 @@ def test_export_colorbar_checkbox_default_on(qtbot, make_viewer_model):
     widget = BatchAnalysisWidget(make_viewer_model())
     qtbot.addWidget(widget)
     assert widget.export_colorbar_checkbox.isChecked()
+
+
+def test_suffix_edit_empty_by_default_with_hint(qtbot, make_viewer_model):
+    """The filename suffix field starts empty and shows placeholder hint text."""
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+    assert widget.suffix_edit.text() == ""
+    assert widget.suffix_edit.placeholderText() != ""

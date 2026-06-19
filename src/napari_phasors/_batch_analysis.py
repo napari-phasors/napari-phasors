@@ -1671,7 +1671,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
 
         suffix_row = QHBoxLayout()
         suffix_row.addWidget(QLabel("Filename suffix:"))
-        self.suffix_edit = QLineEdit("_analyzed")
+        self.suffix_edit = QLineEdit()
         self.suffix_edit.setPlaceholderText(
             "text added to the name of the exported files"
         )
@@ -5682,7 +5682,9 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                     )
                     if tab_name
                     else os.path.join(
-                        self._export_folder, "Combined analysis", "Statistics"
+                        self._export_folder,
+                        "Combined analysis",
+                        "Statistics",
                     )
                 )
                 os.makedirs(target_dir, exist_ok=True)
@@ -5740,7 +5742,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         if not rows:
             return
         target_dir = os.path.join(
-            self._export_folder, "All images combined analysis", "Statistics"
+            self._export_folder, "Combined analysis", "Statistics"
         )
         os.makedirs(target_dir, exist_ok=True)
         path = os.path.join(target_dir, "selection_statistics.csv")
@@ -5887,7 +5889,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         subfolder = (
             os.path.join(
                 self._TAB_FOLDERS[tab],
-                "All images combined analysis",
+                "Combined analysis",
                 "Phasor Plots",
             )
             if tab in self._TAB_FOLDERS
@@ -6124,7 +6126,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             )
             combined_dir = os.path.join(
                 self._export_folder,
-                "All images combined analysis",
+                "Combined analysis",
                 "Phasor Plots",
             )
             os.makedirs(combined_dir, exist_ok=True)
@@ -6203,12 +6205,10 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 os.path.join(
                     self._export_folder,
                     tab_name,
-                    "All images combined analysis",
+                    "Combined analysis",
                 )
                 if tab_name
-                else os.path.join(
-                    self._export_folder, "All images combined analysis"
-                )
+                else os.path.join(self._export_folder, "Combined analysis")
             )
             hist_dir = os.path.join(tab_root, "Histograms")
             os.makedirs(hist_dir, exist_ok=True)
