@@ -5,13 +5,23 @@ import os
 
 import numpy as np
 import pytest
+from napari.layers import Image
 
 from napari_phasors._batch_analysis import (
     BatchAnalysisWidget,
     BatchPipeline,
+    BatchReadOptionsWidget,
+    CopySettingsDialog,
     _apply_component_fraction,
+    _apply_fret,
     _apply_image_mask,
+    _apply_phasor_mapping,
     _apply_selection,
+    _cursor_rgba,
+    _load_mask_array,
+    _make_output_image,
+    _reversed_colormap,
+    _select_harmonic_arrays,
     _selection_statistics,
     _store_plot_settings,
     apply_pipeline,
@@ -2679,3 +2689,202 @@ def test_suffix_edit_empty_by_default_with_hint(qtbot, make_viewer_model):
     qtbot.addWidget(widget)
     assert widget.suffix_edit.text() == ""
     assert widget.suffix_edit.placeholderText() != ""
+
+
+# -- Pure-helper edge cases ------------------------------------------------
+
+
+def _plain_layer(shape=(4, 4)):
+    """An Image layer with no phasor metadata."""
+    return Image(np.zeros(shape, dtype=float), name="plain")
+
+
+def test_scan_folder_missing_folder_returns_empty():
+    # Non-recursive scan of a non-existent directory swallows the OSError.
+    assert scan_folder("/this/path/does/not/exist", recursive=False) == {}
+
+
+def test_parse_harmonics_skips_empty_parts():
+    assert parse_harmonics("1,,2") == [1, 2]
+    assert parse_harmonics(" , ") is None
+
+
+def test_load_mask_array_npy_and_multichannel(tmp_path):
+    # An RGB .npy mask is read and reduced to 2-D (any channel non-zero).
+    rgb = np.zeros((4, 4, 3), dtype=np.uint8)
+    rgb[1, 1, 0] = 255
+    rgb[2, 2, 2] = 10
+    path = tmp_path / "mask.npy"
+    np.save(path, rgb)
+    mask = _load_mask_array(str(path))
+    assert mask.shape == (4, 4)
+    assert mask[1, 1] and mask[2, 2]
+    assert not mask[0, 0]
+
+
+def test_apply_image_mask_skips_missing_coords():
+    # Layer with intensity data but no G/S metadata: masking still applies to
+    # the image data and skips the absent coordinate arrays.
+    layer = _plain_layer()
+    layer.data = np.ones((4, 4))
+    mask = np.zeros((4, 4))
+    mask[0, 0] = 1
+    _apply_image_mask(layer, mask)
+    assert np.isnan(layer.data[1, 1])
+    assert layer.data[0, 0] == 1
+    assert "G" not in layer.metadata
+
+
+def test_select_harmonic_arrays_without_metadata():
+    assert _select_harmonic_arrays(_plain_layer(), 1) == (None, None)
+
+
+def test_select_harmonic_arrays_falls_back_without_harmonics():
+    layer = _plain_layer((2, 3))
+    layer.metadata["G"] = np.ones((2, 3))
+    layer.metadata["S"] = np.zeros((2, 3))
+    real, imag = _select_harmonic_arrays(layer, 1)
+    assert np.array_equal(real, np.ones((2, 3)))
+    assert np.array_equal(imag, np.zeros((2, 3)))
+
+
+def test_apply_component_fraction_no_data_returns_empty():
+    dummy = np.zeros((1, 2))
+    base = {
+        "names": ["A", "B"],
+        "component_real": dummy,
+        "component_imag": dummy,
+        "analysis_type": "linear",
+        "harmonic": 1,
+    }
+    # Linear, single harmonic, layer lacks phasor coordinates.
+    assert _apply_component_fraction(_plain_layer(), base) == []
+    # Multi-harmonic path also bails out when a harmonic has no data.
+    multi = dict(base, harmonics=[1, 2])
+    assert _apply_component_fraction(_plain_layer(), multi) == []
+
+
+def test_apply_component_fraction_fit_without_mean():
+    layer = _make_phasor_layer()
+    layer.metadata.pop("original_mean", None)
+    dummy = np.zeros((1, 3))
+    comp = {
+        "names": ["A", "B", "C"],
+        "component_real": dummy,
+        "component_imag": dummy,
+        "analysis_type": "fit",
+        "harmonic": 1,
+    }
+    assert _apply_component_fraction(layer, comp) == []
+
+
+def test_reversed_colormap_variants():
+    # Empty name returns it unchanged.
+    assert _reversed_colormap("") == ""
+    assert _reversed_colormap(None) is None
+    # A real colormap is reversed.
+    reversed_cmap = _reversed_colormap("viridis")
+    assert reversed_cmap != "viridis"
+    assert hasattr(reversed_cmap, "colors")
+    # An invalid name falls back to the original string.
+    assert (
+        _reversed_colormap("not_a_real_colormap_xyz")
+        == "not_a_real_colormap_xyz"
+    )
+
+
+def test_make_output_image_ignores_degenerate_contrast():
+    img = _make_output_image(
+        np.ones((2, 2)), "out", contrast_limits=(1.0, 1.0)
+    )
+    assert "contrast_limits" not in (img.metadata or {})
+
+
+def test_apply_mapping_fret_selection_no_data_return_empty():
+    layer = _plain_layer()
+    assert _apply_phasor_mapping(layer, {"harmonic": 1}) == []
+    assert (
+        _apply_fret(
+            layer,
+            {
+                "harmonic": 1,
+                "frequency": 80.0,
+                "donor_lifetime": 4.0,
+                "donor_background": 0.0,
+                "background_real": 0.0,
+                "background_imag": 0.0,
+                "donor_fretting": 1.0,
+            },
+        )
+        == []
+    )
+    assert _apply_selection(layer, {"harmonic": 1, "cursors": []}) == []
+
+
+def test_selection_statistics_no_data_returns_empty():
+    layer = _plain_layer()
+    assert _selection_statistics(layer, {"harmonic": 1}, None) == []
+
+
+def test_cursor_rgba_color_and_palette_fallback():
+    # Explicit color is parsed.
+    red = _cursor_rgba("#ff0000", 0)
+    assert red[:3] == (1.0, 0.0, 0.0)
+    # None falls back to the default palette cycling by index.
+    fallback = _cursor_rgba(None, 0)
+    assert len(fallback) == 4
+    # A custom palette is honored.
+    custom = _cursor_rgba(None, 0, palette=["#00ff00"])
+    assert custom[:3] == (0.0, 1.0, 0.0)
+
+
+def test_batch_read_options_rows_and_typed_params(qtbot, monkeypatch):
+    widget = BatchReadOptionsWidget()
+    qtbot.addWidget(widget)
+
+    # .lif exercises int_or_none (with a value) and str typed params.
+    widget.set_extension(".lif")
+    image_widget = widget._param_widgets["image"][0]
+    image_widget.setText("2")
+    dim_widget = widget._param_widgets["dim"][0]
+    dim_widget.setText("λ")
+
+    # Add two dynamic kwarg rows, then remove the first.
+    widget._add_kwarg_row("alpha", "[1, 2]")
+    widget._add_kwarg_row("beta", "not-a-literal")
+    assert len(widget._kwargs_rows) == 2
+    widget._remove_kwarg_row(widget._kwargs_rows[0])
+    assert len(widget._kwargs_rows) == 1
+
+    options = widget.get_reader_options()
+    assert options["image"] == 2
+    assert options["dim"] == "λ"
+    # The literal is eval'd, the non-literal stays a string.
+    assert options["beta"] == "not-a-literal"
+
+    # .json exercises the str_or_none branch left at its default (None).
+    widget.set_extension(".json")
+    assert widget.get_reader_options()["dtype"] is None
+
+
+def test_copy_settings_dialog_selection(qtbot, monkeypatch):
+    dialog = CopySettingsDialog(["Layer A", "Layer B"])
+    qtbot.addWidget(dialog)
+
+    # Selecting a layer reports the layer and no file.
+    dialog.layer_combo.setCurrentIndex(dialog.layer_combo.findData("Layer B"))
+    assert dialog.selected_layer() == "Layer B"
+    assert dialog.selected_file() == ""
+
+    # Browsing to a file records it and resets the layer combo.
+    monkeypatch.setattr(
+        "napari_phasors._batch_analysis.QFileDialog.getOpenFileName",
+        lambda *a, **k: ("/tmp/settings.ome.tif", ""),
+    )
+    dialog._browse()
+    assert dialog.selected_file() == "/tmp/settings.ome.tif"
+    assert dialog.selected_layer() is None
+
+    # Re-selecting a layer clears the chosen file.
+    dialog.layer_combo.setCurrentIndex(dialog.layer_combo.findData("Layer A"))
+    assert dialog.selected_file() == ""
