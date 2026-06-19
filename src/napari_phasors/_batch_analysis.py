@@ -1005,7 +1005,7 @@ def default_group_config():
         "group_names": {},
         "group_colors": {},
         "layer_colors": {},
-        "show_sd": False,
+        "show_sd": True,
         "central_tendency": "None",
         "show_legend": True,
         "white_background": False,
@@ -1590,7 +1590,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
 
         harmonics_row = QHBoxLayout()
         harmonics_row.addWidget(QLabel("Harmonics:"))
-        self.harmonics_edit = QLineEdit("1, 2")
+        self.harmonics_edit = QLineEdit("1")
         self.harmonics_edit.setToolTip(
             "Comma-separated harmonics (e.g. '1, 2'), 'all', or empty for the "
             "reader default."
@@ -1664,7 +1664,9 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "images, phasor plots, and histograms. Higher DPI gives sharper "
             "images but larger files and slower exports."
         )
-        dpi_row.addWidget(self.export_dpi_combo, 1)
+        self.export_dpi_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        dpi_row.addWidget(self.export_dpi_combo)
+        dpi_row.addStretch()
         export_layout.addLayout(dpi_row)
 
         suffix_row = QHBoxLayout()
@@ -3026,18 +3028,41 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         shared_box, shared_layout = self._section("Common appearance")
         shared_form = self._form()
         semicircle_row = QHBoxLayout()
-        semicircle_row.addWidget(QLabel("Semicircle (FLIM)"))
+        self._lbl_semicircle = QLabel("Semicircle (FLIM)")
+        semicircle_row.addWidget(self._lbl_semicircle)
         self.plot_semicircle_checkbox = QToggleSwitch()
         self.plot_semicircle_checkbox.onColor = QColor("#27ae60")
-        self.plot_semicircle_checkbox.setChecked(True)
+        self.plot_semicircle_checkbox.setChecked(False)
         self.plot_semicircle_checkbox.setToolTip(
             "Draw the universal semicircle (single-exponential reference) on "
             "the phasor plot, or switch to the full polar plot."
         )
         semicircle_row.addWidget(self.plot_semicircle_checkbox)
-        semicircle_row.addWidget(QLabel("Full polar plot (HSI)"))
+        self._lbl_polar = QLabel("Full polar plot (HSI)")
+        semicircle_row.addWidget(self._lbl_polar)
         semicircle_row.addStretch()
         shared_form.addRow(semicircle_row)
+
+        def _update_semicircle_labels(checked):
+            if checked:
+                self._lbl_semicircle.setStyleSheet(
+                    "font-weight: normal; color: gray;"
+                )
+                self._lbl_polar.setStyleSheet(
+                    "font-weight: bold; color: white;"
+                )
+            else:
+                self._lbl_semicircle.setStyleSheet(
+                    "font-weight: bold; color: white;"
+                )
+                self._lbl_polar.setStyleSheet(
+                    "font-weight: normal; color: gray;"
+                )
+
+        self.plot_semicircle_checkbox.toggled.connect(
+            _update_semicircle_labels
+        )
+        _update_semicircle_labels(self.plot_semicircle_checkbox.isChecked())
 
         self.plot_white_bg_checkbox = QCheckBox("White background")
         self.plot_white_bg_checkbox.setChecked(True)
@@ -3046,6 +3071,13 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "napari theme background."
         )
         shared_form.addRow(self.plot_white_bg_checkbox)
+
+        self.plot_legend_checkbox = QCheckBox("Export legends")
+        self.plot_legend_checkbox.setChecked(True)
+        self.plot_legend_checkbox.setToolTip(
+            "Include a legend in exported phasor plots."
+        )
+        shared_form.addRow(self.plot_legend_checkbox)
 
         self.plot_frequency_spin = QLineEdit()
         self.plot_frequency_spin.setValidator(QDoubleValidator())
@@ -3425,7 +3457,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         names = [os.path.basename(f) for f in files]
         dialog = HistogramSettingsDialog(
             display_mode=self._group_config.get("mode", "Merged"),
-            show_sd=self._group_config.get("show_sd", False),
+            show_sd=self._group_config.get("show_sd", True),
             central_tendency=self._group_config.get(
                 "central_tendency", "None"
             ),
@@ -4199,7 +4231,9 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
 
     def _apply_plot_settings_to_ui(self, settings):
         if "semi_circle" in settings:
-            self.plot_semicircle_checkbox.setChecked(settings["semi_circle"])
+            self.plot_semicircle_checkbox.setChecked(
+                not settings["semi_circle"]
+            )
         if "log_scale" in settings:
             self.plot_log_checkbox.setChecked(settings["log_scale"])
         if "colormap" in settings:
@@ -4337,7 +4371,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "group_colors": {
                 int(k): v for k, v in stored.get("group_colors", {}).items()
             },
-            "show_sd": stored.get("show_sd", False),
+            "show_sd": stored.get("show_sd", True),
             "central_tendency": stored.get("central_tendency", "None"),
             "show_legend": stored.get("show_legend", True),
         }
@@ -5163,10 +5197,14 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             # Base phasor plot -> "Phasor Plots/Individual"; analysis-tab plots
             # -> "<tab>/Individual/Phasor Plots".
             if tab is None:
-                subfolder = os.path.join("Phasor Plots", "Individual")
+                subfolder = os.path.join(
+                    "Individual image analysis", "Phasor Plots"
+                )
             else:
                 subfolder = os.path.join(
-                    self._TAB_FOLDERS[tab], "Individual", "Phasor Plots"
+                    self._TAB_FOLDERS[tab],
+                    "Individual image analysis",
+                    "Phasor Plots",
                 )
             if want_individual:
                 job_base_out = self._derive_output_path(
@@ -5236,7 +5274,9 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 return "Intensity Images"
             return self._TYPE_DIRS[out_type]
         return os.path.join(
-            self._TAB_FOLDERS[tab], "Individual", self._TYPE_DIRS[out_type]
+            self._TAB_FOLDERS[tab],
+            "Individual image analysis",
+            self._TYPE_DIRS[out_type],
         )
 
     def _export_layer_files(
@@ -5500,7 +5540,10 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 suffix,
                 preserve,
                 subfolder=os.path.join(
-                    self._TAB_FOLDERS[tab], "Individual", "Histograms", "PNG"
+                    self._TAB_FOLDERS[tab],
+                    "Individual image analysis",
+                    "Histograms",
+                    "PNG",
                 ),
             )
             _save_histogram_png(
@@ -5520,7 +5563,10 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 suffix,
                 preserve,
                 subfolder=os.path.join(
-                    self._TAB_FOLDERS[tab], "Individual", "Histograms", "CSV"
+                    self._TAB_FOLDERS[tab],
+                    "Individual image analysis",
+                    "Histograms",
+                    "CSV",
                 ),
             )
             _save_histogram_csv(
@@ -5610,7 +5656,9 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                     rec["suffix"],
                     rec["preserve"],
                     subfolder=os.path.join(
-                        self._TAB_FOLDERS[rec["tab"]], "Individual", "Images"
+                        self._TAB_FOLDERS[rec["tab"]],
+                        "Individual image analysis",
+                        "Images",
                     ),
                 )
                 export_layer_as_image(
@@ -5626,9 +5674,16 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             if job["stats"] and stats_accum.get(name):
                 tab_name = self._TAB_FOLDERS.get(name, "")
                 target_dir = (
-                    os.path.join(self._export_folder, tab_name, "Statistics")
+                    os.path.join(
+                        self._export_folder,
+                        tab_name,
+                        "Combined analysis",
+                        "Statistics",
+                    )
                     if tab_name
-                    else self._export_folder
+                    else os.path.join(
+                        self._export_folder, "Combined analysis", "Statistics"
+                    )
                 )
                 os.makedirs(target_dir, exist_ok=True)
                 path = os.path.join(target_dir, f"{name}_statistics.csv")
@@ -5685,7 +5740,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         if not rows:
             return
         target_dir = os.path.join(
-            self._export_folder, "Selection Analysis", "Statistics"
+            self._export_folder, "All images combined analysis", "Statistics"
         )
         os.makedirs(target_dir, exist_ok=True)
         path = os.path.join(target_dir, "selection_statistics.csv")
@@ -5830,7 +5885,11 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         suffix = job["suffix"]
         tab = job.get("tab")
         subfolder = (
-            os.path.join(self._TAB_FOLDERS[tab], "Combined")
+            os.path.join(
+                self._TAB_FOLDERS[tab],
+                "All images combined analysis",
+                "Phasor Plots",
+            )
             if tab in self._TAB_FOLDERS
             else None
         )
@@ -5893,7 +5952,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             for harmonic, key in entries:
                 harmonic_keys.setdefault(harmonic, []).append(key)
             colors = self._resolve_group_colors(group_meta)
-            legend = self._group_config.get("show_legend", True)
+            legend = display.get("show_legend", True)
             is_contour = display.get("plot_type") == "Contour"
             # Collect the per-group arrays of each multi-group harmonic so an
             # "all groups in one plot" overlay can be drawn after the per-group
@@ -6039,7 +6098,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
     def _write_aggregate_outputs(self, aggregate, display):
         group_meta = aggregate["group_meta"]
         colors = self._resolve_group_colors(group_meta)
-        legend = self._group_config.get("show_legend", True)
+        legend = display.get("show_legend", True)
         streaming = aggregate.get("streaming")
 
         plot_type = aggregate.get("plot_type", "Histogram")
@@ -6064,7 +6123,9 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 else {}
             )
             combined_dir = os.path.join(
-                self._export_folder, "Phasor Plots", "Combined"
+                self._export_folder,
+                "All images combined analysis",
+                "Phasor Plots",
             )
             os.makedirs(combined_dir, exist_ok=True)
             if plot_type == "Contour":
@@ -6139,11 +6200,17 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             stats_rows = []
             tab_name = self._TAB_FOLDERS.get(tab, "")
             tab_root = (
-                os.path.join(self._export_folder, tab_name)
+                os.path.join(
+                    self._export_folder,
+                    tab_name,
+                    "All images combined analysis",
+                )
                 if tab_name
-                else self._export_folder
+                else os.path.join(
+                    self._export_folder, "All images combined analysis"
+                )
             )
-            hist_dir = os.path.join(tab_root, "Grouped Histograms")
+            hist_dir = os.path.join(tab_root, "Histograms")
             os.makedirs(hist_dir, exist_ok=True)
             for label, groups in labels.items():
                 path = os.path.join(
@@ -6266,9 +6333,10 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         )
         return {
             "plot_type": controls["type"].currentData(),
-            "semi_circle": self.plot_semicircle_checkbox.isChecked(),
+            "semi_circle": not self.plot_semicircle_checkbox.isChecked(),
             "log_scale": controls["log"].isChecked(),
             "white_background": self.plot_white_bg_checkbox.isChecked(),
+            "show_legend": self.plot_legend_checkbox.isChecked(),
             "colormap": controls["colormap"].currentText() or "turbo",
             "bins": controls["bins"].value(),
             "contour_levels": controls["levels"].value(),
@@ -7171,7 +7239,7 @@ def _save_grouped_histogram(
             hw.update_multi_data(datasets)
             # ``update_multi_data`` auto-enables SD when several datasets are
             # added; override it so the configured choice wins.
-            hw.show_sd = config.get("show_sd", False)
+            hw.show_sd = config.get("show_sd", True)
             _save_export_histogram(hw, path, dpi=dpi)
         return stats_rows
 
