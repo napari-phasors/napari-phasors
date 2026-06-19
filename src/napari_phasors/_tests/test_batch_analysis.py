@@ -1871,15 +1871,17 @@ def test_analysis_histogram_filename_no_duplication(
     widget.run_batch()
 
     hist_csvs = list(out_root.rglob("*_histogram.csv"))
-    assert hist_csvs
-    name = hist_csvs[0].name
+    names = {p.name for p in hist_csvs}
     # Clean: source stem (kept verbatim) once, the safe-ified analysis label,
     # then _histogram. The label's spaces become underscores; the file stem is
-    # left untouched.
-    assert name == "sample one_Component_1_fraction_histogram.csv"
+    # left untouched. Directory iteration order isn't guaranteed across
+    # filesystems, so check set membership rather than indexing into the
+    # glob result.
+    assert "sample one_Component_1_fraction_histogram.csv" in names
     # No leftover layer-name duplication.
-    assert "Intensity" not in name
-    assert name.count("sample one") == 1
+    for name in names:
+        assert "Intensity" not in name
+        assert name.count("sample one") == 1
 
 
 def test_combined_components_phasor_merged(qtbot, make_viewer_model, tmp_path):
