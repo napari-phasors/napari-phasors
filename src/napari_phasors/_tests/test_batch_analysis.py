@@ -2888,3 +2888,185 @@ def test_copy_settings_dialog_selection(qtbot, monkeypatch):
     # Re-selecting a layer clears the chosen file.
     dialog.layer_combo.setCurrentIndex(dialog.layer_combo.findData("Layer A"))
     assert dialog.selected_file() == ""
+
+
+# -- Stateless overlay / draw helpers (shared with batch export) -----------
+
+
+def _agg_axes():
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots()
+    return plt, fig, ax
+
+
+def test_draw_components_overlay_two_with_colormap_line():
+    from napari_phasors.components_tab import draw_components_overlay
+
+    plt, fig, ax = _agg_axes()
+    # Linear projection with a colormap gradient line (<=32 interpolated stops).
+    draw_components_overlay(
+        ax,
+        [0.2, 0.8],
+        [0.3, 0.4],
+        names=["A", "B"],
+        analysis_type="Linear Projection",
+        settings={
+            "show_colormap_line": True,
+            "fractions_colormap": ["#000000", "#ffffff"],
+            "line_offset": 0.05,
+        },
+    )
+    # A >32 list takes the ListedColormap branch instead.
+    draw_components_overlay(
+        ax,
+        [0.2, 0.8],
+        [0.3, 0.4],
+        settings={
+            "show_colormap_line": True,
+            "fractions_colormap": [f"C{i % 10}" for i in range(40)],
+        },
+    )
+    assert ax.collections
+    plt.close(fig)
+
+
+def test_draw_components_overlay_plain_line_and_polygon():
+    from napari_phasors.components_tab import draw_components_overlay
+
+    plt, fig, ax = _agg_axes()
+    # Two components, no colormap -> a plain connecting line.
+    draw_components_overlay(ax, [0.1, 0.9], [0.2, 0.5])
+    # Three components -> a closed polygon patch, with hidden dots/labels.
+    draw_components_overlay(
+        ax,
+        [0.1, 0.9, 0.5],
+        [0.2, 0.5, 0.8],
+        settings={"show_dots": False, "show_labels": False},
+    )
+    assert ax.patches
+    plt.close(fig)
+
+
+def test_draw_selection_overlay_cursor_types_and_cluster():
+    from napari_phasors.selection_tab import draw_selection_overlay
+
+    plt, fig, ax = _agg_axes()
+    # Cluster mode draws no static cursors (early return).
+    assert draw_selection_overlay(ax, [], mode="cluster") is None
+    cursors = [
+        {
+            "type": "circular",
+            "g": 0.3,
+            "s": 0.3,
+            "radius": 0.1,
+            "color": "#ff0000",
+        },
+        {
+            "type": "elliptic",
+            "g": 0.5,
+            "s": 0.4,
+            "radius": 0.1,
+            "radius_minor": 0.05,
+            "angle": 30,
+            "color": (1.0, 0.0, 0.0, 1.0),
+        },
+        {
+            "type": "polar",
+            "phase_min": 10,
+            "phase_max": 40,
+            "modulation_min": 0.6,
+            "modulation_max": 0.6,
+            "color": "green",
+        },
+    ]
+    draw_selection_overlay(ax, cursors, mode="cursor")
+    assert len(ax.patches) == 3
+    plt.close(fig)
+
+
+def test_draw_fret_trajectory_overlay_modes():
+    import numpy as np
+
+    from napari_phasors.fret_tab import draw_fret_trajectory_overlay
+
+    plt, fig, ax = _agg_axes()
+    real = np.linspace(0.9, 0.1, 200)
+    imag = np.linspace(0.1, 0.4, 200)
+    eff = np.linspace(0, 1, 200)
+    # Colormap mode, interpolated list (<=32).
+    draw_fret_trajectory_overlay(
+        ax, real, imag, eff, settings={"fret_colormap": ["#000000", "#ffffff"]}
+    )
+    # Colormap mode, large list -> ListedColormap.
+    draw_fret_trajectory_overlay(
+        ax,
+        real,
+        imag,
+        eff,
+        settings={"fret_colormap": [f"C{i % 10}" for i in range(40)]},
+    )
+    # Colormap mode, non-list colormap -> default turbo.
+    draw_fret_trajectory_overlay(
+        ax, real, imag, eff, settings={"fret_colormap": "turbo"}
+    )
+    # Plain (no colormap) mode draws a single gray line.
+    draw_fret_trajectory_overlay(
+        ax, real, imag, eff, settings={"use_colormap": False}
+    )
+    assert ax.collections or ax.lines
+    assert len(ax.patches) >= 2  # donor + background dots each call
+    plt.close(fig)
+
+
+def test_draw_phasor_mesh_full_quadrant_and_modulation():
+    from napari_phasors.phasor_mapping_tab import draw_phasor_mesh
+
+    plt, fig, ax = _agg_axes()
+    # Non-semicircle geometry (full quadrant) with the Modulation field and a
+    # supplied modulation range -> exercises the wrap + range branches.
+    image = draw_phasor_mesh(
+        ax,
+        "Modulation",
+        semicircle=False,
+        modulation_range=(0.2, 0.9),
+        colormap="viridis",
+    )
+    assert image is not None
+    # Unknown colormap name falls back to viridis; no range -> auto vmin/vmax.
+    image2 = draw_phasor_mesh(
+        ax, "Modulation", semicircle=True, colormap="not_a_real_cmap_xyz"
+    )
+    assert image2 is not None
+    plt.close(fig)
+
+
+def test_normalize_rgb_and_solid_contour_cmap():
+
+    from napari_phasors._utils import make_solid_contour_cmap, normalize_rgb
+
+    assert normalize_rgb(None) is None
+    # Matplotlib color string.
+    assert normalize_rgb("red") == pytest.approx((1.0, 0.0, 0.0))
+    # 0-255 array is scaled into 0-1.
+    assert normalize_rgb([255, 0, 0]) == pytest.approx((1.0, 0.0, 0.0))
+    # Already-normalized array is passed through.
+    assert normalize_rgb([0.5, 0.25, 0.0]) == pytest.approx((0.5, 0.25, 0.0))
+    cmap = make_solid_contour_cmap("solid", "#ff0000")
+    # Low end is blended toward white, high end is the target color.
+    assert cmap(1.0)[:3] == pytest.approx((1.0, 0.0, 0.0))
+    assert cmap(0.0)[0] > cmap(0.0)[1]  # still reddish at the low end
+
+
+def test_null_progress_supports_progress_api():
+    from napari_phasors._utils import _NullProgress
+
+    with _NullProgress() as prog:
+        prog.update(1)
+        prog.set_description("x")
+        prog.increment()
+        assert list(prog) == []
+        prog.close()
