@@ -4348,11 +4348,9 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 float(fret["donor_lifetime"])
             )
         if "donor_background" in fret:
-            self.fret_donor_bg_spin.setValue(float(fret["donor_background"]))
+            self.fret_background_spin.setValue(float(fret["donor_background"]))
         if "donor_fretting" in fret:
-            self.fret_donor_fretting_spin.setValue(
-                float(fret["donor_fretting"])
-            )
+            self.fret_fretting_spin.setValue(float(fret["donor_fretting"]))
         if "background_real" in fret:
             self.fret_bg_real_spin.setValue(float(fret["background_real"]))
         if "background_imag" in fret:

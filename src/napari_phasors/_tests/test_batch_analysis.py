@@ -3070,3 +3070,235 @@ def test_null_progress_supports_progress_api():
         prog.increment()
         assert list(prog) == []
         prog.close()
+
+
+# -- Copy-settings -> UI population (all analysis tabs) --------------------
+
+
+def test_apply_settings_to_ui_populates_all_tabs(qtbot, make_viewer_model):
+    """A full settings dict drives calibration, filter, components, mapping,
+    FRET and selection tabs in one pass."""
+
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+
+    settings = {
+        "frequency": [80.0],
+        "calibrated": True,
+        "calibration_phase": 0.1,
+        "calibration_modulation": 0.9,
+        # Wavelet branch + upper threshold (median is covered elsewhere).
+        "filter": {"method": "wavelet", "sigma": 2.5, "levels": 3},
+        "threshold_method": "otsu",
+        "threshold": 0.5,
+        "threshold_upper": 9.0,
+        "component_analysis": {
+            "components": {
+                "0": {
+                    "name": "C1",
+                    "gs_harmonics": {
+                        "1": {"g": 0.2, "s": 0.3},
+                        "2": {"g": 0.15, "s": 0.25},
+                    },
+                },
+                "1": {
+                    "name": "C2",
+                    "gs_harmonics": {
+                        "1": {"g": 0.7, "s": 0.4},
+                        "2": {"g": 0.6, "s": 0.35},
+                    },
+                },
+            }
+        },
+        "lifetime": {"lifetime_type": "Apparent Phase Lifetime"},
+        "fret_analysis": {
+            "donor_lifetime": 3.5,
+            "donor_background": 0.1,
+            "donor_fretting": 0.8,
+            "background_real": 0.05,
+            "background_imag": 0.02,
+        },
+        "selections": {
+            "circular_cursors": [
+                {"g": 0.3, "s": 0.3, "radius": 0.1, "color": [255, 0, 0, 255]}
+            ],
+            "elliptical_cursors": [
+                {
+                    "g": 0.5,
+                    "s": 0.4,
+                    "radius": 0.1,
+                    "radius_minor": 0.05,
+                    "angle": 30.0,
+                    "color": "#00ff00",
+                }
+            ],
+            "polar_cursors": [
+                {
+                    "phase_min": 10.0,
+                    "phase_max": 40.0,
+                    "modulation_min": 0.5,
+                    "modulation_max": 0.8,
+                }
+            ],
+        },
+        "semi_circle": True,
+        "log_scale": True,
+        "bins": 128,
+        "batch_group_config": {
+            "mode": "Grouped",
+            "assignments": {"a.ome.tif": 1},
+            "group_names": {"1": "G1"},
+            "group_colors": {"1": "#123456"},
+        },
+    }
+    widget._apply_settings_to_ui(settings)
+
+    assert widget.calibration_group.isChecked()
+    assert widget._copied_calibration is not None
+    assert widget.filter_group.isChecked()
+    assert widget.filter_method_combo.currentText() == "Wavelet"
+    assert widget.wavelet_sigma_spin.value() == 2.5
+    assert widget.wavelet_levels_spin.value() == 3
+    assert widget.threshold_max_spin.value() == 9.0
+    assert widget.components_group.isChecked()
+    assert len(widget._component_rows) == 2
+    assert widget.fret_group.isChecked()
+    assert widget.fret_donor_lifetime_spin.value() == 3.5
+    assert widget.fret_background_spin.value() == 0.1
+    assert widget.fret_fretting_spin.value() == 0.8
+    assert widget.mapping_group.isChecked()
+    assert widget.selection_group.isChecked()
+    assert len(widget._cursor_rows) == 3
+    assert widget._group_config["mode"] == "Grouped"
+    assert widget._group_config["group_names"] == {1: "G1"}
+    assert widget.calib_frequency_spin.text() == "80.0"
+
+
+def test_apply_settings_to_ui_ignores_empty_and_bad_frequency(
+    qtbot, make_viewer_model
+):
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+    # Empty settings is a no-op.
+    widget._apply_settings_to_ui({})
+    widget._apply_settings_to_ui(None)
+    # A non-numeric frequency is swallowed, and a single component is ignored.
+    widget._apply_settings_to_ui(
+        {
+            "frequency": "not-a-number",
+            "component_analysis": {
+                "components": {
+                    "0": {"gs_harmonics": {"1": {"g": 0.1, "s": 0.2}}}
+                }
+            },
+        }
+    )
+    assert not widget.components_group.isChecked()
+
+
+def test_component_style_dialogs_apply_on_accept(
+    qtbot, make_viewer_model, monkeypatch
+):
+    from qtpy.QtWidgets import QDialog
+
+    import napari_phasors._batch_analysis as ba
+
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+
+    monkeypatch.setattr(ba.QDialog, "exec", lambda self: QDialog.Accepted)
+    widget._open_component_line_style_dialog()
+    widget._open_component_label_style_dialog()
+    # Accepting writes the (default) values back into the style dicts.
+    assert "line_width" in widget._component_line_style
+    assert "fontsize" in widget._component_label_style
+
+    # A rejected dialog leaves the styles untouched.
+    before = dict(widget._component_line_style)
+    monkeypatch.setattr(ba.QDialog, "exec", lambda self: QDialog.Rejected)
+    widget._open_component_line_style_dialog()
+    assert widget._component_line_style == before
+
+
+def test_remove_component_and_cursor_rows(qtbot, make_viewer_model):
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+
+    # Components start with two rows; a third can be added then removed.
+    widget._add_component_row("Extra", 0.4, 0.4)
+    assert len(widget._component_rows) == 3
+    widget._remove_component_row(widget._component_rows[-1])
+    assert len(widget._component_rows) == 2
+    # The minimum of two rows cannot be removed.
+    widget._remove_component_row(widget._component_rows[-1])
+    assert len(widget._component_rows) == 2
+
+    # Cursor rows can be added and removed freely.
+    widget._add_cursor_row()
+    widget._add_cursor_row()
+    n = len(widget._cursor_rows)
+    widget._remove_cursor_row(widget._cursor_rows[-1])
+    assert len(widget._cursor_rows) == n - 1
+
+
+def test_has_extra_outputs_branches(qtbot, make_viewer_model):
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+
+    def _reset():
+        widget.plot_individual_checkbox.setChecked(False)
+        widget.plot_combined_checkbox.setChecked(False)
+        for g in (
+            widget.components_group,
+            widget.mapping_group,
+            widget.fret_group,
+            widget.selection_group,
+        ):
+            g.setChecked(False)
+
+    _reset()
+    assert widget._has_extra_outputs() is False
+
+    # A combined phasor plot counts as an extra output.
+    widget.plot_combined_checkbox.setChecked(True)
+    assert widget._has_extra_outputs() is True
+
+    # A per-tab plot toggle counts when its group is enabled.
+    _reset()
+    widget.components_group.setChecked(True)
+    widget.components_plot_toggle.setChecked(True)
+    assert widget._has_extra_outputs() is True
+
+    # Selection statistics count even without a plot.
+    _reset()
+    widget.selection_group.setChecked(True)
+    widget.selection_plot_toggle.setChecked(False)
+    widget.selection_stats_checkbox.setChecked(True)
+    assert widget._has_extra_outputs() is True
+
+    # A per-tab stats export counts.
+    _reset()
+    widget.mapping_group.setChecked(True)
+    widget.mapping_plot_toggle.setChecked(False)
+    widget.mapping_export_controls["stats"].setChecked(True)
+    assert widget._has_extra_outputs() is True
+
+
+def test_collect_filter_kwargs_wavelet_and_manual(qtbot, make_viewer_model):
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+
+    widget.filter_method_combo.setCurrentText("Wavelet")
+    widget.wavelet_sigma_spin.setValue(1.5)
+    widget.wavelet_levels_spin.setValue(4)
+    widget.threshold_method_combo.setCurrentText("Manual")
+    widget.threshold_min_spin.setValue(0.5)
+    widget.threshold_max_spin.setValue(5.0)
+
+    kwargs = widget._collect_filter_kwargs()
+    assert kwargs["filter_method"] == "wavelet"
+    assert kwargs["sigma"] == 1.5
+    assert kwargs["levels"] == 4
+    assert kwargs["threshold_method"] == "manual"
+    assert kwargs["threshold"] == 0.5
+    assert kwargs["threshold_upper"] == 5.0
