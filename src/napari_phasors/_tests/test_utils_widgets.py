@@ -1655,3 +1655,71 @@ def test_primary_layer_delegate_paint(qtbot):
         delegate.paint(painter, opt, idx)
     finally:
         painter.end()
+
+
+def test_popout_window_mixin(qtbot):
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QDockWidget, QMainWindow, QWidget
+
+    from napari_phasors._utils import PopoutWindowMixin
+
+    class MyPopoutWidget(PopoutWindowMixin, QWidget):
+        _popout_title = "Test Popout"
+
+    main_window = QMainWindow()
+    qtbot.addWidget(main_window)
+
+    dock = QDockWidget("Dock", main_window)
+    main_window.addDockWidget(Qt.RightDockWidgetArea, dock)
+
+    widget = MyPopoutWidget()
+    dock.setWidget(widget)
+
+    # Call showEvent
+    class MockEvent:
+        pass
+
+    widget.showEvent(MockEvent())
+
+    assert widget._floated is True
+
+    # wait for singleShot
+    qtbot.wait(50)
+
+    # After popout, it should detach from the dock parent
+    assert dock.widget() is None
+
+    # fallback sets it to Qt.Window
+    assert int(widget.windowFlags() & Qt.Window) == int(Qt.Window)
+    assert widget.windowTitle() == "Test Popout"
+
+
+def test_popout_window_mixin_with_napari_viewer(qtbot):
+    from qtpy.QtWidgets import QMainWindow, QWidget
+
+    from napari_phasors._utils import PopoutWindowMixin
+
+    class MyPopoutWidget(PopoutWindowMixin, QWidget):
+        pass
+
+    widget = MyPopoutWidget()
+
+    class MockWindow:
+        def __init__(self):
+            self._qt_window = QMainWindow()
+            self.removed_widget = None
+
+        def remove_dock_widget(self, w):
+            self.removed_widget = w
+            # normally this removes parent, but here we just mock it
+
+    class MockViewer:
+        def __init__(self):
+            self.window = MockWindow()
+
+    widget.viewer = MockViewer()
+
+    widget._popout_to_window()
+
+    assert widget.viewer.window.removed_widget is widget
+    assert widget.parent() is widget.viewer.window._qt_window
