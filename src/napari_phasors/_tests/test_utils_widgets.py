@@ -1675,11 +1675,9 @@ def test_popout_window_mixin(qtbot):
     widget = MyPopoutWidget()
     dock.setWidget(widget)
 
-    # Call showEvent
-    class MockEvent:
-        pass
+    from qtpy.QtGui import QShowEvent
 
-    widget.showEvent(MockEvent())
+    widget.showEvent(QShowEvent())
 
     assert widget._floated is True
 
