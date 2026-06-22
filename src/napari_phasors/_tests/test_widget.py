@@ -923,8 +923,11 @@ def test_signal_plot_error_handling(make_viewer_model, qtbot):
     widget = FbdWidget(viewer, path=test_file_path)
 
     # Mock _get_signal_data to raise an exception
-    with patch.object(
-        widget, '_get_signal_data', side_effect=Exception("Test error")
+    with (
+        patch.object(
+            widget, '_get_signal_data', side_effect=Exception("Test error")
+        ),
+        patch("napari_phasors._widget.show_error"),
     ):
         # Should not raise; the plot must end up with no data lines.
         widget._update_signal_plot()
