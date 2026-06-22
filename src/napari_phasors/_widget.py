@@ -27,7 +27,6 @@ from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
     QCompleter,
-    QDockWidget,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -50,6 +49,7 @@ from ._utils import (
     CheckableComboBox,
     CollapsibleSection,
     FileOrderDialog,
+    PopoutWindowMixin,
     natural_sort_key,
 )
 from ._writer import export_layer_as_csv, export_layer_as_image, write_ome_tiff
@@ -71,13 +71,20 @@ if TYPE_CHECKING:
     import napari
 
 
-class PhasorTransform(QWidget):
+class PhasorTransform(PopoutWindowMixin, QWidget):
     """Widget to transform FLIM and hyperspectral images into phasor space."""
+
+    # Shown as a standalone (non-dockable) window; see ``PopoutWindowMixin``.
+    # The reader-options content lives in a scroll area, so use a fixed height.
+    _popout_title = "Phasor Custom Import"
+    _popout_max_width = 480
+    _popout_height = 700
 
     def __init__(self, viewer: "napari.viewer.Viewer"):
         """Initialize the widget."""
         super().__init__()
         self.viewer = viewer
+        self._floated = False
 
         self.setMinimumWidth(400)
 
@@ -2451,8 +2458,13 @@ class IfliWidget(ProcessedOnlyWidget):
         super()._on_click(path, reader_options, harmonics)
 
 
-class WriterWidget(QWidget):
+class WriterWidget(PopoutWindowMixin, QWidget):
     """Widget to export phasor data to a OME-TIF or CSV file."""
+
+    # Shown as a standalone (non-dockable) window; see ``PopoutWindowMixin``.
+    # Compact content with no scroll area, so use its natural height.
+    _popout_title = "Export Phasor"
+    _popout_max_width = 520
 
     def __init__(self, viewer: "napari.viewer.Viewer"):
         """Initialize the widget."""
@@ -2557,25 +2569,7 @@ class WriterWidget(QWidget):
 
         self._populate_combobox()
 
-    def showEvent(self, event):
-        """Float the dock widget on first show and center it on screen."""
-        super().showEvent(event)
-        if not self._floated:
-            self._floated = True
-            parent = self.parent()
-            while parent is not None:
-                if isinstance(parent, QDockWidget):
-                    parent.setFloating(True)
-                    from qtpy.QtWidgets import QApplication
-
-                    screen = QApplication.primaryScreen().geometry()
-                    dw_size = parent.sizeHint()
-                    parent.move(
-                        screen.center().x() - dw_size.width() // 2,
-                        screen.center().y() - dw_size.height() // 2,
-                    )
-                    break
-                parent = parent.parent()
+    # Standalone-window behaviour is provided by ``PopoutWindowMixin``.
 
     def _open_file_dialog(self):
         """Open a native file dialog to select export location."""

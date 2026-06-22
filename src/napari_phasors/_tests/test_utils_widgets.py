@@ -139,6 +139,40 @@ def test_histogram_widget_update_multi_data_autosd(qtbot):
     assert widget._show_sd is True
 
 
+def test_histogram_widget_grouped_sd_band(qtbot):
+    """Grouped mode draws a shaded SD band per multi-file group when enabled."""
+    from matplotlib.collections import PolyCollection
+
+    widget = HistogramWidget(bins=10)
+    qtbot.addWidget(widget)
+
+    rng = np.random.default_rng(0)
+    # Two files per group so an across-file standard deviation exists.
+    datasets = {
+        "G1::a": rng.normal(0.3, 0.05, 500),
+        "G1::b": rng.normal(0.32, 0.05, 500),
+        "G2::a": rng.normal(0.7, 0.05, 500),
+        "G2::b": rng.normal(0.68, 0.05, 500),
+    }
+    widget._group_assignments = {
+        "G1::a": 1,
+        "G1::b": 1,
+        "G2::a": 2,
+        "G2::b": 2,
+    }
+    widget._group_names = {1: "Group 1", 2: "Group 2"}
+    widget.display_mode = "Grouped"
+    widget.update_multi_data(datasets)
+
+    widget.show_sd = True
+    bands = [c for c in widget.ax.collections if isinstance(c, PolyCollection)]
+    assert len(bands) >= 2  # one SD band per group
+
+    widget.show_sd = False
+    bands = [c for c in widget.ax.collections if isinstance(c, PolyCollection)]
+    assert bands == []  # no bands when SD shading is off
+
+
 def test_statistics_table_widget_populates_rows(qtbot):
     """StatisticsTableWidget should populate rows for each dataset."""
     table = StatisticsTableWidget()
@@ -1621,3 +1655,69 @@ def test_primary_layer_delegate_paint(qtbot):
         delegate.paint(painter, opt, idx)
     finally:
         painter.end()
+
+
+def test_popout_window_mixin(qtbot):
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QDockWidget, QMainWindow, QWidget
+
+    from napari_phasors._utils import PopoutWindowMixin
+
+    class MyPopoutWidget(PopoutWindowMixin, QWidget):
+        _popout_title = "Test Popout"
+
+    main_window = QMainWindow()
+    qtbot.addWidget(main_window)
+
+    dock = QDockWidget("Dock", main_window)
+    main_window.addDockWidget(Qt.RightDockWidgetArea, dock)
+
+    widget = MyPopoutWidget()
+    dock.setWidget(widget)
+
+    from qtpy.QtGui import QShowEvent
+
+    widget.showEvent(QShowEvent())
+
+    assert widget._floated is True
+
+    # wait for singleShot
+    qtbot.wait(50)
+
+    # After popout, it should detach from the dock parent
+    assert widget.parent() is None
+
+    # fallback sets it to Qt.Window
+    assert int(widget.windowFlags() & Qt.Window) == int(Qt.Window)
+    assert widget.windowTitle() == "Test Popout"
+
+
+def test_popout_window_mixin_with_napari_viewer(qtbot):
+    from qtpy.QtWidgets import QMainWindow, QWidget
+
+    from napari_phasors._utils import PopoutWindowMixin
+
+    class MyPopoutWidget(PopoutWindowMixin, QWidget):
+        pass
+
+    widget = MyPopoutWidget()
+
+    class MockWindow:
+        def __init__(self):
+            self._qt_window = QMainWindow()
+            self.removed_widget = None
+
+        def remove_dock_widget(self, w):
+            self.removed_widget = w
+            # normally this removes parent, but here we just mock it
+
+    class MockViewer:
+        def __init__(self):
+            self.window = MockWindow()
+
+    widget.viewer = MockViewer()
+
+    widget._popout_to_window()
+
+    assert widget.viewer.window.removed_widget is widget
+    assert widget.parent() is widget.viewer.window._qt_window

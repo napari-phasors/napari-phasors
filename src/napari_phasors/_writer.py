@@ -407,6 +407,7 @@ def export_layer_as_image(
     image_layer: Any,
     include_colorbar: bool = True,
     current_step: Sequence[int] | None = None,
+    dpi: int = 300,
 ) -> list[str]:
     """Export an image or labels layer as an image file using its colormap and contrast limits.
 
@@ -429,6 +430,9 @@ def export_layer_as_image(
         dimensions, typically taken from ``viewer.dims.current_step``. If not
         provided and the data is multi-dimensional, the first index (0) is used
         for each non-spatial dimension.
+    dpi : int, optional
+        Resolution (dots per inch) used when rendering the figure. Default is
+        ``300``.
     """
 
     if isinstance(image_layer, list) and not hasattr(image_layer, 'data'):
@@ -591,8 +595,6 @@ def export_layer_as_image(
             cbar.ax.tick_params(colors="white")
 
         plt.tight_layout(pad=0)
-
-        dpi = 300
 
         # For JPEG, set facecolor to white since it doesn't support transparency
         if current_path.endswith((".jpg", ".jpeg")):

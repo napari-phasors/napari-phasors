@@ -4777,3 +4777,70 @@ class EllipticalCursorWidget(QWidget):
                 self.parent_widget.canvas_widget.show_color_overlay_signal.disconnect()
 
         event.accept()
+
+
+def draw_selection_overlay(ax, cursors, mode="cursor", settings=None):
+    """Stateless function to draw selection cursors on a matplotlib axes."""
+    from matplotlib.patches import CirclePolygon, Ellipse, Wedge
+
+    if mode == "cluster":
+        # Cluster regions are data-dependent, so no static cursors to overlay
+        return
+
+    for cursor in cursors:
+        cursor_type = cursor.get("type", "circular")
+
+        # Color parsing
+        color_val = cursor.get("color", "#ff0000")
+        if hasattr(color_val, "redF"):  # QColor
+            color = (
+                color_val.redF(),
+                color_val.greenF(),
+                color_val.blueF(),
+                1.0,
+            )
+        elif isinstance(color_val, str) and color_val.startswith("#"):
+            color = color_val
+        else:
+            color = color_val
+
+        if cursor_type == "circular":
+            patch = CirclePolygon(
+                (cursor["g"], cursor["s"]),
+                radius=cursor["radius"],
+                resolution=64,
+                edgecolor=color,
+                facecolor="none",
+                linewidth=2,
+                zorder=10,
+            )
+            ax.add_patch(patch)
+        elif cursor_type == "elliptic":
+            patch = Ellipse(
+                (cursor["g"], cursor["s"]),
+                width=cursor["radius"] * 2,
+                height=cursor["radius_minor"] * 2,
+                angle=cursor.get("angle", 0),
+                edgecolor=color,
+                facecolor="none",
+                linewidth=2,
+                zorder=10,
+            )
+            ax.add_patch(patch)
+        elif cursor_type == "polar":
+            r = cursor['modulation_max']
+            width = cursor['modulation_max'] - cursor['modulation_min']
+            if width <= 0:
+                width = 0.001
+            patch = Wedge(
+                (0, 0),
+                r,
+                cursor['phase_min'],
+                cursor['phase_max'],
+                width=width,
+                fill=False,
+                edgecolor=color,
+                linewidth=2,
+                zorder=10,
+            )
+            ax.add_patch(patch)

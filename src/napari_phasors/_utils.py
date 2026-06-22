@@ -23,7 +23,7 @@ from phasorpy.filter import (
     phasor_filter_pawflim,
     phasor_threshold,
 )
-from qtpy.QtCore import QEvent, QRect, QSize, Qt, Signal
+from qtpy.QtCore import QEvent, QRect, QSize, Qt, QThread, QTimer, Signal
 from qtpy.QtGui import (
     QColor,
     QDoubleValidator,
@@ -100,6 +100,164 @@ def resolve_colormap_by_name(cmap_name):
         return plt.get_cmap(cmap_name)
     except (ValueError, TypeError):
         return None
+
+
+# Phasor-mapping output quantities that are lifetimes and therefore require a
+# laser frequency to compute. Shared by the Phasor Mapping tab and the batch
+# analysis pipeline so the two never disagree on which outputs need a frequency.
+LIFETIME_OUTPUT_TYPES = frozenset(
+    {
+        "Apparent Phase Lifetime",
+        "Apparent Modulation Lifetime",
+        "Normal Lifetime",
+    }
+)
+
+
+def required_component_harmonics(num_components):
+    """Return the minimum number of harmonics an N-component analysis needs.
+
+    A single harmonic provides two independent coordinates (G and S), which —
+    together with the unit-sum constraint — supports up to 3 components. Each
+    additional harmonic adds two more coordinates, so ``n`` components need
+    ``ceil((n - 1) / 2)`` harmonics (at least 2 once more than 3 components are
+    used). Shared by the interactive Components tab and the batch analysis
+    pipeline so both agree on the requirement.
+    """
+    if num_components <= 3:
+        return 1
+    return max(2, int(np.ceil((num_components - 1) / 2)))
+
+
+def normalize_rgb(color):
+    """Return an RGB tuple in the 0–1 range from a color spec, or ``None``.
+
+    Accepts ``None`` (returns ``None``), a Matplotlib color string, or an
+    array-like of 3+ channels (scaled down from 0–255 when any value exceeds
+    1). Shared by the Plotter and the batch analysis contour rendering.
+    """
+    if color is None:
+        return None
+    if isinstance(color, str):
+        from matplotlib.colors import to_rgb
+
+        return to_rgb(color)
+    arr = np.asarray(color, dtype=float)
+    if arr.max(initial=0) > 1.0:
+        arr = arr / 255.0
+    return tuple(arr[:3])
+
+
+def make_solid_contour_cmap(name, target_color):
+    """Build a solid-color contour colormap ramp.
+
+    Blends the target color with white at the low end (50%) so low-density
+    contours stay visible instead of washing out to gray, while preserving the
+    hue. Shared by the Plotter and the batch analysis contour rendering.
+    """
+    target = np.asarray(normalize_rgb(target_color), dtype=float)
+    low_color = np.clip(target + (1.0 - target) * 0.5, 0.0, 1.0)
+    return LinearSegmentedColormap.from_list(
+        name, [tuple(low_color), tuple(target)]
+    )
+
+
+class PopoutWindowMixin:
+    """Mixin that turns a napari dock-widget contribution into a standalone window.
+
+    napari always wraps a widget contribution in a ``QDockWidget``. Recent napari
+    versions re-dock such widgets when dragged and can leave them stuck
+    un-undockable. To behave like a separate, non-dockable window instead, a
+    widget can inherit this mixin (before ``QWidget``) and expose a ``self.viewer``
+    attribute. On first show the widget detaches from the dock and is re-shown as
+    an independent top-level window owned by napari's main window (kept alive and
+    closed together with napari).
+
+    Subclasses may override the class attributes:
+
+    ``_popout_title``
+        Window title (defaults to the existing title).
+    ``_popout_max_width``
+        Upper bound on the window width, so wide content (e.g. many tabs) never
+        overflows small displays.
+    ``_popout_height``
+        Fixed window height. Leave ``None`` to use the widget's natural height
+        (appropriate for compact, non-scrolling widgets); set a value for tall,
+        scroll-area-based widgets whose natural height hint is unreliable.
+    """
+
+    _popout_title = None
+    _popout_max_width = 540
+    _popout_height = None
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not getattr(self, "_floated", False):
+            self._floated = True
+            # Defer so napari finishes wiring up the dock before we remove it.
+            QTimer.singleShot(0, self._popout_to_window)
+
+    def _popout_to_window(self):
+        """Detach from the napari dock and become a separate top-level window."""
+        from qtpy.QtWidgets import QApplication
+
+        viewer = getattr(self, "viewer", None)
+        window = getattr(viewer, "window", None)
+        main_window = getattr(window, "_qt_window", None)
+
+        # Remove the QDockWidget wrapper napari created. ``remove_dock_widget``
+        # also reparents this widget out of the dock (``setParent(None)``).
+        if window is not None:
+            try:
+                window.remove_dock_widget(self)
+            except (LookupError, AttributeError, RuntimeError):
+                self._detach_from_dock_parent()
+        else:
+            self._detach_from_dock_parent()
+
+        # Reparent onto napari's main window with the ``Window`` flag: an
+        # independent top-level window (never dockable) kept alive by, and closed
+        # together with, napari. Fall back to a parentless window if needed.
+        if main_window is not None:
+            self.setParent(main_window, Qt.Window)
+        else:
+            self.setParent(None)
+            self.setWindowFlags(Qt.Window)
+        if self._popout_title:
+            self.setWindowTitle(self._popout_title)
+
+        # Size to fit the content but stay comfortably inside the screen so it
+        # never spills off smaller displays.
+        screen = QApplication.primaryScreen().availableGeometry()
+        max_width = min(self._popout_max_width, screen.width() - 80)
+        width = max(360, min(self.sizeHint().width(), max_width))
+        if self._popout_height:
+            height = min(self._popout_height, screen.height() - 120)
+        else:
+            height = min(self.sizeHint().height(), screen.height() - 120)
+        height = max(300, height)
+        self.resize(width, height)
+        self.move(
+            screen.center().x() - width // 2,
+            screen.center().y() - height // 2,
+        )
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _detach_from_dock_parent(self):
+        """Fallback: unparent this widget from its enclosing ``QDockWidget``."""
+        from qtpy.QtWidgets import QDockWidget
+
+        parent = self.parent()
+        while parent is not None:
+            if isinstance(parent, QDockWidget):
+                parent.setWidget(None)
+                self.setParent(None)
+                parent.setParent(None)
+                parent.deleteLater()
+                break
+            parent = parent.parent()
 
 
 def create_napari_colormap_from_qcolor(color: QColor, name: str = "custom"):
@@ -287,12 +445,47 @@ def show_activity_progress(desc="Processing...", total=0, **kwargs):
     progress
         A napari progress bar instance.
     """
+    app = QApplication.instance()
+    # napari's progress bar is a Qt object with a timer; creating it off the
+    # GUI thread (e.g. from a batch worker thread) is unsafe and emits
+    # "Cannot set parent / Timers cannot be started from another thread"
+    # warnings. Return a no-op progress in that case.
+    if app is not None and QThread.currentThread() != app.thread():
+        return _NullProgress()
     pbr = _napari_progress(desc=desc, total=total, **kwargs)
     # Force the UI to process the new progress bar
-    app = QApplication.instance()
     if app:
         app.processEvents()
     return pbr
+
+
+class _NullProgress:
+    """No-op stand-in for ``napari.utils.progress`` (used off the GUI thread).
+
+    Implements the subset of the progress API used by the readers so callers
+    work unchanged when no progress bar can be shown.
+    """
+
+    def update(self, *args, **kwargs):
+        pass
+
+    def set_description(self, *args, **kwargs):
+        pass
+
+    def increment(self, *args, **kwargs):
+        pass
+
+    def close(self):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def __iter__(self):
+        return iter(())
 
 
 def threshold_otsu(data, nbins=256):
@@ -1186,6 +1379,7 @@ class CheckableComboBox(QComboBox):
         unit="layers",
         show_select_all_none=False,
         no_selection_text=None,
+        show_checked_list=False,
     ):
         super().__init__(parent)
         self.setModel(QStandardItemModel(self))
@@ -1195,6 +1389,10 @@ class CheckableComboBox(QComboBox):
         self._unit = unit
         self._show_select_all_none = show_select_all_none
         self._no_selection_text = no_selection_text
+        # When True the line edit lists the checked items verbatim (e.g.
+        # "PNG, CSV") instead of the primary/count/"all" summary. Suited to
+        # small fixed option sets where every state should read literally.
+        self._show_checked_list = show_checked_list
         self._header_count = 0  # number of non-checkable header rows at top
         self.lineEdit().setPlaceholderText(self._placeholder_text)
 
@@ -1519,6 +1717,16 @@ class CheckableComboBox(QComboBox):
             line_edit.removeAction(self._star_action)
             self._star_action = None
 
+        if self._show_checked_list:
+            if checked:
+                line_edit.setText(", ".join(checked))
+            elif self._no_selection_text is not None:
+                line_edit.setText(self._no_selection_text)
+            else:
+                line_edit.setText("")
+                line_edit.setPlaceholderText(self._placeholder_text)
+            return
+
         all_count = self.model().rowCount() - self._header_count
         if not checked:
             if self._no_selection_text is not None:
@@ -1623,6 +1831,7 @@ class HistogramSettingsDialog(QDialog):
         show_sd: bool = False,
         central_tendency: str = "None",
         show_legend: bool = False,
+        aspect_ratio: str = "auto",
         layer_labels: list = None,
         group_assignments: dict = None,
         layer_colors: dict = None,
@@ -1675,6 +1884,18 @@ class HistogramSettingsDialog(QDialog):
         self.smooth_checkbox = QCheckBox("Smooth curves")
         self.smooth_checkbox.setChecked(True)
         layout.addWidget(self.smooth_checkbox)
+
+        # --- Aspect ratio ---
+        aspect_layout = QHBoxLayout()
+        aspect_layout.addWidget(QLabel("Export aspect ratio:"))
+        self.aspect_ratio_combo = QComboBox()
+        self.aspect_ratio_combo.addItem("Auto (Rectangle)", "auto")
+        self.aspect_ratio_combo.addItem("Equal (Square)", "equal")
+        self.aspect_ratio_combo.setCurrentText(
+            "Auto (Rectangle)" if aspect_ratio == "auto" else "Equal (Square)"
+        )
+        aspect_layout.addWidget(self.aspect_ratio_combo)
+        layout.addLayout(aspect_layout)
 
         # --- Layer colours (Individual layers mode) ---
         default_tab10 = plt.cm.tab10.colors
@@ -2053,6 +2274,7 @@ class HistogramWidget(QWidget):
         self._group_colors = {}  # {group_id: (r,g,b)}
         self._white_background = False
         self._smooth_curves = True
+        self._aspect_ratio = "auto"
 
         # Range slider state
         self._range_slider_enabled = range_slider_enabled
@@ -2296,6 +2518,10 @@ class HistogramWidget(QWidget):
             file_path += '.png'
 
         self._style_axes(export_mode=True)
+        if self._aspect_ratio == "equal":
+            self.ax.set_aspect(1, adjustable='box')
+        else:
+            self.ax.set_aspect("auto")
         self.fig.canvas.draw_idle()
 
         use_transparent = not self._white_background
@@ -2443,6 +2669,7 @@ class HistogramWidget(QWidget):
             layer_colors=self._layer_colors,
             group_colors=group_colors,
             group_names=group_names,
+            aspect_ratio=self._aspect_ratio,
             parent=self,
         )
         dlg.white_bg_checkbox.setChecked(self._white_background)
@@ -2455,6 +2682,7 @@ class HistogramWidget(QWidget):
             self._show_legend = dlg.legend_checkbox.isChecked()
             self._white_background = dlg.white_bg_checkbox.isChecked()
             self._smooth_curves = dlg.smooth_checkbox.isChecked()
+            self._aspect_ratio = dlg.aspect_ratio_combo.currentData()
             if dlg._group_row_data:
                 self._group_assignments = dlg.get_group_assignments()
                 self._group_colors = dlg.get_group_colors()
@@ -3747,3 +3975,162 @@ class FileOrderDialog(QDialog):
         except ValueError:
             return 1.0
         return value if value > 0 else 1.0
+
+
+def read_ome_tiff_settings(file_path):
+    """Read the napari-phasors settings bundle from an OME-TIFF file.
+
+    Extracts the frequency and any persisted ``napari_phasors_settings``
+    stored in the OME description of a phasor OME-TIFF, returning them as a
+    flat settings dictionary (the same structure stored under a layer's
+    ``metadata['settings']``).
+
+    Parameters
+    ----------
+    file_path : str
+        Path to an OME-TIFF file written by napari-phasors.
+
+    Returns
+    -------
+    dict
+        Settings dictionary. Empty if the file contains no recognizable
+        napari-phasors settings.
+    """
+    import html
+    import json
+
+    from phasorpy import io
+
+    _, _, _, attrs = io.phasor_from_ometiff(file_path, harmonic='all')
+    settings = {}
+    if "frequency" in attrs:
+        settings["frequency"] = attrs["frequency"]
+    if "description" in attrs:
+        try:
+            description_str = html.unescape(attrs["description"])
+            description = json.loads(description_str)
+            if "napari_phasors_settings" in description:
+                napari_phasors_settings = json.loads(
+                    description["napari_phasors_settings"]
+                )
+                for key, value in napari_phasors_settings.items():
+                    settings[key] = value
+        except (json.JSONDecodeError, KeyError):
+            pass
+    return settings
+
+
+def compute_calibration_parameters(
+    calibration_layer, frequency, reference_lifetime
+):
+    """Compute phase and modulation calibration parameters from a reference.
+
+    Mirrors the calculation performed interactively by
+    :class:`~napari_phasors.calibration_tab.CalibrationWidget`, but operates
+    purely on layer metadata so it can be reused headlessly (e.g. batch
+    processing).
+
+    Parameters
+    ----------
+    calibration_layer : napari.layers.Image
+        Reference layer with phasor metadata (``original_mean``,
+        ``G_original``, ``S_original``, ``harmonics``).
+    frequency : float
+        Laser/modulation frequency in MHz.
+    reference_lifetime : float
+        Known lifetime of the calibration reference, in nanoseconds.
+
+    Returns
+    -------
+    tuple of numpy.ndarray
+        ``(phi_zero, mod_zero)`` correction parameters.
+    """
+    from phasorpy.lifetime import (
+        phasor_from_lifetime,
+        polar_from_reference_phasor,
+    )
+    from phasorpy.phasor import phasor_center
+
+    metadata = calibration_layer.metadata
+    calibration_mean = metadata["original_mean"]
+    calibration_g = metadata["G_original"]
+    calibration_s = metadata["S_original"]
+    harmonics = metadata.get("harmonics")
+
+    _, measured_re, measured_im = phasor_center(
+        calibration_mean, calibration_g, calibration_s
+    )
+
+    harmonics_array = np.atleast_1d(harmonics)
+    known_re, known_im = phasor_from_lifetime(
+        frequency * harmonics_array, reference_lifetime
+    )
+    phi_zero, mod_zero = polar_from_reference_phasor(
+        measured_re, measured_im, known_re, known_im
+    )
+    return phi_zero, mod_zero
+
+
+def apply_calibration_correction(layer, phi_zero, mod_zero):
+    """Apply a phasor calibration correction to a layer in place.
+
+    Applies the polar correction ``(phi_zero, mod_zero)`` to both the
+    original and current phasor coordinates of ``layer`` and records the
+    calibration parameters in ``layer.metadata['settings']``.
+
+    Parameters
+    ----------
+    layer : napari.layers.Image
+        Layer with phasor metadata to calibrate.
+    phi_zero : float or numpy.ndarray
+        Phase correction parameter (per harmonic).
+    mod_zero : float or numpy.ndarray
+        Modulation correction parameter (per harmonic).
+    """
+    from phasorpy.phasor import phasor_transform
+
+    metadata = layer.metadata
+    harmonics = np.atleast_1d(metadata.get("harmonics"))
+    g_original = metadata["G_original"]
+    s_original = metadata["S_original"]
+    g_current = metadata["G"]
+    s_current = metadata["S"]
+
+    if isinstance(phi_zero, list):
+        phi_zero = np.array(phi_zero)
+    if isinstance(mod_zero, list):
+        mod_zero = np.array(mod_zero)
+
+    if g_original.ndim > 1 and len(harmonics) > 1:
+        spatial_dims = g_original.ndim - 1
+        expand_shape = (slice(None),) + (None,) * spatial_dims
+        if np.ndim(phi_zero) > 0:
+            phi_expanded = phi_zero[expand_shape]
+            mod_expanded = mod_zero[expand_shape]
+        else:
+            phi_expanded = phi_zero
+            mod_expanded = mod_zero
+    else:
+        phi_expanded = phi_zero
+        mod_expanded = mod_zero
+
+    real_original, imag_original = phasor_transform(
+        g_original, s_original, phi_expanded, mod_expanded
+    )
+    real, imag = phasor_transform(
+        g_current, s_current, phi_expanded, mod_expanded
+    )
+
+    metadata["G_original"] = real_original
+    metadata["S_original"] = imag_original
+    metadata["G"] = real
+    metadata["S"] = imag
+
+    settings = metadata.setdefault("settings", {})
+    settings["calibration_phase"] = (
+        phi_zero.tolist() if np.ndim(phi_zero) > 0 else float(phi_zero)
+    )
+    settings["calibration_modulation"] = (
+        mod_zero.tolist() if np.ndim(mod_zero) > 0 else float(mod_zero)
+    )
+    settings["calibrated"] = True

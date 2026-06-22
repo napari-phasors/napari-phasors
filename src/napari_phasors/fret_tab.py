@@ -1938,3 +1938,107 @@ class FretWidget(QWidget):
                     )
 
         event.accept()
+
+
+def draw_fret_trajectory_overlay(
+    ax, trajectory_real, trajectory_imag, fret_efficiencies, settings=None
+):
+    """Stateless function to draw a FRET trajectory on a matplotlib axes."""
+
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from matplotlib.collections import LineCollection
+    from matplotlib.colors import LinearSegmentedColormap, ListedColormap
+
+    if settings is None:
+        settings = {}
+
+    use_colormap = settings.get("use_colormap", True)
+    fret_colormap = settings.get("fret_colormap")
+    colormap_contrast_limits = settings.get("colormap_contrast_limits", (0, 1))
+    trajectory_zorder = settings.get("trajectory_zorder", 10)
+    dot_zorder = settings.get("dot_zorder", 11)
+    circle_radius = settings.get("circle_radius", 0.02)
+    colormap_density_factor = settings.get("colormap_density_factor", 1.0)
+
+    if use_colormap:
+        if fret_colormap is not None:
+            if isinstance(fret_colormap, list) and len(fret_colormap) <= 32:
+                colormap = LinearSegmentedColormap.from_list(
+                    "fret_interp", fret_colormap, N=256
+                )
+            elif isinstance(fret_colormap, list):
+                colormap = ListedColormap(fret_colormap)
+            else:
+                colormap = plt.cm.turbo
+        else:
+            colormap = plt.cm.turbo
+
+        donor_color = colormap(0.0)[:3]
+        background_color = colormap(1.0)[:3]
+
+        num_segments = min(
+            int(len(trajectory_real) * colormap_density_factor),
+            len(trajectory_real) - 1,
+        )
+        if num_segments < 1:
+            num_segments = 1
+
+        vmin, vmax = colormap_contrast_limits
+
+        segments = []
+        colors = []
+
+        for i in range(num_segments):
+            start_idx = int(i * (len(trajectory_real) - 1) / num_segments)
+            end_idx = int((i + 1) * (len(trajectory_real) - 1) / num_segments)
+            end_idx = min(end_idx, len(trajectory_real) - 1)
+            if i > 0:
+                start_idx = max(0, start_idx - 1)
+
+            segment = [
+                (trajectory_real[start_idx], trajectory_imag[start_idx]),
+                (trajectory_real[end_idx], trajectory_imag[end_idx]),
+            ]
+            segments.append(segment)
+
+            fret_value = fret_efficiencies[start_idx]
+            colors.append(fret_value)
+
+        lc = LineCollection(
+            segments, cmap=colormap, linewidths=3, zorder=trajectory_zorder
+        )
+        lc.set_array(np.array(colors))
+        lc.set_clim(vmin, vmax)
+        ax.add_collection(lc)
+    else:
+        donor_color = 'dimgray'
+        background_color = 'dimgray'
+        ax.plot(
+            trajectory_real,
+            trajectory_imag,
+            color='dimgray',
+            linewidth=3,
+            label='Donor Trajectory',
+            zorder=trajectory_zorder,
+        )
+
+    donor_circle = plt.Circle(
+        (trajectory_real[0], trajectory_imag[0]),
+        circle_radius,
+        fill=True,
+        facecolor=donor_color,
+        linewidth=1,
+        zorder=dot_zorder,
+    )
+    ax.add_patch(donor_circle)
+
+    background_circle = plt.Circle(
+        (trajectory_real[-1], trajectory_imag[-1]),
+        circle_radius,
+        fill=True,
+        facecolor=background_color,
+        linewidth=1,
+        zorder=dot_zorder,
+    )
+    ax.add_patch(background_circle)

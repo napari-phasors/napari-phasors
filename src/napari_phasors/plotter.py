@@ -1,6 +1,5 @@
 import contextlib
 import copy
-import html
 import math
 import warnings
 from pathlib import Path
@@ -56,7 +55,10 @@ from ._utils import (
     apply_filter_and_threshold,
     build_group_styles_from_layer_metadata,
     build_groups_from_layer_metadata,
+    make_solid_contour_cmap,
+    normalize_rgb,
     populate_colormap_combobox,
+    read_ome_tiff_settings,
     resolve_colormap_by_name,
     save_groups_to_layer_metadata,
     update_frequency_in_metadata,
@@ -577,10 +579,17 @@ class ContourLayerSettingsDialog(QDialog):
         layer_styles=None,
         group_styles=None,
         available_colormaps=None,
+        groups_only=False,
         parent=None,
     ):
         super().__init__(parent)
-        self.setWindowTitle("Contour Layer Settings")
+        # ``groups_only`` hides the merged/grouped mode selector (and the
+        # merged + per-layer sections) and locks the dialog to Grouped mode, so
+        # callers that pick the mode elsewhere only configure the groups.
+        self._groups_only = groups_only
+        self.setWindowTitle(
+            "Configure Groups" if groups_only else "Contour Layer Settings"
+        )
         self.setMinimumWidth(550)
 
         self._layer_labels = list(layer_labels or [])
@@ -600,12 +609,18 @@ class ContourLayerSettingsDialog(QDialog):
 
         # Display mode
         mode_layout = QHBoxLayout()
-        mode_layout.addWidget(QLabel("Multi-layer display mode:"))
+        self._mode_label = QLabel("Multi-layer display mode:")
+        mode_layout.addWidget(self._mode_label)
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(list(self.DISPLAY_MODES))
-        self.mode_combo.setCurrentText(display_mode)
+        self.mode_combo.setCurrentText(
+            "Grouped" if groups_only else display_mode
+        )
         mode_layout.addWidget(self.mode_combo)
         root.addLayout(mode_layout)
+        if groups_only:
+            self._mode_label.setVisible(False)
+            self.mode_combo.setVisible(False)
 
         default_tab10 = plt.cm.tab10.colors
 
@@ -3211,29 +3226,7 @@ class PlotterWidget(QWidget):
         if not file_path:
             return
         try:
-            import json
-
-            from phasorpy import io
-
-            _, _, _, attrs = io.phasor_from_ometiff(file_path, harmonic='all')
-            settings = {}
-            if "frequency" in attrs:
-                settings["frequency"] = attrs["frequency"]
-            if "description" in attrs:
-                try:
-                    # HTML-unescape the description to handle tifffile HTML encoding
-                    description_str = html.unescape(attrs["description"])
-                    description = json.loads(description_str)
-                    if "napari_phasors_settings" in description:
-                        napari_phasors_settings = json.loads(
-                            description["napari_phasors_settings"]
-                        )
-                        for key, value in napari_phasors_settings.items():
-                            settings[key] = value
-                except (json.JSONDecodeError, KeyError):
-                    notifications.WarningNotification(
-                        "Failed to parse napari-phasors settings from file"
-                    )
+            settings = read_ome_tiff_settings(file_path)
             if settings:
                 selected_tabs = self._show_import_dialog(
                     source_settings=settings
@@ -7200,27 +7193,16 @@ class PlotterWidget(QWidget):
 
     @staticmethod
     def _normalize_rgb(color):
-        arr = np.asarray(color, dtype=float)
-        if arr.max(initial=0) > 1.0:
-            arr = arr / 255.0
-        return tuple(arr[:3])
+        return normalize_rgb(color)
 
     def _make_solid_contour_cmap(self, name, target_color):
         """Create a gradient ramp for solid contour style.
 
-        Blends the target color with white for the lower end to preserve
-        hue while providing a good visible range of the gradient.
+        Delegates to the shared :func:`napari_phasors._utils.
+        make_solid_contour_cmap` so the interactive contour plot and the batch
+        analysis contour export render identically.
         """
-        target = np.asarray(self._normalize_rgb(target_color), dtype=float)
-
-        # Start from a lighter version of the color (e.g., 50% mixed with white)
-        # to prevent too many white/gray contours at low levels.
-        low_color = np.clip(target + (1.0 - target) * 0.5, 0.0, 1.0)
-
-        return LinearSegmentedColormap.from_list(
-            name,
-            [tuple(low_color), tuple(target)],
-        )
+        return make_solid_contour_cmap(name, target_color)
 
     def _sample_colors_from_cmap(self, cmap, n_colors):
         if n_colors <= 1:

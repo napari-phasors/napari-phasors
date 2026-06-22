@@ -40,7 +40,11 @@ from qtpy.QtWidgets import (
     QWidgetAction,
 )
 
-from ._utils import CheckableComboBox, HistogramWidget
+from ._utils import (
+    CheckableComboBox,
+    HistogramWidget,
+    required_component_harmonics,
+)
 
 if TYPE_CHECKING:
     import napari
@@ -1518,13 +1522,13 @@ class ComponentsWidget(QWidget):
         )
 
     def _get_required_harmonics(self, num_components):
-        """Calculate minimum number of harmonics required for given number of components."""
-        if num_components <= 3:
-            return 1
-        else:
-            # For more than 3 components: num_components <= 2 * num_harmonics + 1
-            # Solving for num_harmonics: num_harmonics >= (num_components - 1) / 2
-            return max(2, int(np.ceil((num_components - 1) / 2)))
+        """Minimum number of harmonics required for ``num_components``.
+
+        Delegates to the shared :func:`napari_phasors._utils.
+        required_component_harmonics` so the interactive tab and the batch
+        analysis pipeline stay in agreement.
+        """
+        return required_component_harmonics(num_components)
 
     def _clear_components_display(self):
         """Clear component display without removing from storage."""
@@ -4796,3 +4800,229 @@ class ComponentsWidget(QWidget):
                 )
 
         event.accept()
+
+
+def draw_components_overlay(
+    ax,
+    reals,
+    imags,
+    names=None,
+    colors=None,
+    analysis_type="Linear Projection",
+    settings=None,
+):
+    """Stateless function to draw components and their connecting lines or polygons on a matplotlib axes."""
+    import contextlib
+
+    import numpy as np
+    from matplotlib.collections import LineCollection
+    from matplotlib.colors import LinearSegmentedColormap, ListedColormap
+    from matplotlib.patches import PathPatch
+    from matplotlib.path import Path
+
+    if settings is None:
+        settings = {}
+
+    line_offset = settings.get("line_offset", 0.0)
+    line_width = settings.get("line_width", 2)
+    line_alpha = settings.get("line_alpha", 1.0)
+    show_colormap_line = settings.get("show_colormap_line", False)
+    fractions_colormap = settings.get("fractions_colormap")
+    colormap_contrast_limits = settings.get("colormap_contrast_limits", (0, 1))
+    label_fontsize = settings.get("label_fontsize", 10)
+    label_fontweight = settings.get("label_fontweight", "normal")
+    label_fontstyle = settings.get("label_fontstyle", "normal")
+    # When set, labels use this color instead of the per-component dot color.
+    label_color = settings.get("label_color")
+    show_dots = settings.get("show_dots", True)
+    show_labels = settings.get("show_labels", True)
+    default_component_color = settings.get(
+        "default_component_color", "dimgray"
+    )
+    component_colors = settings.get(
+        "component_colors",
+        [
+            "#e6194B",
+            "#3cb44b",
+            "#ffe119",
+            "#4363d8",
+            "#f58231",
+            "#911eb4",
+            "#42d4f4",
+            "#f032e6",
+            "#bfef45",
+            "#fabed4",
+            "#469990",
+            "#dcbeff",
+            "#9A6324",
+            "#fffac8",
+            "#800000",
+            "#aaffc3",
+            "#808000",
+            "#ffd8b1",
+            "#000075",
+            "#a9a9a9",
+        ],
+    )
+
+    if names is None:
+        names = [f"Component {i+1}" for i in range(len(reals))]
+    if colors is None:
+        colors = [
+            component_colors[i % len(component_colors)]
+            for i in range(len(reals))
+        ]
+
+    num_components = len(reals)
+
+    # 1. Draw lines or polygons first (so they are under the dots)
+    if num_components == 2:
+        ox1, oy1 = reals[0], imags[0]
+        ox2, oy2 = reals[1], imags[1]
+
+        if line_offset != 0.0:
+            vx = ox2 - ox1
+            vy = oy2 - oy1
+            length = np.hypot(vx, vy)
+            if length > 0:
+                nx = -vy / length
+                ny = vx / length
+                ox1 += nx * line_offset
+                oy1 += ny * line_offset
+                ox2 += nx * line_offset
+                oy2 += ny * line_offset
+
+        use_colormap = (
+            analysis_type == "Linear Projection"
+            and show_colormap_line
+            and fractions_colormap is not None
+        )
+        if use_colormap:
+            dx = ox2 - ox1
+            dy = oy2 - oy1
+            length = np.hypot(dx, dy)
+            if length > 0:
+                t_values = np.linspace(0, 1, 500)
+                trajectory_real = ox1 + t_values * dx
+                trajectory_imag = oy1 + t_values * dy
+
+                density_factor = 2
+                num_segments = min(
+                    len(trajectory_real) * density_factor,
+                    len(trajectory_real) - 1,
+                )
+
+                if len(fractions_colormap) <= 32:
+                    colormap = LinearSegmentedColormap.from_list(
+                        "fractions_interp", fractions_colormap, N=256
+                    )
+                else:
+                    colormap = ListedColormap(fractions_colormap)
+
+                vmin, vmax = (
+                    colormap_contrast_limits
+                    if colormap_contrast_limits
+                    else (0, 1)
+                )
+                segments = []
+                segment_colors = []
+
+                for i in range(num_segments):
+                    start_idx = int(
+                        i * (len(trajectory_real) - 1) / num_segments
+                    )
+                    end_idx = int(
+                        (i + 1) * (len(trajectory_real) - 1) / num_segments
+                    )
+                    end_idx = min(end_idx, len(trajectory_real) - 1)
+                    if i > 0:
+                        start_idx = max(0, start_idx - 1)
+
+                    segments.append(
+                        [
+                            (
+                                trajectory_real[start_idx],
+                                trajectory_imag[start_idx],
+                            ),
+                            (
+                                trajectory_real[end_idx],
+                                trajectory_imag[end_idx],
+                            ),
+                        ]
+                    )
+
+                    t = (
+                        start_idx / (len(trajectory_real) - 1)
+                        if len(trajectory_real) > 1
+                        else 0
+                    )
+                    segment_colors.append(1.0 - t)
+
+                lc = LineCollection(
+                    segments, cmap=colormap, linewidths=line_width, zorder=10
+                )
+                lc.set_array(np.array(segment_colors))
+                lc.set_clim(vmin, vmax)
+                lc.set_alpha(line_alpha)
+                with contextlib.suppress(Exception):
+                    lc.set_capstyle('butt')
+                ax.add_collection(lc)
+        else:
+            line = ax.plot(
+                [ox1, ox2],
+                [oy1, oy2],
+                color=default_component_color,
+                linewidth=line_width,
+                alpha=line_alpha,
+                zorder=10,
+            )[0]
+            with contextlib.suppress(Exception):
+                line.set_solid_capstyle('butt')
+
+    elif num_components >= 3:
+        vertices = [(reals[i], imags[i]) for i in range(num_components)]
+        vertices.append((reals[0], imags[0]))
+        codes = (
+            [Path.MOVETO]
+            + [Path.LINETO] * (num_components - 1)
+            + [Path.CLOSEPOLY]
+        )
+        path = Path(vertices, codes)
+        patch = PathPatch(
+            path,
+            facecolor="lightgray",
+            edgecolor=default_component_color,
+            alpha=0.3 * line_alpha,
+            linewidth=line_width,
+            zorder=9,
+        )
+        ax.add_patch(patch)
+
+    # 2. Draw dots and labels on top
+    for i in range(num_components):
+        real, imag = reals[i], imags[i]
+        color = colors[i] if i < len(colors) else default_component_color
+        name = names[i] if i < len(names) else f"C{i+1}"
+
+        if show_dots:
+            ax.plot(
+                [real],
+                [imag],
+                marker='o',
+                markersize=8,
+                color=color,
+                zorder=11,
+            )
+        if show_labels and name:
+            ax.text(
+                real,
+                imag,
+                f" {name}",
+                verticalalignment='bottom',
+                horizontalalignment='left',
+                color=label_color or color,
+                fontsize=label_fontsize,
+                fontweight=label_fontweight,
+                fontstyle=label_fontstyle,
+                zorder=12,
+            )
