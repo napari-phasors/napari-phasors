@@ -1685,7 +1685,7 @@ def test_popout_window_mixin(qtbot):
     qtbot.wait(50)
 
     # After popout, it should detach from the dock parent
-    assert dock.widget() is None
+    assert widget.parent() is None
 
     # fallback sets it to Qt.Window
     assert int(widget.windowFlags() & Qt.Window) == int(Qt.Window)
