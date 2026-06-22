@@ -2171,93 +2171,55 @@ class ComponentsWidget(QWidget):
         cursors_added = False
         selection_tab = getattr(self.parent_widget, 'selection_tab', None)
         if selection_tab is not None:
-            # A. Circular cursors
-            circ_widget = getattr(
-                selection_tab, 'circular_cursor_widget', None
+            # A. Cursor-selection cursors (circular / elliptical / polar)
+            cursor_widget = getattr(
+                selection_tab, 'cursor_selection_widget', None
             )
-            if circ_widget and hasattr(circ_widget, '_cursors'):
-                for i, cursor in enumerate(circ_widget._cursors):
-                    g = cursor.get('g')
-                    s = cursor.get('s')
+            if cursor_widget and hasattr(cursor_widget, '_cursors'):
+                type_labels = {
+                    'circular': 'Circular',
+                    'elliptic': 'Elliptical',
+                    'polar': 'Polar',
+                }
+                for i, cursor in enumerate(cursor_widget._cursors):
                     harmonic = cursor.get('harmonic', 1)
                     color = cursor.get('color')
-                    if g is not None and s is not None:
-                        name = f"Circular {i + 1} (H{harmonic})"
-                        text = f"{name}: G={g:.3f}, S={s:.3f}"
-                        action = QWidgetAction(cursor_menu)
-                        action.setText(text)
-                        action_widget = ColorActionWidget(
-                            text, color, action, cursor_menu
-                        )
-                        action.setDefaultWidget(action_widget)
-                        action.triggered.connect(
-                            lambda _, g_val=g, s_val=s: self._set_component_coords_from_menu(
-                                idx, g_val, s_val
-                            )
-                        )
-                        cursor_menu.addAction(action)
-                        cursors_added = True
-
-            # B. Polar cursors
-            polar_widget = getattr(selection_tab, 'polar_cursor_widget', None)
-            if polar_widget and hasattr(polar_widget, '_cursors'):
-                for i, cursor in enumerate(polar_widget._cursors):
-                    phase_min = cursor.get('phase_min')
-                    phase_max = cursor.get('phase_max')
-                    mod_min = cursor.get('modulation_min')
-                    mod_max = cursor.get('modulation_max')
-                    harmonic = cursor.get('harmonic', 1)
-                    color = cursor.get('color')
-                    if all(
-                        v is not None
-                        for v in [phase_min, phase_max, mod_min, mod_max]
-                    ):
+                    cursor_type = cursor.get('type', 'circular')
+                    if cursor_type == 'polar':
+                        phase_min = cursor.get('phase_min')
+                        phase_max = cursor.get('phase_max')
+                        mod_min = cursor.get('modulation_min')
+                        mod_max = cursor.get('modulation_max')
+                        if any(
+                            v is None
+                            for v in [phase_min, phase_max, mod_min, mod_max]
+                        ):
+                            continue
                         phase_center = (phase_min + phase_max) / 2.0
                         mod_center = (mod_min + mod_max) / 2.0
                         g = mod_center * np.cos(np.deg2rad(phase_center))
                         s = mod_center * np.sin(np.deg2rad(phase_center))
-                        name = f"Polar {i + 1} (H{harmonic})"
-                        text = f"{name}: G={g:.3f}, S={s:.3f}"
-                        action = QWidgetAction(cursor_menu)
-                        action.setText(text)
-                        action_widget = ColorActionWidget(
-                            text, color, action, cursor_menu
+                    else:
+                        g = cursor.get('g')
+                        s = cursor.get('s')
+                        if g is None or s is None:
+                            continue
+                    label = type_labels.get(cursor_type, 'Cursor')
+                    name = f"{label} {i + 1} (H{harmonic})"
+                    text = f"{name}: G={g:.3f}, S={s:.3f}"
+                    action = QWidgetAction(cursor_menu)
+                    action.setText(text)
+                    action_widget = ColorActionWidget(
+                        text, color, action, cursor_menu
+                    )
+                    action.setDefaultWidget(action_widget)
+                    action.triggered.connect(
+                        lambda _, g_val=g, s_val=s: self._set_component_coords_from_menu(
+                            idx, g_val, s_val
                         )
-                        action.setDefaultWidget(action_widget)
-                        action.triggered.connect(
-                            lambda _, g_val=g, s_val=s: self._set_component_coords_from_menu(
-                                idx, g_val, s_val
-                            )
-                        )
-                        cursor_menu.addAction(action)
-                        cursors_added = True
-
-            # C. Elliptical cursors
-            ell_widget = getattr(
-                selection_tab, 'elliptical_cursor_widget', None
-            )
-            if ell_widget and hasattr(ell_widget, '_cursors'):
-                for i, cursor in enumerate(ell_widget._cursors):
-                    g = cursor.get('g')
-                    s = cursor.get('s')
-                    harmonic = cursor.get('harmonic', 1)
-                    color = cursor.get('color')
-                    if g is not None and s is not None:
-                        name = f"Elliptical {i + 1} (H{harmonic})"
-                        text = f"{name}: G={g:.3f}, S={s:.3f}"
-                        action = QWidgetAction(cursor_menu)
-                        action.setText(text)
-                        action_widget = ColorActionWidget(
-                            text, color, action, cursor_menu
-                        )
-                        action.setDefaultWidget(action_widget)
-                        action.triggered.connect(
-                            lambda _, g_val=g, s_val=s: self._set_component_coords_from_menu(
-                                idx, g_val, s_val
-                            )
-                        )
-                        cursor_menu.addAction(action)
-                        cursors_added = True
+                    )
+                    cursor_menu.addAction(action)
+                    cursors_added = True
 
             # D. GMM Clusters
             cluster_widget = getattr(
