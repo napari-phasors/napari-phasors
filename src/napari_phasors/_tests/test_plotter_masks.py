@@ -1460,3 +1460,258 @@ def test_on_mask_data_changed_refreshes_label_combo(make_viewer_model):
     assert (
         "2" in combo.allItems()
     ), "New label 2 should appear after data change"
+
+
+def _make_spatial_mask(layer, fill=1):
+    """Build a labels mask matching a phasor layer's spatial dimensions."""
+    g_data = layer.metadata["G"]
+    mask_shape = g_data.shape[1:] if g_data.ndim == 3 else g_data.shape
+    mask = np.zeros(mask_shape, dtype=int)
+    mask[mask_shape[0] // 2 :, :] = fill
+    return mask
+
+
+def test_copy_mask_from_layer_copies_and_applies_mask(make_viewer_model):
+    """_copy_mask_from_layer mirrors the source mask onto the target layer."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+
+    source_layer = create_image_layer_with_phasors()
+    target_layer = create_image_layer_with_phasors()
+    viewer.add_layer(source_layer)
+    viewer.add_layer(target_layer)
+
+    # Mask the source layer (invert + a label selection so we can assert both
+    # are carried over to the target).
+    mask = _make_spatial_mask(source_layer)
+    mask_layer = viewer.add_labels(mask, name="src_mask")
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [source_layer.name]
+    )
+    plotter._apply_mask_to_phasor_data(
+        mask_layer, source_layer, invert=True, labels=[1]
+    )
+
+    copied = plotter._copy_mask_from_layer(source_layer, target_layer)
+
+    assert copied is True
+    np.testing.assert_array_equal(
+        target_layer.metadata["mask"], source_layer.metadata["mask"]
+    )
+    assert target_layer.metadata["mask_invert"] is True
+    assert target_layer.metadata["mask_labels"] == [1]
+    # Mask was actually applied to the target's phasor coordinates.
+    assert np.isnan(target_layer.metadata["G"]).sum() > 0
+    # The per-layer assignment points at the source's mask layer.
+    assert plotter._mask_assignments[target_layer.name] == "src_mask"
+    assert plotter._mask_invert_assignments[target_layer.name] is True
+    assert plotter._mask_label_assignments[target_layer.name] == [1]
+
+    plotter.deleteLater()
+
+
+def test_copy_mask_from_unmasked_source_clears_target_mask(make_viewer_model):
+    """Copying masking from an unmasked source removes the target's mask."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+
+    source_layer = create_image_layer_with_phasors()
+    target_layer = create_image_layer_with_phasors()
+    viewer.add_layer(source_layer)
+    viewer.add_layer(target_layer)
+
+    # Give the target an existing mask; the source has none.
+    mask = _make_spatial_mask(target_layer)
+    mask_layer = viewer.add_labels(mask, name="tgt_mask")
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [target_layer.name]
+    )
+    plotter._apply_mask_to_phasor_data(mask_layer, target_layer)
+    assert "mask" in target_layer.metadata
+
+    original_g = target_layer.metadata["G_original"]
+    copied = plotter._copy_mask_from_layer(source_layer, target_layer)
+
+    assert copied is False
+    assert "mask" not in target_layer.metadata
+    assert "mask_invert" not in target_layer.metadata
+    # Phasor data restored to its unmasked original.
+    np.testing.assert_array_almost_equal(
+        target_layer.metadata["G"], original_g
+    )
+
+    plotter.deleteLater()
+
+
+def test_copy_mask_from_layer_shapes_mask_different_image_sizes(
+    make_viewer_model,
+):
+    """A Shapes mask copies across images of different sizes.
+
+    Regression: copying the source's rasterized mask array failed the
+    size check when the target had different dimensions, silently leaving the
+    target's own mask. Copying the mask *layer* re-rasterizes the shapes to the
+    target's shape instead.
+    """
+    from napari_phasors._synthetic_generator import (
+        make_intensity_layer_with_phasors,
+        make_raw_flim_data,
+    )
+
+    def _layer(shape, name):
+        raw = make_raw_flim_data(
+            time_constants=[0.1, 1, 2, 3, 4, 5, 10], shape=shape
+        )
+        layer = make_intensity_layer_with_phasors(raw, harmonic=[1, 2, 3])
+        layer.name = name
+        return layer
+
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+
+    source_layer = _layer((10, 10), "SOURCE")
+    target_layer = _layer((6, 8), "TARGET")  # different dimensions
+    viewer.add_layer(source_layer)
+    viewer.add_layer(target_layer)
+
+    shapes_src = viewer.add_shapes(
+        [np.array([[0, 0], [5, 0], [5, 5], [0, 5]])],
+        shape_type="polygon",
+        name="shapes_src",
+    )
+    shapes_tgt = viewer.add_shapes(
+        [np.array([[3, 4], [6, 4], [6, 8], [3, 8]])],
+        shape_type="polygon",
+        name="shapes_tgt",
+    )
+
+    plotter.image_layers_checkable_combobox.setCheckedItems(["SOURCE"])
+    plotter._apply_mask_to_phasor_data(shapes_src, source_layer)
+    plotter.image_layers_checkable_combobox.setCheckedItems(["TARGET"])
+    plotter._apply_mask_to_phasor_data(shapes_tgt, target_layer)
+    plotter.mask_layer_combobox.setCurrentText("shapes_tgt")
+
+    plotter._copy_metadata_from_layer("SOURCE", selected_tabs=["masking"])
+
+    # Target now uses the source's Shapes mask, rasterized to its own shape.
+    assert plotter._mask_assignments[target_layer.name] == "shapes_src"
+    assert plotter.mask_layer_combobox.currentText() == "shapes_src"
+    expected = shapes_src.to_labels(labels_shape=target_layer.data.shape)
+    np.testing.assert_array_equal(target_layer.metadata["mask"], expected)
+
+    plotter.deleteLater()
+
+
+def test_copy_mask_from_layer_shape_mismatch_skips(make_viewer_model):
+    """A mask whose shape differs from the target is not copied."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+
+    source_layer = create_image_layer_with_phasors()
+    target_layer = create_image_layer_with_phasors()
+    viewer.add_layer(source_layer)
+    viewer.add_layer(target_layer)
+
+    # Stash a deliberately mismatched mask on the source.
+    source_layer.metadata["mask"] = np.ones((3, 3), dtype=int)
+    source_layer.metadata["mask_invert"] = False
+
+    with patch(
+        "napari_phasors.plotter.notifications.WarningNotification"
+    ) as warn:
+        copied = plotter._copy_mask_from_layer(source_layer, target_layer)
+
+    assert copied is False
+    assert "mask" not in target_layer.metadata
+    warn.assert_called_once()
+
+    plotter.deleteLater()
+
+
+def test_copy_metadata_from_layer_with_masking_tab(make_viewer_model):
+    """Selecting 'masking' in the import dialog copies the mask to targets."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+
+    source_layer = create_image_layer_with_phasors()
+    target_layer = create_image_layer_with_phasors()
+    viewer.add_layer(source_layer)
+    viewer.add_layer(target_layer)
+
+    mask = _make_spatial_mask(source_layer)
+    mask_layer = viewer.add_labels(mask, name="src_mask")
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [source_layer.name]
+    )
+    plotter._apply_mask_to_phasor_data(mask_layer, source_layer)
+
+    # Now select the target and import with masking enabled.
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [target_layer.name]
+    )
+    plotter._copy_metadata_from_layer(
+        source_layer.name, selected_tabs=["masking"]
+    )
+
+    assert "mask" in target_layer.metadata
+    np.testing.assert_array_equal(
+        target_layer.metadata["mask"], source_layer.metadata["mask"]
+    )
+
+    plotter.deleteLater()
+
+
+def test_copy_metadata_from_layer_switches_selected_mask(make_viewer_model):
+    """Regression: copying masking replaces the target's own mask selection.
+
+    The target starts with its own mask; after importing masking from a source
+    that uses a *different* (inverted) mask, the target's selected mask layer,
+    invert flag, and NaN pattern must all match the source — not its own
+    previous mask.
+    """
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+
+    source_layer = create_image_layer_with_phasors()
+    target_layer = create_image_layer_with_phasors()
+    viewer.add_layer(source_layer)
+    viewer.add_layer(target_layer)
+
+    src_mask = viewer.add_labels(
+        _make_spatial_mask(source_layer), name="src_mask"
+    )
+    # A different mask for the target (left half rather than bottom half).
+    g = target_layer.metadata["G"]
+    shape = g.shape[1:] if g.ndim == 3 else g.shape
+    tgt_arr = np.zeros(shape, dtype=int)
+    tgt_arr[:, : shape[1] // 2] = 1
+    tgt_mask = viewer.add_labels(tgt_arr, name="tgt_mask")
+
+    # Apply the inverted source mask to the source.
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [source_layer.name]
+    )
+    plotter._apply_mask_to_phasor_data(src_mask, source_layer, invert=True)
+    source_nan = np.isnan(source_layer.metadata["G"])
+
+    # Give the target its own (non-inverted) mask and select it.
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [target_layer.name]
+    )
+    plotter._apply_mask_to_phasor_data(tgt_mask, target_layer)
+    plotter.mask_layer_combobox.setCurrentText("tgt_mask")
+
+    plotter._copy_metadata_from_layer(
+        source_layer.name, selected_tabs=["masking"]
+    )
+
+    # Selection now points at the source's mask, not the target's old one.
+    assert plotter._mask_assignments[target_layer.name] == "src_mask"
+    assert plotter.mask_layer_combobox.currentText() == "src_mask"
+    assert plotter._mask_invert_assignments[target_layer.name] is True
+    # Invert was honored: the NaN pattern matches the inverted source mask.
+    np.testing.assert_array_equal(
+        np.isnan(target_layer.metadata["G"]), source_nan
+    )
+
+    plotter.deleteLater()

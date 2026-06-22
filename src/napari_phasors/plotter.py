@@ -2863,7 +2863,12 @@ class PlotterWidget(QWidget):
         finally:
             self._updating_settings = False
 
-    def _show_import_dialog(self, default_checked=None, source_settings=None):
+    def _show_import_dialog(
+        self,
+        default_checked=None,
+        source_settings=None,
+        mask_available=False,
+    ):
         """Show a dialog to select which analyses to import/apply.
 
         Parameters
@@ -2872,6 +2877,10 @@ class PlotterWidget(QWidget):
             List of tab keys that should be checked by default
         source_settings : dict, optional
             Settings dictionary from source layer/file to determine which tabs to show
+        mask_available : bool, optional
+            If True, show a "Masking" toggle so the user can choose whether to
+            copy the source's mask (the assigned mask layer) onto the target
+            layers. When checked, ``"masking"`` is included in the returned list.
         """
         dialog = QDialog(self)
         dialog.setWindowTitle("Select Analyses to Import")
@@ -2945,6 +2954,33 @@ class PlotterWidget(QWidget):
                 layout.addWidget(cb)
                 checkboxes[attr] = cb
 
+        # Masking toggle: lets the user copy the source's assigned mask layer
+        # onto the target layers. Only offered when the source actually has a
+        # mask (e.g. layer-to-layer import); masks are not stored in OME-TIFFs.
+        masking_cb = None
+        if mask_available:
+            line = QFrame()
+            line.setFrameShape(QFrame.HLine)
+            line.setFrameShadow(QFrame.Sunken)
+            layout.addWidget(line)
+
+            masking_cb = QToggleSwitch("Masking")
+            masking_cb.onColor = QColor("#27ae60")  # Nice Green
+            masking_cb.setToolTip(
+                "Copy the mask (assigned mask layer) from the source onto the "
+                "selected layers."
+            )
+            masking_cb.setChecked(
+                default_checked is None
+                or "masking"
+                in (
+                    default_checked
+                    if isinstance(default_checked, list)
+                    else []
+                )
+            )
+            layout.addWidget(masking_cb)
+
         button_box = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel
         )
@@ -2959,6 +2995,8 @@ class PlotterWidget(QWidget):
             ]
             if frequency_cb is not None and frequency_cb.isChecked():
                 selected.insert(0, "frequency")
+            if masking_cb is not None and masking_cb.isChecked():
+                selected.append("masking")
             return selected
         return []
 
@@ -3208,7 +3246,8 @@ class PlotterWidget(QWidget):
             source_settings = source_layer.metadata.get('settings', {}).copy()
 
             selected_tabs = self._show_import_dialog(
-                source_settings=source_settings
+                source_settings=source_settings,
+                mask_available='mask' in source_layer.metadata,
             )
             if selected_tabs:
                 self._copy_metadata_from_layer(
@@ -3258,8 +3297,11 @@ class PlotterWidget(QWidget):
                 source_layer.metadata.get('settings', {})
             )
 
+            copy_masking = "masking" in selected_tabs
             selected_analysis_tabs = [
-                tab for tab in selected_tabs if tab != "frequency"
+                tab
+                for tab in selected_tabs
+                if tab not in ("frequency", "masking")
             ]
 
             for target_layer in selected_layers:
@@ -3285,6 +3327,16 @@ class PlotterWidget(QWidget):
                 ):
                     freq_val = source_settings['frequency']
                     update_frequency_in_metadata(target_layer, freq_val)
+
+                if copy_masking:
+                    self._copy_mask_from_layer(source_layer, target_layer)
+
+            if copy_masking:
+                # Sync the mask combobox / invert / labels controls from the
+                # freshly-set assignments. Doing this before the settings
+                # restore below makes that restore's mask handling a no-op, so
+                # it can't re-apply the mask with a stale invert/label state.
+                self._update_mask_ui_mode()
 
             if "frequency" in selected_tabs and 'frequency' in source_settings:
                 self._broadcast_frequency_value_across_tabs(
@@ -5919,6 +5971,34 @@ class PlotterWidget(QWidget):
         else:
             return
 
+        self._apply_mask_array_to_phasor_data(
+            mask_data, image_layer, invert=invert, labels=labels
+        )
+
+    def _apply_mask_array_to_phasor_data(
+        self, mask_data, image_layer, invert=False, labels=None
+    ):
+        """Apply a mask *array* to phasor data, setting outside pixels to NaN.
+
+        Stores the mask (and its invert/labels selection) in the image layer's
+        metadata and masks ``image_layer.data`` together with the ``G``/``S``
+        phasor coordinates. This is the array-based core shared by
+        :meth:`_apply_mask_to_phasor_data` and by mask copying between layers.
+
+        Parameters
+        ----------
+        mask_data : numpy.ndarray
+            2-D label array matching ``image_layer.data`` (a pixel is inside
+            the mask when its value is non-zero / in ``labels``).
+        image_layer : napari.layers.Image
+            The image layer to store mask metadata on and mask.
+        invert : bool
+            If True, invert the mask so pixels inside the mask are excluded.
+        labels : list of int, optional
+            Labels whose pixels are considered valid. ``None`` means all
+            non-zero pixels are valid; an empty list means no masking.
+        """
+        mask_data = np.asarray(mask_data)
         image_layer.metadata['mask'] = mask_data.copy()
         image_layer.metadata['mask_invert'] = invert
         if labels is not None:
@@ -5926,7 +6006,7 @@ class PlotterWidget(QWidget):
         elif 'mask_labels' in image_layer.metadata:
             del image_layer.metadata['mask_labels']
 
-        if isinstance(mask_layer, Labels) and labels is not None:
+        if labels is not None:
             if len(labels) > 0:
                 if invert:
                     mask_invalid = np.isin(mask_data, labels)
@@ -5957,6 +6037,116 @@ class PlotterWidget(QWidget):
             image_layer.metadata['S'] = np.where(mask_invalid, np.nan, s_array)
 
         self._invalidate_features_cache()
+
+    def _copy_mask_from_layer(self, source_layer, target_layer):
+        """Copy the mask of ``source_layer`` onto ``target_layer`` and apply it.
+
+        Mirrors assigning the source's mask *layer* to the target: the mask
+        layer the source used is re-applied to the target (re-rasterizing it to
+        the target's own shape), and the invert / label selection is carried
+        over. Copying the mask layer rather than the source's rasterized array
+        is what lets a Shapes mask — or any mask shared by differently sized
+        images — be applied correctly to the target.
+
+        If the source has no mask, any mask on the target is removed so the
+        target ends up matching the (unmasked) source.
+
+        Returns
+        -------
+        bool
+            True if a mask was copied, False otherwise.
+        """
+        if 'mask' not in source_layer.metadata:
+            # Source is unmasked: clear any mask currently on the target.
+            self._restore_original_phasor_data(target_layer)
+            for key in ('mask', 'mask_invert', 'mask_labels'):
+                target_layer.metadata.pop(key, None)
+            self._mask_assignments.pop(target_layer.name, None)
+            self._mask_invert_assignments.pop(target_layer.name, None)
+            self._mask_label_assignments.pop(target_layer.name, None)
+            return False
+
+        source_mask = np.asarray(source_layer.metadata['mask'])
+        invert = bool(source_layer.metadata.get('mask_invert', False))
+        labels = source_layer.metadata.get('mask_labels', None)
+
+        # Identify the mask *layer* the source used (by matching its stored,
+        # source-shaped mask). Re-applying that layer re-rasterizes it to the
+        # target's shape, so Shapes masks and differently sized targets work.
+        mask_layer = self._find_mask_layer_for(source_mask, source_layer)
+
+        self._restore_original_phasor_data(target_layer)
+
+        if mask_layer is not None:
+            if isinstance(
+                mask_layer, Labels
+            ) and mask_layer.data.shape != tuple(target_layer.data.shape):
+                notifications.WarningNotification(
+                    f"Mask layer '{mask_layer.name}' "
+                    f"{tuple(mask_layer.data.shape)} does not match layer "
+                    f"'{target_layer.name}' {tuple(target_layer.data.shape)}; "
+                    "mask not copied to this layer."
+                )
+                return False
+            self._apply_mask_to_phasor_data(
+                mask_layer, target_layer, invert=invert, labels=labels
+            )
+            mask_layer_name = mask_layer.name
+        else:
+            # No matching mask layer in the viewer (e.g. it was deleted): fall
+            # back to the source's raster, which only fits a same-shaped target.
+            if source_mask.shape != tuple(target_layer.data.shape):
+                notifications.WarningNotification(
+                    f"Source mask {source_mask.shape} does not match layer "
+                    f"'{target_layer.name}' {tuple(target_layer.data.shape)} "
+                    "and its mask layer is unavailable; mask not copied."
+                )
+                return False
+            self._apply_mask_array_to_phasor_data(
+                source_mask, target_layer, invert=invert, labels=labels
+            )
+            mask_layer_name = self._create_mask_layer_from_array(
+                source_mask, target_layer
+            )
+
+        self._mask_assignments[target_layer.name] = mask_layer_name
+        self._mask_invert_assignments[target_layer.name] = invert
+        self._mask_label_assignments[target_layer.name] = labels
+        return True
+
+    def _find_mask_layer_for(self, mask_data, reference_layer):
+        """Return the viewer mask layer whose pixels equal ``mask_data``.
+
+        ``mask_data`` is the mask as stored on ``reference_layer`` (rasterized
+        at that layer's shape), so Shapes candidates are rasterized to the same
+        shape for comparison. Returns the matching ``Labels``/``Shapes`` layer,
+        or ``None`` if no layer matches.
+        """
+        mask_data = np.asarray(mask_data)
+        for mask_l in self.viewer.layers:
+            if not isinstance(mask_l, (Labels, Shapes)):
+                continue
+            if isinstance(mask_l, Shapes):
+                if len(mask_l.data) == 0:
+                    continue
+                existing = mask_l.to_labels(
+                    labels_shape=reference_layer.data.shape
+                )
+            else:
+                existing = mask_l.data
+            if np.array_equal(existing, mask_data):
+                return mask_l
+        return None
+
+    def _create_mask_layer_from_array(self, mask_data, reference_layer):
+        """Add a Labels layer from ``mask_data`` and return its name."""
+        name = f"Restored Mask: {reference_layer.name}"
+        self.viewer.add_labels(
+            np.asarray(mask_data).copy(),
+            name=name,
+            scale=reference_layer.scale,
+        )
+        return name
 
     def _set_mask_labels_visible(self, visible):
         """Set the visibility of the mask labels combobox and its container."""
