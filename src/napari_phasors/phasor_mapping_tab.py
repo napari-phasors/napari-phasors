@@ -33,10 +33,13 @@ from superqt import QRangeSlider, QToggleSwitch
 from ._utils import (
     LIFETIME_OUTPUT_TYPES,
     HistogramWidget,
+    analysis_section_stylesheet,
     create_mpl_colormap_from_qcolor,
+    make_section,
     populate_colormap_combobox,
     resolve_colormap_by_name,
     resolve_napari_layer_colormap,
+    setup_primary_button,
     update_frequency_in_metadata,
 )
 
@@ -313,6 +316,10 @@ class PhasorMappingWidget(QWidget):
         main_widget_layout = QVBoxLayout(self)
         main_widget_layout.addWidget(scroll_area)
         main_widget_layout.setStretch(0, 1)
+        self.setStyleSheet(analysis_section_stylesheet())
+
+        # Output section -----------------------------------------------------
+        output_box, output_box_layout = make_section("Output")
 
         # Output mode (always visible, top row)
         self.output_mode_widget = QWidget()
@@ -323,7 +330,7 @@ class PhasorMappingWidget(QWidget):
         self.output_mode_combobox.addItems(["Lifetime", "Phase", "Modulation"])
         self.output_mode_combobox.setCurrentText("Lifetime")
         output_mode_layout.addWidget(self.output_mode_combobox, 1)
-        self.main_layout.addWidget(self.output_mode_widget)
+        output_box_layout.addWidget(self.output_mode_widget)
 
         # Lifetime output selector (visible only for Lifetime mode)
         self.lifetime_output_widget = QWidget()
@@ -340,7 +347,7 @@ class PhasorMappingWidget(QWidget):
         )
         self.lifetime_type_combobox.setCurrentText("Apparent Phase Lifetime")
         lifetime_type_layout.addWidget(self.lifetime_type_combobox, 1)
-        self.main_layout.addWidget(self.lifetime_output_widget)
+        output_box_layout.addWidget(self.lifetime_output_widget)
 
         # Frequency input (visible only for Lifetime mode)
         self.frequency_widget = QWidget()
@@ -350,7 +357,11 @@ class PhasorMappingWidget(QWidget):
         self.frequency_input = QLineEdit()
         self.frequency_input.setValidator(QDoubleValidator())
         frequency_layout.addWidget(self.frequency_input)
-        self.main_layout.addWidget(self.frequency_widget)
+        output_box_layout.addWidget(self.frequency_widget)
+        self.main_layout.addWidget(output_box)
+
+        # Coloring section ---------------------------------------------------
+        coloring_box, coloring_box_layout = make_section("Coloring")
 
         # 2D phasor custom-color controls (visible for Phase/Modulation modes)
         self.colormap_widget = QWidget()
@@ -372,7 +383,7 @@ class PhasorMappingWidget(QWidget):
         self.custom_color_button.clicked.connect(self._on_custom_color_clicked)
         colormap_layout.addWidget(self.custom_color_button)
 
-        self.main_layout.addWidget(self.colormap_widget)
+        coloring_box_layout.addWidget(self.colormap_widget)
 
         self.coloring_checkbox_widget = QWidget()
         coloring_checkbox_layout = QHBoxLayout(self.coloring_checkbox_widget)
@@ -385,7 +396,8 @@ class PhasorMappingWidget(QWidget):
         )  # Nice Green
         coloring_checkbox_layout.addWidget(self.apply_2d_colormap_checkbox)
         coloring_checkbox_layout.addStretch(1)
-        self.main_layout.addWidget(self.coloring_checkbox_widget)
+        coloring_box_layout.addWidget(self.coloring_checkbox_widget)
+        self.main_layout.addWidget(coloring_box)
 
         # Connect signals
         self.lifetime_type_combobox.currentTextChanged.connect(
@@ -435,9 +447,9 @@ class PhasorMappingWidget(QWidget):
         self.histogram_widget.update_data(np.array([]))
 
         # Mesh Overlay Settings (at the end of the tab)
-        self.mesh_overlay_group = QWidget()
-        mesh_overlay_group_layout = QVBoxLayout(self.mesh_overlay_group)
-        mesh_overlay_group_layout.setContentsMargins(0, 0, 0, 0)
+        self.mesh_overlay_group, mesh_overlay_group_layout = make_section(
+            "Mesh overlay"
+        )
 
         # Toggle for background mesh
         self.mesh_overlay_checkbox = QToggleSwitch("Show mesh overlay")
@@ -559,14 +571,26 @@ class PhasorMappingWidget(QWidget):
         self.calculate_lifetime_button.setSizePolicy(
             QSizePolicy.Expanding, QSizePolicy.Fixed
         )
-        self.calculate_lifetime_button.setToolTip(
-            "Calculate and display the selected output for all selected layers"
-        )
-        self.calculate_lifetime_button.clicked.connect(
-            self._on_calculate_lifetime_clicked
+        self._refresh_calculate_button = setup_primary_button(
+            self.calculate_lifetime_button,
+            self._mapping_validation,
+            self._on_calculate_lifetime_clicked,
+            ready_tooltip="Calculate and display the selected output for all "
+            "selected layers.",
         )
         self.main_layout.addWidget(self.calculate_lifetime_button)
         self.main_layout.addStretch(1)
+
+        # Re-evaluate the button whenever a required input changes.
+        self.frequency_input.textChanged.connect(
+            lambda _=None: self._refresh_calculate_button()
+        )
+        self.output_mode_combobox.currentTextChanged.connect(
+            lambda _=None: self._refresh_calculate_button()
+        )
+        self.lifetime_type_combobox.currentTextChanged.connect(
+            lambda _=None: self._refresh_calculate_button()
+        )
 
         # Connect signals for mesh overlay
         self.mesh_overlay_checkbox.toggled.connect(
@@ -1790,6 +1814,18 @@ class PhasorMappingWidget(QWidget):
         ):
             self._apply_histogram_coloring(output_type)
 
+    def _mapping_validation(self):
+        """Return ``None`` if the output can be computed, else the missing msg."""
+        if not self.parent_widget.get_selected_layers():
+            return "Select at least one image layer with phasor features."
+        output_type = self._get_selected_output_type()
+        if (
+            self._output_requires_frequency(output_type)
+            and not self.frequency_input.text().strip()
+        ):
+            return "Enter the frequency (MHz)."
+        return None
+
     def _on_image_layer_changed(self):
         """Callback whenever the image layer with phasor features changes.
 
@@ -1798,6 +1834,8 @@ class PhasorMappingWidget(QWidget):
         """
         self._teardown_on_layer_change()
         self._restore_on_layer_change()
+        if hasattr(self, '_refresh_calculate_button'):
+            self._refresh_calculate_button()
 
     def _teardown_on_layer_change(self):
         """Immediate cleanup: disconnect signals and clear data."""
