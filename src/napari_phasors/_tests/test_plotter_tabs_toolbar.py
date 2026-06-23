@@ -374,7 +374,7 @@ def test_toolbar_visibility_based_on_selection_mode(make_viewer_model):
     with patch.object(plotter, '_set_selection_visibility') as mock_vis:
         # Switch to circular cursor mode
         plotter.selection_tab.selection_mode_combobox.setCurrentText(
-            "Circular Cursor"
+            "Cursor Selection"
         )
 
         # Should call _set_selection_visibility(False) to hide toolbar
@@ -396,7 +396,7 @@ def test_is_manual_selection_mode_method(make_viewer_model):
     assert selection_widget.is_manual_selection_mode()
 
     # Switch back to circular cursor mode
-    selection_widget.selection_mode_combobox.setCurrentText("Circular Cursor")
+    selection_widget.selection_mode_combobox.setCurrentText("Cursor Selection")
     assert not selection_widget.is_manual_selection_mode()
 
 
@@ -422,7 +422,7 @@ def test_plot_colors_cleared_when_switching_from_manual_mode(
     with patch.object(plotter, 'plot') as mock_plot:
         # Switch to circular cursor mode
         plotter.selection_tab.selection_mode_combobox.setCurrentText(
-            "Circular Cursor"
+            "Cursor Selection"
         )
 
         # plot should be called with selection_id_data=None to clear colors
@@ -442,7 +442,7 @@ def test_selection_tab_mode_switching_integration(make_viewer_model):
     assert selection_widget.stacked_widget.currentIndex() == 0
 
     # Add a circular cursor
-    circular_widget = selection_widget.circular_cursor_widget
+    circular_widget = selection_widget.cursor_selection_widget
     circular_widget._add_cursor()
     circular_widget._apply_selection()
 
@@ -456,7 +456,7 @@ def test_selection_tab_mode_switching_integration(make_viewer_model):
     selection_widget.selection_mode_combobox.setCurrentText("Manual Selection")
 
     # Verify UI switched
-    assert selection_widget.stacked_widget.currentIndex() == 4
+    assert selection_widget.stacked_widget.currentIndex() == 2
     assert selection_widget.is_manual_selection_mode()
 
     # Verify circular cursor layer is now hidden
@@ -473,7 +473,7 @@ def test_selection_tab_mode_switching_integration(make_viewer_model):
     assert manual_layer.visible is True
 
     # Switch back to circular cursor mode
-    selection_widget.selection_mode_combobox.setCurrentText("Circular Cursor")
+    selection_widget.selection_mode_combobox.setCurrentText("Cursor Selection")
 
     # Verify we're back in circular cursor mode
     assert not selection_widget.is_manual_selection_mode()
@@ -541,7 +541,7 @@ def test_toolbar_shown_only_in_manual_selection_mode(make_viewer_model):
 
     # Test circular cursor mode - toolbar should be hidden
     plotter.selection_tab.selection_mode_combobox.setCurrentText(
-        "Circular Cursor"
+        "Cursor Selection"
     )
     with patch.object(plotter, '_set_selection_visibility') as mock_vis:
         plotter._show_tab_artists(plotter.selection_tab)
@@ -570,7 +570,7 @@ def test_toolbar_visibility_on_mode_change_within_selection_tab(
 
     # Start in circular cursor mode
     plotter.selection_tab.selection_mode_combobox.setCurrentText(
-        "Circular Cursor"
+        "Cursor Selection"
     )
 
     # Mock _set_selection_visibility to track calls
@@ -589,7 +589,7 @@ def test_toolbar_visibility_on_mode_change_within_selection_tab(
     with patch.object(plotter, '_set_selection_visibility') as mock_vis:
         # Switch back to circular cursor mode
         plotter.selection_tab.selection_mode_combobox.setCurrentText(
-            "Circular Cursor"
+            "Cursor Selection"
         )
 
         # Should call _set_selection_visibility(False) to hide toolbar
@@ -619,7 +619,7 @@ def test_circular_cursor_and_manual_selection_visibility_coordination(
     ):
         # Switch to circular cursor mode
         plotter.selection_tab.selection_mode_combobox.setCurrentText(
-            "Circular Cursor"
+            "Cursor Selection"
         )
         plotter._show_tab_artists(plotter.selection_tab)
 

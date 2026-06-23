@@ -1003,44 +1003,19 @@ def test_components_dropdown_menu_and_cursor_selection(
     # 1. Setup mock cursors in Selection tab
     selection_tab = parent.selection_tab
 
-    # A. Circular cursor
-    circ_widget = selection_tab.circular_cursor_widget
-    circ_widget._cursors.append(
-        {
-            'g': 0.4,
-            's': 0.3,
-            'radius': 0.05,
-            'harmonic': 1,
-            'color': circ_widget._get_next_color(),
-            'patch': None,
-        }
+    # A-C. Cursor-selection cursors (circular / polar / elliptical)
+    cursor_widget = selection_tab.cursor_selection_widget
+    cursor_widget._add_cursor(
+        cursor_type="circular", g=0.4, s=0.3, radius=0.05
     )
-
-    # B. Polar cursor
-    polar_widget = selection_tab.polar_cursor_widget
-    polar_widget._cursors.append(
-        {
-            'phase_min': 10.0,
-            'phase_max': 30.0,
-            'modulation_min': 0.4,
-            'modulation_max': 0.6,
-            'harmonic': 1,
-            'color': polar_widget._get_next_color(),
-            'patch': None,
-        }
+    cursor_widget._add_cursor(
+        cursor_type="polar",
+        phase_min=10.0,
+        phase_max=30.0,
+        modulation_min=0.4,
+        modulation_max=0.6,
     )
-
-    # C. Elliptical cursor
-    ell_widget = selection_tab.elliptical_cursor_widget
-    ell_widget._cursors.append(
-        {
-            'g': 0.35,
-            's': 0.25,
-            'harmonic': 1,
-            'color': ell_widget._get_next_color(),
-            'patch': None,
-        }
-    )
+    cursor_widget._add_cursor(cursor_type="elliptic", g=0.35, s=0.25)
 
     # D. GMM Cluster
     cluster_widget = selection_tab.automatic_clustering_widget
@@ -1072,8 +1047,8 @@ def test_components_dropdown_menu_and_cursor_selection(
     cursor_actions = cursor_submenu.actions()
     assert len(cursor_actions) == 4
     assert "Circular 1" in cursor_actions[0].text()
-    assert "Polar 1" in cursor_actions[1].text()
-    assert "Elliptical 1" in cursor_actions[2].text()
+    assert "Polar 2" in cursor_actions[1].text()
+    assert "Elliptical 3" in cursor_actions[2].text()
     assert "Cluster 1" in cursor_actions[3].text()
 
     # 3. Trigger selecting from cursor center (each type)

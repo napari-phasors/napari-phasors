@@ -3505,31 +3505,23 @@ class PlotterWidget(QWidget):
             mode_idx = (
                 self.selection_tab.selection_mode_combobox.currentIndex()
             )
-            w_circ = self.selection_tab.circular_cursor_widget
-            w_pol = self.selection_tab.polar_cursor_widget
-            w_ell = self.selection_tab.elliptical_cursor_widget
+            w_cursor = self.selection_tab.cursor_selection_widget
             w_auto = self.selection_tab.automatic_clustering_widget
 
             if visible:
                 if mode_idx == 0:
-                    w_circ.redraw_all_patches()
+                    w_cursor.redraw_all_patches()
                 elif mode_idx == 1:
-                    w_pol.redraw_all_patches()
-                elif mode_idx == 2:
-                    w_ell.redraw_all_patches()
-                elif mode_idx == 3:
                     w_auto.redraw_all_patches()
-                elif mode_idx == 4:
+                elif mode_idx == 2:
                     self.selection_tab.update_phasor_plot_with_selection_id(
                         self.selection_tab.selection_id
                     )
             else:
-                w_circ.clear_all_patches()
-                w_pol.clear_all_patches()
-                w_ell.clear_all_patches()
+                w_cursor.clear_all_patches()
                 w_auto.clear_all_patches()
                 # Clear manual selection from plot when not visible
-                if mode_idx == 4:
+                if mode_idx == 2:
                     self.plot(selection_id_data=None)
 
     def _set_components_visibility(self, visible):
