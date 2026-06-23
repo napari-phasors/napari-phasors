@@ -4887,6 +4887,19 @@ class PlotterWidget(QWidget):
             self.components_tab.histogram_widget,
             title="Components Statistics",
         )
+
+        # Mirror the component selector at the top of the statistics dock so
+        # the component can be changed without opening the histogram dock.
+        stats_dock_layout = self.components_statistics_dock_widget.layout()
+        stats_component_selector = QWidget()
+        stats_selector_layout = QHBoxLayout(stats_component_selector)
+        stats_selector_layout.setContentsMargins(4, 4, 4, 0)
+        stats_selector_layout.addWidget(QLabel("Component:"))
+        stats_selector_layout.addWidget(
+            self.components_tab.stats_component_combobox, 1
+        )
+        stats_dock_layout.insertWidget(0, stats_component_selector)
+
         self._components_stats_page_idx = self._statistics_stack.addWidget(
             self.components_statistics_dock_widget
         )

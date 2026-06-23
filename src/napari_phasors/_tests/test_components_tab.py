@@ -883,6 +883,104 @@ def test_components_fraction_range_updates_layer_and_is_reversible(
     )
 
 
+def test_components_second_component_histogram_inverts_fraction(
+    make_viewer_model,
+    qtbot,
+):
+    """Second component option shows 1 - first fraction with reversed colormap."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(parent.components_tab)
+    comp_widget.analysis_type_combo.setCurrentText("Linear Projection")
+
+    comp_widget.components[0].g_edit.setText("0.2")
+    comp_widget.components[0].s_edit.setText("0.1")
+    comp_widget._on_component_coords_changed(0)
+    comp_widget.components[1].g_edit.setText("0.8")
+    comp_widget.components[1].s_edit.setText("0.5")
+    comp_widget._on_component_coords_changed(1)
+    comp_widget._run_analysis()
+
+    name1, name2 = comp_widget._linear_projection_component_names()
+    assert name1 is not None and name2 is not None
+
+    # Both components must be selectable in the histogram combobox.
+    assert comp_widget.histogram_component_combobox.findText(name1) >= 0
+    assert comp_widget.histogram_component_combobox.findText(name2) >= 0
+
+    fraction_layers_map, invert = comp_widget._resolve_histogram_component(
+        name2
+    )
+    assert invert is True
+    assert fraction_layers_map  # underlying first-component layers
+
+    first_layer = comp_widget.comp1_fractions_layer
+
+    # Selecting the second component displays the inverted distribution.
+    comp_widget.histogram_component_combobox.setCurrentText(name2)
+    comp_widget.update_component_histogram()
+
+    displayed = comp_widget.histogram_widget._raw_valid_data
+    expected = 1.0 - first_layer.data
+    expected = expected[np.isfinite(expected)]
+    np.testing.assert_allclose(
+        np.sort(displayed),
+        np.sort(expected),
+        rtol=1e-6,
+        atol=1e-9,
+    )
+
+    # The histogram colormap must be the reversed first-component colormap.
+    np.testing.assert_allclose(
+        comp_widget.histogram_widget.colormap_colors,
+        np.asarray(first_layer.colormap.colors)[::-1],
+    )
+
+
+def test_components_stats_combobox_mirrors_histogram_combobox(
+    make_viewer_model,
+    qtbot,
+):
+    """Statistics-dock component selector stays in sync with the histogram one."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(parent.components_tab)
+    comp_widget.analysis_type_combo.setCurrentText("Linear Projection")
+
+    comp_widget.components[0].g_edit.setText("0.2")
+    comp_widget.components[0].s_edit.setText("0.1")
+    comp_widget._on_component_coords_changed(0)
+    comp_widget.components[1].g_edit.setText("0.8")
+    comp_widget.components[1].s_edit.setText("0.5")
+    comp_widget._on_component_coords_changed(1)
+    comp_widget._run_analysis()
+
+    hist_combo = comp_widget.histogram_component_combobox
+    stats_combo = comp_widget.stats_component_combobox
+
+    # Both comboboxes expose the same entries.
+    hist_items = [hist_combo.itemText(i) for i in range(hist_combo.count())]
+    stats_items = [stats_combo.itemText(i) for i in range(stats_combo.count())]
+    assert hist_items == stats_items
+    assert len(hist_items) >= 2
+
+    # Changing the statistics combobox updates the histogram combobox.
+    stats_combo.setCurrentText(hist_items[1])
+    assert hist_combo.currentText() == hist_items[1]
+
+    # Changing the histogram combobox updates the statistics combobox.
+    hist_combo.setCurrentText(hist_items[0])
+    assert stats_combo.currentText() == hist_items[0]
+
+
 def test_components_on_image_layer_changed_runs_teardown_and_restore(
     make_viewer_model,
     qtbot,
