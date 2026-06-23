@@ -1,5 +1,5 @@
 import contextlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import matplotlib.colors as mcolors
@@ -63,6 +63,8 @@ class ComponentState:
     number_label: QLabel | None = None
     text_offset: tuple[float, float] = (0.02, 0.02)
     label: str = "Component"
+    # Layer names last used to compute the phasor center for this component.
+    phasor_center_layers: list[str] = field(default_factory=list)
 
 
 class ColorActionWidget(QLabel):
@@ -123,7 +125,7 @@ class ColorActionWidget(QLabel):
 
 
 class PhasorCenterSelectionDialog(QDialog):
-    def __init__(self, layers, parent=None):
+    def __init__(self, layers, parent=None, preselected=None):
         super().__init__(parent)
         self.setWindowTitle("Select Phasor Center Layers")
         self.setMinimumWidth(360)
@@ -147,14 +149,11 @@ class PhasorCenterSelectionDialog(QDialog):
         )
         self.layer_combo.addItems(layers)
 
-        # Pre-select currently selected layers in napari / plotter widget if possible
-        if (
-            parent
-            and hasattr(parent, 'parent_widget')
-            and parent.parent_widget
-        ):
-            selected_names = parent.parent_widget.get_selected_layer_names()
-            checked = [name for name in selected_names if name in layers]
+        # Pre-select only the layers that were previously used to compute the
+        # phasor center for this component. By default (no prior selection)
+        # nothing is checked.
+        if preselected:
+            checked = [name for name in preselected if name in layers]
             if checked:
                 self.layer_combo.setCheckedItems(checked)
 
@@ -671,12 +670,28 @@ class ComponentsWidget(QWidget):
             show_warning("No active layers with phasor data found.")
             return
 
-        dialog = PhasorCenterSelectionDialog(available_layers, parent=self)
+        comp = self.components[idx]
+        preselected = [
+            name
+            for name in (comp.phasor_center_layers or [])
+            if name in available_layers
+        ]
+
+        dialog = PhasorCenterSelectionDialog(
+            available_layers, parent=self, preselected=preselected
+        )
         if dialog.exec() == QDialog.Accepted:
             selected_layer_names = dialog.get_selected_layers()
             if not selected_layer_names:
                 show_warning("No layers selected.")
                 return
+
+            # Remember the selection for this component so reopening the
+            # dialog restores it.
+            comp.phasor_center_layers = list(selected_layer_names)
+            self._update_component_phasor_center_layers(
+                idx, comp.phasor_center_layers
+            )
 
             pooled_mean_list = []
             pooled_g_list = []
@@ -1020,6 +1035,10 @@ class ComponentsWidget(QWidget):
                     if name:
                         comp.name_edit.setText(name)
 
+                    comp.phasor_center_layers = list(
+                        comp_data.get('phasor_center_layers', [])
+                    )
+
                     gs_harmonics = comp_data.get('gs_harmonics', {})
 
                     if current_harmonic_key in gs_harmonics:
@@ -1174,6 +1193,10 @@ class ComponentsWidget(QWidget):
 
                     if name:
                         comp.name_edit.setText(name)
+
+                    comp.phasor_center_layers = list(
+                        comp_data.get('phasor_center_layers', [])
+                    )
 
                     gs_harmonics = comp_data.get('gs_harmonics', {})
 
@@ -3888,6 +3911,16 @@ class ComponentsWidget(QWidget):
 
         comp_data['name'] = name if name else None
 
+    def _update_component_phasor_center_layers(
+        self, idx: int, layer_names: list[str]
+    ):
+        """Persist the layers used to compute this component's phasor center."""
+        comp_data = self._ensure_component_metadata(idx)
+        if comp_data is None:
+            return
+
+        comp_data['phasor_center_layers'] = list(layer_names)
+
     def _update_component_colormap(
         self,
         idx: int,
@@ -4513,6 +4546,20 @@ class ComponentsWidget(QWidget):
                 if name.endswith(sep + old_name):
                     comp_part = name[: -len(sep + old_name)]
                     layer.name = f"{comp_part}{sep}{new_name}"
+
+        # Keep each component's remembered phasor-center selection in sync so a
+        # renamed layer stays selected instead of being dropped.
+        for comp in self.components:
+            if comp is None or not comp.phasor_center_layers:
+                continue
+            if old_name in comp.phasor_center_layers:
+                comp.phasor_center_layers = [
+                    new_name if n == old_name else n
+                    for n in comp.phasor_center_layers
+                ]
+                self._update_component_phasor_center_layers(
+                    comp.idx, comp.phasor_center_layers
+                )
 
     def _get_fraction_layers_for_component(self, component_name):
         """Get all fraction layers in the viewer for a given component name.

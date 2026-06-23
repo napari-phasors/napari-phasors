@@ -1186,6 +1186,60 @@ def test_components_select_from_phasor_center_and_generalized_auto_place(
     assert float(comp2.g_edit.text()) > 0
 
 
+def test_components_phasor_center_remembers_selection_and_rename(
+    make_viewer_model,
+    qtbot,
+):
+    """Selecting phasor-center layers is remembered per component and survives renames."""
+    from unittest.mock import patch
+
+    from qtpy.QtWidgets import QDialog
+
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    layer.metadata["settings"] = {"frequency": 80.0}
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+
+    comp0 = comp_widget.components[0]
+    # No selection remembered initially.
+    assert comp0.phasor_center_layers == []
+
+    # Select the layer for component 1's phasor center.
+    with patch(
+        "napari_phasors.components_tab.PhasorCenterSelectionDialog"
+    ) as MockDialog:
+        mock_dialog_instance = MockDialog.return_value
+        mock_dialog_instance.exec.return_value = QDialog.Accepted
+        mock_dialog_instance.get_selected_layers.return_value = [layer.name]
+
+        comp_widget._select_from_phasor_center(0)
+
+    # The selection is remembered on the component and persisted to metadata.
+    assert comp0.phasor_center_layers == [layer.name]
+    settings = layer.metadata["settings"]["component_analysis"]
+    assert settings["components"]["0"]["phasor_center_layers"] == [layer.name]
+
+    # Reopening the dialog pre-selects the previously chosen layers.
+    with patch(
+        "napari_phasors.components_tab.PhasorCenterSelectionDialog"
+    ) as MockDialog:
+        mock_dialog_instance = MockDialog.return_value
+        mock_dialog_instance.exec.return_value = QDialog.Rejected
+        comp_widget._select_from_phasor_center(0)
+        _, kwargs = MockDialog.call_args
+        assert kwargs.get("preselected") == [layer.name]
+
+    # Renaming the layer updates the remembered selection instead of dropping it.
+    new_name = "renamed_layer"
+    comp_widget.rename_layer(layer.name, new_name)
+    assert comp0.phasor_center_layers == [new_name]
+    assert settings["components"]["0"]["phasor_center_layers"] == [new_name]
+
+
 def test_color_action_widget_and_dialog(make_viewer_model, qtbot):
     """Test ColorActionWidget color conversions, mouse events, and PhasorCenterSelectionDialog."""
     from qtpy.QtCore import QPointF, Qt
@@ -1265,8 +1319,14 @@ def test_color_action_widget_and_dialog(make_viewer_model, qtbot):
 
     dialog = PhasorCenterSelectionDialog([layer.name], parent=comp_widget)
     assert dialog.windowTitle() == "Select Phasor Center Layers"
-    # The active layer is automatically checked on init
-    assert layer.name in dialog.get_selected_layers()
+    # By default nothing is checked on init.
+    assert dialog.get_selected_layers() == []
+
+    # When preselected layers are provided, they are checked on init.
+    dialog_pre = PhasorCenterSelectionDialog(
+        [layer.name], parent=comp_widget, preselected=[layer.name]
+    )
+    assert layer.name in dialog_pre.get_selected_layers()
 
 
 # ---------------------------------------------------------------------------
