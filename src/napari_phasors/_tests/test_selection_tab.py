@@ -299,12 +299,10 @@ def test_cursor_selection_widget_initialization(make_viewer_model, qtbot):
     assert widget.layout().count() > 0
 
     assert hasattr(widget, 'add_cursor_button')
-    assert hasattr(widget, 'clear_all_button')
     assert hasattr(widget, 'calculate_button')
     assert hasattr(widget, 'autoupdate_check')
-    assert widget.add_cursor_button.text() == 'Add Cursor'
-    assert widget.clear_all_button.text() == 'Clear All'
-    assert widget.calculate_button.text() == 'Calculate'
+    assert "Add Cursor" in widget.add_cursor_button.text()
+    assert "Calculate" in widget.calculate_button.text()
     assert widget.autoupdate_check.text() == 'Autoupdate'
     assert not widget.autoupdate_check.isChecked()
 
@@ -965,17 +963,144 @@ def test_elliptical_cursor_drag_cycle(make_viewer_model, qtbot):
     assert len(widget._cursors) == 1
 
 
-def test_polar_cursor_not_draggable(make_viewer_model, qtbot):
-    """Polar cursor patches are not pickable/draggable."""
+def test_polar_cursor_not_translated_but_edge_editable(
+    make_viewer_model, qtbot
+):
+    """Polar cursors are not translated; their edges are pickable/editable."""
     viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
     viewer.add_layer(layer)
     parent = PlotterWidget(viewer)
     widget = parent.selection_tab.cursor_selection_widget
 
-    widget._add_cursor(cursor_type="polar")
-    patch = widget._cursors[0]['patch']
-    assert patch.get_picker() in (False, None)
+    widget._add_cursor(
+        cursor_type="polar",
+        phase_min=10.0,
+        phase_max=30.0,
+        modulation_min=0.4,
+        modulation_max=0.6,
+    )
+    cursor = widget._cursors[0]
+    # The polar patch is pickable (so its edges can be grabbed).
+    assert cursor['patch'].get_picker() is True
+
+
+def test_polar_closest_edge_detection(make_viewer_model, qtbot):
+    """The nearest polar boundary is identified from a click position."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+    widget._add_cursor(
+        cursor_type="polar",
+        phase_min=10.0,
+        phase_max=30.0,
+        modulation_min=0.4,
+        modulation_max=0.8,
+    )
+    cursor = widget._cursors[0]
+
+    def point(angle_deg, r):
+        return (
+            r * np.cos(np.deg2rad(angle_deg)),
+            r * np.sin(np.deg2rad(angle_deg)),
+        )
+
+    assert (
+        widget._closest_polar_edge(cursor, point(20, 0.8)) == 'modulation_max'
+    )
+    assert (
+        widget._closest_polar_edge(cursor, point(20, 0.4)) == 'modulation_min'
+    )
+    assert widget._closest_polar_edge(cursor, point(10, 0.6)) == 'phase_min'
+    assert widget._closest_polar_edge(cursor, point(30, 0.6)) == 'phase_max'
+
+
+def test_polar_edge_drag_changes_value_not_center(make_viewer_model, qtbot):
+    """Dragging a polar edge changes its bound, leaving the wedge centered."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+    widget._add_cursor(
+        cursor_type="polar",
+        phase_min=10.0,
+        phase_max=30.0,
+        modulation_min=0.4,
+        modulation_max=0.6,
+    )
+    cursor = widget._cursors[0]
+
+    # Pick the outer arc (modulation_max) at 20 degrees, r=0.6.
+    pick = Mock()
+    pick.artist = cursor['patch']
+    pick.mouseevent.xdata = 0.6 * np.cos(np.deg2rad(20))
+    pick.mouseevent.ydata = 0.6 * np.sin(np.deg2rad(20))
+    with patch.object(
+        QApplication, 'keyboardModifiers', return_value=Qt.NoModifier
+    ):
+        widget._on_pick(pick)
+    assert widget._drag_mode == 'polar_edge'
+    assert widget._polar_edge == 'modulation_max'
+
+    # Drag outward to r=0.85 at the same angle.
+    motion = Mock()
+    motion.xdata = 0.85 * np.cos(np.deg2rad(20))
+    motion.ydata = 0.85 * np.sin(np.deg2rad(20))
+    with patch.object(
+        QApplication, 'keyboardModifiers', return_value=Qt.NoModifier
+    ):
+        widget._on_motion(motion)
+
+    assert np.isclose(cursor['modulation_max'], 0.85, atol=1e-6)
+    assert np.isclose(cursor['mod_max_spin'].value(), 0.85, atol=1e-2)
+    # Phase bounds and the modulation_min are untouched.
+    assert cursor['phase_min'] == 10.0
+    assert cursor['phase_max'] == 30.0
+    assert cursor['modulation_min'] == 0.4
+
+    widget._on_release(Mock())
+    assert widget._dragging_cursor is None
+
+
+def test_polar_edge_drag_changes_phase(make_viewer_model, qtbot):
+    """Dragging the phase_max edge changes the phase bound to the new angle."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+    widget._add_cursor(
+        cursor_type="polar",
+        phase_min=10.0,
+        phase_max=30.0,
+        modulation_min=0.4,
+        modulation_max=0.6,
+    )
+    cursor = widget._cursors[0]
+
+    pick = Mock()
+    pick.artist = cursor['patch']
+    pick.mouseevent.xdata = 0.5 * np.cos(np.deg2rad(30))
+    pick.mouseevent.ydata = 0.5 * np.sin(np.deg2rad(30))
+    with patch.object(
+        QApplication, 'keyboardModifiers', return_value=Qt.NoModifier
+    ):
+        widget._on_pick(pick)
+    assert widget._polar_edge == 'phase_max'
+
+    motion = Mock()
+    motion.xdata = 0.5 * np.cos(np.deg2rad(45))
+    motion.ydata = 0.5 * np.sin(np.deg2rad(45))
+    with patch.object(
+        QApplication, 'keyboardModifiers', return_value=Qt.NoModifier
+    ):
+        widget._on_motion(motion)
+
+    assert np.isclose(cursor['phase_max'], 45.0, atol=1e-6)
+    assert cursor['phase_min'] == 10.0
 
 
 # ---------------------------------------------------------------------------
@@ -1791,13 +1916,12 @@ def test_recreate_manual_selection_layer(make_viewer_model, qtbot):
 
 
 def test_cursor_widget_control_tooltips(make_viewer_model, qtbot):
-    """The add/clear/calculate/autoupdate controls expose tooltips."""
+    """The add/calculate/autoupdate controls expose tooltips."""
     viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.selection_tab.cursor_selection_widget
 
     assert widget.add_cursor_button.toolTip() != ""
-    assert widget.clear_all_button.toolTip() != ""
     assert widget.calculate_button.toolTip() != ""
     assert widget.autoupdate_check.toolTip() != ""
 
@@ -1849,9 +1973,11 @@ def test_cursor_visibility_button_defaults(make_viewer_model, qtbot):
     widget._add_cursor()
     cursor = widget._cursors[0]
     assert cursor['visible'] is True
-    assert cursor['visibility_button'].isChecked() is True
-    # Eye glyph shown when visible.
-    assert cursor['visibility_button'].text() == "\U0001f441"
+    # The eye button is a plain (non-checkable) button, like the remove "×".
+    assert cursor['visibility_button'].isCheckable() is False
+    # Plain (un-crossed) white eye icon shown when visible.
+    assert not cursor['visibility_button'].icon().isNull()
+    assert cursor['visibility_button'].property("eyeCrossed") is False
 
 
 def test_cursor_visibility_toggle_hides_patch(make_viewer_model, qtbot):
@@ -1866,14 +1992,17 @@ def test_cursor_visibility_toggle_hides_patch(make_viewer_model, qtbot):
     cursor = widget._cursors[0]
     assert cursor['patch'] is not None
 
-    cursor['visibility_button'].setChecked(False)
+    cursor['visibility_button'].click()
     assert cursor['visible'] is False
     assert cursor['patch'] is None
-    assert cursor['visibility_button'].text() == "⊘"
+    # Crossed-out white eye when hidden (same colour, slashed shape).
+    assert cursor['visibility_button'].property("eyeCrossed") is True
 
-    cursor['visibility_button'].setChecked(True)
+    # Showing it again clears the slash and recreates the patch.
+    cursor['visibility_button'].click()
     assert cursor['visible'] is True
     assert cursor['patch'] is not None
+    assert cursor['visibility_button'].property("eyeCrossed") is False
 
 
 def test_cursor_visibility_excludes_from_selection(make_viewer_model, qtbot):
@@ -1901,7 +2030,7 @@ def test_cursor_visibility_excludes_from_selection(make_viewer_model, qtbot):
     )
 
     # Hide the second cursor -> only the first contributes (id 1).
-    widget._cursors[1]['visibility_button'].setChecked(False)
+    widget._cursors[1]['visibility_button'].click()
     assert set(np.unique(labels_layer.data)) == {0, 1}
     assert int(np.count_nonzero(labels_layer.data)) == cursor0_mask_count
 
@@ -1910,7 +2039,7 @@ def test_cursor_visibility_excludes_from_selection(make_viewer_model, qtbot):
     assert widget._cursors[1]['percentage_label'].text() == "-"
 
     # Show it again -> id 2 returns.
-    widget._cursors[1]['visibility_button'].setChecked(True)
+    widget._cursors[1]['visibility_button'].click()
     assert 2 in np.unique(labels_layer.data)
 
 
@@ -1936,7 +2065,7 @@ def test_cursor_visibility_overlap_logic(make_viewer_model, qtbot):
     assert 2 in np.unique(labels_layer.data)
 
     # Hide the second: overlap pixels fall back to the first cursor (id 1).
-    widget._cursors[1]['visibility_button'].setChecked(False)
+    widget._cursors[1]['visibility_button'].click()
     assert set(np.unique(labels_layer.data)) == {0, 1}
     assert int(np.count_nonzero(labels_layer.data)) == int(
         np.sum(cursor0_mask)
@@ -1961,11 +2090,11 @@ def test_cursor_visibility_recompute_when_layer_exists(
     assert layer_name in [ly.name for ly in viewer.layers]
 
     # Hiding the only cursor removes the (now empty) selection layer.
-    widget._cursors[0]['visibility_button'].setChecked(False)
+    widget._cursors[0]['visibility_button'].click()
     assert layer_name not in [ly.name for ly in viewer.layers]
 
     # Showing it again recreates the layer.
-    widget._cursors[0]['visibility_button'].setChecked(True)
+    widget._cursors[0]['visibility_button'].click()
     assert layer_name in [ly.name for ly in viewer.layers]
 
 
@@ -1983,7 +2112,7 @@ def test_cursor_visibility_no_recompute_without_layer(
     layer_name = f"Cursor Selection: {intensity_image_layer.name}"
     assert layer_name not in [ly.name for ly in viewer.layers]
 
-    widget._cursors[0]['visibility_button'].setChecked(False)
+    widget._cursors[0]['visibility_button'].click()
     # No selection layer is created just by toggling.
     assert layer_name not in [ly.name for ly in viewer.layers]
     assert widget._cursors[0]['patch'] is None
@@ -1999,7 +2128,7 @@ def test_cursor_visibility_persisted_in_metadata(make_viewer_model, qtbot):
 
     widget._add_cursor(cursor_type="circular", g=0.5, s=0.3, radius=0.1)
     widget._add_cursor(cursor_type="circular", g=0.6, s=0.4, radius=0.1)
-    widget._cursors[1]['visibility_button'].setChecked(False)
+    widget._cursors[1]['visibility_button'].click()
     widget._apply_selection()
 
     cursors = intensity_image_layer.metadata["settings"]["selections"][
@@ -2032,7 +2161,7 @@ def test_cursor_visibility_restored_from_metadata(make_viewer_model, qtbot):
 
     assert len(w._cursors) == 1
     assert w._cursors[0]['visible'] is False
-    assert w._cursors[0]['visibility_button'].isChecked() is False
+    assert w._cursors[0]['visibility_button'].property("eyeCrossed") is True
     assert w._cursors[0]['patch'] is None
 
 

@@ -13,8 +13,15 @@ from phasorpy.cursor import (
     mask_from_polar_cursor,
 )
 from qtpy import uic
-from qtpy.QtCore import Qt, Signal
-from qtpy.QtGui import QColor
+from qtpy.QtCore import QPointF, QSize, Qt, Signal
+from qtpy.QtGui import (
+    QColor,
+    QIcon,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+)
 from qtpy.QtWidgets import (
     QApplication,
     QColorDialog,
@@ -35,6 +42,43 @@ from qtpy.QtWidgets import (
 from superqt import QToggleSwitch
 
 from ._utils import colormap_to_dict
+
+
+def _make_eye_icon(color, size=18, crossed=False):
+    """Return a simple grey eye-outline ``QIcon`` drawn in ``color``.
+
+    The eye is an almond outline with a small pupil, stroked (not filled).
+    When ``crossed`` is True a diagonal slash is drawn across it (the
+    standard "hidden" eye), keeping the same colour as the plain eye.
+    """
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    pen = QPen(QColor(color))
+    pen.setWidthF(1.4)
+    painter.setPen(pen)
+    painter.setBrush(Qt.NoBrush)
+
+    margin = size * 0.14
+    mid_y = size / 2.0
+    path = QPainterPath()
+    path.moveTo(margin, mid_y)
+    path.quadTo(size / 2.0, margin, size - margin, mid_y)  # upper lid
+    path.quadTo(size / 2.0, size - margin, margin, mid_y)  # lower lid
+    painter.drawPath(path)
+
+    pupil_r = size * 0.16
+    painter.drawEllipse(QPointF(size / 2.0, mid_y), pupil_r, pupil_r)
+
+    if crossed:
+        painter.drawLine(
+            QPointF(margin, size - margin),
+            QPointF(size - margin, margin),
+        )
+
+    painter.end()
+    return QIcon(pixmap)
 
 
 class SelectionWidget(QWidget):
@@ -1712,6 +1756,7 @@ class CursorSelectionWidget(QWidget):
         self._drag_mode = None
         self._drag_start_angle = 0.0
         self._drag_start_cursor_angle = 0.0
+        self._polar_edge = None
 
         # Autoupdate state (not stored in metadata)
         self._autoupdate_enabled = False
@@ -1735,31 +1780,29 @@ class CursorSelectionWidget(QWidget):
         self._rows_layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._rows_container)
 
-        # Buttons for add and clear
-        buttons_layout = QHBoxLayout()
-        self.add_cursor_button = QPushButton("Add Cursor")
+        # "Add Cursor" button, full width.
+        self.add_cursor_button = QPushButton("+ Add Cursor")
         self.add_cursor_button.setToolTip(
             "Add a new cursor row (defaults to a circular cursor)."
         )
         self.add_cursor_button.clicked.connect(lambda: self._add_cursor())
-        buttons_layout.addWidget(self.add_cursor_button)
-        self.clear_all_button = QPushButton("Clear All")
-        self.clear_all_button.setToolTip(
-            "Remove all cursors and the selection layer."
-        )
-        self.clear_all_button.clicked.connect(self._clear_all_cursors)
-        buttons_layout.addWidget(self.clear_all_button)
-        layout.addLayout(buttons_layout)
+        layout.addWidget(self.add_cursor_button)
 
-        # Calculate button and autoupdate toggle
-        calculate_layout = QHBoxLayout()
-        self.calculate_button = QPushButton("Calculate")
+        # Prominent "Calculate" button — the primary action of the tab.
+        self.calculate_button = QPushButton("Calculate Selection")
         self.calculate_button.setToolTip(
             "Compute the selection from the current (visible) cursors."
         )
+        # Keep it prominent (taller, bold) but the same color as the
+        # "+ Add Cursor" button (the default button background).
+        self.calculate_button.setMinimumHeight(34)
+        self.calculate_button.setStyleSheet(
+            "QPushButton { font-weight: bold; }"
+        )
         self.calculate_button.clicked.connect(self._on_calculate_clicked)
-        calculate_layout.addWidget(self.calculate_button)
+        layout.addWidget(self.calculate_button)
 
+        # Autoupdate toggle.
         self.autoupdate_checkbox = QWidget()
         autoupdate_layout = QHBoxLayout(self.autoupdate_checkbox)
         autoupdate_layout.setContentsMargins(0, 0, 0, 0)
@@ -1771,8 +1814,7 @@ class CursorSelectionWidget(QWidget):
         )
         self.autoupdate_check.toggled.connect(self._on_autoupdate_changed)
         autoupdate_layout.addWidget(self.autoupdate_check)
-        calculate_layout.addWidget(self.autoupdate_checkbox)
-        layout.addLayout(calculate_layout)
+        layout.addWidget(self.autoupdate_checkbox)
 
         layout.addStretch()
 
@@ -2072,10 +2114,11 @@ class CursorSelectionWidget(QWidget):
             "Percentage of valid pixels inside this cursor's region."
         )
 
+        # A plain (non-checkable) button so its background always matches the
+        # neighbouring "×" remove button; the icon conveys the visible state.
         visibility_button = QPushButton()
-        visibility_button.setCheckable(True)
-        visibility_button.setChecked(cursor['visible'])
         visibility_button.setFixedSize(25, 25)
+        visibility_button.setIconSize(QSize(18, 18))
 
         remove_button = QPushButton("×")
         remove_button.setFixedSize(25, 25)
@@ -2145,36 +2188,39 @@ class CursorSelectionWidget(QWidget):
         color_button.color_changed.connect(
             lambda _c, c=cursor: self._on_cursor_changed(c)
         )
-        visibility_button.toggled.connect(
-            lambda _checked=False, c=cursor: self._on_cursor_visibility_toggled(
-                c
-            )
+        visibility_button.clicked.connect(
+            lambda _=False, c=cursor: self._on_cursor_visibility_toggled(c)
         )
         remove_button.clicked.connect(
             lambda _=False, c=cursor: self._remove_cursor(c)
         )
 
+    # The eye outline and slash are always drawn white; visibility is
+    # conveyed by the slash, not by colour.
+    EYE_COLOR = "white"
+
     def _update_visibility_button(self, cursor):
-        """Update the eye button's glyph and tooltip from ``visible`` state."""
+        """Update the eye icon and tooltip from the ``visible`` state."""
         button = cursor['visibility_button']
         if cursor['visible']:
-            button.setText("\U0001f441")  # eye
             button.setToolTip(
                 "Cursor is shown and included in the selection. "
                 "Click to hide it."
             )
         else:
-            button.setText("⊘")  # circled slash
             button.setToolTip(
                 "Cursor is hidden and excluded from the selection. "
                 "Click to show it."
             )
+        crossed = not cursor['visible']
+        button.setIcon(_make_eye_icon(self.EYE_COLOR, crossed=crossed))
+        button.setProperty("eyeCrossed", crossed)
 
     def _on_cursor_visibility_toggled(self, cursor):
         """Toggle a cursor's visibility, recomputing the selection."""
         if cursor not in self._cursors:
             return
-        cursor['visible'] = cursor['visibility_button'].isChecked()
+        cursor['visible'] = not cursor['visible']
         self._update_visibility_button(cursor)
         self._update_cursor_patch(cursor)
         # Recompute the selection so hidden cursors are excluded (and shown
@@ -2365,7 +2411,7 @@ class CursorSelectionWidget(QWidget):
                 edgecolor=edge_rgba,
                 linewidth=2,
                 zorder=10,
-                picker=False,
+                picker=True,
             )
 
         cursor['patch'] = ax.add_patch(patch)
@@ -2755,7 +2801,14 @@ class CursorSelectionWidget(QWidget):
                 click_pos = (event.mouseevent.xdata, event.mouseevent.ydata)
                 modifiers = QApplication.keyboardModifiers()
                 is_shift = bool(modifiers & Qt.ShiftModifier)
-                if cursor['type'] == "elliptic" and is_shift:
+                if cursor['type'] == "polar":
+                    # Polar cursors are not translated; instead the nearest
+                    # edge (a phase or modulation bound) is dragged.
+                    self._drag_mode = 'polar_edge'
+                    self._polar_edge = self._closest_polar_edge(
+                        cursor, click_pos
+                    )
+                elif cursor['type'] == "elliptic" and is_shift:
                     self._drag_mode = 'rotate'
                     if click_pos[0] is not None and click_pos[1] is not None:
                         dy = click_pos[1] - cursor['s']
@@ -2770,6 +2823,37 @@ class CursorSelectionWidget(QWidget):
                             cursor['s'] - click_pos[1],
                         )
                 break
+
+    @staticmethod
+    def _closest_polar_edge(cursor, click_pos):
+        """Return which polar boundary is nearest to ``click_pos``.
+
+        One of ``'phase_min'``, ``'phase_max'``, ``'modulation_min'`` or
+        ``'modulation_max'``. Returns ``None`` if the click is invalid.
+        """
+        g, s = click_pos
+        if g is None or s is None:
+            return None
+        r = float(np.hypot(g, s))
+        theta = float(np.degrees(np.arctan2(s, g)))
+
+        def angle_diff(a, b):
+            return abs(((a - b + 180.0) % 360.0) - 180.0)
+
+        # Distances (in data units) to each of the four boundaries.
+        d_inner = abs(r - cursor['modulation_min'])
+        d_outer = abs(r - cursor['modulation_max'])
+        radial = max(r, 1e-6)
+        d_pmin = np.radians(angle_diff(theta, cursor['phase_min'])) * radial
+        d_pmax = np.radians(angle_diff(theta, cursor['phase_max'])) * radial
+
+        edges = {
+            'modulation_min': d_inner,
+            'modulation_max': d_outer,
+            'phase_min': d_pmin,
+            'phase_max': d_pmax,
+        }
+        return min(edges, key=edges.get)
 
     def _update_hover_cursor(self, event):
         """Change the mouse cursor based on hover/interaction."""
@@ -2812,7 +2896,9 @@ class CursorSelectionWidget(QWidget):
         if event.xdata is None or event.ydata is None:
             return
 
-        if self._drag_mode == 'rotate' and cursor['type'] == "elliptic":
+        if self._drag_mode == 'polar_edge' and cursor['type'] == "polar":
+            self._drag_polar_edge(cursor, event.xdata, event.ydata)
+        elif self._drag_mode == 'rotate' and cursor['type'] == "elliptic":
             dy = event.ydata - cursor['s']
             dx = event.xdata - cursor['g']
             current_angle = np.degrees(np.arctan2(dy, dx))
@@ -2842,6 +2928,34 @@ class CursorSelectionWidget(QWidget):
 
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def _drag_polar_edge(self, cursor, x, y):
+        """Move the picked polar boundary to the pointer position."""
+        edge = getattr(self, '_polar_edge', None)
+        if edge is None:
+            return
+        r = float(np.hypot(x, y))
+        theta = float(np.degrees(np.arctan2(y, x)))
+
+        if edge == 'phase_min':
+            cursor['phase_min'] = theta
+            spin, value = cursor['phase_min_spin'], theta
+        elif edge == 'phase_max':
+            cursor['phase_max'] = theta
+            spin, value = cursor['phase_max_spin'], theta
+        elif edge == 'modulation_min':
+            value = min(max(0.0, min(1.0, r)), cursor['modulation_max'])
+            cursor['modulation_min'] = value
+            spin = cursor['mod_min_spin']
+        else:  # modulation_max
+            value = max(max(0.0, min(1.0, r)), cursor['modulation_min'])
+            cursor['modulation_max'] = value
+            spin = cursor['mod_max_spin']
+
+        spin.blockSignals(True)
+        spin.setValue(value)
+        spin.blockSignals(False)
+        self._update_cursor_patch(cursor)
 
     def _on_release(self, event):
         """Handle mouse release to finish dragging and update selection."""
