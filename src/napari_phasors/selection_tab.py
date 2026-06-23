@@ -1,5 +1,4 @@
 import contextlib
-from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,7 +11,6 @@ from phasorpy.cursor import (
     mask_from_elliptic_cursor,
     mask_from_polar_cursor,
 )
-from qtpy import uic
 from qtpy.QtCore import QPointF, QSize, Qt, Signal
 from qtpy.QtGui import (
     QColor,
@@ -28,10 +26,12 @@ from qtpy.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QStackedWidget,
     QStyle,
@@ -143,12 +143,8 @@ class SelectionWidget(QWidget):
         manual_layout = QVBoxLayout(self.manual_selection_widget)
         manual_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Load the UI from the .ui file
-        self.selection_input_widget = QWidget()
-        uic.loadUi(
-            Path(__file__).parent / "ui/selection_tab.ui",
-            self.selection_input_widget,
-        )
+        # Build the manual-selection controls (formerly a .ui file).
+        self.selection_input_widget = self._build_selection_input_widget()
         manual_layout.addWidget(self.selection_input_widget)
 
         # Add default items to the selection id combobox
@@ -219,6 +215,45 @@ class SelectionWidget(QWidget):
         self.selection_mode_combobox.currentIndexChanged.connect(
             self._on_selection_mode_changed
         )
+
+    def _build_selection_input_widget(self):
+        """Build the manual-selection controls programmatically.
+
+        Reproduces the former ``selection_tab.ui``: a scroll area whose content
+        widget is named ``scrollAreaWidgetContents`` (so the refresh button can
+        be added to its grid) and exposes ``phasor_selection_id_combobox``.
+        """
+        widget = QWidget()
+        outer = QGridLayout(widget)
+
+        scroll_area = QScrollArea()
+        scroll_area.setMinimumHeight(130)
+        scroll_area.setWidgetResizable(True)
+
+        contents = QWidget()
+        contents.setObjectName("scrollAreaWidgetContents")
+        grid = QGridLayout(contents)
+
+        instructions = [
+            "• Select regions with the selection toolbar above plot.",
+            "• Change the class number to have different colors.",
+            "• Use class 0 to remove selections.",
+            "• Right-click to apply.",
+        ]
+        for row, text in enumerate(instructions):
+            grid.addWidget(QLabel(text), row, 0, 1, 3)
+
+        grid.addWidget(QLabel("Phasor Selection ID:"), 4, 0)
+        widget.phasor_selection_id_combobox = QComboBox()
+        widget.phasor_selection_id_combobox.setEditable(True)
+        widget.phasor_selection_id_combobox.setToolTip(
+            "Choose or type new text to edit different selection layers."
+        )
+        grid.addWidget(widget.phasor_selection_id_combobox, 4, 1, 1, 2)
+
+        scroll_area.setWidget(contents)
+        outer.addWidget(scroll_area, 0, 0)
+        return widget
 
     def on_harmonic_changed(self):
         """Callback when harmonic spinbox is changed."""

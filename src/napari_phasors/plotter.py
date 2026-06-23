@@ -17,7 +17,6 @@ from napari.utils import colormaps, notifications
 from phasorpy.lifetime import phasor_from_lifetime
 from phasorpy.phasor import phasor_center as _phasor_center
 from phasorpy.phasor import phasor_to_polar
-from qtpy import uic
 from qtpy.QtCore import QEvent, Qt, QTimer
 from qtpy.QtGui import QColor, QCursor
 from qtpy.QtWidgets import (
@@ -1962,12 +1961,8 @@ class PlotterWidget(QWidget):
         import_box_layout.addLayout(import_buttons_layout)
         self.settings_tab.layout().addWidget(import_box)
 
-        # Load plotter inputs widget from ui file
-        self.plotter_inputs_widget = QWidget()
-        uic.loadUi(
-            Path(__file__).parent / "ui/plotter_inputs_widget.ui",
-            self.plotter_inputs_widget,
-        )
+        # Build the plotter inputs widget (formerly loaded from a .ui file)
+        self.plotter_inputs_widget = self._build_plotter_inputs_widget()
         # Set toggle colors
         for attr in [
             'semi_circle_checkbox',
@@ -4422,6 +4417,103 @@ class PlotterWidget(QWidget):
         # Update phasor center controls for current layer count
         if hasattr(self, '_phasor_center_enabled'):
             self._update_phasor_center_controls_visibility()
+
+    def _build_plotter_inputs_widget(self):
+        """Build the plot-settings input controls programmatically.
+
+        Reproduces the former ``plotter_inputs_widget.ui``: a scroll area whose
+        content widget is named ``scrollAreaWidgetContents`` holding a grid of
+        the plot-appearance controls. All the children the rest of the class
+        relies on are exposed as attributes with their original names.
+        ``_organize_plot_settings_sections`` later regroups this grid into
+        titled section boxes.
+        """
+        widget = QWidget()
+        outer = QGridLayout(widget)
+
+        scroll_area = QScrollArea()
+        scroll_area.setMinimumHeight(200)
+        scroll_area.setWidgetResizable(True)
+
+        contents = QWidget()
+        contents.setObjectName("scrollAreaWidgetContents")
+        grid = QGridLayout(contents)
+
+        widget.label_5 = QLabel("Full Polar Plot (Spectral Phasor)")
+        widget.semi_circle_checkbox = QToggleSwitch()
+
+        widget.label_6 = QLabel("White Background:")
+        widget.white_background_checkbox = QToggleSwitch()
+        widget.white_background_checkbox.setChecked(True)
+
+        widget.label_2 = QLabel("Plot Type:")
+        widget.plot_type_combobox = QComboBox()
+
+        widget.label_3 = QLabel("Colormap:")
+        widget.colormap_combobox = QComboBox()
+
+        widget.label_4 = QLabel("Number of bins:")
+        widget.number_of_bins_spinbox = QSpinBox()
+        widget.number_of_bins_spinbox.setMinimum(1)
+        widget.number_of_bins_spinbox.setMaximum(10000)
+        widget.number_of_bins_spinbox.setValue(150)
+
+        widget.label_7 = QLabel("Colors in Log Scale:")
+        widget.log_scale_checkbox = QToggleSwitch()
+
+        widget.label_marker_size = QLabel("Marker Size:")
+        widget.marker_size_spinbox = QSpinBox()
+        widget.marker_size_spinbox.setMinimum(1)
+        widget.marker_size_spinbox.setMaximum(1000)
+        widget.marker_size_spinbox.setValue(50)
+        widget.marker_size_spinbox.setKeyboardTracking(False)
+
+        widget.label_marker_color = QLabel("Marker Color:")
+        widget.marker_color_button = QPushButton()
+        widget.marker_color_button.setMinimumSize(20, 20)
+        widget.marker_color_button.setMaximumSize(20, 20)
+
+        widget.label_marker_alpha = QLabel("Alpha:")
+        widget.marker_alpha_spinbox = QDoubleSpinBox()
+        widget.marker_alpha_spinbox.setMinimum(0.01)
+        widget.marker_alpha_spinbox.setMaximum(1.0)
+        widget.marker_alpha_spinbox.setSingleStep(0.1)
+        widget.marker_alpha_spinbox.setValue(0.5)
+        widget.marker_alpha_spinbox.setKeyboardTracking(False)
+
+        widget.label_contour_levels = QLabel("Levels:")
+        widget.contour_levels_spinbox = QSpinBox()
+        widget.contour_levels_spinbox.setMinimum(1)
+        widget.contour_levels_spinbox.setMaximum(100)
+        widget.contour_levels_spinbox.setValue(10)
+
+        widget.label_contour_linewidth = QLabel("Linewidth:")
+        widget.contour_linewidth_spinbox = QDoubleSpinBox()
+        widget.contour_linewidth_spinbox.setMinimum(0.1)
+        widget.contour_linewidth_spinbox.setMaximum(10.0)
+        widget.contour_linewidth_spinbox.setSingleStep(0.5)
+        widget.contour_linewidth_spinbox.setValue(1.0)
+
+        rows = [
+            (widget.label_5, widget.semi_circle_checkbox),
+            (widget.label_6, widget.white_background_checkbox),
+            (widget.label_2, widget.plot_type_combobox),
+            (widget.label_3, widget.colormap_combobox),
+            (widget.label_4, widget.number_of_bins_spinbox),
+            (widget.label_7, widget.log_scale_checkbox),
+            (widget.label_marker_size, widget.marker_size_spinbox),
+            (widget.label_marker_color, widget.marker_color_button),
+            (widget.label_marker_alpha, widget.marker_alpha_spinbox),
+            (widget.label_contour_levels, widget.contour_levels_spinbox),
+            (widget.label_contour_linewidth, widget.contour_linewidth_spinbox),
+        ]
+        for row, (label, field) in enumerate(rows):
+            grid.addWidget(label, row, 0)
+            grid.addWidget(field, row, 1)
+
+        scroll_area.setWidget(contents)
+        outer.addWidget(scroll_area, 0, 0)
+        return widget
 
     def _organize_plot_settings_sections(self):
         """Group the flat Plot Settings grid into titled section boxes.

@@ -1,5 +1,4 @@
 import contextlib
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -7,9 +6,13 @@ from napari.layers import Image
 from napari.utils.notifications import show_error
 from phasorpy.lifetime import phasor_from_lifetime, polar_from_reference_phasor
 from phasorpy.phasor import phasor_center, phasor_transform
-from qtpy import uic
 from qtpy.QtWidgets import (
+    QComboBox,
+    QGridLayout,
+    QLabel,
+    QLineEdit,
     QMessageBox,
+    QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -18,6 +21,7 @@ from qtpy.QtWidgets import (
 from ._utils import (
     analysis_section_stylesheet,
     apply_filter_and_threshold,
+    make_section,
     setup_primary_button,
 )
 
@@ -34,12 +38,8 @@ class CalibrationWidget(QWidget):
         self.viewer = viewer
         self.parent_widget = parent
 
-        # Creates and empty widget
-        self.calibration_widget = QWidget()
-        uic.loadUi(
-            Path(__file__).parent / "ui/calibration_widget.ui",
-            self.calibration_widget,
-        )
+        # Build the calibration controls (formerly loaded from a .ui file).
+        self.calibration_widget = self._build_calibration_widget()
 
         # Apply the shared section styling and wire the primary action as a
         # validated button (greyed out with a tooltip while inputs are missing).
@@ -85,6 +85,49 @@ class CalibrationWidget(QWidget):
         mainLayout = QVBoxLayout()
         mainLayout.addWidget(scroll_area)
         self.setLayout(mainLayout)
+
+    def _build_calibration_widget(self):
+        """Build the calibration controls programmatically.
+
+        Returns a container ``QWidget`` exposing the same named children the
+        tab logic relies on (``calibration_layer_combobox``,
+        ``frequency_input``, ``lifetime_line_edit_widget`` and
+        ``calibrate_push_button``).
+        """
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        # Calibration reference -------------------------------------------
+        reference_box, reference_layout = make_section("Calibration reference")
+        reference_grid = QGridLayout()
+        reference_layout.addLayout(reference_grid)
+        widget.calibration_layer_label_widget = QLabel("Calibration Layer:")
+        widget.calibration_layer_combobox = QComboBox()
+        reference_grid.addWidget(widget.calibration_layer_label_widget, 0, 0)
+        reference_grid.addWidget(widget.calibration_layer_combobox, 0, 1)
+        layout.addWidget(reference_box)
+
+        # Reference parameters --------------------------------------------
+        parameters_box, parameters_layout = make_section(
+            "Reference parameters"
+        )
+        parameters_grid = QGridLayout()
+        parameters_layout.addLayout(parameters_grid)
+        widget.frequency_label_widget = QLabel("Frequency (MHz):")
+        widget.frequency_input = QLineEdit()
+        widget.lifetime_label_widget = QLabel("Lifetime (ns):")
+        widget.lifetime_line_edit_widget = QLineEdit()
+        parameters_grid.addWidget(widget.frequency_label_widget, 0, 0)
+        parameters_grid.addWidget(widget.frequency_input, 0, 1)
+        parameters_grid.addWidget(widget.lifetime_label_widget, 1, 0)
+        parameters_grid.addWidget(widget.lifetime_line_edit_widget, 1, 1)
+        layout.addWidget(parameters_box)
+
+        widget.calibrate_push_button = QPushButton("Calibrate")
+        layout.addWidget(widget.calibrate_push_button)
+
+        layout.addStretch(1)
+        return widget
 
     def _populate_comboboxes(self, event=None):
         """Populate calibration layer combobox with image layers."""
