@@ -33,6 +33,9 @@ from superqt import QToggleSwitch
 from ._utils import (
     CheckableComboBox,
     HistogramWidget,
+    analysis_section_stylesheet,
+    make_section,
+    setup_primary_button,
     update_frequency_in_metadata,
 )
 
@@ -93,11 +96,17 @@ class FretWidget(QWidget):
         scroll_area.setWidgetResizable(True)
         content_widget = QWidget()
         layout = QVBoxLayout(content_widget)
+        self.setStyleSheet(analysis_section_stylesheet())
 
-        # Use a compact form layout for essentials
-        form = QFormLayout()
-        # Let fields grow by default but still shrink when needed
-        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        def _make_form():
+            """A compact, growing form layout used inside each section box."""
+            f = QFormLayout()
+            f.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+            return f
+
+        # Donor section ------------------------------------------------------
+        donor_box, donor_box_layout = make_section("Donor")
+        form = _make_form()
 
         # Frequency
         freq_row = QHBoxLayout()
@@ -216,6 +225,13 @@ class FretWidget(QWidget):
         background_slider_layout.addWidget(self.background_label)
         form.addRow("Donor Background:", background_slider_layout)
 
+        donor_box_layout.addLayout(form)
+        layout.addWidget(donor_box)
+
+        # Background section -------------------------------------------------
+        bg_box, bg_box_layout = make_section("Background")
+        form = _make_form()
+
         # Background position source selector
         bg_source_row = QHBoxLayout()
         self.bg_source_selector = QComboBox()
@@ -288,6 +304,13 @@ class FretWidget(QWidget):
         self.background_position_label = QLabel("Background position:")
         form.addRow(self.background_position_label, self.bg_stack)
 
+        bg_box_layout.addLayout(form)
+        layout.addWidget(bg_box)
+
+        # Fretting section ---------------------------------------------------
+        fretting_box, fretting_box_layout = make_section("Fretting")
+        form = _make_form()
+
         # Proportion of Donors Fretting slider and label
         fretting_layout = QHBoxLayout()
         self.fretting_slider = QSlider(Qt.Horizontal)
@@ -309,8 +332,8 @@ class FretWidget(QWidget):
         fretting_layout.addWidget(self.fretting_label)
         form.addRow("Proportion fretting:", fretting_layout)
 
-        # Add form to root layout
-        layout.addLayout(form)
+        fretting_box_layout.addLayout(form)
+        layout.addWidget(fretting_box)
 
         # Colormap over trajectory toggle
         self.colormap_checkbox = QToggleSwitch(
@@ -327,10 +350,22 @@ class FretWidget(QWidget):
         self.calculate_fret_efficiency_button = QPushButton(
             "Calculate FRET efficiency"
         )
-        self.calculate_fret_efficiency_button.clicked.connect(
-            self.calculate_fret_efficiency
+        self._refresh_calculate_button = setup_primary_button(
+            self.calculate_fret_efficiency_button,
+            self._fret_validation,
+            self.calculate_fret_efficiency,
+            ready_tooltip="Calculate FRET efficiency for the selected "
+            "layer(s).",
         )
         layout.addWidget(self.calculate_fret_efficiency_button)
+
+        # Re-evaluate the button whenever a required input changes.
+        self.frequency_input.textChanged.connect(
+            lambda _=None: self._refresh_calculate_button()
+        )
+        self.donor_line_edit.textChanged.connect(
+            lambda _=None: self._refresh_calculate_button()
+        )
 
         # NOTE: The widget is created here but NOT added to this tab's layout.
         # PlotterWidget wraps it in a HistogramDockWidget and docks it separately.
@@ -1614,10 +1649,29 @@ class FretWidget(QWidget):
 
         self.plot_donor_trajectory()
 
+    def _fret_validation(self):
+        """Return ``None`` if FRET efficiency can run, else the missing msg."""
+        if not self.parent_widget.get_selected_layers():
+            return "Select at least one image layer with phasor features."
+        donor = self.donor_line_edit.text().strip()
+        if not donor:
+            return "Enter a donor lifetime value (or select donor layer(s))."
+        frequency = self.frequency_input.text().strip()
+        if not frequency:
+            return "Enter the frequency (MHz)."
+        try:
+            float(donor)
+            float(frequency)
+        except ValueError:
+            return "Donor lifetime and frequency must be valid numbers."
+        return None
+
     def _on_image_layer_changed(self):
         """Callback whenever the image layer with phasor features changes."""
         self._teardown_on_layer_change()
         self._restore_on_layer_change()
+        if hasattr(self, '_refresh_calculate_button'):
+            self._refresh_calculate_button()
 
     def _teardown_on_layer_change(self):
         """Immediate cleanup: remove artists and disconnect signals."""

@@ -43,7 +43,10 @@ from qtpy.QtWidgets import (
 from ._utils import (
     CheckableComboBox,
     HistogramWidget,
+    analysis_section_stylesheet,
+    make_section,
     required_component_harmonics,
+    setup_primary_button,
 )
 
 if TYPE_CHECKING:
@@ -275,6 +278,7 @@ class ComponentsWidget(QWidget):
         """Set up the user interface for the components widget."""
         # Root layout for this widget
         root_layout = QVBoxLayout()
+        self.setStyleSheet(analysis_section_stylesheet())
 
         # Scroll area
         scroll_area = QScrollArea()
@@ -290,7 +294,8 @@ class ComponentsWidget(QWidget):
         layout = QVBoxLayout()
         content_widget.setLayout(layout)
 
-        # Analysis type selection
+        # Analysis type section
+        analysis_box, analysis_box_layout = make_section("Analysis type")
         analysis_layout = QHBoxLayout()
         analysis_layout.addWidget(QLabel("Analysis Type:"))
         self.analysis_type_combo = QComboBox()
@@ -302,7 +307,11 @@ class ComponentsWidget(QWidget):
         )
         analysis_layout.addWidget(self.analysis_type_combo)
         analysis_layout.addStretch()
-        layout.addLayout(analysis_layout)
+        analysis_box_layout.addLayout(analysis_layout)
+        layout.addWidget(analysis_box)
+
+        # Components section
+        components_box, components_box_layout = make_section("Components")
 
         # Components info label
         self.components_info_label = QLabel()
@@ -314,11 +323,11 @@ class ComponentsWidget(QWidget):
             "Change the harmonic spinbox number above to view components at different harmonics."
         )
         self._refresh_components_info_label()
-        layout.addWidget(self.components_info_label)
+        components_box_layout.addWidget(self.components_info_label)
 
-        # Components section
+        # Components inputs
         self.components_layout = QVBoxLayout()
-        layout.addLayout(self.components_layout)
+        components_box_layout.addLayout(self.components_layout)
 
         # Initialize with 2 components
         for i in range(2):
@@ -347,20 +356,22 @@ class ComponentsWidget(QWidget):
         comp_management_layout.addWidget(self.clear_components_btn)
 
         comp_management_layout.addStretch()
-        layout.addLayout(comp_management_layout)
+        components_box_layout.addLayout(comp_management_layout)
+        layout.addWidget(components_box)
 
-        # Calculate button
+        # Calculate button (validated: greyed out until components are set)
         self.calculate_button = QPushButton("Run Component Analysis")
-        self.calculate_button.clicked.connect(self._run_analysis)
-        self.calculate_button.setToolTip(
-            "Run the selected analysis type on the defined components."
+        self._refresh_run_button = setup_primary_button(
+            self.calculate_button,
+            self._components_validation,
+            self._run_analysis,
+            ready_tooltip="Run the selected analysis type on the defined "
+            "components.",
         )
         layout.addWidget(self.calculate_button)
 
-        # Plot and label settings section
-        settings_label = QLabel("Display Settings:")
-        settings_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
-        layout.addWidget(settings_label)
+        # Display settings section
+        display_box, display_box_layout = make_section("Display settings")
 
         buttons_row = QHBoxLayout()
         self.plot_settings_btn = QPushButton("Edit Line Layout...")
@@ -379,7 +390,8 @@ class ComponentsWidget(QWidget):
         buttons_row.addWidget(self.label_style_btn)
 
         buttons_row.addStretch()
-        layout.addLayout(buttons_row)
+        display_box_layout.addLayout(buttons_row)
+        layout.addWidget(display_box)
 
         # Component selector combobox (will be inserted into the histogram dock widget)
         self.histogram_component_combobox = QComboBox()
@@ -508,11 +520,17 @@ class ComponentsWidget(QWidget):
         g_edit.textChanged.connect(
             lambda: self._update_component_input_styling(idx)
         )
+        g_edit.textChanged.connect(
+            lambda _=None: self._refresh_run_button_if_ready()
+        )
         s_edit.editingFinished.connect(
             lambda: self._on_component_coords_changed(idx)
         )
         s_edit.textChanged.connect(
             lambda: self._update_component_input_styling(idx)
+        )
+        s_edit.textChanged.connect(
+            lambda _=None: self._refresh_run_button_if_ready()
         )
         lifetime_edit.editingFinished.connect(
             lambda: self._update_component_from_lifetime(idx)
@@ -832,6 +850,31 @@ class ComponentsWidget(QWidget):
         except Exception:  # noqa: BLE001
             return 3
 
+    def _components_validation(self):
+        """Return ``None`` if the analysis can run, else the missing-input msg."""
+        if not self.parent_widget.get_selected_layers():
+            return "Select at least one image layer with phasor features."
+        comps = [c for c in self.components if c is not None]
+        if not comps:
+            return "Add at least two components."
+        for comp in comps:
+            g_text = comp.g_edit.text().strip() if comp.g_edit else ""
+            s_text = comp.s_edit.text().strip() if comp.s_edit else ""
+            if not g_text or not s_text:
+                return "Enter G and S coordinates for every component."
+            try:
+                float(g_text)
+                float(s_text)
+            except ValueError:
+                return "Component coordinates must be valid numbers."
+        return None
+
+    def _refresh_run_button_if_ready(self):
+        """Re-evaluate the Run button state if it has been wired up."""
+        refresh = getattr(self, '_refresh_run_button', None)
+        if refresh is not None:
+            refresh()
+
     def _update_button_states(self):
         """Update the enabled/disabled state of add/remove component buttons."""
         total_count = len([c for c in self.components if c is not None])
@@ -840,6 +883,8 @@ class ComponentsWidget(QWidget):
         self.add_component_btn.setEnabled(total_count < max_components)
 
         self.remove_component_btn.setEnabled(total_count > 2)
+
+        self._refresh_run_button_if_ready()
 
     def _clear_components(self):
         """Clear all component visualizations and input fields."""
@@ -3750,6 +3795,7 @@ class ComponentsWidget(QWidget):
         """Callback whenever the image layer with phasor features changes."""
         self._teardown_on_layer_change()
         self._restore_on_layer_change()
+        self._refresh_run_button_if_ready()
 
     def _teardown_on_layer_change(self):
         """Immediate cleanup: remove artists and disconnect signals."""

@@ -23,7 +23,10 @@ from qtpy.QtWidgets import (
 from superqt import QRangeSlider, QToggleSwitch
 
 from ._utils import (
+    analysis_section_stylesheet,
     apply_filter_and_threshold,
+    make_section,
+    setup_primary_button,
     threshold_li,
     threshold_otsu,
     threshold_yen,
@@ -122,7 +125,13 @@ class FilterWidget(QWidget):
         self.median_filter_spinbox.valueChanged.connect(
             self.on_median_kernel_size_change
         )
-        self.apply_button.clicked.connect(self.apply_button_clicked)
+        self._refresh_apply_button = setup_primary_button(
+            self.apply_button,
+            self._filter_validation,
+            self.apply_button_clicked,
+            ready_tooltip="Apply the filter and threshold to the selected "
+            "layer(s).",
+        )
         self.min_threshold_edit.editingFinished.connect(
             self.on_min_threshold_edit_changed
         )
@@ -137,10 +146,14 @@ class FilterWidget(QWidget):
     def setup_ui(self):
         """Setup the user interface elements."""
         layout = QVBoxLayout()
+        self.setStyleSheet(analysis_section_stylesheet())
 
         # Create a widget to hold the scrollable content
         scroll_content = QWidget()
         scroll_layout = QVBoxLayout(scroll_content)
+
+        # Filter section -----------------------------------------------------
+        filter_box, filter_box_layout = make_section("Filter")
 
         # Filter method selection
         filter_method_layout = QHBoxLayout()
@@ -149,20 +162,25 @@ class FilterWidget(QWidget):
         self.filter_method_combobox.addItems(["None", "Median", "Wavelet"])
         self.filter_method_combobox.setCurrentText("None")
         filter_method_layout.addWidget(self.filter_method_combobox)
-        scroll_layout.addLayout(filter_method_layout)
+        filter_box_layout.addLayout(filter_method_layout)
 
         # Create containers for filter-specific parameters
         self.median_filter_widget = QWidget()
         self.setup_median_filter_ui()
-        scroll_layout.addWidget(self.median_filter_widget)
+        filter_box_layout.addWidget(self.median_filter_widget)
 
         self.wavelet_filter_widget = QWidget()
         self.setup_wavelet_filter_ui()
-        scroll_layout.addWidget(self.wavelet_filter_widget)
+        filter_box_layout.addWidget(self.wavelet_filter_widget)
 
         # Initially hide filter parameter widgets
         self.median_filter_widget.setVisible(False)
         self.wavelet_filter_widget.setVisible(False)
+
+        scroll_layout.addWidget(filter_box)
+
+        # Threshold section --------------------------------------------------
+        threshold_box, threshold_box_layout = make_section("Threshold")
 
         # Threshold method selection
         threshold_method_layout = QHBoxLayout()
@@ -182,7 +200,7 @@ class FilterWidget(QWidget):
         threshold_method_layout.addWidget(self.log_scale_checkbox)
         threshold_method_layout.addStretch()
 
-        scroll_layout.addLayout(threshold_method_layout)
+        threshold_box_layout.addLayout(threshold_method_layout)
 
         # Threshold range slider with min/max edits
         theshold_slider_layout = QHBoxLayout()
@@ -212,7 +230,7 @@ class FilterWidget(QWidget):
         self.threshold_slider.setValue((0, 100))
         theshold_slider_layout.addWidget(self.threshold_slider)
 
-        scroll_layout.addLayout(theshold_slider_layout)
+        threshold_box_layout.addLayout(theshold_slider_layout)
 
         # Embed the Matplotlib figure into the widget with fixed size
         canvas = FigureCanvas(self.hist_fig)
@@ -225,7 +243,9 @@ class FilterWidget(QWidget):
         canvas.mpl_connect('motion_notify_event', self.on_mouse_move)
         canvas.mpl_connect('button_release_event', self.on_mouse_release)
 
-        scroll_layout.addWidget(canvas)
+        threshold_box_layout.addWidget(canvas)
+
+        scroll_layout.addWidget(threshold_box)
 
         # Set scroll area
         scroll_area = QScrollArea()
@@ -233,7 +253,8 @@ class FilterWidget(QWidget):
         scroll_area.setWidget(scroll_content)
         layout.addWidget(scroll_area)
 
-        # Apply button (not inside scroll area)
+        # Apply button (not inside scroll area). Styled / wired in
+        # ``_connect_signals`` as a validated primary action.
         self.apply_button = QPushButton("Apply")
         layout.addWidget(self.apply_button)
 
@@ -445,8 +466,15 @@ class FilterWidget(QWidget):
             self.update_threshold_lines()
             self._updating_threshold = False
 
+    def _filter_validation(self):
+        """Return ``None`` if filtering can run, else the missing-input msg."""
+        if not self.parent_widget.get_selected_layers():
+            return "Select at least one image layer with phasor features."
+        return None
+
     def _on_image_layer_changed(self):
         """Callback function when the image layer selection is changed."""
+        self._refresh_apply_button()
         selected_layers = self.parent_widget.get_selected_layers()
         if not selected_layers:
             return

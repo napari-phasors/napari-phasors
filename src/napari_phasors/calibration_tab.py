@@ -1,5 +1,4 @@
 import contextlib
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -7,15 +6,24 @@ from napari.layers import Image
 from napari.utils.notifications import show_error
 from phasorpy.lifetime import phasor_from_lifetime, polar_from_reference_phasor
 from phasorpy.phasor import phasor_center, phasor_transform
-from qtpy import uic
 from qtpy.QtWidgets import (
+    QComboBox,
+    QGridLayout,
+    QLabel,
+    QLineEdit,
     QMessageBox,
+    QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
-from ._utils import apply_filter_and_threshold
+from ._utils import (
+    analysis_section_stylesheet,
+    apply_filter_and_threshold,
+    make_section,
+    setup_primary_button,
+)
 
 if TYPE_CHECKING:
     import napari
@@ -30,16 +38,28 @@ class CalibrationWidget(QWidget):
         self.viewer = viewer
         self.parent_widget = parent
 
-        # Creates and empty widget
-        self.calibration_widget = QWidget()
-        uic.loadUi(
-            Path(__file__).parent / "ui/calibration_widget.ui",
-            self.calibration_widget,
+        # Build the calibration controls (formerly loaded from a .ui file).
+        self.calibration_widget = self._build_calibration_widget()
+
+        # Apply the shared section styling and wire the primary action as a
+        # validated button (greyed out with a tooltip while inputs are missing).
+        self.calibration_widget.setStyleSheet(analysis_section_stylesheet())
+        self._refresh_calibrate_button = setup_primary_button(
+            self.calibration_widget.calibrate_push_button,
+            self._calibrate_validation,
+            self._on_click,
+            ready_tooltip="Calibrate the selected layer(s).",
         )
 
-        # Connect callbacks
-        self.calibration_widget.calibrate_push_button.clicked.connect(
-            self._on_click
+        # Re-evaluate the button whenever a required input changes.
+        self.calibration_widget.frequency_input.textChanged.connect(
+            lambda _=None: self._refresh_calibrate_button()
+        )
+        self.calibration_widget.lifetime_line_edit_widget.textChanged.connect(
+            lambda _=None: self._refresh_calibrate_button()
+        )
+        self.calibration_widget.calibration_layer_combobox.currentTextChanged.connect(
+            lambda _=None: self._refresh_calibrate_button()
         )
 
         # Connect layer events to populate combobox and update button state
@@ -65,6 +85,49 @@ class CalibrationWidget(QWidget):
         mainLayout = QVBoxLayout()
         mainLayout.addWidget(scroll_area)
         self.setLayout(mainLayout)
+
+    def _build_calibration_widget(self):
+        """Build the calibration controls programmatically.
+
+        Returns a container ``QWidget`` exposing the same named children the
+        tab logic relies on (``calibration_layer_combobox``,
+        ``frequency_input``, ``lifetime_line_edit_widget`` and
+        ``calibrate_push_button``).
+        """
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        # Calibration reference -------------------------------------------
+        reference_box, reference_layout = make_section("Calibration reference")
+        reference_grid = QGridLayout()
+        reference_layout.addLayout(reference_grid)
+        widget.calibration_layer_label_widget = QLabel("Calibration Layer:")
+        widget.calibration_layer_combobox = QComboBox()
+        reference_grid.addWidget(widget.calibration_layer_label_widget, 0, 0)
+        reference_grid.addWidget(widget.calibration_layer_combobox, 0, 1)
+        layout.addWidget(reference_box)
+
+        # Reference parameters --------------------------------------------
+        parameters_box, parameters_layout = make_section(
+            "Reference parameters"
+        )
+        parameters_grid = QGridLayout()
+        parameters_layout.addLayout(parameters_grid)
+        widget.frequency_label_widget = QLabel("Frequency (MHz):")
+        widget.frequency_input = QLineEdit()
+        widget.lifetime_label_widget = QLabel("Lifetime (ns):")
+        widget.lifetime_line_edit_widget = QLineEdit()
+        parameters_grid.addWidget(widget.frequency_label_widget, 0, 0)
+        parameters_grid.addWidget(widget.frequency_input, 0, 1)
+        parameters_grid.addWidget(widget.lifetime_label_widget, 1, 0)
+        parameters_grid.addWidget(widget.lifetime_line_edit_widget, 1, 1)
+        layout.addWidget(parameters_box)
+
+        widget.calibrate_push_button = QPushButton("Calibrate")
+        layout.addWidget(widget.calibrate_push_button)
+
+        layout.addStretch(1)
+        return widget
 
     def _populate_comboboxes(self, event=None):
         """Populate calibration layer combobox with image layers."""
@@ -126,6 +189,7 @@ class CalibrationWidget(QWidget):
         selected_layers = self.parent_widget.get_selected_layers()
         if not selected_layers:
             self.calibration_widget.calibrate_push_button.setText("Calibrate")
+            self._refresh_calibrate_button()
             return
 
         # Check if any selected layer is calibrated
@@ -139,6 +203,31 @@ class CalibrationWidget(QWidget):
             )
         else:
             self.calibration_widget.calibrate_push_button.setText("Calibrate")
+
+        self._refresh_calibrate_button()
+
+    def _calibrate_validation(self):
+        """Return ``None`` if calibration can run, else the missing-input msg.
+
+        Uncalibration (when a selected layer is already calibrated) needs no
+        inputs, so the button is always ready in that case.
+        """
+        selected_layers = self.parent_widget.get_selected_layers()
+        if not selected_layers:
+            return "Select at least one image layer with phasor features."
+        if any(self._is_layer_calibrated(layer) for layer in selected_layers):
+            return None
+        if (
+            not self.calibration_widget.calibration_layer_combobox.currentText()
+        ):
+            return "Select a calibration layer."
+        if not self.calibration_widget.frequency_input.text().strip():
+            return "Enter the frequency (MHz)."
+        if (
+            not self.calibration_widget.lifetime_line_edit_widget.text().strip()
+        ):
+            return "Enter the reference lifetime (ns)."
+        return None
 
     def _on_click(self):
         """Handle calibration button click for all selected layers."""

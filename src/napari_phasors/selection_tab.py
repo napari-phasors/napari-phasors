@@ -1,5 +1,4 @@
 import contextlib
-from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,7 +11,6 @@ from phasorpy.cursor import (
     mask_from_elliptic_cursor,
     mask_from_polar_cursor,
 )
-from qtpy import uic
 from qtpy.QtCore import QPointF, QSize, Qt, Signal
 from qtpy.QtGui import (
     QColor,
@@ -28,10 +26,12 @@ from qtpy.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QStackedWidget,
     QStyle,
@@ -41,7 +41,12 @@ from qtpy.QtWidgets import (
 )
 from superqt import QToggleSwitch
 
-from ._utils import colormap_to_dict
+from ._utils import (
+    analysis_section_stylesheet,
+    colormap_to_dict,
+    make_section,
+    setup_primary_button,
+)
 
 
 def _make_eye_icon(color, size=18, crossed=False):
@@ -111,8 +116,10 @@ class SelectionWidget(QWidget):
 
         # Main layout
         layout = QVBoxLayout(self)
+        self.setStyleSheet(analysis_section_stylesheet())
 
         # Selection mode combobox at the top
+        mode_box, mode_box_layout = make_section("Selection mode")
         mode_layout = QHBoxLayout()
         mode_layout.addWidget(QLabel("Selection Mode:"))
         self.selection_mode_combobox = QComboBox()
@@ -124,7 +131,8 @@ class SelectionWidget(QWidget):
             ]
         )
         mode_layout.addWidget(self.selection_mode_combobox, 1)
-        layout.addLayout(mode_layout)
+        mode_box_layout.addLayout(mode_layout)
+        layout.addWidget(mode_box)
 
         # Stacked widget to switch between modes
         self.stacked_widget = QStackedWidget()
@@ -135,12 +143,8 @@ class SelectionWidget(QWidget):
         manual_layout = QVBoxLayout(self.manual_selection_widget)
         manual_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Load the UI from the .ui file
-        self.selection_input_widget = QWidget()
-        uic.loadUi(
-            Path(__file__).parent / "ui/selection_tab.ui",
-            self.selection_input_widget,
-        )
+        # Build the manual-selection controls (formerly a .ui file).
+        self.selection_input_widget = self._build_selection_input_widget()
         manual_layout.addWidget(self.selection_input_widget)
 
         # Add default items to the selection id combobox
@@ -211,6 +215,45 @@ class SelectionWidget(QWidget):
         self.selection_mode_combobox.currentIndexChanged.connect(
             self._on_selection_mode_changed
         )
+
+    def _build_selection_input_widget(self):
+        """Build the manual-selection controls programmatically.
+
+        Reproduces the former ``selection_tab.ui``: a scroll area whose content
+        widget is named ``scrollAreaWidgetContents`` (so the refresh button can
+        be added to its grid) and exposes ``phasor_selection_id_combobox``.
+        """
+        widget = QWidget()
+        outer = QGridLayout(widget)
+
+        scroll_area = QScrollArea()
+        scroll_area.setMinimumHeight(130)
+        scroll_area.setWidgetResizable(True)
+
+        contents = QWidget()
+        contents.setObjectName("scrollAreaWidgetContents")
+        grid = QGridLayout(contents)
+
+        instructions = [
+            "• Select regions with the selection toolbar above plot.",
+            "• Change the class number to have different colors.",
+            "• Use class 0 to remove selections.",
+            "• Right-click to apply.",
+        ]
+        for row, text in enumerate(instructions):
+            grid.addWidget(QLabel(text), row, 0, 1, 3)
+
+        grid.addWidget(QLabel("Phasor Selection ID:"), 4, 0)
+        widget.phasor_selection_id_combobox = QComboBox()
+        widget.phasor_selection_id_combobox.setEditable(True)
+        widget.phasor_selection_id_combobox.setToolTip(
+            "Choose or type new text to edit different selection layers."
+        )
+        grid.addWidget(widget.phasor_selection_id_combobox, 4, 1, 1, 2)
+
+        scroll_area.setWidget(contents)
+        outer.addWidget(scroll_area, 0, 0)
+        return widget
 
     def on_harmonic_changed(self):
         """Callback when harmonic spinbox is changed."""
@@ -457,6 +500,7 @@ class SelectionWidget(QWidget):
     def _on_image_layer_changed(self):
         """Callback when the image layer changes - restores cursors from metadata."""
         self.cursor_selection_widget._on_image_layer_changed()
+        self.automatic_clustering_widget._refresh_apply_button_if_ready()
 
     def update_phasor_plot_with_selection_id(self, selection_id):
         """Update the phasor plot with the selected ID and show/hide label layers."""
@@ -961,6 +1005,10 @@ class AutomaticClusteringWidget(QWidget):
         """Set up the user interface."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 5, 0, 0)
+        self.setStyleSheet(analysis_section_stylesheet())
+
+        # Clustering parameters section
+        params_box, params_box_layout = make_section("Clustering parameters")
 
         # Clustering method selection
         method_layout = QHBoxLayout()
@@ -970,7 +1018,7 @@ class AutomaticClusteringWidget(QWidget):
             ["GMM (Gaussian Mixture Model)"]
         )
         method_layout.addWidget(self.clustering_method_combobox, 1)
-        layout.addLayout(method_layout)
+        params_box_layout.addLayout(method_layout)
 
         # Number of clusters selection
         clusters_layout = QHBoxLayout()
@@ -979,11 +1027,17 @@ class AutomaticClusteringWidget(QWidget):
         self.num_clusters_spinbox.setRange(2, 100)
         self.num_clusters_spinbox.setValue(2)
         clusters_layout.addWidget(self.num_clusters_spinbox, 1)
-        layout.addLayout(clusters_layout)
+        params_box_layout.addLayout(clusters_layout)
+        layout.addWidget(params_box)
 
-        # Apply clustering button
+        # Apply clustering button (validated)
         self.apply_button = QPushButton("Apply Clustering")
-        self.apply_button.clicked.connect(self._apply_clustering)
+        self._refresh_apply_button = setup_primary_button(
+            self.apply_button,
+            self._clustering_validation,
+            self._apply_clustering,
+            ready_tooltip="Run automatic clustering on the selected layer(s).",
+        )
         layout.addWidget(self.apply_button)
 
         # Table for clusters
@@ -1673,9 +1727,22 @@ class AutomaticClusteringWidget(QWidget):
             return []
         return self.parent_widget.get_selected_layers()
 
+    def _clustering_validation(self):
+        """Return ``None`` if clustering can run, else the missing-input msg."""
+        if self.parent_widget is None or not self._get_selected_layers():
+            return "Select at least one image layer with phasor features."
+        return None
+
+    def _refresh_apply_button_if_ready(self):
+        """Re-evaluate the Apply button state if it has been wired up."""
+        refresh = getattr(self, '_refresh_apply_button', None)
+        if refresh is not None:
+            refresh()
+
     def _on_image_layer_changed(self):
         """Callback when image layer changes - clear clusters."""
         self._clear_clusters()
+        self._refresh_apply_button_if_ready()
 
 
 class ColorButton(QPushButton):
@@ -1773,12 +1840,16 @@ class CursorSelectionWidget(QWidget):
         """Set up the user interface."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 5, 0, 0)
+        self.setStyleSheet(analysis_section_stylesheet())
+
+        # Cursors section ----------------------------------------------------
+        cursors_box, cursors_box_layout = make_section("Cursors")
 
         # Container holding one QFrame per cursor row.
         self._rows_container = QWidget()
         self._rows_layout = QVBoxLayout(self._rows_container)
         self._rows_layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self._rows_container)
+        cursors_box_layout.addWidget(self._rows_container)
 
         # "Add Cursor" button, full width.
         self.add_cursor_button = QPushButton("+ Add Cursor")
@@ -1786,20 +1857,21 @@ class CursorSelectionWidget(QWidget):
             "Add a new cursor row (defaults to a circular cursor)."
         )
         self.add_cursor_button.clicked.connect(lambda: self._add_cursor())
-        layout.addWidget(self.add_cursor_button)
+        cursors_box_layout.addWidget(self.add_cursor_button)
+        layout.addWidget(cursors_box)
 
         # Prominent "Calculate" button — the primary action of the tab.
         self.calculate_button = QPushButton("Calculate Selection")
         self.calculate_button.setToolTip(
             "Compute the selection from the current (visible) cursors."
         )
-        # Keep it prominent (taller, bold) but the same color as the
-        # "+ Add Cursor" button (the default button background).
         self.calculate_button.setMinimumHeight(34)
-        self.calculate_button.setStyleSheet(
-            "QPushButton { font-weight: bold; }"
+        self._refresh_calculate_button = setup_primary_button(
+            self.calculate_button,
+            self._cursor_validation,
+            self._on_calculate_clicked,
+            ready_tooltip="Compute the selection from the current cursors.",
         )
-        self.calculate_button.clicked.connect(self._on_calculate_clicked)
         layout.addWidget(self.calculate_button)
 
         # Autoupdate toggle.
@@ -1964,6 +2036,7 @@ class CursorSelectionWidget(QWidget):
 
         self._update_row_visibility()
         self._update_cursor_patch(cursor)
+        self._refresh_calculate_button_if_ready()
 
         if self._autoupdate_enabled:
             self._apply_selection()
@@ -2322,6 +2395,7 @@ class CursorSelectionWidget(QWidget):
         self._cursors.remove(cursor)
 
         self._update_row_visibility()
+        self._refresh_calculate_button_if_ready()
 
         if not self._cursors:
             self._remove_selection_layer()
@@ -2461,6 +2535,20 @@ class CursorSelectionWidget(QWidget):
         if self.parent_widget is None:
             return []
         return self.parent_widget.get_selected_layers()
+
+    def _cursor_validation(self):
+        """Return ``None`` if a selection can be computed, else the missing msg."""
+        if self.parent_widget is None or not self._get_selected_layers():
+            return "Select at least one image layer with phasor features."
+        if not self._cursors:
+            return "Add at least one cursor."
+        return None
+
+    def _refresh_calculate_button_if_ready(self):
+        """Re-evaluate the Calculate button state if it has been wired up."""
+        refresh = getattr(self, '_refresh_calculate_button', None)
+        if refresh is not None:
+            refresh()
 
     def _on_calculate_clicked(self):
         """Handle Calculate button click."""
@@ -2730,6 +2818,7 @@ class CursorSelectionWidget(QWidget):
             cursor['row'].deleteLater()
         self._cursors.clear()
         self._selection_active = False
+        self._refresh_calculate_button_if_ready()
 
         selected_layers = self._get_selected_layers()
         if not selected_layers:
