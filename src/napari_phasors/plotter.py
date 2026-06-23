@@ -5849,16 +5849,13 @@ class PlotterWidget(QWidget):
             self._preserve_plot_type_on_restore = False
 
     def _update_grid_view(self, selected_layers):
-        """Update napari grid view based on selected layers.
+        """Update napari grid view and layer visibility for the selection.
 
-        When multiple layers are selected, enables grid mode and makes
-        selected layers visible. When only one layer is selected,
-        disables grid mode.
-
-        Skips no-op writes to ``layer.visible`` so napari doesn't emit
-        redundant redraw events on every selection change. With many
-        layers (10+) the no-op skip alone removes the dominant per-layer
-        cost in the selection-change path.
+        When multiple layers are selected, enables grid mode; otherwise
+        disables it. In both cases the napari viewer visibility is synced
+        to the selection via :meth:`_update_layer_visibility_for_selection`
+        so that only the selected intensity layers and their associated
+        analysis layers are shown.
 
         Parameters
         ----------
@@ -5870,24 +5867,73 @@ class PlotterWidget(QWidget):
         if len(selected_layers) > 1:
             if not self.viewer.grid.enabled:
                 self.viewer.grid.enabled = True
-
-            for layer in self.viewer.layers:
-                if (
-                    isinstance(layer, Image)
-                    and "G" in layer.metadata
-                    and "S" in layer.metadata
-                    and "G_original" in layer.metadata
-                    and "S_original" in layer.metadata
-                ):
-                    desired_visible = layer.name in selected_names
-                    if layer.visible != desired_visible:
-                        layer.visible = desired_visible
         else:
             if self.viewer.grid.enabled:
                 self.viewer.grid.enabled = False
 
-            if selected_layers and not selected_layers[0].visible:
-                selected_layers[0].visible = True
+        self._update_layer_visibility_for_selection(selected_names)
+
+    def _is_phasor_intensity_layer(self, layer):
+        """Return True if ``layer`` is an intensity layer with phasor data."""
+        return (
+            isinstance(layer, Image)
+            and "G" in layer.metadata
+            and "S" in layer.metadata
+            and "G_original" in layer.metadata
+            and "S_original" in layer.metadata
+        )
+
+    def _update_layer_visibility_for_selection(self, selected_names):
+        """Sync napari layer visibility to the phasor plot selection.
+
+        Shows the selected intensity layers and every analysis layer
+        derived from them (components, lifetime, FRET, selections, masks,
+        etc.), and hides the non-selected intensity layers together with
+        their derived analysis layers.
+
+        Association is determined by napari-phasors' layer naming
+        convention: analysis layers are named ``"<descriptor>: <intensity
+        layer name>"``. Layers that are not associated with any phasor
+        intensity layer (e.g. unrelated reference layers) are left
+        untouched. Redundant writes to ``layer.visible`` are skipped so
+        napari does not emit unnecessary redraw events.
+
+        Parameters
+        ----------
+        selected_names : set of str
+            Names of the currently selected intensity layers.
+        """
+        # Intensity layer names sorted longest-first so the most specific
+        # suffix wins when one layer name is a suffix of another.
+        intensity_names = sorted(
+            (
+                layer.name
+                for layer in self.viewer.layers
+                if self._is_phasor_intensity_layer(layer)
+            ),
+            key=len,
+            reverse=True,
+        )
+        intensity_name_set = set(intensity_names)
+
+        def associated_intensity_name(layer_name):
+            """Return the intensity layer this layer derives from, or None."""
+            for intensity_name in intensity_names:
+                if layer_name.endswith(f": {intensity_name}"):
+                    return intensity_name
+            return None
+
+        for layer in self.viewer.layers:
+            if layer.name in intensity_name_set:
+                desired_visible = layer.name in selected_names
+            else:
+                associated = associated_intensity_name(layer.name)
+                if associated is None:
+                    # Unrelated layer; leave its visibility untouched.
+                    continue
+                desired_visible = associated in selected_names
+            if layer.visible != desired_visible:
+                layer.visible = desired_visible
 
     def _get_common_harmonics(self, layers):
         """Get the intersection of harmonics available in all layers.

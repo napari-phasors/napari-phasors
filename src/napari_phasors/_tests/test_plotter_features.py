@@ -772,6 +772,161 @@ def test_update_grid_view_single_layer_makes_invisible_visible(
     plotter.deleteLater()
 
 
+def test_is_phasor_intensity_layer(make_viewer_model):
+    """_is_phasor_intensity_layer detects intensity layers with phasor data."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+
+    intensity = create_image_layer_with_phasors()
+    intensity.name = "imgA"
+    viewer.add_layer(intensity)
+
+    # Plain image layer without phasor metadata.
+    plain = viewer.add_image(np.zeros((5, 5)), name="plain")
+
+    assert plotter._is_phasor_intensity_layer(intensity) is True
+    assert plotter._is_phasor_intensity_layer(plain) is False
+
+    plotter.deleteLater()
+
+
+def test_update_layer_visibility_shows_selected_and_associated(
+    make_viewer_model,
+):
+    """Selected intensity layer and its analysis layers are made visible;
+    non-selected layers and their analysis layers are hidden."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+
+    a = create_image_layer_with_phasors()
+    a.name = "imgA"
+    viewer.add_layer(a)
+    b = create_image_layer_with_phasors()
+    b.name = "imgB"
+    viewer.add_layer(b)
+
+    # Analysis layers derived from each intensity layer.
+    comp_a = viewer.add_image(
+        np.zeros((5, 5)), name="Component 1 fractions: imgA"
+    )
+    fret_b = viewer.add_image(np.zeros((5, 5)), name="FRET efficiency: imgB")
+
+    # Start from a mixed visibility state to exercise both directions.
+    a.visible = False
+    b.visible = True
+    comp_a.visible = False
+    fret_b.visible = True
+
+    plotter._update_layer_visibility_for_selection({"imgA"})
+
+    assert a.visible is True
+    assert comp_a.visible is True
+    assert b.visible is False
+    assert fret_b.visible is False
+
+    plotter.deleteLater()
+
+
+def test_update_layer_visibility_leaves_unrelated_layers_untouched(
+    make_viewer_model,
+):
+    """Layers not derived from any phasor layer keep their visibility."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+
+    a = create_image_layer_with_phasors()
+    a.name = "imgA"
+    viewer.add_layer(a)
+
+    unrelated_visible = viewer.add_image(np.zeros((5, 5)), name="reference")
+    unrelated_visible.visible = True
+    unrelated_hidden = viewer.add_image(np.zeros((5, 5)), name="scratch")
+    unrelated_hidden.visible = False
+
+    plotter._update_layer_visibility_for_selection({"imgA"})
+
+    assert unrelated_visible.visible is True
+    assert unrelated_hidden.visible is False
+
+    plotter.deleteLater()
+
+
+def test_update_layer_visibility_longest_suffix_wins(make_viewer_model):
+    """When one intensity name is a suffix of another, the most specific
+    (longest) intensity name claims the analysis layer."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+
+    short = create_image_layer_with_phasors()
+    short.name = "img"
+    viewer.add_layer(short)
+    long = create_image_layer_with_phasors()
+    long.name = "other img"
+    viewer.add_layer(long)
+
+    # Name ends with ": other img" which contains ": img" as well; the
+    # longer intensity name must win so this is associated with "other img".
+    analysis = viewer.add_image(
+        np.zeros((5, 5)), name="Component 1 fractions: other img"
+    )
+    analysis.visible = True
+
+    # Select only the short layer; the analysis layer belongs to "other img"
+    # and must therefore be hidden.
+    plotter._update_layer_visibility_for_selection({"img"})
+
+    assert short.visible is True
+    assert long.visible is False
+    assert analysis.visible is False
+
+    # Now select the long layer; the analysis layer must become visible.
+    plotter._update_layer_visibility_for_selection({"other img"})
+
+    assert analysis.visible is True
+
+    plotter.deleteLater()
+
+
+def test_update_grid_view_multi_layer_hides_associated_layers(
+    make_viewer_model,
+):
+    """Multi-layer selection enables grid mode and syncs analysis layers."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+
+    a = create_image_layer_with_phasors()
+    a.name = "imgA"
+    viewer.add_layer(a)
+    b = create_image_layer_with_phasors()
+    b.name = "imgB"
+    viewer.add_layer(b)
+    c = create_image_layer_with_phasors()
+    c.name = "imgC"
+    viewer.add_layer(c)
+
+    comp_a = viewer.add_image(
+        np.zeros((5, 5)), name="Component 1 fractions: imgA"
+    )
+    comp_c = viewer.add_image(
+        np.zeros((5, 5)), name="Component 1 fractions: imgC"
+    )
+    comp_c.visible = True
+
+    viewer.grid.enabled = False
+
+    # Select imgA and imgB (not imgC).
+    plotter._update_grid_view([a, b])
+
+    assert viewer.grid.enabled is True
+    assert a.visible is True
+    assert b.visible is True
+    assert comp_a.visible is True
+    assert c.visible is False
+    assert comp_c.visible is False
+
+    plotter.deleteLater()
+
+
 def test_get_common_harmonics_empty_layers_returns_none(make_viewer_model):
     viewer = make_viewer_model()
     plotter = PlotterWidget(viewer)
