@@ -1442,7 +1442,7 @@ def test_components_select_from_phasor_center_and_generalized_auto_place(
     menu0 = QMenu()
     comp_widget._populate_select_menu(0, menu0)
     texts0 = [a.text() for a in menu0.actions()]
-    assert "Select from phasor center..." in texts0
+    assert "Select from layer(s) phasor center" in texts0
     assert (
         "Auto intersect semicircle" not in texts0
     )  # idx=0 should NOT have auto intersect
@@ -1450,7 +1450,7 @@ def test_components_select_from_phasor_center_and_generalized_auto_place(
     menu1 = QMenu()
     comp_widget._populate_select_menu(1, menu1)
     texts1 = [a.text() for a in menu1.actions()]
-    assert "Select from phasor center..." in texts1
+    assert "Select from layer(s) phasor center" in texts1
     assert (
         "Auto intersect semicircle" in texts1
     )  # idx=1 should have auto intersect

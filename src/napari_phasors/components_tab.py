@@ -2241,7 +2241,9 @@ class ComponentsWidget(QWidget):
         )
 
         # 2. Option: Select from phasor center
-        select_center_action = menu.addAction("Select from phasor center...")
+        select_center_action = menu.addAction(
+            "Select from layer(s) phasor center"
+        )
         select_center_action.triggered.connect(
             lambda _, curr_idx=idx: self._select_from_phasor_center(curr_idx)
         )
