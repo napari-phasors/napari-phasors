@@ -1783,3 +1783,274 @@ def test_recreate_manual_selection_layer(make_viewer_model, qtbot):
     n_layers = len(viewer.layers)
     sel._recreate_manual_selection_layer("stored_sel", selection_map)
     assert len(viewer.layers) == n_layers
+
+
+# ---------------------------------------------------------------------------
+# CursorSelectionWidget - tooltips
+# ---------------------------------------------------------------------------
+
+
+def test_cursor_widget_control_tooltips(make_viewer_model, qtbot):
+    """The add/clear/calculate/autoupdate controls expose tooltips."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    assert widget.add_cursor_button.toolTip() != ""
+    assert widget.clear_all_button.toolTip() != ""
+    assert widget.calculate_button.toolTip() != ""
+    assert widget.autoupdate_check.toolTip() != ""
+
+
+def test_cursor_row_parameter_tooltips(make_viewer_model, qtbot):
+    """Every per-cursor parameter widget exposes an explanatory tooltip."""
+    viewer = make_viewer_model()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor()
+    cursor = widget._cursors[0]
+
+    for key in (
+        'type_combo',
+        'color_button',
+        'g_spin',
+        's_spin',
+        'radius_spin',
+        'radius_minor_spin',
+        'angle_spin',
+        'phase_min_spin',
+        'phase_max_spin',
+        'mod_min_spin',
+        'mod_max_spin',
+        'count_label',
+        'percentage_label',
+        'visibility_button',
+        'remove_button',
+    ):
+        assert cursor[key].toolTip() != "", f"missing tooltip on {key}"
+
+
+# ---------------------------------------------------------------------------
+# CursorSelectionWidget - visibility (eye) toggle
+# ---------------------------------------------------------------------------
+
+
+def test_cursor_visibility_button_defaults(make_viewer_model, qtbot):
+    """New cursors are visible by default with a checked eye button."""
+    viewer = make_viewer_model()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor()
+    cursor = widget._cursors[0]
+    assert cursor['visible'] is True
+    assert cursor['visibility_button'].isChecked() is True
+    # Eye glyph shown when visible.
+    assert cursor['visibility_button'].text() == "\U0001f441"
+
+
+def test_cursor_visibility_toggle_hides_patch(make_viewer_model, qtbot):
+    """Hiding a cursor removes its patch; showing it recreates it."""
+    viewer = make_viewer_model()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor()
+    cursor = widget._cursors[0]
+    assert cursor['patch'] is not None
+
+    cursor['visibility_button'].setChecked(False)
+    assert cursor['visible'] is False
+    assert cursor['patch'] is None
+    assert cursor['visibility_button'].text() == "⊘"
+
+    cursor['visibility_button'].setChecked(True)
+    assert cursor['visible'] is True
+    assert cursor['patch'] is not None
+
+
+def test_cursor_visibility_excludes_from_selection(make_viewer_model, qtbot):
+    """A hidden cursor is excluded from the computed selection map."""
+    viewer = make_viewer_model()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget.autoupdate_check.setChecked(True)
+    widget._add_cursor(g=0.5, s=0.5, radius=0.5)
+    widget._add_cursor(g=0.4, s=0.4, radius=0.5)
+
+    layer_name = f"Cursor Selection: {intensity_image_layer.name}"
+    labels_layer = viewer.layers[layer_name]
+    # Both cursors present -> ids {0, 1, 2} possible.
+    assert set(np.unique(labels_layer.data)) <= {0, 1, 2}
+    assert 2 in np.unique(labels_layer.data)
+
+    # The first cursor's own mask count (independent of overlap).
+    g, s = widget._layer_harmonic_arrays(intensity_image_layer, 1)
+    cursor0_mask_count = int(
+        np.sum(widget._cursor_mask(widget._cursors[0], g, s))
+    )
+
+    # Hide the second cursor -> only the first contributes (id 1).
+    widget._cursors[1]['visibility_button'].setChecked(False)
+    assert set(np.unique(labels_layer.data)) == {0, 1}
+    assert int(np.count_nonzero(labels_layer.data)) == cursor0_mask_count
+
+    # Hidden cursor's statistics are blanked.
+    assert widget._cursors[1]['count_label'].text() == "-"
+    assert widget._cursors[1]['percentage_label'].text() == "-"
+
+    # Show it again -> id 2 returns.
+    widget._cursors[1]['visibility_button'].setChecked(True)
+    assert 2 in np.unique(labels_layer.data)
+
+
+def test_cursor_visibility_overlap_logic(make_viewer_model, qtbot):
+    """Hiding the top cursor reassigns overlapping pixels to the lower one."""
+    viewer = make_viewer_model()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget.autoupdate_check.setChecked(True)
+    # Two heavily overlapping cursors covering the data.
+    widget._add_cursor(g=0.5, s=0.5, radius=0.6)
+    widget._add_cursor(g=0.5, s=0.5, radius=0.6)
+
+    layer_name = f"Cursor Selection: {intensity_image_layer.name}"
+    labels_layer = viewer.layers[layer_name]
+    g, s = widget._layer_harmonic_arrays(intensity_image_layer, 1)
+    cursor0_mask = widget._cursor_mask(widget._cursors[0], g, s)
+
+    # With both visible, the second (id 2) overwrites the overlap.
+    assert 2 in np.unique(labels_layer.data)
+
+    # Hide the second: overlap pixels fall back to the first cursor (id 1).
+    widget._cursors[1]['visibility_button'].setChecked(False)
+    assert set(np.unique(labels_layer.data)) == {0, 1}
+    assert int(np.count_nonzero(labels_layer.data)) == int(
+        np.sum(cursor0_mask)
+    )
+
+
+def test_cursor_visibility_recompute_when_layer_exists(
+    make_viewer_model, qtbot
+):
+    """Without autoupdate, toggling recomputes if a selection layer exists."""
+    viewer = make_viewer_model()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    assert not widget._autoupdate_enabled
+    widget._add_cursor(g=0.5, s=0.5, radius=0.5)
+    widget.calculate_button.click()
+
+    layer_name = f"Cursor Selection: {intensity_image_layer.name}"
+    assert layer_name in [ly.name for ly in viewer.layers]
+
+    # Hiding the only cursor removes the (now empty) selection layer.
+    widget._cursors[0]['visibility_button'].setChecked(False)
+    assert layer_name not in [ly.name for ly in viewer.layers]
+
+    # Showing it again recreates the layer.
+    widget._cursors[0]['visibility_button'].setChecked(True)
+    assert layer_name in [ly.name for ly in viewer.layers]
+
+
+def test_cursor_visibility_no_recompute_without_layer(
+    make_viewer_model, qtbot
+):
+    """Toggling with no layer and no autoupdate only updates stats/patch."""
+    viewer = make_viewer_model()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor(g=0.5, s=0.5, radius=0.5)
+    layer_name = f"Cursor Selection: {intensity_image_layer.name}"
+    assert layer_name not in [ly.name for ly in viewer.layers]
+
+    widget._cursors[0]['visibility_button'].setChecked(False)
+    # No selection layer is created just by toggling.
+    assert layer_name not in [ly.name for ly in viewer.layers]
+    assert widget._cursors[0]['patch'] is None
+
+
+def test_cursor_visibility_persisted_in_metadata(make_viewer_model, qtbot):
+    """Cursor visibility is written to the per-shape metadata entries."""
+    viewer = make_viewer_model()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor(cursor_type="circular", g=0.5, s=0.3, radius=0.1)
+    widget._add_cursor(cursor_type="circular", g=0.6, s=0.4, radius=0.1)
+    widget._cursors[1]['visibility_button'].setChecked(False)
+    widget._apply_selection()
+
+    cursors = intensity_image_layer.metadata["settings"]["selections"][
+        "circular_cursors"
+    ]
+    assert len(cursors) == 2
+    assert cursors[0]['visible'] is True
+    assert cursors[1]['visible'] is False
+
+
+def test_cursor_visibility_restored_from_metadata(make_viewer_model, qtbot):
+    """A hidden cursor stored in metadata is restored hidden."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    layer.metadata.setdefault("settings", {})["selections"] = {
+        "circular_cursors": [
+            {
+                "g": 0.5,
+                "s": 0.3,
+                "radius": 0.1,
+                "color": [255, 0, 0, 255],
+                "visible": False,
+            }
+        ]
+    }
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    w = parent.selection_tab.cursor_selection_widget
+    w._on_image_layer_changed()
+
+    assert len(w._cursors) == 1
+    assert w._cursors[0]['visible'] is False
+    assert w._cursors[0]['visibility_button'].isChecked() is False
+    assert w._cursors[0]['patch'] is None
+
+
+def test_cursor_visibility_missing_metadata_defaults_true(
+    make_viewer_model, qtbot
+):
+    """Cursors stored before the visibility feature default to visible."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    layer.metadata.setdefault("settings", {})["selections"] = {
+        "circular_cursors": [
+            {"g": 0.5, "s": 0.3, "radius": 0.1, "color": [0, 255, 0, 255]}
+        ]
+    }
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    w = parent.selection_tab.cursor_selection_widget
+    w._on_image_layer_changed()
+
+    assert len(w._cursors) == 1
+    assert w._cursors[0]['visible'] is True

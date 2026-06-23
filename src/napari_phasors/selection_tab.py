@@ -1715,6 +1715,10 @@ class CursorSelectionWidget(QWidget):
 
         # Autoupdate state (not stored in metadata)
         self._autoupdate_enabled = False
+        # Whether a selection has been computed at least once. Visibility
+        # toggles keep the selection in sync while this is True, even if the
+        # selection layer was momentarily removed (e.g. all cursors hidden).
+        self._selection_active = False
 
         self._setup_ui()
         self._connect_drag_events()
@@ -1734,9 +1738,15 @@ class CursorSelectionWidget(QWidget):
         # Buttons for add and clear
         buttons_layout = QHBoxLayout()
         self.add_cursor_button = QPushButton("Add Cursor")
+        self.add_cursor_button.setToolTip(
+            "Add a new cursor row (defaults to a circular cursor)."
+        )
         self.add_cursor_button.clicked.connect(lambda: self._add_cursor())
         buttons_layout.addWidget(self.add_cursor_button)
         self.clear_all_button = QPushButton("Clear All")
+        self.clear_all_button.setToolTip(
+            "Remove all cursors and the selection layer."
+        )
         self.clear_all_button.clicked.connect(self._clear_all_cursors)
         buttons_layout.addWidget(self.clear_all_button)
         layout.addLayout(buttons_layout)
@@ -1744,6 +1754,9 @@ class CursorSelectionWidget(QWidget):
         # Calculate button and autoupdate toggle
         calculate_layout = QHBoxLayout()
         self.calculate_button = QPushButton("Calculate")
+        self.calculate_button.setToolTip(
+            "Compute the selection from the current (visible) cursors."
+        )
         self.calculate_button.clicked.connect(self._on_calculate_clicked)
         calculate_layout.addWidget(self.calculate_button)
 
@@ -1753,6 +1766,9 @@ class CursorSelectionWidget(QWidget):
         self.autoupdate_check = QToggleSwitch("Autoupdate")
         self.autoupdate_check.onColor = QColor("#27ae60")  # Nice Green
         self.autoupdate_check.setChecked(False)
+        self.autoupdate_check.setToolTip(
+            "Recompute the selection automatically whenever a cursor changes."
+        )
         self.autoupdate_check.toggled.connect(self._on_autoupdate_changed)
         autoupdate_layout.addWidget(self.autoupdate_check)
         calculate_layout.addWidget(self.autoupdate_checkbox)
@@ -1819,6 +1835,7 @@ class CursorSelectionWidget(QWidget):
         modulation_min=None,
         modulation_max=None,
         color=None,
+        visible=True,
     ):
         """Add a new cursor row.
 
@@ -1894,6 +1911,7 @@ class CursorSelectionWidget(QWidget):
             'modulation_max': modulation_max,
             'color': color,
             'patch': None,
+            'visible': bool(visible),
             'harmonic': (
                 self.parent_widget.harmonic if self.parent_widget else 1
             ),
@@ -1912,6 +1930,15 @@ class CursorSelectionWidget(QWidget):
 
     def _build_row(self, cursor):
         """Construct the QFrame row and store widget refs on ``cursor``."""
+
+        def _labeled(layout, text, widget, tooltip):
+            """Add a ``text`` label + ``widget`` to ``layout``, sharing tooltip."""
+            label = QLabel(text)
+            label.setToolTip(tooltip)
+            widget.setToolTip(tooltip)
+            layout.addWidget(label)
+            layout.addWidget(widget)
+
         frame = QFrame()
         frame.setFrameShape(QFrame.StyledPanel)
         row_layout = QHBoxLayout(frame)
@@ -1925,8 +1952,15 @@ class CursorSelectionWidget(QWidget):
         type_combo.addItem("Elliptical", "elliptic")
         type_combo.addItem("Polar", "polar")
         type_combo.setCurrentIndex(type_combo.findData(cursor['type']))
+        type_combo.setToolTip(
+            "Cursor shape: a circular, elliptical or polar (wedge) region "
+            "of the phasor plot."
+        )
 
         color_button = ColorButton(cursor['color'])
+        color_button.setToolTip(
+            "Color of this cursor's region in the selection overlay."
+        )
 
         # Center fields (circular + elliptic).
         center_widget = QWidget()
@@ -1936,13 +1970,25 @@ class CursorSelectionWidget(QWidget):
         g_spin = self._make_spinbox(-1.5, 1.5, cursor['g'], 2, 0.01)
         s_spin = self._make_spinbox(-1.5, 1.5, cursor['s'], 2, 0.01)
         radius_spin = self._make_spinbox(0.001, 1.0, cursor['radius'], 3, 0.01)
-        for label, widget in (
-            ("G", g_spin),
-            ("S", s_spin),
-            ("r", radius_spin),
-        ):
-            center_line.addWidget(QLabel(label))
-            center_line.addWidget(widget)
+        _labeled(
+            center_line,
+            "G",
+            g_spin,
+            "G coordinate (horizontal axis) of the cursor center.",
+        )
+        _labeled(
+            center_line,
+            "S",
+            s_spin,
+            "S coordinate (vertical axis) of the cursor center.",
+        )
+        _labeled(
+            center_line,
+            "r",
+            radius_spin,
+            "Radius of the circular cursor, or the major-axis radius of the "
+            "elliptical cursor.",
+        )
 
         # Elliptic-only fields.
         elliptic_widget = QWidget()
@@ -1953,12 +1999,18 @@ class CursorSelectionWidget(QWidget):
             0.001, 1.0, cursor['radius_minor'], 3, 0.01
         )
         angle_spin = self._make_spinbox(-360.0, 360.0, cursor['angle'], 1, 1.0)
-        for label, widget in (
-            ("rₘ", radius_minor_spin),
-            ("∠", angle_spin),
-        ):
-            elliptic_line.addWidget(QLabel(label))
-            elliptic_line.addWidget(widget)
+        _labeled(
+            elliptic_line,
+            "rₘ",
+            radius_minor_spin,
+            "Minor-axis radius of the elliptical cursor.",
+        )
+        _labeled(
+            elliptic_line,
+            "∠",
+            angle_spin,
+            "Rotation angle of the elliptical cursor, in degrees.",
+        )
 
         # Polar-only fields.
         polar_widget = QWidget()
@@ -1977,24 +2029,57 @@ class CursorSelectionWidget(QWidget):
         mod_max_spin = self._make_spinbox(
             0.0, 1.0, cursor['modulation_max'], 2, 0.01
         )
-        for label, widget in (
-            ("φ₋", phase_min_spin),
-            ("φ₊", phase_max_spin),
-            ("m₋", mod_min_spin),
-            ("m₊", mod_max_spin),
-        ):
-            polar_line.addWidget(QLabel(label))
-            polar_line.addWidget(widget)
+        _labeled(
+            polar_line,
+            "φ₋",
+            phase_min_spin,
+            "Lower phase bound of the polar cursor, in degrees.",
+        )
+        _labeled(
+            polar_line,
+            "φ₊",
+            phase_max_spin,
+            "Upper phase bound of the polar cursor, in degrees.",
+        )
+        _labeled(
+            polar_line,
+            "m₋",
+            mod_min_spin,
+            "Lower modulation (radial distance) bound of the polar cursor.",
+        )
+        _labeled(
+            polar_line,
+            "m₊",
+            mod_max_spin,
+            "Upper modulation (radial distance) bound of the polar cursor.",
+        )
 
         count_label = QLabel("-")
         count_label.setAlignment(Qt.AlignCenter)
         count_label.setMinimumWidth(45)
+        count_label.setToolTip("Number of pixels inside this cursor's region.")
         percentage_label = QLabel("-")
         percentage_label.setAlignment(Qt.AlignCenter)
         percentage_label.setMinimumWidth(40)
+        percentage_label.setToolTip(
+            "Percentage of valid pixels inside this cursor's region."
+        )
+
+        n_label = QLabel("n:")
+        n_label.setToolTip("Number of pixels inside this cursor's region.")
+        pct_label = QLabel("%:")
+        pct_label.setToolTip(
+            "Percentage of valid pixels inside this cursor's region."
+        )
+
+        visibility_button = QPushButton()
+        visibility_button.setCheckable(True)
+        visibility_button.setChecked(cursor['visible'])
+        visibility_button.setFixedSize(25, 25)
 
         remove_button = QPushButton("×")
         remove_button.setFixedSize(25, 25)
+        remove_button.setToolTip("Remove this cursor.")
 
         row_layout.addWidget(number_label)
         row_layout.addWidget(type_combo)
@@ -2003,10 +2088,11 @@ class CursorSelectionWidget(QWidget):
         row_layout.addWidget(elliptic_widget)
         row_layout.addWidget(polar_widget)
         row_layout.addStretch()
-        row_layout.addWidget(QLabel("n:"))
+        row_layout.addWidget(n_label)
         row_layout.addWidget(count_label)
-        row_layout.addWidget(QLabel("%:"))
+        row_layout.addWidget(pct_label)
         row_layout.addWidget(percentage_label)
+        row_layout.addWidget(visibility_button)
         row_layout.addWidget(remove_button)
 
         cursor.update(
@@ -2029,12 +2115,14 @@ class CursorSelectionWidget(QWidget):
                 'mod_max_spin': mod_max_spin,
                 'count_label': count_label,
                 'percentage_label': percentage_label,
+                'visibility_button': visibility_button,
                 'remove_button': remove_button,
             }
         )
 
         self._rows_layout.addWidget(frame)
         self._apply_type_visibility(cursor)
+        self._update_visibility_button(cursor)
 
         # Wire signals (lambdas capture the cursor dict directly).
         type_combo.currentIndexChanged.connect(
@@ -2057,9 +2145,45 @@ class CursorSelectionWidget(QWidget):
         color_button.color_changed.connect(
             lambda _c, c=cursor: self._on_cursor_changed(c)
         )
+        visibility_button.toggled.connect(
+            lambda _checked=False, c=cursor: self._on_cursor_visibility_toggled(
+                c
+            )
+        )
         remove_button.clicked.connect(
             lambda _=False, c=cursor: self._remove_cursor(c)
         )
+
+    def _update_visibility_button(self, cursor):
+        """Update the eye button's glyph and tooltip from ``visible`` state."""
+        button = cursor['visibility_button']
+        if cursor['visible']:
+            button.setText("\U0001f441")  # eye
+            button.setToolTip(
+                "Cursor is shown and included in the selection. "
+                "Click to hide it."
+            )
+        else:
+            button.setText("⊘")  # circled slash
+            button.setToolTip(
+                "Cursor is hidden and excluded from the selection. "
+                "Click to show it."
+            )
+
+    def _on_cursor_visibility_toggled(self, cursor):
+        """Toggle a cursor's visibility, recomputing the selection."""
+        if cursor not in self._cursors:
+            return
+        cursor['visible'] = cursor['visibility_button'].isChecked()
+        self._update_visibility_button(cursor)
+        self._update_cursor_patch(cursor)
+        # Recompute the selection so hidden cursors are excluded (and shown
+        # cursors re-included) whenever a selection has been computed or
+        # autoupdate is on.
+        if self._autoupdate_enabled or self._selection_active:
+            self._apply_selection()
+        else:
+            self._update_cursor_statistics()
 
     def _apply_type_visibility(self, cursor):
         """Show/hide the shape-specific field groups for a cursor row."""
@@ -2155,6 +2279,7 @@ class CursorSelectionWidget(QWidget):
 
         if not self._cursors:
             self._remove_selection_layer()
+            self._selection_active = False
         elif self._autoupdate_enabled:
             self._apply_selection()
         else:
@@ -2173,6 +2298,7 @@ class CursorSelectionWidget(QWidget):
             cursor['row'].deleteLater()
         self._cursors.clear()
         self._remove_selection_layer()
+        self._selection_active = False
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
@@ -2191,7 +2317,10 @@ class CursorSelectionWidget(QWidget):
                 cursor['patch'].remove()
             cursor['patch'] = None
 
-        if cursor_harmonic != current_harmonic:
+        # Hidden cursors and cursors of a different harmonic draw no patch.
+        if cursor_harmonic != current_harmonic or not cursor.get(
+            'visible', True
+        ):
             self.parent_widget.canvas_widget.canvas.draw_idle()
             return
 
@@ -2369,12 +2498,14 @@ class CursorSelectionWidget(QWidget):
             color.blue(),
             color.alpha(),
         )
+        visible = bool(cursor.get('visible', True))
         if cursor['type'] == "circular":
             return {
                 'g': cursor['g'],
                 's': cursor['s'],
                 'radius': cursor['radius'],
                 'color': color_tuple,
+                'visible': visible,
             }
         if cursor['type'] == "elliptic":
             return {
@@ -2384,6 +2515,7 @@ class CursorSelectionWidget(QWidget):
                 'radius_minor': cursor['radius_minor'],
                 'angle': cursor['angle'],
                 'color': color_tuple,
+                'visible': visible,
             }
         return {
             'phase_min': cursor['phase_min'],
@@ -2391,6 +2523,7 @@ class CursorSelectionWidget(QWidget):
             'modulation_min': cursor['modulation_min'],
             'modulation_max': cursor['modulation_max'],
             'color': color_tuple,
+            'visible': visible,
         }
 
     def _apply_selection(self):
@@ -2401,6 +2534,10 @@ class CursorSelectionWidget(QWidget):
         selected_layers = self._get_selected_layers()
         if not selected_layers:
             return
+
+        # A selection has now been computed; visibility toggles will keep it
+        # in sync from here on.
+        self._selection_active = True
 
         current_harmonic = self.parent_widget.harmonic
         current_harmonic_cursors = self._current_harmonic_cursors()
@@ -2426,8 +2563,15 @@ class CursorSelectionWidget(QWidget):
             selections["elliptical_cursors"] = elliptical_params
             selections["polar_cursors"] = polar_params
 
-        if not current_harmonic_cursors:
+        # Only visible cursors contribute to the selection (and to the
+        # label-id / color mapping); hidden cursors behave as if absent.
+        visible_cursors = [
+            c for c in current_harmonic_cursors if c.get('visible', True)
+        ]
+
+        if not visible_cursors:
             self._remove_selection_layer()
+            self._update_cursor_statistics()
             return
 
         for layer in selected_layers:
@@ -2435,11 +2579,11 @@ class CursorSelectionWidget(QWidget):
             if g is None:
                 continue
             selection_map = np.zeros(layer.data.shape, dtype=np.uint32)
-            for idx, cursor in enumerate(current_harmonic_cursors):
+            for idx, cursor in enumerate(visible_cursors):
                 mask = self._cursor_mask(cursor, g, s)
                 selection_map[mask] = idx + 1
             self._create_or_update_labels_layer(
-                layer, selection_map, current_harmonic_cursors
+                layer, selection_map, visible_cursors
             )
 
         self._update_cursor_statistics()
@@ -2469,6 +2613,12 @@ class CursorSelectionWidget(QWidget):
             return
 
         for cursor in current_harmonic_cursors:
+            # Hidden cursors are excluded from the selection, so report no
+            # statistics for them.
+            if not cursor.get('visible', True):
+                cursor['count_label'].setText("-")
+                cursor['percentage_label'].setText("-")
+                continue
             count = 0
             for layer in selected_layers:
                 g, s = self._layer_harmonic_arrays(layer, current_harmonic)
@@ -2533,6 +2683,7 @@ class CursorSelectionWidget(QWidget):
             cursor['row'].setParent(None)
             cursor['row'].deleteLater()
         self._cursors.clear()
+        self._selection_active = False
 
         selected_layers = self._get_selected_layers()
         if not selected_layers:
@@ -2553,6 +2704,7 @@ class CursorSelectionWidget(QWidget):
                     s=params["s"],
                     radius=params["radius"],
                     color=QColor(*params["color"]),
+                    visible=params.get("visible", True),
                 )
             for params in selections.get("elliptical_cursors", []) or []:
                 self._add_cursor(
@@ -2563,6 +2715,7 @@ class CursorSelectionWidget(QWidget):
                     radius_minor=params["radius_minor"],
                     angle=params["angle"],
                     color=QColor(*params["color"]),
+                    visible=params.get("visible", True),
                 )
             for params in selections.get("polar_cursors", []) or []:
                 self._add_cursor(
@@ -2572,6 +2725,7 @@ class CursorSelectionWidget(QWidget):
                     modulation_min=params["modulation_min"],
                     modulation_max=params["modulation_max"],
                     color=QColor(*params["color"]),
+                    visible=params.get("visible", True),
                 )
         finally:
             self._apply_selection = original_apply
