@@ -26,6 +26,7 @@ from phasorpy.filter import (
 from qtpy.QtCore import QEvent, QRect, QSize, Qt, QThread, QTimer, Signal
 from qtpy.QtGui import (
     QColor,
+    QCursor,
     QDoubleValidator,
     QFont,
     QFontMetrics,
@@ -44,6 +45,7 @@ from qtpy.QtWidgets import (
     QComboBox,
     QDialog,
     QFileDialog,
+    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -59,10 +61,118 @@ from qtpy.QtWidgets import (
     QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
 from superqt import QRangeSlider
+
+
+def analysis_section_stylesheet():
+    """Return the shared stylesheet for titled analysis-tab section boxes.
+
+    Mirrors the Batch Analysis widget's cohesive look: ``QGroupBox`` sections
+    get a titled, rounded frame. Uses ``rgba`` so the look stays consistent in
+    both the light and dark napari themes.
+    """
+    return (
+        "QGroupBox {"
+        "  font-weight: 600;"
+        "  border: 1px solid rgba(128, 128, 128, 0.35);"
+        "  border-radius: 6px;"
+        "  margin-top: 10px;"
+        "  padding: 8px 6px 6px 6px;"
+        "}"
+        "QGroupBox::title {"
+        "  subcontrol-origin: margin;"
+        "  subcontrol-position: top left;"
+        "  left: 8px;"
+        "  padding: 0 4px;"
+        "}"
+    )
+
+
+def make_section(title):
+    """Return ``(box, layout)`` for a titled section group inside a tab."""
+    box = QGroupBox(title)
+    layout = QVBoxLayout(box)
+    return box, layout
+
+
+# Green-outlined "ready" look for a tab's primary action button. ``#27ae60``
+# matches the green used for toggles elsewhere in the UI.
+_PRIMARY_BUTTON_READY_QSS = (
+    "QPushButton {"
+    "  border: 2px solid #27ae60;"
+    "  border-radius: 6px;"
+    "  padding: 6px 12px;"
+    "  font-weight: 600;"
+    "}"
+    "QPushButton:hover { background: rgba(39, 174, 96, 0.12); }"
+    "QPushButton:pressed { background: rgba(39, 174, 96, 0.25); }"
+    "QPushButton:disabled {"
+    "  border-color: rgba(39, 174, 96, 0.35);"
+    "  color: gray;"
+    "}"
+)
+
+# Greyed-out "blocked" look used when required parameters are missing. The
+# button stays clickable so a tooltip can explain what is missing.
+_PRIMARY_BUTTON_BLOCKED_QSS = (
+    "QPushButton {"
+    "  border: 2px solid rgba(128, 128, 128, 0.5);"
+    "  border-radius: 6px;"
+    "  padding: 6px 12px;"
+    "  font-weight: 600;"
+    "  color: gray;"
+    "}"
+)
+
+
+def emphasize_primary_button(button):
+    """Style ``button`` as a tab's prominent primary action (green outline).
+
+    Used for the single Run/Apply button of each analysis tab so it stands out
+    from secondary controls.
+    """
+    button.setStyleSheet(_PRIMARY_BUTTON_READY_QSS)
+    return button
+
+
+def setup_primary_button(button, validator, run_callback, ready_tooltip=""):
+    """Wire ``button`` as a *validated* primary action.
+
+    ``validator()`` returns ``None`` when the action can run, otherwise a short
+    message naming the first missing required parameter. The button shows the
+    green "ready" outline when runnable and a greyed-out look while blocked.
+    The button stays clickable while blocked: clicking it then pops a tooltip
+    with the reason (and re-evaluates) instead of running ``run_callback``.
+
+    Returns a ``refresh`` callable that re-evaluates the validator and updates
+    the button's look and tooltip; call it whenever the relevant inputs change
+    (e.g. from a layer-selection change or an input field's ``textChanged``).
+    """
+
+    def refresh():
+        reason = validator()
+        if reason:
+            button.setStyleSheet(_PRIMARY_BUTTON_BLOCKED_QSS)
+            button.setToolTip(reason)
+        else:
+            button.setStyleSheet(_PRIMARY_BUTTON_READY_QSS)
+            button.setToolTip(ready_tooltip)
+
+    def _on_clicked():
+        reason = validator()
+        refresh()
+        if reason:
+            QToolTip.showText(QCursor.pos(), reason, button)
+            return
+        run_callback()
+
+    button.clicked.connect(_on_clicked)
+    refresh()
+    return refresh
 
 
 def _check_state_value(state):
@@ -2192,7 +2302,8 @@ class HistogramWidget(QWidget):
         Name of the Matplotlib colormap to use as fallback when no explicit
         colormap colors are provided, by default ``"plasma"``.
     canvas_height : int, optional
-        Fixed pixel height of the canvas, by default 150.
+        Minimum pixel height of the canvas, by default 150. The canvas grows
+        beyond this to fill the available vertical space.
     range_slider_enabled : bool, optional
         If ``True``, show a range slider with min / max edits above the
         histogram plot, by default ``False``.
@@ -2327,9 +2438,11 @@ class HistogramWidget(QWidget):
         self._style_axes()
 
         canvas = FigureCanvas(self.fig)
-        canvas.setFixedHeight(canvas_height)
-        canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        layout.addWidget(canvas)
+        # Let the canvas grow with the window instead of staying a fixed
+        # height; ``canvas_height`` becomes a lower bound so it never collapses.
+        canvas.setMinimumHeight(canvas_height)
+        canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        layout.addWidget(canvas, 1)
 
         # Settings and export controls in one row
         controls_layout = QHBoxLayout()

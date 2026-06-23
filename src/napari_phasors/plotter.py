@@ -29,6 +29,7 @@ from qtpy.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -52,9 +53,11 @@ from ._utils import (
     HistogramWidget,
     StatisticsDockWidget,
     StatisticsTableWidget,
+    analysis_section_stylesheet,
     apply_filter_and_threshold,
     build_group_styles_from_layer_metadata,
     build_groups_from_layer_metadata,
+    make_section,
     make_solid_contour_cmap,
     normalize_rgb,
     populate_colormap_combobox,
@@ -1624,12 +1627,24 @@ class PlotterWidget(QWidget):
         image_layer_layout = QHBoxLayout()
         image_layer_layout.setContentsMargins(0, 0, 0, 0)  # Remove margins
         image_layer_layout.setSpacing(5)  # Reduce spacing between widgets
-        image_layer_layout.addWidget(QLabel("Image Layers:"))
+        image_layer_label = QLabel("Phasor Layers:")
+        image_layer_label.setStyleSheet("font-weight: bold;")
+        image_layer_layout.addWidget(image_layer_label)
         self.image_layers_checkable_combobox = CheckableComboBox()
         self.image_layers_checkable_combobox.setToolTip(
             "Select one or more layers to plot. Check multiple layers to merge their phasor data.\n"
             "Click 'Set as primary' next to a layer name to change the primary layer.\n"
             "The primary layer is used for settings and analysis."
+        )
+        # Highlight the primary layer selector with a blue outline and give it
+        # a little extra height so it stands out as the main control.
+        self.image_layers_checkable_combobox.setStyleSheet(
+            "QComboBox {"
+            "  border: 2px solid #1E90FF;"
+            "  border-radius: 4px;"
+            "  min-height: 26px;"
+            "  padding: 2px 6px;"
+            "}"
         )
         image_layer_layout.addWidget(self.image_layers_checkable_combobox, 1)
 
@@ -1788,24 +1803,6 @@ class PlotterWidget(QWidget):
             harmonics_and_mask_container
         )
 
-        # Add import buttons below harmonic spinbox
-        import_buttons_layout = QHBoxLayout()
-        import_buttons_layout.setContentsMargins(0, 0, 0, 0)
-        import_buttons_layout.setSpacing(5)
-
-        import_label = QLabel("Load and Apply Settings from:")
-        import_buttons_layout.addWidget(import_label)
-
-        self.import_from_layer_button = QPushButton("Layer")
-        import_buttons_layout.addWidget(self.import_from_layer_button)
-
-        self.import_from_file_button = QPushButton("OME-TIFF File")
-        import_buttons_layout.addWidget(self.import_from_file_button)
-
-        import_buttons_widget = QWidget()
-        import_buttons_widget.setLayout(import_buttons_layout)
-        self.controls_container.layout().addWidget(import_buttons_widget)
-
         # Dynamic buttons to re-open closed dock widgets
         dock_buttons_layout = QHBoxLayout()
         dock_buttons_layout.setContentsMargins(0, 0, 0, 0)
@@ -1943,7 +1940,27 @@ class PlotterWidget(QWidget):
         # Create Settings tab
         self.settings_tab = QWidget()
         self.settings_tab.setLayout(QVBoxLayout())
+        self.settings_tab.setStyleSheet(analysis_section_stylesheet())
         self.tab_widget.addTab(self.settings_tab, "Plot Settings")
+
+        # Import buttons in a titled section at the top of the Plot Settings tab
+        import_box, import_box_layout = make_section("Load and apply settings")
+        import_buttons_layout = QHBoxLayout()
+        import_buttons_layout.setContentsMargins(0, 0, 0, 0)
+        import_buttons_layout.setSpacing(5)
+
+        import_label = QLabel("Load and Apply Settings from:")
+        import_buttons_layout.addWidget(import_label)
+
+        self.import_from_layer_button = QPushButton("Layer")
+        import_buttons_layout.addWidget(self.import_from_layer_button)
+
+        self.import_from_file_button = QPushButton("OME-TIFF File")
+        import_buttons_layout.addWidget(self.import_from_file_button)
+
+        import_buttons_layout.addStretch(1)
+        import_box_layout.addLayout(import_buttons_layout)
+        self.settings_tab.layout().addWidget(import_box)
 
         # Load plotter inputs widget from ui file
         self.plotter_inputs_widget = QWidget()
@@ -2170,6 +2187,10 @@ class PlotterWidget(QWidget):
             pc_base_row,
             1,
         )
+        self._pc_controls_container = pc_controls_container
+
+        # Reorganize the flat settings grid into titled section boxes.
+        self._organize_plot_settings_sections()
 
         self.import_from_layer_button.clicked.connect(
             self._import_settings_from_layer
@@ -4401,6 +4422,79 @@ class PlotterWidget(QWidget):
         # Update phasor center controls for current layer count
         if hasattr(self, '_phasor_center_enabled'):
             self._update_phasor_center_controls_visibility()
+
+    def _organize_plot_settings_sections(self):
+        """Group the flat Plot Settings grid into titled section boxes.
+
+        The plot-settings controls are loaded from a single ``QGridLayout``
+        and rearranged at runtime by :meth:`_reflow_plot_settings_rows`. Here
+        we split them into three titled :class:`QGroupBox` sections — "Plot
+        type & background", "Appearance" and "Phasor centers" — to match the
+        other analysis tabs. The Appearance grid becomes the reflow target
+        (``_plotter_settings_layout``); its reflowable rows keep their original
+        row indices (3-10) so the reflow logic is unchanged. The empty leading
+        rows collapse to zero height.
+        """
+        piw = self.plotter_inputs_widget
+        contents = piw.findChild(QWidget, "scrollAreaWidgetContents")
+        old_grid = contents.layout()
+
+        # Detach every item from the original grid; the widgets stay parented
+        # to ``contents`` until re-added to a section box below.
+        while old_grid.count():
+            old_grid.takeAt(0)
+
+        # Plot type & background -------------------------------------------
+        type_box, _ = make_section("Plot type & background")
+        type_grid = QGridLayout()
+        type_box.layout().addLayout(type_grid)
+        for row, (label, field) in enumerate(
+            [
+                (piw.label_5, piw.semi_circle_checkbox),
+                (piw.label_6, piw.white_background_checkbox),
+                (piw.label_2, piw.plot_type_combobox),
+            ]
+        ):
+            type_grid.addWidget(label, row, 0)
+            type_grid.addWidget(field, row, 1)
+
+        # Appearance (reflow target) ---------------------------------------
+        appearance_box, _ = make_section("Appearance")
+        appearance_grid = QGridLayout()
+        appearance_box.layout().addLayout(appearance_grid)
+        self._plotter_settings_layout = appearance_grid
+        appearance_rows = [
+            (piw.label_3, self._colormap_row_widget, 3),
+            (piw.label_4, piw.number_of_bins_spinbox, 4),
+            (piw.label_7, piw.log_scale_checkbox, 5),
+            (piw.label_marker_size, piw.marker_size_spinbox, 6),
+            (piw.label_marker_color, piw.marker_color_button, 7),
+            (piw.label_marker_alpha, piw.marker_alpha_spinbox, 8),
+            (piw.label_contour_levels, piw.contour_levels_spinbox, 9),
+            (piw.label_contour_linewidth, piw.contour_linewidth_spinbox, 10),
+        ]
+        for label, field, row in appearance_rows:
+            appearance_grid.addWidget(label, row, 0)
+            appearance_grid.addWidget(field, row, 1)
+        # Parked off-screen until shown by the reflow for multi-layer contours.
+        appearance_grid.addWidget(piw.label_contour_layer_settings, 99, 0)
+        appearance_grid.addWidget(piw.contour_layer_settings_button, 99, 1)
+
+        # Phasor centers ----------------------------------------------------
+        pc_box, _ = make_section("Phasor centers")
+        pc_grid = QGridLayout()
+        pc_box.layout().addLayout(pc_grid)
+        pc_grid.addWidget(piw.label_phasor_center, 0, 0)
+        pc_grid.addWidget(self._pc_controls_container, 0, 1)
+
+        # Replace the now-empty original grid with a vertical stack of boxes.
+        QWidget().setLayout(old_grid)
+        sections_layout = QVBoxLayout(contents)
+        sections_layout.setContentsMargins(0, 0, 0, 0)
+        sections_layout.addWidget(type_box)
+        sections_layout.addWidget(appearance_box)
+        sections_layout.addWidget(pc_box)
+        sections_layout.addStretch(1)
 
     def _reflow_plot_settings_rows(self, show_multi_layer_contour_controls):
         """Reposition rows to avoid empty spacing when contour row is hidden."""

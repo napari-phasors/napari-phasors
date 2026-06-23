@@ -15,7 +15,11 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from ._utils import apply_filter_and_threshold
+from ._utils import (
+    analysis_section_stylesheet,
+    apply_filter_and_threshold,
+    setup_primary_button,
+)
 
 if TYPE_CHECKING:
     import napari
@@ -37,9 +41,25 @@ class CalibrationWidget(QWidget):
             self.calibration_widget,
         )
 
-        # Connect callbacks
-        self.calibration_widget.calibrate_push_button.clicked.connect(
-            self._on_click
+        # Apply the shared section styling and wire the primary action as a
+        # validated button (greyed out with a tooltip while inputs are missing).
+        self.calibration_widget.setStyleSheet(analysis_section_stylesheet())
+        self._refresh_calibrate_button = setup_primary_button(
+            self.calibration_widget.calibrate_push_button,
+            self._calibrate_validation,
+            self._on_click,
+            ready_tooltip="Calibrate the selected layer(s).",
+        )
+
+        # Re-evaluate the button whenever a required input changes.
+        self.calibration_widget.frequency_input.textChanged.connect(
+            lambda _=None: self._refresh_calibrate_button()
+        )
+        self.calibration_widget.lifetime_line_edit_widget.textChanged.connect(
+            lambda _=None: self._refresh_calibrate_button()
+        )
+        self.calibration_widget.calibration_layer_combobox.currentTextChanged.connect(
+            lambda _=None: self._refresh_calibrate_button()
         )
 
         # Connect layer events to populate combobox and update button state
@@ -126,6 +146,7 @@ class CalibrationWidget(QWidget):
         selected_layers = self.parent_widget.get_selected_layers()
         if not selected_layers:
             self.calibration_widget.calibrate_push_button.setText("Calibrate")
+            self._refresh_calibrate_button()
             return
 
         # Check if any selected layer is calibrated
@@ -139,6 +160,31 @@ class CalibrationWidget(QWidget):
             )
         else:
             self.calibration_widget.calibrate_push_button.setText("Calibrate")
+
+        self._refresh_calibrate_button()
+
+    def _calibrate_validation(self):
+        """Return ``None`` if calibration can run, else the missing-input msg.
+
+        Uncalibration (when a selected layer is already calibrated) needs no
+        inputs, so the button is always ready in that case.
+        """
+        selected_layers = self.parent_widget.get_selected_layers()
+        if not selected_layers:
+            return "Select at least one image layer with phasor features."
+        if any(self._is_layer_calibrated(layer) for layer in selected_layers):
+            return None
+        if (
+            not self.calibration_widget.calibration_layer_combobox.currentText()
+        ):
+            return "Select a calibration layer."
+        if not self.calibration_widget.frequency_input.text().strip():
+            return "Enter the frequency (MHz)."
+        if (
+            not self.calibration_widget.lifetime_line_edit_widget.text().strip()
+        ):
+            return "Enter the reference lifetime (ns)."
+        return None
 
     def _on_click(self):
         """Handle calibration button click for all selected layers."""
