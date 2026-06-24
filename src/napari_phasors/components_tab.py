@@ -1,5 +1,5 @@
 import contextlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import matplotlib.colors as mcolors
@@ -66,6 +66,8 @@ class ComponentState:
     number_label: QLabel | None = None
     text_offset: tuple[float, float] = (0.02, 0.02)
     label: str = "Component"
+    # Layer names last used to compute the phasor center for this component.
+    phasor_center_layers: list[str] = field(default_factory=list)
 
 
 class ColorActionWidget(QLabel):
@@ -126,7 +128,7 @@ class ColorActionWidget(QLabel):
 
 
 class PhasorCenterSelectionDialog(QDialog):
-    def __init__(self, layers, parent=None):
+    def __init__(self, layers, parent=None, preselected=None):
         super().__init__(parent)
         self.setWindowTitle("Select Phasor Center Layers")
         self.setMinimumWidth(360)
@@ -150,14 +152,11 @@ class PhasorCenterSelectionDialog(QDialog):
         )
         self.layer_combo.addItems(layers)
 
-        # Pre-select currently selected layers in napari / plotter widget if possible
-        if (
-            parent
-            and hasattr(parent, 'parent_widget')
-            and parent.parent_widget
-        ):
-            selected_names = parent.parent_widget.get_selected_layer_names()
-            checked = [name for name in selected_names if name in layers]
+        # Pre-select only the layers that were previously used to compute the
+        # phasor center for this component. By default (no prior selection)
+        # nothing is checked.
+        if preselected:
+            checked = [name for name in preselected if name in layers]
             if checked:
                 self.layer_combo.setCheckedItems(checked)
 
@@ -247,6 +246,9 @@ class ComponentsWidget(QWidget):
         self._updating_from_lifetime = False
         self._updating_settings = False  # Flag to prevent recursive updates
         self._needs_update = False  # Deferred update flag
+        # Guard to avoid recursion while mirroring the component selection
+        # between the histogram and statistics comboboxes.
+        self._syncing_component_comboboxes = False
 
         # Flag to track if analysis was attempted
         self._analysis_attempted = False
@@ -400,6 +402,17 @@ class ComponentsWidget(QWidget):
         )
         self.histogram_component_combobox.currentIndexChanged.connect(
             self._on_histogram_component_changed
+        )
+
+        # Mirror of the selector shown in the statistics dock so the component
+        # can be changed there too. Kept in sync with the histogram combobox.
+        self.stats_component_combobox = QComboBox()
+        self.stats_component_combobox.setToolTip(
+            "Select which component's fraction data to display in the "
+            "histogram and statistics."
+        )
+        self.stats_component_combobox.currentIndexChanged.connect(
+            self._on_stats_component_changed
         )
 
         # NOTE: The widget is created here but NOT added to this tab's layout.
@@ -689,12 +702,28 @@ class ComponentsWidget(QWidget):
             show_warning("No active layers with phasor data found.")
             return
 
-        dialog = PhasorCenterSelectionDialog(available_layers, parent=self)
+        comp = self.components[idx]
+        preselected = [
+            name
+            for name in (comp.phasor_center_layers or [])
+            if name in available_layers
+        ]
+
+        dialog = PhasorCenterSelectionDialog(
+            available_layers, parent=self, preselected=preselected
+        )
         if dialog.exec() == QDialog.Accepted:
             selected_layer_names = dialog.get_selected_layers()
             if not selected_layer_names:
                 show_warning("No layers selected.")
                 return
+
+            # Remember the selection for this component so reopening the
+            # dialog restores it.
+            comp.phasor_center_layers = list(selected_layer_names)
+            self._update_component_phasor_center_layers(
+                idx, comp.phasor_center_layers
+            )
 
             pooled_mean_list = []
             pooled_g_list = []
@@ -1065,6 +1094,10 @@ class ComponentsWidget(QWidget):
                     if name:
                         comp.name_edit.setText(name)
 
+                    comp.phasor_center_layers = list(
+                        comp_data.get('phasor_center_layers', [])
+                    )
+
                     gs_harmonics = comp_data.get('gs_harmonics', {})
 
                     if current_harmonic_key in gs_harmonics:
@@ -1219,6 +1252,10 @@ class ComponentsWidget(QWidget):
 
                     if name:
                         comp.name_edit.setText(name)
+
+                    comp.phasor_center_layers = list(
+                        comp_data.get('phasor_center_layers', [])
+                    )
 
                     gs_harmonics = comp_data.get('gs_harmonics', {})
 
@@ -2204,7 +2241,9 @@ class ComponentsWidget(QWidget):
         )
 
         # 2. Option: Select from phasor center
-        select_center_action = menu.addAction("Select from phasor center...")
+        select_center_action = menu.addAction(
+            "Select from layer(s) phasor center"
+        )
         select_center_action.triggered.connect(
             lambda _, curr_idx=idx: self._select_from_phasor_center(curr_idx)
         )
@@ -3295,6 +3334,10 @@ class ComponentsWidget(QWidget):
                 colormap_colors=layer.colormap.colors,
                 contrast_limits=list(layer.contrast_limits),
             )
+        else:
+            self._refresh_second_component_colormap(
+                comp_idx, selected_component, layer
+            )
 
     def _on_contrast_limits_changed(self, event):
         """Handle changes to contrast limits of any fraction layer."""
@@ -3384,6 +3427,36 @@ class ComponentsWidget(QWidget):
                 colormap_colors=layer.colormap.colors,
                 contrast_limits=contrast_limits,
             )
+        else:
+            self._refresh_second_component_colormap(
+                comp_idx, selected_component, layer
+            )
+
+    def _refresh_second_component_colormap(
+        self, comp_idx, selected_component, layer
+    ):
+        """Refresh the histogram colormap when the second component is shown.
+
+        In Linear Projection the second component is displayed using the first
+        component's layer with an inverted fraction. When the first component's
+        colormap or contrast limits change, mirror that change (reversed) onto
+        the histogram if the second component is the active selection.
+        """
+        if (
+            not hasattr(self, 'histogram_widget')
+            or self.histogram_widget is None
+        ):
+            return
+
+        name1, name2 = self._linear_projection_component_names()
+        if name1 is None or comp_idx != 0 or selected_component != name2:
+            return
+
+        limits = list(layer.contrast_limits)
+        self.histogram_widget.update_colormap(
+            colormap_colors=np.asarray(layer.colormap.colors)[::-1],
+            contrast_limits=[1.0 - limits[1], 1.0 - limits[0]],
+        )
 
     def _find_component_index_for_layer(self, layer):
         """Find which component index a layer belongs to based on its name."""
@@ -3933,6 +4006,16 @@ class ComponentsWidget(QWidget):
             return
 
         comp_data['name'] = name if name else None
+
+    def _update_component_phasor_center_layers(
+        self, idx: int, layer_names: list[str]
+    ):
+        """Persist the layers used to compute this component's phasor center."""
+        comp_data = self._ensure_component_metadata(idx)
+        if comp_data is None:
+            return
+
+        comp_data['phasor_center_layers'] = list(layer_names)
 
     def _update_component_colormap(
         self,
@@ -4560,6 +4643,20 @@ class ComponentsWidget(QWidget):
                     comp_part = name[: -len(sep + old_name)]
                     layer.name = f"{comp_part}{sep}{new_name}"
 
+        # Keep each component's remembered phasor-center selection in sync so a
+        # renamed layer stays selected instead of being dropped.
+        for comp in self.components:
+            if comp is None or not comp.phasor_center_layers:
+                continue
+            if old_name in comp.phasor_center_layers:
+                comp.phasor_center_layers = [
+                    new_name if n == old_name else n
+                    for n in comp.phasor_center_layers
+                ]
+                self._update_component_phasor_center_layers(
+                    comp.idx, comp.phasor_center_layers
+                )
+
     def _get_fraction_layers_for_component(self, component_name):
         """Get all fraction layers in the viewer for a given component name.
 
@@ -4653,25 +4750,125 @@ class ComponentsWidget(QWidget):
                 result.append(name)
         return result
 
+    def _linear_projection_component_names(self):
+        """First/second component display names for Linear Projection mode.
+
+        In Linear Projection only the first component gets a fraction layer.
+        The second component's fraction is ``1 - first`` and can be displayed
+        in the histogram without creating an extra layer.
+
+        Returns
+        -------
+        tuple of (str or None, str or None)
+            ``(name1, name2)`` when applicable, otherwise ``(None, None)``.
+        """
+        if self.analysis_type != "Linear Projection":
+            return None, None
+        if len(self.components) < 2:
+            return None, None
+        c1, c2 = self.components[0], self.components[1]
+        if c1 is None or c2 is None:
+            return None, None
+        name1 = c1.name_edit.text().strip() or "Component 1"
+        name2 = c2.name_edit.text().strip() or "Component 2"
+        if name1 == name2:
+            return None, None
+        return name1, name2
+
+    def _resolve_histogram_component(self, selected_text):
+        """Resolve a combobox entry to its fraction layers and an invert flag.
+
+        Most entries map directly to fraction layers in the viewer. In Linear
+        Projection mode the second component has no layer of its own; its
+        fraction is ``1 - first_component_fraction``. In that case the
+        underlying first-component layers are returned together with
+        ``invert=True`` so the displayed values, colormap and contrast limits
+        are inverted.
+
+        Returns
+        -------
+        tuple of (dict, bool)
+            ``({image_layer_name: Image}, invert)``.
+        """
+        fraction_layers_map = self._get_fraction_layers_for_component(
+            selected_text
+        )
+        if fraction_layers_map:
+            return fraction_layers_map, False
+
+        name1, name2 = self._linear_projection_component_names()
+        if name2 is not None and selected_text == name2:
+            comp1_layers = self._get_fraction_layers_for_component(name1)
+            if comp1_layers:
+                return comp1_layers, True
+
+        return {}, False
+
     def _update_histogram_combobox(self):
-        """Populate the histogram component combobox with available fraction layers."""
+        """Populate the component selector comboboxes with fraction layers.
+
+        The histogram and statistics docks each show a combobox; both are
+        populated with the same entries and kept in sync.
+        """
         current_text = self.histogram_component_combobox.currentText()
-        self.histogram_component_combobox.blockSignals(True)
-        self.histogram_component_combobox.clear()
 
-        comp_names = self._get_component_names_from_fraction_layers()
-        for comp_name in comp_names:
-            self.histogram_component_combobox.addItem(comp_name)
+        comp_names = list(self._get_component_names_from_fraction_layers())
 
-        idx = self.histogram_component_combobox.findText(current_text)
-        if idx >= 0:
-            self.histogram_component_combobox.setCurrentIndex(idx)
+        # Linear Projection creates only the first component's fraction layer,
+        # but the second component's fraction (1 - first) can also be shown.
+        name1, name2 = self._linear_projection_component_names()
+        if (
+            name2 is not None
+            and self._get_fraction_layers_for_component(name1)
+            and name2 not in comp_names
+        ):
+            comp_names.append(name2)
 
-        self.histogram_component_combobox.blockSignals(False)
+        for combobox in (
+            self.histogram_component_combobox,
+            self.stats_component_combobox,
+        ):
+            combobox.blockSignals(True)
+            combobox.clear()
+            for comp_name in comp_names:
+                combobox.addItem(comp_name)
+            idx = combobox.findText(current_text)
+            if idx >= 0:
+                combobox.setCurrentIndex(idx)
+            combobox.blockSignals(False)
 
     def _on_histogram_component_changed(self, index):
         """Handle change of the selected component in the histogram combobox."""
+        self._mirror_component_selection(
+            self.histogram_component_combobox, self.stats_component_combobox
+        )
         self.update_component_histogram()
+
+    def _on_stats_component_changed(self, index):
+        """Handle change of the selected component in the statistics combobox.
+
+        Mirrors the choice onto the histogram combobox, which is the canonical
+        selector and refreshes the histogram/statistics via its own signal.
+        """
+        self._mirror_component_selection(
+            self.stats_component_combobox, self.histogram_component_combobox
+        )
+
+    def _mirror_component_selection(self, source, target):
+        """Copy the current selection from ``source`` to ``target`` combobox."""
+        if self._syncing_component_comboboxes:
+            return
+        text = source.currentText()
+        if target.currentText() == text:
+            return
+        idx = target.findText(text)
+        if idx < 0:
+            return
+        self._syncing_component_comboboxes = True
+        try:
+            target.setCurrentIndex(idx)
+        finally:
+            self._syncing_component_comboboxes = False
 
     def _on_fraction_range_changed(self, min_val, max_val):
         """Handle range slider changes on the fraction histogram.
@@ -4683,11 +4880,19 @@ class ComponentsWidget(QWidget):
         if not selected_text:
             return
 
-        fraction_layers_map = self._get_fraction_layers_for_component(
+        fraction_layers_map, invert = self._resolve_histogram_component(
             selected_text
         )
         if not fraction_layers_map:
             return
+
+        # When the second component is displayed, the slider acts on its
+        # fraction (1 - first). Clipping it to [min_val, max_val] is equivalent
+        # to clipping the underlying first-component layer to [1-max, 1-min].
+        if invert:
+            layer_min, layer_max = 1.0 - max_val, 1.0 - min_val
+        else:
+            layer_min, layer_max = min_val, max_val
 
         clipped_data = {}
         self._updating_linked_layers = True
@@ -4696,22 +4901,27 @@ class ComponentsWidget(QWidget):
                 # Use original (unclipped) values when available so expanding the
                 # slider range can restore previous data.
                 original = fl.metadata.get('fraction_data_original', fl.data)
-                clipped = np.clip(original, min_val, max_val)
+                clipped = np.clip(original, layer_min, layer_max)
                 fl.data = clipped
 
                 current_limits = np.asarray(fl.contrast_limits, dtype=float)
-                target_limits = np.asarray([min_val, max_val], dtype=float)
+                target_limits = np.asarray([layer_min, layer_max], dtype=float)
                 if not np.allclose(current_limits, target_limits):
-                    fl.contrast_limits = [min_val, max_val]
+                    fl.contrast_limits = [layer_min, layer_max]
 
-                clipped_data[img_name] = clipped
+                clipped_data[img_name] = 1.0 - clipped if invert else clipped
         finally:
             self._updating_linked_layers = False
 
-        self.colormap_contrast_limits = [min_val, max_val]
+        # The phasor-plot line gradient is always expressed in first-component
+        # fraction space, so keep ``colormap_contrast_limits`` in that space.
+        self.colormap_contrast_limits = [layer_min, layer_max]
         first_layer = next(iter(fraction_layers_map.values()))
+        colormap_colors = first_layer.colormap.colors
+        if invert:
+            colormap_colors = np.asarray(colormap_colors)[::-1]
         self.histogram_widget.update_colormap(
-            colormap_colors=first_layer.colormap.colors,
+            colormap_colors=colormap_colors,
             contrast_limits=[min_val, max_val],
         )
 
@@ -4730,7 +4940,7 @@ class ComponentsWidget(QWidget):
             self.histogram_widget.hide()
             return
 
-        fraction_layers_map = self._get_fraction_layers_for_component(
+        fraction_layers_map, invert = self._resolve_histogram_component(
             selected_text
         )
         if not fraction_layers_map:
@@ -4740,6 +4950,15 @@ class ComponentsWidget(QWidget):
         first_layer = next(iter(fraction_layers_map.values()))
         colormap_colors = first_layer.colormap.colors
         contrast_limits = list(first_layer.contrast_limits)
+        if invert:
+            # Second component: fraction is 1 - first, so reverse the colormap
+            # and the contrast limits to keep colors consistent with the
+            # component line gradient in the phasor plot.
+            colormap_colors = np.asarray(colormap_colors)[::-1]
+            contrast_limits = [
+                1.0 - contrast_limits[1],
+                1.0 - contrast_limits[0],
+            ]
 
         self.histogram_widget.update_colormap(
             colormap_colors=colormap_colors,
@@ -4753,6 +4972,8 @@ class ComponentsWidget(QWidget):
         for fl in fraction_layers_map.values():
             original = fl.metadata.get('fraction_data_original', fl.data)
             valid = np.asarray(original, dtype=float)
+            if invert:
+                valid = 1.0 - valid
             valid = valid[np.isfinite(valid)]
             if valid.size > 0:
                 original_arrays.append(valid)
@@ -4774,7 +4995,15 @@ class ComponentsWidget(QWidget):
                 range_min = data_min
                 range_max = data_max
 
-            self.colormap_contrast_limits = [range_min, range_max]
+            # ``colormap_contrast_limits`` drives the phasor-plot line gradient,
+            # which is always expressed in first-component fraction space.
+            if invert:
+                self.colormap_contrast_limits = [
+                    1.0 - range_max,
+                    1.0 - range_min,
+                ]
+            else:
+                self.colormap_contrast_limits = [range_min, range_max]
             self.histogram_widget.update_colormap(
                 colormap_colors=colormap_colors,
                 contrast_limits=[range_min, range_max],
@@ -4789,12 +5018,15 @@ class ComponentsWidget(QWidget):
 
         if len(fraction_layers_map) > 1:
             per_layer_data = {
-                img_name: fl.data
+                img_name: (1.0 - fl.data if invert else fl.data)
                 for img_name, fl in fraction_layers_map.items()
             }
             self.histogram_widget.update_multi_data(per_layer_data)
         else:
-            self.histogram_widget.update_data(first_layer.data)
+            data = first_layer.data
+            if invert:
+                data = 1.0 - np.asarray(data, dtype=float)
+            self.histogram_widget.update_data(data)
 
         self.histogram_widget.show()
 

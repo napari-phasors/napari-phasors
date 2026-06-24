@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 import numpy as np
 from matplotlib.collections import LineCollection
 from phasorpy.component import phasor_component_fraction
@@ -5,6 +7,18 @@ from phasorpy.lifetime import phasor_from_lifetime
 
 from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
 from napari_phasors.plotter import PlotterWidget
+
+
+def _setup_linear_projection(comp_widget):
+    """Configure two components and run a Linear Projection analysis."""
+    comp_widget.analysis_type_combo.setCurrentText("Linear Projection")
+    comp_widget.components[0].g_edit.setText("0.2")
+    comp_widget.components[0].s_edit.setText("0.1")
+    comp_widget._on_component_coords_changed(0)
+    comp_widget.components[1].g_edit.setText("0.8")
+    comp_widget.components[1].s_edit.setText("0.5")
+    comp_widget._on_component_coords_changed(1)
+    comp_widget._run_analysis()
 
 
 def test_components_widget_initialization_values(make_viewer_model, qtbot):
@@ -883,6 +897,301 @@ def test_components_fraction_range_updates_layer_and_is_reversible(
     )
 
 
+def test_components_second_component_histogram_inverts_fraction(
+    make_viewer_model,
+    qtbot,
+):
+    """Second component option shows 1 - first fraction with reversed colormap."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(parent.components_tab)
+    comp_widget.analysis_type_combo.setCurrentText("Linear Projection")
+
+    comp_widget.components[0].g_edit.setText("0.2")
+    comp_widget.components[0].s_edit.setText("0.1")
+    comp_widget._on_component_coords_changed(0)
+    comp_widget.components[1].g_edit.setText("0.8")
+    comp_widget.components[1].s_edit.setText("0.5")
+    comp_widget._on_component_coords_changed(1)
+    comp_widget._run_analysis()
+
+    name1, name2 = comp_widget._linear_projection_component_names()
+    assert name1 is not None and name2 is not None
+
+    # Both components must be selectable in the histogram combobox.
+    assert comp_widget.histogram_component_combobox.findText(name1) >= 0
+    assert comp_widget.histogram_component_combobox.findText(name2) >= 0
+
+    fraction_layers_map, invert = comp_widget._resolve_histogram_component(
+        name2
+    )
+    assert invert is True
+    assert fraction_layers_map  # underlying first-component layers
+
+    first_layer = comp_widget.comp1_fractions_layer
+
+    # Selecting the second component displays the inverted distribution.
+    comp_widget.histogram_component_combobox.setCurrentText(name2)
+    comp_widget.update_component_histogram()
+
+    displayed = comp_widget.histogram_widget._raw_valid_data
+    expected = 1.0 - first_layer.data
+    expected = expected[np.isfinite(expected)]
+    np.testing.assert_allclose(
+        np.sort(displayed),
+        np.sort(expected),
+        rtol=1e-6,
+        atol=1e-9,
+    )
+
+    # The histogram colormap must be the reversed first-component colormap.
+    np.testing.assert_allclose(
+        comp_widget.histogram_widget.colormap_colors,
+        np.asarray(first_layer.colormap.colors)[::-1],
+    )
+
+
+def test_components_second_component_fraction_range_inverts(
+    make_viewer_model,
+    qtbot,
+):
+    """Range slider on the second component clips the first-component layer."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(parent.components_tab)
+    _setup_linear_projection(comp_widget)
+
+    name1, name2 = comp_widget._linear_projection_component_names()
+    comp_widget.histogram_component_combobox.setCurrentText(name2)
+
+    fraction_layer = comp_widget.comp1_fractions_layer
+    original_data = fraction_layer.data.copy()
+
+    # Clipping the second-component fraction to [0.2, 0.6] is equivalent to
+    # clipping the underlying first-component layer to [0.4, 0.8].
+    comp_widget._on_fraction_range_changed(0.2, 0.6)
+
+    np.testing.assert_allclose(
+        fraction_layer.data,
+        np.clip(original_data, 0.4, 0.8),
+        rtol=1e-6,
+        atol=1e-9,
+        equal_nan=True,
+    )
+    np.testing.assert_allclose(
+        np.asarray(fraction_layer.contrast_limits),
+        [0.4, 0.8],
+        atol=1e-9,
+    )
+    # The phasor-line gradient stays in first-component fraction space.
+    np.testing.assert_allclose(
+        comp_widget.colormap_contrast_limits, [0.4, 0.8], atol=1e-9
+    )
+
+    # The histogram shows the inverted distribution with the reversed colormap.
+    np.testing.assert_allclose(
+        comp_widget.histogram_widget.colormap_colors,
+        np.asarray(fraction_layer.colormap.colors)[::-1],
+    )
+    displayed = comp_widget.histogram_widget._raw_valid_data
+    expected = 1.0 - np.clip(original_data, 0.4, 0.8)
+    expected = expected[np.isfinite(expected)]
+    np.testing.assert_allclose(
+        np.sort(displayed), np.sort(expected), rtol=1e-6, atol=1e-9
+    )
+
+
+def test_components_second_component_colormap_follows_first_layer(
+    make_viewer_model,
+    qtbot,
+):
+    """First-layer colormap/contrast edits update the inverted overlay."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(parent.components_tab)
+    _setup_linear_projection(comp_widget)
+
+    _name1, name2 = comp_widget._linear_projection_component_names()
+    comp_widget.histogram_component_combobox.setCurrentText(name2)
+
+    fraction_layer = comp_widget.comp1_fractions_layer
+
+    # Changing the first component's colormap reverses it on the histogram.
+    fraction_layer.colormap = "viridis"
+    np.testing.assert_allclose(
+        comp_widget.histogram_widget.colormap_colors,
+        np.asarray(fraction_layer.colormap.colors)[::-1],
+    )
+
+    # Changing the contrast limits flips them into second-component space.
+    fraction_layer.contrast_limits = [0.2, 0.7]
+    np.testing.assert_allclose(
+        np.asarray(comp_widget.histogram_widget.contrast_limits),
+        [1.0 - 0.7, 1.0 - 0.2],
+        atol=1e-9,
+    )
+
+    # With no component selected, a first-layer colormap change is a no-op for
+    # the overlay (the refresh guard short-circuits).
+    comp_widget.histogram_component_combobox.blockSignals(True)
+    comp_widget.histogram_component_combobox.clear()
+    comp_widget.histogram_component_combobox.blockSignals(False)
+    previous_colors = comp_widget.histogram_widget.colormap_colors
+    fraction_layer.colormap = "magma"
+    assert comp_widget.histogram_widget.colormap_colors is previous_colors
+
+
+def test_components_histogram_hidden_without_fraction_data(
+    make_viewer_model,
+    qtbot,
+):
+    """Histogram is hidden when the selection resolves to no data."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(parent.components_tab)
+    _setup_linear_projection(comp_widget)
+
+    hw = comp_widget.histogram_widget
+    name1, _ = comp_widget._linear_projection_component_names()
+    comp_widget.histogram_component_combobox.setCurrentText(name1)
+
+    # Removing the only fraction layer leaves the selection unresolvable.
+    viewer.layers.remove(comp_widget.comp1_fractions_layer)
+    with patch.object(hw, "hide") as mock_hide:
+        comp_widget.update_component_histogram()
+        mock_hide.assert_called_once()
+
+    # An empty selection is also hidden.
+    comp_widget.histogram_component_combobox.blockSignals(True)
+    comp_widget.histogram_component_combobox.clear()
+    comp_widget.histogram_component_combobox.blockSignals(False)
+    with patch.object(hw, "hide") as mock_hide:
+        comp_widget.update_component_histogram()
+        mock_hide.assert_called_once()
+
+
+def test_components_histogram_multi_layer_linear_projection(
+    make_viewer_model,
+    qtbot,
+):
+    """Linear projection over multiple layers feeds a per-layer histogram."""
+    viewer = make_viewer_model()
+    layer_a = create_image_layer_with_phasors()
+    layer_a.name = "layer_a"
+    layer_b = create_image_layer_with_phasors()
+    layer_b.name = "layer_b"
+    viewer.add_layer(layer_a)
+    viewer.add_layer(layer_b)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(parent.components_tab)
+
+    comp_widget.analysis_type_combo.setCurrentText("Linear Projection")
+    comp_widget.components[0].g_edit.setText("0.2")
+    comp_widget.components[0].s_edit.setText("0.1")
+    comp_widget._on_component_coords_changed(0)
+    comp_widget.components[1].g_edit.setText("0.8")
+    comp_widget.components[1].s_edit.setText("0.5")
+    comp_widget._on_component_coords_changed(1)
+
+    with patch.object(
+        parent, "get_selected_layers", return_value=[layer_a, layer_b]
+    ):
+        comp_widget._run_analysis()
+
+    name1, _ = comp_widget._linear_projection_component_names()
+    fraction_layers_map, invert = comp_widget._resolve_histogram_component(
+        name1
+    )
+    assert invert is False
+    assert set(fraction_layers_map.keys()) == {"layer_a", "layer_b"}
+
+    comp_widget.histogram_component_combobox.setCurrentText(name1)
+    comp_widget.update_component_histogram()
+
+    # One histogram dataset is stored per source image layer.
+    assert set(comp_widget.histogram_widget._datasets.keys()) == {
+        "layer_a",
+        "layer_b",
+    }
+
+    # The range slider clips every layer and keeps the per-layer histogram.
+    comp_widget._on_fraction_range_changed(0.2, 0.8)
+    assert set(comp_widget.histogram_widget._datasets.keys()) == {
+        "layer_a",
+        "layer_b",
+    }
+
+    # Early returns: an empty and an unresolved selection are both no-ops.
+    comp_widget.histogram_component_combobox.blockSignals(True)
+    comp_widget.histogram_component_combobox.clear()
+    comp_widget.histogram_component_combobox.blockSignals(False)
+    comp_widget._on_fraction_range_changed(0.1, 0.9)
+
+    comp_widget.histogram_component_combobox.blockSignals(True)
+    comp_widget.histogram_component_combobox.addItem("Ghost component")
+    comp_widget.histogram_component_combobox.setCurrentText("Ghost component")
+    comp_widget.histogram_component_combobox.blockSignals(False)
+    comp_widget._on_fraction_range_changed(0.1, 0.9)
+
+
+def test_components_stats_combobox_mirrors_histogram_combobox(
+    make_viewer_model,
+    qtbot,
+):
+    """Statistics-dock component selector stays in sync with the histogram one."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(parent.components_tab)
+    comp_widget.analysis_type_combo.setCurrentText("Linear Projection")
+
+    comp_widget.components[0].g_edit.setText("0.2")
+    comp_widget.components[0].s_edit.setText("0.1")
+    comp_widget._on_component_coords_changed(0)
+    comp_widget.components[1].g_edit.setText("0.8")
+    comp_widget.components[1].s_edit.setText("0.5")
+    comp_widget._on_component_coords_changed(1)
+    comp_widget._run_analysis()
+
+    hist_combo = comp_widget.histogram_component_combobox
+    stats_combo = comp_widget.stats_component_combobox
+
+    # Both comboboxes expose the same entries.
+    hist_items = [hist_combo.itemText(i) for i in range(hist_combo.count())]
+    stats_items = [stats_combo.itemText(i) for i in range(stats_combo.count())]
+    assert hist_items == stats_items
+    assert len(hist_items) >= 2
+
+    # Changing the statistics combobox updates the histogram combobox.
+    stats_combo.setCurrentText(hist_items[1])
+    assert hist_combo.currentText() == hist_items[1]
+
+    # Changing the histogram combobox updates the statistics combobox.
+    hist_combo.setCurrentText(hist_items[0])
+    assert stats_combo.currentText() == hist_items[0]
+
+
 def test_components_on_image_layer_changed_runs_teardown_and_restore(
     make_viewer_model,
     qtbot,
@@ -1133,7 +1442,7 @@ def test_components_select_from_phasor_center_and_generalized_auto_place(
     menu0 = QMenu()
     comp_widget._populate_select_menu(0, menu0)
     texts0 = [a.text() for a in menu0.actions()]
-    assert "Select from phasor center..." in texts0
+    assert "Select from layer(s) phasor center" in texts0
     assert (
         "Auto intersect semicircle" not in texts0
     )  # idx=0 should NOT have auto intersect
@@ -1141,7 +1450,7 @@ def test_components_select_from_phasor_center_and_generalized_auto_place(
     menu1 = QMenu()
     comp_widget._populate_select_menu(1, menu1)
     texts1 = [a.text() for a in menu1.actions()]
-    assert "Select from phasor center..." in texts1
+    assert "Select from layer(s) phasor center" in texts1
     assert (
         "Auto intersect semicircle" in texts1
     )  # idx=1 should have auto intersect
@@ -1184,6 +1493,60 @@ def test_components_select_from_phasor_center_and_generalized_auto_place(
     assert comp2.g_edit.text() != ""
     assert comp2.s_edit.text() != ""
     assert float(comp2.g_edit.text()) > 0
+
+
+def test_components_phasor_center_remembers_selection_and_rename(
+    make_viewer_model,
+    qtbot,
+):
+    """Selecting phasor-center layers is remembered per component and survives renames."""
+    from unittest.mock import patch
+
+    from qtpy.QtWidgets import QDialog
+
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    layer.metadata["settings"] = {"frequency": 80.0}
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+
+    comp0 = comp_widget.components[0]
+    # No selection remembered initially.
+    assert comp0.phasor_center_layers == []
+
+    # Select the layer for component 1's phasor center.
+    with patch(
+        "napari_phasors.components_tab.PhasorCenterSelectionDialog"
+    ) as MockDialog:
+        mock_dialog_instance = MockDialog.return_value
+        mock_dialog_instance.exec.return_value = QDialog.Accepted
+        mock_dialog_instance.get_selected_layers.return_value = [layer.name]
+
+        comp_widget._select_from_phasor_center(0)
+
+    # The selection is remembered on the component and persisted to metadata.
+    assert comp0.phasor_center_layers == [layer.name]
+    settings = layer.metadata["settings"]["component_analysis"]
+    assert settings["components"]["0"]["phasor_center_layers"] == [layer.name]
+
+    # Reopening the dialog pre-selects the previously chosen layers.
+    with patch(
+        "napari_phasors.components_tab.PhasorCenterSelectionDialog"
+    ) as MockDialog:
+        mock_dialog_instance = MockDialog.return_value
+        mock_dialog_instance.exec.return_value = QDialog.Rejected
+        comp_widget._select_from_phasor_center(0)
+        _, kwargs = MockDialog.call_args
+        assert kwargs.get("preselected") == [layer.name]
+
+    # Renaming the layer updates the remembered selection instead of dropping it.
+    new_name = "renamed_layer"
+    comp_widget.rename_layer(layer.name, new_name)
+    assert comp0.phasor_center_layers == [new_name]
+    assert settings["components"]["0"]["phasor_center_layers"] == [new_name]
 
 
 def test_color_action_widget_and_dialog(make_viewer_model, qtbot):
@@ -1265,8 +1628,14 @@ def test_color_action_widget_and_dialog(make_viewer_model, qtbot):
 
     dialog = PhasorCenterSelectionDialog([layer.name], parent=comp_widget)
     assert dialog.windowTitle() == "Select Phasor Center Layers"
-    # The active layer is automatically checked on init
-    assert layer.name in dialog.get_selected_layers()
+    # By default nothing is checked on init.
+    assert dialog.get_selected_layers() == []
+
+    # When preselected layers are provided, they are checked on init.
+    dialog_pre = PhasorCenterSelectionDialog(
+        [layer.name], parent=comp_widget, preselected=[layer.name]
+    )
+    assert layer.name in dialog_pre.get_selected_layers()
 
 
 # ---------------------------------------------------------------------------

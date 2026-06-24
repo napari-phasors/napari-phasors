@@ -7,7 +7,7 @@ The **Components** tab of the **Phasor Plot** widget lets you decompose phasor d
 - Specifying coordinates (G and S) or FLIM lifetime values manually.
 - Using the **Select** dropdown options next to each component:
   - **Select on plot**: Click manually on the phasor plot.
-  - **Select from phasor center...**: Calculate the location from the center of selected layer(s).
+  - **Select from layer(s) phasor center**: Calculate the location from the center of selected layer(s).
   - **Select from cursor center**: Use the center of any active cursor.
   - **Auto intersect semicircle**: Place the component at the intersection of the universal semicircle and the line connecting the previous component to the data center.
 
@@ -35,7 +35,7 @@ Hovering over this option opens a submenu listing all active cursors (Circular, 
 </video>
 
 ### Select from phasor center (layer selection)
-Selecting **Select from phasor center...** opens a dialog where you can select one or more image layers with phasor data. The widget will calculate the pooled phasor center of gravity of those layers and use it as the component coordinate.
+Selecting **Select from layer(s) phasor center** opens a dialog where you can select one or more image layers with phasor data. The widget will calculate the pooled phasor center of gravity of those layers and use it as the component coordinate.
 
 <video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/component%20from%20layers.gif">
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/component%20from%20layers.mp4" type="video/mp4">
