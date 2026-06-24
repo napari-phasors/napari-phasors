@@ -70,20 +70,29 @@ jobs:
         env:
           PLATFORM: ${{ matrix.platform }}
           BACKEND: ${{ matrix.qt-backend }}
-          # DIAGNOSTIC (temporary): per-worker faulthandler dumps for the
-          # PySide6 teardown segfault. Remove once the crash is located.
-          NP_FAULTHANDLER_DIR: ${{ github.workspace }}/faulthandler
+          # DIAGNOSTIC (temporary): per-worker faulthandler dumps, only for the
+          # crashing ubuntu-pyside6 combo (empty elsewhere -> no-op in conftest).
+          # Remove once the crash is located.
+          NP_FAULTHANDLER_DIR: ${{ (matrix.platform == 'ubuntu-latest' && matrix.qt-backend == 'pyside6') && format('{0}/faulthandler', github.workspace) || '' }}
 
-      # DIAGNOSTIC (temporary): surface any worker segfault traceback that the
-      # crashed xdist worker's discarded stderr would otherwise hide.
+      # DIAGNOSTIC (temporary): surface the per-worker traceback that the
+      # crashed/hung xdist worker's discarded stderr would otherwise hide. For
+      # a hang, the LAST "Timeout (...)" block in each file is where that
+      # process was stuck; for a segfault, look for "Fatal Python error".
       - name: Print faulthandler dumps
         if: always()
         shell: bash
         run: |
-          for f in "${{ github.workspace }}"/faulthandler/*.log; do
-            [ -e "$f" ] || continue
+          shopt -s nullglob
+          files=("${{ github.workspace }}"/faulthandler/*.log)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No faulthandler dumps were written."
+            exit 0
+          fi
+          for f in "${files[@]}"; do
             echo "===== $f ====="
             cat "$f"
+            echo ""
           done
 
       - name: Coverage

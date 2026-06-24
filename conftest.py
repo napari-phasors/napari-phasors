@@ -5,12 +5,18 @@ and before the ``napari_phasors`` package is imported for coverage source
 resolution. We use that early hook to pre-register vispy's Qt backend.
 """
 
-# DIAGNOSTIC (temporary): capture a C-level traceback per xdist worker when a
-# PySide6 teardown segfault kills the process. ``faulthandler`` writes via a
-# raw file descriptor from its signal handler, so the dump survives a crash
-# even though pytest-xdist discards the dead worker's stderr. Each worker
-# writes its own file; CI prints them on failure. Remove once the crash is
-# located. Controlled by ``NP_FAULTHANDLER_DIR`` so it is a no-op locally.
+# DIAGNOSTIC (temporary): capture a traceback per xdist worker for the
+# ubuntu-pyside6 teardown crash, which is non-deterministic — sometimes a
+# segfault, sometimes a pure hang near end-of-session. ``faulthandler`` writes
+# via a raw file descriptor, so dumps survive even though pytest-xdist discards
+# the dead/stuck worker's stderr. Each worker (and the controller, "main")
+# writes its own file; CI prints them after the step is force-timed-out.
+#   - ``enable()`` dumps on a fatal signal (covers the segfault case).
+#   - ``dump_traceback_later(repeat=True)`` periodically appends every thread's
+#     stack (covers the hang case): the LAST block in a file is where that
+#     process was stuck when the step timed out.
+# Remove once the crash is located. Gated on ``NP_FAULTHANDLER_DIR`` (no-op
+# locally).
 try:  # pragma: no cover - diagnostic only
     import os as _os
 
@@ -26,6 +32,9 @@ try:  # pragma: no cover - diagnostic only
             )
         )
         _faulthandler.enable(file=_fh_file, all_threads=True)
+        # Append all thread stacks every 120s so a hang (no fatal signal) is
+        # still captured. The repeating timer is harmless during a healthy run.
+        _faulthandler.dump_traceback_later(120, repeat=True, file=_fh_file)
 except Exception:  # noqa: BLE001
     pass
 
