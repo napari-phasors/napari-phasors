@@ -59,6 +59,11 @@ jobs:
 
       # This runs the platform-specific tests declared in tox.ini
       - name: Test with tox
+        # DIAGNOSTIC (temporary): a PySide6 worker segfault can leave the xdist
+        # controller hanging, which would otherwise run to the 6h job cap and
+        # skip the dump-printing step. A step timeout kills just this step so
+        # the always() step below still runs and surfaces the captured stack.
+        timeout-minutes: 30
         uses: aganders3/headless-gui@v1
         with:
           run: python -m tox
