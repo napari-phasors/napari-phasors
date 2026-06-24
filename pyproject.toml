@@ -86,7 +86,12 @@ testing = [
 # bytecode boundary. On expiry it dumps every thread's stack (pinpointing the
 # hang) and terminates the worker, so the job fails fast instead of stalling
 # until GitHub's 6-hour cap.
-addopts = "-n auto --dist loadfile --max-worker-restart=0 --timeout=300 --timeout-method=thread"
+#
+# ``-p no:faulthandler`` is a TEMPORARY diagnostic: it disables pytest's own
+# faulthandler so the per-worker file handler installed in the repo-root
+# conftest (gated on ``NP_FAULTHANDLER_DIR``) owns the segfault dump. Remove
+# together with that conftest block once the PySide6 teardown crash is located.
+addopts = "-n auto --dist loadfile --max-worker-restart=0 --timeout=1200 --timeout-method=thread -p no:faulthandler"
 # Silence benign, unavoidable third-party teardown/rendering warnings so the
 # test output stays readable. Genuine deprecations in our own code are fixed
 # rather than filtered. Each entry below is library noise we cannot act on:

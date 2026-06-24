@@ -65,6 +65,21 @@ jobs:
         env:
           PLATFORM: ${{ matrix.platform }}
           BACKEND: ${{ matrix.qt-backend }}
+          # DIAGNOSTIC (temporary): per-worker faulthandler dumps for the
+          # PySide6 teardown segfault. Remove once the crash is located.
+          NP_FAULTHANDLER_DIR: ${{ github.workspace }}/faulthandler
+
+      # DIAGNOSTIC (temporary): surface any worker segfault traceback that the
+      # crashed xdist worker's discarded stderr would otherwise hide.
+      - name: Print faulthandler dumps
+        if: always()
+        shell: bash
+        run: |
+          for f in "${{ github.workspace }}"/faulthandler/*.log; do
+            [ -e "$f" ] || continue
+            echo "===== $f ====="
+            cat "$f"
+          done
 
       - name: Coverage
         uses: codecov/codecov-action@v5
