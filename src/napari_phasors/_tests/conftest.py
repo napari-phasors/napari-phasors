@@ -133,6 +133,7 @@ def _cleanup_widgets_after_test(request):
                 '_dock_resize_timer',
                 '_layer_selection_timer',
                 '_bins_timer',
+                '_resize_canvas_timer',
             ):
                 with contextlib.suppress(AttributeError):
                     timer = getattr(w, attr, None)

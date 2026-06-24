@@ -86,7 +86,7 @@ testing = [
 # bytecode boundary. On expiry it dumps every thread's stack (pinpointing the
 # hang) and terminates the worker, so the job fails fast instead of stalling
 # until GitHub's 6-hour cap.
-addopts = "-n auto --dist loadfile --timeout=300 --timeout-method=thread"
+addopts = "-n auto --dist loadfile --max-worker-restart=0 --timeout=300 --timeout-method=thread"
 # Silence benign, unavoidable third-party teardown/rendering warnings so the
 # test output stays readable. Genuine deprecations in our own code are fixed
 # rather than filtered. Each entry below is library noise we cannot act on:
