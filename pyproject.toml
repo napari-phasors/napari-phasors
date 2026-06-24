@@ -50,6 +50,7 @@ testing = [
     "pytest-cov",  # https://pytest-cov.readthedocs.io/en/latest/
     "pytest-qt",  # https://pytest-qt.readthedocs.io/en/latest/
     "pytest-xdist",  # https://pytest-xdist.readthedocs.io/ (parallel test runs)
+    "pytest-timeout",  # https://pypi.org/project/pytest-timeout/ (kills hung Qt workers)
     "napari",
     "qtpy",
     "scikit-image",
@@ -76,7 +77,16 @@ testing = [
 # ``--dist loadfile`` keeps every test from the same file on a single worker,
 # which avoids PySide6 teardown segfaults caused by interleaving tests from
 # different modules on one worker. Override with ``-n0`` for serial debugging.
-addopts = "-n auto --dist loadfile"
+#
+# ``--timeout`` is a safety net for the recurring PySide6 + xdist worker hangs
+# (a worker deadlocks inside a C-level Qt event loop and never returns to
+# Python). ``--timeout-method=thread`` runs the watchdog in a separate thread
+# so it can kill the worker even when the main thread is blocked in C — the
+# default ``signal`` method cannot, since its handler only runs at a Python
+# bytecode boundary. On expiry it dumps every thread's stack (pinpointing the
+# hang) and terminates the worker, so the job fails fast instead of stalling
+# until GitHub's 6-hour cap.
+addopts = "-n auto --dist loadfile --timeout=300 --timeout-method=thread"
 # Silence benign, unavoidable third-party teardown/rendering warnings so the
 # test output stays readable. Genuine deprecations in our own code are fixed
 # rather than filtered. Each entry below is library noise we cannot act on:
