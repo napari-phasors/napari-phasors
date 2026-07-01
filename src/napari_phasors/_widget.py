@@ -140,6 +140,7 @@ class PhasorTransform(PopoutWindowMixin, QWidget):
             ".ifli": IfliWidget,
             ".lif": LifWidget,
             ".json": JsonWidget,
+            ".h5": H5Widget,
         }
 
     def _open_file_dialog(self):
@@ -151,7 +152,7 @@ class PhasorTransform(PopoutWindowMixin, QWidget):
         supported_filter = (
             "All files (*.tif *.tiff *.ome.tif *.ome.tiff *.ptu *.fbd *.sdt "
             "*.lsm *.czi *.flif *.bh *.b&h *.bhz *.bin *.r64 *.ref *.ifli "
-            "*.lif *.json)"
+            "*.lif *.json *.h5)"
         )
         selected_files, _ = QFileDialog.getOpenFileNames(
             self,
@@ -242,6 +243,7 @@ class PhasorTransform(PopoutWindowMixin, QWidget):
             "*.ifli",
             "*.lif",
             "*.json",
+            "*.h5",
         )
 
         selected_entries, _ = QFileDialog.getOpenFileNames(
@@ -2388,6 +2390,319 @@ class JsonWidget(AdvancedOptionsWidget):
         """Callback whenever the calculate phasor button is clicked."""
         self._sync_json_reader_options()
         super()._on_click(path, reader_options, harmonics)
+
+
+class H5Widget(AdvancedOptionsWidget):
+    """Widget for BrightEyes MCS-H5 and generic HDF5 histogram files."""
+
+    def __init__(self, viewer, path):
+        """Initialize the widget."""
+        self.all_repetitions = 1
+        self.all_z = 1
+        self.h5_products = []
+        self._read_h5_products(path)
+        super().__init__(viewer, path)
+
+    def _read_h5_products(self, path):
+        """Read available output products and virtual raw views."""
+        try:
+            import h5py
+
+            with h5py.File(path, "r") as h5:
+                output = h5.get("output")
+                if output is not None:
+                    default_run = self._h5_default_output_run(output)
+                    products = self._h5_output_products(output, default_run)
+                    raw_views = self._h5_virtual_raw_views(output)
+                    self.h5_products = products + raw_views
+
+                if not self.h5_products and "raw/spad" in h5:
+                    data = h5["raw/spad"]
+                    self.h5_products = [
+                        {
+                            "label": "Raw view: raw/spad",
+                            "path": "raw/spad",
+                            "shape": tuple(data.shape),
+                        }
+                    ]
+                if not self.h5_products and "data" in h5:
+                    data = h5["data"]
+                    self.h5_products = [
+                        {
+                            "label": "data",
+                            "path": "data",
+                            "shape": tuple(data.shape),
+                        }
+                    ]
+        except Exception:  # noqa: BLE001
+            pass
+
+        if not self.h5_products:
+            self.h5_products = [
+                {"label": "raw/spad", "path": "raw/spad", "shape": ()}
+            ]
+        self._set_h5_counts_from_product(0)
+
+    def _h5_default_output_run(self, output):
+        """Return default output run id, if declared."""
+        default = output.attrs.get("default", "")
+        if isinstance(default, bytes):
+            default = default.decode()
+        if not default and "metadata" in output:
+            default = output["metadata"].attrs.get("default_run_id", "")
+            if isinstance(default, bytes):
+                default = default.decode()
+        default = str(default).strip("/")
+        if default.startswith("output/"):
+            default = default.split("/", 2)[1]
+        if default in output:
+            return default
+        if "sum_channels_001" in output:
+            return "sum_channels_001"
+        return ""
+
+    def _h5_output_products(self, output, default_run):
+        """Return readable product datasets under /output/<run>/products."""
+        products = []
+        for run_id in sorted(output.keys(), key=natural_sort_key):
+            if run_id in {"metadata", "virtual_channels"}:
+                continue
+            run = output[run_id]
+            if not hasattr(run, "keys") or "products" not in run:
+                continue
+            product_group = run["products"]
+            names = [
+                name
+                for name in sorted(product_group.keys(), key=natural_sort_key)
+                if hasattr(product_group[name], "shape")
+            ]
+            if "image" in names:
+                names.remove("image")
+                names.insert(0, "image")
+            for name in names:
+                dataset = product_group[name]
+                label = (
+                    f"output/{run_id}"
+                    if name == "image"
+                    else f"output/{run_id}/products/{name}"
+                )
+                if run_id == default_run and name == "image":
+                    label = f"{label} (default)"
+                products.append(
+                    {
+                        "label": label,
+                        "path": f"output/{run_id}/products/{name}",
+                        "shape": tuple(dataset.shape),
+                        "default": run_id == default_run and name == "image",
+                    }
+                )
+        products.sort(
+            key=lambda item: (not item.get("default", False), item["label"])
+        )
+        return products
+
+    def _h5_virtual_raw_views(self, output):
+        """Return virtual channel datasets as raw-view products."""
+        raw_views = []
+        containers = []
+        if "virtual_channels" in output:
+            containers.append(
+                ("output/virtual_channels", output["virtual_channels"])
+            )
+        containers.append(("output", output))
+
+        for prefix, group in containers:
+            for name in sorted(group.keys(), key=natural_sort_key):
+                if not name.startswith(("data_channel_", "data_aux_channel_")):
+                    continue
+                dataset = group[name]
+                if not hasattr(dataset, "shape"):
+                    continue
+                label = self._h5_raw_view_label(name)
+                raw_views.append(
+                    {
+                        "label": label,
+                        "path": f"{prefix}/{name}",
+                        "shape": tuple(dataset.shape),
+                    }
+                )
+        return raw_views
+
+    def _h5_raw_view_label(self, name):
+        """Return display name for a raw-view virtual channel."""
+        label = str(name).removeprefix("data_").replace("_", " ")
+        return f"Raw view: {label}"
+
+    def _set_h5_counts_from_product(self, index):
+        """Set repetition and z counts from selected product shape."""
+        try:
+            shape = self.h5_products[index]["shape"]
+            self.all_repetitions = int(shape[0])
+            self.all_z = int(shape[1])
+        except (IndexError, KeyError, TypeError):
+            self.all_repetitions = 1
+            self.all_z = 1
+        except Exception:  # noqa: BLE001
+            self.all_repetitions = 1
+            self.all_z = 1
+
+    def _update_h5_index_combo(self, combo, count):
+        """Refresh one zero-based HDF5 index selector."""
+        current = min(combo.currentIndex(), max(0, int(count) - 1))
+        combo.blockSignals(True)
+        combo.clear()
+        for index in range(max(1, int(count))):
+            combo.addItem(str(index))
+        combo.setCurrentIndex(current)
+        combo.blockSignals(False)
+
+    def initUI(self):
+        """Initialize the user interface."""
+        self.mainLayout = QVBoxLayout()
+        self.setLayout(self.mainLayout)
+
+        self.mainLayout.addWidget(self.canvas)
+        self._harmonic_widget()
+        self._h5_selection_widgets()
+
+        self.btn = QPushButton("Phasor Transform")
+        self.btn.clicked.connect(
+            lambda: self._on_click(
+                self.path, self.reader_options, self.harmonics
+            )
+        )
+        self.mainLayout.addWidget(self.btn)
+
+        self.btn_data_calibration = QPushButton(
+            "Phasor Transform Data + REF/IRF"
+        )
+        self.btn_data_calibration.clicked.connect(
+            lambda: self._on_click_data_and_calibration(
+                self.path, self.reader_options, self.harmonics
+            )
+        )
+        self.mainLayout.addWidget(self.btn_data_calibration)
+
+        self._sync_h5_reader_options()
+        self._update_signal_plot()
+
+    def _h5_selection_widgets(self):
+        """Add HDF5 output product, repetition, and z selectors."""
+        product_layout = QHBoxLayout()
+        product_layout.addWidget(QLabel("Output: "))
+        self.product_combo = QComboBox()
+        for product in self.h5_products:
+            self.product_combo.addItem(product["label"], product["path"])
+        self.product_combo.currentIndexChanged.connect(
+            self._on_h5_product_changed
+        )
+        product_layout.addWidget(self.product_combo)
+        product_layout.addStretch()
+        self.mainLayout.addLayout(product_layout)
+
+        self.repetition_combo = self._add_h5_index_combo(
+            "Repetition",
+            self.all_repetitions,
+        )
+        self.z_combo = self._add_h5_index_combo("Z", self.all_z)
+
+        calibration_layout = QHBoxLayout()
+        self.reference_checkbox = QCheckBox("Acquire calibration")
+        self.reference_checkbox.stateChanged.connect(
+            self._on_h5_selection_changed
+        )
+        calibration_layout.addWidget(self.reference_checkbox)
+
+        calibration_layout.addWidget(QLabel("Use: "))
+        self.calibration_combo = QComboBox()
+        self.calibration_combo.addItems(["REF", "IRF"])
+        self.calibration_combo.currentIndexChanged.connect(
+            self._on_h5_selection_changed
+        )
+        calibration_layout.addWidget(self.calibration_combo)
+        calibration_layout.addStretch()
+        self.mainLayout.addLayout(calibration_layout)
+
+    def _add_h5_index_combo(self, label, count):
+        """Add one zero-based HDF5 index selector."""
+        layout = QHBoxLayout()
+        layout.addWidget(QLabel(f"{label}: "))
+
+        combo = QComboBox()
+        for index in range(max(1, int(count))):
+            combo.addItem(str(index))
+        combo.currentIndexChanged.connect(self._on_h5_selection_changed)
+
+        layout.addWidget(combo)
+        layout.addStretch()
+        self.mainLayout.addLayout(layout)
+        return combo
+
+    def _sync_h5_reader_options(self):
+        """Sync HDF5 selector state into reader options."""
+        self.reader_options["data_dataset"] = (
+            self.product_combo.currentData() or "raw/spad"
+        )
+        self.reader_options["repetition"] = (
+            self.repetition_combo.currentIndex()
+        )
+        self.reader_options["z"] = self.z_combo.currentIndex()
+        self.reader_options["channel"] = 0
+        calibration = self.reference_checkbox.isChecked()
+        self.reader_options["reference"] = calibration
+        self.reader_options["irf"] = (
+            self.calibration_combo.currentText() == "IRF"
+        )
+        self.repetition_combo.setEnabled(not calibration)
+        self.z_combo.setEnabled(not calibration)
+        self.product_combo.setEnabled(not calibration)
+
+    def _on_h5_product_changed(self, index):
+        """Callback whenever HDF5 output product changes."""
+        self._set_h5_counts_from_product(index)
+        self._update_h5_index_combo(
+            self.repetition_combo, self.all_repetitions
+        )
+        self._update_h5_index_combo(self.z_combo, self.all_z)
+        self._on_h5_selection_changed(index)
+
+    def _on_h5_selection_changed(self, index):
+        """Callback whenever HDF5 selection changes."""
+        self._sync_h5_reader_options()
+        self._update_signal_plot()
+
+    def _get_signal_data(self):
+        """Get selected HDF5 histogram signal."""
+        from phasorpy.io import signal_from_h5
+
+        try:
+            return signal_from_h5(self.path, **self.reader_options.copy())
+        except Exception as e:  # noqa: BLE001
+            show_error(f"Error reading HDF5 signal: {str(e)}")
+            return None
+
+    def _on_click(self, path, reader_options, harmonics):
+        """Callback whenever the calculate phasor button is clicked."""
+        self._sync_h5_reader_options()
+        super()._on_click(path, reader_options, harmonics)
+
+    def _on_click_data_and_calibration(
+        self, path, reader_options, harmonics
+    ):
+        """Import selected HDF5 data and matching REF or IRF."""
+        self._sync_h5_reader_options()
+
+        data_options = reader_options.copy()
+        data_options["reference"] = False
+        data_options["irf"] = False
+        super()._on_click(path, data_options, harmonics)
+
+        calibration_options = reader_options.copy()
+        calibration_options["reference"] = True
+        calibration_options["irf"] = (
+            self.calibration_combo.currentText() == "IRF"
+        )
+        super()._on_click(path, calibration_options, harmonics)
 
 
 class ProcessedOnlyWidget(AdvancedOptionsWidget):
