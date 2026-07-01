@@ -109,6 +109,33 @@ def test_raw_reader_nonzero_channel_label(monkeypatch, extension):
     assert layer_data_list[0][1]["metadata"]["settings"]["channel"] == 3
 
 
+def test_reader_h5_reference_lifetime_setting(monkeypatch):
+    """H5 reader should expose MCS reference lifetime metadata in settings."""
+    signal = xr.DataArray(
+        np.ones((2, 2, 4), dtype=np.uint16),
+        dims=("Y", "X", "H"),
+        attrs={
+            "frequency": 80.0,
+            "reference_lifetime_ns": 2.7,
+            "h5_dataset": "/raw/spad",
+            "h5_selection": {"repetition": 0, "z": 0, "channel": 0},
+        },
+    )
+
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".h5",
+        lambda path, reader_options: signal,
+    )
+
+    layer_data_list = reader_module.raw_file_reader("example.h5")
+
+    settings = layer_data_list[0][1]["metadata"]["settings"]
+    assert settings["frequency"] == 80.0
+    assert settings["reference_lifetime_ns"] == 2.7
+    assert settings["data_dataset"] == "/raw/spad"
+
+
 def test_reader_fbd():
     """Test reading a FBD file"""
     fbd_file = get_test_file_path("test_file$EI0S.fbd")

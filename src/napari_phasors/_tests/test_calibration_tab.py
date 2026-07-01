@@ -409,20 +409,26 @@ def test_harmonic_mismatch_error(make_viewer_model, qtbot):
 
 
 def test_on_image_layer_changed_with_frequency(make_viewer_model, qtbot):
-    """Test that frequency is populated when image layer changes."""
+    """Test that frequency and reference lifetime populate from metadata."""
     viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
 
     widget = parent.calibration_tab
 
-    # Add layer with frequency in metadata
+    # Add layer with frequency and MCS-H5 reference lifetime in metadata
     test_layer = create_image_layer_with_phasors()
     test_layer.name = "test_layer"
-    test_layer.metadata["settings"] = {"frequency": 80}
+    test_layer.metadata["settings"] = {
+        "frequency": 80.0,
+        "reference_lifetime_ns": 2.7,
+    }
     viewer.add_layer(test_layer)
 
     parent._sync_frequency_inputs_from_metadata()
     assert widget.calibration_widget.frequency_input.text() == "80.0"
+    assert (
+        widget.calibration_widget.lifetime_line_edit_widget.text() == "2.7"
+    )
 
 
 def test_calibration_preserves_filters(make_viewer_model, qtbot):
