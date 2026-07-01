@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from biaplotter.plotter import CanvasWidget
 from napari.layers import Image
+from qtpy.QtCore import QEvent
 from qtpy.QtWidgets import (
     QPushButton,
     QSpinBox,
@@ -275,6 +276,33 @@ def test_phasor_plotter_initialization_values(make_viewer_model):
     assert hasattr(plotter, 'import_from_file_button')
     assert isinstance(plotter.import_from_file_button, QPushButton)
     assert plotter.import_from_file_button.text() == "OME-TIFF File"
+
+
+def test_canvas_container_resize_starts_debounce_timer(make_viewer_model):
+    """Resize/Show events on the watched containers should (re)start the
+    debounced resize timer rather than firing the resize immediately.
+
+    ``_resize_canvas_timer`` is parented to the widget precisely so it cannot
+    outlive it (see ``PopoutWindowMixin``/PySide6 teardown segfault notes);
+    this exercises the timer actually getting started from ``eventFilter``.
+    """
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+
+    assert not plotter._resize_canvas_timer.isActive()
+
+    handled = plotter.eventFilter(
+        plotter.canvas_container, QEvent(QEvent.Resize)
+    )
+
+    assert plotter._resize_canvas_timer.isActive()
+    # eventFilter should not consume the event for the container itself.
+    assert handled is False
+
+    # An event on an unrelated object must not start the timer.
+    plotter._resize_canvas_timer.stop()
+    plotter.eventFilter(plotter, QEvent(QEvent.Resize))
+    assert not plotter._resize_canvas_timer.isActive()
 
     # Tab widget tests
     assert hasattr(plotter, 'tab_widget')

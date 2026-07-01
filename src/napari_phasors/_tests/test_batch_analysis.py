@@ -121,6 +121,33 @@ def test_format_combobox_populated(qtbot, make_viewer_model, tmp_path):
     assert widget.format_combobox.count() == 2
 
 
+def test_layer_events_refresh_reference_combo_via_bound_method(
+    qtbot, make_viewer_model
+):
+    """``viewer.layers.events`` are connected to a bound method (not a
+    lambda) so ``closeEvent`` can disconnect them; this exercises that the
+    connection actually refreshes the UI on insert/remove after
+    construction (not just the initial population call in ``__init__``).
+    """
+    viewer = make_viewer_model()
+    widget = BatchAnalysisWidget(viewer)
+    qtbot.addWidget(widget)
+
+    assert widget.calib_reference_combo.count() == 0
+
+    layer = _make_phasor_layer(name="new_layer")
+    viewer.add_layer(layer)
+
+    labels = [
+        widget.calib_reference_combo.itemText(i)
+        for i in range(widget.calib_reference_combo.count())
+    ]
+    assert layer.name in labels
+
+    viewer.layers.remove(layer)
+    assert widget.calib_reference_combo.count() == 0
+
+
 def test_get_reader_options_with_dynamic_kwargs(qtbot, make_viewer_model):
     widget = BatchAnalysisWidget(make_viewer_model())
     qtbot.addWidget(widget)
