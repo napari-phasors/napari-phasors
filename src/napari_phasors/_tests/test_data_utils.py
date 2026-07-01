@@ -4,9 +4,13 @@ import pooch
 from phasorpy.datasets import fetch
 
 # Create a pooch downloader for test data
+# ``retry_if_failed`` retries transient network errors (e.g. GitHub read
+# timeouts on CI runners) instead of letting a single flaky download fail
+# the test outright.
 test_data_downloader = pooch.create(
     path=pooch.os_cache("napari-phasors-test-data"),
     base_url="https://github.com/napari-phasors/napari-phasors-data/raw/main/test_files/",
+    retry_if_failed=3,
     registry={
         'test_file.ptu': (
             'sha256:'
