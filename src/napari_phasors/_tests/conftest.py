@@ -21,6 +21,31 @@ except (AttributeError, ImportError, TypeError):
     pass
 
 
+def configure_phasorpy_retries():
+    """Opt every phasorpy dataset repository into a few download retries.
+
+    ``phasorpy.datasets.fetch`` downloads sample files (e.g. "simfcs.r64")
+    from GitHub/Zenodo on first use via Pooch, which by default makes a
+    single attempt per file. On CI this occasionally hits a transient
+    ``requests.exceptions.ReadTimeout`` against github.com, failing the test
+    even though a retry would succeed. Pooch retries connection errors
+    (including read timeouts) itself when a repository's ``retry_if_failed``
+    is set, so opt every phasorpy dataset repository into a few retries with
+    backoff instead of failing on the first flake. Silently does nothing if
+    phasorpy's dataset registry is unavailable or has a different shape.
+    """
+    try:
+        from phasorpy.datasets import REPOSITORIES as _phasorpy_repositories
+
+        for repo in _phasorpy_repositories.values():
+            repo.retry_if_failed = 3
+    except (AttributeError, ImportError, TypeError):
+        pass
+
+
+configure_phasorpy_retries()
+
+
 # Harden superqt's SliderLabel against the same PySide6 + Python 3.14 shiboken
 # wrapper-corruption bug: under address reuse, `widget.style()` can return a
 # transient QWidgetItem instead of a QStyle, so `_get_size()` raises
