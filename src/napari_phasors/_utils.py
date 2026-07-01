@@ -305,7 +305,14 @@ class PopoutWindowMixin:
         if not getattr(self, "_floated", False):
             self._floated = True
             # Defer so napari finishes wiring up the dock before we remove it.
-            QTimer.singleShot(0, self._popout_to_window)
+            # Parent the timer to self (single-shot) so Qt cancels it when the
+            # widget is destroyed; a bare ``QTimer.singleShot(0, self.method)``
+            # is orphaned and can fire into a freed C++ object during teardown
+            # (a PySide6 segfault).
+            self._popout_timer = QTimer(self)
+            self._popout_timer.setSingleShot(True)
+            self._popout_timer.timeout.connect(self._popout_to_window)
+            self._popout_timer.start(0)
 
     def _popout_to_window(self):
         """Detach from the napari dock and become a separate top-level window."""

@@ -1936,6 +1936,18 @@ class PlotterWidget(QWidget):
         self._bins_timer.setInterval(500)  # 500ms delay
         self._bins_timer.timeout.connect(self._process_bins_change)
 
+        # Debounce canvas resizes triggered from eventFilter. Parented to self
+        # (single-shot) so Qt destroys it with the widget: a bare
+        # ``QTimer.singleShot(0, self._resize_canvas_to_available_space)`` would
+        # be orphaned and could still fire after the widget is deleted during
+        # teardown, calling into a freed C++ object — a PySide6 segfault.
+        self._resize_canvas_timer = QTimer(self)
+        self._resize_canvas_timer.setSingleShot(True)
+        self._resize_canvas_timer.setInterval(0)
+        self._resize_canvas_timer.timeout.connect(
+            self._resize_canvas_to_available_space
+        )
+
         # Create Settings tab
         self.settings_tab = QWidget()
         self.settings_tab.setLayout(QVBoxLayout())
@@ -2378,7 +2390,7 @@ class PlotterWidget(QWidget):
             getattr(self, 'controls_container', None),
         }
         if obj in watched and event.type() in {QEvent.Resize, QEvent.Show}:
-            QTimer.singleShot(0, self._resize_canvas_to_available_space)
+            self._resize_canvas_timer.start()
         return super().eventFilter(obj, event)
 
     def resizeEvent(self, event):
@@ -8230,6 +8242,8 @@ class PlotterWidget(QWidget):
             self._layer_selection_timer.stop()
         with contextlib.suppress(AttributeError):
             self._bins_timer.stop()
+        with contextlib.suppress(AttributeError):
+            self._resize_canvas_timer.stop()
 
         # Disconnect timer callbacks to avoid queued invocations during teardown.
         with contextlib.suppress(TypeError, ValueError, AttributeError):

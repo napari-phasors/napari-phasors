@@ -15,6 +15,7 @@ interactive analysis tabs.
 """
 
 import ast
+import contextlib
 import csv
 import os
 import shutil
@@ -1173,12 +1174,13 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
 
         self._build_run_footer(layout)
 
-        self.viewer.layers.events.inserted.connect(
-            lambda e: self._populate_layer_comboboxes()
-        )
-        self.viewer.layers.events.removed.connect(
-            lambda e: self._populate_layer_comboboxes()
-        )
+        # Connect a bound method (not a lambda) so ``closeEvent`` can
+        # disconnect it. The napari viewer outlives this top-level widget; a
+        # lingering connection to a destroyed widget fires during teardown and
+        # segfaults under PySide6 (where PyQt would raise a catchable
+        # RuntimeError). A lambda cannot be disconnected by reference.
+        self.viewer.layers.events.inserted.connect(self._on_layers_changed)
+        self.viewer.layers.events.removed.connect(self._on_layers_changed)
         self._connect_run_enabled_signals()
         self._populate_layer_comboboxes()
         self._update_run_enabled()
@@ -3949,6 +3951,30 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 for key in ["G", "S", "G_original", "S_original"]
             )
         ]
+
+    def _on_layers_changed(self, event=None):
+        """Refresh layer comboboxes when the viewer's layer list changes."""
+        self._populate_layer_comboboxes()
+
+    def closeEvent(self, event):
+        """Disconnect viewer events so teardown can't fire into a freed widget.
+
+        The napari viewer outlives this (top-level) widget, so its
+        ``layers.events`` connections must be dropped here. Without this, the
+        emitter keeps a reference to a bound method of a destroyed widget and
+        firing it during teardown segfaults under PySide6 — the same class of
+        crash that leaks BatchAnalysisWidget instances across a ``loadfile``
+        worker until it dies near the end of ``test_batch_analysis.py``.
+        """
+        with contextlib.suppress(TypeError, ValueError, AttributeError):
+            self.viewer.layers.events.inserted.disconnect(
+                self._on_layers_changed
+            )
+        with contextlib.suppress(TypeError, ValueError, AttributeError):
+            self.viewer.layers.events.removed.disconnect(
+                self._on_layers_changed
+            )
+        event.accept()
 
     def _populate_layer_comboboxes(self):
         names = self._phasor_layer_names()

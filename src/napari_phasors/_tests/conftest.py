@@ -85,29 +85,25 @@ def _cleanup_widgets_after_test(request):
     import matplotlib.pyplot as plt
     from qtpy.QtWidgets import QApplication
 
-    from napari_phasors._widget import (
-        AdvancedOptionsWidget,
-        PhasorTransform,
-        WriterWidget,
-    )
     from napari_phasors.plotter import PlotterWidget
 
     widgets = []
     with contextlib.suppress(Exception):
         widgets = QApplication.allWidgets()
 
-    phasor_widgets = []
-    for w in widgets:
-        if isinstance(
-            w,
-            (
-                PhasorTransform,
-                WriterWidget,
-                AdvancedOptionsWidget,
-                PlotterWidget,
-            ),
-        ):
-            phasor_widgets.append(w)
+    # Collect every widget defined by this plugin, not a hand-maintained list of
+    # types. Heavy widgets instantiated many times in a single test file and
+    # never explicitly closed — notably BatchAnalysisWidget (~140 instances in
+    # test_batch_analysis.py) and the standalone analysis tabs — otherwise
+    # accumulate on one ``loadfile`` xdist worker and segfault during PySide6
+    # teardown near the end of the file. Closing them here also runs each
+    # widget's ``closeEvent``, which disconnects its ``viewer.layers.events``
+    # handlers so the (longer-lived) viewer can't fire into a freed widget.
+    phasor_widgets = [
+        w
+        for w in widgets
+        if type(w).__module__.split(".")[0] == "napari_phasors"
+    ]
 
     # 1. Break parent relationships to avoid double-free/deletion issues in PySide6
     for w in phasor_widgets:
@@ -133,6 +129,7 @@ def _cleanup_widgets_after_test(request):
                 '_dock_resize_timer',
                 '_layer_selection_timer',
                 '_bins_timer',
+                '_resize_canvas_timer',
             ):
                 with contextlib.suppress(AttributeError):
                     timer = getattr(w, attr, None)
