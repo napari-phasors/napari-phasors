@@ -43,6 +43,11 @@ FLIMARI_INSTALL_HINT = (
     "(see https://github.com/GuangchenW/FLIMari)."
 )
 
+#: napari plugin name and dock widget display name, as declared in
+#: FLIMari's ``napari.yaml`` manifest. Used to open/dock it automatically.
+_FLIMARI_PLUGIN_NAME = "flimari"
+_FLIMARI_WIDGET_NAME = "Phasor Analysis"
+
 
 class FlimariNotAvailable(RuntimeError):
     """Raised when the FLIMari bridge module cannot be imported."""
@@ -63,6 +68,32 @@ def _import_bridge():
     ) as exc:  # noqa: BLE001 - any import failure means "unavailable"
         raise FlimariNotAvailable(FLIMARI_INSTALL_HINT) from exc
     return bridge
+
+
+def _open_flimari_dock(viewer: Any) -> None:
+    """Open and dock FLIMari's main widget in the given napari viewer.
+
+    Constructing FLIMari's widget registers its import callback with the
+    bridge synchronously (``SampleManagerWidget.__init__`` calls
+    ``register_import_callback``), so once this call returns FLIMari is
+    ready to receive data -- no need to wait or poll.
+
+    Raises
+    ------
+    FlimariNotAvailable
+        If the dock widget could not be opened (for example, FLIMari is
+        installed as a library but not registered as a napari plugin).
+    """
+    try:
+        viewer.window.add_plugin_dock_widget(
+            plugin_name=_FLIMARI_PLUGIN_NAME,
+            widget_name=_FLIMARI_WIDGET_NAME,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise FlimariNotAvailable(
+            "Could not open the FLIMari dock widget automatically. "
+            "Please open it manually from Plugins > FLIMari."
+        ) from exc
 
 
 def _as_harmonic_stack(array: Any) -> np.ndarray:
@@ -108,6 +139,28 @@ def _filter_value(settings: dict, key: str, default: int) -> int:
     return int(default)
 
 
+#: Metadata keys a layer must carry to be exportable to FLIMari. Derived
+#: layers that hold analysis results rather than phasor coordinates -- e.g.
+#: component-analysis fraction images, which only carry
+#: ``fraction_data_original`` -- do not have these and are excluded.
+_REQUIRED_PHASOR_KEYS = ("G", "S", "G_original", "S_original")
+
+
+def has_phasor_data(layer: Any) -> bool:
+    """Return whether ``layer`` carries the phasor metadata FLIMari needs.
+
+    Used both to decide what to export and to drive the "Export Phasor
+    Layer to FLIMARI" button's enabled state: layers produced by other
+    analyses (component analysis, FRET, phasor mapping, ...) do not carry
+    raw phasor coordinates and must not be offered for export.
+    """
+    metadata = getattr(layer, "metadata", None) or {}
+    return all(
+        key in metadata and metadata[key] is not None
+        for key in _REQUIRED_PHASOR_KEYS
+    )
+
+
 def build_flimari_dataset(layer: Any) -> dict | None:
     """Build a FLIMari import dict from a napari-phasors image layer.
 
@@ -127,13 +180,10 @@ def build_flimari_dataset(layer: Any) -> dict | None:
     dict or None
         The import dict, or ``None`` if ``layer`` has no phasor metadata.
     """
-    metadata = getattr(layer, "metadata", None) or {}
-    required = ("G", "S", "G_original", "S_original")
-    if not all(
-        key in metadata and metadata[key] is not None for key in required
-    ):
+    if not has_phasor_data(layer):
         return None
 
+    metadata = layer.metadata
     settings = metadata.get("settings", {}) or {}
 
     g = _as_harmonic_stack(metadata["G"])
@@ -197,28 +247,40 @@ def build_flimari_dataset(layer: Any) -> dict | None:
     return payload
 
 
-def send_layers_to_flimari(layers: list[Any]) -> tuple[list[dict], list[str]]:
+def send_layers_to_flimari(
+    layers: list[Any], viewer: Any | None = None
+) -> tuple[list[dict], list[str], bool]:
     """Send phasor layers to a running FLIMari session via its bridge.
+
+    If FLIMari's dock widget is not open yet, its bridge raises a
+    ``RuntimeError``. Rather than surfacing that as an error, when a
+    ``viewer`` is provided this opens and docks FLIMari's widget (which
+    registers its import callback synchronously) and retries once.
 
     Parameters
     ----------
     layers : list of napari.layers.Image
         Candidate layers to export. Layers without phasor metadata are skipped.
+    viewer : napari.viewer.Viewer, optional
+        Viewer used to open FLIMari's dock widget if it is not open yet.
+        If not provided, a closed FLIMari dock surfaces as a ``RuntimeError``.
 
     Returns
     -------
-    (sent, skipped) : tuple of (list of dict, list of str)
-        The payloads handed to FLIMari and the names of skipped layers.
+    (sent, skipped, opened_dock) : tuple of (list of dict, list of str, bool)
+        The payloads handed to FLIMari, the names of skipped layers, and
+        whether FLIMari's dock widget had to be opened automatically.
 
     Raises
     ------
     FlimariNotAvailable
-        If FLIMari is not installed.
+        If FLIMari is not installed, or its dock could not be opened
+        automatically.
     ValueError
         If none of the layers carry phasor data.
     RuntimeError
-        Propagated from FLIMari's bridge when no FLIMari dock is open to
-        receive the data.
+        Propagated from FLIMari's bridge when no FLIMari dock is open and
+        no ``viewer`` was provided to open one automatically.
     """
     bridge = _import_bridge()
 
@@ -236,8 +298,17 @@ def send_layers_to_flimari(layers: list[Any]) -> tuple[list[dict], list[str]]:
             "No selected layer contains phasor data to send to FLIMari."
         )
 
-    bridge.import_from_napari_phasors(sent)
-    return sent, skipped
+    opened_dock = False
+    try:
+        bridge.import_from_napari_phasors(sent)
+    except RuntimeError:
+        if viewer is None:
+            raise
+        _open_flimari_dock(viewer)
+        opened_dock = True
+        bridge.import_from_napari_phasors(sent)
+
+    return sent, skipped, opened_dock
 
 
 def _safe_int(value: Any, default: int) -> int:

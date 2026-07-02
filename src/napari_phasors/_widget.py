@@ -2564,14 +2564,34 @@ class WriterWidget(PopoutWindowMixin, QWidget):
         self.search_button.clicked.connect(self._open_file_dialog)
         self.main_layout.addWidget(self.search_button)
 
-        self.flimari_button = QPushButton("Send to FLIMari")
-        self.flimari_button.setToolTip(
-            "Send the selected phasor layer(s) to a running FLIMari session. "
-            "FLIMari must be installed and its dock widget open. Total photon "
-            "counts are recovered from the mean intensity and sent along."
+        self.flimari_section = CollapsibleSection(
+            "FLIMari Interoperability",
+            initially_collapsed=True,
+            text_color="#c7c7c7",
         )
+        flimari_info = QLabel(
+            "Send the selected phasor layer(s) directly to "
+            "<a href=\"https://github.com/GuangchenW/FLIMari\">FLIMari</a>, "
+            "without saving any file. FLIMari must be installed as a "
+            "napari plugin; if its dock widget isn't open yet, it will be "
+            "opened automatically. Since FLIMari works with total photon "
+            "counts rather than mean intensity, the counts are recovered "
+            "automatically from the mean intensity and sent along."
+        )
+        flimari_info.setWordWrap(True)
+        flimari_info.setOpenExternalLinks(True)
+        self.flimari_section.add_widget(flimari_info)
+
+        self.flimari_button = QPushButton("Export Phasor Layer to FLIMARI")
+        self.flimari_button.setEnabled(False)
         self.flimari_button.clicked.connect(self._send_to_flimari)
-        self.main_layout.addWidget(self.flimari_button)
+        self.flimari_section.add_widget(self.flimari_button)
+
+        self.main_layout.addWidget(self.flimari_section)
+
+        self.export_layer_combobox.selectionChanged.connect(
+            self._update_flimari_button_state
+        )
 
         self.viewer.layers.events.inserted.connect(self._populate_combobox)
         self.viewer.layers.events.removed.connect(self._populate_combobox)
@@ -2622,7 +2642,7 @@ class WriterWidget(PopoutWindowMixin, QWidget):
             )
 
     def _send_to_flimari(self):
-        """Send the selected phasor layer(s) to a running FLIMari session."""
+        """Send the selected phasor layer(s) to FLIMari, opening its dock if needed."""
         from ._flimari import FlimariNotAvailable, send_layers_to_flimari
 
         selected_layers = self.export_layer_combobox.checkedItems()
@@ -2637,7 +2657,9 @@ class WriterWidget(PopoutWindowMixin, QWidget):
         ]
 
         try:
-            sent, skipped = send_layers_to_flimari(layers)
+            sent, skipped, opened_dock = send_layers_to_flimari(
+                layers, viewer=self.viewer
+            )
         except FlimariNotAvailable as exc:
             show_error(str(exc))
             return
@@ -2645,17 +2667,38 @@ class WriterWidget(PopoutWindowMixin, QWidget):
             show_error(str(exc))
             return
         except RuntimeError as exc:
-            # FLIMari's bridge raises this when no dock is open to receive data.
+            # Bridge still refused after we tried opening FLIMari's dock.
             show_error(str(exc))
             return
         except Exception as exc:  # noqa: BLE001
             show_error(f"Error sending to FLIMari: {exc}")
             return
 
-        message = f"Sent {len(sent)} layer(s) to FLIMari."
+        message = (
+            f"Opened FLIMari and sent {len(sent)} layer(s) to it."
+            if opened_dock
+            else f"Sent {len(sent)} layer(s) to FLIMari."
+        )
         if skipped:
             message += f" Skipped (no phasor data): {', '.join(skipped)}."
         show_info(message)
+
+    def _update_flimari_button_state(self, event=None):
+        """Enable the FLIMari export button only if a selected layer has phasor data.
+
+        Layers from other analyses (component analysis, FRET, phasor
+        mapping, ...) do not carry raw phasor coordinates, so selecting
+        only those must not enable this button.
+        """
+        from ._flimari import has_phasor_data
+
+        selected_layers = self.export_layer_combobox.checkedItems()
+        can_export = any(
+            name in self.viewer.layers
+            and has_phasor_data(self.viewer.layers[name])
+            for name in selected_layers
+        )
+        self.flimari_button.setEnabled(can_export)
 
     def _update_mask_checkbox_visibility(self, event=None):
         """Show/hide the mask checkbox based on whether any selected layer has a mask."""
@@ -2689,6 +2732,10 @@ class WriterWidget(PopoutWindowMixin, QWidget):
                 layer.events.metadata.disconnect(
                     self._update_mask_checkbox_visibility
                 )
+            with suppress(Exception):
+                layer.events.metadata.disconnect(
+                    self._update_flimari_button_state
+                )
         self._connected_metadata_layers.clear()
 
         for layer in image_layers:
@@ -2696,9 +2743,13 @@ class WriterWidget(PopoutWindowMixin, QWidget):
                 layer.events.metadata.connect(
                     self._update_mask_checkbox_visibility
                 )
+                layer.events.metadata.connect(
+                    self._update_flimari_button_state
+                )
                 self._connected_metadata_layers.add(layer)
 
         self._update_mask_checkbox_visibility()
+        self._update_flimari_button_state()
 
     def closeEvent(self, event):
         """Disconnect viewer signals before the widget is destroyed."""
@@ -2715,6 +2766,10 @@ class WriterWidget(PopoutWindowMixin, QWidget):
                 with suppress(Exception):
                     layer.events.metadata.disconnect(
                         self._update_mask_checkbox_visibility
+                    )
+                with suppress(Exception):
+                    layer.events.metadata.disconnect(
+                        self._update_flimari_button_state
                     )
             self._connected_metadata_layers.clear()
 

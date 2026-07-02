@@ -1,5 +1,7 @@
 """Tests for the napari-phasors -> FLIMari interoperability bridge."""
 
+from unittest.mock import MagicMock
+
 import numpy as np
 import pytest
 from napari.layers import Image
@@ -7,6 +9,7 @@ from napari.layers import Image
 from napari_phasors._flimari import (
     FlimariNotAvailable,
     build_flimari_dataset,
+    has_phasor_data,
     send_layers_to_flimari,
 )
 from napari_phasors._synthetic_generator import (
@@ -32,6 +35,28 @@ class _FakeBridge:
         self.received = None
 
     def import_from_napari_phasors(self, data_list):
+        self.received = data_list
+
+
+class _FlakyBridge:
+    """Bridge stub that reports "not ready" once, then accepts data.
+
+    Mimics FLIMari's real bridge, which raises ``RuntimeError`` from
+    ``import_from_napari_phasors`` until its dock widget has been opened
+    (which registers the import callback).
+    """
+
+    def __init__(self):
+        self.calls = 0
+        self.received = None
+
+    def import_from_napari_phasors(self, data_list):
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError(
+                "FLIMari is not ready to receive data. "
+                "Open the FLIMari dock widget first."
+            )
         self.received = data_list
 
 
@@ -126,6 +151,24 @@ def test_build_returns_none_without_phasor_metadata():
     assert build_flimari_dataset(layer) is None
 
 
+def test_has_phasor_data():
+    """has_phasor_data distinguishes phasor layers from derived-analysis ones."""
+    phasor_layer = _phasor_layer()
+    assert has_phasor_data(phasor_layer) is True
+
+    plain_layer = Image(np.zeros((4, 5)), name="plain")
+    assert has_phasor_data(plain_layer) is False
+
+    # A component-analysis fraction layer only carries
+    # 'fraction_data_original', never raw phasor coordinates.
+    component_layer = Image(
+        np.zeros((4, 5)),
+        name="Component 1 Fractions",
+        metadata={"fraction_data_original": np.zeros((4, 5))},
+    )
+    assert has_phasor_data(component_layer) is False
+
+
 def test_send_layers_calls_bridge(monkeypatch):
     """send_layers_to_flimari forwards built payloads to the bridge."""
     import napari_phasors._flimari as flimari_mod
@@ -136,11 +179,32 @@ def test_send_layers_calls_bridge(monkeypatch):
     phasor = _phasor_layer(name="good")
     plain = Image(np.zeros((4, 5)), name="plain")
 
-    sent, skipped = send_layers_to_flimari([phasor, plain])
+    sent, skipped, opened_dock = send_layers_to_flimari([phasor, plain])
 
     assert fake.received is sent
     assert len(sent) == 1
     assert skipped == ["plain"]
+    assert opened_dock is False
+
+
+def test_send_layers_skips_component_analysis_layers(monkeypatch):
+    """Mixing a phasor layer with a component-analysis one only sends the former."""
+    import napari_phasors._flimari as flimari_mod
+
+    fake = _FakeBridge()
+    monkeypatch.setattr(flimari_mod, "_import_bridge", lambda: fake)
+
+    phasor = _phasor_layer(name="good")
+    component_layer = Image(
+        np.zeros((4, 5)),
+        name="Component 1 Fractions",
+        metadata={"fraction_data_original": np.zeros((4, 5))},
+    )
+
+    sent, skipped, _ = send_layers_to_flimari([phasor, component_layer])
+
+    assert len(sent) == 1
+    assert skipped == ["Component 1 Fractions"]
 
 
 def test_send_layers_raises_when_no_phasor_layers(monkeypatch):
@@ -159,3 +223,51 @@ def test_send_layers_raises_when_flimari_missing():
     # FLIMari is not a test dependency, so the real import must fail.
     with pytest.raises(FlimariNotAvailable):
         send_layers_to_flimari([_phasor_layer()])
+
+
+def test_send_layers_opens_flimari_dock_when_not_ready(monkeypatch):
+    """If FLIMari's dock isn't open, it is opened automatically and retried."""
+    import napari_phasors._flimari as flimari_mod
+
+    fake = _FlakyBridge()
+    monkeypatch.setattr(flimari_mod, "_import_bridge", lambda: fake)
+
+    mock_viewer = MagicMock()
+    layer = _phasor_layer()
+
+    sent, skipped, opened_dock = send_layers_to_flimari(
+        [layer], viewer=mock_viewer
+    )
+
+    assert opened_dock is True
+    assert fake.calls == 2
+    assert fake.received is sent
+    assert skipped == []
+    mock_viewer.window.add_plugin_dock_widget.assert_called_once_with(
+        plugin_name="flimari", widget_name="Phasor Analysis"
+    )
+
+
+def test_send_layers_without_viewer_reraises_runtime_error(monkeypatch):
+    """Without a viewer to open the dock with, the original error propagates."""
+    import napari_phasors._flimari as flimari_mod
+
+    fake = _FlakyBridge()
+    monkeypatch.setattr(flimari_mod, "_import_bridge", lambda: fake)
+
+    with pytest.raises(RuntimeError):
+        send_layers_to_flimari([_phasor_layer()])
+
+
+def test_send_layers_raises_if_dock_cannot_be_opened(monkeypatch):
+    """If opening the dock itself fails, a clear FlimariNotAvailable is raised."""
+    import napari_phasors._flimari as flimari_mod
+
+    fake = _FlakyBridge()
+    monkeypatch.setattr(flimari_mod, "_import_bridge", lambda: fake)
+
+    mock_viewer = MagicMock()
+    mock_viewer.window.add_plugin_dock_widget.side_effect = KeyError("flimari")
+
+    with pytest.raises(FlimariNotAvailable):
+        send_layers_to_flimari([_phasor_layer()], viewer=mock_viewer)

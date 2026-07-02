@@ -1080,6 +1080,8 @@ def test_writer_widget(make_viewer_model, qtbot, tmp_path):
     assert isinstance(main_widget, QWidget)
     # Check init values are empty
     assert main_widget.export_layer_combobox.count() == 0
+    # FLIMari export button is disabled while no layer is selected
+    assert not main_widget.flimari_button.isEnabled()
     # Check error messages if there are no phasor layers
     with patch("napari_phasors._widget.show_error") as mock_show_error:
         main_widget.search_button.click()
@@ -1096,11 +1098,18 @@ def test_writer_widget(make_viewer_model, qtbot, tmp_path):
         main_widget.export_layer_combobox.itemText(0)
         == sample_image_layer.name
     )
+    # Still disabled: layer is present but not checked yet
+    assert not main_widget.flimari_button.isEnabled()
     # Select the layer in the CheckableComboBox
     main_widget.export_layer_combobox.selectAll()
     assert main_widget.export_layer_combobox.checkedItems() == [
         sample_image_layer.name
     ]
+    # FLIMari export button becomes enabled once a layer is checked
+    assert main_widget.flimari_button.isEnabled()
+    main_widget.export_layer_combobox.deselectAll()
+    assert not main_widget.flimari_button.isEnabled()
+    main_widget.export_layer_combobox.selectAll()
 
     # Simulate saving as OME-TIFF
     with (
@@ -1502,6 +1511,60 @@ def test_writer_widget_excludes_labels_layer(make_viewer_model, qtbot):
     ]
     assert "my_image" in items
     assert "my_labels" not in items
+
+
+def test_writer_widget_flimari_button_requires_phasor_layer(
+    make_viewer_model, qtbot
+):
+    """FLIMari button stays disabled unless a *phasor* layer is checked.
+
+    Layers from other analyses (e.g. component analysis fractions) are
+    valid targets for OME-TIFF/CSV export but must not enable the FLIMari
+    export button, since they carry no phasor coordinates to send.
+    """
+    viewer = make_viewer_model()
+    raw_flim_data = make_raw_flim_data()
+    phasor_layer = make_intensity_layer_with_phasors(raw_flim_data)
+    viewer.add_layer(phasor_layer)
+    # Simulate a component-analysis fraction layer: an Image layer with
+    # unrelated metadata and no phasor coordinates.
+    viewer.add_image(
+        np.zeros((5, 5)),
+        name="Component 1 Fractions",
+        metadata={"fraction_data_original": np.zeros((5, 5))},
+    )
+
+    widget = WriterWidget(viewer)
+
+    # Only the non-phasor layer selected: button must stay disabled.
+    widget.export_layer_combobox.setCheckedItems(["Component 1 Fractions"])
+    assert not widget.flimari_button.isEnabled()
+
+    # Adding the phasor layer to the selection enables it.
+    widget.export_layer_combobox.setCheckedItems(
+        ["Component 1 Fractions", phasor_layer.name]
+    )
+    assert widget.flimari_button.isEnabled()
+
+    # Sending only forwards the phasor layer and skips the other one.
+    from unittest.mock import MagicMock
+
+    with (
+        patch("napari_phasors._flimari._import_bridge") as mock_import_bridge,
+        patch("napari_phasors._widget.show_info") as mock_show_info,
+    ):
+        fake_bridge = MagicMock()
+        mock_import_bridge.return_value = fake_bridge
+
+        widget.flimari_button.click()
+
+        fake_bridge.import_from_napari_phasors.assert_called_once()
+        (sent_payloads,) = fake_bridge.import_from_napari_phasors.call_args[0]
+        assert len(sent_payloads) == 1
+        assert sent_payloads[0]["name"] == phasor_layer.name
+        message = mock_show_info.call_args[0][0]
+        assert "Sent 1 layer(s)" in message
+        assert "Component 1 Fractions" in message
 
 
 def test_export_labels_layer_as_colored_image(
