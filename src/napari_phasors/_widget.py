@@ -2564,6 +2564,15 @@ class WriterWidget(PopoutWindowMixin, QWidget):
         self.search_button.clicked.connect(self._open_file_dialog)
         self.main_layout.addWidget(self.search_button)
 
+        self.flimari_button = QPushButton("Send to FLIMari")
+        self.flimari_button.setToolTip(
+            "Send the selected phasor layer(s) to a running FLIMari session. "
+            "FLIMari must be installed and its dock widget open. Total photon "
+            "counts are recovered from the mean intensity and sent along."
+        )
+        self.flimari_button.clicked.connect(self._send_to_flimari)
+        self.main_layout.addWidget(self.flimari_button)
+
         self.viewer.layers.events.inserted.connect(self._populate_combobox)
         self.viewer.layers.events.removed.connect(self._populate_combobox)
 
@@ -2611,6 +2620,42 @@ class WriterWidget(PopoutWindowMixin, QWidget):
                 selected_layers,
                 export_masked=export_masked,
             )
+
+    def _send_to_flimari(self):
+        """Send the selected phasor layer(s) to a running FLIMari session."""
+        from ._flimari import FlimariNotAvailable, send_layers_to_flimari
+
+        selected_layers = self.export_layer_combobox.checkedItems()
+        if not selected_layers:
+            show_error("No layer selected")
+            return
+
+        layers = [
+            self.viewer.layers[name]
+            for name in selected_layers
+            if name in self.viewer.layers
+        ]
+
+        try:
+            sent, skipped = send_layers_to_flimari(layers)
+        except FlimariNotAvailable as exc:
+            show_error(str(exc))
+            return
+        except ValueError as exc:
+            show_error(str(exc))
+            return
+        except RuntimeError as exc:
+            # FLIMari's bridge raises this when no dock is open to receive data.
+            show_error(str(exc))
+            return
+        except Exception as exc:  # noqa: BLE001
+            show_error(f"Error sending to FLIMari: {exc}")
+            return
+
+        message = f"Sent {len(sent)} layer(s) to FLIMari."
+        if skipped:
+            message += f" Skipped (no phasor data): {', '.join(skipped)}."
+        show_info(message)
 
     def _update_mask_checkbox_visibility(self, event=None):
         """Show/hide the mask checkbox based on whether any selected layer has a mask."""
