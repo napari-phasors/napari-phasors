@@ -114,6 +114,17 @@ def test_build_caps_harmonics_at_two():
     assert len(payload["calibration_phase"]) == 2
 
 
+def test_build_promotes_single_harmonic_to_leading_axis():
+    """A single-harmonic layer stores 2D G/S; a harmonic axis is added."""
+    layer = _phasor_layer(harmonic=1)
+    assert layer.metadata["G"].ndim == 2
+
+    payload = build_flimari_dataset(layer)
+
+    assert payload["g"].shape == (1, 4, 5)
+    assert payload["s"].shape == (1, 4, 5)
+
+
 def test_build_converts_thresholds_to_counts():
     """Mean-intensity thresholds are scaled to photon-count units by K."""
     layer = _phasor_layer()
@@ -166,6 +177,16 @@ def test_get_layer_histogram_bins():
     layer = _phasor_layer()
     assert get_layer_histogram_bins(layer) == N_TIME_BINS
     del layer.metadata["summed_signal"]
+    assert get_layer_histogram_bins(layer) is None
+
+
+def test_get_layer_histogram_bins_none_for_empty_summed_signal():
+    """An empty or scalar summed_signal is treated as 'unknown', not a bin count."""
+    layer = _phasor_layer()
+    layer.metadata["summed_signal"] = []
+    assert get_layer_histogram_bins(layer) is None
+
+    layer.metadata["summed_signal"] = 5.0
     assert get_layer_histogram_bins(layer) is None
 
 
@@ -296,6 +317,30 @@ def test_send_layers_raises_when_flimari_missing():
     # FLIMari is not a test dependency, so the real import must fail.
     with pytest.raises(FlimariNotAvailable):
         send_layers_to_flimari([_phasor_layer()])
+
+
+def test_import_bridge_returns_module_when_flimari_available(monkeypatch):
+    """_import_bridge returns the real bridge module when FLIMari is installed.
+
+    FLIMari is not a test dependency, so a fake ``flimari.core.bridge``
+    module is injected into ``sys.modules`` to exercise the success path.
+    """
+    import sys
+    import types
+
+    import napari_phasors._flimari as flimari_mod
+
+    fake_bridge = types.ModuleType("flimari.core.bridge")
+    fake_core = types.ModuleType("flimari.core")
+    fake_core.bridge = fake_bridge
+    fake_flimari = types.ModuleType("flimari")
+    fake_flimari.core = fake_core
+
+    monkeypatch.setitem(sys.modules, "flimari", fake_flimari)
+    monkeypatch.setitem(sys.modules, "flimari.core", fake_core)
+    monkeypatch.setitem(sys.modules, "flimari.core.bridge", fake_bridge)
+
+    assert flimari_mod._import_bridge() is fake_bridge
 
 
 def test_send_layers_opens_flimari_dock_when_not_ready(monkeypatch):
