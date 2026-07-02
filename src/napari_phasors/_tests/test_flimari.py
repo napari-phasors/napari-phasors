@@ -9,7 +9,9 @@ from napari.layers import Image
 from napari_phasors._flimari import (
     FlimariNotAvailable,
     build_flimari_dataset,
+    get_layer_histogram_bins,
     has_phasor_data,
+    histogram_bins_from_raw_file,
     send_layers_to_flimari,
 )
 from napari_phasors._synthetic_generator import (
@@ -143,6 +145,77 @@ def test_build_without_histogram_bins_uses_mean_thresholds():
 
     assert "counts" not in payload
     assert payload["min_count"] == 4
+
+
+def test_build_uses_histogram_bins_override():
+    """An explicit K recovers counts even when the metadata lacks it."""
+    layer = _phasor_layer()
+    del layer.metadata["summed_signal"]
+    assert get_layer_histogram_bins(layer) is None
+
+    payload = build_flimari_dataset(layer, histogram_bins=100)
+
+    assert "counts" in payload
+    np.testing.assert_allclose(
+        payload["counts"], np.rint(layer.metadata["original_mean"] * 100)
+    )
+
+
+def test_get_layer_histogram_bins():
+    """get_layer_histogram_bins reads K from summed_signal, else None."""
+    layer = _phasor_layer()
+    assert get_layer_histogram_bins(layer) == N_TIME_BINS
+    del layer.metadata["summed_signal"]
+    assert get_layer_histogram_bins(layer) is None
+
+
+def test_histogram_bins_from_raw_file(tmp_path):
+    """K is recovered from an original raw file and validated against mean."""
+    import tifffile
+
+    raw = make_raw_flim_data(n_time_bins=64, shape=(4, 5))
+    path = str(tmp_path / "raw.tif")
+    tifffile.imwrite(path, raw)
+
+    # A layer built from the same data has a matching mean-intensity image.
+    layer = make_intensity_layer_with_phasors(raw)
+
+    k = histogram_bins_from_raw_file(
+        path, reference_mean=layer.metadata["original_mean"]
+    )
+    assert k == 64
+
+
+def test_histogram_bins_from_raw_file_rejects_mismatched_file(tmp_path):
+    """A file whose image shape/intensity doesn't match the layer is rejected."""
+    import tifffile
+
+    raw = make_raw_flim_data(n_time_bins=64, shape=(4, 5))
+    path = str(tmp_path / "raw.tif")
+    tifffile.imwrite(path, raw)
+
+    with pytest.raises(ValueError):
+        histogram_bins_from_raw_file(path, reference_mean=np.zeros((10, 10)))
+
+
+def test_send_layers_uses_histogram_bins_override(monkeypatch):
+    """Per-layer K overrides recover counts for layers lacking summed_signal."""
+    import napari_phasors._flimari as flimari_mod
+
+    fake = _FakeBridge()
+    monkeypatch.setattr(flimari_mod, "_import_bridge", lambda: fake)
+
+    layer = _phasor_layer()
+    del layer.metadata["summed_signal"]
+
+    sent, skipped, _ = send_layers_to_flimari(
+        [layer], histogram_bins={layer: 128}
+    )
+
+    assert "counts" in sent[0]
+    np.testing.assert_allclose(
+        sent[0]["counts"], np.rint(layer.metadata["original_mean"] * 128)
+    )
 
 
 def test_build_returns_none_without_phasor_metadata():

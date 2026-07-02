@@ -1567,6 +1567,80 @@ def test_writer_widget_flimari_button_requires_phasor_layer(
         assert "Component 1 Fractions" in message
 
 
+def test_writer_widget_flimari_prompts_for_raw_file(make_viewer_model, qtbot):
+    """A phasor layer without summed_signal prompts for the original raw file.
+
+    The recovered histogram-bin count is used to reconstruct photon counts,
+    which are then included in the payload sent to FLIMari.
+    """
+    from unittest.mock import MagicMock
+
+    viewer = make_viewer_model()
+    raw_flim_data = make_raw_flim_data()
+    layer = make_intensity_layer_with_phasors(raw_flim_data)
+    # Simulate a layer loaded from a processed format without raw histogram.
+    del layer.metadata["summed_signal"]
+    viewer.add_layer(layer)
+
+    widget = WriterWidget(viewer)
+    widget.export_layer_combobox.setCheckedItems([layer.name])
+
+    with (
+        patch(
+            "napari_phasors._widget.QFileDialog.getOpenFileName",
+            return_value=("/fake/original.ptu", ""),
+        ) as mock_dialog,
+        patch(
+            "napari_phasors._flimari.histogram_bins_from_raw_file",
+            return_value=64,
+        ) as mock_bins,
+        patch("napari_phasors._flimari._import_bridge") as mock_import_bridge,
+        patch("napari_phasors._widget.show_info"),
+    ):
+        fake_bridge = MagicMock()
+        mock_import_bridge.return_value = fake_bridge
+
+        widget.flimari_button.click()
+
+        # User was prompted for the raw file for this layer.
+        mock_dialog.assert_called_once()
+        mock_bins.assert_called_once()
+
+        (sent_payloads,) = fake_bridge.import_from_napari_phasors.call_args[0]
+        assert "counts" in sent_payloads[0]
+        np.testing.assert_allclose(
+            sent_payloads[0]["counts"],
+            np.rint(layer.metadata["original_mean"] * 64),
+        )
+
+
+def test_writer_widget_flimari_skips_prompt_when_counts_present(
+    make_viewer_model, qtbot
+):
+    """A layer that already has summed_signal is not prompted for a raw file."""
+    from unittest.mock import MagicMock
+
+    viewer = make_viewer_model()
+    raw_flim_data = make_raw_flim_data()
+    layer = make_intensity_layer_with_phasors(raw_flim_data)
+    viewer.add_layer(layer)
+
+    widget = WriterWidget(viewer)
+    widget.export_layer_combobox.setCheckedItems([layer.name])
+
+    with (
+        patch(
+            "napari_phasors._widget.QFileDialog.getOpenFileName"
+        ) as mock_dialog,
+        patch("napari_phasors._flimari._import_bridge") as mock_import_bridge,
+        patch("napari_phasors._widget.show_info"),
+    ):
+        mock_import_bridge.return_value = MagicMock()
+        widget.flimari_button.click()
+
+        mock_dialog.assert_not_called()
+
+
 def test_export_labels_layer_as_colored_image(
     make_viewer_model, qtbot, tmp_path
 ):

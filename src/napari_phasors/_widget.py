@@ -2565,7 +2565,7 @@ class WriterWidget(PopoutWindowMixin, QWidget):
         self.main_layout.addWidget(self.search_button)
 
         self.flimari_section = CollapsibleSection(
-            "FLIMari Interoperability",
+            "Send to FLIMari",
             initially_collapsed=True,
             text_color="#c7c7c7",
         )
@@ -2576,7 +2576,9 @@ class WriterWidget(PopoutWindowMixin, QWidget):
             "napari plugin; if its dock widget isn't open yet, it will be "
             "opened automatically. Since FLIMari works with total photon "
             "counts rather than mean intensity, the counts are recovered "
-            "automatically from the mean intensity and sent along."
+            "automatically. For layers loaded from formats without the raw "
+            "histogram (e.g. R64/REF), you'll be prompted to point to the "
+            "original raw file so the counts can be recovered."
         )
         flimari_info.setWordWrap(True)
         flimari_info.setOpenExternalLinks(True)
@@ -2656,9 +2658,13 @@ class WriterWidget(PopoutWindowMixin, QWidget):
             if name in self.viewer.layers
         ]
 
+        # For phasor layers whose metadata lacks the raw histogram, ask the
+        # user to point to the original raw file so counts can be recovered.
+        histogram_bins = self._recover_missing_counts(layers)
+
         try:
             sent, skipped, opened_dock = send_layers_to_flimari(
-                layers, viewer=self.viewer
+                layers, viewer=self.viewer, histogram_bins=histogram_bins
             )
         except FlimariNotAvailable as exc:
             show_error(str(exc))
@@ -2679,9 +2685,70 @@ class WriterWidget(PopoutWindowMixin, QWidget):
             if opened_dock
             else f"Sent {len(sent)} layer(s) to FLIMari."
         )
+        n_proxy = sum(1 for payload in sent if "counts" not in payload)
+        if n_proxy:
+            message += (
+                f" {n_proxy} sent without photon counts "
+                "(mean intensity used as a proxy)."
+            )
         if skipped:
             message += f" Skipped (no phasor data): {', '.join(skipped)}."
         show_info(message)
+
+    def _recover_missing_counts(self, layers):
+        """Prompt for the original raw file of phasor layers lacking counts.
+
+        Returns a mapping of layer -> histogram-bin count for layers whose
+        photon counts were recovered from a user-assigned raw file. Layers
+        that already carry the info, that the user skips, or whose assigned
+        file does not match are left out (they fall back to mean intensity).
+        """
+        from ._flimari import (
+            get_layer_histogram_bins,
+            has_phasor_data,
+            histogram_bins_from_raw_file,
+        )
+        from ._reader import extension_mapping
+
+        raw_extensions = sorted(extension_mapping["raw"].keys())
+        pattern = " ".join(f"*{ext}" for ext in raw_extensions)
+        file_filter = f"Raw FLIM files ({pattern});;All files (*)"
+
+        overrides = {}
+        for layer in layers:
+            if not has_phasor_data(layer):
+                continue
+            if get_layer_histogram_bins(layer) is not None:
+                continue
+
+            start_dir = ""
+            source = getattr(layer, "source", None)
+            source_path = getattr(source, "path", None) if source else None
+            if source_path:
+                start_dir = os.path.dirname(str(source_path))
+
+            path, _ = QFileDialog.getOpenFileName(
+                self,
+                f"Select original raw file for '{layer.name}' to recover "
+                "photon counts (Cancel to send mean intensity only)",
+                start_dir,
+                file_filter,
+            )
+            if not path:
+                continue
+
+            try:
+                overrides[layer] = histogram_bins_from_raw_file(
+                    path,
+                    reference_mean=layer.metadata.get("original_mean"),
+                )
+            except Exception as exc:  # noqa: BLE001
+                show_error(
+                    f"Could not recover photon counts for "
+                    f"'{layer.name}': {exc}"
+                )
+
+        return overrides
 
     def _update_flimari_button_state(self, event=None):
         """Enable the FLIMari export button only if a selected layer has phasor data.
