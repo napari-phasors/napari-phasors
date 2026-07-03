@@ -355,6 +355,12 @@ def raw_file_reader(
         except (KeyError, ValueError, TypeError):
             filtered_reader_options.pop('phasor_axis', None)
 
+    # Opt-in flag (widget-level, never passed to IO functions): when set, keep
+    # the full per-pixel signal and its histogram/spectral axis in the layer
+    # metadata so callers (e.g. batch signal export) can average the signal
+    # over a masked region. This is memory-heavy, so it is off by default.
+    keep_signal = bool(filtered_reader_options.pop('_keep_signal', False))
+
     filename, file_extension = _get_filename_extension(path)
 
     # Read SDT multi-file special case
@@ -475,6 +481,9 @@ def raw_file_reader(
                     "harmonics": harmonics_to_use,
                 },
             }
+            if keep_signal:
+                add_kwargs["metadata"]["signal_full"] = np.asarray(raw_data)
+                add_kwargs["metadata"]["signal_axis"] = int(axis)
             layers.append((mean_intensity_image, add_kwargs))
         else:
             # Handle multi-channel files with iteration axis
@@ -563,6 +572,11 @@ def raw_file_reader(
                         "harmonics": harmonics_to_use,
                     },
                 }
+                if keep_signal:
+                    add_kwargs["metadata"]["signal_full"] = np.asarray(
+                        channel_data
+                    )
+                    add_kwargs["metadata"]["signal_axis"] = int(histogram_axis)
                 layers.append((mean_intensity_image, add_kwargs))
     finally:
         pbr.close()
@@ -782,6 +796,9 @@ def processed_file_reader(
     # Prepare reader options: remove widget-only keys and ensure harmonic present
     filtered_reader_options = reader_options.copy() if reader_options else {}
     filtered_reader_options.pop('phasor_axis', None)
+    # Widget-level flag understood only by the raw reader; drop it so it is
+    # never forwarded to the processed IO functions (which would reject it).
+    filtered_reader_options.pop('_keep_signal', None)
     if 'harmonic' not in filtered_reader_options:
         filtered_reader_options['harmonic'] = harmonics
 

@@ -1132,6 +1132,14 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self._deferred_exports = []
         self._deferred_store = None
         self._deferred_dir = None
+        # Signal-export state. ``_signal_capable_cache`` memoizes per-file
+        # "can this file yield a signal?" checks (keyed by path). ``_signal_
+        # export_cfg`` is the resolved per-run config (or None). ``_signal_
+        # combined`` accumulates per-group signal profiles for the combined
+        # mean +/- SD plot during a run.
+        self._signal_capable_cache = {}
+        self._signal_export_cfg = None
+        self._signal_combined = {}
 
         layout = QVBoxLayout(self)
 
@@ -1160,6 +1168,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         # minimum width (this is the Qt default; set explicitly for clarity).
         self.tabs.setUsesScrollButtons(True)
         self.tabs.addTab(self._build_setup_tab(), "Setup")
+        self.tabs.addTab(self._build_signal_tab(), "Signal Export")
         self.tabs.addTab(
             self._build_plot_settings_tab(), "Phasor Plot Settings"
         )
@@ -1183,6 +1192,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self.viewer.layers.events.removed.connect(self._on_layers_changed)
         self._connect_run_enabled_signals()
         self._populate_layer_comboboxes()
+        self._refresh_signal_availability()
         self._update_run_enabled()
 
     def _connect_run_enabled_signals(self):
@@ -1203,6 +1213,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             self.plot_centers_checkbox,
             self.plot_individual_checkbox,
             self.plot_combined_checkbox,
+            self.signal_individual_checkbox,
+            self.signal_combined_checkbox,
         ]
         controls = [
             self.components_export_controls,
@@ -1714,6 +1726,242 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
 
         outer.addStretch()
         return self._scrollable(tab)
+
+    # -- Signal export tab -------------------------------------------------
+
+    def _build_signal_tab(self):
+        """Build the signal-export tab (average signal along the phasor axis).
+
+        The tab exports the average signal (decay for FLIM, spectrum for HSI)
+        along the axis the phasor is computed on. It is only usable for files
+        that can provide a signal (all raw files; napari-phasors OME-TIFFs that
+        stored ``summed_signal``). When the selected format cannot provide a
+        signal the body is locked and clicking it flashes an explanation, the
+        same affordance used for disabled analysis tabs.
+        """
+        self._signal_available = False
+
+        tab = QWidget()
+        outer = QVBoxLayout(tab)
+        outer.addWidget(
+            self._tab_header(
+                "Signal export",
+                "Export the average signal along the axis the phasor is "
+                "computed on (time bins for FLIM, wavelength for HSI). The "
+                "signal is averaged over all pixels; for raw files the batch "
+                "mask is applied first.",
+            )
+        )
+
+        # Persistent availability status; also flashed on a locked click.
+        self._signal_status = QLabel()
+        self._signal_status.setWordWrap(True)
+        self._signal_status_base_style = ""
+        outer.addWidget(self._signal_status)
+
+        # Flash the status label when the (locked) body is clicked, mirroring
+        # the "enable this analysis" hint used by ``_enable_section``.
+        self._signal_flash_timer = QTimer(self)
+        self._signal_flash_timer.setSingleShot(True)
+
+        def _end_signal_flash():
+            self._signal_status.setStyleSheet(self._signal_status_base_style)
+
+        def _flash_signal_status():
+            self._signal_status.setStyleSheet(
+                "background: rgba(230, 126, 34, 0.30); border-radius: 5px;"
+                " color: #e67e22; font-weight: 600; padding: 2px;"
+            )
+            self._signal_flash_timer.start(2000)
+
+        self._signal_flash_timer.timeout.connect(_end_signal_flash)
+
+        body = QWidget()
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        self._signal_body = body
+
+        body_layout.addWidget(
+            self._note(
+                "For raw files the signal is averaged per pixel over the batch "
+                "mask (Masks tab); for processed OME-TIFF files the stored "
+                "signal (summed over all pixels at import) is used and the "
+                "mask does not apply."
+            )
+        )
+
+        # Individual per-file plots ---------------------------------------
+        ind_box, ind_layout = self._section("Individual signal plots")
+        self.signal_individual_checkbox = QCheckBox(
+            "Export individual signal plots (one PNG per file)"
+        )
+        self.signal_individual_checkbox.setToolTip(
+            "Export one signal plot per file, drawn like the signal preview "
+            "in the Custom Import widget."
+        )
+        ind_layout.addWidget(self.signal_individual_checkbox)
+
+        color_row = QHBoxLayout()
+        color_row.addWidget(QLabel("Line color:"))
+        self.signal_color = ColorButton(QColor("#1f77b4"))
+        self.signal_color.setToolTip("Color of the individual signal line.")
+        color_row.addWidget(self.signal_color)
+        color_row.addStretch()
+        ind_layout.addLayout(color_row)
+        body_layout.addWidget(ind_box)
+
+        # Combined (grouped) plot -----------------------------------------
+        comb_box, comb_layout = self._section("Combined signal plot")
+        self.signal_combined_checkbox = QCheckBox(
+            "Export combined signal plot (mean ± shaded SD)"
+        )
+        self.signal_combined_checkbox.setToolTip(
+            "Overlay every file's signal as a per-group mean line with a "
+            "shaded ±1 standard-deviation band."
+        )
+        comb_layout.addWidget(self.signal_combined_checkbox)
+        comb_layout.addWidget(
+            self._note(
+                "Files are grouped with the Merged / Grouped setting and group "
+                "colors from the Phasor Plot Settings tab; each group is drawn "
+                "as a mean line with a shaded ±1 SD band."
+            )
+        )
+        body_layout.addWidget(comb_box)
+
+        # Shared normalization --------------------------------------------
+        norm_row = QHBoxLayout()
+        norm_row.addWidget(QLabel("Normalization:"))
+        self.signal_normalize_combo = QComboBox()
+        self.signal_normalize_combo.addItem("None (average per pixel)", "none")
+        self.signal_normalize_combo.addItem("Peak (max = 1)", "peak")
+        self.signal_normalize_combo.addItem("Area (sum = 1)", "area")
+        self.signal_normalize_combo.setToolTip(
+            "Scale each signal before plotting so files with different "
+            "intensities are comparable (applied to individual and combined "
+            "plots)."
+        )
+        norm_row.addWidget(self.signal_normalize_combo)
+        norm_row.addStretch()
+        body_layout.addLayout(norm_row)
+
+        chan_row = QHBoxLayout()
+        chan_row.addWidget(QLabel("Channels:"))
+        self.signal_channel_combo = QComboBox()
+        self.signal_channel_combo.addItem("Separate plots", "separate")
+        self.signal_channel_combo.addItem("Together (overlaid)", "together")
+        self.signal_channel_combo.setToolTip(
+            "For multichannel files, draw each channel in its own plot "
+            "(Separate) or overlay all channels in one plot (Together). "
+            "Applies to both the individual and combined plots; single-channel "
+            "files are unaffected."
+        )
+        chan_row.addWidget(self.signal_channel_combo)
+        chan_row.addStretch()
+        body_layout.addLayout(chan_row)
+
+        self._signal_section = _LockableBody(body, _flash_signal_status)
+        outer.addWidget(self._signal_section)
+        outer.addStretch()
+        return self._scrollable(tab)
+
+    def _signal_file_capable(self, path, ext):
+        """Return whether ``path`` can provide a signal for export (cached).
+
+        Raw and ambiguous (raw-or-processed) formats always yield a signal
+        from the raw reader. Processed OME-TIFFs only carry a signal when they
+        were written by napari-phasors (``summed_signal`` stored in settings);
+        other processed formats (R64/REF/IFLI) store only phasor coordinates.
+        """
+        if path in self._signal_capable_cache:
+            return self._signal_capable_cache[path]
+        processed_exts = set(extension_mapping["processed"])
+        raw_exts = set(extension_mapping["raw"])
+        if ext not in processed_exts or ext in raw_exts:
+            result = True
+        elif ext in (".ome.tif", ".ome.tiff"):
+            try:
+                settings = read_ome_tiff_settings(path)
+                result = settings.get("summed_signal") is not None
+            except Exception:  # noqa: BLE001
+                result = False
+        else:
+            result = False
+        self._signal_capable_cache[path] = result
+        return result
+
+    def _signal_availability(self, ext):
+        """Return ``(available, explanation)`` for the selected format."""
+        if not ext or not self._scanned.get(ext):
+            return (
+                False,
+                "Select an input folder and file format to export signals.",
+            )
+        processed_exts = set(extension_mapping["processed"])
+        raw_exts = set(extension_mapping["raw"])
+        if ext not in processed_exts or ext in raw_exts:
+            return True, ""
+        if ext in (".ome.tif", ".ome.tiff"):
+            if self._signal_file_capable(self._scanned[ext][0], ext):
+                return True, ""
+            return (
+                False,
+                "These OME-TIFF files do not contain a stored signal (they "
+                "were not written by napari-phasors), so the signal cannot be "
+                "reconstructed. Signal export is unavailable for this format.",
+            )
+        return (
+            False,
+            "This processed format stores only phasor coordinates, not the "
+            "original signal, so signal export is unavailable. Use the raw "
+            "files or napari-phasors OME-TIFFs instead.",
+        )
+
+    def _refresh_signal_availability(self):
+        """Lock/unlock the signal tab from the selected format's capability."""
+        ext = self.format_combobox.currentData()
+        available, explanation = self._signal_availability(ext)
+        self._signal_available = available
+        self._signal_section.set_locked(not available)
+        self._signal_body.setEnabled(available)
+        if available:
+            text = "Signal export is available for the selected files."
+            style = "color: #27ae60; font-weight: 600;"
+        else:
+            text = explanation
+            style = "color: #e74c3c; font-weight: 600;"
+        self._signal_status.setText(text)
+        self._signal_status_base_style = style
+        self._signal_status.setStyleSheet(style)
+        self._update_run_enabled()
+
+    def _signal_export_requested(self):
+        """Whether a usable signal export is enabled for the current format."""
+        return bool(self._signal_available) and (
+            self.signal_individual_checkbox.isChecked()
+            or self.signal_combined_checkbox.isChecked()
+        )
+
+    @staticmethod
+    def _normalize_signal(profile, mode):
+        """Return ``profile`` scaled per ``mode`` ('none'/'peak'/'area')."""
+        profile = np.asarray(profile, dtype=float)
+        if mode == "peak":
+            peak = np.nanmax(profile) if profile.size else 0.0
+            return profile / peak if peak else profile
+        if mode == "area":
+            area = np.nansum(profile) if profile.size else 0.0
+            return profile / area if area else profile
+        return profile
+
+    @staticmethod
+    def _signal_ylabel(mode):
+        """Return the y-axis label matching the normalization ``mode``."""
+        if mode == "peak":
+            return "Signal (peak-normalized)"
+        if mode == "area":
+            return "Signal (area-normalized)"
+        return "Mean signal per pixel"
 
     def _build_calibration_tab(self):
         tab = QWidget()
@@ -4003,6 +4251,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self._scanned = scan_folder(
             self._input_folder, self.subfolders_checkbox.isChecked()
         )
+        # Files changed: drop the memoized signal-capability probe results.
+        self._signal_capable_cache = {}
         self.format_combobox.blockSignals(True)
         self.format_combobox.clear()
         for ext in sorted(self._scanned):
@@ -4016,7 +4266,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             self.status_label.setText(
                 "No supported files found in the selected folder."
             )
-        self._update_run_enabled()
+        self._refresh_signal_availability()
 
     def _on_format_changed(self):
         ext = self.format_combobox.currentData()
@@ -4029,7 +4279,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             self._rebuild_subfolder_rows()
         if getattr(self, "_mask_rows_layout", None) is not None:
             self._rebuild_mask_rows()
-        self._update_run_enabled()
+        self._refresh_signal_availability()
 
     def _on_calib_source_changed(self):
         source = self.calib_source_combo.currentData()
@@ -4156,6 +4406,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             self.plot_individual_checkbox.isChecked()
             or self.plot_combined_checkbox.isChecked()
         ):
+            return True
+        if self._signal_export_requested():
             return True
         plot_toggles = [
             (self.components_group, self.components_plot_toggle),
@@ -4836,6 +5088,35 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         analysis_jobs = self._collect_analysis_export_jobs(pipeline)
         analysis_stats = {job["name"]: [] for job in analysis_jobs}
 
+        # Signal export: resolve the per-run config and, for raw/ambiguous
+        # formats, ask the reader to retain the per-pixel signal so it can be
+        # masked and averaged. Processed OME-TIFFs reuse their stored signal.
+        want_signal_individual = (
+            self._signal_available
+            and self.signal_individual_checkbox.isChecked()
+        )
+        want_signal_combined = (
+            self._signal_available
+            and self.signal_combined_checkbox.isChecked()
+        )
+        if want_signal_individual or want_signal_combined:
+            self._signal_export_cfg = {
+                "individual": want_signal_individual,
+                "combined": want_signal_combined,
+                "normalize": self.signal_normalize_combo.currentData(),
+                "channel_mode": self.signal_channel_combo.currentData(),
+                "color": self.signal_color.color().name(),
+                "white_background": self.plot_white_bg_checkbox.isChecked(),
+                "legend": self.plot_legend_checkbox.isChecked(),
+            }
+            self._signal_combined = {}
+            processed_exts = set(extension_mapping["processed"])
+            raw_exts = set(extension_mapping["raw"])
+            if ext not in processed_exts or ext in raw_exts:
+                reader_options = {**reader_options, "_keep_signal": True}
+        else:
+            self._signal_export_cfg = None
+
         # Per-cursor / per-cluster selection statistics (CSV), accumulated
         # across files on the main thread in ``_emit_file_outputs``.
         self._selection_stats_config = (
@@ -4965,6 +5246,10 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                     analysis_stats,
                     aggregate,
                 )
+            # Signal export is handled per file (all channels at once) so the
+            # "Together" channel mode can overlay a file's channels.
+            if self._signal_export_cfg is not None:
+                self._emit_signal_outputs(path, results, ext, suffix, preserve)
 
         processed = 0
         failed = []
@@ -5013,6 +5298,11 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             self._write_selection_stats_csv()
             self._write_aggregate_outputs(aggregate, display_combined)
             self._write_tab_phasor_outputs(aggregate, display_combined)
+            if (
+                self._signal_export_cfg is not None
+                and self._signal_export_cfg["combined"]
+            ):
+                self._write_signal_combined()
         finally:
             if spill_dir:
                 shutil.rmtree(spill_dir, ignore_errors=True)
@@ -5085,8 +5375,43 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 metadata=add_kw.get("metadata", {}),
             )
             extra_layers = apply_pipeline(layer, local_pipeline)
+            if self._signal_export_cfg is not None:
+                # Compute the 1-D signal profile here (in the worker thread) so
+                # the heavy per-pixel signal never crosses to the main thread.
+                self._attach_signal_profile(layer, mask)
             results.append((layer, extra_layers))
         return results
+
+    def _attach_signal_profile(self, layer, mask):
+        """Store the file's 1-D signal profile in ``layer.metadata``.
+
+        For raw files the reader retained the per-pixel signal (``signal_full``
+        + ``signal_axis``); it is averaged over the masked region and dropped.
+        For processed OME-TIFFs the stored ``summed_signal`` (a sum over all
+        pixels) is converted to a per-pixel average. The result is a 1-D array
+        under ``_signal_profile`` (or nothing if no signal is available).
+        """
+        meta = layer.metadata
+        full = meta.pop("signal_full", None)
+        axis = meta.pop("signal_axis", None)
+        profile = None
+        if full is not None:
+            profile = _masked_signal_mean(full, axis, mask)
+        else:
+            sig = meta.get("summed_signal")
+            if sig is None:
+                sig = meta.get("settings", {}).get("summed_signal")
+            if sig is not None:
+                arr = np.asarray(sig, dtype=float).ravel()
+                mean_img = meta.get("original_mean")
+                n = (
+                    int(np.asarray(mean_img).size)
+                    if mean_img is not None
+                    else 0
+                )
+                profile = arr / n if n > 0 else arr
+        if profile is not None:
+            meta["_signal_profile"] = np.asarray(profile, dtype=float).ravel()
 
     def _auto_contrast_tabs(self):
         """Return the set of analysis-tab keys with contrast set to Auto."""
@@ -6500,6 +6825,359 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 center=center,
                 dpi=self._export_dpi(),
             )
+
+    # -- Signal export outputs ---------------------------------------------
+
+    @staticmethod
+    def _channel_label(layer, index):
+        """Return a stable channel label for ``layer`` (settings, name or index)."""
+        settings = (getattr(layer, "metadata", {}) or {}).get(
+            "settings", {}
+        ) or {}
+        channel = settings.get("channel")
+        if channel is not None:
+            return channel
+        name = getattr(layer, "name", "") or ""
+        if "Channel" in name:
+            label = name.split("Channel")[-1].strip().strip(":").strip()
+            if label:
+                return label
+        return index
+
+    def _emit_signal_outputs(self, path, results, ext, suffix, preserve):
+        """Export / accumulate the signal profiles for one file's channels.
+
+        ``results`` is the list of ``(layer, extra_layers)`` produced for
+        ``path`` (one entry per channel). Channels are drawn separately or
+        overlaid per the ``channel_mode`` config.
+        """
+        cfg = self._signal_export_cfg
+        channels = []
+        for index, (layer, _extra) in enumerate(results):
+            profile = layer.metadata.get("_signal_profile")
+            if profile is None:
+                continue
+            profile = self._normalize_signal(profile, cfg["normalize"])
+            channels.append(
+                (
+                    self._channel_label(layer, index),
+                    np.asarray(profile, dtype=float),
+                )
+            )
+        if not channels:
+            return
+        if cfg["individual"]:
+            self._save_signal_individual(path, ext, suffix, preserve, channels)
+        if cfg["combined"]:
+            group_key, group_name, group_color = self._group_for(
+                os.path.basename(path)
+            )
+            entry = self._signal_combined.setdefault(
+                group_key,
+                {"name": group_name, "color": group_color, "channels": {}},
+            )
+            for label, profile in channels:
+                entry["channels"].setdefault(label, []).append(profile)
+
+    def _save_signal_individual(self, path, ext, suffix, preserve, channels):
+        """Write the individual signal plot(s) for one file into 'Signal Plots'."""
+        cfg = self._signal_export_cfg
+        base = self._derive_output_path(
+            path,
+            ext,
+            suffix,
+            preserve,
+            subfolder=os.path.join(
+                "Individual image analysis", "Signal Plots"
+            ),
+        )
+        title = os.path.basename(path)
+        ylabel = self._signal_ylabel(cfg["normalize"])
+        multichannel = len(channels) > 1
+        if not multichannel or cfg["channel_mode"] == "together":
+            if multichannel:
+                lines = [
+                    {
+                        "label": f"Channel {label}",
+                        "color": _channel_color(idx),
+                        "y": profile,
+                    }
+                    for idx, (label, profile) in enumerate(channels)
+                ]
+                legend = True
+            else:
+                lines = [
+                    {"label": None, "color": cfg["color"], "y": channels[0][1]}
+                ]
+                legend = False
+            _save_signal_lines_png(
+                lines,
+                f"{base}_signal.png",
+                title=title,
+                ylabel=ylabel,
+                legend=legend,
+                white_background=cfg["white_background"],
+                dpi=self._export_dpi(),
+            )
+        else:
+            for label, profile in channels:
+                _save_signal_lines_png(
+                    [{"label": None, "color": cfg["color"], "y": profile}],
+                    f"{base}_Channel_{_safe_suffix(str(label))}_signal.png",
+                    title=f"{title} — Channel {label}",
+                    ylabel=ylabel,
+                    legend=False,
+                    white_background=cfg["white_background"],
+                    dpi=self._export_dpi(),
+                )
+
+    @staticmethod
+    def _signal_band(profiles):
+        """Return ``(mean, std, n)`` across ``profiles`` (aligned to min length)."""
+        n_bins = min(p.size for p in profiles)
+        if n_bins == 0:
+            return None
+        stacked = np.stack([p[:n_bins] for p in profiles], axis=0)
+        return (
+            np.nanmean(stacked, axis=0),
+            np.nanstd(stacked, axis=0),
+            len(profiles),
+        )
+
+    def _write_signal_combined(self):
+        """Write the combined mean ± SD signal plot(s) (per group / channel)."""
+        if not self._signal_combined:
+            return
+        cfg = self._signal_export_cfg
+        ylabel = self._signal_ylabel(cfg["normalize"])
+        # Distinct channel labels in first-seen order across all groups.
+        channel_labels = []
+        for entry in self._signal_combined.values():
+            for label in entry["channels"]:
+                if label not in channel_labels:
+                    channel_labels.append(label)
+        if not channel_labels:
+            return
+        multichannel = len(channel_labels) > 1
+        single_group = len(self._signal_combined) <= 1
+        combined_dir = os.path.join(
+            self._export_folder, "Combined analysis", "Signal Plots"
+        )
+        os.makedirs(combined_dir, exist_ok=True)
+
+        if multichannel and cfg["channel_mode"] == "separate":
+            # One figure per channel, overlaying the per-group bands.
+            for label in channel_labels:
+                bands = []
+                for entry in self._signal_combined.values():
+                    profiles = entry["channels"].get(label)
+                    if not profiles:
+                        continue
+                    band = self._signal_band(profiles)
+                    if band is None:
+                        continue
+                    mean, std, n = band
+                    bands.append(
+                        {
+                            "label": f"{entry['name']} (n={n})",
+                            "color": entry["color"] or None,
+                            "linestyle": "-",
+                            "mean": mean,
+                            "std": std,
+                        }
+                    )
+                if not bands:
+                    continue
+                _save_signal_bands_png(
+                    bands,
+                    os.path.join(
+                        combined_dir,
+                        f"combined_signal_Channel_{_safe_suffix(str(label))}"
+                        ".png",
+                    ),
+                    title=f"Channel {label}",
+                    white_background=cfg["white_background"],
+                    legend=cfg["legend"],
+                    ylabel=ylabel,
+                    dpi=self._export_dpi(),
+                )
+            return
+
+        # Single channel, or "Together": one figure with all group×channel bands.
+        bands = []
+        for entry in self._signal_combined.values():
+            for idx, label in enumerate(channel_labels):
+                profiles = entry["channels"].get(label)
+                if not profiles:
+                    continue
+                band = self._signal_band(profiles)
+                if band is None:
+                    continue
+                mean, std, n = band
+                if not multichannel:
+                    line_label = f"{entry['name']} (n={n})"
+                    color = entry["color"] or None
+                    linestyle = "-"
+                elif single_group:
+                    line_label = f"Channel {label} (n={n})"
+                    color = _channel_color(idx)
+                    linestyle = "-"
+                else:
+                    line_label = f"{entry['name']} · Ch{label} (n={n})"
+                    color = entry["color"] or None
+                    linestyle = _CHANNEL_LINESTYLES[
+                        idx % len(_CHANNEL_LINESTYLES)
+                    ]
+                bands.append(
+                    {
+                        "label": line_label,
+                        "color": color,
+                        "linestyle": linestyle,
+                        "mean": mean,
+                        "std": std,
+                    }
+                )
+        if not bands:
+            return
+        _save_signal_bands_png(
+            bands,
+            os.path.join(combined_dir, "combined_signal.png"),
+            white_background=cfg["white_background"],
+            legend=cfg["legend"],
+            ylabel=ylabel,
+            dpi=self._export_dpi(),
+        )
+
+
+def _masked_signal_mean(full, axis, mask):
+    """Return the per-pixel mean signal over the mask along ``axis``.
+
+    ``full`` is the per-pixel signal array (histogram/spectral axis at
+    ``axis``); ``mask`` is ``None`` or ``{"array", "invert"}`` from the batch
+    Masks tab. Pixels inside the mask (respecting ``invert``) are averaged; if
+    the mask shape does not match the spatial dimensions, or no pixels remain,
+    every pixel is averaged instead.
+    """
+    arr = np.asarray(full, dtype=float)
+    if arr.ndim == 0:
+        return arr.reshape(1)
+    if axis is None:
+        axis = arr.ndim - 1
+    axis = int(axis) % arr.ndim
+    moved = np.moveaxis(arr, axis, 0)
+    flat = moved.reshape(moved.shape[0], -1)
+    valid = None
+    if mask is not None:
+        m = np.asarray(mask["array"])
+        invalid = m > 0 if mask.get("invert") else m <= 0
+        keep = ~invalid
+        if keep.shape == moved.shape[1:]:
+            valid = keep.reshape(-1)
+    if valid is not None and valid.any():
+        return np.nanmean(flat[:, valid], axis=1)
+    return np.nanmean(flat, axis=1)
+
+
+# Line styles cycled to distinguish channels of the same group when combined
+# channel bands are overlaid ("Together" mode with more than one group).
+_CHANNEL_LINESTYLES = ["-", "--", ":", "-."]
+
+
+def _channel_color(index):
+    """Return a distinct color for channel ``index`` (tab10 cycle)."""
+    import matplotlib.pyplot as plt
+
+    return plt.cm.tab10(index % 10)
+
+
+def _save_signal_lines_png(
+    lines,
+    path,
+    title=None,
+    ylabel="Mean signal per pixel",
+    legend=False,
+    white_background=True,
+    dpi=300,
+):
+    """Render one or more 1-D signal lines to ``path`` as a PNG.
+
+    ``lines`` is a list of dicts with ``y`` and optional ``label``/``color``/
+    ``linestyle``.
+    """
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(5.0, 3.2))
+    if white_background:
+        fig.set_facecolor("white")
+        ax.set_facecolor("white")
+    for line in lines:
+        y = np.asarray(line["y"], dtype=float).ravel()
+        ax.plot(
+            np.arange(y.size),
+            y,
+            color=line.get("color"),
+            linewidth=1.5,
+            linestyle=line.get("linestyle", "-"),
+            label=line.get("label"),
+        )
+    ax.set_xlabel("Histogram / spectral bin")
+    ax.set_ylabel(ylabel)
+    if title:
+        ax.set_title(title, fontsize=9)
+    ax.margins(x=0)
+    if legend:
+        ax.legend(fontsize=8, frameon=False)
+    fig.tight_layout()
+    fig.savefig(path, dpi=dpi)
+    plt.close(fig)
+
+
+def _save_signal_bands_png(
+    bands,
+    path,
+    title=None,
+    white_background=True,
+    legend=True,
+    ylabel="Mean signal per pixel",
+    dpi=300,
+):
+    """Render mean ± SD signal bands overlaid to ``path``.
+
+    ``bands`` is a list of dicts with ``mean``/``std`` and optional ``label``/
+    ``color``/``linestyle``.
+    """
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(5.5, 3.5))
+    if white_background:
+        fig.set_facecolor("white")
+        ax.set_facecolor("white")
+    for band in bands:
+        mean = np.asarray(band["mean"], dtype=float)
+        std = np.asarray(band["std"], dtype=float)
+        x = np.arange(mean.size)
+        color = band.get("color")
+        ax.plot(
+            x,
+            mean,
+            color=color,
+            linewidth=1.5,
+            linestyle=band.get("linestyle", "-"),
+            label=band.get("label"),
+        )
+        ax.fill_between(
+            x, mean - std, mean + std, color=color, alpha=0.25, linewidth=0
+        )
+    ax.set_xlabel("Histogram / spectral bin")
+    ax.set_ylabel(ylabel)
+    if title:
+        ax.set_title(title, fontsize=9)
+    ax.margins(x=0)
+    if legend:
+        ax.legend(fontsize=8, frameon=False)
+    fig.tight_layout()
+    fig.savefig(path, dpi=dpi)
+    plt.close(fig)
 
 
 def _save_plot_with_zoom(plot, path, zoom, dpi=300):

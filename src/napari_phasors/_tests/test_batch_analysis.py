@@ -3329,3 +3329,216 @@ def test_collect_filter_kwargs_wavelet_and_manual(qtbot, make_viewer_model):
     assert kwargs["threshold_method"] == "manual"
     assert kwargs["threshold"] == 0.5
     assert kwargs["threshold_upper"] == 5.0
+
+
+def test_masked_signal_mean_applies_mask():
+    """The masked mean averages only the pixels kept by the mask."""
+    from napari_phasors._batch_analysis import _masked_signal_mean
+
+    full = np.zeros((3, 2, 2))
+    full[:, 0, 0] = [1, 2, 3]
+    full[:, 0, 1] = [10, 20, 30]
+    full[:, 1, 0] = [100, 200, 300]
+    full[:, 1, 1] = [1000, 2000, 3000]
+
+    mask = {"array": np.array([[1, 0], [0, 0]]), "invert": False}
+    assert np.allclose(_masked_signal_mean(full, 0, mask), [1, 2, 3])
+
+    # No mask -> mean over every pixel.
+    expected_all = np.mean(
+        [[1, 10, 100, 1000], [2, 20, 200, 2000], [3, 30, 300, 3000]], axis=1
+    )
+    assert np.allclose(_masked_signal_mean(full, 0, None), expected_all)
+
+    # Invert keeps the three pixels outside the mask.
+    inv = {"array": np.array([[1, 0], [0, 0]]), "invert": True}
+    expected_inv = np.mean(
+        [[10, 100, 1000], [20, 200, 2000], [30, 300, 3000]], axis=1
+    )
+    assert np.allclose(_masked_signal_mean(full, 0, inv), expected_inv)
+
+    # A mismatched mask shape falls back to averaging every pixel.
+    bad = {"array": np.ones((3, 3)), "invert": False}
+    assert np.allclose(_masked_signal_mean(full, 0, bad), expected_all)
+
+
+def test_signal_export_ometiff_outputs(qtbot, make_viewer_model, tmp_path):
+    """OME-TIFFs written by napari-phasors export individual + combined signals."""
+    in_root = tmp_path / "in"
+    in_root.mkdir()
+    out_root = tmp_path / "out"
+    out_root.mkdir()
+    for name in ("a", "b"):
+        write_ome_tiff(
+            str(in_root / f"{name}.ome.tif"),
+            _make_phasor_layer(name=name, harmonic=[1, 2]),
+        )
+
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+    widget._input_folder = str(in_root)
+    widget._rescan()
+    idx = widget.format_combobox.findData(".ome.tif")
+    widget.format_combobox.setCurrentIndex(idx)
+    widget._export_folder = str(out_root)
+    widget.export_ometiff_checkbox.setChecked(False)
+
+    assert widget._signal_available is True
+    widget.signal_individual_checkbox.setChecked(True)
+    widget.signal_combined_checkbox.setChecked(True)
+
+    widget.run_batch()
+
+    individual = list(
+        (out_root / "Individual image analysis" / "Signal Plots").rglob(
+            "*_signal.png"
+        )
+    )
+    assert len(individual) == 2
+    combined = (
+        out_root / "Combined analysis" / "Signal Plots" / "combined_signal.png"
+    )
+    assert combined.exists()
+    assert "2/2 files processed" in widget.status_label.text()
+
+
+def test_signal_export_unavailable_for_third_party_ometiff(
+    qtbot, make_viewer_model, tmp_path
+):
+    """An OME-TIFF without a stored signal locks the signal tab."""
+    in_root = tmp_path / "in"
+    in_root.mkdir()
+    layer = _make_phasor_layer(name="ext", harmonic=[1, 2])
+    del layer.metadata["summed_signal"]  # emulate a file written elsewhere
+    write_ome_tiff(str(in_root / "ext.ome.tif"), layer)
+
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+    widget._input_folder = str(in_root)
+    widget._rescan()
+    idx = widget.format_combobox.findData(".ome.tif")
+    widget.format_combobox.setCurrentIndex(idx)
+
+    assert widget._signal_available is False
+    assert "unavailable" in widget._signal_status.text().lower()
+    assert widget._signal_export_requested() is False
+
+
+def test_signal_export_raw_tif(qtbot, make_viewer_model, tmp_path):
+    """Raw files retain the per-pixel signal and export individual plots."""
+    import tifffile
+
+    in_root = tmp_path / "in"
+    in_root.mkdir()
+    out_root = tmp_path / "out"
+    out_root.mkdir()
+    raw = make_raw_flim_data(
+        n_time_bins=16, shape=(4, 4), time_constants=[0.1, 1, 10]
+    ).astype(np.float32)
+    tifffile.imwrite(str(in_root / "raw_a.tif"), raw)
+    tifffile.imwrite(str(in_root / "raw_b.tif"), raw)
+
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+    widget._input_folder = str(in_root)
+    widget._rescan()
+    idx = widget.format_combobox.findData(".tif")
+    widget.format_combobox.setCurrentIndex(idx)
+    widget._export_folder = str(out_root)
+    widget.export_ometiff_checkbox.setChecked(False)
+    widget.harmonics_edit.setText("1")
+
+    assert widget._signal_available is True
+    widget.signal_individual_checkbox.setChecked(True)
+
+    widget.run_batch()
+
+    individual = list(
+        (out_root / "Individual image analysis" / "Signal Plots").rglob(
+            "*_signal.png"
+        )
+    )
+    assert len(individual) == 2
+
+
+def _fake_channel_results(profiles_by_channel):
+    """Build a batch ``results`` list emulating one file's per-channel layers."""
+    results = []
+    for channel, profile in profiles_by_channel:
+        layer = Image(
+            np.zeros((2, 2)),
+            name=f"f Intensity Image: Channel {channel}",
+            metadata={
+                "settings": {"channel": channel},
+                "_signal_profile": np.asarray(profile, dtype=float),
+            },
+        )
+        results.append((layer, []))
+    return results
+
+
+def _signal_export_widget(make_viewer_model, qtbot, out_root, channel_mode):
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+    widget._export_folder = str(out_root)
+    widget._signal_export_cfg = {
+        "individual": True,
+        "combined": True,
+        "normalize": "none",
+        "channel_mode": channel_mode,
+        "color": "#1f77b4",
+        "white_background": True,
+        "legend": True,
+    }
+    widget._signal_combined = {}
+    return widget
+
+
+def test_signal_export_channels_separate(qtbot, make_viewer_model, tmp_path):
+    out_root = tmp_path / "out"
+    out_root.mkdir()
+    widget = _signal_export_widget(
+        make_viewer_model, qtbot, out_root, "separate"
+    )
+    for name in ("a", "b"):
+        widget._emit_signal_outputs(
+            f"{name}.tif",
+            _fake_channel_results([(0, [1, 2, 3, 4]), (1, [4, 3, 2, 1])]),
+            ".tif",
+            "",
+            False,
+        )
+    widget._write_signal_combined()
+
+    ind = out_root / "Individual image analysis" / "Signal Plots"
+    assert (ind / "a_Channel_0_signal.png").exists()
+    assert (ind / "a_Channel_1_signal.png").exists()
+    assert not (ind / "a_signal.png").exists()
+    comb = out_root / "Combined analysis" / "Signal Plots"
+    assert (comb / "combined_signal_Channel_0.png").exists()
+    assert (comb / "combined_signal_Channel_1.png").exists()
+    assert not (comb / "combined_signal.png").exists()
+
+
+def test_signal_export_channels_together(qtbot, make_viewer_model, tmp_path):
+    out_root = tmp_path / "out"
+    out_root.mkdir()
+    widget = _signal_export_widget(
+        make_viewer_model, qtbot, out_root, "together"
+    )
+    for name in ("a", "b"):
+        widget._emit_signal_outputs(
+            f"{name}.tif",
+            _fake_channel_results([(0, [1, 2, 3, 4]), (1, [4, 3, 2, 1])]),
+            ".tif",
+            "",
+            False,
+        )
+    widget._write_signal_combined()
+
+    ind = out_root / "Individual image analysis" / "Signal Plots"
+    assert (ind / "a_signal.png").exists()  # channels overlaid in one figure
+    assert not (ind / "a_Channel_0_signal.png").exists()
+    comb = out_root / "Combined analysis" / "Signal Plots"
+    assert (comb / "combined_signal.png").exists()  # one overlaid figure
+    assert not (comb / "combined_signal_Channel_0.png").exists()
