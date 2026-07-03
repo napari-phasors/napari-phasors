@@ -2564,6 +2564,37 @@ class WriterWidget(PopoutWindowMixin, QWidget):
         self.search_button.clicked.connect(self._open_file_dialog)
         self.main_layout.addWidget(self.search_button)
 
+        self.flimari_section = CollapsibleSection(
+            "Send to FLIMari",
+            initially_collapsed=True,
+            text_color="#c7c7c7",
+        )
+        flimari_info = QLabel(
+            "Send the selected phasor layer(s) directly to "
+            "<a href=\"https://github.com/GuangchenW/FLIMari\">FLIMari</a>, "
+            "without saving any file. FLIMari must be installed as a "
+            "napari plugin; if its dock widget isn't open yet, it will be "
+            "opened automatically. Since FLIMari works with total photon "
+            "counts rather than mean intensity, the counts are recovered "
+            "automatically. For layers loaded from formats without the raw "
+            "histogram (e.g. R64/REF), you'll be prompted to point to the "
+            "original raw file so the counts can be recovered."
+        )
+        flimari_info.setWordWrap(True)
+        flimari_info.setOpenExternalLinks(True)
+        self.flimari_section.add_widget(flimari_info)
+
+        self.flimari_button = QPushButton("Export Phasor Layer to FLIMARI")
+        self.flimari_button.setEnabled(False)
+        self.flimari_button.clicked.connect(self._send_to_flimari)
+        self.flimari_section.add_widget(self.flimari_button)
+
+        self.main_layout.addWidget(self.flimari_section)
+
+        self.export_layer_combobox.selectionChanged.connect(
+            self._update_flimari_button_state
+        )
+
         self.viewer.layers.events.inserted.connect(self._populate_combobox)
         self.viewer.layers.events.removed.connect(self._populate_combobox)
 
@@ -2612,6 +2643,130 @@ class WriterWidget(PopoutWindowMixin, QWidget):
                 export_masked=export_masked,
             )
 
+    def _send_to_flimari(self):
+        """Send the selected phasor layer(s) to FLIMari, opening its dock if needed."""
+        from ._flimari import FlimariNotAvailable, send_layers_to_flimari
+
+        selected_layers = self.export_layer_combobox.checkedItems()
+        if not selected_layers:
+            show_error("No layer selected")
+            return
+
+        layers = [
+            self.viewer.layers[name]
+            for name in selected_layers
+            if name in self.viewer.layers
+        ]
+
+        # For phasor layers whose metadata lacks the raw histogram, ask the
+        # user to point to the original raw file so counts can be recovered.
+        histogram_bins = self._recover_missing_counts(layers)
+
+        try:
+            sent, skipped, opened_dock = send_layers_to_flimari(
+                layers, viewer=self.viewer, histogram_bins=histogram_bins
+            )
+        except FlimariNotAvailable as exc:
+            show_error(str(exc))
+            return
+        except ValueError as exc:
+            show_error(str(exc))
+            return
+        except RuntimeError as exc:
+            # Bridge still refused after we tried opening FLIMari's dock.
+            show_error(str(exc))
+            return
+        except Exception as exc:  # noqa: BLE001
+            show_error(f"Error sending to FLIMari: {exc}")
+            return
+
+        message = (
+            f"Opened FLIMari and sent {len(sent)} layer(s) to it."
+            if opened_dock
+            else f"Sent {len(sent)} layer(s) to FLIMari."
+        )
+        n_proxy = sum(1 for payload in sent if "counts" not in payload)
+        if n_proxy:
+            message += (
+                f" {n_proxy} sent without photon counts "
+                "(mean intensity used as a proxy)."
+            )
+        if skipped:
+            message += f" Skipped (no phasor data): {', '.join(skipped)}."
+        show_info(message)
+
+    def _recover_missing_counts(self, layers):
+        """Prompt for the original raw file of phasor layers lacking counts.
+
+        Returns a mapping of layer -> histogram-bin count for layers whose
+        photon counts were recovered from a user-assigned raw file. Layers
+        that already carry the info, that the user skips, or whose assigned
+        file does not match are left out (they fall back to mean intensity).
+        """
+        from ._flimari import (
+            get_layer_histogram_bins,
+            has_phasor_data,
+            histogram_bins_from_raw_file,
+        )
+        from ._reader import extension_mapping
+
+        raw_extensions = sorted(extension_mapping["raw"].keys())
+        pattern = " ".join(f"*{ext}" for ext in raw_extensions)
+        file_filter = f"Raw FLIM files ({pattern});;All files (*)"
+
+        overrides = {}
+        for layer in layers:
+            if not has_phasor_data(layer):
+                continue
+            if get_layer_histogram_bins(layer) is not None:
+                continue
+
+            start_dir = ""
+            source = getattr(layer, "source", None)
+            source_path = getattr(source, "path", None) if source else None
+            if source_path:
+                start_dir = os.path.dirname(str(source_path))
+
+            path, _ = QFileDialog.getOpenFileName(
+                self,
+                f"Select original raw file for '{layer.name}' to recover "
+                "photon counts (Cancel to send mean intensity only)",
+                start_dir,
+                file_filter,
+            )
+            if not path:
+                continue
+
+            try:
+                overrides[layer] = histogram_bins_from_raw_file(
+                    path,
+                    reference_mean=layer.metadata.get("original_mean"),
+                )
+            except Exception as exc:  # noqa: BLE001
+                show_error(
+                    f"Could not recover photon counts for "
+                    f"'{layer.name}': {exc}"
+                )
+
+        return overrides
+
+    def _update_flimari_button_state(self, event=None):
+        """Enable the FLIMari export button only if a selected layer has phasor data.
+
+        Layers from other analyses (component analysis, FRET, phasor
+        mapping, ...) do not carry raw phasor coordinates, so selecting
+        only those must not enable this button.
+        """
+        from ._flimari import has_phasor_data
+
+        selected_layers = self.export_layer_combobox.checkedItems()
+        can_export = any(
+            name in self.viewer.layers
+            and has_phasor_data(self.viewer.layers[name])
+            for name in selected_layers
+        )
+        self.flimari_button.setEnabled(can_export)
+
     def _update_mask_checkbox_visibility(self, event=None):
         """Show/hide the mask checkbox based on whether any selected layer has a mask."""
         selected_layers = self.export_layer_combobox.checkedItems()
@@ -2644,6 +2799,10 @@ class WriterWidget(PopoutWindowMixin, QWidget):
                 layer.events.metadata.disconnect(
                     self._update_mask_checkbox_visibility
                 )
+            with suppress(Exception):
+                layer.events.metadata.disconnect(
+                    self._update_flimari_button_state
+                )
         self._connected_metadata_layers.clear()
 
         for layer in image_layers:
@@ -2651,9 +2810,13 @@ class WriterWidget(PopoutWindowMixin, QWidget):
                 layer.events.metadata.connect(
                     self._update_mask_checkbox_visibility
                 )
+                layer.events.metadata.connect(
+                    self._update_flimari_button_state
+                )
                 self._connected_metadata_layers.add(layer)
 
         self._update_mask_checkbox_visibility()
+        self._update_flimari_button_state()
 
     def closeEvent(self, event):
         """Disconnect viewer signals before the widget is destroyed."""
@@ -2670,6 +2833,10 @@ class WriterWidget(PopoutWindowMixin, QWidget):
                 with suppress(Exception):
                     layer.events.metadata.disconnect(
                         self._update_mask_checkbox_visibility
+                    )
+                with suppress(Exception):
+                    layer.events.metadata.disconnect(
+                        self._update_flimari_button_state
                     )
             self._connected_metadata_layers.clear()
 

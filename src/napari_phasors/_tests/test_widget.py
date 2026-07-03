@@ -1080,6 +1080,8 @@ def test_writer_widget(make_viewer_model, qtbot, tmp_path):
     assert isinstance(main_widget, QWidget)
     # Check init values are empty
     assert main_widget.export_layer_combobox.count() == 0
+    # FLIMari export button is disabled while no layer is selected
+    assert not main_widget.flimari_button.isEnabled()
     # Check error messages if there are no phasor layers
     with patch("napari_phasors._widget.show_error") as mock_show_error:
         main_widget.search_button.click()
@@ -1096,11 +1098,18 @@ def test_writer_widget(make_viewer_model, qtbot, tmp_path):
         main_widget.export_layer_combobox.itemText(0)
         == sample_image_layer.name
     )
+    # Still disabled: layer is present but not checked yet
+    assert not main_widget.flimari_button.isEnabled()
     # Select the layer in the CheckableComboBox
     main_widget.export_layer_combobox.selectAll()
     assert main_widget.export_layer_combobox.checkedItems() == [
         sample_image_layer.name
     ]
+    # FLIMari export button becomes enabled once a layer is checked
+    assert main_widget.flimari_button.isEnabled()
+    main_widget.export_layer_combobox.deselectAll()
+    assert not main_widget.flimari_button.isEnabled()
+    main_widget.export_layer_combobox.selectAll()
 
     # Simulate saving as OME-TIFF
     with (
@@ -1502,6 +1511,281 @@ def test_writer_widget_excludes_labels_layer(make_viewer_model, qtbot):
     ]
     assert "my_image" in items
     assert "my_labels" not in items
+
+
+def test_writer_widget_flimari_button_requires_phasor_layer(
+    make_viewer_model, qtbot
+):
+    """FLIMari button stays disabled unless a *phasor* layer is checked.
+
+    Layers from other analyses (e.g. component analysis fractions) are
+    valid targets for OME-TIFF/CSV export but must not enable the FLIMari
+    export button, since they carry no phasor coordinates to send.
+    """
+    viewer = make_viewer_model()
+    raw_flim_data = make_raw_flim_data()
+    phasor_layer = make_intensity_layer_with_phasors(raw_flim_data)
+    viewer.add_layer(phasor_layer)
+    # Simulate a component-analysis fraction layer: an Image layer with
+    # unrelated metadata and no phasor coordinates.
+    viewer.add_image(
+        np.zeros((5, 5)),
+        name="Component 1 Fractions",
+        metadata={"fraction_data_original": np.zeros((5, 5))},
+    )
+
+    widget = WriterWidget(viewer)
+
+    # Only the non-phasor layer selected: button must stay disabled.
+    widget.export_layer_combobox.setCheckedItems(["Component 1 Fractions"])
+    assert not widget.flimari_button.isEnabled()
+
+    # Adding the phasor layer to the selection enables it.
+    widget.export_layer_combobox.setCheckedItems(
+        ["Component 1 Fractions", phasor_layer.name]
+    )
+    assert widget.flimari_button.isEnabled()
+
+    # Sending only forwards the phasor layer and skips the other one.
+    from unittest.mock import MagicMock
+
+    with (
+        patch("napari_phasors._flimari._import_bridge") as mock_import_bridge,
+        patch("napari_phasors._widget.show_info") as mock_show_info,
+    ):
+        fake_bridge = MagicMock()
+        mock_import_bridge.return_value = fake_bridge
+
+        widget.flimari_button.click()
+
+        fake_bridge.import_from_napari_phasors.assert_called_once()
+        (sent_payloads,) = fake_bridge.import_from_napari_phasors.call_args[0]
+        assert len(sent_payloads) == 1
+        assert sent_payloads[0]["name"] == phasor_layer.name
+        message = mock_show_info.call_args[0][0]
+        assert "Sent 1 layer(s)" in message
+        assert "Component 1 Fractions" in message
+
+
+def test_writer_widget_flimari_prompts_for_raw_file(make_viewer_model, qtbot):
+    """A phasor layer without summed_signal prompts for the original raw file.
+
+    The recovered histogram-bin count is used to reconstruct photon counts,
+    which are then included in the payload sent to FLIMari.
+    """
+    from unittest.mock import MagicMock
+
+    viewer = make_viewer_model()
+    raw_flim_data = make_raw_flim_data()
+    layer = make_intensity_layer_with_phasors(raw_flim_data)
+    # Simulate a layer loaded from a processed format without raw histogram.
+    del layer.metadata["summed_signal"]
+    viewer.add_layer(layer)
+
+    widget = WriterWidget(viewer)
+    widget.export_layer_combobox.setCheckedItems([layer.name])
+
+    with (
+        patch(
+            "napari_phasors._widget.QFileDialog.getOpenFileName",
+            return_value=("/fake/original.ptu", ""),
+        ) as mock_dialog,
+        patch(
+            "napari_phasors._flimari.histogram_bins_from_raw_file",
+            return_value=64,
+        ) as mock_bins,
+        patch("napari_phasors._flimari._import_bridge") as mock_import_bridge,
+        patch("napari_phasors._widget.show_info"),
+    ):
+        fake_bridge = MagicMock()
+        mock_import_bridge.return_value = fake_bridge
+
+        widget.flimari_button.click()
+
+        # User was prompted for the raw file for this layer.
+        mock_dialog.assert_called_once()
+        mock_bins.assert_called_once()
+
+        (sent_payloads,) = fake_bridge.import_from_napari_phasors.call_args[0]
+        assert "counts" in sent_payloads[0]
+        np.testing.assert_allclose(
+            sent_payloads[0]["counts"],
+            np.rint(layer.metadata["original_mean"] * 64),
+        )
+
+
+def test_writer_widget_flimari_skips_prompt_when_counts_present(
+    make_viewer_model, qtbot
+):
+    """A layer that already has summed_signal is not prompted for a raw file."""
+    from unittest.mock import MagicMock
+
+    viewer = make_viewer_model()
+    raw_flim_data = make_raw_flim_data()
+    layer = make_intensity_layer_with_phasors(raw_flim_data)
+    viewer.add_layer(layer)
+
+    widget = WriterWidget(viewer)
+    widget.export_layer_combobox.setCheckedItems([layer.name])
+
+    with (
+        patch(
+            "napari_phasors._widget.QFileDialog.getOpenFileName"
+        ) as mock_dialog,
+        patch("napari_phasors._flimari._import_bridge") as mock_import_bridge,
+        patch("napari_phasors._widget.show_info"),
+    ):
+        mock_import_bridge.return_value = MagicMock()
+        widget.flimari_button.click()
+
+        mock_dialog.assert_not_called()
+
+
+def test_send_to_flimari_shows_error_when_nothing_selected(
+    make_viewer_model, qtbot
+):
+    """_send_to_flimari guards against being invoked with no selection.
+
+    The button itself is disabled in this state, so the handler is called
+    directly to exercise the guard clause.
+    """
+    viewer = make_viewer_model()
+    widget = WriterWidget(viewer)
+
+    with patch("napari_phasors._widget.show_error") as mock_show_error:
+        widget._send_to_flimari()
+
+    mock_show_error.assert_called_once_with("No layer selected")
+
+
+def test_send_to_flimari_reports_flimari_not_available(
+    make_viewer_model, qtbot
+):
+    """FlimariNotAvailable from the bridge is surfaced via show_error."""
+    from napari_phasors._flimari import FlimariNotAvailable
+
+    viewer = make_viewer_model()
+    raw_flim_data = make_raw_flim_data()
+    layer = make_intensity_layer_with_phasors(raw_flim_data)
+    viewer.add_layer(layer)
+
+    widget = WriterWidget(viewer)
+    widget.export_layer_combobox.setCheckedItems([layer.name])
+
+    with (
+        patch(
+            "napari_phasors._flimari.send_layers_to_flimari",
+            side_effect=FlimariNotAvailable("FLIMari is not installed."),
+        ),
+        patch("napari_phasors._widget.show_error") as mock_show_error,
+    ):
+        widget._send_to_flimari()
+
+    mock_show_error.assert_called_once_with("FLIMari is not installed.")
+
+
+def test_send_to_flimari_reports_value_error(make_viewer_model, qtbot):
+    """A ValueError from send_layers_to_flimari is surfaced via show_error."""
+    viewer = make_viewer_model()
+    raw_flim_data = make_raw_flim_data()
+    layer = make_intensity_layer_with_phasors(raw_flim_data)
+    viewer.add_layer(layer)
+
+    widget = WriterWidget(viewer)
+    widget.export_layer_combobox.setCheckedItems([layer.name])
+
+    with (
+        patch(
+            "napari_phasors._flimari.send_layers_to_flimari",
+            side_effect=ValueError("no phasor data to send."),
+        ),
+        patch("napari_phasors._widget.show_error") as mock_show_error,
+    ):
+        widget._send_to_flimari()
+
+    mock_show_error.assert_called_once_with("no phasor data to send.")
+
+
+def test_send_to_flimari_reports_runtime_error(make_viewer_model, qtbot):
+    """A RuntimeError still raised after the dock-open retry is surfaced."""
+    viewer = make_viewer_model()
+    raw_flim_data = make_raw_flim_data()
+    layer = make_intensity_layer_with_phasors(raw_flim_data)
+    viewer.add_layer(layer)
+
+    widget = WriterWidget(viewer)
+    widget.export_layer_combobox.setCheckedItems([layer.name])
+
+    with (
+        patch(
+            "napari_phasors._flimari.send_layers_to_flimari",
+            side_effect=RuntimeError("FLIMari is not ready to receive data."),
+        ),
+        patch("napari_phasors._widget.show_error") as mock_show_error,
+    ):
+        widget._send_to_flimari()
+
+    mock_show_error.assert_called_once_with(
+        "FLIMari is not ready to receive data."
+    )
+
+
+def test_send_to_flimari_reports_unexpected_error(make_viewer_model, qtbot):
+    """Any other exception is caught and reported with context."""
+    viewer = make_viewer_model()
+    raw_flim_data = make_raw_flim_data()
+    layer = make_intensity_layer_with_phasors(raw_flim_data)
+    viewer.add_layer(layer)
+
+    widget = WriterWidget(viewer)
+    widget.export_layer_combobox.setCheckedItems([layer.name])
+
+    with (
+        patch(
+            "napari_phasors._flimari.send_layers_to_flimari",
+            side_effect=TypeError("boom"),
+        ),
+        patch("napari_phasors._widget.show_error") as mock_show_error,
+    ):
+        widget._send_to_flimari()
+
+    mock_show_error.assert_called_once_with("Error sending to FLIMari: boom")
+
+
+def test_recover_missing_counts_reports_error_for_bad_raw_file(
+    make_viewer_model, qtbot
+):
+    """A raw file that fails validation is reported and the layer is skipped.
+
+    The layer must then be exported without a histogram-bin override, so it
+    falls back to sending mean intensity as FLIMari's counts proxy.
+    """
+    viewer = make_viewer_model()
+    raw_flim_data = make_raw_flim_data()
+    layer = make_intensity_layer_with_phasors(raw_flim_data)
+    del layer.metadata["summed_signal"]
+    viewer.add_layer(layer)
+
+    widget = WriterWidget(viewer)
+
+    with (
+        patch(
+            "napari_phasors._widget.QFileDialog.getOpenFileName",
+            return_value=("/fake/wrong.ptu", ""),
+        ),
+        patch(
+            "napari_phasors._flimari.histogram_bins_from_raw_file",
+            side_effect=ValueError("the selected file does not match."),
+        ),
+        patch("napari_phasors._widget.show_error") as mock_show_error,
+    ):
+        overrides = widget._recover_missing_counts([layer])
+
+    assert overrides == {}
+    mock_show_error.assert_called_once_with(
+        f"Could not recover photon counts for "
+        f"'{layer.name}': the selected file does not match."
+    )
 
 
 def test_export_labels_layer_as_colored_image(
