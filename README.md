@@ -72,25 +72,12 @@ Activate the environment :
 
 ## Contributing
 
-Contributions are very welcome. Tests can be run with [tox], please ensure
-the coverage at least stays the same before you submit a pull request.
+Contributions are very welcome. See the [contributing
+guide](CONTRIBUTING.md) for how to set up a development environment, run
+the tests, and submit a pull request.
 
-### Pre-commit Hooks
-
-This project uses [pre-commit](https://pre-commit.com/) to run **black**,
-**isort**, and **ruff** automatically on every commit. To set it up:
-
-```bash
-pip install pre-commit
-pre-commit install
-```
-
-From now on, every `git commit` will auto-format and lint your code before
-the commit goes through. You can also run the hooks manually on all files:
-
-```bash
-pre-commit run --all-files
-```
+This project adheres to a [Code of Conduct](CODE_OF_CONDUCT.md); by
+participating, you are expected to uphold it.
 
 ## License
 
