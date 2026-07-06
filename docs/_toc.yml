@@ -27,3 +27,7 @@ parts:
 - caption: API Reference
   chapters:
   - file: api/index
+- caption: Community
+  chapters:
+  - file: contributing
+  - file: code_of_conduct
