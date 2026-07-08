@@ -99,6 +99,31 @@ def test_scan_folder_respects_recursion(tmp_path):
     assert len(deep[".ome.tif"]) == 2
 
 
+def test_mask_phasor_arrays_same_ndim():
+    """Test _mask_phasor_arrays when array has same ndim as data."""
+    layer = Image(np.zeros((2, 2)), name="test")
+    layer.metadata["G"] = np.ones((2, 2))
+    layer.metadata["S"] = np.ones((2, 2))
+    from napari_phasors._batch_analysis import _apply_image_mask
+
+    mask_invalid = np.array([[True, False], [False, True]])
+    # invert=False means mask > 0 is kept, mask <= 0 is invalid.
+    # mask_invalid being boolean: True is kept, False is invalid.
+    _apply_image_mask(layer, mask_invalid)
+    assert np.isnan(layer.metadata["G"][0, 1])
+    assert layer.metadata["G"][0, 0] == 1.0
+
+
+def test_select_harmonic_arrays_missing_gs():
+    """Test _select_harmonic_arrays when G or S is missing."""
+    layer = Image(np.zeros((2, 2)), name="test")
+    layer.metadata["G"] = np.ones((2, 2))
+    layer.metadata["S"] = None
+    real, imag = _select_harmonic_arrays(layer, 1)
+    assert real is None
+    assert imag is None
+
+
 # -- Widget behaviour ------------------------------------------------------
 
 
