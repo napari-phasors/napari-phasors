@@ -1204,6 +1204,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             self.mapping_group,
             self.fret_group,
             self.selection_group,
+            self.signal_group,
         ]
         toggles = [
             self.components_plot_toggle,
@@ -1223,6 +1224,9 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         ]
         for widget in groups + toggles:
             widget.toggled.connect(lambda _=False: self._update_run_enabled())
+        self.signal_format_combo.selectionChanged.connect(
+            self._update_run_enabled
+        )
         for control in controls:
             control["stats"].toggled.connect(
                 lambda _=False: self._update_run_enabled()
@@ -1633,7 +1637,9 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         export_layout.addLayout(out_row)
 
         types_row = QHBoxLayout()
-        types_row.addWidget(QLabel("Export as:"))
+        types_row.addWidget(
+            QLabel("Export Intensty Image (with phasor data) as:")
+        )
         self.export_ometiff_checkbox = QCheckBox("OME-TIFF")
         self.export_ometiff_checkbox.setChecked(True)
         self.export_csv_checkbox = QCheckBox("CSV")
@@ -1753,47 +1759,32 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             )
         )
 
-        # Persistent availability status; also flashed on a locked click.
+        # Master toggle for the whole section, matching the analysis tabs.
+        # ``_refresh_signal_availability`` disables it (and shows the red
+        # explanation below) when the selected format cannot provide a signal.
+        self.signal_group, body, content = self._enable_section(
+            "Enable signal export",
+            "For raw files the signal is averaged per pixel over the batch "
+            "mask (Masks tab); for processed OME-TIFF files the stored signal "
+            "(summed over all pixels at import) is used and the mask does not "
+            "apply.",
+        )
+        outer.addWidget(content)
+
+        # Shown (red) only when the selected format cannot provide a signal.
         self._signal_status = QLabel()
         self._signal_status.setWordWrap(True)
-        self._signal_status_base_style = ""
+        self._signal_status.setStyleSheet("color: #e74c3c; font-weight: 600;")
+        self._signal_status.hide()
         outer.addWidget(self._signal_status)
 
-        # Flash the status label when the (locked) body is clicked, mirroring
-        # the "enable this analysis" hint used by ``_enable_section``.
-        self._signal_flash_timer = QTimer(self)
-        self._signal_flash_timer.setSingleShot(True)
-
-        def _end_signal_flash():
-            self._signal_status.setStyleSheet(self._signal_status_base_style)
-
-        def _flash_signal_status():
-            self._signal_status.setStyleSheet(
-                "background: rgba(230, 126, 34, 0.30); border-radius: 5px;"
-                " color: #e67e22; font-weight: 600; padding: 2px;"
-            )
-            self._signal_flash_timer.start(2000)
-
-        self._signal_flash_timer.timeout.connect(_end_signal_flash)
-
-        body = QWidget()
         body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(0, 0, 0, 0)
-        self._signal_body = body
-
-        body_layout.addWidget(
-            self._note(
-                "For raw files the signal is averaged per pixel over the batch "
-                "mask (Masks tab); for processed OME-TIFF files the stored "
-                "signal (summed over all pixels at import) is used and the "
-                "mask does not apply."
-            )
-        )
 
         # Individual per-file plots ---------------------------------------
         ind_box, ind_layout = self._section("Individual signal plots")
         self.signal_individual_checkbox = QCheckBox(
-            "Export individual signal plots (one PNG per file)"
+            "Export individual signal plots (one per file)"
         )
         self.signal_individual_checkbox.setToolTip(
             "Export one signal plot per file, drawn like the signal preview "
@@ -1820,14 +1811,44 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "shaded ±1 standard-deviation band."
         )
         comb_layout.addWidget(self.signal_combined_checkbox)
+
+        groups_row = QHBoxLayout()
+        signal_groups_button = QPushButton("Configure Groups…")
+        signal_groups_button.setToolTip(
+            "Assign files to groups for the combined plot and choose the "
+            "color and legend for each group (shared with the other tabs)."
+        )
+        signal_groups_button.clicked.connect(self._open_plot_group_dialog)
+        groups_row.addWidget(signal_groups_button)
+        groups_row.addStretch()
+        comb_layout.addLayout(groups_row)
         comb_layout.addWidget(
             self._note(
-                "Files are grouped with the Merged / Grouped setting and group "
-                "colors from the Phasor Plot Settings tab; each group is drawn "
-                "as a mean line with a shaded ±1 SD band."
+                "Grouping is shared with the Phasor Plot Settings tab; each "
+                "group is drawn as a mean line with a shaded ±1 SD band."
             )
         )
+        signal_groups_button.setEnabled(
+            self.signal_combined_checkbox.isChecked()
+        )
+        self.signal_combined_checkbox.toggled.connect(
+            signal_groups_button.setEnabled
+        )
         body_layout.addWidget(comb_box)
+
+        # Shared export format (PNG image and/or CSV data) ----------------
+        fmt_row = QHBoxLayout()
+        fmt_row.addWidget(QLabel("Export plots as:"))
+        self.signal_format_combo = self._format_combo(
+            "No signal export", png=True, csv=False
+        )
+        self.signal_format_combo.setToolTip(
+            "Formats for the signal plots (individual and combined). PNG is "
+            "the rendered plot; CSV holds the underlying signal values."
+        )
+        fmt_row.addWidget(self.signal_format_combo)
+        fmt_row.addStretch()
+        body_layout.addLayout(fmt_row)
 
         # Shared normalization --------------------------------------------
         norm_row = QHBoxLayout()
@@ -1860,8 +1881,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         chan_row.addStretch()
         body_layout.addLayout(chan_row)
 
-        self._signal_section = _LockableBody(body, _flash_signal_status)
-        outer.addWidget(self._signal_section)
         outer.addStretch()
         return self._scrollable(tab)
 
@@ -1918,28 +1937,36 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         )
 
     def _refresh_signal_availability(self):
-        """Lock/unlock the signal tab from the selected format's capability."""
+        """Enable/disable the signal tab from the selected format's capability.
+
+        When the format cannot provide a signal the master toggle is unchecked
+        and disabled and a red explanation is shown beneath it; otherwise the
+        toggle is re-enabled so the user can activate the section.
+        """
         ext = self.format_combobox.currentData()
         available, explanation = self._signal_availability(ext)
         self._signal_available = available
-        self._signal_section.set_locked(not available)
-        self._signal_body.setEnabled(available)
         if available:
-            text = "Signal export is available for the selected files."
-            style = "color: #27ae60; font-weight: 600;"
+            self.signal_group.setEnabled(True)
+            self._signal_status.hide()
         else:
-            text = explanation
-            style = "color: #e74c3c; font-weight: 600;"
-        self._signal_status.setText(text)
-        self._signal_status_base_style = style
-        self._signal_status.setStyleSheet(style)
+            if self.signal_group.isChecked():
+                self.signal_group.setChecked(False)
+            self.signal_group.setEnabled(False)
+            self._signal_status.setText(explanation)
+            self._signal_status.show()
         self._update_run_enabled()
 
     def _signal_export_requested(self):
         """Whether a usable signal export is enabled for the current format."""
-        return bool(self._signal_available) and (
-            self.signal_individual_checkbox.isChecked()
-            or self.signal_combined_checkbox.isChecked()
+        return (
+            bool(self._signal_available)
+            and self.signal_group.isChecked()
+            and bool(self.signal_format_combo.checkedItems())
+            and (
+                self.signal_individual_checkbox.isChecked()
+                or self.signal_combined_checkbox.isChecked()
+            )
         )
 
     @staticmethod
@@ -5091,18 +5118,24 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         # Signal export: resolve the per-run config and, for raw/ambiguous
         # formats, ask the reader to retain the per-pixel signal so it can be
         # masked and averaged. Processed OME-TIFFs reuse their stored signal.
-        want_signal_individual = (
+        signal_formats = self.signal_format_combo.checkedItems()
+        signal_enabled = (
             self._signal_available
-            and self.signal_individual_checkbox.isChecked()
+            and self.signal_group.isChecked()
+            and bool(signal_formats)
+        )
+        want_signal_individual = (
+            signal_enabled and self.signal_individual_checkbox.isChecked()
         )
         want_signal_combined = (
-            self._signal_available
-            and self.signal_combined_checkbox.isChecked()
+            signal_enabled and self.signal_combined_checkbox.isChecked()
         )
         if want_signal_individual or want_signal_combined:
             self._signal_export_cfg = {
                 "individual": want_signal_individual,
                 "combined": want_signal_combined,
+                "png": "PNG" in signal_formats,
+                "csv": "CSV" in signal_formats,
                 "normalize": self.signal_normalize_combo.currentData(),
                 "channel_mode": self.signal_channel_combo.currentData(),
                 "color": self.signal_color.color().name(),
@@ -6910,26 +6943,34 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                     {"label": None, "color": cfg["color"], "y": channels[0][1]}
                 ]
                 legend = False
-            _save_signal_lines_png(
-                lines,
-                f"{base}_signal.png",
-                title=title,
-                ylabel=ylabel,
-                legend=legend,
-                white_background=cfg["white_background"],
-                dpi=self._export_dpi(),
-            )
-        else:
-            for label, profile in channels:
+            if cfg["png"]:
                 _save_signal_lines_png(
-                    [{"label": None, "color": cfg["color"], "y": profile}],
-                    f"{base}_Channel_{_safe_suffix(str(label))}_signal.png",
-                    title=f"{title} — Channel {label}",
+                    lines,
+                    f"{base}_signal.png",
+                    title=title,
                     ylabel=ylabel,
-                    legend=False,
+                    legend=legend,
                     white_background=cfg["white_background"],
                     dpi=self._export_dpi(),
                 )
+            if cfg["csv"]:
+                _save_signal_lines_csv(lines, f"{base}_signal.csv", ylabel)
+        else:
+            for label, profile in channels:
+                lines = [{"label": None, "color": cfg["color"], "y": profile}]
+                stem = f"{base}_Channel_{_safe_suffix(str(label))}_signal"
+                if cfg["png"]:
+                    _save_signal_lines_png(
+                        lines,
+                        f"{stem}.png",
+                        title=f"{title} — Channel {label}",
+                        ylabel=ylabel,
+                        legend=False,
+                        white_background=cfg["white_background"],
+                        dpi=self._export_dpi(),
+                    )
+                if cfg["csv"]:
+                    _save_signal_lines_csv(lines, f"{stem}.csv", ylabel)
 
     @staticmethod
     def _signal_band(profiles):
@@ -6988,19 +7029,22 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                     )
                 if not bands:
                     continue
-                _save_signal_bands_png(
-                    bands,
-                    os.path.join(
-                        combined_dir,
-                        f"combined_signal_Channel_{_safe_suffix(str(label))}"
-                        ".png",
-                    ),
-                    title=f"Channel {label}",
-                    white_background=cfg["white_background"],
-                    legend=cfg["legend"],
-                    ylabel=ylabel,
-                    dpi=self._export_dpi(),
+                stem = os.path.join(
+                    combined_dir,
+                    f"combined_signal_Channel_{_safe_suffix(str(label))}",
                 )
+                if cfg["png"]:
+                    _save_signal_bands_png(
+                        bands,
+                        f"{stem}.png",
+                        title=f"Channel {label}",
+                        white_background=cfg["white_background"],
+                        legend=cfg["legend"],
+                        ylabel=ylabel,
+                        dpi=self._export_dpi(),
+                    )
+                if cfg["csv"]:
+                    _save_signal_bands_csv(bands, f"{stem}.csv", ylabel)
             return
 
         # Single channel, or "Together": one figure with all group×channel bands.
@@ -7039,14 +7083,18 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 )
         if not bands:
             return
-        _save_signal_bands_png(
-            bands,
-            os.path.join(combined_dir, "combined_signal.png"),
-            white_background=cfg["white_background"],
-            legend=cfg["legend"],
-            ylabel=ylabel,
-            dpi=self._export_dpi(),
-        )
+        stem = os.path.join(combined_dir, "combined_signal")
+        if cfg["png"]:
+            _save_signal_bands_png(
+                bands,
+                f"{stem}.png",
+                white_background=cfg["white_background"],
+                legend=cfg["legend"],
+                ylabel=ylabel,
+                dpi=self._export_dpi(),
+            )
+        if cfg["csv"]:
+            _save_signal_bands_csv(bands, f"{stem}.csv", ylabel)
 
 
 def _masked_signal_mean(full, axis, mask):
@@ -7130,6 +7178,64 @@ def _save_signal_lines_png(
     fig.tight_layout()
     fig.savefig(path, dpi=dpi)
     plt.close(fig)
+
+
+def _csv_column_label(label, fallback):
+    """Return a safe, human-readable CSV column name for a plot ``label``."""
+    text = str(label) if label not in (None, "") else fallback
+    return text.replace("\n", " ").strip()
+
+
+def _save_signal_lines_csv(lines, path, value_header="value"):
+    """Write signal ``lines`` (one ``y`` column each) to ``path`` as CSV.
+
+    The first column is the histogram / spectral bin index; each subsequent
+    column is one line's values, aligned to the shortest line.
+    """
+    ys = [np.asarray(line["y"], dtype=float).ravel() for line in lines]
+    if not ys:
+        return
+    n_bins = min(y.size for y in ys)
+    if n_bins == 0:
+        return
+    headers = ["bin"]
+    for idx, line in enumerate(lines):
+        base = _csv_column_label(line.get("label"), value_header)
+        headers.append(base if len(lines) == 1 else f"{base} ({idx + 1})")
+    with open(path, "w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(headers)
+        for i in range(n_bins):
+            writer.writerow([i] + [f"{y[i]:.6g}" for y in ys])
+
+
+def _save_signal_bands_csv(bands, path, value_header="value"):
+    """Write mean ± SD ``bands`` to ``path`` as CSV.
+
+    The first column is the histogram / spectral bin index; each band adds a
+    ``<label> mean`` and ``<label> std`` column, aligned to the shortest band.
+    """
+    means = [np.asarray(b["mean"], dtype=float).ravel() for b in bands]
+    stds = [np.asarray(b["std"], dtype=float).ravel() for b in bands]
+    if not means:
+        return
+    n_bins = min(m.size for m in means)
+    if n_bins == 0:
+        return
+    headers = ["bin"]
+    for idx, band in enumerate(bands):
+        base = _csv_column_label(
+            band.get("label"), f"{value_header} {idx + 1}"
+        )
+        headers.extend([f"{base} mean", f"{base} std"])
+    with open(path, "w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(headers)
+        for i in range(n_bins):
+            row = [i]
+            for mean, std in zip(means, stds, strict=True):
+                row.extend([f"{mean[i]:.6g}", f"{std[i]:.6g}"])
+            writer.writerow(row)
 
 
 def _save_signal_bands_png(

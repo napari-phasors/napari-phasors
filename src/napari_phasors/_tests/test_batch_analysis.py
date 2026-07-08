@@ -3384,6 +3384,7 @@ def test_signal_export_ometiff_outputs(qtbot, make_viewer_model, tmp_path):
     widget.export_ometiff_checkbox.setChecked(False)
 
     assert widget._signal_available is True
+    widget.signal_group.setChecked(True)
     widget.signal_individual_checkbox.setChecked(True)
     widget.signal_combined_checkbox.setChecked(True)
 
@@ -3449,6 +3450,7 @@ def test_signal_export_raw_tif(qtbot, make_viewer_model, tmp_path):
     widget.harmonics_edit.setText("1")
 
     assert widget._signal_available is True
+    widget.signal_group.setChecked(True)
     widget.signal_individual_checkbox.setChecked(True)
 
     widget.run_batch()
@@ -3484,6 +3486,8 @@ def _signal_export_widget(make_viewer_model, qtbot, out_root, channel_mode):
     widget._signal_export_cfg = {
         "individual": True,
         "combined": True,
+        "png": True,
+        "csv": False,
         "normalize": "none",
         "channel_mode": channel_mode,
         "color": "#1f77b4",
@@ -3542,3 +3546,36 @@ def test_signal_export_channels_together(qtbot, make_viewer_model, tmp_path):
     comb = out_root / "Combined analysis" / "Signal Plots"
     assert (comb / "combined_signal.png").exists()  # one overlaid figure
     assert not (comb / "combined_signal_Channel_0.png").exists()
+
+
+def test_signal_export_csv_only(qtbot, make_viewer_model, tmp_path):
+    """CSV-only export writes signal data as CSV and no PNG."""
+    out_root = tmp_path / "out"
+    out_root.mkdir()
+    widget = _signal_export_widget(
+        make_viewer_model, qtbot, out_root, "together"
+    )
+    widget._signal_export_cfg["png"] = False
+    widget._signal_export_cfg["csv"] = True
+    for name in ("a", "b"):
+        widget._emit_signal_outputs(
+            f"{name}.tif",
+            _fake_channel_results([(0, [1, 2, 3, 4])]),
+            ".tif",
+            "",
+            False,
+        )
+    widget._write_signal_combined()
+
+    ind = out_root / "Individual image analysis" / "Signal Plots"
+    assert (ind / "a_signal.csv").exists()
+    assert not (ind / "a_signal.png").exists()
+    comb = out_root / "Combined analysis" / "Signal Plots"
+    combined_csv = comb / "combined_signal.csv"
+    assert combined_csv.exists()
+    assert not (comb / "combined_signal.png").exists()
+    # Header carries the bin column plus a mean/std pair for the single group.
+    header = combined_csv.read_text().splitlines()[0].split(",")
+    assert header[0] == "bin"
+    assert any("mean" in h for h in header)
+    assert any("std" in h for h in header)
