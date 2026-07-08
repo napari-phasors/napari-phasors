@@ -1720,3 +1720,120 @@ def test_color_settings_and_signal_teardown(
     viewer.add_shapes(np.random.random((2, 2)))
     viewer.add_labels(np.random.randint(0, 2, (10, 10)))
     plotter._disconnect_all_artist_signals()
+
+
+def test_analysis_docks_in_right_area_below_plotter(make_napari_viewer, qtbot):
+    """Analysis docks in the right area (below the plotter); histogram and
+    statistics stay in the bottom area, and the resize path runs cleanly."""
+    from qtpy.QtCore import Qt
+
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    qtbot.addWidget(plotter)
+    # Dock the plotter so the "split analysis below plotter" path executes.
+    viewer.window.add_dock_widget(plotter, name="Phasor Plot", area="right")
+    # Fire the dock setup deterministically rather than via the init timer.
+    plotter._analysis_dock_init_timer.stop()
+    plotter._add_analysis_dock_widget()
+
+    qt_window = viewer.window._qt_window
+    assert (
+        qt_window.dockWidgetArea(plotter._analysis_dock)
+        == Qt.RightDockWidgetArea
+    )
+    assert (
+        qt_window.dockWidgetArea(plotter._histogram_dock)
+        == Qt.BottomDockWidgetArea
+    )
+    assert (
+        qt_window.dockWidgetArea(plotter._statistics_dock)
+        == Qt.BottomDockWidgetArea
+    )
+    assert plotter._docks_initialized is True
+
+    # The hosting dock is discoverable via the parent walk.
+    assert plotter._find_plotter_dock() is not None
+
+    # Resize path (right width + minimum bottom height) runs without error.
+    plotter._resize_initial_docks()
+
+
+def test_bottom_corner_reassignment_and_restore(make_napari_viewer, qtbot):
+    """Docking hands the bottom corners to the side areas; closing restores
+    the viewer's original corner ownership."""
+    from qtpy.QtCore import Qt
+
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    qtbot.addWidget(plotter)
+    plotter._analysis_dock_init_timer.stop()
+
+    qt_window = viewer.window._qt_window
+    original_left = qt_window.corner(Qt.BottomLeftCorner)
+    original_right = qt_window.corner(Qt.BottomRightCorner)
+
+    plotter._add_analysis_dock_widget()
+
+    # Corners now belong to the left/right dock areas.
+    assert qt_window.corner(Qt.BottomLeftCorner) == Qt.LeftDockWidgetArea
+    assert qt_window.corner(Qt.BottomRightCorner) == Qt.RightDockWidgetArea
+
+    # The originals were captured for later restoration.
+    assert (
+        plotter._original_bottom_corners[Qt.BottomLeftCorner] == original_left
+    )
+    assert (
+        plotter._original_bottom_corners[Qt.BottomRightCorner]
+        == original_right
+    )
+
+    # Capture is idempotent: reassigning again must not overwrite the stored
+    # originals with the already-reassigned values.
+    plotter._assign_bottom_corners_to_side_docks()
+    assert (
+        plotter._original_bottom_corners[Qt.BottomLeftCorner] == original_left
+    )
+
+    # Closing restores the original corner ownership.
+    plotter.close()
+    assert qt_window.corner(Qt.BottomLeftCorner) == original_left
+    assert qt_window.corner(Qt.BottomRightCorner) == original_right
+
+
+def test_show_analysis_dock_readds_to_right_area(make_napari_viewer, qtbot):
+    """Re-opening a destroyed analysis dock re-adds it to the right area."""
+    from qtpy.QtCore import Qt
+
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    qtbot.addWidget(plotter)
+    plotter._analysis_dock_init_timer.stop()
+    viewer.window.add_dock_widget(plotter, name="Phasor Plot", area="right")
+
+    # Simulate the dock's C++ object having been destroyed so the re-add
+    # branch (except RuntimeError) runs.
+    destroyed = MagicMock()
+    destroyed.setVisible.side_effect = RuntimeError("wrapped object deleted")
+    plotter._analysis_dock = destroyed
+
+    plotter._show_analysis_dock()
+
+    qt_window = viewer.window._qt_window
+    assert (
+        qt_window.dockWidgetArea(plotter._analysis_dock)
+        == Qt.RightDockWidgetArea
+    )
+
+
+def test_dock_helpers_are_safe_without_window(make_viewer_model):
+    """The corner/split helpers no-op safely when there is no Qt main window."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+
+    # No corners captured yet -> restore is a safe no-op.
+    plotter._restore_bottom_corners()
+    assert not hasattr(plotter, '_original_bottom_corners')
+
+    # No hosting dock -> the parent walk returns None and split returns early.
+    assert plotter._find_plotter_dock() is None
+    plotter._split_analysis_below_plotter()
