@@ -850,6 +850,30 @@ def test_raw_reader_multichannel_without_coords_uses_indices(monkeypatch):
     assert layers[0][1]["blending"] == "additive"
 
 
+def test_raw_reader_multichannel_keep_signal(monkeypatch):
+    """keep_signal=True preserves signal data for multi-channel files."""
+    data = xr.DataArray(
+        np.ones((2, 4, 2, 2), dtype=np.uint16),
+        dims=("C", "H", "Y", "X"),
+    )
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".ptu",
+        lambda path, opts: data,
+    )
+    layers = reader_module.raw_file_reader(
+        "ex.ptu", reader_options={"_keep_signal": True}
+    )
+    assert len(layers) == 2
+    for layer in layers:
+        metadata = layer[1]["metadata"]
+        assert "signal_full" in metadata
+        assert metadata["signal_axis"] == 0
+        assert np.array_equal(
+            metadata["signal_full"], np.ones((4, 2, 2), dtype=np.uint16)
+        )
+
+
 def test_raw_reader_multichannel_axis_override_and_string_label(monkeypatch):
     """Axis override is honoured per-channel and non-numeric channel labels
     are stored verbatim."""
