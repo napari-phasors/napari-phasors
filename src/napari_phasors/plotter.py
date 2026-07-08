@@ -24,6 +24,7 @@ from qtpy.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDockWidget,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -2298,26 +2299,34 @@ class PlotterWidget(QWidget):
     def _add_analysis_dock_widget(self):
         """Add the analysis widget and histogram container to the viewer.
 
-        Histogram and statistics use separate dock widgets that are tabified
-        together in the same bottom area, alongside the analysis dock.
+        The analysis tabs dock in the right area, stacked below the plotter,
+        so the left (layer list) and right (plotter/analysis) columns run the
+        full height of the viewer. The histogram and statistics share the
+        bottom area, which is confined to the central column between them.
         """
         if (
             hasattr(self.viewer, 'window')
             and self.viewer.window is not None
             and hasattr(self.viewer.window, '_qt_window')
         ):
-            # Create histogram and analysis first, then split them.
-            # Create statistics after that and tabify only with histogram.
-            self._histogram_dock = self.viewer.window.add_dock_widget(
-                self.histogram_container,
-                name="Histogram",
-                area="bottom",
-            )
+            # Give the bottom area's corners to the left/right dock areas so
+            # the layer list and plotter/analysis columns keep their full
+            # height and the bottom docks are squeezed into the centre column.
+            self._assign_bottom_corners_to_side_docks()
 
-            # Analysis dock — rightmost
+            # Analysis tabs go to the right area, beneath the plotter, so they
+            # extend full height alongside the phasor plot.
             self._analysis_dock = self.viewer.window.add_dock_widget(
                 self.analysis_widget,
                 name="Phasor Analysis",
+                area="right",
+            )
+            self._split_analysis_below_plotter()
+
+            # Histogram and statistics share the bottom (central) column.
+            self._histogram_dock = self.viewer.window.add_dock_widget(
+                self.histogram_container,
+                name="Histogram",
                 area="bottom",
             )
 
@@ -2333,19 +2342,85 @@ class PlotterWidget(QWidget):
             # Defer resizeDocks so it runs after Qt has applied the splits.
             self._dock_resize_timer.start(200)
 
+    def _assign_bottom_corners_to_side_docks(self):
+        """Let the left/right dock areas own the bottom corners.
+
+        By default the bottom dock area spans the full window width, so a
+        bottom-docked histogram sits under the layer list. Handing the bottom
+        corners to the left and right dock areas keeps the layer list (left)
+        and plotter/analysis (right) columns full height and confines the
+        bottom area to the central column.
+        """
+        with contextlib.suppress(AttributeError, RuntimeError):
+            qt_window = self.viewer.window._qt_window
+            # Remember the viewer's original corner ownership once, so it can
+            # be restored when this widget closes (the change is viewer-wide).
+            if not hasattr(self, '_original_bottom_corners'):
+                self._original_bottom_corners = {
+                    Qt.BottomLeftCorner: qt_window.corner(Qt.BottomLeftCorner),
+                    Qt.BottomRightCorner: qt_window.corner(
+                        Qt.BottomRightCorner
+                    ),
+                }
+            qt_window.setCorner(Qt.BottomLeftCorner, Qt.LeftDockWidgetArea)
+            qt_window.setCorner(Qt.BottomRightCorner, Qt.RightDockWidgetArea)
+
+    def _restore_bottom_corners(self):
+        """Restore the viewer's original bottom-corner ownership.
+
+        Undoes :meth:`_assign_bottom_corners_to_side_docks` so closing this
+        widget does not leave the (viewer-wide) corner reassignment in place.
+        """
+        corners = getattr(self, '_original_bottom_corners', None)
+        if not corners:
+            return
+        with contextlib.suppress(AttributeError, RuntimeError):
+            qt_window = self.viewer.window._qt_window
+            for corner, area in corners.items():
+                qt_window.setCorner(corner, area)
+
+    def _find_plotter_dock(self):
+        """Return the QDockWidget that hosts this plotter, or ``None``."""
+        widget = self
+        while widget is not None:
+            parent = widget.parent()
+            if isinstance(parent, QDockWidget):
+                return parent
+            widget = parent
+        return None
+
+    def _split_analysis_below_plotter(self):
+        """Stack the analysis dock directly beneath the plotter dock."""
+        plotter_dock = self._find_plotter_dock()
+        if plotter_dock is None or not hasattr(self, '_analysis_dock'):
+            return
+        with contextlib.suppress(AttributeError, RuntimeError):
+            qt_window = self.viewer.window._qt_window
+            qt_window.splitDockWidget(
+                plotter_dock,
+                self._analysis_dock,
+                Qt.Vertical,
+            )
+
     def _resize_initial_docks(self):
         """Resize docks after delayed split has been applied."""
         if not getattr(self, '_docks_initialized', False):
             return
         with contextlib.suppress(AttributeError, RuntimeError):
             qt_window = self.viewer.window._qt_window
+            # Width of the right column (plotter/analysis).
             qt_window.resizeDocks(
-                [
-                    self._histogram_dock,
-                    self._analysis_dock,
-                ],
-                [600, 500],
+                [self._analysis_dock],
+                [600],
                 Qt.Horizontal,
+            )
+            # Height of the bottom (central) histogram/statistics area.
+            # Request 1 px so Qt clamps it to the dock's minimum height,
+            # keeping the histogram as short as allowed by default.
+            qt_window.resizeDocks(
+                [self._histogram_dock],
+                [1],
+                Qt.Vertical,
             )
 
     def _tabify_histogram_and_statistics_docks(self):
@@ -2363,24 +2438,16 @@ class PlotterWidget(QWidget):
             self._histogram_dock.raise_()
 
     def _enforce_bottom_dock_layout(self):
-        """Keep analysis separate and tabify only histogram/statistics."""
+        """Tabify histogram/statistics in the bottom (central) column.
+
+        The analysis dock lives in the right area, so the bottom area only
+        needs the histogram and statistics tabified together.
+        """
         if not all(
             hasattr(self, name)
-            for name in (
-                '_histogram_dock',
-                '_statistics_dock',
-                '_analysis_dock',
-            )
+            for name in ('_histogram_dock', '_statistics_dock')
         ):
             return
-
-        with contextlib.suppress(AttributeError, RuntimeError):
-            qt_window = self.viewer.window._qt_window
-            qt_window.splitDockWidget(
-                self._histogram_dock,
-                self._analysis_dock,
-                Qt.Horizontal,
-            )
         self._tabify_histogram_and_statistics_docks()
 
     def eventFilter(self, obj, event):
@@ -3661,8 +3728,9 @@ class PlotterWidget(QWidget):
             self._analysis_dock = self.viewer.window.add_dock_widget(
                 self.analysis_widget,
                 name="Phasor Analysis",
-                area="bottom",
+                area="right",
             )
+            self._split_analysis_below_plotter()
         self._enforce_bottom_dock_layout()
         with contextlib.suppress(AttributeError, RuntimeError):
             self._analysis_dock.raise_()
@@ -8339,5 +8407,8 @@ class PlotterWidget(QWidget):
             if tab is not None:
                 with contextlib.suppress(Exception):
                     tab.close()
+
+        # Undo the viewer-wide bottom-corner reassignment made when docking.
+        self._restore_bottom_corners()
 
         super().closeEvent(event)
