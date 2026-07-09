@@ -444,6 +444,7 @@ class MaskAssignmentDialog(QDialog):
                     lc.setVisible(False)
 
             combo.currentTextChanged.connect(_on_mask_changed)
+            combo.currentTextChanged.connect(self._sync_apply_all_combo)
             # Initialize label combobox state
             _on_mask_changed(combo.currentText())
 
@@ -456,7 +457,13 @@ class MaskAssignmentDialog(QDialog):
         apply_all_layout = QHBoxLayout()
         apply_all_layout.addWidget(QLabel("Set all to:"))
         self._apply_all_combo = QComboBox()
-        self._apply_all_combo.addItems(mask_options)
+        apply_all_options = ["Select ..."] + mask_options
+        self._apply_all_combo.addItems(apply_all_options)
+        # Default to the common mask if all selected layers share one;
+        # otherwise (including when layers have differing masks) show the
+        # placeholder rather than any stale value.
+        self._sync_apply_all_combo()
+
         self._apply_all_combo.currentTextChanged.connect(
             self._on_apply_all_changed
         )
@@ -478,8 +485,19 @@ class MaskAssignmentDialog(QDialog):
     def _apply_to_all(self):
         """Set all combos to the same mask layer."""
         mask = self._apply_all_combo.currentText()
+        if mask == "Select ...":
+            return
         for combo in self._combos.values():
             combo.setCurrentText(mask)
+
+    def _sync_apply_all_combo(self, *_):
+        """Reflect the shared per-layer mask (or lack thereof) in "Set all to"."""
+        values = {combo.currentText() for combo in self._combos.values()}
+        common = next(iter(values)) if len(values) == 1 else "Select ..."
+        if self._apply_all_combo.currentText() != common:
+            self._apply_all_combo.blockSignals(True)
+            self._apply_all_combo.setCurrentText(common)
+            self._apply_all_combo.blockSignals(False)
 
     def get_assignments(self):
         """Return the mask assignments as a dict.
