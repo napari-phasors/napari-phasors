@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Union
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.colors import LinearSegmentedColormap, PowerNorm
 from napari.layers import Labels
 from phasorpy.io import phasor_to_ometiff
 
@@ -465,6 +465,7 @@ def export_layer_as_image(
             is_labels = isinstance(current_layer, Labels)
             colormap = getattr(current_layer, 'colormap', None)
             contrast_limits = getattr(current_layer, 'contrast_limits', None)
+            gamma = getattr(current_layer, 'gamma', 1.0)
             layer_name = getattr(current_layer, 'name', f"layer_{i}")
         else:
             data = (
@@ -480,6 +481,7 @@ def export_layer_as_image(
             )
             colormap = attributes.get('colormap', None)
             contrast_limits = attributes.get('contrast_limits', None)
+            gamma = attributes.get('gamma', 1.0)
             layer_name = attributes.get('name', f"layer_{i}")
 
         _, ext = os.path.splitext(path)
@@ -584,8 +586,15 @@ def export_layer_as_image(
         }
         if data_2d.ndim == 2:
             imshow_kwargs["cmap"] = cmap
-            imshow_kwargs["vmin"] = clim[0]
-            imshow_kwargs["vmax"] = clim[1]
+            if gamma is not None and gamma != 1.0:
+                # Reproduce napari's rendering: normalize to the contrast
+                # limits, then apply gamma via a power-law norm.
+                imshow_kwargs["norm"] = PowerNorm(
+                    gamma, vmin=clim[0], vmax=clim[1]
+                )
+            else:
+                imshow_kwargs["vmin"] = clim[0]
+                imshow_kwargs["vmax"] = clim[1]
 
         im = ax.imshow(data_2d, **imshow_kwargs)
         ax.axis("off")

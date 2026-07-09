@@ -222,7 +222,7 @@ def test_components_widget_fraction_calculation_creates_both_layers(
     )
 
     # Check initial colormap
-    assert comp_widget.comp1_fractions_layer.colormap.name == 'PiYG'
+    assert comp_widget.comp1_fractions_layer.colormap.name == 'jet'
 
     assert isinstance(comp_widget.component_line, LineCollection)
 

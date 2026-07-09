@@ -1015,7 +1015,7 @@ def default_group_config():
         "contour_layer_styles": {},  # filename -> {mode, colormap, color}
         "contour_group_styles": {},  # gid -> {mode, colormap, color}
         "contour_merged_style": "colormap",
-        "contour_merged_colormap": "turbo",
+        "contour_merged_colormap": "jet",
         "contour_merged_color": None,
     }
 
@@ -1412,7 +1412,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         toggle.setChecked(True)
         return toggle
 
-    def _make_colormap_combo(self, default="turbo"):
+    def _make_colormap_combo(self, default="jet"):
         """Return a combobox populated with napari colormap names + icons."""
         combo = QComboBox()
         populate_colormap_combobox(
@@ -2581,7 +2581,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         )
         output_form.addRow("Harmonic:", self.mapping_harmonic_spin)
 
-        self.mapping_colormap_combo = self._make_colormap_combo("turbo")
+        self.mapping_colormap_combo = self._make_colormap_combo("jet")
         self.mapping_colormap_combo.setToolTip(
             "Colormap applied to the exported mapped images."
         )
@@ -3552,7 +3552,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         form.addRow("Plot type:", type_combo)
 
         colormap_label = QLabel("Colormap:")
-        colormap_combo = self._make_colormap_combo("turbo")
+        colormap_combo = self._make_colormap_combo("jet")
         colormap_combo.setToolTip("Colormap used for the phasor-plot density.")
         form.addRow(colormap_label, colormap_combo)
 
@@ -3791,7 +3791,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             groups_only=True,
             display_mode="Grouped",
             show_legend=cfg.get("show_legend", True),
-            merged_colormap=cfg.get("contour_merged_colormap", "turbo"),
+            merged_colormap=cfg.get("contour_merged_colormap", "jet"),
             layer_labels=names,
             group_assignments=cfg.get("assignments", {}),
             group_colors=cfg.get("group_colors", {}),
@@ -3868,7 +3868,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "Type a lifetime (ns) and press Enter to set G/S from it."
         )
 
-        colormap_combo = self._make_colormap_combo("turbo")
+        colormap_combo = self._make_colormap_combo("jet")
         colormap_combo.setMaximumWidth(120)
         colormap_combo.setToolTip("Colormap for this component's fraction.")
 
@@ -4939,7 +4939,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             # Color ramp + limits driving the colormap line and colormap-end
             # dot colors (derived from the first component's colormap).
             "fractions_colormap": _colormap_color_list(
-                colormaps[0] if colormaps else "turbo"
+                colormaps[0] if colormaps else "jet"
             ),
             "colormap_contrast_limits": contrast or (0.0, 1.0),
         }
@@ -6470,7 +6470,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             if mode == "Merged":
                 styles[key] = {
                     "mode": cfg.get("contour_merged_style", "colormap"),
-                    "colormap": cfg.get("contour_merged_colormap", "turbo"),
+                    "colormap": cfg.get("contour_merged_colormap", "jet"),
                     "color": cfg.get("contour_merged_color"),
                 }
             elif mode == "Individual layers":
@@ -6719,7 +6719,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "log_scale": controls["log"].isChecked(),
             "white_background": self.plot_white_bg_checkbox.isChecked(),
             "show_legend": self.plot_legend_checkbox.isChecked(),
-            "colormap": controls["colormap"].currentText() or "turbo",
+            "colormap": controls["colormap"].currentText() or "jet",
             "bins": controls["bins"].value(),
             "contour_levels": controls["levels"].value(),
             "contour_linewidth": controls["linewidth"].value(),

@@ -421,7 +421,7 @@ class ComponentsWidget(QWidget):
             xlabel="Fraction",
             ylabel="Pixel count",
             bins=150,
-            default_colormap_name="PiYG",
+            default_colormap_name="jet",
             range_slider_enabled=True,
             range_label_prefix="Fraction range",
             range_factor=1000,
@@ -3180,7 +3180,7 @@ class ComponentsWidget(QWidget):
             else:
                 colormap = ListedColormap(self.fractions_colormap)
         else:
-            colormap = plt.cm.PiYG
+            colormap = plt.cm.jet
 
         if (
             hasattr(self, 'colormap_contrast_limits')
@@ -3792,7 +3792,7 @@ class ComponentsWidget(QWidget):
                 colors=inverted_colors, name=f"inverted_{colormap_name}"
             )
 
-        return 'PiYG_r' if not colormap_name.endswith('_r') else 'PiYG'
+        return 'jet_r' if not colormap_name.endswith('_r') else 'jet'
 
     def _find_and_reconnect_layer(
         self, expected_name, component_name, layer_name, idx
@@ -4192,7 +4192,7 @@ class ComponentsWidget(QWidget):
         current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
         harmonic_key = str(current_harmonic)
 
-        comp1_colormap = 'PiYG'
+        comp1_colormap = 'jet'
         valid_fraction = fraction_comp1[np.isfinite(fraction_comp1)]
         if valid_fraction.size > 0:
             frac_min = float(np.min(valid_fraction))

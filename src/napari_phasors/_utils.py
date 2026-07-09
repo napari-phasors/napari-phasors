@@ -377,6 +377,61 @@ class PopoutWindowMixin:
             parent = parent.parent()
 
 
+EXTRA_MATPLOTLIB_COLORMAPS = (
+    'jet',
+    'nipy_spectral',
+    'ocean',
+    'gnuplot2',
+    'gnuplot',
+    'rainbow',
+    'brg',
+    'summer',
+    'winter',
+    'spring',
+    'autumn',
+    'cool',
+)
+
+
+def register_extra_colormaps() -> None:
+    """Make extra matplotlib colormaps selectable in napari's layer controls.
+
+    Napari's built-in colormap dropdown does not ship these matplotlib
+    colormaps by default, so this registers them globally the first time it
+    is called, making them available for any image or labels layer, not only
+    ones created by this plugin.
+    """
+    from napari.utils.colormaps import AVAILABLE_COLORMAPS
+    from napari.utils.colormaps import Colormap as NapariColormap
+
+    for name in EXTRA_MATPLOTLIB_COLORMAPS:
+        if name in AVAILABLE_COLORMAPS:
+            continue
+        colors = plt.get_cmap(name)(np.linspace(0, 1, 256))
+        AVAILABLE_COLORMAPS.add_colormap_if_missing(
+            NapariColormap(colors=colors, name=name, display_name=name)
+        )
+
+
+def available_colormap_names() -> list:
+    """Names of all colormaps offered in this plugin's colormap comboboxes.
+
+    Extends napari's built-in colormap list with the extra matplotlib
+    colormaps registered by :func:`register_extra_colormaps`, so widgets that
+    list colormaps (e.g. the histogram 2D colormap, phasor mapping, plotter
+    contours) also offer them.
+    """
+    from napari.utils import colormaps as napari_colormaps
+
+    names = list(napari_colormaps.ALL_COLORMAPS.keys())
+    names.extend(
+        name
+        for name in EXTRA_MATPLOTLIB_COLORMAPS
+        if name not in napari_colormaps.ALL_COLORMAPS
+    )
+    return names
+
+
 def create_napari_colormap_from_qcolor(color: QColor, name: str = "custom"):
     """Create a napari Colormap ramp from black to the given QColor."""
     from napari.utils import colormaps as napari_colormaps
@@ -442,10 +497,8 @@ def populate_colormap_combobox(
     combo, include_select_color=True, selected=None, available_colormaps=None
 ):
     """Populate a QComboBox with colormap names and icons."""
-    from napari.utils import colormaps as napari_colormaps
-
     if available_colormaps is None:
-        available_colormaps = list(napari_colormaps.ALL_COLORMAPS.keys())
+        available_colormaps = available_colormap_names()
 
     was_blocked = combo.blockSignals(True)
     try:
@@ -1195,7 +1248,7 @@ def build_group_styles_from_layer_metadata(viewer, layer_names):
             colors[next_gid] = c
             styles[next_gid] = {
                 'style': gstyle,
-                'colormap': gcmap or 'turbo',
+                'colormap': gcmap or 'jet',
                 'color': c,
             }
             next_gid += 1
@@ -1257,7 +1310,7 @@ def save_groups_to_layer_metadata(
             gstyle = style_data.get('style', 'solid')
             group_data['style'] = gstyle
             if gstyle == 'colormap':
-                group_data['colormap'] = style_data.get('colormap', 'turbo')
+                group_data['colormap'] = style_data.get('colormap', 'jet')
         layer.metadata['settings']['group'] = group_data
 
 

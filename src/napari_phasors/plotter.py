@@ -9,11 +9,11 @@ import matplotlib.ticker as ticker
 import numpy as np
 from biaplotter.plotter import CanvasWidget
 from matplotlib.colorbar import Colorbar
-from matplotlib.colors import LinearSegmentedColormap, LogNorm
+from matplotlib.colors import LogNorm
 from matplotlib.lines import Line2D
 from matplotlib.patches import Circle, Patch
 from napari.layers import Image, Labels, Shapes
-from napari.utils import colormaps, notifications
+from napari.utils import notifications
 from phasorpy.lifetime import phasor_from_lifetime
 from phasorpy.phasor import phasor_center as _phasor_center
 from phasorpy.phasor import phasor_to_polar
@@ -55,6 +55,7 @@ from ._utils import (
     StatisticsTableWidget,
     analysis_section_stylesheet,
     apply_filter_and_threshold,
+    available_colormap_names,
     build_group_styles_from_layer_metadata,
     build_groups_from_layer_metadata,
     make_section,
@@ -569,7 +570,7 @@ class ContourLayerSettingsDialog(QDialog):
         self,
         *,
         display_mode="Merged",
-        merged_colormap="turbo",
+        merged_colormap="jet",
         merged_style="colormap",
         merged_color=None,
         show_legend=True,
@@ -599,7 +600,7 @@ class ContourLayerSettingsDialog(QDialog):
         self._group_row_data = []
         self._available_colormaps = list(available_colormaps or [])
         if not self._available_colormaps:
-            self._available_colormaps = list(colormaps.ALL_COLORMAPS.keys())
+            self._available_colormaps = available_colormap_names()
 
         group_assignments = dict(group_assignments or {})
         layer_colors = dict(layer_colors or {})
@@ -881,7 +882,7 @@ class ContourLayerSettingsDialog(QDialog):
         color=None,
         checked_layers=None,
         style="colormap",
-        colormap_name="turbo",
+        colormap_name="jet",
     ):
         default_tab10 = plt.cm.tab10.colors
         idx = len(self._group_row_data)
@@ -2003,10 +2004,10 @@ class PlotterWidget(QWidget):
         # Set contour single-layer defaults before wiring UI signals.
         # Combo-box population can emit callbacks during initialization.
         self._histogram_style = "colormap"
-        self._histogram_colormap_name = "turbo"
+        self._histogram_colormap_name = "jet"
         self._histogram_color = (0.1216, 0.4667, 0.7059)
         self._single_contour_style = "colormap"
-        self._single_contour_colormap = "turbo"
+        self._single_contour_colormap = "jet"
         self._single_contour_color = (0.1216, 0.4667, 0.7059)
         self._preserve_plot_type_on_restore = False
 
@@ -2216,7 +2217,7 @@ class PlotterWidget(QWidget):
         self._populate_main_colormap_combobox(
             selected=self._single_contour_colormap,
         )
-        self.histogram_colormap = "turbo"
+        self.histogram_colormap = "jet"
 
         # Initialize attributes
         self.polar_plot_artist_list = []
@@ -2227,7 +2228,7 @@ class PlotterWidget(QWidget):
         self._contour_group_assignments = {}
         self._contour_group_colors = {}
         self._contour_group_names = {}
-        self._contour_multi_layer_colormap = "turbo"
+        self._contour_multi_layer_colormap = "jet"
         self._contour_merged_style = "colormap"
         self._contour_merged_color = (0.1216, 0.4667, 0.7059)
         self._contour_layer_styles = {}
@@ -2865,12 +2866,12 @@ class PlotterWidget(QWidget):
                 'contour_single_style', 'colormap'
             )
             self._single_contour_colormap = settings.get(
-                'contour_single_colormap', settings.get('colormap', 'turbo')
+                'contour_single_colormap', settings.get('colormap', 'jet')
             )
             self._single_contour_color = tuple(
                 settings.get('contour_single_color', (0.1216, 0.4667, 0.7059))
             )
-            self._histogram_colormap_name = settings.get('colormap', 'turbo')
+            self._histogram_colormap_name = settings.get('colormap', 'jet')
             self._histogram_style = settings.get('histogram_style', 'colormap')
             self._histogram_color = tuple(
                 settings.get('histogram_color', (0.1216, 0.4667, 0.7059))
@@ -3936,7 +3937,7 @@ class PlotterWidget(QWidget):
             group_names=current_group_names,
             layer_styles=current_layer_styles,
             group_styles=current_group_styles,
-            available_colormaps=list(colormaps.ALL_COLORMAPS.keys()),
+            available_colormaps=available_colormap_names(),
             parent=self,
         )
 
@@ -5565,7 +5566,7 @@ class PlotterWidget(QWidget):
     @histogram_colormap.setter
     def histogram_colormap(self, colormap: str):
         """Sets the histogram colormap from the colormap combobox."""
-        if colormap not in colormaps.ALL_COLORMAPS:
+        if resolve_colormap_by_name(colormap) is None:
             notifications.WarningNotification(
                 f"{colormap} is not a valid colormap. Setting to default colormap."
             )
@@ -7532,14 +7533,8 @@ class PlotterWidget(QWidget):
                         )
                     )
                 else:
-                    selected_histogram_colormap = colormaps.ALL_COLORMAPS[
+                    selected_histogram_colormap = resolve_colormap_by_name(
                         self.histogram_colormap
-                    ]
-                    selected_histogram_colormap = (
-                        LinearSegmentedColormap.from_list(
-                            self.histogram_colormap,
-                            selected_histogram_colormap.colors,
-                        )
                     )
                 histogram_artist.histogram_colormap = (
                     selected_histogram_colormap
@@ -7632,9 +7627,9 @@ class PlotterWidget(QWidget):
             )
             if cmap_name == "Select color...":
                 # Sentinel entry for solid style; keep a valid fallback colormap.
-                cmap_name = "turbo"
+                cmap_name = "jet"
         elif cmap_name == "Select color...":
-            cmap_name = self._single_contour_colormap or "turbo"
+            cmap_name = self._single_contour_colormap or "jet"
 
         return resolve_colormap_by_name(cmap_name)
 

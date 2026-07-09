@@ -1066,7 +1066,7 @@ class FretWidget(QWidget):
                         "fret_interp", self.fret_colormap, N=256
                     )
                 else:
-                    colormap = plt.cm.turbo
+                    colormap = plt.cm.jet
 
                 donor_color = colormap(0.0)[:3]
                 background_color = colormap(1.0)[:3]
@@ -1135,7 +1135,7 @@ class FretWidget(QWidget):
                 "fret_interp", self.fret_colormap, N=256
             )
         else:
-            colormap = plt.cm.turbo
+            colormap = plt.cm.jet
 
         if (
             hasattr(self, 'colormap_contrast_limits')
@@ -2024,9 +2024,9 @@ def draw_fret_trajectory_overlay(
             elif isinstance(fret_colormap, list):
                 colormap = ListedColormap(fret_colormap)
             else:
-                colormap = plt.cm.turbo
+                colormap = plt.cm.jet
         else:
-            colormap = plt.cm.turbo
+            colormap = plt.cm.jet
 
         donor_color = colormap(0.0)[:3]
         background_color = colormap(1.0)[:3]
