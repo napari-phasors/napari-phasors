@@ -306,6 +306,106 @@ def test_mask_assignment_dialog_apply_all(make_viewer_model):
     assert assignments["layer_B"] == "mask_2"
 
 
+def test_mask_assignment_dialog_apply_all_defaults_to_placeholder(
+    make_viewer_model,
+):
+    """'Set all to' defaults to 'Select ...' when layers have differing masks."""
+    from napari_phasors.plotter import MaskAssignmentDialog
+
+    image_names = ["layer_A", "layer_B"]
+    mask_names = ["mask_1", "mask_2"]
+    current = {"layer_A": "mask_1", "layer_B": "None"}
+
+    dialog = MaskAssignmentDialog(
+        image_layer_names=image_names,
+        mask_layer_names=mask_names,
+        current_assignments=current,
+        parent=None,
+    )
+
+    assert dialog._apply_all_combo.currentText() == "Select ..."
+    # Selecting the placeholder must not clobber the per-layer assignments.
+    assignments = dialog.get_assignments()
+    assert assignments["layer_A"] == "mask_1"
+    assert assignments["layer_B"] == "None"
+
+    dialog.close()
+
+
+def test_mask_assignment_dialog_apply_all_defaults_to_common_mask(
+    make_viewer_model,
+):
+    """'Set all to' defaults to the shared mask when all layers match."""
+    from napari_phasors.plotter import MaskAssignmentDialog
+
+    image_names = ["layer_A", "layer_B"]
+    mask_names = ["mask_1", "mask_2"]
+    current = {"layer_A": "mask_1", "layer_B": "mask_1"}
+
+    dialog = MaskAssignmentDialog(
+        image_layer_names=image_names,
+        mask_layer_names=mask_names,
+        current_assignments=current,
+        parent=None,
+    )
+
+    assert dialog._apply_all_combo.currentText() == "mask_1"
+
+    dialog.close()
+
+
+def test_mask_assignment_dialog_apply_all_updates_on_per_layer_change(
+    make_viewer_model,
+):
+    """'Set all to' updates live as per-layer mask combos are edited."""
+    from napari_phasors.plotter import MaskAssignmentDialog
+
+    image_names = ["layer_A", "layer_B"]
+    mask_names = ["mask_1", "mask_2"]
+    current = {"layer_A": "mask_1", "layer_B": "mask_1"}
+
+    dialog = MaskAssignmentDialog(
+        image_layer_names=image_names,
+        mask_layer_names=mask_names,
+        current_assignments=current,
+        parent=None,
+    )
+
+    # Starts common, so "Set all to" reflects the shared mask.
+    assert dialog._apply_all_combo.currentText() == "mask_1"
+
+    # Diverging one layer's mask should fall back to the placeholder.
+    dialog._combos["layer_B"].setCurrentText("mask_2")
+    assert dialog._apply_all_combo.currentText() == "Select ..."
+
+    # Making them match again should restore the shared value automatically.
+    dialog._combos["layer_B"].setCurrentText("mask_1")
+    assert dialog._apply_all_combo.currentText() == "mask_1"
+
+    dialog.close()
+
+
+def test_mask_assignment_dialog_apply_all_differing_masks_ignores_stale_choice(
+    make_viewer_model,
+):
+    """Differing per-layer masks always show 'Select ...', never a stale value."""
+    from napari_phasors.plotter import MaskAssignmentDialog
+
+    image_names = ["layer_A", "layer_B"]
+    mask_names = ["mask_1", "mask_2"]
+    current = {"layer_A": "mask_1", "layer_B": "mask_2"}
+
+    dialog = MaskAssignmentDialog(
+        image_layer_names=image_names,
+        mask_layer_names=mask_names,
+        current_assignments=current,
+        parent=None,
+    )
+
+    assert dialog._apply_all_combo.currentText() == "Select ..."
+    dialog.close()
+
+
 def test_apply_mask_assignments_different_masks_per_layer(make_viewer_model):
     """Test that _apply_mask_assignments applies distinct masks to each layer."""
     viewer = make_viewer_model()
