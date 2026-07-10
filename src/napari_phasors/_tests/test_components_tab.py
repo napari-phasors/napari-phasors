@@ -2424,12 +2424,12 @@ def test_center_fill_slider_paint_event_zero_span(qtbot):
     qtbot.addWidget(slider)
     slider.setMinimum(0)
     slider.setMaximum(0)
+    slider.resize(100, 20)
 
-    slider.show()
-    # Forces a synchronous call to paintEvent; the span==0 guard must return
-    # early without error.
-    slider.repaint()
-    slider.close()
+    # QWidget.grab() forces a synchronous paint (unlike repaint(), which
+    # only schedules one on the offscreen platform used in tests); the
+    # span==0 guard must return early without error.
+    slider.grab()
 
 
 def test_restore_fraction_layer_colormaps_applies_gamma(
