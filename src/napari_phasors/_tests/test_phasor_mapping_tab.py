@@ -159,9 +159,12 @@ def test_mesh_alpha_map_is_cached_for_repeated_refreshes(
         'napari_phasors.phasor_mapping_tab.gaussian_filter',
         return_value=blurred_base,
     ) as mock_filter:
-        first = lifetime_widget._get_mesh_alpha_map(mesh_mask, alpha_key, 0.5)
+        ax = parent.canvas_widget.axes
+        first = lifetime_widget._get_mesh_alpha_map(
+            mesh_mask, alpha_key, 0.5, 300, ax
+        )
         second = lifetime_widget._get_mesh_alpha_map(
-            mesh_mask, alpha_key, 0.25
+            mesh_mask, alpha_key, 0.25, 300, ax
         )
 
     assert mock_filter.call_count == 1
@@ -292,7 +295,7 @@ def test_phasor_mapping_widget_canvas_properties(make_viewer_model, qtbot):
     # Access the canvas through the histogram widget directly
     canvas = lifetime_widget.histogram_widget.fig.canvas
     assert isinstance(canvas, FigureCanvasQTAgg)
-    assert canvas.height() == 220  # Minimum canvas height set in the widget
+    assert canvas.height() == 180  # Minimum canvas height set in the widget
 
 
 def test_phasor_mapping_widget_type_changed_no_frequency(

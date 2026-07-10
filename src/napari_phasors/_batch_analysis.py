@@ -257,6 +257,21 @@ DEFAULT_CURSOR_COLORS = [
 ]
 
 
+@contextlib.contextmanager
+def _pipeline_step(step_name):
+    """Annotate any error with the analysis step (tab) that raised it.
+
+    Batch failures are otherwise reported with only the file name and a bare
+    exception message, which does not say which enabled analysis (Calibration,
+    Filter, Components, Phasor Mapping, FRET, Selection) actually failed. This
+    re-raises with that context so the user knows where to look.
+    """
+    try:
+        yield
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"{step_name} failed: {exc}") from exc
+
+
 def apply_pipeline(layer, pipeline):
     """Apply ``pipeline`` to ``layer`` in place and return extra output layers.
 
@@ -276,33 +291,41 @@ def apply_pipeline(layer, pipeline):
     extra_layers = []
 
     if pipeline.calibration is not None:
-        apply_calibration_correction(
-            layer,
-            pipeline.calibration["phi_zero"],
-            pipeline.calibration["mod_zero"],
-        )
+        with _pipeline_step("Calibration"):
+            apply_calibration_correction(
+                layer,
+                pipeline.calibration["phi_zero"],
+                pipeline.calibration["mod_zero"],
+                calibration_harmonics=pipeline.calibration.get("harmonics"),
+            )
 
     if pipeline.filter is not None:
-        apply_filter_and_threshold(layer, **pipeline.filter)
+        with _pipeline_step("Filter / Threshold"):
+            apply_filter_and_threshold(layer, **pipeline.filter)
 
     if pipeline.mask is not None:
-        _apply_image_mask(
-            layer, pipeline.mask["array"], pipeline.mask["invert"]
-        )
+        with _pipeline_step("Image mask"):
+            _apply_image_mask(
+                layer, pipeline.mask["array"], pipeline.mask["invert"]
+            )
 
     if pipeline.components is not None:
-        extra_layers.extend(
-            _apply_component_fraction(layer, pipeline.components)
-        )
+        with _pipeline_step("Components"):
+            extra_layers.extend(
+                _apply_component_fraction(layer, pipeline.components)
+            )
 
     if pipeline.mapping is not None:
-        extra_layers.extend(_apply_phasor_mapping(layer, pipeline.mapping))
+        with _pipeline_step("Phasor Mapping"):
+            extra_layers.extend(_apply_phasor_mapping(layer, pipeline.mapping))
 
     if pipeline.fret is not None:
-        extra_layers.extend(_apply_fret(layer, pipeline.fret))
+        with _pipeline_step("FRET"):
+            extra_layers.extend(_apply_fret(layer, pipeline.fret))
 
     if pipeline.selection is not None:
-        extra_layers.extend(_apply_selection(layer, pipeline.selection))
+        with _pipeline_step("Selection"):
+            extra_layers.extend(_apply_selection(layer, pipeline.selection))
 
     return extra_layers
 
@@ -2661,7 +2684,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         mesh_container.setLayout(mesh_row)
         top_form.addRow("Mesh overlay:", mesh_container)
 
-        self.mapping_mesh_colormap_combo = self._make_colormap_combo("hsv")
+        self.mapping_mesh_colormap_combo = self._make_colormap_combo("jet")
         top_form.addRow(
             "Mesh/color colormap:", self.mapping_mesh_colormap_combo
         )
@@ -4481,9 +4504,15 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         else:
             name = dialog.selected_layer()
             if name and name in self.viewer.layers:
-                settings = dict(
-                    self.viewer.layers[name].metadata.get("settings", {})
-                )
+                layer_metadata = self.viewer.layers[name].metadata
+                settings = dict(layer_metadata.get("settings", {}))
+                # Harmonics live on the layer, not in its settings dict; expose
+                # them so a copied calibration can be matched to targets by
+                # harmonic value.
+                if layer_metadata.get("harmonics") is not None:
+                    settings.setdefault(
+                        "harmonics", layer_metadata["harmonics"]
+                    )
         if not settings:
             show_error("No settings found in the selected source.")
             return
@@ -4583,6 +4612,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             self._copied_calibration = {
                 "phi_zero": np.asarray(settings["calibration_phase"]),
                 "mod_zero": np.asarray(settings["calibration_modulation"]),
+                "harmonics": settings.get("harmonics"),
             }
             self.calibration_group.setChecked(True)
             index = self.calib_source_combo.findData("copied")
@@ -4788,6 +4818,41 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
 
     def _apply_component_settings_to_ui(self, settings):
         component_analysis = settings.get("component_analysis") or {}
+
+        # Copy the persisted phasor-plot line / fraction-histogram overlay
+        # style so an exported plot matches what was configured interactively.
+        # User edits are saved under ``two_component_line_settings`` (older
+        # metadata used ``line_settings``).
+        line_settings = (
+            component_analysis.get("two_component_line_settings")
+            or component_analysis.get("line_settings")
+            or {}
+        )
+        for key in (
+            "show_colormap_line",
+            "show_component_dots",
+            "line_offset",
+            "line_width",
+            "line_alpha",
+            "default_component_color",
+            "show_fraction_histogram",
+            "histogram_overlay_height",
+            "histogram_offset",
+            "histogram_alpha",
+        ):
+            if key in line_settings:
+                self._component_line_style[key] = line_settings[key]
+
+        # Same for the component label font style.
+        label_settings = (
+            component_analysis.get("two_components_label_settings")
+            or component_analysis.get("label_settings")
+            or {}
+        )
+        for key in ("fontsize", "bold", "italic", "color"):
+            if key in label_settings:
+                self._component_label_style[key] = label_settings[key]
+
         components = component_analysis.get("components") or {}
         if not components:
             return
@@ -4824,6 +4889,17 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self._set_component_rows(parsed)
         self._set_component_harmonic_coords(per_harmonic)
         self.components_group.setChecked(True)
+
+        # Restore the analysis type. Rebuilding the rows transiently drops the
+        # count below 2, which forces the combo off "Linear Projection"; if the
+        # source used Linear Projection, that would otherwise silently switch
+        # the export to a Component Fit and drop the colormap line / fraction
+        # histogram overlay (both Linear-Projection-only).
+        analysis_type = component_analysis.get("analysis_type")
+        if analysis_type:
+            index = self.analysis_type_combo.findText(analysis_type)
+            if index >= 0:
+                self.analysis_type_combo.setCurrentIndex(index)
 
     # -- Pipeline building -------------------------------------------------
 
@@ -5084,7 +5160,13 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             phi_zero, mod_zero = compute_calibration_parameters(
                 reference, frequency, lifetime
             )
-            return {"*": {"phi_zero": phi_zero, "mod_zero": mod_zero}}
+            return {
+                "*": {
+                    "phi_zero": phi_zero,
+                    "mod_zero": mod_zero,
+                    "harmonics": reference.metadata.get("harmonics"),
+                }
+            }
 
         # Per-subfolder references.
         result = {}
@@ -5099,7 +5181,11 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             phi_zero, mod_zero = compute_calibration_parameters(
                 reference, frequency, lifetime
             )
-            result[key] = {"phi_zero": phi_zero, "mod_zero": mod_zero}
+            result[key] = {
+                "phi_zero": phi_zero,
+                "mod_zero": mod_zero,
+                "harmonics": reference.metadata.get("harmonics"),
+            }
         if not result:
             raise ValueError(
                 "No subfolders found to assign references. Scan a folder and "
@@ -5408,9 +5494,12 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self.progress_bar.setVisible(False)
         summary = f"Batch complete: {processed}/{len(files)} files processed."
         if failed:
-            names = ", ".join(name for name, _ in failed)
-            summary += f" Failed: {names}."
-            show_error(summary)
+            summary += f" {len(failed)} failed."
+            # Show which file failed and at which step (e.g. "Components
+            # failed: ...") so the user knows which tab to fix, rather than a
+            # bare list of file names.
+            details = "\n".join(f"  • {name}: {msg}" for name, msg in failed)
+            show_error(f"{summary}\n{details}")
         else:
             show_info(summary)
         self.status_label.setText(summary)
@@ -6873,7 +6962,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "kind": "mapping",
             "color_by": mapping.get("color_by", "None"),
             "mesh": None,
-            "mesh_colormap": mapping.get("mesh_colormap", "hsv"),
+            "mesh_colormap": mapping.get("mesh_colormap", "jet"),
             "mesh_alpha": mapping.get("mesh_alpha", 0.45),
             "mesh_phase_range": mapping.get("mesh_phase_range"),
             "mesh_modulation_range": mapping.get("mesh_modulation_range"),
@@ -7489,7 +7578,7 @@ def _save_phasor_plot_png(
         _draw_phase_modulation_mesh(
             plot,
             mapping_overlay["mesh"],
-            mapping_overlay.get("mesh_colormap") or "hsv",
+            mapping_overlay.get("mesh_colormap") or "jet",
             mapping_overlay.get("mesh_alpha", 0.45),
             display.get("semi_circle", True),
             phase_range=mapping_overlay.get("mesh_phase_range"),
@@ -7515,7 +7604,7 @@ def _save_phasor_plot_png(
             phase, modulation = phasor_to_polar(real, imag)
         color_by = mapping_overlay["color_by"]
         metric = phase if color_by == "Phase" else modulation
-        metric_cmap = mapping_overlay.get("mesh_colormap") or "hsv"
+        metric_cmap = mapping_overlay.get("mesh_colormap") or "jet"
         # Use the same color range as the phase/modulation mesh so the colored
         # data and the mesh represent identical values with identical colors.
         metric_range = (
@@ -7814,9 +7903,9 @@ def _color_plot_by_metric(
 
     resolved = cmap
     if resolved is None or isinstance(resolved, str):
-        resolved = resolve_colormap_by_name(resolved or "hsv")
+        resolved = resolve_colormap_by_name(resolved or "jet")
     if resolved is None:
-        resolved = resolve_colormap_by_name("hsv")
+        resolved = resolve_colormap_by_name("jet")
 
     vmin = vmax = None
     if value_range is not None and value_range[0] < value_range[1]:
@@ -7963,7 +8052,7 @@ def _save_grouped_overlay_plot(
         _draw_phase_modulation_mesh(
             plot,
             mapping_overlay["mesh"],
-            mapping_overlay.get("mesh_colormap") or "hsv",
+            mapping_overlay.get("mesh_colormap") or "jet",
             mapping_overlay.get("mesh_alpha", 0.45),
             display.get("semi_circle", True),
             phase_range=mapping_overlay.get("mesh_phase_range"),
@@ -8051,7 +8140,7 @@ def _save_combined_contour(
         _draw_phase_modulation_mesh(
             plot,
             mapping_overlay["mesh"],
-            mapping_overlay.get("mesh_colormap") or "hsv",
+            mapping_overlay.get("mesh_colormap") or "jet",
             mapping_overlay.get("mesh_alpha", 0.45),
             display.get("semi_circle", True),
             phase_range=mapping_overlay.get("mesh_phase_range"),

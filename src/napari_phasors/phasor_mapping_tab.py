@@ -84,6 +84,31 @@ def compute_phasor_mesh_mask(
     return mask
 
 
+def _resolve_mesh_blur_sigma(ax, resolution, target_px=1.2, floor=1.5):
+    """Return the alpha-mask blur sigma (grid-cell units) for a mesh edge.
+
+    The mesh's edge anti-aliasing works by Gaussian-blurring the boolean
+    exclusion mask, then letting Matplotlib's Lanczos resampling downscale
+    that to display pixels. Sigma has to be picked in *display-pixel* terms
+    (``target_px``) and converted to grid cells via ``resolution /
+    display_px``, not left as a flat constant: at a fixed sigma, a
+    high-resolution grid (this widget scales it up to 1280 for on-screen
+    sharpness) has cells much smaller than a display pixel, so the blur band
+    becomes sub-pixel and Lanczos-resamples into a ringing/dashed edge
+    instead of a smooth fade -- most visible on shallow-angle mesh
+    boundaries (e.g. a phase limit near the real axis). ``floor`` keeps a
+    minimum blur even when the grid is coarser than the display (e.g. the
+    default low-resolution grid), where the ratio alone would undershoot.
+    """
+    display_px = 0.0
+    with contextlib.suppress(Exception):
+        bbox = ax.get_window_extent()
+        display_px = max(float(bbox.width), float(bbox.height))
+    if display_px <= 0:
+        return max(floor, target_px * resolution / _DEFAULT_MESH_RESOLUTION)
+    return max(floor, target_px * resolution / display_px)
+
+
 def draw_phasor_mesh(
     ax,
     kind,
@@ -201,8 +226,9 @@ def draw_phasor_mesh(
     mesh_cmap.set_bad((0, 0, 0, 0))
 
     if alpha_map is None:
+        sigma = _resolve_mesh_blur_sigma(ax, resolution)
         alpha_base = gaussian_filter(
-            (~mask).astype(float), sigma=1.2, mode="nearest"
+            (~mask).astype(float), sigma=sigma, mode="nearest"
         )
         alpha_map = np.clip(alpha_base, 0.0, 1.0) * alpha
 
@@ -2154,7 +2180,9 @@ class PhasorMappingWidget(QWidget):
 
         return grid
 
-    def _get_mesh_alpha_map(self, mesh_mask, alpha_key, mesh_alpha: float):
+    def _get_mesh_alpha_map(
+        self, mesh_mask, alpha_key, mesh_alpha: float, resolution: int, ax
+    ):
         cached = self._mesh_alpha_cache.get(alpha_key)
         if cached is not None:
             with contextlib.suppress(ValueError):
@@ -2162,8 +2190,11 @@ class PhasorMappingWidget(QWidget):
             self._mesh_alpha_cache_order.append(alpha_key)
             return cached * mesh_alpha
 
+        # See ``_resolve_mesh_blur_sigma`` for why sigma must be resolved
+        # from the actual display size rather than left as a flat constant.
+        sigma = _resolve_mesh_blur_sigma(ax, resolution)
         alpha_base = gaussian_filter(
-            (~mesh_mask).astype(float), sigma=1.2, mode="nearest"
+            (~mesh_mask).astype(float), sigma=sigma, mode="nearest"
         )
         alpha_base = np.clip(alpha_base, 0.0, 1.0)
         self._mesh_alpha_cache[alpha_key] = alpha_base
@@ -2286,6 +2317,8 @@ class PhasorMappingWidget(QWidget):
                 mesh_mask,
                 alpha_key,
                 mesh_alpha,
+                resolution,
+                ax,
             )
 
             self._remove_mesh_overlay()

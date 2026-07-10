@@ -1066,24 +1066,75 @@ class ComponentsWidget(QWidget):
         return {
             'analysis_type': 'Linear Projection',
             'components': {},
-            'line_settings': {
+            # NOTE: keys here must match the ones written by
+            # ``_on_plot_setting_changed`` / ``_pick_label_color`` and read by
+            # the restore methods, otherwise edits are persisted under one key
+            # but restored from another (and never re-applied).
+            'two_component_line_settings': {
                 'show_colormap_line': True,
                 'show_component_dots': True,
                 'line_offset': 0.0,
                 'line_width': 3.0,
                 'line_alpha': 1.0,
+                'default_component_color': 'dimgray',
                 'show_fraction_histogram': False,
                 'histogram_overlay_height': 0.3,
                 'histogram_offset': 0.0,
                 'histogram_alpha': 0.75,
             },
-            'label_settings': {
+            'two_components_label_settings': {
                 'fontsize': 10,
                 'bold': False,
                 'italic': False,
                 'color': 'black',
             },
         }
+
+    def _restore_line_and_label_settings(self, settings):
+        """Restore the two-component line / histogram-overlay and label styles.
+
+        User edits are persisted under ``two_component_line_settings`` and
+        ``two_components_label_settings`` (see ``_on_plot_setting_changed`` and
+        ``_pick_label_color``). Older metadata used ``line_settings`` /
+        ``label_settings``, so fall back to those for backward compatibility.
+        """
+        line_settings = (
+            settings.get('two_component_line_settings')
+            or settings.get('line_settings')
+            or {}
+        )
+        if line_settings:
+            self.show_colormap_line = line_settings.get(
+                'show_colormap_line', True
+            )
+            self.show_component_dots = line_settings.get(
+                'show_component_dots', True
+            )
+            self.line_offset = line_settings.get('line_offset', 0.0)
+            self.line_width = line_settings.get('line_width', 3.0)
+            self.line_alpha = line_settings.get('line_alpha', 1.0)
+            self.default_component_color = line_settings.get(
+                'default_component_color', 'dimgray'
+            )
+            self.show_fraction_histogram = line_settings.get(
+                'show_fraction_histogram', False
+            )
+            self.histogram_overlay_height = line_settings.get(
+                'histogram_overlay_height', 0.3
+            )
+            self.histogram_offset = line_settings.get('histogram_offset', 0.0)
+            self.histogram_alpha = line_settings.get('histogram_alpha', 0.75)
+
+        label_settings = (
+            settings.get('two_components_label_settings')
+            or settings.get('label_settings')
+            or {}
+        )
+        if label_settings:
+            self.label_fontsize = label_settings.get('fontsize', 10)
+            self.label_bold = label_settings.get('bold', False)
+            self.label_italic = label_settings.get('italic', False)
+            self.label_color = label_settings.get('color', 'black')
 
     def _update_components_setting_in_metadata(self, key_path, value):
         """Update a specific component setting in the current layer's metadata."""
@@ -1230,36 +1281,7 @@ class ComponentsWidget(QWidget):
                         if g is not None and s is not None:
                             self._create_component_at_coordinates(idx, g, s)
 
-            if 'line_settings' in settings:
-                line_settings = settings['line_settings']
-                self.show_colormap_line = line_settings.get(
-                    'show_colormap_line', True
-                )
-                self.show_component_dots = line_settings.get(
-                    'show_component_dots', True
-                )
-                self.line_offset = line_settings.get('line_offset', 0.0)
-                self.line_width = line_settings.get('line_width', 3.0)
-                self.line_alpha = line_settings.get('line_alpha', 1.0)
-                self.show_fraction_histogram = line_settings.get(
-                    'show_fraction_histogram', False
-                )
-                self.histogram_overlay_height = line_settings.get(
-                    'histogram_overlay_height', 0.3
-                )
-                self.histogram_offset = line_settings.get(
-                    'histogram_offset', 0.0
-                )
-                self.histogram_alpha = line_settings.get(
-                    'histogram_alpha', 0.75
-                )
-
-            if 'label_settings' in settings:
-                label_settings = settings['label_settings']
-                self.label_fontsize = label_settings.get('fontsize', 10)
-                self.label_bold = label_settings.get('bold', False)
-                self.label_italic = label_settings.get('italic', False)
-                self.label_color = label_settings.get('color', 'black')
+            self._restore_line_and_label_settings(settings)
 
             # Draw visual elements (lines between components) but do NOT
             # run analysis or create fraction layers.
@@ -1401,36 +1423,7 @@ class ComponentsWidget(QWidget):
                         if g is not None and s is not None:
                             self._create_component_at_coordinates(idx, g, s)
 
-            if 'line_settings' in settings:
-                line_settings = settings['line_settings']
-                self.show_colormap_line = line_settings.get(
-                    'show_colormap_line', True
-                )
-                self.show_component_dots = line_settings.get(
-                    'show_component_dots', True
-                )
-                self.line_offset = line_settings.get('line_offset', 0.0)
-                self.line_width = line_settings.get('line_width', 3.0)
-                self.line_alpha = line_settings.get('line_alpha', 1.0)
-                self.show_fraction_histogram = line_settings.get(
-                    'show_fraction_histogram', False
-                )
-                self.histogram_overlay_height = line_settings.get(
-                    'histogram_overlay_height', 0.3
-                )
-                self.histogram_offset = line_settings.get(
-                    'histogram_offset', 0.0
-                )
-                self.histogram_alpha = line_settings.get(
-                    'histogram_alpha', 0.75
-                )
-
-            if 'label_settings' in settings:
-                label_settings = settings['label_settings']
-                self.label_fontsize = label_settings.get('fontsize', 10)
-                self.label_bold = label_settings.get('bold', False)
-                self.label_italic = label_settings.get('italic', False)
-                self.label_color = label_settings.get('color', 'black')
+            self._restore_line_and_label_settings(settings)
 
             components_created = [
                 c
@@ -1840,6 +1833,10 @@ class ComponentsWidget(QWidget):
                 f"background-color: {self.default_component_color}; border: 1px solid black;"
             )
 
+            self._update_components_setting_in_metadata(
+                'two_component_line_settings.default_component_color',
+                self.default_component_color,
+            )
             self._on_plot_setting_changed()
 
     def _update_analysis_options(self):
@@ -2411,6 +2408,15 @@ class ComponentsWidget(QWidget):
         self.label_fontsize = self.fontsize_spin.value()
         self.label_bold = self.bold_checkbox.isChecked()
         self.label_italic = self.italic_checkbox.isChecked()
+        self._update_components_setting_in_metadata(
+            'two_components_label_settings.fontsize', self.label_fontsize
+        )
+        self._update_components_setting_in_metadata(
+            'two_components_label_settings.bold', self.label_bold
+        )
+        self._update_components_setting_in_metadata(
+            'two_components_label_settings.italic', self.label_italic
+        )
         self._apply_styles_to_labels()
 
     def _apply_styles_to_labels(self):

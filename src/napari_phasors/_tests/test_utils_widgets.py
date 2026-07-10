@@ -1573,7 +1573,7 @@ def test_histogram_widget_taller_default_canvas_height(qtbot):
     """The histogram canvas has an increased minimum height."""
     widget = HistogramWidget()
     qtbot.addWidget(widget)
-    assert widget.fig.canvas.minimumHeight() >= 220
+    assert widget.fig.canvas.minimumHeight() >= 180
 
 
 def test_statistics_dock_export_csv(qtbot, tmp_path, monkeypatch):

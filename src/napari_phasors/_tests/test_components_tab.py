@@ -742,17 +742,26 @@ def test_components_widget_default_settings_structure(
     assert default_settings['analysis_type'] == 'Linear Projection'
     assert 'components' in default_settings
     assert isinstance(default_settings['components'], dict)
-    assert 'line_settings' in default_settings
-    assert 'show_colormap_line' in default_settings['line_settings']
-    assert 'show_component_dots' in default_settings['line_settings']
-    assert 'line_offset' in default_settings['line_settings']
-    assert 'line_width' in default_settings['line_settings']
-    assert 'line_alpha' in default_settings['line_settings']
-    assert 'label_settings' in default_settings
-    assert 'fontsize' in default_settings['label_settings']
-    assert 'bold' in default_settings['label_settings']
-    assert 'italic' in default_settings['label_settings']
-    assert 'color' in default_settings['label_settings']
+    # The default keys must match the ones edits are persisted under, so the
+    # restore path re-applies them (see ``_restore_line_and_label_settings``).
+    line_key = 'two_component_line_settings'
+    assert line_key in default_settings
+    assert 'show_colormap_line' in default_settings[line_key]
+    assert 'show_component_dots' in default_settings[line_key]
+    assert 'line_offset' in default_settings[line_key]
+    assert 'line_width' in default_settings[line_key]
+    assert 'line_alpha' in default_settings[line_key]
+    assert 'default_component_color' in default_settings[line_key]
+    assert 'show_fraction_histogram' in default_settings[line_key]
+    assert 'histogram_overlay_height' in default_settings[line_key]
+    assert 'histogram_offset' in default_settings[line_key]
+    assert 'histogram_alpha' in default_settings[line_key]
+    label_key = 'two_components_label_settings'
+    assert label_key in default_settings
+    assert 'fontsize' in default_settings[label_key]
+    assert 'bold' in default_settings[label_key]
+    assert 'italic' in default_settings[label_key]
+    assert 'color' in default_settings[label_key]
 
 
 def test_components_widget_style_state_initialization(
@@ -1763,6 +1772,66 @@ def test_components_restore_ui_only_from_metadata(make_viewer_model, qtbot):
     assert comp.label_bold is True
     assert comp.line_width == 2.0
     assert comp.show_colormap_line is False
+
+
+def test_components_restore_line_and_histogram_overlay_settings(
+    make_viewer_model, qtbot
+):
+    """Line + fraction-histogram overlay settings round-trip via metadata.
+
+    User edits are persisted under ``two_component_line_settings``; the restore
+    path must read that key (regression: it previously only read the unused
+    ``line_settings`` key, so overlay settings were never re-applied).
+    """
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    layer.metadata["settings"]["component_analysis"] = {
+        "analysis_type": "Linear Projection",
+        "last_analysis_harmonic": 1,
+        "components": {
+            "0": {
+                "name": "Comp A",
+                "gs_harmonics": {"1": {"g": 0.6, "s": 0.3}},
+            },
+            "1": {
+                "name": "Comp B",
+                "gs_harmonics": {"1": {"g": 0.3, "s": 0.2}},
+            },
+        },
+        "two_component_line_settings": {
+            "show_colormap_line": True,
+            "show_component_dots": False,
+            "line_offset": 0.07,
+            "line_width": 4.5,
+            "line_alpha": 0.6,
+            "default_component_color": "#abcdef",
+            "show_fraction_histogram": True,
+            "histogram_overlay_height": 0.42,
+            "histogram_offset": -0.15,
+            "histogram_alpha": 0.55,
+        },
+        "two_components_label_settings": {
+            "fontsize": 16,
+            "bold": True,
+            "italic": True,
+            "color": "red",
+        },
+    }
+
+    comp._restore_components_ui_only_from_metadata()
+
+    assert comp.show_component_dots is False
+    assert comp.line_offset == 0.07
+    assert comp.line_width == 4.5
+    assert comp.line_alpha == 0.6
+    assert comp.default_component_color == "#abcdef"
+    assert comp.show_fraction_histogram is True
+    assert comp.histogram_overlay_height == 0.42
+    assert comp.histogram_offset == -0.15
+    assert comp.histogram_alpha == 0.55
+    assert comp.label_fontsize == 16
+    assert comp.label_bold is True
+    assert comp.label_italic is True
+    assert comp.label_color == "red"
 
 
 def test_components_restore_and_recreate_linear_projection(

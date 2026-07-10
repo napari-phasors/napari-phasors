@@ -279,6 +279,97 @@ def test_calibration_same_for_all(qtbot, make_viewer_model):
     assert not np.array_equal(before, target.metadata["G"])
 
 
+def _make_single_harmonic_layer():
+    from napari.layers import Image
+
+    layer = Image(np.zeros((4, 4)), name="single_harmonic")
+    layer.metadata.update(
+        {
+            "harmonics": [1],
+            "G_original": np.full((1, 4, 4), 0.5),
+            "S_original": np.full((1, 4, 4), 0.3),
+            "G": np.full((1, 4, 4), 0.5),
+            "S": np.full((1, 4, 4), 0.3),
+        }
+    )
+    return layer
+
+
+def test_apply_calibration_correction_reports_harmonic_mismatch():
+    """A calibration with a different harmonic count fails with a clear error.
+
+    Regression: previously this surfaced as a cryptic numpy broadcasting error
+    ("operands could not be broadcast together with shapes ...").
+    """
+    from napari_phasors._utils import apply_calibration_correction
+
+    layer = _make_single_harmonic_layer()
+    with pytest.raises(ValueError, match=r"calibration has 2 harmonic"):
+        apply_calibration_correction(
+            layer, np.array([0.1, 0.2]), np.array([1.0, 1.1])
+        )
+
+
+def test_apply_calibration_correction_single_harmonic_array():
+    """A matching single-harmonic (length-1) calibration array applies cleanly."""
+    from napari_phasors._utils import apply_calibration_correction
+
+    layer = _make_single_harmonic_layer()
+    apply_calibration_correction(layer, np.array([0.1]), np.array([1.0]))
+    assert layer.metadata["settings"]["calibrated"] is True
+    assert layer.metadata["G"].shape == (1, 4, 4)
+
+
+def _make_two_harmonic_layer():
+    from napari.layers import Image
+
+    layer = Image(np.zeros((4, 4)), name="two_harmonic")
+    layer.metadata.update(
+        {
+            "harmonics": [1, 2],
+            "G_original": np.full((2, 4, 4), 0.5),
+            "S_original": np.full((2, 4, 4), 0.3),
+            "G": np.full((2, 4, 4), 0.5),
+            "S": np.full((2, 4, 4), 0.3),
+        }
+    )
+    return layer
+
+
+def test_apply_calibration_uses_matching_harmonic_subset():
+    """A [1, 2] calibration applied to a [1] file uses only harmonic 1."""
+    from napari_phasors._utils import apply_calibration_correction
+
+    layer = _make_single_harmonic_layer()
+    apply_calibration_correction(
+        layer,
+        np.array([0.1, 0.9]),
+        np.array([1.0, 2.0]),
+        calibration_harmonics=[1, 2],
+    )
+    assert layer.metadata["settings"]["calibrated"] is True
+    # Only the harmonic-1 correction is kept/stored, not the harmonic-2 one.
+    assert layer.metadata["settings"]["calibration_phase"] == [0.1]
+    assert layer.metadata["settings"]["calibration_modulation"] == [1.0]
+    assert layer.metadata["G"].shape == (1, 4, 4)
+
+
+def test_apply_calibration_errors_on_uncovered_harmonic():
+    """A file needing a harmonic the calibration lacks raises a clear error."""
+    from napari_phasors._utils import apply_calibration_correction
+
+    layer = _make_two_harmonic_layer()
+    with pytest.raises(
+        ValueError, match=r"does not include harmonic\(s\) \[2\]"
+    ):
+        apply_calibration_correction(
+            layer,
+            np.array([0.1]),
+            np.array([1.0]),
+            calibration_harmonics=[1],
+        )
+
+
 def test_calibration_per_subfolder(qtbot, make_viewer_model, tmp_path):
     in_root = tmp_path / "in"
     (in_root / "cond1").mkdir(parents=True)
@@ -3172,6 +3263,135 @@ def test_default_component_line_style_exposes_colormap_gamma():
     from napari_phasors._batch_analysis import default_component_line_style
 
     assert default_component_line_style()["colormap_gamma"] == 1.0
+
+
+def test_apply_component_settings_copies_line_and_overlay_style(
+    qtbot, make_viewer_model
+):
+    """Copying settings applies the persisted line / histogram overlay style.
+
+    Regression: the exported phasor plot ignored the interactively configured
+    line and fraction-histogram overlay because ``_apply_component_settings_to_ui``
+    only read the component coordinates, not ``two_component_line_settings``.
+    """
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+
+    settings = {
+        "component_analysis": {
+            "components": {
+                "0": {
+                    "name": "C1",
+                    "gs_harmonics": {"1": {"g": 0.2, "s": 0.3}},
+                },
+                "1": {
+                    "name": "C2",
+                    "gs_harmonics": {"1": {"g": 0.7, "s": 0.4}},
+                },
+            },
+            "two_component_line_settings": {
+                "show_colormap_line": True,
+                "show_component_dots": False,
+                "line_offset": 0.09,
+                "line_width": 5.5,
+                "line_alpha": 0.7,
+                "default_component_color": "#abcdef",
+                "show_fraction_histogram": True,
+                "histogram_overlay_height": 0.44,
+                "histogram_offset": -0.2,
+                "histogram_alpha": 0.6,
+            },
+            "two_components_label_settings": {
+                "fontsize": 18,
+                "bold": True,
+                "italic": True,
+                "color": "red",
+            },
+        }
+    }
+
+    widget._apply_settings_to_ui(settings)
+
+    style = widget._component_line_style
+    assert style["show_component_dots"] is False
+    assert style["line_offset"] == 0.09
+    assert style["line_width"] == 5.5
+    assert style["line_alpha"] == 0.7
+    assert style["default_component_color"] == "#abcdef"
+    assert style["show_fraction_histogram"] is True
+    assert style["histogram_overlay_height"] == 0.44
+    assert style["histogram_offset"] == -0.2
+    assert style["histogram_alpha"] == 0.6
+
+    label_style = widget._component_label_style
+    assert label_style["fontsize"] == 18
+    assert label_style["bold"] is True
+    assert label_style["italic"] is True
+    assert label_style["color"] == "red"
+
+
+def test_apply_component_settings_restores_linear_projection_type(
+    qtbot, make_viewer_model
+):
+    """Copying a Linear Projection keeps the exported colormap line / histogram.
+
+    Regression: rebuilding the component rows dropped the analysis type back to
+    "Component Fit", so ``_collect_components`` produced a "fit" config and
+    ``draw_components_overlay`` skipped the (Linear-Projection-only) colormap
+    line and fraction-histogram overlay even with their checkboxes on.
+    """
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+
+    settings = {
+        "component_analysis": {
+            "analysis_type": "Linear Projection",
+            "components": {
+                "0": {
+                    "name": "A",
+                    "gs_harmonics": {"1": {"g": 0.8, "s": 0.3}},
+                },
+                "1": {
+                    "name": "B",
+                    "gs_harmonics": {"1": {"g": 0.2, "s": 0.3}},
+                },
+            },
+            "two_component_line_settings": {
+                "show_colormap_line": True,
+                "show_fraction_histogram": True,
+            },
+        }
+    }
+
+    widget._apply_settings_to_ui(settings)
+
+    assert widget.analysis_type_combo.currentText() == "Linear Projection"
+    config = widget.build_pipeline([1]).components
+    assert config["analysis_type"] == "linear"
+
+
+def test_pipeline_step_annotates_error_with_step_name():
+    """A failing step is re-raised with the analysis (tab) name for context."""
+    from napari_phasors._batch_analysis import _pipeline_step
+
+    with pytest.raises(RuntimeError, match=r"Components failed: boom"):
+        with _pipeline_step("Components"):
+            raise ValueError("boom")
+
+
+def test_apply_pipeline_reports_which_step_failed(monkeypatch):
+    """``apply_pipeline`` surfaces which enabled step raised, not a bare error."""
+    from napari_phasors import _batch_analysis as ba
+
+    pipeline = ba.BatchPipeline(fret={"donor_lifetime": 3.0})
+
+    def boom(*args, **kwargs):
+        raise ValueError("kaboom")
+
+    monkeypatch.setattr(ba, "_apply_fret", boom)
+
+    with pytest.raises(RuntimeError, match=r"FRET failed: kaboom"):
+        ba.apply_pipeline(object(), pipeline)
 
 
 def test_draw_components_overlay_plain_line_and_polygon():

@@ -2397,7 +2397,7 @@ class HistogramWidget(QWidget):
         ylabel: str = "Pixel count",
         bins: int = 150,
         default_colormap_name: str = "plasma",
-        canvas_height: int = 220,
+        canvas_height: int = 180,
         range_slider_enabled: bool = False,
         range_label_prefix: str = "Range",
         range_factor: int = 1000,
@@ -3768,7 +3768,7 @@ class HistogramDockWidget(QWidget):
         self.histogram_widget = histogram_widget
         self._stats_dock = None
 
-        self.setMinimumHeight(220)
+        self.setMinimumHeight(250)
         self.setMinimumWidth(300)
 
         layout = QVBoxLayout(self)
@@ -4201,6 +4201,12 @@ def read_ome_tiff_settings(file_path):
                 )
                 for key, value in napari_phasors_settings.items():
                     settings[key] = value
+                # Expose the file's harmonics alongside the real settings so a
+                # copied calibration can be matched to targets by harmonic.
+                # Only added when napari-phasors settings exist, so a file
+                # with no settings still reads back as empty.
+                if attrs.get("harmonic") is not None:
+                    settings.setdefault("harmonics", attrs["harmonic"])
         except (json.JSONDecodeError, KeyError):
             pass
     return settings
@@ -4257,7 +4263,25 @@ def compute_calibration_parameters(
     return phi_zero, mod_zero
 
 
-def apply_calibration_correction(layer, phi_zero, mod_zero):
+def _normalize_harmonics(values):
+    """Return ``values`` as a flat list of plain ints (best effort).
+
+    Harmonics read from metadata are often numpy integers; converting to
+    Python ints keeps dict lookups and user-facing messages clean (``2``
+    rather than ``np.int64(2)``).
+    """
+    result = []
+    for value in np.ravel(np.atleast_1d(values)):
+        try:
+            result.append(int(value))
+        except (TypeError, ValueError):
+            result.append(value)
+    return result
+
+
+def apply_calibration_correction(
+    layer, phi_zero, mod_zero, calibration_harmonics=None
+):
     """Apply a phasor calibration correction to a layer in place.
 
     Applies the polar correction ``(phi_zero, mod_zero)`` to both the
@@ -4272,33 +4296,81 @@ def apply_calibration_correction(layer, phi_zero, mod_zero):
         Phase correction parameter (per harmonic).
     mod_zero : float or numpy.ndarray
         Modulation correction parameter (per harmonic).
+    calibration_harmonics : sequence of int, optional
+        The harmonic each ``phi_zero`` / ``mod_zero`` value corresponds to.
+        When given, the correction is matched to the layer's harmonics *by
+        value*: only the calibration for the harmonics the layer actually has
+        is applied (e.g. a ``[1, 2]`` calibration applied to a single-harmonic
+        ``[1]`` file uses just the harmonic-1 correction). A :class:`ValueError`
+        is raised if the layer needs a harmonic the calibration does not cover.
+        When ``None`` (calibration harmonics unknown), the values are treated
+        positionally and must match the layer's harmonic count.
     """
     from phasorpy.phasor import phasor_transform
 
     metadata = layer.metadata
-    harmonics = np.atleast_1d(metadata.get("harmonics"))
+    harmonics = _normalize_harmonics(metadata.get("harmonics"))
     g_original = metadata["G_original"]
     s_original = metadata["S_original"]
     g_current = metadata["G"]
     s_current = metadata["S"]
 
-    if isinstance(phi_zero, list):
-        phi_zero = np.array(phi_zero)
-    if isinstance(mod_zero, list):
-        mod_zero = np.array(mod_zero)
+    if np.ndim(phi_zero) > 0:
+        phi_arr = np.ravel(np.asarray(phi_zero, dtype=float))
+        mod_arr = np.ravel(np.asarray(mod_zero, dtype=float))
 
-    if g_original.ndim > 1 and len(harmonics) > 1:
-        spatial_dims = g_original.ndim - 1
-        expand_shape = (slice(None),) + (None,) * spatial_dims
-        if np.ndim(phi_zero) > 0:
-            phi_expanded = phi_zero[expand_shape]
-            mod_expanded = mod_zero[expand_shape]
+        cal_harmonics = None
+        if calibration_harmonics is not None:
+            cal_harmonics = _normalize_harmonics(calibration_harmonics)
+            # Ignore inconsistent labels and fall back to positional matching.
+            if len(cal_harmonics) != len(phi_arr):
+                cal_harmonics = None
+
+        if cal_harmonics is not None:
+            # Match by harmonic value: keep only the calibration for the
+            # harmonics this file actually has, and error if any file harmonic
+            # is not covered by the calibration.
+            phi_map = dict(zip(cal_harmonics, phi_arr, strict=True))
+            mod_map = dict(zip(cal_harmonics, mod_arr, strict=True))
+            missing = [h for h in harmonics if h not in phi_map]
+            if missing:
+                raise ValueError(
+                    f"the calibration does not include harmonic(s) {missing} "
+                    f"needed by this file (calibration covers harmonics "
+                    f"{cal_harmonics}). Recompute or copy a calibration that "
+                    "includes these harmonics."
+                )
+            phi_sel = np.array([phi_map[h] for h in harmonics], dtype=float)
+            mod_sel = np.array([mod_map[h] for h in harmonics], dtype=float)
         else:
-            phi_expanded = phi_zero
-            mod_expanded = mod_zero
+            # Calibration harmonics unknown: require a positional 1:1 match so
+            # a genuine mismatch is reported instead of silently misaligning.
+            if len(phi_arr) != len(harmonics):
+                raise ValueError(
+                    f"calibration has {len(phi_arr)} harmonic(s) but this "
+                    f"file has {len(harmonics)} ({harmonics}). Use the same "
+                    "harmonics for the calibration reference and the files "
+                    "being processed (the 'Harmonics' field), or "
+                    "recompute/copy the calibration for these harmonics."
+                )
+            phi_sel = phi_arr
+            mod_sel = mod_arr
+
+        if g_original.ndim > 1:
+            spatial_dims = g_original.ndim - 1
+            expand_shape = (slice(None),) + (None,) * spatial_dims
+            phi_expanded = phi_sel[expand_shape]
+            mod_expanded = mod_sel[expand_shape]
+        else:
+            phi_expanded = phi_sel
+            mod_expanded = mod_sel
+        stored_phase = phi_sel.tolist()
+        stored_modulation = mod_sel.tolist()
     else:
         phi_expanded = phi_zero
         mod_expanded = mod_zero
+        stored_phase = float(phi_zero)
+        stored_modulation = float(mod_zero)
 
     real_original, imag_original = phasor_transform(
         g_original, s_original, phi_expanded, mod_expanded
@@ -4313,10 +4385,6 @@ def apply_calibration_correction(layer, phi_zero, mod_zero):
     metadata["S"] = imag
 
     settings = metadata.setdefault("settings", {})
-    settings["calibration_phase"] = (
-        phi_zero.tolist() if np.ndim(phi_zero) > 0 else float(phi_zero)
-    )
-    settings["calibration_modulation"] = (
-        mod_zero.tolist() if np.ndim(mod_zero) > 0 else float(mod_zero)
-    )
+    settings["calibration_phase"] = stored_phase
+    settings["calibration_modulation"] = stored_modulation
     settings["calibrated"] = True
