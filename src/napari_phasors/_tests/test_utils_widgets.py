@@ -1437,6 +1437,40 @@ def test_populate_colormap_combobox(qtbot):
     assert combo2.currentIndex() == 0
 
 
+def test_register_extra_colormaps_idempotent():
+    """Calling register_extra_colormaps twice skips already-registered names."""
+    from napari.utils.colormaps import AVAILABLE_COLORMAPS
+
+    from napari_phasors._utils import (
+        EXTRA_MATPLOTLIB_COLORMAPS,
+        register_extra_colormaps,
+    )
+
+    # First call (possibly a no-op if already registered at plugin import).
+    register_extra_colormaps()
+    for name in EXTRA_MATPLOTLIB_COLORMAPS:
+        assert name in AVAILABLE_COLORMAPS
+
+    # Second call must hit the "already registered" skip branch for every
+    # name without raising or duplicating entries.
+    register_extra_colormaps()
+    for name in EXTRA_MATPLOTLIB_COLORMAPS:
+        assert name in AVAILABLE_COLORMAPS
+
+
+def test_available_colormap_names_includes_extras():
+    from napari_phasors._utils import (
+        EXTRA_MATPLOTLIB_COLORMAPS,
+        available_colormap_names,
+    )
+
+    names = available_colormap_names()
+    for name in EXTRA_MATPLOTLIB_COLORMAPS:
+        assert name in names
+    # No duplicates from colormaps already present in napari's own list.
+    assert len(names) == len(set(names))
+
+
 def test_colormap_legend_proxy_and_handler(qtbot):
     import matplotlib.pyplot as plt
     from matplotlib.transforms import IdentityTransform

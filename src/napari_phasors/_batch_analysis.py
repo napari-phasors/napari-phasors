@@ -7584,6 +7584,7 @@ def _save_phasor_plot_png(
             phase_range=mapping_overlay.get("mesh_phase_range"),
             modulation_range=mapping_overlay.get("mesh_modulation_range"),
             clip_semicircle=mapping_overlay.get("mesh_clip_semicircle"),
+            dpi=dpi,
         )
 
     plot_type = display.get("plot_type", "Histogram")
@@ -7734,6 +7735,7 @@ def _draw_phase_modulation_mesh(
     phase_range=None,
     modulation_range=None,
     clip_semicircle=None,
+    dpi=300,
 ):
     """Draw a phase or modulation colored field behind the phasor data.
 
@@ -7748,9 +7750,7 @@ def _draw_phase_modulation_mesh(
 
     if clip_semicircle is None:
         clip_semicircle = semicircle
-    # Use a fine grid for the exported mesh: at the default 300 the edges look
-    # coarse / "shadowed" (the smoothed alpha halo spans several cells), and a
-    # zoomed crop magnifies it. A high resolution keeps the edges crisp.
+    plot.fig.set_dpi(dpi)
     draw_phasor_mesh(
         plot.ax,
         kind,
@@ -8058,6 +8058,7 @@ def _save_grouped_overlay_plot(
             phase_range=mapping_overlay.get("mesh_phase_range"),
             modulation_range=mapping_overlay.get("mesh_modulation_range"),
             clip_semicircle=mapping_overlay.get("mesh_clip_semicircle"),
+            dpi=dpi,
         )
 
     marker_size = display.get("marker_size", 5)
@@ -8146,6 +8147,7 @@ def _save_combined_contour(
             phase_range=mapping_overlay.get("mesh_phase_range"),
             modulation_range=mapping_overlay.get("mesh_modulation_range"),
             clip_semicircle=mapping_overlay.get("mesh_clip_semicircle"),
+            dpi=dpi,
         )
 
     handles = []

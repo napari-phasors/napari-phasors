@@ -832,6 +832,40 @@ def test_export_image_multidim_uses_current_step(tmp_path):
     assert os.path.exists(out[0])
 
 
+def test_export_image_gamma_applies_power_norm(tmp_path):
+    """A layer with gamma != 1.0 is exported via a PowerNorm, not plain vmin/vmax.
+
+    Regression: previously the exported image used the raw contrast limits
+    and ignored gamma entirely, so it didn't match napari's on-screen
+    rendering whenever gamma correction was applied.
+    """
+    from napari.layers import Image
+    from PIL import Image as PILImage
+
+    from napari_phasors._writer import export_layer_as_image
+
+    data = np.linspace(0, 1, 16).reshape(4, 4)
+
+    linear_layer = Image(data.copy(), name="linear", colormap="gray")
+    linear_layer.gamma = 1.0
+    gamma_layer = Image(data.copy(), name="gamma", colormap="gray")
+    gamma_layer.gamma = 2.5
+
+    linear_path = export_layer_as_image(
+        str(tmp_path / "linear.png"), linear_layer, include_colorbar=False
+    )[0]
+    gamma_path = export_layer_as_image(
+        str(tmp_path / "gamma.png"), gamma_layer, include_colorbar=False
+    )[0]
+
+    with PILImage.open(linear_path) as linear_img:
+        linear_arr = np.array(linear_img)
+    with PILImage.open(gamma_path) as gamma_img:
+        gamma_arr = np.array(gamma_img)
+
+    assert not np.array_equal(linear_arr, gamma_arr)
+
+
 # ---------------------------------------------------------------------------
 # write_ome_tiff — dims / physical-size branches
 # ---------------------------------------------------------------------------

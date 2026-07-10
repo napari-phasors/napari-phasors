@@ -24,6 +24,12 @@ from superqt import QRangeSlider
 
 from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
 from napari_phasors._utils import HistogramWidget
+from napari_phasors.phasor_mapping_tab import (
+    _DEFAULT_MESH_RESOLUTION,
+    PhasorMappingWidget,
+    _resolve_mesh_blur_sigma,
+    draw_phasor_mesh,
+)
 from napari_phasors.plotter import PlotterWidget
 
 
@@ -2209,3 +2215,97 @@ def test_phasor_mapping_exceptions(make_viewer_model, qtbot):
     layer.metadata["S"] = np.ones((2, 10, 10))
     layer.metadata["harmonics"] = np.array([999])
     pm.calculate_output_data()  # Should return early
+
+
+def test_resolve_mesh_blur_sigma_zero_display_px_fallback():
+    """_resolve_mesh_blur_sigma falls back to the default-resolution ratio
+    when the axes report a zero-sized (or unavailable) window extent."""
+    ax = MagicMock()
+    bbox = MagicMock()
+    bbox.width = 0.0
+    bbox.height = 0.0
+    ax.get_window_extent.return_value = bbox
+
+    resolution = 640
+    result = _resolve_mesh_blur_sigma(ax, resolution)
+
+    expected = max(1.5, 1.2 * resolution / _DEFAULT_MESH_RESOLUTION)
+    assert result == expected
+
+
+def test_draw_phasor_mesh_falls_back_when_interpolation_stage_unsupported(
+    make_viewer_model, qtbot
+):
+    """draw_phasor_mesh retries without ``interpolation_stage`` when the
+    installed Matplotlib's ``imshow`` doesn't accept that kwarg (older
+    Matplotlib versions)."""
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots()
+    try:
+        real_image = ax.imshow(np.zeros((2, 2)))
+        with patch.object(
+            ax,
+            "imshow",
+            side_effect=[TypeError("no interpolation_stage"), real_image],
+        ) as mock_imshow:
+            result = draw_phasor_mesh(ax, "Phase", resolution=4)
+
+        assert result is real_image
+        assert mock_imshow.call_count == 2
+    finally:
+        plt.close(fig)
+
+
+def test_get_output_colormap_name_branches():
+    """_get_output_colormap_name returns the colormap per output type and
+    falls back to 'plasma' for lifetime-style (or any other) outputs."""
+    assert PhasorMappingWidget._get_output_colormap_name("Phase") == "jet"
+    assert (
+        PhasorMappingWidget._get_output_colormap_name("Modulation")
+        == "viridis"
+    )
+    assert (
+        PhasorMappingWidget._get_output_colormap_name("Normal Lifetime")
+        == "plasma"
+    )
+
+
+def test_phasor_mapping_teardown_disconnects_real_layer_events(
+    make_viewer_model, qtbot
+):
+    """_teardown_on_layer_change disconnects colormap/contrast_limits/gamma
+    events from real metric layers still present in the viewer when there is
+    no primary layer selected."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    output_layer = Image(
+        np.random.rand(10, 10), name="Apparent Phase Lifetime: test"
+    )
+    viewer.add_layer(output_layer)
+    output_layer.events.colormap.connect(mapping_widget._on_colormap_changed)
+    output_layer.events.contrast_limits.connect(
+        mapping_widget._on_colormap_changed
+    )
+    output_layer.events.gamma.connect(mapping_widget._on_colormap_changed)
+    mapping_widget.metric_layers = [output_layer]
+
+    # No primary layer selected -> get_primary_layer_name() returns "".
+    mapping_widget._teardown_on_layer_change()
+
+    assert mapping_widget.metric_layers == []
+
+
+def test_get_mesh_grid_resolution_exception_fallback(make_viewer_model, qtbot):
+    """_get_mesh_grid_resolution falls back to 1000 when
+    ``ax.get_window_extent`` raises."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    ax = MagicMock()
+    ax.get_window_extent.side_effect = RuntimeError("boom")
+
+    assert mapping_widget._get_mesh_grid_resolution(ax) == 1000
