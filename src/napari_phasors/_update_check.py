@@ -2,8 +2,9 @@
 
 On startup (once per session, and at most once a week) this queries PyPI in a
 background thread and, if a newer stable release is available, shows a small
-dialog with upgrade instructions. The dialog offers a "Don't notify me about
-updates again" checkbox that permanently disables the check.
+dialog with upgrade instructions. The dialog offers a "Don't show this
+message again" checkbox that suppresses the notice for that specific
+version only — a later release still triggers a fresh notice.
 
 Everything here fails silently: no network, an odd PyPI response, or an
 unwritable config directory must never disrupt the plugin.
@@ -103,7 +104,11 @@ def _upgrade_instructions() -> str:
 
 
 def _show_update_dialog(latest: str, installed: str, parent=None) -> None:
-    """Show the (non-modal) update dialog with a "don't ask again" option."""
+    """Show the (non-modal) update dialog with a "don't ask again" option.
+
+    The checkbox only suppresses the notice for ``latest``: once a newer
+    version is released, the notice reappears.
+    """
     from qtpy.QtWidgets import QCheckBox, QMessageBox
 
     box = QMessageBox(parent)
@@ -120,13 +125,13 @@ def _show_update_dialog(latest: str, installed: str, parent=None) -> None:
     )
     box.setStandardButtons(QMessageBox.Ok)
 
-    dont_ask = QCheckBox("Don't notify me about updates again")
+    dont_ask = QCheckBox("Don't show this message again")
     box.setCheckBox(dont_ask)
 
     def _on_finished(_result):
         if dont_ask.isChecked():
             config = _load_config()
-            config["disabled"] = True
+            config["skipped_version"] = latest
             _save_config(config)
 
     box.finished.connect(_on_finished)
@@ -143,12 +148,16 @@ _live_dialog = None
 
 
 def _handle_latest_version(latest: str | None, installed: Version, parent):
-    """Record the check and show the dialog if a newer release exists."""
+    """Record the check and show the dialog if a newer release exists.
+
+    Skips the dialog if the user previously dismissed the notice for this
+    exact ``latest`` version via "Don't show this message again".
+    """
     config = _load_config()
     config["last_check"] = time.time()
     _save_config(config)
 
-    if latest is None:
+    if latest is None or latest == config.get("skipped_version"):
         return
     try:
         if Version(latest) > installed:
@@ -162,7 +171,11 @@ def maybe_check_for_update(parent=None) -> None:
 
     Safe to call from multiple widget constructors: it runs at most once per
     session and no more than once per :data:`CHECK_INTERVAL_SECONDS`. Skips
-    entirely for source/dev installs and when the user has opted out.
+    entirely for source/dev installs. If the user previously dismissed the
+    notice for the latest-known version via "Don't show this message again",
+    the dialog itself is suppressed for that version only (see
+    :func:`_handle_latest_version`) — the check still runs so a newer release
+    is detected.
     """
     global _checked_this_session
     if _checked_this_session:
@@ -178,9 +191,6 @@ def maybe_check_for_update(parent=None) -> None:
         return
 
     config = _load_config()
-    if config.get("disabled"):
-        return
-
     last_check = config.get("last_check", 0)
     if (
         isinstance(last_check, (int, float))
