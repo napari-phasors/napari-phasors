@@ -4959,6 +4959,19 @@ class PlotterWidget(QWidget):
         )
         dock_layout.insertWidget(0, component_selector)
 
+        # The docked histogram area is clamped to its minimum height
+        # (see ``_resize_initial_docks``). This dock uniquely carries the
+        # "Component:" selector row above the plot, so grow its minimum by that
+        # row's height; otherwise the extra row eats into the histogram canvas
+        # and the bottom of the plot is clipped in the Components tab.
+        selector_extra = (
+            component_selector.sizeHint().height() + dock_layout.spacing()
+        )
+        self.components_histogram_dock_widget.setMinimumHeight(
+            self.components_histogram_dock_widget.minimumHeight()
+            + selector_extra
+        )
+
         self._components_hist_page_idx = self._histogram_stack.addWidget(
             self.components_histogram_dock_widget
         )

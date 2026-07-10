@@ -80,8 +80,7 @@ def test_phasor_mapping_widget_initialization_values(make_viewer_model, qtbot):
     assert hasattr(lifetime_widget, 'lifetime_range_label')
     assert isinstance(lifetime_widget.lifetime_range_label, QLabel)
     assert (
-        lifetime_widget.lifetime_range_label.text()
-        == "Lifetime range (ns): 0.0 - 100.0"
+        lifetime_widget.lifetime_range_label.text() == "Lifetime range (ns):"
     )
 
     assert hasattr(lifetime_widget, 'lifetime_min_edit')
@@ -211,13 +210,12 @@ def test_phasor_mapping_widget_range_label_update(make_viewer_model, qtbot):
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.phasor_mapping_tab
 
-    # Test label update
+    # Test edits update while dragging (label keeps just the prefix)
     test_value = (25000, 75000)  # Represents 25.0 - 75.0 ns with factor 1000
     lifetime_widget.histogram_widget._on_range_label_update(test_value)
 
     assert (
-        lifetime_widget.lifetime_range_label.text()
-        == "Lifetime range (ns): 25.00 - 75.00"
+        lifetime_widget.lifetime_range_label.text() == "Lifetime range (ns):"
     )
     assert lifetime_widget.lifetime_min_edit.text() == "25.00"
     assert lifetime_widget.lifetime_max_edit.text() == "75.00"
@@ -294,7 +292,7 @@ def test_phasor_mapping_widget_canvas_properties(make_viewer_model, qtbot):
     # Access the canvas through the histogram widget directly
     canvas = lifetime_widget.histogram_widget.fig.canvas
     assert isinstance(canvas, FigureCanvasQTAgg)
-    assert canvas.height() == 150  # Fixed height as set in setup_ui
+    assert canvas.height() == 220  # Minimum canvas height set in the widget
 
 
 def test_phasor_mapping_widget_type_changed_no_frequency(
@@ -915,6 +913,40 @@ def test_phasor_mapping_widget_colormap_changed_callback(
 
     # Reset flag
     lifetime_widget._updating_contrast_limits = False
+
+
+def test_phasor_mapping_gamma_links_layers_and_histogram(
+    make_viewer_model,
+    qtbot,
+):
+    """Changing gamma on one lifetime layer syncs siblings and the histogram."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    lifetime_widget = parent.phasor_mapping_tab
+
+    layer_1 = create_image_layer_with_phasors()
+    layer_2 = create_image_layer_with_phasors()
+    viewer.add_layer(layer_1)
+    viewer.add_layer(layer_2)
+
+    lifetime_widget.frequency_input.setText("80.0")
+    parent._broadcast_frequency_value_across_tabs("80.0")
+    lifetime_widget.lifetime_type_combobox.setCurrentText("Normal Lifetime")
+
+    with patch.object(
+        parent, "get_selected_layers", return_value=[layer_1, layer_2]
+    ):
+        lifetime_widget._on_calculate_lifetime_clicked()
+
+    assert len(lifetime_widget.metric_layers) == 2
+
+    # Changing gamma on one output layer propagates to the sibling layer, the
+    # stored gamma, and the histogram widget.
+    lifetime_widget.metric_layers[0].gamma = 0.6
+
+    assert lifetime_widget.metric_layers[1].gamma == 0.6
+    assert lifetime_widget.colormap_gamma == 0.6
+    assert lifetime_widget.histogram_widget.gamma == 0.6
 
 
 def test_phasor_mapping_widget_calculate_lifetimes_with_real_data(

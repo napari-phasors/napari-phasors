@@ -1728,6 +1728,124 @@ def test_run_batch_components_plot_with_style(
     assert any("_components_phasor_H1.png" in name for name in plots)
 
 
+def test_default_component_line_style_has_histogram_keys():
+    """The batch line style exposes the fraction histogram overlay controls."""
+    from napari_phasors._batch_analysis import default_component_line_style
+
+    style = default_component_line_style()
+    assert style["show_fraction_histogram"] is False
+    assert style["histogram_overlay_height"] == 0.3
+    assert style["histogram_offset"] == 0.0
+    assert style["histogram_alpha"] == 0.75
+
+
+def test_components_overlay_injects_fraction_data():
+    """Fraction data is computed and attached only for linear projections with
+    the histogram overlay enabled."""
+    rng = np.random.default_rng(0)
+    real = rng.uniform(0.2, 0.8, 500)
+    imag = rng.uniform(0.1, 0.5, 500)
+    base = {
+        "kind": "components",
+        "components": {
+            "analysis_type": "linear",
+            "component_real": [0.2, 0.8],
+            "component_imag": [0.1, 0.5],
+            "line_style": {"show_fraction_histogram": True},
+        },
+    }
+    out = BatchAnalysisWidget._components_overlay_with_fraction_data(
+        base, real, imag
+    )
+    assert "fraction_data" in out
+    assert out["fraction_data"].shape == real.shape
+    # The original overlay is not mutated.
+    assert "fraction_data" not in base
+
+    # Disabled overlay -> unchanged (no fraction data attached).
+    base["components"]["line_style"]["show_fraction_histogram"] = False
+    assert (
+        "fraction_data"
+        not in BatchAnalysisWidget._components_overlay_with_fraction_data(
+            base, real, imag
+        )
+    )
+
+
+def test_draw_fraction_histogram_overlay_shared_helper():
+    """The shared overlay helper draws a single gradient image artist."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.image import AxesImage
+
+    from napari_phasors.components_tab import (
+        draw_fraction_histogram_overlay,
+    )
+
+    fig, ax = plt.subplots()
+    ax.set_xlim(-0.05, 1.05)
+    ax.set_ylim(-0.05, 0.7)
+    rng = np.random.default_rng(1)
+    values = np.clip(rng.normal(0.4, 0.15, 5000), 0, 1)
+    ramp = plt.get_cmap("jet")(np.linspace(0, 1, 256))
+
+    artists = draw_fraction_histogram_overlay(
+        ax, 0.2, 0.1, 0.8, 0.5, values, ramp, height=0.3
+    )
+    assert artists is not None
+    assert len(artists) == 1
+    assert isinstance(artists[0], AxesImage)
+
+    # Empty data draws nothing.
+    assert (
+        draw_fraction_histogram_overlay(
+            ax, 0.2, 0.1, 0.8, 0.5, np.array([]), ramp
+        )
+        is None
+    )
+    plt.close(fig)
+
+
+def test_run_batch_components_plot_with_fraction_histogram(
+    qtbot, make_viewer_model, tmp_path
+):
+    """End-to-end: the fraction histogram overlay renders in a batch export."""
+    in_root = tmp_path / "in"
+    in_root.mkdir()
+    out_root = tmp_path / "out"
+    out_root.mkdir()
+    write_ome_tiff(
+        str(in_root / "a.ome.tif"), _make_phasor_layer(name="a", harmonic=[1])
+    )
+
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+    widget._input_folder = str(in_root)
+    widget._rescan()
+    idx = widget.format_combobox.findData(".ome.tif")
+    widget.format_combobox.setCurrentIndex(idx)
+    widget.harmonics_edit.setText("1")
+    widget._export_folder = str(out_root)
+    widget.export_ometiff_checkbox.setChecked(False)
+
+    widget.components_group.setChecked(True)
+    widget.components_plot_toggle.setChecked(True)
+    widget._component_line_style["show_colormap_line"] = True
+    widget._component_line_style["show_fraction_histogram"] = True
+    widget._component_line_style["histogram_overlay_height"] = 0.4
+    widget._component_rows[0]["g"].setText("0.8")
+    widget._component_rows[0]["s"].setText("0.3")
+    widget._component_rows[1]["g"].setText("0.2")
+    widget._component_rows[1]["s"].setText("0.3")
+
+    widget.run_batch()
+
+    plots = {p.name for p in out_root.rglob("*.png")}
+    assert any("_components_phasor_H1.png" in name for name in plots)
+
+
 def test_combined_merged_histogram_exported(
     qtbot, make_viewer_model, tmp_path
 ):
@@ -2434,6 +2552,27 @@ def test_histogram_csv_respects_value_range(tmp_path):
     assert sum(counts) == 3
 
 
+def test_compute_stats_center_of_mass_from_raw_histogram():
+    """Batch statistics compute the center of mass from the raw histogram."""
+    from napari_phasors._batch_analysis import _compute_stats
+
+    rng = np.random.default_rng(1)
+    data = np.concatenate(
+        [rng.normal(2.0, 0.3, 5000), rng.normal(5.0, 0.5, 1500)]
+    )
+    bins = 100
+    stats = _compute_stats(data, bins)
+
+    counts, edges = np.histogram(data, bins=bins)
+    centers = (edges[:-1] + edges[1:]) / 2.0
+    expected_com = float(np.average(centers, weights=counts))
+
+    assert np.isclose(stats["com"], expected_com)
+    assert stats["n"] == data.size
+    # Mean is the raw arithmetic mean (unbinned), distinct from the binned COM.
+    assert np.isclose(stats["mean"], float(np.mean(data)))
+
+
 def test_output_controls_unified(qtbot, make_viewer_model):
     """Each analysis tab exposes one Outputs section with format comboboxes."""
     widget = BatchAnalysisWidget(make_viewer_model())
@@ -2984,6 +3123,55 @@ def test_draw_components_overlay_two_with_colormap_line():
     )
     assert ax.collections
     plt.close(fig)
+
+
+def test_draw_components_overlay_gamma_uses_power_norm():
+    """A non-unity export gamma renders the gradient line through a PowerNorm."""
+    from matplotlib.colors import PowerNorm
+
+    from napari_phasors.components_tab import draw_components_overlay
+
+    plt, fig, ax = _agg_axes()
+
+    # Gamma of 1.0 keeps a plain linear normalisation.
+    draw_components_overlay(
+        ax,
+        [0.2, 0.8],
+        [0.3, 0.4],
+        analysis_type="Linear Projection",
+        settings={
+            "show_colormap_line": True,
+            "fractions_colormap": ["#000000", "#ffffff"],
+            "colormap_contrast_limits": (0.0, 1.0),
+            "colormap_gamma": 1.0,
+        },
+    )
+    assert not isinstance(ax.collections[-1].norm, PowerNorm)
+
+    # A non-unity gamma switches the gradient line to a matching PowerNorm.
+    draw_components_overlay(
+        ax,
+        [0.2, 0.8],
+        [0.3, 0.4],
+        analysis_type="Linear Projection",
+        settings={
+            "show_colormap_line": True,
+            "fractions_colormap": ["#000000", "#ffffff"],
+            "colormap_contrast_limits": (0.0, 1.0),
+            "colormap_gamma": 0.4,
+        },
+    )
+    norm = ax.collections[-1].norm
+    assert isinstance(norm, PowerNorm)
+    assert norm.gamma == 0.4
+    plt.close(fig)
+
+
+def test_default_component_line_style_exposes_colormap_gamma():
+    """The batch line style exposes the colormap gamma control (default 1.0)."""
+    from napari_phasors._batch_analysis import default_component_line_style
+
+    assert default_component_line_style()["colormap_gamma"] == 1.0
 
 
 def test_draw_components_overlay_plain_line_and_polygon():

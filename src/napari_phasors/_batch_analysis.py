@@ -980,6 +980,15 @@ def default_component_line_style():
         "line_width": 3.0,
         "line_alpha": 1.0,
         "default_component_color": "dimgray",
+        # Power-law gamma applied to the colormap line / fraction-histogram
+        # gradient, mirroring the fraction layer's ``gamma`` in the tab.
+        "colormap_gamma": 1.0,
+        # Fraction histogram overlay (Linear Projection only), mirroring the
+        # interactive Components tab.
+        "show_fraction_histogram": False,
+        "histogram_overlay_height": 0.3,
+        "histogram_offset": 0.0,
+        "histogram_alpha": 0.75,
     }
 
 
@@ -4137,6 +4146,17 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         alpha_spin.setValue(style["line_alpha"])
         form.addRow("Line alpha:", alpha_spin)
 
+        gamma_spin = QDoubleSpinBox()
+        gamma_spin.setRange(0.01, 10.0)
+        gamma_spin.setSingleStep(0.05)
+        gamma_spin.setDecimals(2)
+        gamma_spin.setValue(style.get("colormap_gamma", 1.0))
+        gamma_spin.setToolTip(
+            "Power-law gamma applied to the colormap line and fraction "
+            "histogram gradient, matching the fraction layer's gamma."
+        )
+        form.addRow("Colormap gamma:", gamma_spin)
+
         color_button = ColorButton(QColor(style["default_component_color"]))
         color_row = QHBoxLayout()
         color_row.addWidget(color_button)
@@ -4145,6 +4165,44 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         color_container.setLayout(color_row)
         form.addRow("Default line color:", color_container)
         vbox.addLayout(form)
+
+        # Fraction histogram overlay (Linear Projection, 2 components).
+        hist_group = QGroupBox("Fraction histogram overlay")
+        hist_form = QFormLayout(hist_group)
+        hist_cb = QCheckBox("Overlay fraction histogram on the line")
+        hist_cb.setChecked(style.get("show_fraction_histogram", False))
+        hist_cb.setToolTip(
+            "Overlay the first component's fraction histogram along the line "
+            "joining the two components, colored with the line's colormap. "
+            "Applies to a two-component Linear Projection."
+        )
+        hist_form.addRow(hist_cb)
+
+        hist_height_spin = QDoubleSpinBox()
+        hist_height_spin.setRange(0.05, 1.0)
+        hist_height_spin.setSingleStep(0.05)
+        hist_height_spin.setDecimals(2)
+        hist_height_spin.setValue(style.get("histogram_overlay_height", 0.3))
+        hist_form.addRow("Histogram height:", hist_height_spin)
+
+        hist_offset_spin = QDoubleSpinBox()
+        hist_offset_spin.setRange(-1.0, 1.0)
+        hist_offset_spin.setSingleStep(0.01)
+        hist_offset_spin.setDecimals(3)
+        hist_offset_spin.setValue(style.get("histogram_offset", 0.0))
+        hist_offset_spin.setToolTip(
+            "Shift the histogram relative to the line. Positive keeps it on "
+            "one side; negative flips it to the other side."
+        )
+        hist_form.addRow("Histogram offset:", hist_offset_spin)
+
+        hist_transp_spin = QDoubleSpinBox()
+        hist_transp_spin.setRange(0.0, 1.0)
+        hist_transp_spin.setSingleStep(0.05)
+        hist_transp_spin.setDecimals(2)
+        hist_transp_spin.setValue(1.0 - style.get("histogram_alpha", 0.75))
+        hist_form.addRow("Histogram transparency:", hist_transp_spin)
+        vbox.addWidget(hist_group)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel
@@ -4160,7 +4218,12 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 "line_offset": offset_spin.value(),
                 "line_width": width_spin.value(),
                 "line_alpha": alpha_spin.value(),
+                "colormap_gamma": gamma_spin.value(),
                 "default_component_color": color_button.color().name(),
+                "show_fraction_histogram": hist_cb.isChecked(),
+                "histogram_overlay_height": hist_height_spin.value(),
+                "histogram_offset": hist_offset_spin.value(),
+                "histogram_alpha": 1.0 - hist_transp_spin.value(),
             }
 
     def _open_component_label_style_dialog(self):
@@ -6849,15 +6912,59 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             if display.get("show_center") and mean is not None:
                 _, center_real, center_imag = phasor_center(mean, real, imag)
                 center = (float(center_real), float(center_imag))
+            plot_overlay = self._components_overlay_with_fraction_data(
+                overlay, real, imag
+            )
             _save_phasor_plot_png(
                 real,
                 imag,
                 display,
-                overlay,
+                plot_overlay,
                 f"{base_out}_{suffix}_H{int(harmonic)}.png",
                 center=center,
                 dpi=self._export_dpi(),
             )
+
+    @staticmethod
+    def _components_overlay_with_fraction_data(overlay, real, imag):
+        """Attach the first-component fraction data to a components overlay.
+
+        The fraction histogram overlay (Linear Projection) needs the per-pixel
+        first-component fraction for the harmonic being plotted. This is
+        computed here from the plotted ``real``/``imag`` and the component
+        locations, then returned in a shallow copy of ``overlay`` so the
+        original (shared across harmonics) is left untouched. Non-component or
+        non-linear overlays are returned unchanged.
+        """
+        if overlay is None or overlay.get("kind") != "components":
+            return overlay
+        components = overlay.get("components") or {}
+        line_style = components.get("line_style") or {}
+        if not line_style.get("show_fraction_histogram"):
+            return overlay
+        if components.get("analysis_type") != "linear":
+            return overlay
+        component_real = components.get("component_real")
+        component_imag = components.get("component_imag")
+        if component_real is None or component_imag is None:
+            return overlay
+        component_real = np.asarray(component_real)
+        component_imag = np.asarray(component_imag)
+        if component_real.ndim > 1:
+            component_real = component_real[0]
+            component_imag = component_imag[0]
+        try:
+            fraction = phasor_component_fraction(
+                np.asarray(real),
+                np.asarray(imag),
+                component_real,
+                component_imag,
+            )
+        except Exception:  # noqa: BLE001 - skip overlay if it can't compute
+            return overlay
+        new_overlay = dict(overlay)
+        new_overlay["fraction_data"] = np.asarray(fraction, dtype=float)
+        return new_overlay
 
     # -- Signal export outputs ---------------------------------------------
 
@@ -7608,6 +7715,7 @@ def _add_phasor_overlay(plot, overlay):
             ),
             "fractions_colormap": fractions_colormap,
             "colormap_contrast_limits": contrast,
+            "colormap_gamma": line_style.get("colormap_gamma", 1.0),
             "label_fontsize": label_style.get("fontsize", 10),
             "label_fontweight": (
                 "bold" if label_style.get("bold") else "normal"
@@ -7617,6 +7725,17 @@ def _add_phasor_overlay(plot, overlay):
             ),
             "label_color": label_style.get("color"),
             "show_labels": label_style.get("show_labels", False),
+            # Fraction histogram overlay (Linear Projection); the fraction data
+            # is injected per-harmonic by ``_render_phasor_plot``.
+            "show_fraction_histogram": line_style.get(
+                "show_fraction_histogram", False
+            ),
+            "histogram_overlay_height": line_style.get(
+                "histogram_overlay_height", 0.3
+            ),
+            "histogram_offset": line_style.get("histogram_offset", 0.0),
+            "histogram_alpha": line_style.get("histogram_alpha", 0.75),
+            "fraction_data": overlay.get("fraction_data"),
         }
         # Multi-harmonic fits store 2-D component arrays; the overlay draws a
         # single harmonic, so use the primary harmonic's locations.

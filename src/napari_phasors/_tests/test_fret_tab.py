@@ -493,6 +493,40 @@ def test_colormap_events(make_viewer_model, qtbot):
     )  # Should have changed
 
 
+def test_fret_gamma_links_layers_and_histogram(make_viewer_model, qtbot):
+    """Changing gamma on one FRET layer syncs siblings and the histogram."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    layer_a = create_image_layer_with_phasors()
+    layer_a.name = "layer_a"
+    layer_b = create_image_layer_with_phasors()
+    layer_b.name = "layer_b"
+    viewer.add_layer(layer_a)
+    viewer.add_layer(layer_b)
+
+    widget.donor_line_edit.setText("2.0")
+    widget.frequency_input.setText("80")
+    widget.background_real_edit.setText("0.1")
+    widget.background_imag_edit.setText("0.1")
+
+    with patch.object(
+        parent, "get_selected_layers", return_value=[layer_a, layer_b]
+    ):
+        widget.calculate_fret_efficiency_button.click()
+
+    assert len(widget.fret_layers) == 2
+
+    # Changing gamma on one FRET layer propagates to the sibling layer, the
+    # stored gamma, and the histogram widget.
+    widget.fret_layers[0].gamma = 0.7
+
+    assert widget.fret_layers[1].gamma == 0.7
+    assert widget.colormap_gamma == 0.7
+    assert widget.histogram_widget.gamma == 0.7
+
+
 def test_draw_colormap_trajectory(make_viewer_model, qtbot):
     """Test drawing trajectory with colormap."""
     viewer = make_viewer_model()

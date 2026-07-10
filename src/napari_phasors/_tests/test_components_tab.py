@@ -394,16 +394,21 @@ def test_components_widget_line_settings_dialog_effects(
     comp_widget._on_plot_setting_changed()
     assert comp_widget.show_colormap_line
 
-    # Change offset
-    comp_widget.line_offset_slider.setValue(120)  # 0.120
+    # Change offset (slider uses 3-decimal factor: 120 -> 0.120)
+    comp_widget.line_offset_slider.setValue(120)
     assert abs(comp_widget.line_offset - 0.12) < 1e-6
+
+    # Values can also be typed directly via the spinbox, which drives the slider.
+    comp_widget.line_offset_spin.setValue(-0.25)
+    assert abs(comp_widget.line_offset + 0.25) < 1e-6
+    assert comp_widget.line_offset_slider.value() == -250
 
     # Change width
     comp_widget.line_width_spin.setValue(5.0)
     assert comp_widget.line_width == 5.0
 
-    # Change alpha
-    comp_widget.line_alpha_slider.setValue(55)
+    # Transparency (inverse of alpha): 0.45 transparency -> 0.55 opacity
+    comp_widget.line_transparency_spin.setValue(0.45)
     assert abs(comp_widget.line_alpha - 0.55) < 1e-6
 
 
@@ -1126,18 +1131,14 @@ def test_components_histogram_multi_layer_linear_projection(
     comp_widget.histogram_component_combobox.setCurrentText(name1)
     comp_widget.update_component_histogram()
 
-    # One histogram dataset is stored per source image layer.
-    assert set(comp_widget.histogram_widget._datasets.keys()) == {
-        "layer_a",
-        "layer_b",
-    }
+    # All selected layers are pooled into a single merged histogram (rather
+    # than a per-layer mean +/- SD that looks like just one layer).
+    assert set(comp_widget.histogram_widget._datasets.keys()) == {"Layer"}
+    assert comp_widget.histogram_widget._show_sd is False
 
-    # The range slider clips every layer and keeps the per-layer histogram.
+    # The range slider clips every layer and keeps the merged histogram.
     comp_widget._on_fraction_range_changed(0.2, 0.8)
-    assert set(comp_widget.histogram_widget._datasets.keys()) == {
-        "layer_a",
-        "layer_b",
-    }
+    assert set(comp_widget.histogram_widget._datasets.keys()) == {"Layer"}
 
     # Early returns: an empty and an unresolved selection are both no-ops.
     comp_widget.histogram_component_combobox.blockSignals(True)
@@ -1150,6 +1151,52 @@ def test_components_histogram_multi_layer_linear_projection(
     comp_widget.histogram_component_combobox.setCurrentText("Ghost component")
     comp_widget.histogram_component_combobox.blockSignals(False)
     comp_widget._on_fraction_range_changed(0.1, 0.9)
+
+
+def test_components_gamma_links_layers_and_histogram(
+    make_viewer_model,
+    qtbot,
+):
+    """Changing gamma on one fraction layer syncs siblings and the histogram."""
+    viewer = make_viewer_model()
+    layer_a = create_image_layer_with_phasors()
+    layer_a.name = "layer_a"
+    layer_b = create_image_layer_with_phasors()
+    layer_b.name = "layer_b"
+    viewer.add_layer(layer_a)
+    viewer.add_layer(layer_b)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(parent.components_tab)
+
+    comp_widget.analysis_type_combo.setCurrentText("Linear Projection")
+    comp_widget.components[0].g_edit.setText("0.2")
+    comp_widget.components[0].s_edit.setText("0.1")
+    comp_widget._on_component_coords_changed(0)
+    comp_widget.components[1].g_edit.setText("0.8")
+    comp_widget.components[1].s_edit.setText("0.5")
+    comp_widget._on_component_coords_changed(1)
+
+    with patch.object(
+        parent, "get_selected_layers", return_value=[layer_a, layer_b]
+    ):
+        comp_widget._run_analysis()
+
+    # The first component owns one fraction layer per analyzed image.
+    first_component_layers = comp_widget._get_all_layers_for_component(0)
+    assert len(first_component_layers) == 2
+
+    name1, _ = comp_widget._linear_projection_component_names()
+    comp_widget.histogram_component_combobox.setCurrentText(name1)
+
+    # Changing gamma on one layer propagates to the sibling layer, the stored
+    # gradient gamma, and the histogram widget.
+    first_component_layers[0].gamma = 0.5
+
+    assert first_component_layers[1].gamma == 0.5
+    assert comp_widget.fractions_gamma == 0.5
+    assert comp_widget.histogram_widget.gamma == 0.5
 
 
 def test_components_stats_combobox_mirrors_histogram_combobox(
@@ -1643,6 +1690,24 @@ def test_color_action_widget_and_dialog(make_viewer_model, qtbot):
 # ---------------------------------------------------------------------------
 
 
+def test_components_histogram_dock_reserves_selector_row_height(
+    make_viewer_model, qtbot
+):
+    """The components histogram dock is taller than tabs without a selector row.
+
+    The docked histogram area is clamped to its minimum height, and the
+    Components tab uniquely adds a "Component:" selector row above the plot, so
+    its dock must reserve extra height to keep the whole canvas visible.
+    """
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+
+    components_min = parent.components_histogram_dock_widget.minimumHeight()
+    mapping_min = parent.phasor_map_histogram_dock_widget.minimumHeight()
+
+    assert components_min > mapping_min
+
+
 def _setup_components(make_viewer_model, freq=80.0):
     viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
@@ -1860,6 +1925,46 @@ def test_components_component_fit_three_and_colors(make_viewer_model, qtbot):
     # and a smaller count.
     assert comp._get_component_colors_for_count(3) is not None
     assert comp._get_component_colors_for_count(2) is not None
+
+
+def test_components_redisplay_preserves_display_settings(
+    make_viewer_model, qtbot
+):
+    """Re-displaying fraction images keeps manual colormap/contrast/gamma."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    comp._add_component()
+    comp.analysis_type_combo.setCurrentText("Component Fit")
+    for i, (g, s) in enumerate(
+        [("0.2", "0.1"), ("0.5", "0.3"), ("0.8", "0.5")]
+    ):
+        comp.components[i].g_edit.setText(g)
+        comp.components[i].s_edit.setText(s)
+        comp._on_component_coords_changed(i)
+
+    comp._run_analysis()
+    assert len(comp.fraction_layers) == 3
+
+    # Record the default colormap of an untouched layer, then manually tweak
+    # a different one's colormap, contrast limits and gamma.
+    other_layer = comp.fraction_layers[0]
+    other_colormap = other_layer.colormap.name
+
+    tweaked_layer = comp.fraction_layers[1]
+    tweaked_layer.colormap = "magma"
+    tweaked_layer.contrast_limits = (0.15, 0.85)
+    tweaked_layer.gamma = 0.4
+
+    # Press "Display Component Fraction Images" again.
+    comp._run_analysis()
+
+    new_tweaked = viewer.layers[tweaked_layer.name]
+    assert new_tweaked.colormap.name == "magma"
+    assert np.allclose(new_tweaked.contrast_limits, (0.15, 0.85))
+    assert new_tweaked.gamma == 0.4
+
+    # The untouched layer must keep its (default) colormap, not reset.
+    new_other = viewer.layers[other_layer.name]
+    assert new_other.colormap.name == other_colormap
 
 
 def test_components_auto_place_by_index(make_viewer_model, qtbot):
@@ -2128,3 +2233,108 @@ def test_components_widget_exceptions(make_viewer_model, qtbot):
     layer.metadata["G"] = np.ones((2, 10, 10))
     layer.metadata["harmonics"] = np.array([999])
     comp._run_analysis()  # Should return early
+
+
+def test_components_widget_fraction_histogram_overlay(
+    make_viewer_model,
+    qtbot,
+):
+    """Fraction histogram overlay is drawn/removed with the setting toggle."""
+    from matplotlib.image import AxesImage
+
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+
+    _setup_linear_projection(comp_widget)
+
+    # No overlay by default.
+    assert comp_widget.show_fraction_histogram is False
+    assert comp_widget.component_histogram is None
+
+    # Enable the overlay and redraw.
+    comp_widget.show_fraction_histogram = True
+    comp_widget.draw_line_between_components()
+
+    assert comp_widget.component_histogram is not None
+    # The overlay is a single seamless gradient image (no outline).
+    assert len(comp_widget.component_histogram) == 1
+    fill = comp_widget.component_histogram[0]
+    assert isinstance(fill, AxesImage)
+    assert fill in comp_widget.get_all_artists()
+    assert fill.get_alpha() == comp_widget.histogram_alpha
+
+    # Disable again -> overlay removed on next draw.
+    comp_widget.show_fraction_histogram = False
+    comp_widget.draw_line_between_components()
+    assert comp_widget.component_histogram is None
+
+
+def test_components_widget_fraction_histogram_height_setting(
+    make_viewer_model,
+    qtbot,
+):
+    """Overlay height scales the histogram profile."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+
+    _setup_linear_projection(comp_widget)
+
+    comp_widget.show_fraction_histogram = True
+
+    def _profile_height():
+        comp_widget.draw_line_between_components()
+        # The gradient image extent is in the local (u, v) frame; its top edge
+        # (v_max) scales linearly with the height setting.
+        im = comp_widget.component_histogram[0]
+        return im.get_extent()[3]
+
+    comp_widget.histogram_overlay_height = 0.1
+    small = _profile_height()
+    comp_widget.histogram_overlay_height = 0.6
+    large = _profile_height()
+
+    assert large > small
+    assert np.isclose(large / small, 6.0, rtol=1e-3)
+
+
+def test_components_widget_fraction_histogram_offset_flips_side(
+    make_viewer_model,
+    qtbot,
+):
+    """A negative histogram offset mirrors the overlay to the other side."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+
+    _setup_linear_projection(comp_widget)
+    comp_widget.show_fraction_histogram = True
+
+    def _apex_display():
+        comp_widget.draw_line_between_components()
+        im = comp_widget.component_histogram[0]
+        # Map the local apex (u=0, top of the profile) through the image
+        # transform to display coordinates.
+        v_max = im.get_extent()[3]
+        return im.get_transform().transform((0.0, v_max))
+
+    comp_widget.histogram_offset = 0.1
+    pos_apex = _apex_display()
+    comp_widget.histogram_offset = -0.1
+    neg_apex = _apex_display()
+
+    # Flipping the sign puts the apex on the opposite side of the line.
+    assert not np.allclose(pos_apex, neg_apex)

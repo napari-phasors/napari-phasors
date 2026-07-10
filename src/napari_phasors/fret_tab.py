@@ -3,7 +3,7 @@ import contextlib
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.collections import LineCollection
-from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.colors import LinearSegmentedColormap, PowerNorm
 from napari.layers import Image
 from napari.utils.notifications import show_error, show_warning
 from phasorpy.lifetime import (
@@ -58,6 +58,7 @@ class FretWidget(QWidget):
         self.fret_layers = []  # List of all FRET efficiency layers
         self.colormap_contrast_limits = None
         self.fret_colormap = None
+        self.colormap_gamma = 1.0
         self._updating_linked_layers = (
             False  # Flag to prevent recursive updates
         )
@@ -1172,7 +1173,13 @@ class FretWidget(QWidget):
             segments, cmap=colormap, linewidths=3, zorder=zorder
         )
         lc.set_array(np.array(colors))
-        lc.set_clim(vmin, vmax)
+        gamma = getattr(self, 'colormap_gamma', 1.0) or 1.0
+        if gamma != 1.0 and vmax > vmin:
+            # Match the FRET layer's gamma so the phasor-plot trajectory reads
+            # the same as the image and the histogram.
+            lc.set_norm(PowerNorm(gamma, vmin=vmin, vmax=vmax))
+        else:
+            lc.set_clim(vmin, vmax)
 
         self.current_donor_line = ax.add_collection(lc)
 
@@ -1183,15 +1190,18 @@ class FretWidget(QWidget):
 
         source_layer = event.source
         new_colormap = source_layer.colormap
+        new_gamma = source_layer.gamma
 
         # Update stored values
         self.fret_colormap = new_colormap.colors
         self.colormap_contrast_limits = source_layer.contrast_limits
+        self.colormap_gamma = new_gamma
 
         # Update histogram colormap
         self.histogram_widget.update_colormap(
             colormap_colors=self.fret_colormap,
             contrast_limits=list(self.colormap_contrast_limits),
+            gamma=self.colormap_gamma,
         )
 
         # Extract colormap info for metadata
@@ -1213,6 +1223,9 @@ class FretWidget(QWidget):
         self._update_fret_setting_in_metadata(
             'colormap_settings.colormap_changed', True
         )
+        self._update_fret_setting_in_metadata(
+            'colormap_settings.gamma', new_gamma
+        )
 
         # Update all other FRET layers to match
         self._updating_linked_layers = True
@@ -1220,6 +1233,7 @@ class FretWidget(QWidget):
             for layer in self.fret_layers:
                 if layer != source_layer and layer in self.viewer.layers:
                     layer.colormap = new_colormap
+                    layer.gamma = new_gamma
         finally:
             self._updating_linked_layers = False
 
@@ -1240,6 +1254,7 @@ class FretWidget(QWidget):
         self.histogram_widget.update_colormap(
             colormap_colors=self.fret_colormap,
             contrast_limits=list(self.colormap_contrast_limits),
+            gamma=self.colormap_gamma,
         )
 
         # Prepare for metadata
@@ -1445,6 +1460,7 @@ class FretWidget(QWidget):
                 self._saved_contrast_limits = colormap_settings.get(
                     'contrast_limits', (0, 1)
                 )
+                self._saved_gamma = colormap_settings.get('gamma', 1.0)
                 self._colormap_was_changed = colormap_settings.get(
                     'colormap_changed', False
                 )
@@ -1487,6 +1503,9 @@ class FretWidget(QWidget):
                 self.fret_layer.events.contrast_limits.disconnect(
                     self._on_contrast_limits_changed
                 )
+                self.fret_layer.events.gamma.disconnect(
+                    self._on_colormap_changed
+                )
 
                 if self._saved_colormap_colors is not None:
                     from napari.utils.colormaps import Colormap
@@ -1510,8 +1529,12 @@ class FretWidget(QWidget):
 
                 self.fret_layer.contrast_limits = saved_limits
 
+                if getattr(self, '_saved_gamma', None) is not None:
+                    self.fret_layer.gamma = self._saved_gamma
+
                 self.fret_colormap = self.fret_layer.colormap.colors
                 self.colormap_contrast_limits = self.fret_layer.contrast_limits
+                self.colormap_gamma = self.fret_layer.gamma
 
                 self.fret_layer.events.colormap.connect(
                     self._on_colormap_changed
@@ -1519,6 +1542,7 @@ class FretWidget(QWidget):
                 self.fret_layer.events.contrast_limits.connect(
                     self._on_contrast_limits_changed
                 )
+                self.fret_layer.events.gamma.connect(self._on_colormap_changed)
 
                 self.plot_donor_trajectory()
 
@@ -1530,6 +1554,9 @@ class FretWidget(QWidget):
                     )
                     self.fret_layer.events.contrast_limits.connect(
                         self._on_contrast_limits_changed
+                    )
+                    self.fret_layer.events.gamma.connect(
+                        self._on_colormap_changed
                     )
                 except Exception:  # noqa: BLE001
                     pass
@@ -1545,12 +1572,14 @@ class FretWidget(QWidget):
             self.fret_layer.events.contrast_limits.connect(
                 self._on_contrast_limits_changed
             )
+            self.fret_layer.events.gamma.connect(self._on_colormap_changed)
 
             if hasattr(self, '_saved_colormap_name'):
                 self._apply_saved_fret_colormap_settings()
             else:
                 self.fret_colormap = self.fret_layer.colormap.colors
                 self.colormap_contrast_limits = self.fret_layer.contrast_limits
+                self.colormap_gamma = self.fret_layer.gamma
 
     def rename_layer(self, old_name: str, new_name: str):
         """Rename derived layers when base layer is renamed."""
@@ -1604,6 +1633,7 @@ class FretWidget(QWidget):
                 if self.colormap_contrast_limits is not None
                 else None
             ),
+            gamma=self.colormap_gamma,
         )
         if len(per_layer) > 1:
             self.histogram_widget.update_multi_data(per_layer)
@@ -1641,6 +1671,7 @@ class FretWidget(QWidget):
             self.histogram_widget.update_colormap(
                 colormap_colors=self.fret_colormap,
                 contrast_limits=[min_val, max_val],
+                gamma=self.colormap_gamma,
             )
             if len(per_layer) > 1:
                 self.histogram_widget.update_multi_data(per_layer)
@@ -1698,6 +1729,7 @@ class FretWidget(QWidget):
                     layer.events.contrast_limits.disconnect(
                         self._on_contrast_limits_changed
                     )
+                    layer.events.gamma.disconnect(self._on_colormap_changed)
                 except Exception:  # noqa: BLE001
                     pass
 
@@ -1781,6 +1813,7 @@ class FretWidget(QWidget):
                     layer.events.contrast_limits.disconnect(
                         self._on_contrast_limits_changed
                     )
+                    layer.events.gamma.disconnect(self._on_colormap_changed)
                 except Exception:  # noqa: BLE001
                     pass
         self.fret_layers = []
@@ -1933,12 +1966,14 @@ class FretWidget(QWidget):
             fret_layer.events.contrast_limits.connect(
                 self._on_contrast_limits_changed
             )
+            fret_layer.events.gamma.connect(self._on_colormap_changed)
 
             # Store reference to first FRET layer for backward compatibility
             if self.fret_layer is None:
                 self.fret_layer = fret_layer
                 self.fret_colormap = fret_layer.colormap.colors
                 self.colormap_contrast_limits = fret_layer.contrast_limits
+                self.colormap_gamma = fret_layer.gamma
 
             try:
                 frequency_float = float(self.frequency_input.text().strip())

@@ -76,7 +76,11 @@ def compute_phasor_mesh_mask(
         mask |= ~((m_grid >= mod_min) & (m_grid <= mod_max))
     if clip_semicircle and semicircle:
         with np.errstate(invalid="ignore"):
-            mask |= m_grid > np.cos(p_grid)
+            # Bound by the arc (m <= cos(phase)) and by the diameter (s >= 0).
+            # In semicircle mode the phase comes straight from ``atan2`` so
+            # points below the diameter have a negative phase; clipping them
+            # stops the mesh from bleeding past the bottom of the semicircle.
+            mask |= (m_grid > np.cos(p_grid)) | (p_grid < 0)
     return mask
 
 
@@ -85,7 +89,7 @@ def draw_phasor_mesh(
     kind,
     *,
     semicircle=True,
-    colormap="hsv",
+    colormap="jet",
     alpha=0.45,
     alpha_map=None,
     phase_range=None,
@@ -179,7 +183,13 @@ def draw_phasor_mesh(
         )
 
     field = p_grid if kind == "Phase" else m_grid
-    field_masked = np.ma.array(field, mask=mask)
+    # The exterior of the mesh is hidden purely through ``alpha_map`` (0 outside
+    # the visible region). We deliberately keep the *colour* field fully valid
+    # everywhere rather than masking it: a masked colour field renders excluded
+    # cells as the "bad" colour, and blending those transparent-black cells into
+    # the feathered edge under RGBA interpolation produces a grey halo / shadow
+    # around the outline. Filling non-finite values keeps the edge colours clean.
+    field = np.nan_to_num(np.asarray(field, dtype=float), nan=0.0)
 
     if isinstance(colormap, str):
         cmap = resolve_colormap_by_name(colormap)
@@ -220,12 +230,12 @@ def draw_phasor_mesh(
     }
     try:
         image = ax.imshow(
-            field_masked,
+            field,
             interpolation_stage="rgba",
             **mesh_imshow_kwargs,
         )
     except TypeError:
-        image = ax.imshow(field_masked, **mesh_imshow_kwargs)
+        image = ax.imshow(field, **mesh_imshow_kwargs)
     # Restore a 1:1 data aspect; ``aspect="auto"`` on imshow otherwise stretches
     # the axes and distorts the phasor plot.
     ax.set_aspect(1, adjustable="box")
@@ -264,13 +274,14 @@ class PhasorMappingWidget(QWidget):
         self.current_output_type = "Apparent Phase Lifetime"
         self._overlay_imshow = None
         self._mesh_overlay_imshow = None
-        self._phase_colormap_name = "hsv"
+        self._phase_colormap_name = "jet"
         self._modulation_colormap_name = "viridis"
         self._coloring_paused_by_tab = False
         self.min_lifetime = None
         self.max_lifetime = None
         self.lifetime_colormap = None
         self.colormap_contrast_limits = None
+        self.colormap_gamma = 1.0
         self.lifetime_type = None
         self.lifetime_range_factor = (
             1000  # Factor to convert to integer for slider
@@ -1013,7 +1024,7 @@ class PhasorMappingWidget(QWidget):
     @staticmethod
     def _get_output_colormap_name(output_type: str) -> str:
         if output_type == "Phase":
-            return "hsv"
+            return "jet"
         if output_type == "Modulation":
             return "viridis"
         return "plasma"
@@ -1245,7 +1256,7 @@ class PhasorMappingWidget(QWidget):
                 self.lifetime_min_edit.setText('0.0')
                 self.lifetime_max_edit.setText('100.0')
                 self.lifetime_range_label.setText(
-                    f'{self.histogram_widget._range_label_prefix}: 0.0 - 100.0'
+                    f'{self.histogram_widget._range_label_prefix}:'
                 )
                 self._set_frequency_input_enabled(True)
                 self.mesh_overlay_checkbox.blockSignals(True)
@@ -1631,7 +1642,7 @@ class PhasorMappingWidget(QWidget):
         self.lifetime_range_slider.setValue((min_slider_val, max_slider_val))
 
         self.lifetime_range_label.setText(
-            f"{self.histogram_widget._range_label_prefix}: {self.min_lifetime:.2f} - {self.max_lifetime:.2f}"
+            f"{self.histogram_widget._range_label_prefix}:"
         )
 
         self.lifetime_min_edit.setText(f"{self.min_lifetime:.2f}")
@@ -1650,6 +1661,7 @@ class PhasorMappingWidget(QWidget):
         self.histogram_widget.update_colormap(
             colormap_colors=self.lifetime_colormap,
             contrast_limits=self.colormap_contrast_limits,
+            gamma=self.colormap_gamma,
         )
 
         output_type = self._get_selected_output_type()
@@ -1710,6 +1722,7 @@ class PhasorMappingWidget(QWidget):
                     layer.events.contrast_limits.disconnect(
                         self._on_colormap_changed
                     )
+                    layer.events.gamma.disconnect(self._on_colormap_changed)
         self.metric_layers = []
         self.lifetime_layers = []
         self.lifetime_layer = None
@@ -1753,11 +1766,13 @@ class PhasorMappingWidget(QWidget):
             output_layer.events.contrast_limits.connect(
                 self._on_colormap_changed
             )
+            output_layer.events.gamma.connect(self._on_colormap_changed)
 
             if self.lifetime_layer is None:
                 self.lifetime_layer = output_layer
                 self.lifetime_colormap = output_layer.colormap.colors
                 self.colormap_contrast_limits = output_layer.contrast_limits
+                self.colormap_gamma = output_layer.gamma
 
     def create_lifetime_layer(self):
         """Backward-compatible alias for output layer creation."""
@@ -1773,10 +1788,12 @@ class PhasorMappingWidget(QWidget):
         source_layer = event.source
         new_colormap = source_layer.colormap
         new_contrast_limits = source_layer.contrast_limits
+        new_gamma = source_layer.gamma
 
         # Update stored values
         self.lifetime_colormap = new_colormap.colors
         self.colormap_contrast_limits = new_contrast_limits
+        self.colormap_gamma = new_gamma
 
         output_type = self._get_selected_output_type()
         if output_type in {"Phase", "Modulation"}:
@@ -1800,12 +1817,14 @@ class PhasorMappingWidget(QWidget):
                 if layer != source_layer and layer in self.viewer.layers:
                     layer.colormap = new_colormap
                     layer.contrast_limits = new_contrast_limits
+                    layer.gamma = new_gamma
         finally:
             self._updating_linked_layers = False
 
         self.histogram_widget.update_colormap(
             colormap_colors=self.lifetime_colormap,
             contrast_limits=self.colormap_contrast_limits,
+            gamma=self.colormap_gamma,
         )
 
         if output_type in {"Phase", "Modulation"} and (
@@ -1850,6 +1869,9 @@ class PhasorMappingWidget(QWidget):
                             self._on_colormap_changed
                         )
                         layer.events.contrast_limits.disconnect(
+                            self._on_colormap_changed
+                        )
+                        layer.events.gamma.disconnect(
                             self._on_colormap_changed
                         )
 
@@ -2002,7 +2024,7 @@ class PhasorMappingWidget(QWidget):
                         self.lifetime_min_edit.setText(f"{min_val:.2f}")
                         self.lifetime_max_edit.setText(f"{max_val:.2f}")
                         self.lifetime_range_label.setText(
-                            f"{self.histogram_widget._range_label_prefix}: {min_val:.2f} - {max_val:.2f}"
+                            f"{self.histogram_widget._range_label_prefix}:"
                         )
                     finally:
                         self._updating_settings = False
@@ -2068,11 +2090,17 @@ class PhasorMappingWidget(QWidget):
             self._mesh_overlay_imshow = None
 
     def _get_mesh_grid_resolution(self, ax) -> int:
+        # Sample the mesh grid well above the on-screen pixel size so the mesh
+        # outline (the curved semicircle / range boundaries) stays finely
+        # detailed - especially when zoomed out, where a coarse grid spreads
+        # few samples over a wide data extent and the edge looks rough. Grids
+        # are cached per view, so a higher resolution only costs on a new
+        # zoom/pan level (~25 ms at the cap, within the redraw debounce).
         with contextlib.suppress(Exception):
             bbox = ax.get_window_extent()
-            target = int(max(float(bbox.width), float(bbox.height)) * 1.2)
-            return int(np.clip(target, 320, 640))
-        return 480
+            target = int(max(float(bbox.width), float(bbox.height)) * 2.0)
+            return int(np.clip(target, 640, 1280))
+        return 1000
 
     def _make_mesh_grid_cache_key(self, ax, resolution: int):
         x_min, x_max = ax.get_xlim()
@@ -2517,6 +2545,8 @@ class PhasorMappingWidget(QWidget):
                 layer.events.contrast_limits.disconnect(
                     self._on_colormap_changed
                 )
+            with contextlib.suppress(TypeError, ValueError, AttributeError):
+                layer.events.gamma.disconnect(self._on_colormap_changed)
 
         event.accept()
 

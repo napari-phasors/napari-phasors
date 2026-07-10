@@ -12,7 +12,7 @@ import numpy as np
 import scipy
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.collections import LineCollection
-from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.colors import LinearSegmentedColormap, PowerNorm
 from matplotlib.figure import Figure
 from matplotlib.legend_handler import HandlerBase
 from matplotlib.patches import Polygon as MplPolygon
@@ -2362,7 +2362,7 @@ class HistogramWidget(QWidget):
         Name of the Matplotlib colormap to use as fallback when no explicit
         colormap colors are provided, by default ``"plasma"``.
     canvas_height : int, optional
-        Minimum pixel height of the canvas, by default 150. The canvas grows
+        Minimum pixel height of the canvas, by default 220. The canvas grows
         beyond this to fill the available vertical space.
     range_slider_enabled : bool, optional
         If ``True``, show a range slider with min / max edits above the
@@ -2397,7 +2397,7 @@ class HistogramWidget(QWidget):
         ylabel: str = "Pixel count",
         bins: int = 150,
         default_colormap_name: str = "plasma",
-        canvas_height: int = 150,
+        canvas_height: int = 220,
         range_slider_enabled: bool = False,
         range_label_prefix: str = "Range",
         range_factor: int = 1000,
@@ -2428,6 +2428,7 @@ class HistogramWidget(QWidget):
         # Colormap state (set externally)
         self.colormap_colors = None  # Nx4 array of RGBA colors
         self.contrast_limits = None  # [vmin, vmax]
+        self.gamma = 1.0  # power-law gamma applied to the colormap
 
         # Raw pooled data (for central tendency computation)
         self._raw_valid_data = None
@@ -2457,23 +2458,24 @@ class HistogramWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # Optional range slider section
+        # Optional range slider section: label, min/max edits and the range
+        # slider all share a single row.
         if self._range_slider_enabled:
-            self.range_label = QLabel(
-                f"{self._range_label_prefix}: 0.0 - 100.0"
-            )
-            layout.addWidget(self.range_label)
+            range_row = QHBoxLayout()
 
-            edit_layout = QHBoxLayout()
+            self.range_label = QLabel(f"{self._range_label_prefix}:")
+            range_row.addWidget(self.range_label)
+
             self.range_min_edit = QLineEdit("0.0")
             self.range_max_edit = QLineEdit("100.0")
             self.range_min_edit.setValidator(QDoubleValidator())
             self.range_max_edit.setValidator(QDoubleValidator())
-            edit_layout.addWidget(QLabel("Min:"))
-            edit_layout.addWidget(self.range_min_edit)
-            edit_layout.addWidget(QLabel("Max:"))
-            edit_layout.addWidget(self.range_max_edit)
-            layout.addLayout(edit_layout)
+            self.range_min_edit.setMaximumWidth(60)
+            self.range_max_edit.setMaximumWidth(60)
+            range_row.addWidget(QLabel("Min:"))
+            range_row.addWidget(self.range_min_edit)
+            range_row.addWidget(QLabel("Max:"))
+            range_row.addWidget(self.range_max_edit)
 
             self.range_slider = QRangeSlider(Qt.Orientation.Horizontal)
             self.range_slider.setRange(0, 100)
@@ -2483,7 +2485,9 @@ class HistogramWidget(QWidget):
             self.range_slider.valueChanged.connect(self._on_range_label_update)
             self.range_slider.sliderPressed.connect(self._on_slider_pressed)
             self.range_slider.sliderReleased.connect(self._on_slider_released)
-            layout.addWidget(self.range_slider)
+            range_row.addWidget(self.range_slider, 1)
+
+            layout.addLayout(range_row)
 
             self.range_min_edit.editingFinished.connect(
                 self._on_range_min_edit
@@ -2595,9 +2599,6 @@ class HistogramWidget(QWidget):
         max_out = max_s / self.range_factor
         self.range_min_edit.setText(f"{min_out:.2f}")
         self.range_max_edit.setText(f"{max_out:.2f}")
-        self.range_label.setText(
-            f"{self._range_label_prefix}: {min_out:.2f} - {max_out:.2f}"
-        )
 
     def get_range(self) -> tuple:
         """Return ``(min_float, max_float)`` from the slider."""
@@ -2607,13 +2608,10 @@ class HistogramWidget(QWidget):
         return lo / self.range_factor, hi / self.range_factor
 
     def _on_range_label_update(self, value):
-        """Update label + edits while dragging (no heavy work)."""
+        """Update edits while dragging (no heavy work)."""
         lo, hi = value
         lo_f = lo / self.range_factor
         hi_f = hi / self.range_factor
-        self.range_label.setText(
-            f"{self._range_label_prefix}: {lo_f:.2f} - {hi_f:.2f}"
-        )
         self.range_min_edit.setText(f"{lo_f:.2f}")
         self.range_max_edit.setText(f"{hi_f:.2f}")
 
@@ -2998,6 +2996,7 @@ class HistogramWidget(QWidget):
         self,
         colormap_colors: np.ndarray = None,
         contrast_limits: list = None,
+        gamma: float = None,
     ) -> None:
         """Update the colormap / contrast limits and re-render.
 
@@ -3007,9 +3006,14 @@ class HistogramWidget(QWidget):
             Nx4 RGBA array that defines the colormap.
         contrast_limits : list, optional
             ``[vmin, vmax]`` for the normalisation.
+        gamma : float, optional
+            Power-law gamma applied to the colormap, matching napari's
+            layer ``gamma``. When ``None`` the current gamma is kept.
         """
         self.colormap_colors = colormap_colors
         self.contrast_limits = contrast_limits
+        if gamma is not None:
+            self.gamma = gamma
         if self.counts is not None:
             self._render()
 
@@ -3120,26 +3124,22 @@ class HistogramWidget(QWidget):
         """Return (cmap, norm) from current colormap state."""
         if self.colormap_colors is None or self.contrast_limits is None:
             cmap = plt.get_cmap(self.default_colormap_name)
-            norm = plt.Normalize(
-                vmin=(
-                    np.min(self.bin_centers)
-                    if len(self.bin_centers) > 0
-                    else 0
-                ),
-                vmax=(
-                    np.max(self.bin_centers)
-                    if len(self.bin_centers) > 0
-                    else 1
-                ),
-            )
+            vmin = np.min(self.bin_centers) if len(self.bin_centers) > 0 else 0
+            vmax = np.max(self.bin_centers) if len(self.bin_centers) > 0 else 1
         else:
             cmap = LinearSegmentedColormap.from_list(
                 "custom_cmap", self.colormap_colors
             )
-            norm = plt.Normalize(
-                vmin=self.contrast_limits[0],
-                vmax=self.contrast_limits[1],
-            )
+            vmin = self.contrast_limits[0]
+            vmax = self.contrast_limits[1]
+
+        gamma = getattr(self, "gamma", 1.0) or 1.0
+        if gamma != 1.0 and vmax > vmin:
+            # Reproduce napari's rendering: normalise to the contrast limits,
+            # then apply the layer gamma as a power law.
+            norm = PowerNorm(gamma, vmin=vmin, vmax=vmax)
+        else:
+            norm = plt.Normalize(vmin=vmin, vmax=vmax)
         return cmap, norm
 
     def _smooth_curve(self, y, sigma=2, upsample=5):
@@ -3245,12 +3245,25 @@ class HistogramWidget(QWidget):
                     )
         else:
             if self._raw_valid_data is not None:
-                val = self._compute_central_tendency(
-                    self._raw_valid_data,
-                    choice,
-                    self.bin_centers,
-                    self.bin_edges,
-                )
+                if (
+                    choice == "Center of mass"
+                    and self.counts is not None
+                    and self.bin_centers is not None
+                    and np.sum(self.counts) > 0
+                ):
+                    # Compute the centre of mass from the raw, unsmoothed
+                    # stored histogram (``self.counts``) so it is independent of
+                    # any curve smoothing applied only for display.
+                    val = float(
+                        np.average(self.bin_centers, weights=self.counts)
+                    )
+                else:
+                    val = self._compute_central_tendency(
+                        self._raw_valid_data,
+                        choice,
+                        self.bin_centers,
+                        self.bin_edges,
+                    )
                 if val is not None:
                     self.ax.axvline(
                         val, color="white", ls="--", lw=2, alpha=0.85
@@ -3755,7 +3768,7 @@ class HistogramDockWidget(QWidget):
         self.histogram_widget = histogram_widget
         self._stats_dock = None
 
-        self.setMinimumHeight(150)
+        self.setMinimumHeight(220)
         self.setMinimumWidth(300)
 
         layout = QVBoxLayout(self)
