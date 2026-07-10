@@ -73,6 +73,31 @@ except (AttributeError, ImportError, TypeError):
     pass
 
 
+# Same PySide6/shiboken wrapper-corruption bug as above, hitting matplotlib's
+# Qt canvas this time: `FigureCanvasQT.showEvent` does
+# `self.window().windowHandle()`, which should be a QWindow, to wire up
+# HiDPI pixel-ratio signals. Under teardown-time address reuse this can come
+# back as a stale QWidgetItem instead, so `.installEventFilter(self)` raises
+# `AttributeError: 'QWidgetItem' object has no attribute 'installEventFilter'`.
+# Only reproduces with PySide6 (not PyQt), during Qt event-loop teardown.
+# The pixel-ratio wiring is cosmetic, so skip it on failure rather than
+# aborting the surrounding show()/event handling.
+try:
+    from matplotlib.backends.backend_qt import FigureCanvasQT
+
+    _orig_FigureCanvasQT_showEvent = FigureCanvasQT.showEvent
+
+    def _safe_showEvent(self, event):
+        try:
+            return _orig_FigureCanvasQT_showEvent(self, event)
+        except AttributeError:
+            return None
+
+    FigureCanvasQT.showEvent = _safe_showEvent
+except (AttributeError, ImportError, TypeError):
+    pass
+
+
 @pytest.fixture(autouse=True)
 def _ensure_qapp(qapp):
     """Guarantee a QApplication exists for every test.
