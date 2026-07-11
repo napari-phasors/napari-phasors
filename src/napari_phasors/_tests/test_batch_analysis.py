@@ -2,6 +2,7 @@
 
 import csv
 import os
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -277,6 +278,163 @@ def test_calibration_same_for_all(qtbot, make_viewer_model):
     apply_pipeline(target, pipeline)
     assert target.metadata["settings"]["calibrated"] is True
     assert not np.array_equal(before, target.metadata["G"])
+
+
+def _make_single_harmonic_layer():
+    from napari.layers import Image
+
+    layer = Image(np.zeros((4, 4)), name="single_harmonic")
+    layer.metadata.update(
+        {
+            "harmonics": [1],
+            "G_original": np.full((1, 4, 4), 0.5),
+            "S_original": np.full((1, 4, 4), 0.3),
+            "G": np.full((1, 4, 4), 0.5),
+            "S": np.full((1, 4, 4), 0.3),
+        }
+    )
+    return layer
+
+
+def test_apply_calibration_correction_reports_harmonic_mismatch():
+    """A calibration with a different harmonic count fails with a clear error.
+
+    Regression: previously this surfaced as a cryptic numpy broadcasting error
+    ("operands could not be broadcast together with shapes ...").
+    """
+    from napari_phasors._utils import apply_calibration_correction
+
+    layer = _make_single_harmonic_layer()
+    with pytest.raises(ValueError, match=r"calibration has 2 harmonic"):
+        apply_calibration_correction(
+            layer, np.array([0.1, 0.2]), np.array([1.0, 1.1])
+        )
+
+
+def test_apply_calibration_correction_single_harmonic_array():
+    """A matching single-harmonic (length-1) calibration array applies cleanly."""
+    from napari_phasors._utils import apply_calibration_correction
+
+    layer = _make_single_harmonic_layer()
+    apply_calibration_correction(layer, np.array([0.1]), np.array([1.0]))
+    assert layer.metadata["settings"]["calibrated"] is True
+    assert layer.metadata["G"].shape == (1, 4, 4)
+
+
+def _make_two_harmonic_layer():
+    from napari.layers import Image
+
+    layer = Image(np.zeros((4, 4)), name="two_harmonic")
+    layer.metadata.update(
+        {
+            "harmonics": [1, 2],
+            "G_original": np.full((2, 4, 4), 0.5),
+            "S_original": np.full((2, 4, 4), 0.3),
+            "G": np.full((2, 4, 4), 0.5),
+            "S": np.full((2, 4, 4), 0.3),
+        }
+    )
+    return layer
+
+
+def test_apply_calibration_uses_matching_harmonic_subset():
+    """A [1, 2] calibration applied to a [1] file uses only harmonic 1."""
+    from napari_phasors._utils import apply_calibration_correction
+
+    layer = _make_single_harmonic_layer()
+    apply_calibration_correction(
+        layer,
+        np.array([0.1, 0.9]),
+        np.array([1.0, 2.0]),
+        calibration_harmonics=[1, 2],
+    )
+    assert layer.metadata["settings"]["calibrated"] is True
+    # Only the harmonic-1 correction is kept/stored, not the harmonic-2 one.
+    assert layer.metadata["settings"]["calibration_phase"] == [0.1]
+    assert layer.metadata["settings"]["calibration_modulation"] == [1.0]
+    assert layer.metadata["G"].shape == (1, 4, 4)
+
+
+def test_normalize_harmonics_keeps_non_convertible_values():
+    """Values that can't become plain ints are kept as-is instead of raising."""
+    from napari_phasors._utils import _normalize_harmonics
+
+    assert _normalize_harmonics([1, 2]) == [1, 2]
+    assert all(isinstance(v, int) for v in _normalize_harmonics([1, 2]))
+    # A non-numeric value hits the except branch and is passed through.
+    assert _normalize_harmonics(["a"]) == ["a"]
+
+
+def test_apply_calibration_falls_back_to_positional_when_harmonics_mismatch():
+    """A calibration_harmonics list of the wrong length is ignored.
+
+    When the number of calibration_harmonics labels doesn't match the number
+    of phi_zero/mod_zero values, the labels are untrustworthy, so the
+    correction falls back to positional matching instead.
+    """
+    from napari_phasors._utils import apply_calibration_correction
+
+    layer = _make_two_harmonic_layer()
+    # 3 harmonic labels but only 2 calibration values: labels are dropped and
+    # the 2 values are matched positionally against the layer's 2 harmonics.
+    apply_calibration_correction(
+        layer,
+        np.array([0.1, 0.2]),
+        np.array([1.0, 1.1]),
+        calibration_harmonics=[1, 2, 3],
+    )
+    assert layer.metadata["settings"]["calibrated"] is True
+    assert layer.metadata["settings"]["calibration_phase"] == [0.1, 0.2]
+
+
+def test_apply_calibration_scalar_single_harmonic():
+    """A scalar (non-array) phi_zero/mod_zero calibrates a single-harmonic layer."""
+    from napari_phasors._utils import apply_calibration_correction
+
+    layer = _make_single_harmonic_layer()
+    apply_calibration_correction(layer, 0.1, 1.0)
+    assert layer.metadata["settings"]["calibrated"] is True
+    assert layer.metadata["settings"]["calibration_phase"] == 0.1
+    assert layer.metadata["settings"]["calibration_modulation"] == 1.0
+
+
+def test_apply_calibration_multi_harmonic_without_spatial_dims():
+    """Multi-harmonic calibration on a layer whose G/S have no spatial dims."""
+    from napari.layers import Image
+
+    from napari_phasors._utils import apply_calibration_correction
+
+    layer = Image(np.zeros((4, 4)), name="no_spatial_dims")
+    layer.metadata.update(
+        {
+            "harmonics": [1, 2],
+            "G_original": np.array([0.5, 0.6]),
+            "S_original": np.array([0.3, 0.4]),
+            "G": np.array([0.5, 0.6]),
+            "S": np.array([0.3, 0.4]),
+        }
+    )
+    apply_calibration_correction(
+        layer, np.array([0.1, 0.2]), np.array([1.0, 1.1])
+    )
+    assert layer.metadata["settings"]["calibrated"] is True
+    assert layer.metadata["G"].shape == (2,)
+
+
+def test_apply_calibration_errors_on_uncovered_harmonic():
+    """A file needing a harmonic the calibration lacks raises a clear error."""
+    from napari_phasors._utils import apply_calibration_correction
+
+    layer = _make_two_harmonic_layer()
+    with pytest.raises(
+        ValueError, match=r"does not include harmonic\(s\) \[2\]"
+    ):
+        apply_calibration_correction(
+            layer,
+            np.array([0.1]),
+            np.array([1.0]),
+            calibration_harmonics=[1],
+        )
 
 
 def test_calibration_per_subfolder(qtbot, make_viewer_model, tmp_path):
@@ -1728,6 +1886,124 @@ def test_run_batch_components_plot_with_style(
     assert any("_components_phasor_H1.png" in name for name in plots)
 
 
+def test_default_component_line_style_has_histogram_keys():
+    """The batch line style exposes the fraction histogram overlay controls."""
+    from napari_phasors._batch_analysis import default_component_line_style
+
+    style = default_component_line_style()
+    assert style["show_fraction_histogram"] is False
+    assert style["histogram_overlay_height"] == 0.3
+    assert style["histogram_offset"] == 0.0
+    assert style["histogram_alpha"] == 0.75
+
+
+def test_components_overlay_injects_fraction_data():
+    """Fraction data is computed and attached only for linear projections with
+    the histogram overlay enabled."""
+    rng = np.random.default_rng(0)
+    real = rng.uniform(0.2, 0.8, 500)
+    imag = rng.uniform(0.1, 0.5, 500)
+    base = {
+        "kind": "components",
+        "components": {
+            "analysis_type": "linear",
+            "component_real": [0.2, 0.8],
+            "component_imag": [0.1, 0.5],
+            "line_style": {"show_fraction_histogram": True},
+        },
+    }
+    out = BatchAnalysisWidget._components_overlay_with_fraction_data(
+        base, real, imag
+    )
+    assert "fraction_data" in out
+    assert out["fraction_data"].shape == real.shape
+    # The original overlay is not mutated.
+    assert "fraction_data" not in base
+
+    # Disabled overlay -> unchanged (no fraction data attached).
+    base["components"]["line_style"]["show_fraction_histogram"] = False
+    assert (
+        "fraction_data"
+        not in BatchAnalysisWidget._components_overlay_with_fraction_data(
+            base, real, imag
+        )
+    )
+
+
+def test_draw_fraction_histogram_overlay_shared_helper():
+    """The shared overlay helper draws a single gradient image artist."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.image import AxesImage
+
+    from napari_phasors.components_tab import (
+        draw_fraction_histogram_overlay,
+    )
+
+    fig, ax = plt.subplots()
+    ax.set_xlim(-0.05, 1.05)
+    ax.set_ylim(-0.05, 0.7)
+    rng = np.random.default_rng(1)
+    values = np.clip(rng.normal(0.4, 0.15, 5000), 0, 1)
+    ramp = plt.get_cmap("jet")(np.linspace(0, 1, 256))
+
+    artists = draw_fraction_histogram_overlay(
+        ax, 0.2, 0.1, 0.8, 0.5, values, ramp, height=0.3
+    )
+    assert artists is not None
+    assert len(artists) == 1
+    assert isinstance(artists[0], AxesImage)
+
+    # Empty data draws nothing.
+    assert (
+        draw_fraction_histogram_overlay(
+            ax, 0.2, 0.1, 0.8, 0.5, np.array([]), ramp
+        )
+        is None
+    )
+    plt.close(fig)
+
+
+def test_run_batch_components_plot_with_fraction_histogram(
+    qtbot, make_viewer_model, tmp_path
+):
+    """End-to-end: the fraction histogram overlay renders in a batch export."""
+    in_root = tmp_path / "in"
+    in_root.mkdir()
+    out_root = tmp_path / "out"
+    out_root.mkdir()
+    write_ome_tiff(
+        str(in_root / "a.ome.tif"), _make_phasor_layer(name="a", harmonic=[1])
+    )
+
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+    widget._input_folder = str(in_root)
+    widget._rescan()
+    idx = widget.format_combobox.findData(".ome.tif")
+    widget.format_combobox.setCurrentIndex(idx)
+    widget.harmonics_edit.setText("1")
+    widget._export_folder = str(out_root)
+    widget.export_ometiff_checkbox.setChecked(False)
+
+    widget.components_group.setChecked(True)
+    widget.components_plot_toggle.setChecked(True)
+    widget._component_line_style["show_colormap_line"] = True
+    widget._component_line_style["show_fraction_histogram"] = True
+    widget._component_line_style["histogram_overlay_height"] = 0.4
+    widget._component_rows[0]["g"].setText("0.8")
+    widget._component_rows[0]["s"].setText("0.3")
+    widget._component_rows[1]["g"].setText("0.2")
+    widget._component_rows[1]["s"].setText("0.3")
+
+    widget.run_batch()
+
+    plots = {p.name for p in out_root.rglob("*.png")}
+    assert any("_components_phasor_H1.png" in name for name in plots)
+
+
 def test_combined_merged_histogram_exported(
     qtbot, make_viewer_model, tmp_path
 ):
@@ -2434,6 +2710,27 @@ def test_histogram_csv_respects_value_range(tmp_path):
     assert sum(counts) == 3
 
 
+def test_compute_stats_center_of_mass_from_raw_histogram():
+    """Batch statistics compute the center of mass from the raw histogram."""
+    from napari_phasors._batch_analysis import _compute_stats
+
+    rng = np.random.default_rng(1)
+    data = np.concatenate(
+        [rng.normal(2.0, 0.3, 5000), rng.normal(5.0, 0.5, 1500)]
+    )
+    bins = 100
+    stats = _compute_stats(data, bins)
+
+    counts, edges = np.histogram(data, bins=bins)
+    centers = (edges[:-1] + edges[1:]) / 2.0
+    expected_com = float(np.average(centers, weights=counts))
+
+    assert np.isclose(stats["com"], expected_com)
+    assert stats["n"] == data.size
+    # Mean is the raw arithmetic mean (unbinned), distinct from the binned COM.
+    assert np.isclose(stats["mean"], float(np.mean(data)))
+
+
 def test_output_controls_unified(qtbot, make_viewer_model):
     """Each analysis tab exposes one Outputs section with format comboboxes."""
     widget = BatchAnalysisWidget(make_viewer_model())
@@ -2984,6 +3281,184 @@ def test_draw_components_overlay_two_with_colormap_line():
     )
     assert ax.collections
     plt.close(fig)
+
+
+def test_draw_components_overlay_gamma_uses_power_norm():
+    """A non-unity export gamma renders the gradient line through a PowerNorm."""
+    from matplotlib.colors import PowerNorm
+
+    from napari_phasors.components_tab import draw_components_overlay
+
+    plt, fig, ax = _agg_axes()
+
+    # Gamma of 1.0 keeps a plain linear normalisation.
+    draw_components_overlay(
+        ax,
+        [0.2, 0.8],
+        [0.3, 0.4],
+        analysis_type="Linear Projection",
+        settings={
+            "show_colormap_line": True,
+            "fractions_colormap": ["#000000", "#ffffff"],
+            "colormap_contrast_limits": (0.0, 1.0),
+            "colormap_gamma": 1.0,
+        },
+    )
+    assert not isinstance(ax.collections[-1].norm, PowerNorm)
+
+    # A non-unity gamma switches the gradient line to a matching PowerNorm.
+    draw_components_overlay(
+        ax,
+        [0.2, 0.8],
+        [0.3, 0.4],
+        analysis_type="Linear Projection",
+        settings={
+            "show_colormap_line": True,
+            "fractions_colormap": ["#000000", "#ffffff"],
+            "colormap_contrast_limits": (0.0, 1.0),
+            "colormap_gamma": 0.4,
+        },
+    )
+    norm = ax.collections[-1].norm
+    assert isinstance(norm, PowerNorm)
+    assert norm.gamma == 0.4
+    plt.close(fig)
+
+
+def test_default_component_line_style_exposes_colormap_gamma():
+    """The batch line style exposes the colormap gamma control (default 1.0)."""
+    from napari_phasors._batch_analysis import default_component_line_style
+
+    assert default_component_line_style()["colormap_gamma"] == 1.0
+
+
+def test_apply_component_settings_copies_line_and_overlay_style(
+    qtbot, make_viewer_model
+):
+    """Copying settings applies the persisted line / histogram overlay style.
+
+    Regression: the exported phasor plot ignored the interactively configured
+    line and fraction-histogram overlay because ``_apply_component_settings_to_ui``
+    only read the component coordinates, not ``two_component_line_settings``.
+    """
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+
+    settings = {
+        "component_analysis": {
+            "components": {
+                "0": {
+                    "name": "C1",
+                    "gs_harmonics": {"1": {"g": 0.2, "s": 0.3}},
+                },
+                "1": {
+                    "name": "C2",
+                    "gs_harmonics": {"1": {"g": 0.7, "s": 0.4}},
+                },
+            },
+            "two_component_line_settings": {
+                "show_colormap_line": True,
+                "show_component_dots": False,
+                "line_offset": 0.09,
+                "line_width": 5.5,
+                "line_alpha": 0.7,
+                "default_component_color": "#abcdef",
+                "show_fraction_histogram": True,
+                "histogram_overlay_height": 0.44,
+                "histogram_offset": -0.2,
+                "histogram_alpha": 0.6,
+            },
+            "two_components_label_settings": {
+                "fontsize": 18,
+                "bold": True,
+                "italic": True,
+                "color": "red",
+            },
+        }
+    }
+
+    widget._apply_settings_to_ui(settings)
+
+    style = widget._component_line_style
+    assert style["show_component_dots"] is False
+    assert style["line_offset"] == 0.09
+    assert style["line_width"] == 5.5
+    assert style["line_alpha"] == 0.7
+    assert style["default_component_color"] == "#abcdef"
+    assert style["show_fraction_histogram"] is True
+    assert style["histogram_overlay_height"] == 0.44
+    assert style["histogram_offset"] == -0.2
+    assert style["histogram_alpha"] == 0.6
+
+    label_style = widget._component_label_style
+    assert label_style["fontsize"] == 18
+    assert label_style["bold"] is True
+    assert label_style["italic"] is True
+    assert label_style["color"] == "red"
+
+
+def test_apply_component_settings_restores_linear_projection_type(
+    qtbot, make_viewer_model
+):
+    """Copying a Linear Projection keeps the exported colormap line / histogram.
+
+    Regression: rebuilding the component rows dropped the analysis type back to
+    "Component Fit", so ``_collect_components`` produced a "fit" config and
+    ``draw_components_overlay`` skipped the (Linear-Projection-only) colormap
+    line and fraction-histogram overlay even with their checkboxes on.
+    """
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+
+    settings = {
+        "component_analysis": {
+            "analysis_type": "Linear Projection",
+            "components": {
+                "0": {
+                    "name": "A",
+                    "gs_harmonics": {"1": {"g": 0.8, "s": 0.3}},
+                },
+                "1": {
+                    "name": "B",
+                    "gs_harmonics": {"1": {"g": 0.2, "s": 0.3}},
+                },
+            },
+            "two_component_line_settings": {
+                "show_colormap_line": True,
+                "show_fraction_histogram": True,
+            },
+        }
+    }
+
+    widget._apply_settings_to_ui(settings)
+
+    assert widget.analysis_type_combo.currentText() == "Linear Projection"
+    config = widget.build_pipeline([1]).components
+    assert config["analysis_type"] == "linear"
+
+
+def test_pipeline_step_annotates_error_with_step_name():
+    """A failing step is re-raised with the analysis (tab) name for context."""
+    from napari_phasors._batch_analysis import _pipeline_step
+
+    with pytest.raises(RuntimeError, match=r"Components failed: boom"):
+        with _pipeline_step("Components"):
+            raise ValueError("boom")
+
+
+def test_apply_pipeline_reports_which_step_failed(monkeypatch):
+    """``apply_pipeline`` surfaces which enabled step raised, not a bare error."""
+    from napari_phasors import _batch_analysis as ba
+
+    pipeline = ba.BatchPipeline(fret={"donor_lifetime": 3.0})
+
+    def boom(*args, **kwargs):
+        raise ValueError("kaboom")
+
+    monkeypatch.setattr(ba, "_apply_fret", boom)
+
+    with pytest.raises(RuntimeError, match=r"FRET failed: kaboom"):
+        ba.apply_pipeline(object(), pipeline)
 
 
 def test_draw_components_overlay_plain_line_and_polygon():
@@ -3604,3 +4079,314 @@ def test_signal_export_csv_only(qtbot, make_viewer_model, tmp_path):
     assert header[0] == "bin"
     assert any("mean" in h for h in header)
     assert any("std" in h for h in header)
+
+
+# -- Copy settings dialog wiring --------------------------------------------
+
+
+def test_on_copy_settings_shows_error_when_file_read_fails(
+    qtbot, make_viewer_model, monkeypatch
+):
+    """A file chosen in the Copy Settings dialog that fails to parse
+    surfaces the read error via ``show_error`` (rather than raising)."""
+    from qtpy.QtWidgets import QDialog
+
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+
+    class _FakeCopyDialog:
+        def __init__(self, layer_names, parent=None):
+            pass
+
+        def exec_(self):
+            return QDialog.Accepted
+
+        def selected_file(self):
+            return "/tmp/bad_settings.ome.tif"
+
+        def selected_layer(self):
+            return None
+
+    monkeypatch.setattr(
+        "napari_phasors._batch_analysis.CopySettingsDialog", _FakeCopyDialog
+    )
+
+    def _raise(path):
+        raise ValueError("bad tiff")
+
+    monkeypatch.setattr(
+        "napari_phasors._batch_analysis.read_ome_tiff_settings", _raise
+    )
+
+    with patch("napari_phasors._batch_analysis.show_error") as mock_show_error:
+        widget._on_copy_settings()
+
+    mock_show_error.assert_called_once_with(
+        "Could not read settings: bad tiff"
+    )
+
+
+def test_on_copy_settings_from_layer_includes_harmonics(
+    qtbot, make_viewer_model, monkeypatch
+):
+    """Copying from a layer (no file chosen) folds the layer's harmonics
+    into the settings dict passed on to the UI."""
+    from qtpy.QtWidgets import QDialog
+
+    viewer = make_viewer_model()
+    widget = BatchAnalysisWidget(viewer)
+    qtbot.addWidget(widget)
+
+    layer = _make_phasor_layer(name="Source", harmonic=[1, 2])
+    viewer.add_layer(layer)
+    assert layer.metadata.get("harmonics") is not None
+
+    class _FakeCopyDialog:
+        def __init__(self, layer_names, parent=None):
+            pass
+
+        def exec_(self):
+            return QDialog.Accepted
+
+        def selected_file(self):
+            return ""
+
+        def selected_layer(self):
+            return layer.name
+
+    monkeypatch.setattr(
+        "napari_phasors._batch_analysis.CopySettingsDialog", _FakeCopyDialog
+    )
+
+    captured = {}
+
+    def _fake_apply(settings):
+        captured["settings"] = settings
+
+    monkeypatch.setattr(widget, "_apply_settings_to_ui", _fake_apply)
+
+    widget._on_copy_settings()
+
+    assert captured["settings"]["harmonics"] == layer.metadata["harmonics"]
+
+
+# -- End-of-batch summary reporting -----------------------------------------
+
+
+def test_run_batch_reports_failed_files_via_show_error(
+    qtbot, make_viewer_model, tmp_path, monkeypatch
+):
+    """A file that errors during read/compute is collected into ``failed``
+    and reported (with its name and error message) via ``show_error`` in the
+    end-of-batch summary, alongside the successfully processed count."""
+    in_root = tmp_path / "in"
+    in_root.mkdir()
+    out_root = tmp_path / "out"
+    out_root.mkdir()
+
+    write_ome_tiff(
+        str(in_root / "good.ome.tif"), _make_phasor_layer(name="good")
+    )
+    write_ome_tiff(
+        str(in_root / "bad.ome.tif"), _make_phasor_layer(name="bad")
+    )
+
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+    widget._input_folder = str(in_root)
+    widget._rescan()
+    idx = widget.format_combobox.findData(".ome.tif")
+    widget.format_combobox.setCurrentIndex(idx)
+    widget._export_folder = str(out_root)
+    widget.export_ometiff_checkbox.setChecked(True)
+
+    original = BatchAnalysisWidget._read_compute_file
+
+    def flaky_read_compute(self, path, *args, **kwargs):
+        if os.path.basename(path) == "bad.ome.tif":
+            raise RuntimeError("boom")
+        return original(self, path, *args, **kwargs)
+
+    monkeypatch.setattr(
+        BatchAnalysisWidget, "_read_compute_file", flaky_read_compute
+    )
+
+    with patch("napari_phasors._batch_analysis.show_error") as mock_show_error:
+        widget.run_batch()
+
+    mock_show_error.assert_called_once()
+    message = mock_show_error.call_args[0][0]
+    assert "Batch complete: 1/2 files processed." in message
+    assert "1 failed." in message
+    assert "bad.ome.tif: boom" in message
+    assert (out_root / "OME-TIFF" / "good.ome.tif").exists()
+
+
+# -- Component-fraction overlay edge cases ----------------------------------
+
+
+def test_components_overlay_returns_original_when_component_coords_missing():
+    """No component_real/component_imag in the overlay leaves it unchanged."""
+    real = np.array([0.3, 0.5])
+    imag = np.array([0.2, 0.4])
+    overlay = {
+        "kind": "components",
+        "components": {
+            "analysis_type": "linear",
+            "line_style": {"show_fraction_histogram": True},
+        },
+    }
+    out = BatchAnalysisWidget._components_overlay_with_fraction_data(
+        overlay, real, imag
+    )
+    assert out is overlay
+    assert "fraction_data" not in out
+
+
+def test_components_overlay_squeezes_multi_dim_component_arrays():
+    """A ``(1, N)``-shaped component real/imag pair (as produced by some
+    component-fit paths) is squeezed to 1-D before the fraction is computed."""
+    rng = np.random.default_rng(1)
+    real = rng.uniform(0.2, 0.8, 200)
+    imag = rng.uniform(0.1, 0.5, 200)
+    overlay = {
+        "kind": "components",
+        "components": {
+            "analysis_type": "linear",
+            "component_real": [[0.2, 0.8]],
+            "component_imag": [[0.1, 0.5]],
+            "line_style": {"show_fraction_histogram": True},
+        },
+    }
+    out = BatchAnalysisWidget._components_overlay_with_fraction_data(
+        overlay, real, imag
+    )
+    assert out["fraction_data"].shape == real.shape
+    assert np.asarray(out["fraction_data"], dtype=float).dtype == np.float64
+
+
+def test_components_overlay_returns_original_when_fraction_computation_fails(
+    monkeypatch,
+):
+    """If ``phasor_component_fraction`` raises, the overlay is returned
+    unchanged instead of propagating the exception."""
+    import napari_phasors._batch_analysis as ba
+
+    real = np.array([0.3, 0.5])
+    imag = np.array([0.2, 0.4])
+    overlay = {
+        "kind": "components",
+        "components": {
+            "analysis_type": "linear",
+            "component_real": [0.2, 0.8],
+            "component_imag": [0.1, 0.5],
+            "line_style": {"show_fraction_histogram": True},
+        },
+    }
+
+    def _raise(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(ba, "phasor_component_fraction", _raise)
+
+    out = ba.BatchAnalysisWidget._components_overlay_with_fraction_data(
+        overlay, real, imag
+    )
+
+    assert out is overlay
+    assert "fraction_data" not in out
+
+
+# -- Mapping-overlay coloring (Phase / Modulation) --------------------------
+
+
+def test_save_phasor_plot_png_colors_by_modulation(tmp_path, monkeypatch):
+    """A mapping overlay with ``color_by == "Modulation"`` colors the exported
+    plot by the modulation metric (not phase)."""
+    from phasorpy.phasor import phasor_to_polar
+
+    import napari_phasors._batch_analysis as ba
+
+    rng = np.random.default_rng(2)
+    real = rng.uniform(-0.4, 0.9, 300)
+    imag = rng.uniform(-0.4, 0.9, 300)
+
+    captured = {}
+
+    def _fake_color_plot_by_metric(
+        plot, real_, imag_, metric, cmap, display, plot_type, value_range=None
+    ):
+        captured["metric"] = metric
+
+    monkeypatch.setattr(
+        ba, "_color_plot_by_metric", _fake_color_plot_by_metric
+    )
+
+    display = {"plot_type": "Scatter", "semi_circle": True}
+    overlay = {"kind": "mapping", "color_by": "Modulation"}
+
+    ba._save_phasor_plot_png(
+        real, imag, display, overlay, str(tmp_path / "out.png")
+    )
+
+    _, expected_modulation = phasor_to_polar(real, imag)
+    assert "metric" in captured
+    np.testing.assert_allclose(captured["metric"], expected_modulation)
+
+
+class _FakeMetricAx:
+    """Minimal stand-in for ``PhasorPlot.ax`` that records ``scatter`` kwargs."""
+
+    def scatter(self, *args, **kwargs):
+        self.kwargs = kwargs
+
+
+class _FakeMetricPlot:
+    def __init__(self):
+        self.ax = _FakeMetricAx()
+
+
+def test_color_plot_by_metric_resolves_default_colormap_when_cmap_is_none():
+    """A ``None`` colormap resolves to the "jet" default rather than being
+    passed through as-is."""
+    import napari_phasors._batch_analysis as ba
+
+    plot = _FakeMetricPlot()
+    real = np.array([0.1, 0.2, 0.3])
+    imag = np.array([0.1, 0.2, 0.3])
+    metric = np.array([10.0, 20.0, 30.0])
+
+    ba._color_plot_by_metric(plot, real, imag, metric, None, {}, "Scatter")
+
+    assert plot.ax.kwargs["cmap"] is not None
+
+
+def test_color_plot_by_metric_falls_back_to_jet_when_resolution_fails(
+    monkeypatch,
+):
+    """If resolving the requested colormap name returns ``None``, the
+    function falls back to resolving "jet" instead of leaving ``cmap=None``."""
+    import napari_phasors._batch_analysis as ba
+
+    real_resolve = ba.resolve_colormap_by_name
+    calls = {"n": 0}
+
+    def flaky_resolve(name):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None
+        return real_resolve(name)
+
+    monkeypatch.setattr(ba, "resolve_colormap_by_name", flaky_resolve)
+
+    plot = _FakeMetricPlot()
+    real = np.array([0.1, 0.2, 0.3])
+    imag = np.array([0.1, 0.2, 0.3])
+    metric = np.array([10.0, 20.0, 30.0])
+
+    ba._color_plot_by_metric(
+        plot, real, imag, metric, "viridis", {}, "Scatter"
+    )
+
+    assert calls["n"] == 2
+    assert plot.ax.kwargs["cmap"] is not None

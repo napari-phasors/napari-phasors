@@ -2575,20 +2575,16 @@ class WriterWidget(PopoutWindowMixin, QWidget):
         )
         flimari_info = QLabel(
             "Send the selected phasor layer(s) directly to "
-            "<a href=\"https://github.com/GuangchenW/FLIMari\">FLIMari</a>, "
-            "without saving any file. FLIMari must be installed as a "
-            "napari plugin; if its dock widget isn't open yet, it will be "
-            "opened automatically. Since FLIMari works with total photon "
-            "counts rather than mean intensity, the counts are recovered "
-            "automatically. For layers loaded from formats without the raw "
-            "histogram (e.g. R64/REF), you'll be prompted to point to the "
-            "original raw file so the counts can be recovered."
+            "<a href=\"https://github.com/GuangchenW/FLIMari\">FLIMari</a>. "
+            "FLIMari must be installed as a napari plugin. For layers loaded "
+            "from formats without the raw histogram (e.g. R64/REF), you'll be "
+            "prompted to point to the original raw file so the counts can be recovered."
         )
         flimari_info.setWordWrap(True)
         flimari_info.setOpenExternalLinks(True)
         self.flimari_section.add_widget(flimari_info)
 
-        self.flimari_button = QPushButton("Export Phasor Layer to FLIMARI")
+        self.flimari_button = QPushButton("Export Phasor Layer to FLIMari")
         self.flimari_button.setEnabled(False)
         self.flimari_button.clicked.connect(self._send_to_flimari)
         self.flimari_section.add_widget(self.flimari_button)

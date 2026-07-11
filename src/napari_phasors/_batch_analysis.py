@@ -257,6 +257,21 @@ DEFAULT_CURSOR_COLORS = [
 ]
 
 
+@contextlib.contextmanager
+def _pipeline_step(step_name):
+    """Annotate any error with the analysis step (tab) that raised it.
+
+    Batch failures are otherwise reported with only the file name and a bare
+    exception message, which does not say which enabled analysis (Calibration,
+    Filter, Components, Phasor Mapping, FRET, Selection) actually failed. This
+    re-raises with that context so the user knows where to look.
+    """
+    try:
+        yield
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"{step_name} failed: {exc}") from exc
+
+
 def apply_pipeline(layer, pipeline):
     """Apply ``pipeline`` to ``layer`` in place and return extra output layers.
 
@@ -276,33 +291,41 @@ def apply_pipeline(layer, pipeline):
     extra_layers = []
 
     if pipeline.calibration is not None:
-        apply_calibration_correction(
-            layer,
-            pipeline.calibration["phi_zero"],
-            pipeline.calibration["mod_zero"],
-        )
+        with _pipeline_step("Calibration"):
+            apply_calibration_correction(
+                layer,
+                pipeline.calibration["phi_zero"],
+                pipeline.calibration["mod_zero"],
+                calibration_harmonics=pipeline.calibration.get("harmonics"),
+            )
 
     if pipeline.filter is not None:
-        apply_filter_and_threshold(layer, **pipeline.filter)
+        with _pipeline_step("Filter / Threshold"):
+            apply_filter_and_threshold(layer, **pipeline.filter)
 
     if pipeline.mask is not None:
-        _apply_image_mask(
-            layer, pipeline.mask["array"], pipeline.mask["invert"]
-        )
+        with _pipeline_step("Image mask"):
+            _apply_image_mask(
+                layer, pipeline.mask["array"], pipeline.mask["invert"]
+            )
 
     if pipeline.components is not None:
-        extra_layers.extend(
-            _apply_component_fraction(layer, pipeline.components)
-        )
+        with _pipeline_step("Components"):
+            extra_layers.extend(
+                _apply_component_fraction(layer, pipeline.components)
+            )
 
     if pipeline.mapping is not None:
-        extra_layers.extend(_apply_phasor_mapping(layer, pipeline.mapping))
+        with _pipeline_step("Phasor Mapping"):
+            extra_layers.extend(_apply_phasor_mapping(layer, pipeline.mapping))
 
     if pipeline.fret is not None:
-        extra_layers.extend(_apply_fret(layer, pipeline.fret))
+        with _pipeline_step("FRET"):
+            extra_layers.extend(_apply_fret(layer, pipeline.fret))
 
     if pipeline.selection is not None:
-        extra_layers.extend(_apply_selection(layer, pipeline.selection))
+        with _pipeline_step("Selection"):
+            extra_layers.extend(_apply_selection(layer, pipeline.selection))
 
     return extra_layers
 
@@ -980,6 +1003,15 @@ def default_component_line_style():
         "line_width": 3.0,
         "line_alpha": 1.0,
         "default_component_color": "dimgray",
+        # Power-law gamma applied to the colormap line / fraction-histogram
+        # gradient, mirroring the fraction layer's ``gamma`` in the tab.
+        "colormap_gamma": 1.0,
+        # Fraction histogram overlay (Linear Projection only), mirroring the
+        # interactive Components tab.
+        "show_fraction_histogram": False,
+        "histogram_overlay_height": 0.3,
+        "histogram_offset": 0.0,
+        "histogram_alpha": 0.75,
     }
 
 
@@ -1015,7 +1047,7 @@ def default_group_config():
         "contour_layer_styles": {},  # filename -> {mode, colormap, color}
         "contour_group_styles": {},  # gid -> {mode, colormap, color}
         "contour_merged_style": "colormap",
-        "contour_merged_colormap": "turbo",
+        "contour_merged_colormap": "jet",
         "contour_merged_color": None,
     }
 
@@ -1412,7 +1444,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         toggle.setChecked(True)
         return toggle
 
-    def _make_colormap_combo(self, default="turbo"):
+    def _make_colormap_combo(self, default="jet"):
         """Return a combobox populated with napari colormap names + icons."""
         combo = QComboBox()
         populate_colormap_combobox(
@@ -2581,7 +2613,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         )
         output_form.addRow("Harmonic:", self.mapping_harmonic_spin)
 
-        self.mapping_colormap_combo = self._make_colormap_combo("turbo")
+        self.mapping_colormap_combo = self._make_colormap_combo("jet")
         self.mapping_colormap_combo.setToolTip(
             "Colormap applied to the exported mapped images."
         )
@@ -2652,7 +2684,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         mesh_container.setLayout(mesh_row)
         top_form.addRow("Mesh overlay:", mesh_container)
 
-        self.mapping_mesh_colormap_combo = self._make_colormap_combo("hsv")
+        self.mapping_mesh_colormap_combo = self._make_colormap_combo("jet")
         top_form.addRow(
             "Mesh/color colormap:", self.mapping_mesh_colormap_combo
         )
@@ -3552,7 +3584,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         form.addRow("Plot type:", type_combo)
 
         colormap_label = QLabel("Colormap:")
-        colormap_combo = self._make_colormap_combo("turbo")
+        colormap_combo = self._make_colormap_combo("jet")
         colormap_combo.setToolTip("Colormap used for the phasor-plot density.")
         form.addRow(colormap_label, colormap_combo)
 
@@ -3791,7 +3823,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             groups_only=True,
             display_mode="Grouped",
             show_legend=cfg.get("show_legend", True),
-            merged_colormap=cfg.get("contour_merged_colormap", "turbo"),
+            merged_colormap=cfg.get("contour_merged_colormap", "jet"),
             layer_labels=names,
             group_assignments=cfg.get("assignments", {}),
             group_colors=cfg.get("group_colors", {}),
@@ -3868,7 +3900,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "Type a lifetime (ns) and press Enter to set G/S from it."
         )
 
-        colormap_combo = self._make_colormap_combo("turbo")
+        colormap_combo = self._make_colormap_combo("jet")
         colormap_combo.setMaximumWidth(120)
         colormap_combo.setToolTip("Colormap for this component's fraction.")
 
@@ -4137,6 +4169,17 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         alpha_spin.setValue(style["line_alpha"])
         form.addRow("Line alpha:", alpha_spin)
 
+        gamma_spin = QDoubleSpinBox()
+        gamma_spin.setRange(0.01, 10.0)
+        gamma_spin.setSingleStep(0.05)
+        gamma_spin.setDecimals(2)
+        gamma_spin.setValue(style.get("colormap_gamma", 1.0))
+        gamma_spin.setToolTip(
+            "Power-law gamma applied to the colormap line and fraction "
+            "histogram gradient, matching the fraction layer's gamma."
+        )
+        form.addRow("Colormap gamma:", gamma_spin)
+
         color_button = ColorButton(QColor(style["default_component_color"]))
         color_row = QHBoxLayout()
         color_row.addWidget(color_button)
@@ -4145,6 +4188,44 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         color_container.setLayout(color_row)
         form.addRow("Default line color:", color_container)
         vbox.addLayout(form)
+
+        # Fraction histogram overlay (Linear Projection, 2 components).
+        hist_group = QGroupBox("Fraction histogram overlay")
+        hist_form = QFormLayout(hist_group)
+        hist_cb = QCheckBox("Overlay fraction histogram on the line")
+        hist_cb.setChecked(style.get("show_fraction_histogram", False))
+        hist_cb.setToolTip(
+            "Overlay the first component's fraction histogram along the line "
+            "joining the two components, colored with the line's colormap. "
+            "Applies to a two-component Linear Projection."
+        )
+        hist_form.addRow(hist_cb)
+
+        hist_height_spin = QDoubleSpinBox()
+        hist_height_spin.setRange(0.05, 1.0)
+        hist_height_spin.setSingleStep(0.05)
+        hist_height_spin.setDecimals(2)
+        hist_height_spin.setValue(style.get("histogram_overlay_height", 0.3))
+        hist_form.addRow("Histogram height:", hist_height_spin)
+
+        hist_offset_spin = QDoubleSpinBox()
+        hist_offset_spin.setRange(-1.0, 1.0)
+        hist_offset_spin.setSingleStep(0.01)
+        hist_offset_spin.setDecimals(3)
+        hist_offset_spin.setValue(style.get("histogram_offset", 0.0))
+        hist_offset_spin.setToolTip(
+            "Shift the histogram relative to the line. Positive keeps it on "
+            "one side; negative flips it to the other side."
+        )
+        hist_form.addRow("Histogram offset:", hist_offset_spin)
+
+        hist_transp_spin = QDoubleSpinBox()
+        hist_transp_spin.setRange(0.0, 1.0)
+        hist_transp_spin.setSingleStep(0.05)
+        hist_transp_spin.setDecimals(2)
+        hist_transp_spin.setValue(1.0 - style.get("histogram_alpha", 0.75))
+        hist_form.addRow("Histogram transparency:", hist_transp_spin)
+        vbox.addWidget(hist_group)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel
@@ -4160,7 +4241,12 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 "line_offset": offset_spin.value(),
                 "line_width": width_spin.value(),
                 "line_alpha": alpha_spin.value(),
+                "colormap_gamma": gamma_spin.value(),
                 "default_component_color": color_button.color().name(),
+                "show_fraction_histogram": hist_cb.isChecked(),
+                "histogram_overlay_height": hist_height_spin.value(),
+                "histogram_offset": hist_offset_spin.value(),
+                "histogram_alpha": 1.0 - hist_transp_spin.value(),
             }
 
     def _open_component_label_style_dialog(self):
@@ -4418,9 +4504,15 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         else:
             name = dialog.selected_layer()
             if name and name in self.viewer.layers:
-                settings = dict(
-                    self.viewer.layers[name].metadata.get("settings", {})
-                )
+                layer_metadata = self.viewer.layers[name].metadata
+                settings = dict(layer_metadata.get("settings", {}))
+                # Harmonics live on the layer, not in its settings dict; expose
+                # them so a copied calibration can be matched to targets by
+                # harmonic value.
+                if layer_metadata.get("harmonics") is not None:
+                    settings.setdefault(
+                        "harmonics", layer_metadata["harmonics"]
+                    )
         if not settings:
             show_error("No settings found in the selected source.")
             return
@@ -4520,6 +4612,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             self._copied_calibration = {
                 "phi_zero": np.asarray(settings["calibration_phase"]),
                 "mod_zero": np.asarray(settings["calibration_modulation"]),
+                "harmonics": settings.get("harmonics"),
             }
             self.calibration_group.setChecked(True)
             index = self.calib_source_combo.findData("copied")
@@ -4725,6 +4818,41 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
 
     def _apply_component_settings_to_ui(self, settings):
         component_analysis = settings.get("component_analysis") or {}
+
+        # Copy the persisted phasor-plot line / fraction-histogram overlay
+        # style so an exported plot matches what was configured interactively.
+        # User edits are saved under ``two_component_line_settings`` (older
+        # metadata used ``line_settings``).
+        line_settings = (
+            component_analysis.get("two_component_line_settings")
+            or component_analysis.get("line_settings")
+            or {}
+        )
+        for key in (
+            "show_colormap_line",
+            "show_component_dots",
+            "line_offset",
+            "line_width",
+            "line_alpha",
+            "default_component_color",
+            "show_fraction_histogram",
+            "histogram_overlay_height",
+            "histogram_offset",
+            "histogram_alpha",
+        ):
+            if key in line_settings:
+                self._component_line_style[key] = line_settings[key]
+
+        # Same for the component label font style.
+        label_settings = (
+            component_analysis.get("two_components_label_settings")
+            or component_analysis.get("label_settings")
+            or {}
+        )
+        for key in ("fontsize", "bold", "italic", "color"):
+            if key in label_settings:
+                self._component_label_style[key] = label_settings[key]
+
         components = component_analysis.get("components") or {}
         if not components:
             return
@@ -4761,6 +4889,17 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self._set_component_rows(parsed)
         self._set_component_harmonic_coords(per_harmonic)
         self.components_group.setChecked(True)
+
+        # Restore the analysis type. Rebuilding the rows transiently drops the
+        # count below 2, which forces the combo off "Linear Projection"; if the
+        # source used Linear Projection, that would otherwise silently switch
+        # the export to a Component Fit and drop the colormap line / fraction
+        # histogram overlay (both Linear-Projection-only).
+        analysis_type = component_analysis.get("analysis_type")
+        if analysis_type:
+            index = self.analysis_type_combo.findText(analysis_type)
+            if index >= 0:
+                self.analysis_type_combo.setCurrentIndex(index)
 
     # -- Pipeline building -------------------------------------------------
 
@@ -4939,7 +5078,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             # Color ramp + limits driving the colormap line and colormap-end
             # dot colors (derived from the first component's colormap).
             "fractions_colormap": _colormap_color_list(
-                colormaps[0] if colormaps else "turbo"
+                colormaps[0] if colormaps else "jet"
             ),
             "colormap_contrast_limits": contrast or (0.0, 1.0),
         }
@@ -5021,7 +5160,13 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             phi_zero, mod_zero = compute_calibration_parameters(
                 reference, frequency, lifetime
             )
-            return {"*": {"phi_zero": phi_zero, "mod_zero": mod_zero}}
+            return {
+                "*": {
+                    "phi_zero": phi_zero,
+                    "mod_zero": mod_zero,
+                    "harmonics": reference.metadata.get("harmonics"),
+                }
+            }
 
         # Per-subfolder references.
         result = {}
@@ -5036,7 +5181,11 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             phi_zero, mod_zero = compute_calibration_parameters(
                 reference, frequency, lifetime
             )
-            result[key] = {"phi_zero": phi_zero, "mod_zero": mod_zero}
+            result[key] = {
+                "phi_zero": phi_zero,
+                "mod_zero": mod_zero,
+                "harmonics": reference.metadata.get("harmonics"),
+            }
         if not result:
             raise ValueError(
                 "No subfolders found to assign references. Scan a folder and "
@@ -5345,9 +5494,12 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self.progress_bar.setVisible(False)
         summary = f"Batch complete: {processed}/{len(files)} files processed."
         if failed:
-            names = ", ".join(name for name, _ in failed)
-            summary += f" Failed: {names}."
-            show_error(summary)
+            summary += f" {len(failed)} failed."
+            # Show which file failed and at which step (e.g. "Components
+            # failed: ...") so the user knows which tab to fix, rather than a
+            # bare list of file names.
+            details = "\n".join(f"  • {name}: {msg}" for name, msg in failed)
+            show_error(f"{summary}\n{details}")
         else:
             show_info(summary)
         self.status_label.setText(summary)
@@ -6470,7 +6622,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             if mode == "Merged":
                 styles[key] = {
                     "mode": cfg.get("contour_merged_style", "colormap"),
-                    "colormap": cfg.get("contour_merged_colormap", "turbo"),
+                    "colormap": cfg.get("contour_merged_colormap", "jet"),
                     "color": cfg.get("contour_merged_color"),
                 }
             elif mode == "Individual layers":
@@ -6719,7 +6871,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "log_scale": controls["log"].isChecked(),
             "white_background": self.plot_white_bg_checkbox.isChecked(),
             "show_legend": self.plot_legend_checkbox.isChecked(),
-            "colormap": controls["colormap"].currentText() or "turbo",
+            "colormap": controls["colormap"].currentText() or "jet",
             "bins": controls["bins"].value(),
             "contour_levels": controls["levels"].value(),
             "contour_linewidth": controls["linewidth"].value(),
@@ -6810,7 +6962,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "kind": "mapping",
             "color_by": mapping.get("color_by", "None"),
             "mesh": None,
-            "mesh_colormap": mapping.get("mesh_colormap", "hsv"),
+            "mesh_colormap": mapping.get("mesh_colormap", "jet"),
             "mesh_alpha": mapping.get("mesh_alpha", 0.45),
             "mesh_phase_range": mapping.get("mesh_phase_range"),
             "mesh_modulation_range": mapping.get("mesh_modulation_range"),
@@ -6849,15 +7001,59 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             if display.get("show_center") and mean is not None:
                 _, center_real, center_imag = phasor_center(mean, real, imag)
                 center = (float(center_real), float(center_imag))
+            plot_overlay = self._components_overlay_with_fraction_data(
+                overlay, real, imag
+            )
             _save_phasor_plot_png(
                 real,
                 imag,
                 display,
-                overlay,
+                plot_overlay,
                 f"{base_out}_{suffix}_H{int(harmonic)}.png",
                 center=center,
                 dpi=self._export_dpi(),
             )
+
+    @staticmethod
+    def _components_overlay_with_fraction_data(overlay, real, imag):
+        """Attach the first-component fraction data to a components overlay.
+
+        The fraction histogram overlay (Linear Projection) needs the per-pixel
+        first-component fraction for the harmonic being plotted. This is
+        computed here from the plotted ``real``/``imag`` and the component
+        locations, then returned in a shallow copy of ``overlay`` so the
+        original (shared across harmonics) is left untouched. Non-component or
+        non-linear overlays are returned unchanged.
+        """
+        if overlay is None or overlay.get("kind") != "components":
+            return overlay
+        components = overlay.get("components") or {}
+        line_style = components.get("line_style") or {}
+        if not line_style.get("show_fraction_histogram"):
+            return overlay
+        if components.get("analysis_type") != "linear":
+            return overlay
+        component_real = components.get("component_real")
+        component_imag = components.get("component_imag")
+        if component_real is None or component_imag is None:
+            return overlay
+        component_real = np.asarray(component_real)
+        component_imag = np.asarray(component_imag)
+        if component_real.ndim > 1:
+            component_real = component_real[0]
+            component_imag = component_imag[0]
+        try:
+            fraction = phasor_component_fraction(
+                np.asarray(real),
+                np.asarray(imag),
+                component_real,
+                component_imag,
+            )
+        except Exception:  # noqa: BLE001 - skip overlay if it can't compute
+            return overlay
+        new_overlay = dict(overlay)
+        new_overlay["fraction_data"] = np.asarray(fraction, dtype=float)
+        return new_overlay
 
     # -- Signal export outputs ---------------------------------------------
 
@@ -7382,12 +7578,13 @@ def _save_phasor_plot_png(
         _draw_phase_modulation_mesh(
             plot,
             mapping_overlay["mesh"],
-            mapping_overlay.get("mesh_colormap") or "hsv",
+            mapping_overlay.get("mesh_colormap") or "jet",
             mapping_overlay.get("mesh_alpha", 0.45),
             display.get("semi_circle", True),
             phase_range=mapping_overlay.get("mesh_phase_range"),
             modulation_range=mapping_overlay.get("mesh_modulation_range"),
             clip_semicircle=mapping_overlay.get("mesh_clip_semicircle"),
+            dpi=dpi,
         )
 
     plot_type = display.get("plot_type", "Histogram")
@@ -7408,7 +7605,7 @@ def _save_phasor_plot_png(
             phase, modulation = phasor_to_polar(real, imag)
         color_by = mapping_overlay["color_by"]
         metric = phase if color_by == "Phase" else modulation
-        metric_cmap = mapping_overlay.get("mesh_colormap") or "hsv"
+        metric_cmap = mapping_overlay.get("mesh_colormap") or "jet"
         # Use the same color range as the phase/modulation mesh so the colored
         # data and the mesh represent identical values with identical colors.
         metric_range = (
@@ -7538,6 +7735,7 @@ def _draw_phase_modulation_mesh(
     phase_range=None,
     modulation_range=None,
     clip_semicircle=None,
+    dpi=300,
 ):
     """Draw a phase or modulation colored field behind the phasor data.
 
@@ -7552,9 +7750,7 @@ def _draw_phase_modulation_mesh(
 
     if clip_semicircle is None:
         clip_semicircle = semicircle
-    # Use a fine grid for the exported mesh: at the default 300 the edges look
-    # coarse / "shadowed" (the smoothed alpha halo spans several cells), and a
-    # zoomed crop magnifies it. A high resolution keeps the edges crisp.
+    plot.fig.set_dpi(dpi)
     draw_phasor_mesh(
         plot.ax,
         kind,
@@ -7608,6 +7804,7 @@ def _add_phasor_overlay(plot, overlay):
             ),
             "fractions_colormap": fractions_colormap,
             "colormap_contrast_limits": contrast,
+            "colormap_gamma": line_style.get("colormap_gamma", 1.0),
             "label_fontsize": label_style.get("fontsize", 10),
             "label_fontweight": (
                 "bold" if label_style.get("bold") else "normal"
@@ -7617,6 +7814,17 @@ def _add_phasor_overlay(plot, overlay):
             ),
             "label_color": label_style.get("color"),
             "show_labels": label_style.get("show_labels", False),
+            # Fraction histogram overlay (Linear Projection); the fraction data
+            # is injected per-harmonic by ``_render_phasor_plot``.
+            "show_fraction_histogram": line_style.get(
+                "show_fraction_histogram", False
+            ),
+            "histogram_overlay_height": line_style.get(
+                "histogram_overlay_height", 0.3
+            ),
+            "histogram_offset": line_style.get("histogram_offset", 0.0),
+            "histogram_alpha": line_style.get("histogram_alpha", 0.75),
+            "fraction_data": overlay.get("fraction_data"),
         }
         # Multi-harmonic fits store 2-D component arrays; the overlay draws a
         # single harmonic, so use the primary harmonic's locations.
@@ -7695,9 +7903,9 @@ def _color_plot_by_metric(
 
     resolved = cmap
     if resolved is None or isinstance(resolved, str):
-        resolved = resolve_colormap_by_name(resolved or "hsv")
+        resolved = resolve_colormap_by_name(resolved or "jet")
     if resolved is None:
-        resolved = resolve_colormap_by_name("hsv")
+        resolved = resolve_colormap_by_name("jet")
 
     vmin = vmax = None
     if value_range is not None and value_range[0] < value_range[1]:
@@ -7844,12 +8052,13 @@ def _save_grouped_overlay_plot(
         _draw_phase_modulation_mesh(
             plot,
             mapping_overlay["mesh"],
-            mapping_overlay.get("mesh_colormap") or "hsv",
+            mapping_overlay.get("mesh_colormap") or "jet",
             mapping_overlay.get("mesh_alpha", 0.45),
             display.get("semi_circle", True),
             phase_range=mapping_overlay.get("mesh_phase_range"),
             modulation_range=mapping_overlay.get("mesh_modulation_range"),
             clip_semicircle=mapping_overlay.get("mesh_clip_semicircle"),
+            dpi=dpi,
         )
 
     marker_size = display.get("marker_size", 5)
@@ -7932,12 +8141,13 @@ def _save_combined_contour(
         _draw_phase_modulation_mesh(
             plot,
             mapping_overlay["mesh"],
-            mapping_overlay.get("mesh_colormap") or "hsv",
+            mapping_overlay.get("mesh_colormap") or "jet",
             mapping_overlay.get("mesh_alpha", 0.45),
             display.get("semi_circle", True),
             phase_range=mapping_overlay.get("mesh_phase_range"),
             modulation_range=mapping_overlay.get("mesh_modulation_range"),
             clip_semicircle=mapping_overlay.get("mesh_clip_semicircle"),
+            dpi=dpi,
         )
 
     handles = []

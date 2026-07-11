@@ -1,11 +1,20 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.collections import LineCollection
+from napari.layers import Image
 from phasorpy.component import phasor_component_fraction
 from phasorpy.lifetime import phasor_from_lifetime
+from qtpy.QtGui import QColor
+from qtpy.QtWidgets import QColorDialog
 
 from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
+from napari_phasors.components_tab import (
+    CenterFillSlider,
+    draw_components_overlay,
+    draw_fraction_histogram_overlay,
+)
 from napari_phasors.plotter import PlotterWidget
 
 
@@ -222,7 +231,7 @@ def test_components_widget_fraction_calculation_creates_both_layers(
     )
 
     # Check initial colormap
-    assert comp_widget.comp1_fractions_layer.colormap.name == 'PiYG'
+    assert comp_widget.comp1_fractions_layer.colormap.name == 'jet'
 
     assert isinstance(comp_widget.component_line, LineCollection)
 
@@ -394,16 +403,21 @@ def test_components_widget_line_settings_dialog_effects(
     comp_widget._on_plot_setting_changed()
     assert comp_widget.show_colormap_line
 
-    # Change offset
-    comp_widget.line_offset_slider.setValue(120)  # 0.120
+    # Change offset (slider uses 3-decimal factor: 120 -> 0.120)
+    comp_widget.line_offset_slider.setValue(120)
     assert abs(comp_widget.line_offset - 0.12) < 1e-6
+
+    # Values can also be typed directly via the spinbox, which drives the slider.
+    comp_widget.line_offset_spin.setValue(-0.25)
+    assert abs(comp_widget.line_offset + 0.25) < 1e-6
+    assert comp_widget.line_offset_slider.value() == -250
 
     # Change width
     comp_widget.line_width_spin.setValue(5.0)
     assert comp_widget.line_width == 5.0
 
-    # Change alpha
-    comp_widget.line_alpha_slider.setValue(55)
+    # Transparency (inverse of alpha): 0.45 transparency -> 0.55 opacity
+    comp_widget.line_transparency_spin.setValue(0.45)
     assert abs(comp_widget.line_alpha - 0.55) < 1e-6
 
 
@@ -737,17 +751,26 @@ def test_components_widget_default_settings_structure(
     assert default_settings['analysis_type'] == 'Linear Projection'
     assert 'components' in default_settings
     assert isinstance(default_settings['components'], dict)
-    assert 'line_settings' in default_settings
-    assert 'show_colormap_line' in default_settings['line_settings']
-    assert 'show_component_dots' in default_settings['line_settings']
-    assert 'line_offset' in default_settings['line_settings']
-    assert 'line_width' in default_settings['line_settings']
-    assert 'line_alpha' in default_settings['line_settings']
-    assert 'label_settings' in default_settings
-    assert 'fontsize' in default_settings['label_settings']
-    assert 'bold' in default_settings['label_settings']
-    assert 'italic' in default_settings['label_settings']
-    assert 'color' in default_settings['label_settings']
+    # The default keys must match the ones edits are persisted under, so the
+    # restore path re-applies them (see ``_restore_line_and_label_settings``).
+    line_key = 'two_component_line_settings'
+    assert line_key in default_settings
+    assert 'show_colormap_line' in default_settings[line_key]
+    assert 'show_component_dots' in default_settings[line_key]
+    assert 'line_offset' in default_settings[line_key]
+    assert 'line_width' in default_settings[line_key]
+    assert 'line_alpha' in default_settings[line_key]
+    assert 'default_component_color' in default_settings[line_key]
+    assert 'show_fraction_histogram' in default_settings[line_key]
+    assert 'histogram_overlay_height' in default_settings[line_key]
+    assert 'histogram_offset' in default_settings[line_key]
+    assert 'histogram_alpha' in default_settings[line_key]
+    label_key = 'two_components_label_settings'
+    assert label_key in default_settings
+    assert 'fontsize' in default_settings[label_key]
+    assert 'bold' in default_settings[label_key]
+    assert 'italic' in default_settings[label_key]
+    assert 'color' in default_settings[label_key]
 
 
 def test_components_widget_style_state_initialization(
@@ -1126,18 +1149,14 @@ def test_components_histogram_multi_layer_linear_projection(
     comp_widget.histogram_component_combobox.setCurrentText(name1)
     comp_widget.update_component_histogram()
 
-    # One histogram dataset is stored per source image layer.
-    assert set(comp_widget.histogram_widget._datasets.keys()) == {
-        "layer_a",
-        "layer_b",
-    }
+    # All selected layers are pooled into a single merged histogram (rather
+    # than a per-layer mean +/- SD that looks like just one layer).
+    assert set(comp_widget.histogram_widget._datasets.keys()) == {"Layer"}
+    assert comp_widget.histogram_widget._show_sd is False
 
-    # The range slider clips every layer and keeps the per-layer histogram.
+    # The range slider clips every layer and keeps the merged histogram.
     comp_widget._on_fraction_range_changed(0.2, 0.8)
-    assert set(comp_widget.histogram_widget._datasets.keys()) == {
-        "layer_a",
-        "layer_b",
-    }
+    assert set(comp_widget.histogram_widget._datasets.keys()) == {"Layer"}
 
     # Early returns: an empty and an unresolved selection are both no-ops.
     comp_widget.histogram_component_combobox.blockSignals(True)
@@ -1150,6 +1169,52 @@ def test_components_histogram_multi_layer_linear_projection(
     comp_widget.histogram_component_combobox.setCurrentText("Ghost component")
     comp_widget.histogram_component_combobox.blockSignals(False)
     comp_widget._on_fraction_range_changed(0.1, 0.9)
+
+
+def test_components_gamma_links_layers_and_histogram(
+    make_viewer_model,
+    qtbot,
+):
+    """Changing gamma on one fraction layer syncs siblings and the histogram."""
+    viewer = make_viewer_model()
+    layer_a = create_image_layer_with_phasors()
+    layer_a.name = "layer_a"
+    layer_b = create_image_layer_with_phasors()
+    layer_b.name = "layer_b"
+    viewer.add_layer(layer_a)
+    viewer.add_layer(layer_b)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(parent.components_tab)
+
+    comp_widget.analysis_type_combo.setCurrentText("Linear Projection")
+    comp_widget.components[0].g_edit.setText("0.2")
+    comp_widget.components[0].s_edit.setText("0.1")
+    comp_widget._on_component_coords_changed(0)
+    comp_widget.components[1].g_edit.setText("0.8")
+    comp_widget.components[1].s_edit.setText("0.5")
+    comp_widget._on_component_coords_changed(1)
+
+    with patch.object(
+        parent, "get_selected_layers", return_value=[layer_a, layer_b]
+    ):
+        comp_widget._run_analysis()
+
+    # The first component owns one fraction layer per analyzed image.
+    first_component_layers = comp_widget._get_all_layers_for_component(0)
+    assert len(first_component_layers) == 2
+
+    name1, _ = comp_widget._linear_projection_component_names()
+    comp_widget.histogram_component_combobox.setCurrentText(name1)
+
+    # Changing gamma on one layer propagates to the sibling layer, the stored
+    # gradient gamma, and the histogram widget.
+    first_component_layers[0].gamma = 0.5
+
+    assert first_component_layers[1].gamma == 0.5
+    assert comp_widget.fractions_gamma == 0.5
+    assert comp_widget.histogram_widget.gamma == 0.5
 
 
 def test_components_stats_combobox_mirrors_histogram_combobox(
@@ -1643,6 +1708,24 @@ def test_color_action_widget_and_dialog(make_viewer_model, qtbot):
 # ---------------------------------------------------------------------------
 
 
+def test_components_histogram_dock_reserves_selector_row_height(
+    make_viewer_model, qtbot
+):
+    """The components histogram dock is taller than tabs without a selector row.
+
+    The docked histogram area is clamped to its minimum height, and the
+    Components tab uniquely adds a "Component:" selector row above the plot, so
+    its dock must reserve extra height to keep the whole canvas visible.
+    """
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+
+    components_min = parent.components_histogram_dock_widget.minimumHeight()
+    mapping_min = parent.phasor_map_histogram_dock_widget.minimumHeight()
+
+    assert components_min > mapping_min
+
+
 def _setup_components(make_viewer_model, freq=80.0):
     viewer = make_viewer_model()
     layer = create_image_layer_with_phasors()
@@ -1698,6 +1781,66 @@ def test_components_restore_ui_only_from_metadata(make_viewer_model, qtbot):
     assert comp.label_bold is True
     assert comp.line_width == 2.0
     assert comp.show_colormap_line is False
+
+
+def test_components_restore_line_and_histogram_overlay_settings(
+    make_viewer_model, qtbot
+):
+    """Line + fraction-histogram overlay settings round-trip via metadata.
+
+    User edits are persisted under ``two_component_line_settings``; the restore
+    path must read that key (regression: it previously only read the unused
+    ``line_settings`` key, so overlay settings were never re-applied).
+    """
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    layer.metadata["settings"]["component_analysis"] = {
+        "analysis_type": "Linear Projection",
+        "last_analysis_harmonic": 1,
+        "components": {
+            "0": {
+                "name": "Comp A",
+                "gs_harmonics": {"1": {"g": 0.6, "s": 0.3}},
+            },
+            "1": {
+                "name": "Comp B",
+                "gs_harmonics": {"1": {"g": 0.3, "s": 0.2}},
+            },
+        },
+        "two_component_line_settings": {
+            "show_colormap_line": True,
+            "show_component_dots": False,
+            "line_offset": 0.07,
+            "line_width": 4.5,
+            "line_alpha": 0.6,
+            "default_component_color": "#abcdef",
+            "show_fraction_histogram": True,
+            "histogram_overlay_height": 0.42,
+            "histogram_offset": -0.15,
+            "histogram_alpha": 0.55,
+        },
+        "two_components_label_settings": {
+            "fontsize": 16,
+            "bold": True,
+            "italic": True,
+            "color": "red",
+        },
+    }
+
+    comp._restore_components_ui_only_from_metadata()
+
+    assert comp.show_component_dots is False
+    assert comp.line_offset == 0.07
+    assert comp.line_width == 4.5
+    assert comp.line_alpha == 0.6
+    assert comp.default_component_color == "#abcdef"
+    assert comp.show_fraction_histogram is True
+    assert comp.histogram_overlay_height == 0.42
+    assert comp.histogram_offset == -0.15
+    assert comp.histogram_alpha == 0.55
+    assert comp.label_fontsize == 16
+    assert comp.label_bold is True
+    assert comp.label_italic is True
+    assert comp.label_color == "red"
 
 
 def test_components_restore_and_recreate_linear_projection(
@@ -1860,6 +2003,46 @@ def test_components_component_fit_three_and_colors(make_viewer_model, qtbot):
     # and a smaller count.
     assert comp._get_component_colors_for_count(3) is not None
     assert comp._get_component_colors_for_count(2) is not None
+
+
+def test_components_redisplay_preserves_display_settings(
+    make_viewer_model, qtbot
+):
+    """Re-displaying fraction images keeps manual colormap/contrast/gamma."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    comp._add_component()
+    comp.analysis_type_combo.setCurrentText("Component Fit")
+    for i, (g, s) in enumerate(
+        [("0.2", "0.1"), ("0.5", "0.3"), ("0.8", "0.5")]
+    ):
+        comp.components[i].g_edit.setText(g)
+        comp.components[i].s_edit.setText(s)
+        comp._on_component_coords_changed(i)
+
+    comp._run_analysis()
+    assert len(comp.fraction_layers) == 3
+
+    # Record the default colormap of an untouched layer, then manually tweak
+    # a different one's colormap, contrast limits and gamma.
+    other_layer = comp.fraction_layers[0]
+    other_colormap = other_layer.colormap.name
+
+    tweaked_layer = comp.fraction_layers[1]
+    tweaked_layer.colormap = "magma"
+    tweaked_layer.contrast_limits = (0.15, 0.85)
+    tweaked_layer.gamma = 0.4
+
+    # Press "Display Component Fraction Images" again.
+    comp._run_analysis()
+
+    new_tweaked = viewer.layers[tweaked_layer.name]
+    assert new_tweaked.colormap.name == "magma"
+    assert np.allclose(new_tweaked.contrast_limits, (0.15, 0.85))
+    assert new_tweaked.gamma == 0.4
+
+    # The untouched layer must keep its (default) colormap, not reset.
+    new_other = viewer.layers[other_layer.name]
+    assert new_other.colormap.name == other_colormap
 
 
 def test_components_auto_place_by_index(make_viewer_model, qtbot):
@@ -2128,3 +2311,681 @@ def test_components_widget_exceptions(make_viewer_model, qtbot):
     layer.metadata["G"] = np.ones((2, 10, 10))
     layer.metadata["harmonics"] = np.array([999])
     comp._run_analysis()  # Should return early
+
+
+def test_components_widget_fraction_histogram_overlay(
+    make_viewer_model,
+    qtbot,
+):
+    """Fraction histogram overlay is drawn/removed with the setting toggle."""
+    from matplotlib.image import AxesImage
+
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+
+    _setup_linear_projection(comp_widget)
+
+    # No overlay by default.
+    assert comp_widget.show_fraction_histogram is False
+    assert comp_widget.component_histogram is None
+
+    # Enable the overlay and redraw.
+    comp_widget.show_fraction_histogram = True
+    comp_widget.draw_line_between_components()
+
+    assert comp_widget.component_histogram is not None
+    # The overlay is a single seamless gradient image (no outline).
+    assert len(comp_widget.component_histogram) == 1
+    fill = comp_widget.component_histogram[0]
+    assert isinstance(fill, AxesImage)
+    assert fill in comp_widget.get_all_artists()
+    assert fill.get_alpha() == comp_widget.histogram_alpha
+
+    # Disable again -> overlay removed on next draw.
+    comp_widget.show_fraction_histogram = False
+    comp_widget.draw_line_between_components()
+    assert comp_widget.component_histogram is None
+
+
+def test_components_widget_fraction_histogram_height_setting(
+    make_viewer_model,
+    qtbot,
+):
+    """Overlay height scales the histogram profile."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+
+    _setup_linear_projection(comp_widget)
+
+    comp_widget.show_fraction_histogram = True
+
+    def _profile_height():
+        comp_widget.draw_line_between_components()
+        # The gradient image extent is in the local (u, v) frame; its top edge
+        # (v_max) scales linearly with the height setting.
+        im = comp_widget.component_histogram[0]
+        return im.get_extent()[3]
+
+    comp_widget.histogram_overlay_height = 0.1
+    small = _profile_height()
+    comp_widget.histogram_overlay_height = 0.6
+    large = _profile_height()
+
+    assert large > small
+    assert np.isclose(large / small, 6.0, rtol=1e-3)
+
+
+def test_components_widget_fraction_histogram_offset_flips_side(
+    make_viewer_model,
+    qtbot,
+):
+    """A negative histogram offset mirrors the overlay to the other side."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+
+    _setup_linear_projection(comp_widget)
+    comp_widget.show_fraction_histogram = True
+
+    def _apex_display():
+        comp_widget.draw_line_between_components()
+        im = comp_widget.component_histogram[0]
+        # Map the local apex (u=0, top of the profile) through the image
+        # transform to display coordinates.
+        v_max = im.get_extent()[3]
+        return im.get_transform().transform((0.0, v_max))
+
+    comp_widget.histogram_offset = 0.1
+    pos_apex = _apex_display()
+    comp_widget.histogram_offset = -0.1
+    neg_apex = _apex_display()
+
+    # Flipping the sign puts the apex on the opposite side of the line.
+    assert not np.allclose(pos_apex, neg_apex)
+
+
+def test_center_fill_slider_paint_event_zero_span(qtbot):
+    """paintEvent should no-op (not raise) when minimum == maximum."""
+    slider = CenterFillSlider()
+    qtbot.addWidget(slider)
+    slider.setMinimum(0)
+    slider.setMaximum(0)
+    slider.resize(100, 20)
+
+    # QWidget.grab() forces a synchronous paint (unlike repaint(), which
+    # only schedules one on the offscreen platform used in tests); the
+    # span==0 guard must return early without error.
+    slider.grab()
+
+
+def test_restore_fraction_layer_colormaps_applies_gamma(
+    make_viewer_model, qtbot
+):
+    """Saved settings with a non-None gamma are applied to the fraction
+    layer by ``_restore_fraction_layer_colormaps``."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    _setup_linear_projection(comp)
+    assert comp.comp1_fractions_layer is not None
+
+    settings = {
+        "components": {
+            "0": {
+                "name": "Component 1",
+                "gs_harmonics": {
+                    "1": {
+                        "colormap_name": "viridis",
+                        "gamma": 2.0,
+                    }
+                },
+            }
+        }
+    }
+    comp._restore_fraction_layer_colormaps(settings, "1")
+
+    assert comp.comp1_fractions_layer.gamma == 2.0
+
+
+def test_on_color_button_clicked_updates_color_and_metadata(
+    make_viewer_model, qtbot
+):
+    """Picking a valid color from the dialog updates the button, the stored
+    default color, and the persisted metadata setting."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    comp._open_plot_settings_dialog()
+
+    with patch.object(
+        QColorDialog, "getColor", return_value=QColor("#ff0000")
+    ):
+        comp._on_color_button_clicked()
+
+    assert comp.default_component_color == "#ff0000"
+    settings = layer.metadata["settings"]["component_analysis"]
+    assert (
+        settings["two_component_line_settings"]["default_component_color"]
+        == "#ff0000"
+    )
+
+
+def _is_connected(emitter, bound_method):
+    """Check whether ``bound_method`` is connected to a napari ``emitter``.
+
+    Napari event emitters store callbacks for bound methods as
+    ``(weakref_to_instance, method_name)`` tuples rather than the bound
+    method object itself, so a plain ``in`` check does not work.
+    """
+    for cb in emitter.callbacks:
+        if (
+            isinstance(cb, tuple)
+            and cb[0]() is bound_method.__self__
+            and cb[1] == bound_method.__name__
+        ):
+            return True
+        if cb is bound_method:
+            return True
+    return False
+
+
+def test_apply_saved_colormap_settings_exception_reconnects_gamma(
+    make_viewer_model, qtbot
+):
+    """When applying saved colormap settings raises, the except-branch must
+    still reconnect the colormap/contrast_limits/gamma events."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    _setup_linear_projection(comp)
+    assert comp.comp1_fractions_layer is not None
+
+    # An invalid colormap name raises inside the try block, forcing the
+    # except branch (which re-connects the events) to run.
+    comp._saved_colormap_name = "not_a_real_colormap_xyz"
+    comp._saved_colormap_colors = None
+    comp._saved_contrast_limits = (0.0, 1.0)
+
+    comp._apply_saved_colormap_settings()
+
+    assert _is_connected(
+        comp.comp1_fractions_layer.events.gamma, comp._on_colormap_changed
+    )
+    assert _is_connected(
+        comp.comp1_fractions_layer.events.colormap, comp._on_colormap_changed
+    )
+
+
+def test_on_histogram_offset_changed_updates_metadata_and_redraws(
+    make_viewer_model, qtbot
+):
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    _setup_linear_projection(comp)
+    comp.show_fraction_histogram = True
+
+    comp._on_histogram_offset_changed(0.3)
+
+    assert comp.histogram_offset == 0.3
+    settings = layer.metadata["settings"]["component_analysis"]
+    assert settings["two_component_line_settings"]["histogram_offset"] == 0.3
+
+
+def test_on_histogram_transparency_changed_updates_metadata_and_redraws(
+    make_viewer_model, qtbot
+):
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    _setup_linear_projection(comp)
+    comp.show_fraction_histogram = True
+
+    comp._on_histogram_transparency_changed(0.4)
+
+    assert abs(comp.histogram_alpha - 0.6) < 1e-9
+    settings = layer.metadata["settings"]["component_analysis"]
+    assert (
+        abs(settings["two_component_line_settings"]["histogram_alpha"] - 0.6)
+        < 1e-9
+    )
+
+
+class _RemoveRaisesArtist:
+    """Fake artist whose ``remove`` raises, exercising the suppressed
+    ValueError/AttributeError branch in ``_remove_histogram_overlay``."""
+
+    def remove(self):
+        raise ValueError("boom")
+
+
+def test_remove_histogram_overlay_single_artist(make_viewer_model, qtbot):
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    # Single artist (not a list/tuple) - exercises the wrap-into-list branch.
+    comp.component_histogram = _RemoveRaisesArtist()
+    comp._remove_histogram_overlay()
+    assert comp.component_histogram is None
+
+
+def test_get_all_artists_and_set_artists_visible_single_histogram_artist(
+    make_viewer_model, qtbot
+):
+    """``get_all_artists``/``set_artists_visible`` wrap a non-list/tuple
+    ``component_histogram`` into a single-element list before use."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    fake_artist = MagicMock()
+    comp.component_histogram = fake_artist
+
+    artists = comp.get_all_artists()
+    assert fake_artist in artists
+
+    comp.set_artists_visible(True)
+    fake_artist.set_visible.assert_called_once_with(True)
+
+
+def test_get_first_component_fraction_values_pools_multiple_layers(
+    make_viewer_model, qtbot
+):
+    """Fraction values are pooled (and non-finite values dropped) across
+    every fraction layer matching the first component's name."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    _setup_linear_projection(comp)
+    assert comp.comp1_fractions_layer is not None
+
+    comp1_name = comp.components[0].name_edit.text().strip() or "Component 1"
+    extra_layer = Image(
+        np.array([[0.25, 0.75], [np.nan, 0.5]]),
+        name=f"{comp1_name} fractions: other_image",
+    )
+    viewer.add_layer(extra_layer)
+
+    values = comp._get_first_component_fraction_values()
+
+    assert not np.any(np.isnan(values))
+    original_size = np.asarray(
+        comp.comp1_fractions_layer.data, dtype=float
+    ).size
+    assert values.size == original_size + 3
+
+
+def test_get_first_component_fraction_values_fallback_to_comp1_layer(
+    make_viewer_model, qtbot
+):
+    """When no fraction layer matches the live component name, values fall
+    back to ``comp1_fractions_layer`` directly."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    _setup_linear_projection(comp)
+    assert comp.comp1_fractions_layer is not None
+
+    # Renaming after analysis means no viewer layer matches the new name.
+    comp.components[0].name_edit.setText("Renamed Component")
+
+    values = comp._get_first_component_fraction_values()
+    expected = np.asarray(comp.comp1_fractions_layer.data, dtype=float).ravel()
+    expected = expected[np.isfinite(expected)]
+    assert values.size == expected.size
+    assert values.size > 0
+
+
+def test_get_first_component_fraction_values_returns_empty_with_no_data(
+    make_viewer_model, qtbot
+):
+    """With no fraction layers and no comp1_fractions_layer, an empty array
+    is returned."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    assert comp.comp1_fractions_layer is None
+
+    values = comp._get_first_component_fraction_values()
+    assert values.size == 0
+
+
+def test_draw_colormap_line_jet_fallback(make_viewer_model, qtbot):
+    """``_draw_colormap_line`` falls back to ``plt.cm.jet`` when
+    ``fractions_colormap`` is unset."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    comp.fractions_colormap = None
+
+    fig, ax = plt.subplots()
+    try:
+        comp._draw_colormap_line(ax, 0.0, 0.0, 1.0, 1.0)
+    finally:
+        plt.close(fig)
+
+
+def test_sync_component_layers_gamma_guard_returns_early(
+    make_viewer_model, qtbot
+):
+    """``_sync_component_layers_gamma`` returns immediately (without
+    touching any layers) while ``_updating_linked_layers`` is already
+    True."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    comp._updating_linked_layers = True
+
+    with patch.object(comp, "_get_all_layers_for_component") as mock_get:
+        comp._sync_component_layers_gamma(0, 1.5)
+
+    mock_get.assert_not_called()
+
+
+def test_find_and_reconnect_layer_expected_name(make_viewer_model, qtbot):
+    """Reconnecting via the expected layer name connects the gamma event."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    fraction_layer = Image(
+        np.zeros((5, 5)), name="Component 1 fractions: img1"
+    )
+    viewer.add_layer(fraction_layer)
+
+    comp._find_and_reconnect_layer(
+        "Component 1 fractions: img1", "Component 1", "img1", 0
+    )
+
+    assert comp.comp1_fractions_layer is fraction_layer
+    assert _is_connected(
+        fraction_layer.events.gamma, comp._on_colormap_changed
+    )
+
+
+def test_find_and_reconnect_layer_possible_names(make_viewer_model, qtbot):
+    """Reconnecting via one of the fallback naming conventions renames the
+    layer and connects the gamma event."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    fraction_layer = Image(
+        np.zeros((5, 5)), name="Component 1 fractions: img2"
+    )
+    viewer.add_layer(fraction_layer)
+
+    comp._find_and_reconnect_layer(
+        "Component 1 fractions: RENAMED", "Component 1", "img2", 0
+    )
+
+    assert comp.comp1_fractions_layer is fraction_layer
+    assert fraction_layer.name == "Component 1 fractions: RENAMED"
+    assert _is_connected(
+        fraction_layer.events.gamma, comp._on_colormap_changed
+    )
+
+
+def test_get_inverted_colormap_name_fallback(make_viewer_model, qtbot):
+    """Non-standard colormap names without explicit colors fall back to the
+    ``_r``-suffix inversion convention (the fallback name is a literal
+    ``jet``/``jet_r`` pair keyed only off whether the input already ends in
+    ``_r``)."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    assert comp._get_inverted_colormap("zzz_not_a_real_colormap") == "jet_r"
+    assert comp._get_inverted_colormap("zzz_not_a_real_colormap_r") == "jet"
+
+
+def test_linear_projection_preserves_gamma_on_redisplay(
+    make_viewer_model, qtbot
+):
+    """Re-triggering the same analysis preserves a manually-set gamma on the
+    already-displayed comp1 fraction layer."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    _setup_linear_projection(comp)
+    assert comp.comp1_fractions_layer is not None
+
+    comp.comp1_fractions_layer.gamma = 2.5
+    comp._run_analysis()
+
+    assert comp.comp1_fractions_layer.gamma == 2.5
+
+
+def test_linear_projection_restores_saved_gamma_from_metadata(
+    make_viewer_model, qtbot
+):
+    """A gamma value saved in metadata under the first component's harmonic
+    data is picked up when the fraction layer is first created."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    layer.metadata["settings"]["component_analysis"] = {
+        "components": {
+            "0": {
+                "name": "Component 1",
+                "gs_harmonics": {
+                    "1": {
+                        "analysis_type": "Linear Projection",
+                        "colormap_name": "viridis",
+                        "gamma": 2.75,
+                    }
+                },
+            },
+            "1": {"name": "Component 2", "gs_harmonics": {}},
+        },
+    }
+
+    _setup_linear_projection(comp)
+
+    assert comp.comp1_fractions_layer is not None
+    assert comp.comp1_fractions_layer.gamma == 2.75
+
+
+def test_component_fit_restores_saved_gamma_for_non_first_component(
+    make_viewer_model, qtbot
+):
+    """Gamma saved under a non-first component's harmonic data is restored
+    when its fraction layer is (re-)created during Component Fit."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    layer.metadata["settings"]["component_analysis"] = {
+        "components": {
+            "0": {"name": "Component 1", "gs_harmonics": {}},
+            "1": {
+                "name": "Component 2",
+                "gs_harmonics": {
+                    "1": {
+                        "analysis_type": "Component Fit",
+                        "colormap_name": "viridis",
+                        "gamma": 3.25,
+                    }
+                },
+            },
+        },
+    }
+
+    comp.analysis_type_combo.setCurrentText("Component Fit")
+    comp.components[0].g_edit.setText("0.2")
+    comp.components[0].s_edit.setText("0.1")
+    comp._on_component_coords_changed(0)
+    comp.components[1].g_edit.setText("0.8")
+    comp.components[1].s_edit.setText("0.5")
+    comp._on_component_coords_changed(1)
+    comp._run_analysis()
+
+    assert len(comp.fraction_layers) == 2
+    assert comp.fraction_layers[1].gamma == 3.25
+
+
+def _valid_histogram_values():
+    return np.concatenate(
+        [np.full(20, 0.3), np.full(30, 0.6), np.full(5, 0.9)]
+    )
+
+
+def test_draw_fraction_histogram_overlay_empty_values_returns_none():
+    fig, ax = plt.subplots()
+    try:
+        result = draw_fraction_histogram_overlay(
+            ax, 0.0, 0.0, 1.0, 1.0, np.array([np.nan, np.nan]), None
+        )
+    finally:
+        plt.close(fig)
+    assert result is None
+
+
+def test_draw_fraction_histogram_overlay_all_values_out_of_range():
+    """Values entirely outside the fixed [0, 1] histogram range produce an
+    all-zero histogram (``counts.max() == 0``)."""
+    fig, ax = plt.subplots()
+    try:
+        result = draw_fraction_histogram_overlay(
+            ax, 0.0, 0.0, 1.0, 1.0, np.full(10, 5.0), None
+        )
+    finally:
+        plt.close(fig)
+    assert result is None
+
+
+def test_draw_fraction_histogram_overlay_smoothed_peak_not_positive():
+    """If the (best-effort) smoothing step collapses the histogram to all
+    zeros, the function bails out instead of drawing a degenerate curve."""
+    fig, ax = plt.subplots()
+    try:
+        with patch(
+            "scipy.ndimage.gaussian_filter1d",
+            return_value=np.zeros(150),
+        ):
+            result = draw_fraction_histogram_overlay(
+                ax, 0.0, 0.0, 1.0, 1.0, _valid_histogram_values(), None
+            )
+    finally:
+        plt.close(fig)
+    assert result is None
+
+
+def test_draw_fraction_histogram_overlay_zero_length_line():
+    fig, ax = plt.subplots()
+    try:
+        result = draw_fraction_histogram_overlay(
+            ax, 0.5, 0.5, 0.5, 0.5, _valid_histogram_values(), None
+        )
+    finally:
+        plt.close(fig)
+    assert result is None
+
+
+def test_draw_fraction_histogram_overlay_normal_flip_sign():
+    """A line direction whose default normal points 'down' is flipped so it
+    still points up (the ``ny < 0`` branch)."""
+    fig, ax = plt.subplots()
+    try:
+        # dx = -1, dy = 0 -> default normal (0, -1) has ny < 0 and gets flipped.
+        result = draw_fraction_histogram_overlay(
+            ax, 1.0, 0.0, 0.0, 0.0, _valid_histogram_values(), None
+        )
+    finally:
+        plt.close(fig)
+    assert result is not None
+
+
+def test_draw_fraction_histogram_overlay_zero_height_returns_none():
+    """A zero overlay height collapses every bar to zero (``v_max <= 0``)."""
+    fig, ax = plt.subplots()
+    try:
+        result = draw_fraction_histogram_overlay(
+            ax,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            _valid_histogram_values(),
+            None,
+            height=0.0,
+        )
+    finally:
+        plt.close(fig)
+    assert result is None
+
+
+def test_draw_fraction_histogram_overlay_degenerate_contrast_limits():
+    """``vmax <= vmin`` in the contrast limits is nudged apart instead of
+    raising in the normalization step."""
+    fig, ax = plt.subplots()
+    try:
+        result = draw_fraction_histogram_overlay(
+            ax,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            _valid_histogram_values(),
+            None,
+            contrast_limits=(0.5, 0.5),
+        )
+    finally:
+        plt.close(fig)
+    assert result is not None
+
+
+def test_draw_fraction_histogram_overlay_gamma_power_norm():
+    from matplotlib.colors import PowerNorm
+
+    fig, ax = plt.subplots()
+    try:
+        result = draw_fraction_histogram_overlay(
+            ax,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            _valid_histogram_values(),
+            None,
+            contrast_limits=(0.0, 1.0),
+            gamma=2.0,
+        )
+    finally:
+        plt.close(fig)
+    assert result is not None
+    assert isinstance(result[0].norm, PowerNorm)
+
+
+def test_draw_fraction_histogram_overlay_fractions_colormap_branches():
+    """Small (<=32 entries) colormaps use a smoothly-interpolated colormap;
+    an unset colormap falls back to ``jet``."""
+    fig, ax = plt.subplots()
+    try:
+        small_colormap = [
+            [0.0, 0.0, 0.0, 1.0],
+            [0.5, 0.5, 0.5, 1.0],
+            [1.0, 1.0, 1.0, 1.0],
+        ]
+        result_small = draw_fraction_histogram_overlay(
+            ax, 0.0, 0.0, 1.0, 1.0, _valid_histogram_values(), small_colormap
+        )
+        assert result_small is not None
+
+        result_none = draw_fraction_histogram_overlay(
+            ax, 0.0, 0.0, 1.0, 1.0, _valid_histogram_values(), None
+        )
+        assert result_none is not None
+        assert result_none[0].get_cmap() is plt.cm.jet
+    finally:
+        plt.close(fig)
+
+
+def test_draw_components_overlay_draws_fraction_histogram():
+    """``draw_components_overlay`` delegates to
+    ``draw_fraction_histogram_overlay`` when Linear Projection, the fraction
+    histogram setting, fraction data, and a fractions colormap are all
+    present."""
+    fig, ax = plt.subplots()
+    try:
+        settings = {
+            "show_fraction_histogram": True,
+            "fraction_data": _valid_histogram_values(),
+            "fractions_colormap": [
+                [0.0, 0.0, 0.0, 1.0],
+                [1.0, 1.0, 1.0, 1.0],
+            ],
+            "colormap_contrast_limits": (0.0, 1.0),
+        }
+        with patch(
+            "napari_phasors.components_tab.draw_fraction_histogram_overlay"
+        ) as mock_draw:
+            draw_components_overlay(
+                ax,
+                [0.6, 0.3],
+                [0.3, 0.2],
+                names=["Component 1", "Component 2"],
+                analysis_type="Linear Projection",
+                settings=settings,
+            )
+        mock_draw.assert_called_once()
+    finally:
+        plt.close(fig)

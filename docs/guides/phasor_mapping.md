@@ -40,7 +40,7 @@ from the calibration tab when calibration is applied).
 
 These modes derive the polar coordinates of the phasor directly with no
 frequency input required.  A **Colormap** drop-down lets you choose the
-colormap for the output layer; the default colormap for Phase is *hsv* and
+colormap for the output layer; the default colormap for Phase is *jet* and
 for Modulation is *viridis*.
 
 An optional **Apply colormap to 2D Histogram** checkbox, when enabled,

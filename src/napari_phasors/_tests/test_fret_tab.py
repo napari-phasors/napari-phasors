@@ -8,6 +8,7 @@ from phasorpy.phasor import phasor_nearest_neighbor
 from superqt import QToggleSwitch
 
 from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
+from napari_phasors.fret_tab import draw_fret_trajectory_overlay
 from napari_phasors.plotter import PlotterWidget
 
 
@@ -491,6 +492,40 @@ def test_colormap_events(make_viewer_model, qtbot):
     assert (
         widget.colormap_contrast_limits != initial_contrast_limits
     )  # Should have changed
+
+
+def test_fret_gamma_links_layers_and_histogram(make_viewer_model, qtbot):
+    """Changing gamma on one FRET layer syncs siblings and the histogram."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    layer_a = create_image_layer_with_phasors()
+    layer_a.name = "layer_a"
+    layer_b = create_image_layer_with_phasors()
+    layer_b.name = "layer_b"
+    viewer.add_layer(layer_a)
+    viewer.add_layer(layer_b)
+
+    widget.donor_line_edit.setText("2.0")
+    widget.frequency_input.setText("80")
+    widget.background_real_edit.setText("0.1")
+    widget.background_imag_edit.setText("0.1")
+
+    with patch.object(
+        parent, "get_selected_layers", return_value=[layer_a, layer_b]
+    ):
+        widget.calculate_fret_efficiency_button.click()
+
+    assert len(widget.fret_layers) == 2
+
+    # Changing gamma on one FRET layer propagates to the sibling layer, the
+    # stored gamma, and the histogram widget.
+    widget.fret_layers[0].gamma = 0.7
+
+    assert widget.fret_layers[1].gamma == 0.7
+    assert widget.colormap_gamma == 0.7
+    assert widget.histogram_widget.gamma == 0.7
 
 
 def test_draw_colormap_trajectory(make_viewer_model, qtbot):
@@ -2175,3 +2210,146 @@ def test_fret_widget_exceptions(make_viewer_model, qtbot):
     layer.metadata["S"] = np.ones((2, 10, 10))
     layer.metadata["harmonics"] = np.array([999])
     w.calculate_fret_efficiency()
+
+
+def test_plot_donor_trajectory_uses_jet_colormap_when_fret_colormap_unset(
+    make_viewer_model, qtbot
+):
+    """plot_donor_trajectory falls back to plt.cm.jet when a FRET layer is
+    active and colormap coloring is enabled but no custom fret_colormap has
+    been set (default state)."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    widget.donor_line_edit.setText("2.0")
+    widget.frequency_input.setText("80")
+    widget.background_real_edit.setText("0.1")
+    widget.background_imag_edit.setText("0.1")
+
+    # Simulate an active FRET layer with colormap coloring enabled and no
+    # custom colormap set.
+    mock_fret_layer = Mock()
+    mock_fret_layer.contrast_limits = (0.0, 1.0)
+    widget.fret_layer = mock_fret_layer
+    widget.use_colormap = True
+    widget.fret_colormap = None
+
+    parent.canvas_widget = Mock()
+    parent.canvas_widget.figure = Mock()
+    ax_mock = Mock()
+    parent.canvas_widget.figure.gca.return_value = ax_mock
+    parent.canvas_widget.canvas = Mock()
+
+    widget.plot_donor_trajectory()
+
+    assert widget.current_donor_circle is not None
+    assert widget.current_background_circle is not None
+    assert ax_mock.add_collection.called
+
+
+def test_apply_saved_fret_colormap_settings_recovers_after_exception(
+    make_viewer_model, qtbot
+):
+    """When restoring saved colormap settings on the FRET layer raises, the
+    except-handler still reconnects the colormap/contrast_limits/gamma
+    events instead of leaving the layer without callbacks."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    mock_layer = Mock()
+    mock_layer.events.colormap.disconnect.side_effect = RuntimeError("boom")
+    widget.fret_layer = mock_layer
+    widget._saved_colormap_name = "viridis"
+    widget._saved_colormap_colors = None
+    widget._saved_contrast_limits = [0.0, 1.0]
+    widget._saved_gamma = 1.0
+
+    # Should not raise even though the initial disconnect attempt fails.
+    widget._apply_saved_fret_colormap_settings()
+
+    assert mock_layer.events.colormap.connect.called
+    assert mock_layer.events.contrast_limits.connect.called
+    assert mock_layer.events.gamma.connect.called
+
+
+def test_reconnect_existing_fret_layer_direct(make_viewer_model, qtbot):
+    """_reconnect_existing_fret_layer connects events directly and caches
+    the layer's current colormap/contrast_limits/gamma when there are no
+    saved colormap settings to restore."""
+    import numpy as np
+    from napari.layers import Image
+
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    layer_name = "test_layer"
+    fret_layer_name = f"FRET efficiency: {layer_name}"
+    layer = Image(np.random.random((10, 10)), name=fret_layer_name)
+    viewer.add_layer(layer)
+
+    assert not hasattr(widget, '_saved_colormap_name')
+
+    widget._reconnect_existing_fret_layer(layer_name)
+
+    assert widget.fret_layer is layer
+    assert widget.colormap_gamma == layer.gamma
+    assert widget.colormap_contrast_limits == layer.contrast_limits
+    np.testing.assert_array_equal(widget.fret_colormap, layer.colormap.colors)
+
+
+def test_teardown_disconnects_real_fret_layer_events(make_viewer_model, qtbot):
+    """_teardown_on_layer_change disconnects colormap/contrast_limits/gamma
+    events from real FRET layers connected via the normal calculate flow."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    layer_a = create_image_layer_with_phasors()
+    layer_a.name = "layer_a"
+    layer_b = create_image_layer_with_phasors()
+    layer_b.name = "layer_b"
+    viewer.add_layer(layer_a)
+    viewer.add_layer(layer_b)
+
+    widget.donor_line_edit.setText("2.0")
+    widget.frequency_input.setText("80")
+    widget.background_real_edit.setText("0.1")
+    widget.background_imag_edit.setText("0.1")
+
+    with patch.object(
+        parent, "get_selected_layers", return_value=[layer_a, layer_b]
+    ):
+        widget.calculate_fret_efficiency_button.click()
+
+    assert len(widget.fret_layers) == 2
+
+    widget._teardown_on_layer_change()
+
+    assert widget.fret_layer is None
+    assert widget.fret_layers == []
+
+
+def test_draw_fret_trajectory_overlay_uses_jet_colormap_by_default():
+    """The standalone draw_fret_trajectory_overlay falls back to plt.cm.jet
+    when no fret_colormap is supplied in settings."""
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots()
+    try:
+        trajectory_real = np.linspace(0.1, 0.9, 20)
+        trajectory_imag = np.linspace(0.1, 0.5, 20)
+        fret_efficiencies = np.linspace(0.0, 1.0, 20)
+
+        draw_fret_trajectory_overlay(
+            ax, trajectory_real, trajectory_imag, fret_efficiencies
+        )
+
+        # A colormap trajectory (LineCollection) plus donor/background
+        # circles should have been added to the axes.
+        assert len(ax.collections) == 1
+        assert len(ax.patches) == 2
+    finally:
+        plt.close(fig)

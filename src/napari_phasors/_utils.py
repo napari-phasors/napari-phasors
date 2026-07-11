@@ -12,7 +12,7 @@ import numpy as np
 import scipy
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.collections import LineCollection
-from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.colors import LinearSegmentedColormap, PowerNorm
 from matplotlib.figure import Figure
 from matplotlib.legend_handler import HandlerBase
 from matplotlib.patches import Polygon as MplPolygon
@@ -377,6 +377,61 @@ class PopoutWindowMixin:
             parent = parent.parent()
 
 
+EXTRA_MATPLOTLIB_COLORMAPS = (
+    'jet',
+    'nipy_spectral',
+    'ocean',
+    'gnuplot2',
+    'gnuplot',
+    'rainbow',
+    'brg',
+    'summer',
+    'winter',
+    'spring',
+    'autumn',
+    'cool',
+)
+
+
+def register_extra_colormaps() -> None:
+    """Make extra matplotlib colormaps selectable in napari's layer controls.
+
+    Napari's built-in colormap dropdown does not ship these matplotlib
+    colormaps by default, so this registers them globally the first time it
+    is called, making them available for any image or labels layer, not only
+    ones created by this plugin.
+    """
+    from napari.utils.colormaps import AVAILABLE_COLORMAPS
+    from napari.utils.colormaps import Colormap as NapariColormap
+
+    for name in EXTRA_MATPLOTLIB_COLORMAPS:
+        if name in AVAILABLE_COLORMAPS:
+            continue
+        colors = plt.get_cmap(name)(np.linspace(0, 1, 256))
+        AVAILABLE_COLORMAPS.add_colormap_if_missing(
+            NapariColormap(colors=colors, name=name, display_name=name)
+        )
+
+
+def available_colormap_names() -> list:
+    """Names of all colormaps offered in this plugin's colormap comboboxes.
+
+    Extends napari's built-in colormap list with the extra matplotlib
+    colormaps registered by :func:`register_extra_colormaps`, so widgets that
+    list colormaps (e.g. the histogram 2D colormap, phasor mapping, plotter
+    contours) also offer them.
+    """
+    from napari.utils import colormaps as napari_colormaps
+
+    names = list(napari_colormaps.ALL_COLORMAPS.keys())
+    names.extend(
+        name
+        for name in EXTRA_MATPLOTLIB_COLORMAPS
+        if name not in napari_colormaps.ALL_COLORMAPS
+    )
+    return names
+
+
 def create_napari_colormap_from_qcolor(color: QColor, name: str = "custom"):
     """Create a napari Colormap ramp from black to the given QColor."""
     from napari.utils import colormaps as napari_colormaps
@@ -442,10 +497,8 @@ def populate_colormap_combobox(
     combo, include_select_color=True, selected=None, available_colormaps=None
 ):
     """Populate a QComboBox with colormap names and icons."""
-    from napari.utils import colormaps as napari_colormaps
-
     if available_colormaps is None:
-        available_colormaps = list(napari_colormaps.ALL_COLORMAPS.keys())
+        available_colormaps = available_colormap_names()
 
     was_blocked = combo.blockSignals(True)
     try:
@@ -1195,7 +1248,7 @@ def build_group_styles_from_layer_metadata(viewer, layer_names):
             colors[next_gid] = c
             styles[next_gid] = {
                 'style': gstyle,
-                'colormap': gcmap or 'turbo',
+                'colormap': gcmap or 'jet',
                 'color': c,
             }
             next_gid += 1
@@ -1257,7 +1310,7 @@ def save_groups_to_layer_metadata(
             gstyle = style_data.get('style', 'solid')
             group_data['style'] = gstyle
             if gstyle == 'colormap':
-                group_data['colormap'] = style_data.get('colormap', 'turbo')
+                group_data['colormap'] = style_data.get('colormap', 'jet')
         layer.metadata['settings']['group'] = group_data
 
 
@@ -2309,7 +2362,7 @@ class HistogramWidget(QWidget):
         Name of the Matplotlib colormap to use as fallback when no explicit
         colormap colors are provided, by default ``"plasma"``.
     canvas_height : int, optional
-        Minimum pixel height of the canvas, by default 150. The canvas grows
+        Minimum pixel height of the canvas, by default 220. The canvas grows
         beyond this to fill the available vertical space.
     range_slider_enabled : bool, optional
         If ``True``, show a range slider with min / max edits above the
@@ -2344,7 +2397,7 @@ class HistogramWidget(QWidget):
         ylabel: str = "Pixel count",
         bins: int = 150,
         default_colormap_name: str = "plasma",
-        canvas_height: int = 150,
+        canvas_height: int = 180,
         range_slider_enabled: bool = False,
         range_label_prefix: str = "Range",
         range_factor: int = 1000,
@@ -2375,6 +2428,7 @@ class HistogramWidget(QWidget):
         # Colormap state (set externally)
         self.colormap_colors = None  # Nx4 array of RGBA colors
         self.contrast_limits = None  # [vmin, vmax]
+        self.gamma = 1.0  # power-law gamma applied to the colormap
 
         # Raw pooled data (for central tendency computation)
         self._raw_valid_data = None
@@ -2404,23 +2458,24 @@ class HistogramWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # Optional range slider section
+        # Optional range slider section: label, min/max edits and the range
+        # slider all share a single row.
         if self._range_slider_enabled:
-            self.range_label = QLabel(
-                f"{self._range_label_prefix}: 0.0 - 100.0"
-            )
-            layout.addWidget(self.range_label)
+            range_row = QHBoxLayout()
 
-            edit_layout = QHBoxLayout()
+            self.range_label = QLabel(f"{self._range_label_prefix}:")
+            range_row.addWidget(self.range_label)
+
             self.range_min_edit = QLineEdit("0.0")
             self.range_max_edit = QLineEdit("100.0")
             self.range_min_edit.setValidator(QDoubleValidator())
             self.range_max_edit.setValidator(QDoubleValidator())
-            edit_layout.addWidget(QLabel("Min:"))
-            edit_layout.addWidget(self.range_min_edit)
-            edit_layout.addWidget(QLabel("Max:"))
-            edit_layout.addWidget(self.range_max_edit)
-            layout.addLayout(edit_layout)
+            self.range_min_edit.setMaximumWidth(60)
+            self.range_max_edit.setMaximumWidth(60)
+            range_row.addWidget(QLabel("Min:"))
+            range_row.addWidget(self.range_min_edit)
+            range_row.addWidget(QLabel("Max:"))
+            range_row.addWidget(self.range_max_edit)
 
             self.range_slider = QRangeSlider(Qt.Orientation.Horizontal)
             self.range_slider.setRange(0, 100)
@@ -2430,7 +2485,9 @@ class HistogramWidget(QWidget):
             self.range_slider.valueChanged.connect(self._on_range_label_update)
             self.range_slider.sliderPressed.connect(self._on_slider_pressed)
             self.range_slider.sliderReleased.connect(self._on_slider_released)
-            layout.addWidget(self.range_slider)
+            range_row.addWidget(self.range_slider, 1)
+
+            layout.addLayout(range_row)
 
             self.range_min_edit.editingFinished.connect(
                 self._on_range_min_edit
@@ -2542,9 +2599,6 @@ class HistogramWidget(QWidget):
         max_out = max_s / self.range_factor
         self.range_min_edit.setText(f"{min_out:.2f}")
         self.range_max_edit.setText(f"{max_out:.2f}")
-        self.range_label.setText(
-            f"{self._range_label_prefix}: {min_out:.2f} - {max_out:.2f}"
-        )
 
     def get_range(self) -> tuple:
         """Return ``(min_float, max_float)`` from the slider."""
@@ -2554,13 +2608,10 @@ class HistogramWidget(QWidget):
         return lo / self.range_factor, hi / self.range_factor
 
     def _on_range_label_update(self, value):
-        """Update label + edits while dragging (no heavy work)."""
+        """Update edits while dragging (no heavy work)."""
         lo, hi = value
         lo_f = lo / self.range_factor
         hi_f = hi / self.range_factor
-        self.range_label.setText(
-            f"{self._range_label_prefix}: {lo_f:.2f} - {hi_f:.2f}"
-        )
         self.range_min_edit.setText(f"{lo_f:.2f}")
         self.range_max_edit.setText(f"{hi_f:.2f}")
 
@@ -2945,6 +2996,7 @@ class HistogramWidget(QWidget):
         self,
         colormap_colors: np.ndarray = None,
         contrast_limits: list = None,
+        gamma: float = None,
     ) -> None:
         """Update the colormap / contrast limits and re-render.
 
@@ -2954,9 +3006,14 @@ class HistogramWidget(QWidget):
             Nx4 RGBA array that defines the colormap.
         contrast_limits : list, optional
             ``[vmin, vmax]`` for the normalisation.
+        gamma : float, optional
+            Power-law gamma applied to the colormap, matching napari's
+            layer ``gamma``. When ``None`` the current gamma is kept.
         """
         self.colormap_colors = colormap_colors
         self.contrast_limits = contrast_limits
+        if gamma is not None:
+            self.gamma = gamma
         if self.counts is not None:
             self._render()
 
@@ -3067,26 +3124,22 @@ class HistogramWidget(QWidget):
         """Return (cmap, norm) from current colormap state."""
         if self.colormap_colors is None or self.contrast_limits is None:
             cmap = plt.get_cmap(self.default_colormap_name)
-            norm = plt.Normalize(
-                vmin=(
-                    np.min(self.bin_centers)
-                    if len(self.bin_centers) > 0
-                    else 0
-                ),
-                vmax=(
-                    np.max(self.bin_centers)
-                    if len(self.bin_centers) > 0
-                    else 1
-                ),
-            )
+            vmin = np.min(self.bin_centers) if len(self.bin_centers) > 0 else 0
+            vmax = np.max(self.bin_centers) if len(self.bin_centers) > 0 else 1
         else:
             cmap = LinearSegmentedColormap.from_list(
                 "custom_cmap", self.colormap_colors
             )
-            norm = plt.Normalize(
-                vmin=self.contrast_limits[0],
-                vmax=self.contrast_limits[1],
-            )
+            vmin = self.contrast_limits[0]
+            vmax = self.contrast_limits[1]
+
+        gamma = getattr(self, "gamma", 1.0) or 1.0
+        if gamma != 1.0 and vmax > vmin:
+            # Reproduce napari's rendering: normalise to the contrast limits,
+            # then apply the layer gamma as a power law.
+            norm = PowerNorm(gamma, vmin=vmin, vmax=vmax)
+        else:
+            norm = plt.Normalize(vmin=vmin, vmax=vmax)
         return cmap, norm
 
     def _smooth_curve(self, y, sigma=2, upsample=5):
@@ -3192,12 +3245,25 @@ class HistogramWidget(QWidget):
                     )
         else:
             if self._raw_valid_data is not None:
-                val = self._compute_central_tendency(
-                    self._raw_valid_data,
-                    choice,
-                    self.bin_centers,
-                    self.bin_edges,
-                )
+                if (
+                    choice == "Center of mass"
+                    and self.counts is not None
+                    and self.bin_centers is not None
+                    and np.sum(self.counts) > 0
+                ):
+                    # Compute the centre of mass from the raw, unsmoothed
+                    # stored histogram (``self.counts``) so it is independent of
+                    # any curve smoothing applied only for display.
+                    val = float(
+                        np.average(self.bin_centers, weights=self.counts)
+                    )
+                else:
+                    val = self._compute_central_tendency(
+                        self._raw_valid_data,
+                        choice,
+                        self.bin_centers,
+                        self.bin_edges,
+                    )
                 if val is not None:
                     self.ax.axvline(
                         val, color="white", ls="--", lw=2, alpha=0.85
@@ -3702,7 +3768,7 @@ class HistogramDockWidget(QWidget):
         self.histogram_widget = histogram_widget
         self._stats_dock = None
 
-        self.setMinimumHeight(150)
+        self.setMinimumHeight(250)
         self.setMinimumWidth(300)
 
         layout = QVBoxLayout(self)
@@ -4135,6 +4201,12 @@ def read_ome_tiff_settings(file_path):
                 )
                 for key, value in napari_phasors_settings.items():
                     settings[key] = value
+                # Expose the file's harmonics alongside the real settings so a
+                # copied calibration can be matched to targets by harmonic.
+                # Only added when napari-phasors settings exist, so a file
+                # with no settings still reads back as empty.
+                if attrs.get("harmonic") is not None:
+                    settings.setdefault("harmonics", attrs["harmonic"])
         except (json.JSONDecodeError, KeyError):
             pass
     return settings
@@ -4191,7 +4263,25 @@ def compute_calibration_parameters(
     return phi_zero, mod_zero
 
 
-def apply_calibration_correction(layer, phi_zero, mod_zero):
+def _normalize_harmonics(values):
+    """Return ``values`` as a flat list of plain ints (best effort).
+
+    Harmonics read from metadata are often numpy integers; converting to
+    Python ints keeps dict lookups and user-facing messages clean (``2``
+    rather than ``np.int64(2)``).
+    """
+    result = []
+    for value in np.ravel(np.atleast_1d(values)):
+        try:
+            result.append(int(value))
+        except (TypeError, ValueError):
+            result.append(value)
+    return result
+
+
+def apply_calibration_correction(
+    layer, phi_zero, mod_zero, calibration_harmonics=None
+):
     """Apply a phasor calibration correction to a layer in place.
 
     Applies the polar correction ``(phi_zero, mod_zero)`` to both the
@@ -4206,33 +4296,81 @@ def apply_calibration_correction(layer, phi_zero, mod_zero):
         Phase correction parameter (per harmonic).
     mod_zero : float or numpy.ndarray
         Modulation correction parameter (per harmonic).
+    calibration_harmonics : sequence of int, optional
+        The harmonic each ``phi_zero`` / ``mod_zero`` value corresponds to.
+        When given, the correction is matched to the layer's harmonics *by
+        value*: only the calibration for the harmonics the layer actually has
+        is applied (e.g. a ``[1, 2]`` calibration applied to a single-harmonic
+        ``[1]`` file uses just the harmonic-1 correction). A :class:`ValueError`
+        is raised if the layer needs a harmonic the calibration does not cover.
+        When ``None`` (calibration harmonics unknown), the values are treated
+        positionally and must match the layer's harmonic count.
     """
     from phasorpy.phasor import phasor_transform
 
     metadata = layer.metadata
-    harmonics = np.atleast_1d(metadata.get("harmonics"))
+    harmonics = _normalize_harmonics(metadata.get("harmonics"))
     g_original = metadata["G_original"]
     s_original = metadata["S_original"]
     g_current = metadata["G"]
     s_current = metadata["S"]
 
-    if isinstance(phi_zero, list):
-        phi_zero = np.array(phi_zero)
-    if isinstance(mod_zero, list):
-        mod_zero = np.array(mod_zero)
+    if np.ndim(phi_zero) > 0:
+        phi_arr = np.ravel(np.asarray(phi_zero, dtype=float))
+        mod_arr = np.ravel(np.asarray(mod_zero, dtype=float))
 
-    if g_original.ndim > 1 and len(harmonics) > 1:
-        spatial_dims = g_original.ndim - 1
-        expand_shape = (slice(None),) + (None,) * spatial_dims
-        if np.ndim(phi_zero) > 0:
-            phi_expanded = phi_zero[expand_shape]
-            mod_expanded = mod_zero[expand_shape]
+        cal_harmonics = None
+        if calibration_harmonics is not None:
+            cal_harmonics = _normalize_harmonics(calibration_harmonics)
+            # Ignore inconsistent labels and fall back to positional matching.
+            if len(cal_harmonics) != len(phi_arr):
+                cal_harmonics = None
+
+        if cal_harmonics is not None:
+            # Match by harmonic value: keep only the calibration for the
+            # harmonics this file actually has, and error if any file harmonic
+            # is not covered by the calibration.
+            phi_map = dict(zip(cal_harmonics, phi_arr, strict=True))
+            mod_map = dict(zip(cal_harmonics, mod_arr, strict=True))
+            missing = [h for h in harmonics if h not in phi_map]
+            if missing:
+                raise ValueError(
+                    f"the calibration does not include harmonic(s) {missing} "
+                    f"needed by this file (calibration covers harmonics "
+                    f"{cal_harmonics}). Recompute or copy a calibration that "
+                    "includes these harmonics."
+                )
+            phi_sel = np.array([phi_map[h] for h in harmonics], dtype=float)
+            mod_sel = np.array([mod_map[h] for h in harmonics], dtype=float)
         else:
-            phi_expanded = phi_zero
-            mod_expanded = mod_zero
+            # Calibration harmonics unknown: require a positional 1:1 match so
+            # a genuine mismatch is reported instead of silently misaligning.
+            if len(phi_arr) != len(harmonics):
+                raise ValueError(
+                    f"calibration has {len(phi_arr)} harmonic(s) but this "
+                    f"file has {len(harmonics)} ({harmonics}). Use the same "
+                    "harmonics for the calibration reference and the files "
+                    "being processed (the 'Harmonics' field), or "
+                    "recompute/copy the calibration for these harmonics."
+                )
+            phi_sel = phi_arr
+            mod_sel = mod_arr
+
+        if g_original.ndim > 1:
+            spatial_dims = g_original.ndim - 1
+            expand_shape = (slice(None),) + (None,) * spatial_dims
+            phi_expanded = phi_sel[expand_shape]
+            mod_expanded = mod_sel[expand_shape]
+        else:
+            phi_expanded = phi_sel
+            mod_expanded = mod_sel
+        stored_phase = phi_sel.tolist()
+        stored_modulation = mod_sel.tolist()
     else:
         phi_expanded = phi_zero
         mod_expanded = mod_zero
+        stored_phase = float(phi_zero)
+        stored_modulation = float(mod_zero)
 
     real_original, imag_original = phasor_transform(
         g_original, s_original, phi_expanded, mod_expanded
@@ -4247,10 +4385,6 @@ def apply_calibration_correction(layer, phi_zero, mod_zero):
     metadata["S"] = imag
 
     settings = metadata.setdefault("settings", {})
-    settings["calibration_phase"] = (
-        phi_zero.tolist() if np.ndim(phi_zero) > 0 else float(phi_zero)
-    )
-    settings["calibration_modulation"] = (
-        mod_zero.tolist() if np.ndim(mod_zero) > 0 else float(mod_zero)
-    )
+    settings["calibration_phase"] = stored_phase
+    settings["calibration_modulation"] = stored_modulation
     settings["calibrated"] = True

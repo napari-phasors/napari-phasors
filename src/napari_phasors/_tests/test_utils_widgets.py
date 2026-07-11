@@ -139,6 +139,36 @@ def test_histogram_widget_update_multi_data_autosd(qtbot):
     assert widget._show_sd is True
 
 
+def test_histogram_widget_gamma_uses_power_norm(qtbot):
+    """A non-unity gamma renders the colormap through a PowerNorm."""
+    from matplotlib.colors import PowerNorm
+
+    widget = HistogramWidget(bins=10)
+    qtbot.addWidget(widget)
+
+    widget.update_data(np.linspace(0.0, 1.0, 100))
+
+    colors = np.array([[0, 0, 0, 1], [1, 1, 1, 1]], dtype=float)
+
+    # Default gamma keeps a plain linear normalisation.
+    widget.update_colormap(colormap_colors=colors, contrast_limits=[0.0, 1.0])
+    _, norm = widget._get_cmap_and_norm()
+    assert not isinstance(norm, PowerNorm)
+
+    # A non-unity gamma switches to a matching PowerNorm.
+    widget.update_colormap(
+        colormap_colors=colors, contrast_limits=[0.0, 1.0], gamma=0.4
+    )
+    assert widget.gamma == 0.4
+    _, norm = widget._get_cmap_and_norm()
+    assert isinstance(norm, PowerNorm)
+    assert norm.gamma == 0.4
+
+    # Omitting gamma on a later update preserves the stored value.
+    widget.update_colormap(colormap_colors=colors, contrast_limits=[0.0, 2.0])
+    assert widget.gamma == 0.4
+
+
 def test_histogram_widget_grouped_sd_band(qtbot):
     """Grouped mode draws a shaded SD band per multi-file group when enabled."""
     from matplotlib.collections import PolyCollection
@@ -1407,6 +1437,40 @@ def test_populate_colormap_combobox(qtbot):
     assert combo2.currentIndex() == 0
 
 
+def test_register_extra_colormaps_idempotent():
+    """Calling register_extra_colormaps twice skips already-registered names."""
+    from napari.utils.colormaps import AVAILABLE_COLORMAPS
+
+    from napari_phasors._utils import (
+        EXTRA_MATPLOTLIB_COLORMAPS,
+        register_extra_colormaps,
+    )
+
+    # First call (possibly a no-op if already registered at plugin import).
+    register_extra_colormaps()
+    for name in EXTRA_MATPLOTLIB_COLORMAPS:
+        assert name in AVAILABLE_COLORMAPS
+
+    # Second call must hit the "already registered" skip branch for every
+    # name without raising or duplicating entries.
+    register_extra_colormaps()
+    for name in EXTRA_MATPLOTLIB_COLORMAPS:
+        assert name in AVAILABLE_COLORMAPS
+
+
+def test_available_colormap_names_includes_extras():
+    from napari_phasors._utils import (
+        EXTRA_MATPLOTLIB_COLORMAPS,
+        available_colormap_names,
+    )
+
+    names = available_colormap_names()
+    for name in EXTRA_MATPLOTLIB_COLORMAPS:
+        assert name in names
+    # No duplicates from colormaps already present in napari's own list.
+    assert len(names) == len(set(names))
+
+
 def test_colormap_legend_proxy_and_handler(qtbot):
     import matplotlib.pyplot as plt
     from matplotlib.transforms import IdentityTransform
@@ -1503,6 +1567,47 @@ def test_histogram_widget_render_single_dataset_central_tendency(qtbot):
     widget._central_tendency = "Mean"
     widget._render()
     assert widget.counts is not None
+
+
+def test_histogram_widget_center_of_mass_uses_raw_unsmoothed_data(qtbot):
+    """The center-of-mass line comes from the raw histogram, not the smoothed
+    display curve, so smoothing on/off must not move it."""
+    rng = np.random.default_rng(0)
+    data = np.concatenate(
+        [rng.normal(2.0, 0.3, 5000), rng.normal(5.0, 0.5, 1500)]
+    )
+    widget = HistogramWidget(bins=150)
+    qtbot.addWidget(widget)
+    widget._central_tendency = "Center of mass"
+    widget.update_data(data)
+
+    expected = float(np.average(widget.bin_centers, weights=widget.counts))
+
+    def _drawn_com():
+        widget._render()
+        lines = [
+            ln for ln in widget.ax.get_lines() if ln.get_linestyle() == "--"
+        ]
+        assert len(lines) == 1
+        return float(lines[0].get_xdata()[0])
+
+    widget._smooth_curves = True
+    com_smoothed = _drawn_com()
+    widget._smooth_curves = False
+    com_raw = _drawn_com()
+
+    # Identical regardless of the display smoothing, and equal to the raw
+    # histogram's center of mass.
+    assert np.isclose(com_smoothed, expected)
+    assert np.isclose(com_raw, expected)
+    assert np.isclose(com_smoothed, com_raw)
+
+
+def test_histogram_widget_taller_default_canvas_height(qtbot):
+    """The histogram canvas has an increased minimum height."""
+    widget = HistogramWidget()
+    qtbot.addWidget(widget)
+    assert widget.fig.canvas.minimumHeight() >= 180
 
 
 def test_statistics_dock_export_csv(qtbot, tmp_path, monkeypatch):

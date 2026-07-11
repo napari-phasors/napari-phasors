@@ -7,7 +7,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import vispy.color
 from matplotlib.collections import LineCollection
-from matplotlib.colors import LinearSegmentedColormap, ListedColormap
+from matplotlib.colors import (
+    LinearSegmentedColormap,
+    ListedColormap,
+    PowerNorm,
+)
+from matplotlib.patches import Polygon as MplPolygon
+from matplotlib.transforms import Affine2D
 from napari.layers import Image
 from napari.utils.colormaps import AVAILABLE_COLORMAPS, Colormap
 from napari.utils.notifications import show_error, show_info, show_warning
@@ -18,8 +24,8 @@ from phasorpy.lifetime import (
     phasor_to_normal_lifetime,
 )
 from phasorpy.phasor import phasor_center
-from qtpy.QtCore import Qt
-from qtpy.QtGui import QKeySequence, QShortcut
+from qtpy.QtCore import QRectF, Qt
+from qtpy.QtGui import QColor, QKeySequence, QPainter, QShortcut
 from qtpy.QtWidgets import (
     QCheckBox,
     QColorDialog,
@@ -27,6 +33,7 @@ from qtpy.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -35,6 +42,8 @@ from qtpy.QtWidgets import (
     QScrollArea,
     QSlider,
     QSpinBox,
+    QStyle,
+    QStyleOptionSlider,
     QVBoxLayout,
     QWidget,
     QWidgetAction,
@@ -127,6 +136,89 @@ class ColorActionWidget(QLabel):
                 parent = parent.parent()
 
 
+class CenterFillSlider(QSlider):
+    """Horizontal slider whose colored fill originates from the center (0).
+
+    A standard :class:`QSlider` fills its groove from the minimum edge to the
+    handle, which is misleading for a signed value centered at zero. This
+    subclass paints the fill from the zero position to the handle instead, so
+    dragging left of centre reads as negative and right as positive.
+    """
+
+    fill_color = QColor("#3b82f6")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Neutralise the default directional groove fill so only the
+        # centre-anchored fill drawn below is visible.
+        self.setStyleSheet("""
+            QSlider::groove:horizontal {
+                height: 4px;
+                background: #c7ccd4;
+                border-radius: 2px;
+            }
+            QSlider::sub-page:horizontal,
+            QSlider::add-page:horizontal {
+                background: #c7ccd4;
+                border-radius: 2px;
+            }
+            QSlider::handle:horizontal {
+                width: 12px;
+                margin: -5px 0;
+                border-radius: 6px;
+                background: #6b7280;
+            }
+            """)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        span = self.maximum() - self.minimum()
+        if span == 0:
+            return
+
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        groove = self.style().subControlRect(
+            QStyle.CC_Slider, opt, QStyle.SC_SliderGroove, self
+        )
+        handle = self.style().subControlRect(
+            QStyle.CC_Slider, opt, QStyle.SC_SliderHandle, self
+        )
+
+        # Map the zero value to a pixel the same way Qt positions the handle:
+        # the handle centre only travels within the groove inset by half its
+        # width. Using the naive groove-width mapping instead would drift the
+        # fill origin away from the handle at value 0.
+        handle_w = handle.width()
+        available = groove.width() - handle_w
+        zero_pos = self.style().sliderPositionFromValue(
+            self.minimum(), self.maximum(), 0, available, opt.upsideDown
+        )
+        zero_x = groove.x() + handle_w / 2.0 + zero_pos
+        handle_x = handle.center().x()
+
+        # Overlay the fill exactly on the grey groove line. The stylesheet
+        # draws the track 4px tall, centred on the groove rect; mirror that
+        # here using the float centre so the blue band shares the light-grey
+        # track's centre and thickness (QRect.center() floors for even
+        # heights, which shifted the band up by a pixel).
+        groove_thickness = 4.0
+        center_y = groove.y() + groove.height() / 2.0
+        left = min(zero_x, handle_x)
+        right = max(zero_x, handle_x)
+        rect = QRectF(
+            left,
+            center_y - groove_thickness / 2.0,
+            max(0.0, right - left),
+            groove_thickness,
+        )
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.fillRect(rect, self.fill_color)
+        painter.end()
+
+
 class PhasorCenterSelectionDialog(QDialog):
     def __init__(self, layers, parent=None, preselected=None):
         super().__init__(parent)
@@ -199,6 +291,7 @@ class ComponentsWidget(QWidget):
         self.comp2_fractions_layer = None
         self.fractions_colormap = None
         self.colormap_contrast_limits = None
+        self.fractions_gamma = 1.0
         self.component_colors = [
             'magenta',
             'cyan',
@@ -242,10 +335,19 @@ class ComponentsWidget(QWidget):
         self.line_alpha = 1
         self.default_component_color = 'dimgray'
 
+        # Fraction histogram overlay settings
+        self.show_fraction_histogram = False
+        self.histogram_overlay_height = 0.3
+        self.histogram_offset = 0.0
+        self.histogram_alpha = 0.75
+        self.component_histogram = None
+
         # Flag to prevent clearing lifetime when updating from lifetime
         self._updating_from_lifetime = False
         self._updating_settings = False  # Flag to prevent recursive updates
         self._needs_update = False  # Deferred update flag
+        # Guard against recursion while mirroring slider <-> spinbox pairs.
+        self._syncing_slider_spin = False
         # Guard to avoid recursion while mirroring the component selection
         # between the histogram and statistics comboboxes.
         self._syncing_component_comboboxes = False
@@ -421,7 +523,7 @@ class ComponentsWidget(QWidget):
             xlabel="Fraction",
             ylabel="Pixel count",
             bins=150,
-            default_colormap_name="PiYG",
+            default_colormap_name="jet",
             range_slider_enabled=True,
             range_label_prefix="Fraction range",
             range_factor=1000,
@@ -820,6 +922,8 @@ class ComponentsWidget(QWidget):
                 self.component_polygon.remove()
             self.component_polygon = None
 
+        self._remove_histogram_overlay()
+
         self._update_component_visibility()
         self._update_analysis_options()
         self._update_button_states()
@@ -944,6 +1048,8 @@ class ComponentsWidget(QWidget):
                 self.component_polygon.remove()
             self.component_polygon = None
 
+        self._remove_histogram_overlay()
+
         self._update_components_setting_in_metadata('components', {})
 
         if self.parent_widget is not None:
@@ -960,20 +1066,75 @@ class ComponentsWidget(QWidget):
         return {
             'analysis_type': 'Linear Projection',
             'components': {},
-            'line_settings': {
+            # NOTE: keys here must match the ones written by
+            # ``_on_plot_setting_changed`` / ``_pick_label_color`` and read by
+            # the restore methods, otherwise edits are persisted under one key
+            # but restored from another (and never re-applied).
+            'two_component_line_settings': {
                 'show_colormap_line': True,
                 'show_component_dots': True,
                 'line_offset': 0.0,
                 'line_width': 3.0,
                 'line_alpha': 1.0,
+                'default_component_color': 'dimgray',
+                'show_fraction_histogram': False,
+                'histogram_overlay_height': 0.3,
+                'histogram_offset': 0.0,
+                'histogram_alpha': 0.75,
             },
-            'label_settings': {
+            'two_components_label_settings': {
                 'fontsize': 10,
                 'bold': False,
                 'italic': False,
                 'color': 'black',
             },
         }
+
+    def _restore_line_and_label_settings(self, settings):
+        """Restore the two-component line / histogram-overlay and label styles.
+
+        User edits are persisted under ``two_component_line_settings`` and
+        ``two_components_label_settings`` (see ``_on_plot_setting_changed`` and
+        ``_pick_label_color``). Older metadata used ``line_settings`` /
+        ``label_settings``, so fall back to those for backward compatibility.
+        """
+        line_settings = (
+            settings.get('two_component_line_settings')
+            or settings.get('line_settings')
+            or {}
+        )
+        if line_settings:
+            self.show_colormap_line = line_settings.get(
+                'show_colormap_line', True
+            )
+            self.show_component_dots = line_settings.get(
+                'show_component_dots', True
+            )
+            self.line_offset = line_settings.get('line_offset', 0.0)
+            self.line_width = line_settings.get('line_width', 3.0)
+            self.line_alpha = line_settings.get('line_alpha', 1.0)
+            self.default_component_color = line_settings.get(
+                'default_component_color', 'dimgray'
+            )
+            self.show_fraction_histogram = line_settings.get(
+                'show_fraction_histogram', False
+            )
+            self.histogram_overlay_height = line_settings.get(
+                'histogram_overlay_height', 0.3
+            )
+            self.histogram_offset = line_settings.get('histogram_offset', 0.0)
+            self.histogram_alpha = line_settings.get('histogram_alpha', 0.75)
+
+        label_settings = (
+            settings.get('two_components_label_settings')
+            or settings.get('label_settings')
+            or {}
+        )
+        if label_settings:
+            self.label_fontsize = label_settings.get('fontsize', 10)
+            self.label_bold = label_settings.get('bold', False)
+            self.label_italic = label_settings.get('italic', False)
+            self.label_color = label_settings.get('color', 'black')
 
     def _update_components_setting_in_metadata(self, key_path, value):
         """Update a specific component setting in the current layer's metadata."""
@@ -1120,24 +1281,7 @@ class ComponentsWidget(QWidget):
                         if g is not None and s is not None:
                             self._create_component_at_coordinates(idx, g, s)
 
-            if 'line_settings' in settings:
-                line_settings = settings['line_settings']
-                self.show_colormap_line = line_settings.get(
-                    'show_colormap_line', True
-                )
-                self.show_component_dots = line_settings.get(
-                    'show_component_dots', True
-                )
-                self.line_offset = line_settings.get('line_offset', 0.0)
-                self.line_width = line_settings.get('line_width', 3.0)
-                self.line_alpha = line_settings.get('line_alpha', 1.0)
-
-            if 'label_settings' in settings:
-                label_settings = settings['label_settings']
-                self.label_fontsize = label_settings.get('fontsize', 10)
-                self.label_bold = label_settings.get('bold', False)
-                self.label_italic = label_settings.get('italic', False)
-                self.label_color = label_settings.get('color', 'black')
+            self._restore_line_and_label_settings(settings)
 
             # Draw visual elements (lines between components) but do NOT
             # run analysis or create fraction layers.
@@ -1279,24 +1423,7 @@ class ComponentsWidget(QWidget):
                         if g is not None and s is not None:
                             self._create_component_at_coordinates(idx, g, s)
 
-            if 'line_settings' in settings:
-                line_settings = settings['line_settings']
-                self.show_colormap_line = line_settings.get(
-                    'show_colormap_line', True
-                )
-                self.show_component_dots = line_settings.get(
-                    'show_component_dots', True
-                )
-                self.line_offset = line_settings.get('line_offset', 0.0)
-                self.line_width = line_settings.get('line_width', 3.0)
-                self.line_alpha = line_settings.get('line_alpha', 1.0)
-
-            if 'label_settings' in settings:
-                label_settings = settings['label_settings']
-                self.label_fontsize = label_settings.get('fontsize', 10)
-                self.label_bold = label_settings.get('bold', False)
-                self.label_italic = label_settings.get('italic', False)
-                self.label_color = label_settings.get('color', 'black')
+            self._restore_line_and_label_settings(settings)
 
             components_created = [
                 c
@@ -1375,6 +1502,7 @@ class ComponentsWidget(QWidget):
             colormap_name = harmonic_data.get('colormap_name')
             colormap_colors = harmonic_data.get('colormap_colors')
             contrast_limits = harmonic_data.get('contrast_limits')
+            gamma = harmonic_data.get('gamma')
 
             if not (colormap_name or colormap_colors):
                 continue
@@ -1399,6 +1527,9 @@ class ComponentsWidget(QWidget):
                 fraction_layer.events.colormap.disconnect(
                     self._on_colormap_changed
                 )
+                fraction_layer.events.gamma.disconnect(
+                    self._on_colormap_changed
+                )
 
             try:
                 if colormap_colors is not None:
@@ -1419,10 +1550,14 @@ class ComponentsWidget(QWidget):
                 if contrast_limits:
                     fraction_layer.contrast_limits = tuple(contrast_limits)
 
+                if gamma is not None:
+                    fraction_layer.gamma = gamma
+
             finally:
                 fraction_layer.events.colormap.connect(
                     self._on_colormap_changed
                 )
+                fraction_layer.events.gamma.connect(self._on_colormap_changed)
 
         if (
             len(settings.get('components', {})) == 2
@@ -1434,6 +1569,7 @@ class ComponentsWidget(QWidget):
             self.colormap_contrast_limits = (
                 self.comp1_fractions_layer.contrast_limits
             )
+            self.fractions_gamma = self.comp1_fractions_layer.gamma
 
         self._update_component_colors()
         self.draw_line_between_components()
@@ -1441,100 +1577,248 @@ class ComponentsWidget(QWidget):
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
+    def _make_slider_spin_row(
+        self,
+        label,
+        minv,
+        maxv,
+        value,
+        decimals,
+        on_value,
+        *,
+        center_fill=False,
+        tooltip=None,
+        step=None,
+    ):
+        """Build a labelled slider + spinbox pair kept in sync.
+
+        ``on_value`` is invoked with the float value whenever either the slider
+        or the spinbox changes. The value can therefore be dragged or typed
+        directly. Returns ``(row_layout, slider, spin)``.
+        """
+        factor = 10**decimals
+        row = QHBoxLayout()
+        lbl = QLabel(label)
+        row.addWidget(lbl)
+
+        slider = (
+            CenterFillSlider(Qt.Horizontal)
+            if center_fill
+            else QSlider(Qt.Horizontal)
+        )
+        slider.setRange(int(round(minv * factor)), int(round(maxv * factor)))
+        slider.setValue(int(round(value * factor)))
+
+        spin = QDoubleSpinBox()
+        spin.setDecimals(decimals)
+        spin.setRange(minv, maxv)
+        spin.setSingleStep(step if step is not None else 1.0 / factor)
+        spin.setValue(value)
+        spin.setMaximumWidth(85)
+
+        if tooltip:
+            for w in (lbl, slider, spin):
+                w.setToolTip(tooltip)
+
+        def on_slider(iv):
+            if self._syncing_slider_spin:
+                return
+            self._syncing_slider_spin = True
+            try:
+                spin.setValue(iv / factor)
+            finally:
+                self._syncing_slider_spin = False
+            on_value(iv / factor)
+
+        def on_spin(val):
+            if self._syncing_slider_spin:
+                return
+            self._syncing_slider_spin = True
+            try:
+                slider.setValue(int(round(val * factor)))
+            finally:
+                self._syncing_slider_spin = False
+            on_value(val)
+
+        slider.valueChanged.connect(on_slider)
+        spin.valueChanged.connect(on_spin)
+
+        row.addWidget(slider)
+        row.addWidget(spin)
+        return row, slider, spin
+
     def _open_plot_settings_dialog(self):
-        """Open dialog to edit plot settings."""
+        """Open dialog to edit line and fraction-histogram overlay settings."""
         if self.plot_dialog is not None and self.plot_dialog.isVisible():
             self.plot_dialog.raise_()
             self.plot_dialog.activateWindow()
             return
 
         self.plot_dialog = QDialog(self)
-        self.plot_dialog.setWindowTitle("Component Line Settings")
+        self.plot_dialog.setWindowTitle("Component Line & Histogram Settings")
+        self.plot_dialog.setMinimumWidth(460)
         vbox = QVBoxLayout(self.plot_dialog)
 
-        # Row 1: checkboxes
-        row1 = QHBoxLayout()
-        self.colormap_line_checkbox = QCheckBox("Overlay Colormap")
-        self.colormap_line_checkbox.setChecked(self.show_colormap_line)
-        self.colormap_line_checkbox.stateChanged.connect(
-            self._on_plot_setting_changed
-        )
-        row1.addWidget(self.colormap_line_checkbox)
-
+        # Top row: display checkboxes side by side.
+        checks_row = QHBoxLayout()
         self.show_dots_checkbox = QCheckBox("Show component positions")
         self.show_dots_checkbox.setChecked(self.show_component_dots)
         self.show_dots_checkbox.stateChanged.connect(
             self._on_plot_setting_changed
         )
-        row1.addWidget(self.show_dots_checkbox)
-        row1.addStretch()
-        vbox.addLayout(row1)
+        checks_row.addWidget(self.show_dots_checkbox)
+        checks_row.addStretch()
+        vbox.addLayout(checks_row)
 
-        # Row 2: line offset
-        row2 = QHBoxLayout()
-        row2.addWidget(QLabel("Line offset:"))
-        self.line_offset_slider = QSlider(Qt.Horizontal)
-        self.line_offset_slider.setRange(-500, 500)
-        self.line_offset_slider.setValue(int(self.line_offset * 1000))
-        self.line_offset_slider.valueChanged.connect(
-            self._on_line_offset_changed
+        # --- Line group -----------------------------------------------------
+        line_group = QGroupBox("Line")
+        line_layout = QVBoxLayout(line_group)
+
+        self.colormap_line_checkbox = QCheckBox("Overlay colormap")
+        self.colormap_line_checkbox.setChecked(self.show_colormap_line)
+        self.colormap_line_checkbox.stateChanged.connect(
+            self._on_plot_setting_changed
         )
-        row2.addWidget(self.line_offset_slider)
-        self.line_offset_value_label = QLabel(f"{self.line_offset:.3f}")
-        row2.addWidget(self.line_offset_value_label)
-        vbox.addLayout(row2)
+        line_layout.addWidget(self.colormap_line_checkbox)
 
-        # Row 3: width & alpha
-        row3 = QHBoxLayout()
-        row3.addWidget(QLabel("Line width:"))
-        self.line_width_spin = QDoubleSpinBox()
-        self.line_width_spin.setRange(0.5, 20.0)
-        self.line_width_spin.setSingleStep(0.5)
-        self.line_width_spin.setValue(self.line_width)
-        self.line_width_spin.valueChanged.connect(self._on_line_width_changed)
-        row3.addWidget(self.line_width_spin)
-
-        row3.addWidget(QLabel("Alpha:"))
-        self.line_alpha_slider = QSlider(Qt.Horizontal)
-        self.line_alpha_slider.setRange(0, 100)
-        self.line_alpha_slider.setValue(int(self.line_alpha * 100))
-        self.line_alpha_slider.valueChanged.connect(
-            self._on_line_alpha_changed
+        width_row, self.line_width_slider, self.line_width_spin = (
+            self._make_slider_spin_row(
+                "Width:",
+                0.5,
+                20.0,
+                self.line_width,
+                1,
+                self._on_line_width_changed,
+                step=0.5,
+            )
         )
-        row3.addWidget(self.line_alpha_slider)
-        self.line_alpha_value_label = QLabel(f"{self.line_alpha:.2f}")
-        row3.addWidget(self.line_alpha_value_label)
+        (
+            line_transp_row,
+            self.line_transparency_slider,
+            self.line_transparency_spin,
+        ) = self._make_slider_spin_row(
+            "Transparency:",
+            0.0,
+            1.0,
+            1.0 - self.line_alpha,
+            2,
+            self._on_line_transparency_changed,
+        )
+        top_line_row = QHBoxLayout()
+        top_line_row.addLayout(width_row)
+        top_line_row.addSpacing(12)
+        top_line_row.addLayout(line_transp_row)
+        line_layout.addLayout(top_line_row)
 
-        row3.addStretch()
-        vbox.addLayout(row3)
-
-        # Row 4: Color selection
-        row4 = QHBoxLayout()
-        row4.addWidget(QLabel("Default color:"))
+        offset_row, self.line_offset_slider, self.line_offset_spin = (
+            self._make_slider_spin_row(
+                "Offset:",
+                -1.0,
+                1.0,
+                self.line_offset,
+                3,
+                self._on_line_offset_changed,
+                center_fill=True,
+                tooltip="Shift the line perpendicular to its direction.",
+            )
+        )
+        color_row = QHBoxLayout()
+        color_row.addWidget(QLabel("Default color:"))
         self.color_button = QPushButton()
         self.color_button.setMaximumWidth(80)
         self.color_button.setStyleSheet(
-            f"background-color: {self.default_component_color}; border: 1px solid black;"
+            f"background-color: {self.default_component_color}; "
+            "border: 1px solid black;"
         )
         self.color_button.clicked.connect(self._on_color_button_clicked)
-        row4.addWidget(self.color_button)
+        color_row.addWidget(self.color_button)
+        color_row.addStretch()
 
-        row4.addStretch()
-        vbox.addLayout(row4)
+        bottom_line_row = QHBoxLayout()
+        bottom_line_row.addLayout(offset_row)
+        bottom_line_row.addSpacing(12)
+        bottom_line_row.addLayout(color_row)
+        line_layout.addLayout(bottom_line_row)
+        vbox.addWidget(line_group)
+
+        # --- Fraction histogram group --------------------------------------
+        hist_group = QGroupBox("Fraction histogram overlay")
+        hist_layout = QVBoxLayout(hist_group)
+
+        self.fraction_histogram_checkbox = QCheckBox(
+            "Overlay fraction histogram"
+        )
+        self.fraction_histogram_checkbox.setChecked(
+            self.show_fraction_histogram
+        )
+        self.fraction_histogram_checkbox.setToolTip(
+            "Overlay the histogram of the first component's fraction on top "
+            "of the line joining the components, colored with the line's "
+            "colormap. Available for a two-component Linear Projection."
+        )
+        self.fraction_histogram_checkbox.stateChanged.connect(
+            self._on_plot_setting_changed
+        )
+        hist_layout.addWidget(self.fraction_histogram_checkbox)
+
+        (
+            height_row,
+            self.histogram_height_slider,
+            self.histogram_height_spin,
+        ) = self._make_slider_spin_row(
+            "Height:",
+            0.05,
+            1.0,
+            self.histogram_overlay_height,
+            2,
+            self._on_histogram_height_changed,
+        )
+        (
+            hist_transp_row,
+            self.histogram_transparency_slider,
+            self.histogram_transparency_spin,
+        ) = self._make_slider_spin_row(
+            "Transparency:",
+            0.0,
+            1.0,
+            1.0 - self.histogram_alpha,
+            2,
+            self._on_histogram_transparency_changed,
+        )
+        top_hist_row = QHBoxLayout()
+        top_hist_row.addLayout(height_row)
+        top_hist_row.addSpacing(12)
+        top_hist_row.addLayout(hist_transp_row)
+        hist_layout.addLayout(top_hist_row)
+
+        (
+            hist_offset_row,
+            self.histogram_offset_slider,
+            self.histogram_offset_spin,
+        ) = self._make_slider_spin_row(
+            "Offset:",
+            -1.0,
+            1.0,
+            self.histogram_offset,
+            3,
+            self._on_histogram_offset_changed,
+            center_fill=True,
+            tooltip="Shift the histogram relative to the line. Positive keeps "
+            "it on one side; negative flips it to the other side. The "
+            "magnitude is the distance from the line.",
+        )
+        hist_layout.addLayout(hist_offset_row)
+        vbox.addWidget(hist_group)
 
         # Buttons
         buttons_layout = QHBoxLayout()
-
         reset_button = QPushButton("Reset")
         reset_button.clicked.connect(self._reset_plot_settings)
         buttons_layout.addWidget(reset_button)
-
         buttons_layout.addStretch()
-
         close_button = QPushButton("Close")
         close_button.clicked.connect(self.plot_dialog.close)
         buttons_layout.addWidget(close_button)
-
         vbox.addLayout(buttons_layout)
 
         self.plot_dialog.show()
@@ -1549,6 +1833,10 @@ class ComponentsWidget(QWidget):
                 f"background-color: {self.default_component_color}; border: 1px solid black;"
             )
 
+            self._update_components_setting_in_metadata(
+                'two_component_line_settings.default_component_color',
+                self.default_component_color,
+            )
             self._on_plot_setting_changed()
 
     def _update_analysis_options(self):
@@ -1638,6 +1926,8 @@ class ComponentsWidget(QWidget):
             with contextlib.suppress(ValueError, AttributeError):
                 self.component_line.remove()
             self.component_line = None
+
+        self._remove_histogram_overlay()
 
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
@@ -1782,23 +2072,43 @@ class ComponentsWidget(QWidget):
         default_line_alpha = 1
         default_component_color = 'dimgray'
 
+        default_show_fraction_histogram = False
+        default_histogram_overlay_height = 0.3
+        default_histogram_offset = 0.0
+        default_histogram_alpha = 0.75
+
         self.show_colormap_line = default_show_colormap_line
         self.show_component_dots = default_show_component_dots
         self.line_offset = default_line_offset
         self.line_width = default_line_width
         self.line_alpha = default_line_alpha
         self.default_component_color = default_component_color
+        self.show_fraction_histogram = default_show_fraction_histogram
+        self.histogram_overlay_height = default_histogram_overlay_height
+        self.histogram_offset = default_histogram_offset
+        self.histogram_alpha = default_histogram_alpha
 
         self.colormap_line_checkbox.setChecked(default_show_colormap_line)
         self.show_dots_checkbox.setChecked(default_show_component_dots)
 
-        self.line_offset_slider.setValue(int(default_line_offset * 1000))
-        self.line_offset_value_label.setText(f"{default_line_offset:.3f}")
+        if hasattr(self, 'fraction_histogram_checkbox'):
+            self.fraction_histogram_checkbox.setChecked(
+                default_show_fraction_histogram
+            )
 
-        self.line_width_spin.setValue(default_line_width)
-
-        self.line_alpha_slider.setValue(int(default_line_alpha * 100))
-        self.line_alpha_value_label.setText(f"{default_line_alpha:.2f}")
+        # Updating the spinboxes cascades to the linked sliders and their
+        # value handlers, so this both refreshes the UI and re-applies state.
+        for attr, val in (
+            ('line_offset_spin', default_line_offset),
+            ('line_width_spin', default_line_width),
+            ('line_transparency_spin', 1.0 - default_line_alpha),
+            ('histogram_height_spin', default_histogram_overlay_height),
+            ('histogram_offset_spin', default_histogram_offset),
+            ('histogram_transparency_spin', 1.0 - default_histogram_alpha),
+        ):
+            spin = getattr(self, attr, None)
+            if spin is not None:
+                spin.setValue(val)
 
         if hasattr(self, 'color_button'):
             self.color_button.setStyleSheet(
@@ -1833,6 +2143,9 @@ class ComponentsWidget(QWidget):
                 )
                 self.comp1_fractions_layer.events.contrast_limits.disconnect(
                     self._on_contrast_limits_changed
+                )
+                self.comp1_fractions_layer.events.gamma.disconnect(
+                    self._on_colormap_changed
                 )
 
                 if self._saved_colormap_colors is not None:
@@ -1872,6 +2185,9 @@ class ComponentsWidget(QWidget):
                 self.comp1_fractions_layer.events.contrast_limits.connect(
                     self._on_contrast_limits_changed
                 )
+                self.comp1_fractions_layer.events.gamma.connect(
+                    self._on_colormap_changed
+                )
 
                 self.draw_line_between_components()
 
@@ -1883,6 +2199,9 @@ class ComponentsWidget(QWidget):
                     )
                     self.comp1_fractions_layer.events.contrast_limits.connect(
                         self._on_contrast_limits_changed
+                    )
+                    self.comp1_fractions_layer.events.gamma.connect(
+                        self._on_colormap_changed
                     )
                 except Exception:  # noqa: BLE001
                     pass
@@ -1900,6 +2219,11 @@ class ComponentsWidget(QWidget):
             artists.append(self.component_line)
         if self.component_polygon is not None:
             artists.append(self.component_polygon)
+        if self.component_histogram is not None:
+            hist_artists = self.component_histogram
+            if not isinstance(hist_artists, (list, tuple)):
+                hist_artists = [hist_artists]
+            artists.extend(hist_artists)
         return artists
 
     def set_artists_visible(self, visible):
@@ -1914,6 +2238,12 @@ class ComponentsWidget(QWidget):
             self.component_line.set_visible(visible)
         if self.component_polygon is not None:
             self.component_polygon.set_visible(visible)
+        if self.component_histogram is not None:
+            hist_artists = self.component_histogram
+            if not isinstance(hist_artists, (list, tuple)):
+                hist_artists = [hist_artists]
+            for artist in hist_artists:
+                artist.set_visible(visible)
 
     def clear_artists(self):
         """Clear (remove) all artists created by this widget."""
@@ -1937,6 +2267,15 @@ class ComponentsWidget(QWidget):
             self._update_components_setting_in_metadata(
                 'two_component_line_settings.show_component_dots',
                 self.show_component_dots,
+            )
+
+        if hasattr(self, 'fraction_histogram_checkbox'):
+            self.show_fraction_histogram = (
+                self.fraction_histogram_checkbox.isChecked()
+            )
+            self._update_components_setting_in_metadata(
+                'two_component_line_settings.show_fraction_histogram',
+                self.show_fraction_histogram,
             )
 
         active_components = [
@@ -1967,20 +2306,53 @@ class ComponentsWidget(QWidget):
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
     def _on_line_offset_changed(self, value):
-        """Handle changes to line offset from slider."""
-        self.line_offset = value / 1000.0
+        """Handle changes to line offset (float, data units)."""
+        self.line_offset = float(value)
         self._update_components_setting_in_metadata(
             'two_component_line_settings.line_offset', self.line_offset
         )
-
-        if hasattr(self, 'line_offset_value_label'):
-            self.line_offset_value_label.setText(f"{self.line_offset:.3f}")
         self.draw_line_between_components()
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
+    def _on_histogram_height_changed(self, value):
+        """Handle changes to the fraction histogram overlay height (float)."""
+        self.histogram_overlay_height = float(value)
+        self._update_components_setting_in_metadata(
+            'two_component_line_settings.histogram_overlay_height',
+            self.histogram_overlay_height,
+        )
+        if self.show_fraction_histogram:
+            self.draw_line_between_components()
+            if self.parent_widget is not None:
+                self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def _on_histogram_offset_changed(self, value):
+        """Handle changes to the fraction histogram overlay offset (float)."""
+        self.histogram_offset = float(value)
+        self._update_components_setting_in_metadata(
+            'two_component_line_settings.histogram_offset',
+            self.histogram_offset,
+        )
+        if self.show_fraction_histogram:
+            self.draw_line_between_components()
+            if self.parent_widget is not None:
+                self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def _on_histogram_transparency_changed(self, value):
+        """Handle changes to the histogram transparency (0=opaque, 1=clear)."""
+        self.histogram_alpha = 1.0 - float(value)
+        self._update_components_setting_in_metadata(
+            'two_component_line_settings.histogram_alpha',
+            self.histogram_alpha,
+        )
+        if self.show_fraction_histogram:
+            self.draw_line_between_components()
+            if self.parent_widget is not None:
+                self.parent_widget.canvas_widget.canvas.draw_idle()
+
     def _on_line_width_changed(self, value):
-        """Handle changes to line width from spinbox."""
+        """Handle changes to line width (float)."""
         self.line_width = float(value)
         self._update_components_setting_in_metadata(
             'two_component_line_settings.line_width', self.line_width
@@ -1997,15 +2369,12 @@ class ComponentsWidget(QWidget):
             if self.parent_widget is not None:
                 self.parent_widget.canvas_widget.canvas.draw_idle()
 
-    def _on_line_alpha_changed(self, value):
-        """Handle changes to line alpha from slider."""
-        self.line_alpha = value / 100.0
+    def _on_line_transparency_changed(self, value):
+        """Handle changes to line transparency (0=opaque, 1=clear)."""
+        self.line_alpha = 1.0 - float(value)
         self._update_components_setting_in_metadata(
             'two_component_line_settings.line_alpha', self.line_alpha
         )
-
-        if hasattr(self, 'line_alpha_value_label'):
-            self.line_alpha_value_label.setText(f"{self.line_alpha:.2f}")
 
         if self.component_line is not None and hasattr(
             self.component_line, 'set_alpha'
@@ -2039,6 +2408,15 @@ class ComponentsWidget(QWidget):
         self.label_fontsize = self.fontsize_spin.value()
         self.label_bold = self.bold_checkbox.isChecked()
         self.label_italic = self.italic_checkbox.isChecked()
+        self._update_components_setting_in_metadata(
+            'two_components_label_settings.fontsize', self.label_fontsize
+        )
+        self._update_components_setting_in_metadata(
+            'two_components_label_settings.bold', self.label_bold
+        )
+        self._update_components_setting_in_metadata(
+            'two_components_label_settings.italic', self.label_italic
+        )
         self._apply_styles_to_labels()
 
     def _apply_styles_to_labels(self):
@@ -3075,6 +3453,8 @@ class ComponentsWidget(QWidget):
                 self.component_polygon.remove()
             self.component_polygon = None
 
+        self._remove_histogram_overlay()
+
         try:
             if len(active_components) >= 3:
                 self._update_polygon()
@@ -3142,6 +3522,14 @@ class ComponentsWidget(QWidget):
 
                 self._update_component_colors()
 
+            if (
+                self.show_fraction_histogram
+                and self.analysis_type == "Linear Projection"
+                and self.comp1_fractions_layer is not None
+                and self.fractions_colormap is not None
+            ):
+                self._draw_fraction_histogram_overlay(ax, ox1, oy1, ox2, oy2)
+
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
             components_tab_is_active = (
@@ -3180,7 +3568,7 @@ class ComponentsWidget(QWidget):
             else:
                 colormap = ListedColormap(self.fractions_colormap)
         else:
-            colormap = plt.cm.PiYG
+            colormap = plt.cm.jet
 
         if (
             hasattr(self, 'colormap_contrast_limits')
@@ -3222,13 +3610,90 @@ class ComponentsWidget(QWidget):
             segments, cmap=colormap, linewidths=self.line_width
         )
         lc.set_array(np.array(colors))
-        lc.set_clim(vmin, vmax)
+        gamma = getattr(self, 'fractions_gamma', 1.0) or 1.0
+        if gamma != 1.0 and vmax > vmin:
+            # Match the fraction layer's gamma so the phasor-plot gradient
+            # reads the same as the image and the histogram.
+            lc.set_norm(PowerNorm(gamma, vmin=vmin, vmax=vmax))
+        else:
+            lc.set_clim(vmin, vmax)
         lc.set_alpha(self.line_alpha)
 
         if hasattr(lc, "set_capstyle"):
             with contextlib.suppress(Exception):
                 lc.set_capstyle('butt')
         self.component_line = ax.add_collection(lc)
+
+    def _remove_histogram_overlay(self):
+        """Remove the fraction histogram overlay artists, if present."""
+        if self.component_histogram is None:
+            return
+        artists = self.component_histogram
+        if not isinstance(artists, (list, tuple)):
+            artists = [artists]
+        for artist in artists:
+            with contextlib.suppress(ValueError, AttributeError):
+                artist.remove()
+        self.component_histogram = None
+
+    def _get_first_component_fraction_values(self):
+        """Return the pooled first-component fraction values for the histogram.
+
+        Pools the current (possibly range-clipped) fraction data across every
+        image layer analyzed for the first component so the overlay tracks the
+        histogram widget's range slider, matching the merged fraction histogram.
+        """
+        comp1_name = None
+        if self.components and self.components[0] is not None:
+            comp1_name = self.components[0].name_edit.text().strip()
+        if not comp1_name:
+            comp1_name = "Component 1"
+
+        layers = self._get_fraction_layers_for_component(comp1_name)
+        arrays = []
+        for fl in layers.values():
+            arrays.append(np.asarray(fl.data, dtype=float).ravel())
+
+        if not arrays and self.comp1_fractions_layer is not None:
+            arrays.append(
+                np.asarray(
+                    self.comp1_fractions_layer.data, dtype=float
+                ).ravel()
+            )
+
+        if not arrays:
+            return np.empty(0)
+
+        pooled = np.concatenate(arrays)
+        return pooled[np.isfinite(pooled)]
+
+    def _draw_fraction_histogram_overlay(self, ax, x1, y1, x2, y2):
+        """Overlay the first component's fraction histogram on the line.
+
+        Delegates to the shared, stateless
+        :func:`draw_fraction_histogram_overlay` so the interactive plot and the
+        batch-analysis export render identically.
+        """
+        if self.comp1_fractions_layer is None:
+            return
+
+        values = self._get_first_component_fraction_values()
+        artists = draw_fraction_histogram_overlay(
+            ax,
+            x1,
+            y1,
+            x2,
+            y2,
+            values,
+            self.fractions_colormap,
+            height=self.histogram_overlay_height,
+            offset=self.histogram_offset,
+            alpha=self.histogram_alpha,
+            contrast_limits=self.colormap_contrast_limits,
+            gamma=getattr(self, 'fractions_gamma', 1.0),
+        )
+        if artists:
+            self.component_histogram = artists
 
     def _update_polygon(self):
         """Update polygon for multi-component visualization."""
@@ -3274,16 +3739,19 @@ class ComponentsWidget(QWidget):
         if getattr(self, '_updating_linked_layers', False):
             return
 
-        if (
-            self.comp1_fractions_layer is not None
-            and layer == self.comp1_fractions_layer
-        ):
-            self.fractions_colormap = layer.colormap.colors
-            self.colormap_contrast_limits = layer.contrast_limits
-
         comp_idx = self._find_component_index_for_layer(layer)
         if comp_idx is None:
             return
+
+        # The phasor-plot line/overlay gradient tracks the FIRST component's
+        # colormap. With multiple analyzed images there is one fraction layer
+        # per image, so update the gradient for ANY first-component layer -- not
+        # only the specific one stored in ``comp1_fractions_layer`` (which would
+        # otherwise leave the line stale when a different image's layer changes).
+        if comp_idx == 0:
+            self.fractions_colormap = layer.colormap.colors
+            self.colormap_contrast_limits = layer.contrast_limits
+            self.fractions_gamma = layer.gamma
 
         colormap_name = getattr(layer.colormap, 'name', 'custom')
         is_standard_colormap = self._is_standard_colormap(colormap_name)
@@ -3307,8 +3775,10 @@ class ComponentsWidget(QWidget):
             tuple(layer.contrast_limits),
         )
 
-        # Sync colormap to all other layers belonging to the same component
+        # Sync colormap / gamma to all other layers belonging to the same
+        # component so the derived layers of every analyzed image stay in step.
         self._sync_component_layers_colormap(comp_idx, layer.colormap)
+        self._sync_component_layers_gamma(comp_idx, layer.gamma)
 
         self._update_component_colors()
         self.draw_line_between_components()
@@ -3333,6 +3803,7 @@ class ComponentsWidget(QWidget):
             self.histogram_widget.update_colormap(
                 colormap_colors=layer.colormap.colors,
                 contrast_limits=list(layer.contrast_limits),
+                gamma=layer.gamma,
             )
         else:
             self._refresh_second_component_colormap(
@@ -3347,15 +3818,14 @@ class ComponentsWidget(QWidget):
         if getattr(self, '_updating_linked_layers', False):
             return
 
-        if (
-            self.comp1_fractions_layer is not None
-            and layer == self.comp1_fractions_layer
-        ):
-            self.colormap_contrast_limits = layer.contrast_limits
-
         comp_idx = self._find_component_index_for_layer(layer)
         if comp_idx is None:
             return
+
+        # Keep the line gradient's contrast in sync for any first-component
+        # fraction layer, not just the one stored in ``comp1_fractions_layer``.
+        if comp_idx == 0:
+            self.colormap_contrast_limits = layer.contrast_limits
 
         contrast_limits = layer.contrast_limits
         if hasattr(contrast_limits, 'tolist') or isinstance(
@@ -3426,6 +3896,7 @@ class ComponentsWidget(QWidget):
             self.histogram_widget.update_colormap(
                 colormap_colors=layer.colormap.colors,
                 contrast_limits=contrast_limits,
+                gamma=layer.gamma,
             )
         else:
             self._refresh_second_component_colormap(
@@ -3456,6 +3927,7 @@ class ComponentsWidget(QWidget):
         self.histogram_widget.update_colormap(
             colormap_colors=np.asarray(layer.colormap.colors)[::-1],
             contrast_limits=[1.0 - limits[1], 1.0 - limits[0]],
+            gamma=layer.gamma,
         )
 
     def _find_component_index_for_layer(self, layer):
@@ -3528,6 +4000,21 @@ class ComponentsWidget(QWidget):
             for layer in layers_to_update:
                 if layer.contrast_limits != contrast_limits:
                     layer.contrast_limits = contrast_limits
+        finally:
+            self._updating_linked_layers = False
+
+    def _sync_component_layers_gamma(self, comp_idx, gamma):
+        """Sync gamma across all layers belonging to the same component."""
+        if getattr(self, '_updating_linked_layers', False):
+            return
+
+        try:
+            self._updating_linked_layers = True
+            layers_to_update = self._get_all_layers_for_component(comp_idx)
+
+            for layer in layers_to_update:
+                if layer.gamma != gamma:
+                    layer.gamma = gamma
         finally:
             self._updating_linked_layers = False
 
@@ -3792,7 +4279,7 @@ class ComponentsWidget(QWidget):
                 colors=inverted_colors, name=f"inverted_{colormap_name}"
             )
 
-        return 'PiYG_r' if not colormap_name.endswith('_r') else 'PiYG'
+        return 'jet_r' if not colormap_name.endswith('_r') else 'jet'
 
     def _find_and_reconnect_layer(
         self, expected_name, component_name, layer_name, idx
@@ -3806,6 +4293,9 @@ class ComponentsWidget(QWidget):
                 )
                 self.comp1_fractions_layer.events.contrast_limits.connect(
                     self._on_contrast_limits_changed
+                )
+                self.comp1_fractions_layer.events.gamma.connect(
+                    self._on_colormap_changed
                 )
         else:
             possible_names = [
@@ -3825,6 +4315,9 @@ class ComponentsWidget(QWidget):
                         )
                         self.comp1_fractions_layer.events.contrast_limits.connect(
                             self._on_contrast_limits_changed
+                        )
+                        self.comp1_fractions_layer.events.gamma.connect(
+                            self._on_colormap_changed
                         )
                     break
 
@@ -3903,6 +4396,9 @@ class ComponentsWidget(QWidget):
                 self.comp1_fractions_layer.events.contrast_limits.disconnect(
                     self._on_contrast_limits_changed
                 )
+                self.comp1_fractions_layer.events.gamma.disconnect(
+                    self._on_colormap_changed
+                )
             except Exception:  # noqa: BLE001
                 pass
 
@@ -3910,6 +4406,7 @@ class ComponentsWidget(QWidget):
         self.comp2_fractions_layer = None
         self.fractions_colormap = None
         self.colormap_contrast_limits = None
+        self.fractions_gamma = 1.0
 
     def _restore_on_layer_change(self):
         """Deferred restore: update UI state from metadata."""
@@ -4192,7 +4689,8 @@ class ComponentsWidget(QWidget):
         current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
         harmonic_key = str(current_harmonic)
 
-        comp1_colormap = 'PiYG'
+        comp1_colormap = None
+        comp1_gamma = None
         valid_fraction = fraction_comp1[np.isfinite(fraction_comp1)]
         if valid_fraction.size > 0:
             frac_min = float(np.min(valid_fraction))
@@ -4203,7 +4701,18 @@ class ComponentsWidget(QWidget):
         else:
             contrast_limits = (0, 1)
 
-        if '0' in settings.get('components', {}):
+        # If the fraction layer is already displayed (the user clicked the
+        # button again), preserve its current colormap, contrast limits and
+        # gamma. This takes precedence over the stored defaults so manual
+        # display tweaks - including colormaps propagated from other analyzed
+        # images - survive a re-display.
+        if comp1_fractions_layer_name in self.viewer.layers:
+            existing_layer = self.viewer.layers[comp1_fractions_layer_name]
+            comp1_colormap = existing_layer.colormap
+            contrast_limits = existing_layer.contrast_limits
+            comp1_gamma = existing_layer.gamma
+
+        if comp1_colormap is None and '0' in settings.get('components', {}):
             comp_data = settings['components']['0']
             if harmonic_key in comp_data.get('gs_harmonics', {}):
                 harmonic_data = comp_data['gs_harmonics'][harmonic_key]
@@ -4240,6 +4749,11 @@ class ComponentsWidget(QWidget):
                             contrast_limits = tuple(
                                 harmonic_data['contrast_limits']
                             )
+                        if harmonic_data.get('gamma') is not None:
+                            comp1_gamma = harmonic_data['gamma']
+
+        if comp1_colormap is None:
+            comp1_colormap = 'jet'
 
         if comp1_fractions_layer_name in self.viewer.layers:
             self.viewer.layers.remove(
@@ -4257,6 +4771,8 @@ class ComponentsWidget(QWidget):
         self.comp1_fractions_layer = self.viewer.add_layer(
             comp1_selected_fractions_layer
         )
+        if comp1_gamma is not None:
+            self.comp1_fractions_layer.gamma = comp1_gamma
         self.comp1_fractions_layer.metadata['fraction_data_original'] = (
             fraction_comp1.copy()
         )
@@ -4306,12 +4822,18 @@ class ComponentsWidget(QWidget):
                 comp_data['gs_harmonics'][harmonic_key]['contrast_limits'] = (
                     list(self.comp1_fractions_layer.contrast_limits)
                 )
+                comp_data['gs_harmonics'][harmonic_key][
+                    'gamma'
+                ] = self.comp1_fractions_layer.gamma
 
         self.comp1_fractions_layer.events.colormap.connect(
             self._on_colormap_changed
         )
         self.comp1_fractions_layer.events.contrast_limits.connect(
             self._on_contrast_limits_changed
+        )
+        self.comp1_fractions_layer.events.gamma.connect(
+            self._on_colormap_changed
         )
 
         self._update_component_colors()
@@ -4505,6 +5027,7 @@ class ComponentsWidget(QWidget):
                 fraction_layer_name = f"{name} fraction: {layer.name}"
 
                 colormap = None
+                gamma = None
                 valid_fraction = fraction[np.isfinite(fraction)]
                 if valid_fraction.size > 0:
                     frac_min = float(np.min(valid_fraction))
@@ -4516,7 +5039,18 @@ class ComponentsWidget(QWidget):
                     contrast_limits = (0, 1)
                 idx_str = str(i)
 
-                if (
+                # If the fraction layer is already displayed (the user clicked
+                # the button again), preserve its current colormap, contrast
+                # limits and gamma. This takes precedence over the stored
+                # defaults so manual display tweaks - including colormaps
+                # propagated from other analyzed images - survive a re-display.
+                if fraction_layer_name in self.viewer.layers:
+                    existing_layer = self.viewer.layers[fraction_layer_name]
+                    colormap = existing_layer.colormap
+                    contrast_limits = existing_layer.contrast_limits
+                    gamma = existing_layer.gamma
+
+                if colormap is None and (
                     not self._updating_settings
                     and idx_str in settings.get('components', {})
                     and harmonic_key
@@ -4545,14 +5079,8 @@ class ComponentsWidget(QWidget):
                             contrast_limits = tuple(
                                 harmonic_data['contrast_limits']
                             )
-
-                if (
-                    colormap is None
-                    and fraction_layer_name in self.viewer.layers
-                ):
-                    existing_layer = self.viewer.layers[fraction_layer_name]
-                    colormap = existing_layer.colormap
-                    contrast_limits = existing_layer.contrast_limits
+                        if harmonic_data.get('gamma') is not None:
+                            gamma = harmonic_data['gamma']
 
                 if colormap is None:
                     if i < len(self.component_colormap_names):
@@ -4573,12 +5101,15 @@ class ComponentsWidget(QWidget):
                 new_layer.metadata['fraction_data_original'] = fraction.copy()
 
                 new_layer.contrast_limits = contrast_limits
+                if gamma is not None:
+                    new_layer.gamma = gamma
 
                 self.fraction_layers.append(new_layer)
                 new_layer.events.colormap.connect(self._on_colormap_changed)
                 new_layer.events.contrast_limits.connect(
                     self._on_contrast_limits_changed
                 )
+                new_layer.events.gamma.connect(self._on_colormap_changed)
 
                 if (
                     not self._updating_settings
@@ -4626,6 +5157,9 @@ class ComponentsWidget(QWidget):
                     comp_data['gs_harmonics'][harmonic_key][
                         'contrast_limits'
                     ] = list(new_layer.contrast_limits)
+                    comp_data['gs_harmonics'][harmonic_key][
+                        'gamma'
+                    ] = new_layer.gamma
 
             self._update_component_colors()
 
@@ -4923,10 +5457,20 @@ class ComponentsWidget(QWidget):
         self.histogram_widget.update_colormap(
             colormap_colors=colormap_colors,
             contrast_limits=[min_val, max_val],
+            gamma=first_layer.gamma,
         )
 
+        # Pool the (clipped) data from every selected layer into a single
+        # merged histogram so all layers contribute, rather than showing a
+        # per-layer mean +/- SD that visually resembles a single layer.
         if len(clipped_data) > 1:
-            self.histogram_widget.update_multi_data(clipped_data)
+            pooled = np.concatenate(
+                [
+                    np.asarray(d, dtype=float).ravel()
+                    for d in clipped_data.values()
+                ]
+            )
+            self.histogram_widget.update_data(pooled)
         else:
             first_data = next(iter(clipped_data.values()))
             self.histogram_widget.update_data(first_data)
@@ -4963,6 +5507,7 @@ class ComponentsWidget(QWidget):
         self.histogram_widget.update_colormap(
             colormap_colors=colormap_colors,
             contrast_limits=contrast_limits,
+            gamma=first_layer.gamma,
         )
 
         # Ensure the range slider uses the full original data extent.
@@ -5007,6 +5552,7 @@ class ComponentsWidget(QWidget):
             self.histogram_widget.update_colormap(
                 colormap_colors=colormap_colors,
                 contrast_limits=[range_min, range_max],
+                gamma=first_layer.gamma,
             )
 
             self.histogram_widget.set_range(
@@ -5016,12 +5562,19 @@ class ComponentsWidget(QWidget):
                 slider_max=data_max,
             )
 
+        # Pool the data from every selected layer into a single merged
+        # histogram so all layers contribute, rather than showing a per-layer
+        # mean +/- SD that visually resembles a single layer.
         if len(fraction_layers_map) > 1:
-            per_layer_data = {
-                img_name: (1.0 - fl.data if invert else fl.data)
-                for img_name, fl in fraction_layers_map.items()
-            }
-            self.histogram_widget.update_multi_data(per_layer_data)
+            pooled_layers = [
+                (
+                    1.0 - np.asarray(fl.data, dtype=float)
+                    if invert
+                    else np.asarray(fl.data, dtype=float)
+                ).ravel()
+                for fl in fraction_layers_map.values()
+            ]
+            self.histogram_widget.update_data(np.concatenate(pooled_layers))
         else:
             data = first_layer.data
             if invert:
@@ -5042,6 +5595,185 @@ class ComponentsWidget(QWidget):
         event.accept()
 
 
+def draw_fraction_histogram_overlay(
+    ax,
+    x1,
+    y1,
+    x2,
+    y2,
+    values,
+    fractions_colormap,
+    *,
+    height=0.3,
+    offset=0.0,
+    alpha=0.75,
+    bins=150,
+    contrast_limits=None,
+    gamma=1.0,
+):
+    """Draw the first-component fraction histogram along the component line.
+
+    Stateless helper shared by the interactive Components tab and the batch
+    export so both render identically. The histogram of ``values`` (the
+    first-component fraction) uses the line joining the two components as its
+    baseline and rises perpendicular to it; the area under the curve is filled
+    with a seamless colormap gradient (a single ``imshow`` clipped to the curve
+    polygon and transformed into the line's frame).
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axes hosting the phasor plot.
+    x1, y1, x2, y2 : float
+        Endpoints of the (possibly offset) component line: component 1 at
+        ``(x1, y1)``, component 2 at ``(x2, y2)``.
+    values : array-like
+        First-component fraction values (any shape); flattened and filtered.
+    fractions_colormap : array-like or None
+        Nx4 RGBA color ramp for the gradient (falls back to ``jet``).
+    height : float
+        Peak histogram height as a fraction of the line length.
+    offset : float
+        Signed perpendicular offset of the histogram relative to the line.
+        Positive keeps it on the "up" side; negative flips it to the other side.
+    alpha : float
+        Opacity of the gradient fill.
+    bins : int
+        Number of histogram bins.
+    contrast_limits : sequence of float, optional
+        ``(vmin, vmax)`` in first-component fraction space used to normalize the
+        gradient. When given, the gradient tracks the fraction layer's contrast
+        limits / range slider; otherwise it falls back to the data extent.
+
+    Returns
+    -------
+    list of matplotlib artists, or ``None`` if nothing was drawn.
+    """
+    values = np.asarray(values, dtype=float).ravel()
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return None
+
+    counts, bin_edges = np.histogram(values, bins=bins, range=(0.0, 1.0))
+    if counts.max() == 0:
+        return None
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+
+    # Smooth the curve for a clean profile, matching the histogram widget.
+    counts = counts.astype(float)
+    with contextlib.suppress(Exception):
+        import scipy.ndimage
+
+        counts = scipy.ndimage.gaussian_filter1d(counts, sigma=2)
+    peak = counts.max()
+    if peak <= 0:
+        return None
+
+    # Geometry of the (possibly offset) component line.
+    dx = x2 - x1
+    dy = y2 - y1
+    length = np.hypot(dx, dy)
+    if length == 0:
+        return None
+    ux, uy = dx / length, dy / length
+    # Base normal, pointing "up" on screen for a consistent orientation.
+    nx, ny = -uy, ux
+    if ny < 0:
+        nx, ny = -nx, -ny
+
+    # Signed histogram offset relative to the line: positive keeps the
+    # histogram on the "up" side, negative flips it to the other side. The
+    # magnitude displaces the baseline from the line by that distance.
+    rise_sign = -1.0 if offset < 0 else 1.0
+    rdx, rdy = rise_sign * nx, rise_sign * ny
+    origin_x = x1 + offset * nx
+    origin_y = y1 + offset * ny
+
+    max_height = height * length
+    heights = counts / peak * max_height
+    v_max = float(np.max(heights))
+    if v_max <= 0:
+        return None
+
+    # Colormap consistent with the component line.
+    if fractions_colormap is not None and len(fractions_colormap) > 0:
+        if len(fractions_colormap) <= 32:
+            cmap = LinearSegmentedColormap.from_list(
+                "fractions_interp", fractions_colormap, N=256
+            )
+        else:
+            cmap = ListedColormap(fractions_colormap)
+    else:
+        cmap = plt.cm.jet
+
+    # Normalize the gradient to the fraction layer's contrast limits (or range
+    # slider) when provided, so the overlay tracks those controls. Fall back to
+    # the full data extent otherwise.
+    if contrast_limits is not None:
+        vmin = float(contrast_limits[0])
+        vmax = float(contrast_limits[1])
+    else:
+        vmin = float(np.min(values))
+        vmax = float(np.max(values))
+    if vmax <= vmin:
+        vmax = vmin + 1e-6
+    gamma = gamma or 1.0
+    if gamma != 1.0:
+        norm = PowerNorm(gamma, vmin=vmin, vmax=vmax)
+    else:
+        norm = plt.Normalize(vmin=vmin, vmax=vmax)
+
+    alpha = min(1.0, max(0.0, alpha))
+
+    # Local (u, v) frame: u runs along the line (u=0 at component 1,
+    # u=length at component 2), v rises perpendicular. A point (u, v) maps to
+    # data coordinates via ``origin + u*along + v*rise``.
+    local_to_data = Affine2D(
+        matrix=np.array(
+            [
+                [ux, rdx, origin_x],
+                [uy, rdy, origin_y],
+                [0.0, 0.0, 1.0],
+            ]
+        )
+    )
+    transform = local_to_data + ax.transData
+
+    # Gradient image varying along u (fraction 1 at component 1 -> 0 at
+    # component 2). Preserve the plot's view limits, which ``imshow`` would
+    # otherwise try to rescale.
+    prev_xlim = ax.get_xlim()
+    prev_ylim = ax.get_ylim()
+    gradient = np.linspace(1.0, 0.0, 256).reshape(1, -1)
+    im = ax.imshow(
+        gradient,
+        aspect="auto",
+        extent=[0.0, length, 0.0, v_max],
+        origin="lower",
+        cmap=cmap,
+        norm=norm,
+        alpha=alpha,
+        interpolation="bilinear",
+        zorder=11,
+    )
+    im.set_transform(transform)
+    ax.set_xlim(prev_xlim)
+    ax.set_ylim(prev_ylim)
+
+    # Clip the gradient to the area under the (smoothed) histogram curve.
+    u_curve = (1.0 - bin_centers) * length
+    clip_verts = np.column_stack(
+        [
+            np.concatenate([u_curve, u_curve[::-1]]),
+            np.concatenate([heights, np.zeros_like(heights)]),
+        ]
+    )
+    clip_poly = MplPolygon(clip_verts, closed=True, transform=transform)
+    im.set_clip_path(clip_poly)
+
+    return [im]
+
+
 def draw_components_overlay(
     ax,
     reals,
@@ -5056,7 +5788,11 @@ def draw_components_overlay(
 
     import numpy as np
     from matplotlib.collections import LineCollection
-    from matplotlib.colors import LinearSegmentedColormap, ListedColormap
+    from matplotlib.colors import (
+        LinearSegmentedColormap,
+        ListedColormap,
+        PowerNorm,
+    )
     from matplotlib.patches import PathPatch
     from matplotlib.path import Path
 
@@ -5069,6 +5805,7 @@ def draw_components_overlay(
     show_colormap_line = settings.get("show_colormap_line", False)
     fractions_colormap = settings.get("fractions_colormap")
     colormap_contrast_limits = settings.get("colormap_contrast_limits", (0, 1))
+    colormap_gamma = settings.get("colormap_gamma", 1.0) or 1.0
     label_fontsize = settings.get("label_fontsize", 10)
     label_fontweight = settings.get("label_fontweight", "normal")
     label_fontstyle = settings.get("label_fontstyle", "normal")
@@ -5202,7 +5939,12 @@ def draw_components_overlay(
                     segments, cmap=colormap, linewidths=line_width, zorder=10
                 )
                 lc.set_array(np.array(segment_colors))
-                lc.set_clim(vmin, vmax)
+                if colormap_gamma != 1.0 and vmax > vmin:
+                    lc.set_norm(
+                        PowerNorm(colormap_gamma, vmin=vmin, vmax=vmax)
+                    )
+                else:
+                    lc.set_clim(vmin, vmax)
                 lc.set_alpha(line_alpha)
                 with contextlib.suppress(Exception):
                     lc.set_capstyle('butt')
@@ -5218,6 +5960,30 @@ def draw_components_overlay(
             )[0]
             with contextlib.suppress(Exception):
                 line.set_solid_capstyle('butt')
+
+        # Optional first-component fraction histogram overlaid on the line,
+        # matching the interactive Components tab.
+        fraction_data = settings.get("fraction_data")
+        if (
+            analysis_type == "Linear Projection"
+            and settings.get("show_fraction_histogram")
+            and fraction_data is not None
+            and fractions_colormap is not None
+        ):
+            draw_fraction_histogram_overlay(
+                ax,
+                ox1,
+                oy1,
+                ox2,
+                oy2,
+                fraction_data,
+                fractions_colormap,
+                height=settings.get("histogram_overlay_height", 0.3),
+                offset=settings.get("histogram_offset", 0.0),
+                alpha=settings.get("histogram_alpha", 0.75),
+                contrast_limits=colormap_contrast_limits,
+                gamma=colormap_gamma,
+            )
 
     elif num_components >= 3:
         vertices = [(reals[i], imags[i]) for i in range(num_components)]

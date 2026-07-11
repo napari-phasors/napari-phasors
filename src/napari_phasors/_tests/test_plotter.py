@@ -355,7 +355,7 @@ def test_canvas_container_resize_starts_debounce_timer(make_viewer_model):
     # Test default property values
     assert plotter.harmonic == 1
     assert plotter.plot_type == 'HISTOGRAM2D'
-    assert plotter.histogram_colormap == 'turbo'
+    assert plotter.histogram_colormap == 'jet'
     assert plotter.toggle_semi_circle  # Should default to semi-circle mode
     assert plotter.white_background  # Should default to white background
 
@@ -602,7 +602,7 @@ def test_layer_settings_initialization_in_metadata(make_viewer_model):
     assert layer.metadata['settings']['semi_circle']
     assert layer.metadata['settings']['white_background']
     assert layer.metadata['settings']['plot_type'] == 'HISTOGRAM2D'
-    assert layer.metadata['settings']['colormap'] == 'turbo'
+    assert layer.metadata['settings']['colormap'] == 'jet'
     assert plotter.plotter_inputs_widget.marker_size_spinbox.value() == 50
     assert layer.metadata['settings']['number_of_bins'] == 150
     assert not layer.metadata['settings']['log_scale']
@@ -1036,7 +1036,7 @@ def test_phasor_plotter_colormap_combobox(make_viewer_model):
 
     # Test initial colormap
     initial_colormap = plotter.histogram_colormap
-    assert initial_colormap == 'turbo'  # or whatever the default is
+    assert initial_colormap == 'jet'  # or whatever the default is
 
     # Get available colormaps from combobox
     colormap_combobox = plotter.plotter_inputs_widget.colormap_combobox

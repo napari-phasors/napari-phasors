@@ -24,6 +24,12 @@ from superqt import QRangeSlider
 
 from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
 from napari_phasors._utils import HistogramWidget
+from napari_phasors.phasor_mapping_tab import (
+    _DEFAULT_MESH_RESOLUTION,
+    PhasorMappingWidget,
+    _resolve_mesh_blur_sigma,
+    draw_phasor_mesh,
+)
 from napari_phasors.plotter import PlotterWidget
 
 
@@ -80,8 +86,7 @@ def test_phasor_mapping_widget_initialization_values(make_viewer_model, qtbot):
     assert hasattr(lifetime_widget, 'lifetime_range_label')
     assert isinstance(lifetime_widget.lifetime_range_label, QLabel)
     assert (
-        lifetime_widget.lifetime_range_label.text()
-        == "Lifetime range (ns): 0.0 - 100.0"
+        lifetime_widget.lifetime_range_label.text() == "Lifetime range (ns):"
     )
 
     assert hasattr(lifetime_widget, 'lifetime_min_edit')
@@ -160,9 +165,12 @@ def test_mesh_alpha_map_is_cached_for_repeated_refreshes(
         'napari_phasors.phasor_mapping_tab.gaussian_filter',
         return_value=blurred_base,
     ) as mock_filter:
-        first = lifetime_widget._get_mesh_alpha_map(mesh_mask, alpha_key, 0.5)
+        ax = parent.canvas_widget.axes
+        first = lifetime_widget._get_mesh_alpha_map(
+            mesh_mask, alpha_key, 0.5, 300, ax
+        )
         second = lifetime_widget._get_mesh_alpha_map(
-            mesh_mask, alpha_key, 0.25
+            mesh_mask, alpha_key, 0.25, 300, ax
         )
 
     assert mock_filter.call_count == 1
@@ -211,13 +219,12 @@ def test_phasor_mapping_widget_range_label_update(make_viewer_model, qtbot):
     parent = PlotterWidget(viewer)
     lifetime_widget = parent.phasor_mapping_tab
 
-    # Test label update
+    # Test edits update while dragging (label keeps just the prefix)
     test_value = (25000, 75000)  # Represents 25.0 - 75.0 ns with factor 1000
     lifetime_widget.histogram_widget._on_range_label_update(test_value)
 
     assert (
-        lifetime_widget.lifetime_range_label.text()
-        == "Lifetime range (ns): 25.00 - 75.00"
+        lifetime_widget.lifetime_range_label.text() == "Lifetime range (ns):"
     )
     assert lifetime_widget.lifetime_min_edit.text() == "25.00"
     assert lifetime_widget.lifetime_max_edit.text() == "75.00"
@@ -294,7 +301,7 @@ def test_phasor_mapping_widget_canvas_properties(make_viewer_model, qtbot):
     # Access the canvas through the histogram widget directly
     canvas = lifetime_widget.histogram_widget.fig.canvas
     assert isinstance(canvas, FigureCanvasQTAgg)
-    assert canvas.height() == 150  # Fixed height as set in setup_ui
+    assert canvas.height() == 180  # Minimum canvas height set in the widget
 
 
 def test_phasor_mapping_widget_type_changed_no_frequency(
@@ -915,6 +922,40 @@ def test_phasor_mapping_widget_colormap_changed_callback(
 
     # Reset flag
     lifetime_widget._updating_contrast_limits = False
+
+
+def test_phasor_mapping_gamma_links_layers_and_histogram(
+    make_viewer_model,
+    qtbot,
+):
+    """Changing gamma on one lifetime layer syncs siblings and the histogram."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    lifetime_widget = parent.phasor_mapping_tab
+
+    layer_1 = create_image_layer_with_phasors()
+    layer_2 = create_image_layer_with_phasors()
+    viewer.add_layer(layer_1)
+    viewer.add_layer(layer_2)
+
+    lifetime_widget.frequency_input.setText("80.0")
+    parent._broadcast_frequency_value_across_tabs("80.0")
+    lifetime_widget.lifetime_type_combobox.setCurrentText("Normal Lifetime")
+
+    with patch.object(
+        parent, "get_selected_layers", return_value=[layer_1, layer_2]
+    ):
+        lifetime_widget._on_calculate_lifetime_clicked()
+
+    assert len(lifetime_widget.metric_layers) == 2
+
+    # Changing gamma on one output layer propagates to the sibling layer, the
+    # stored gamma, and the histogram widget.
+    lifetime_widget.metric_layers[0].gamma = 0.6
+
+    assert lifetime_widget.metric_layers[1].gamma == 0.6
+    assert lifetime_widget.colormap_gamma == 0.6
+    assert lifetime_widget.histogram_widget.gamma == 0.6
 
 
 def test_phasor_mapping_widget_calculate_lifetimes_with_real_data(
@@ -2174,3 +2215,97 @@ def test_phasor_mapping_exceptions(make_viewer_model, qtbot):
     layer.metadata["S"] = np.ones((2, 10, 10))
     layer.metadata["harmonics"] = np.array([999])
     pm.calculate_output_data()  # Should return early
+
+
+def test_resolve_mesh_blur_sigma_zero_display_px_fallback():
+    """_resolve_mesh_blur_sigma falls back to the default-resolution ratio
+    when the axes report a zero-sized (or unavailable) window extent."""
+    ax = MagicMock()
+    bbox = MagicMock()
+    bbox.width = 0.0
+    bbox.height = 0.0
+    ax.get_window_extent.return_value = bbox
+
+    resolution = 640
+    result = _resolve_mesh_blur_sigma(ax, resolution)
+
+    expected = max(1.5, 1.2 * resolution / _DEFAULT_MESH_RESOLUTION)
+    assert result == expected
+
+
+def test_draw_phasor_mesh_falls_back_when_interpolation_stage_unsupported(
+    make_viewer_model, qtbot
+):
+    """draw_phasor_mesh retries without ``interpolation_stage`` when the
+    installed Matplotlib's ``imshow`` doesn't accept that kwarg (older
+    Matplotlib versions)."""
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots()
+    try:
+        real_image = ax.imshow(np.zeros((2, 2)))
+        with patch.object(
+            ax,
+            "imshow",
+            side_effect=[TypeError("no interpolation_stage"), real_image],
+        ) as mock_imshow:
+            result = draw_phasor_mesh(ax, "Phase", resolution=4)
+
+        assert result is real_image
+        assert mock_imshow.call_count == 2
+    finally:
+        plt.close(fig)
+
+
+def test_get_output_colormap_name_branches():
+    """_get_output_colormap_name returns the colormap per output type and
+    falls back to 'plasma' for lifetime-style (or any other) outputs."""
+    assert PhasorMappingWidget._get_output_colormap_name("Phase") == "jet"
+    assert (
+        PhasorMappingWidget._get_output_colormap_name("Modulation")
+        == "viridis"
+    )
+    assert (
+        PhasorMappingWidget._get_output_colormap_name("Normal Lifetime")
+        == "plasma"
+    )
+
+
+def test_phasor_mapping_teardown_disconnects_real_layer_events(
+    make_viewer_model, qtbot
+):
+    """_teardown_on_layer_change disconnects colormap/contrast_limits/gamma
+    events from real metric layers still present in the viewer when there is
+    no primary layer selected."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    output_layer = Image(
+        np.random.rand(10, 10), name="Apparent Phase Lifetime: test"
+    )
+    viewer.add_layer(output_layer)
+    output_layer.events.colormap.connect(mapping_widget._on_colormap_changed)
+    output_layer.events.contrast_limits.connect(
+        mapping_widget._on_colormap_changed
+    )
+    output_layer.events.gamma.connect(mapping_widget._on_colormap_changed)
+    mapping_widget.metric_layers = [output_layer]
+
+    # No primary layer selected -> get_primary_layer_name() returns "".
+    mapping_widget._teardown_on_layer_change()
+
+    assert mapping_widget.metric_layers == []
+
+
+def test_get_mesh_grid_resolution_exception_fallback(make_viewer_model, qtbot):
+    """_get_mesh_grid_resolution falls back to 1000 when
+    ``ax.get_window_extent`` raises."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    ax = MagicMock()
+    ax.get_window_extent.side_effect = RuntimeError("boom")
+
+    assert mapping_widget._get_mesh_grid_resolution(ax) == 1000
