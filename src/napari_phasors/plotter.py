@@ -44,6 +44,7 @@ from qtpy.QtWidgets import (
 )
 from superqt import QToggleSwitch
 
+from ._update_check import maybe_check_for_update
 from ._utils import (
     CheckableComboBox,
     CollapsibleSection,
@@ -1552,6 +1553,9 @@ class PlotterWidget(QWidget):
         super().__init__()
         self._is_closing = False
         self.viewer = napari_viewer
+
+        # Unobtrusive, throttled check for a newer release (see module docs).
+        maybe_check_for_update(parent=self)
 
         self.setWindowTitle("Phasor Plot")
         self.setObjectName("Phasor Plot")

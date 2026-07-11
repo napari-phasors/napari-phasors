@@ -45,6 +45,7 @@ from ._reader import (
     napari_get_reader,
     raw_file_stack_reader,
 )
+from ._update_check import maybe_check_for_update
 from ._utils import (
     CheckableComboBox,
     CollapsibleSection,
@@ -141,6 +142,9 @@ class PhasorTransform(PopoutWindowMixin, QWidget):
             ".lif": LifWidget,
             ".json": JsonWidget,
         }
+
+        # Unobtrusive, throttled check for a newer release (see module docs).
+        maybe_check_for_update(parent=self)
 
     def _open_file_dialog(self):
         """Open a dialog to select one or many files for import.
