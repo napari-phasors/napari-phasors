@@ -14,6 +14,20 @@ from napari_phasors._utils import (
 )
 
 
+def _clicked_receiver_count(button):
+    """Return the number of receivers connected to ``button.clicked``.
+
+    PyQt's ``QObject.receivers`` accepts the bound ``SignalInstance``
+    directly, while PySide6 requires the signal signature wrapped with the
+    ``SIGNAL`` macro (a bare instance or signature string returns 0 there).
+    """
+    try:
+        from qtpy.QtCore import SIGNAL  # PySide6 only
+    except ImportError:
+        return button.receivers(button.clicked)
+    return button.receivers(SIGNAL("clicked()"))
+
+
 def test_histogram_widget_update_data_and_clear(qtbot):
     """HistogramWidget should compute bins and reset cleanly."""
     widget = HistogramWidget(bins=8)
@@ -1695,7 +1709,7 @@ def test_histogram_widget_save_button_wired_to_save_menu(qtbot):
     qtbot.addWidget(widget)
     widget.update_data(np.array([1.0, 2.0, 3.0]))
 
-    assert widget.save_button.receivers(widget.save_button.clicked) >= 1
+    assert _clicked_receiver_count(widget.save_button) >= 1
     assert not hasattr(widget, 'save_png_button')
     assert not hasattr(widget, 'save_csv_button')
 
