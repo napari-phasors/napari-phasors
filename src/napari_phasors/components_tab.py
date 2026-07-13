@@ -387,7 +387,7 @@ class ComponentsWidget(QWidget):
         # Scroll area
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         root_layout.addWidget(scroll_area)
 
         # Content widget inside scroll area

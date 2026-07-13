@@ -1510,8 +1510,10 @@ class FbdWidget(AdvancedOptionsWidget):
             "Default is -1. If this doesn't work, "
             "most probable laser factors are: 0.00022, 2.50012, 2.50016"
         )
-        self.laser_factor.setValidator(QDoubleValidator())
-        laser_factor_completer = QCompleter(["0.00022", "2.50012", "2.50016"])
+        self.laser_factor.setValidator(QDoubleValidator(self.laser_factor))
+        laser_factor_completer = QCompleter(
+            ["0.00022", "2.50012", "2.50016"], self.laser_factor
+        )
         self.laser_factor.setCompleter(laser_factor_completer)
         self.laser_factor.editingFinished.connect(
             lambda: self._update_signal_plot()

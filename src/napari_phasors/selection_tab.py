@@ -33,7 +33,6 @@ from qtpy.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSpinBox,
-    QStackedWidget,
     QStyle,
     QTableWidget,
     QVBoxLayout,
@@ -42,6 +41,7 @@ from qtpy.QtWidgets import (
 from superqt import QToggleSwitch
 
 from ._utils import (
+    CurrentPageStackedWidget,
     analysis_section_stylesheet,
     colormap_to_dict,
     make_section,
@@ -135,7 +135,7 @@ class SelectionWidget(QWidget):
         layout.addWidget(mode_box)
 
         # Stacked widget to switch between modes
-        self.stacked_widget = QStackedWidget()
+        self.stacked_widget = CurrentPageStackedWidget()
         layout.addWidget(self.stacked_widget)
 
         # === Manual Selection Mode Widget ===

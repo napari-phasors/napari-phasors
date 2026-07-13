@@ -124,23 +124,22 @@ def test_import_from_layer_dialog_accepted(make_viewer_model, qtbot):
                 mock_dialog.assert_called_once()
                 mock_dialog_instance.exec.assert_called_once()
 
-                # Verify the layer selection combobox was populated
-                mock_combo_instance.addItems.assert_called_with(['layer2'])
+                # Verify the layer selection combobox was populated with
+                # every phasor layer, including ones currently checked for
+                # visualization in the phasor plot.
+                mock_combo_instance.addItems.assert_called_with(
+                    ['layer1', 'layer2']
+                )
 
                 # Verify that since the first dialog was accepted,
                 # the second dialog was shown.
                 mock_show_import_dialog.assert_called_once()
 
 
-def test_import_from_layer_no_other_layers(make_viewer_model, qtbot):
-    """Test import when there are no other layers available."""
+def test_import_from_layer_no_phasor_layers(make_viewer_model, qtbot):
+    """Test import when there are no layers with phasor data available."""
     viewer = make_viewer_model()
-    layer1 = create_image_layer_with_phasors()
-    layer1.name = "layer1"
-    viewer.add_layer(layer1)
-
     plotter = PlotterWidget(viewer)
-    plotter.image_layer_with_phasor_features_combobox.setCurrentText("layer1")
 
     with (
         patch('napari_phasors.plotter.QDialog') as mock_dialog,
@@ -159,7 +158,7 @@ def test_import_from_layer_no_other_layers(make_viewer_model, qtbot):
         ) as mock_show_import_dialog:
             with patch('napari_phasors.plotter.QComboBox') as mock_combo:
                 mock_combo_instance = Mock()
-                # When no other layers are available, the combobox is empty
+                # When no phasor layers are available, the combobox is empty
                 # and currentText returns an empty string.
                 mock_combo_instance.currentText = Mock(return_value="")
                 mock_combo.return_value = mock_combo_instance
@@ -175,6 +174,47 @@ def test_import_from_layer_no_other_layers(make_viewer_model, qtbot):
 
                 # Verify the second dialog was NOT shown
                 mock_show_import_dialog.assert_not_called()
+
+
+def test_import_from_layer_includes_currently_selected_layer(
+    make_viewer_model, qtbot
+):
+    """The source-layer dropdown must include layers currently checked in
+    the plotter's image-layer combobox, not just unchecked ones."""
+    viewer = make_viewer_model()
+    layer1 = create_image_layer_with_phasors()
+    layer1.name = "layer1"
+    viewer.add_layer(layer1)
+
+    plotter = PlotterWidget(viewer)
+    plotter.image_layer_with_phasor_features_combobox.setCurrentText("layer1")
+    # Ensure layer1 is checked (selected for visualization) in the
+    # checkable combobox, matching the reported bug scenario.
+    plotter.image_layers_checkable_combobox.setCheckedItems(["layer1"])
+
+    with (
+        patch('napari_phasors.plotter.QDialog') as mock_dialog,
+        patch('napari_phasors.plotter.QVBoxLayout'),
+        patch('napari_phasors.plotter.QLabel'),
+        patch('napari_phasors.plotter.QDialogButtonBox'),
+    ):
+
+        mock_dialog.Accepted = 1
+        mock_dialog_instance = Mock()
+        mock_dialog_instance.exec = Mock(return_value=mock_dialog.Accepted)
+        mock_dialog.return_value = mock_dialog_instance
+
+        with patch.object(plotter, '_show_import_dialog'):
+            with patch('napari_phasors.plotter.QComboBox') as mock_combo:
+                mock_combo_instance = Mock()
+                mock_combo_instance.currentText = Mock(return_value="layer1")
+                mock_combo.return_value = mock_combo_instance
+
+                plotter._import_settings_from_layer()
+
+                # layer1 is checked for visualization but must still be
+                # offered as a source layer to copy settings from.
+                mock_combo_instance.addItems.assert_called_with(['layer1'])
 
 
 def test_import_all_settings_from_layer(make_viewer_model, qtbot):

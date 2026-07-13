@@ -11,6 +11,24 @@ from napari_phasors.plotter import (
 )
 
 
+def test_home_button_clears_stored_zoom(make_viewer_model):
+    """Pressing Home must clear the stored user zoom so later replots
+    (e.g. a colormap change) use the default limits, not the stale zoom."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    toolbar = getattr(plotter.canvas_widget, "toolbar", None)
+    if toolbar is None or not getattr(toolbar, "_actions", {}).get("home"):
+        return
+
+    # Simulate a user zoom having been stored.
+    plotter._user_axes_limits = ((0.2, 0.4), (0.2, 0.4))
+
+    # Trigger the Home button exactly as a click would.
+    toolbar._actions["home"].trigger()
+
+    assert plotter._user_axes_limits is None
+
+
 def test_canvas_cleared_when_no_layer_selected(make_viewer_model):
     """Test that canvas phasor data is cleared but semicircle/circle remains when no layer is selected."""
     viewer = make_viewer_model()
