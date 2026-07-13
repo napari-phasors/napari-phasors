@@ -577,6 +577,45 @@ def test_adding_removing_layers_updates_plot(make_viewer_model):
     plotter.deleteLater()
 
 
+def test_switch_plot_type_after_removing_scatter_layer(make_viewer_model):
+    """Regression: SCATTER → remove layer → HISTOGRAM2D → add layer.
+
+    Removing the last layer calls ``artist._remove_artists()`` which empties
+    biaplotter's ``_mpl_artists`` but used to leave ``_color_indices``
+    populated. When a new layer was later added and the active artist was
+    switched, biaplotter's ``_colorize`` indexed into the now-empty
+    ``_mpl_artists`` and raised ``KeyError: 'scatter'``.
+    """
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+
+    # Draw a scatter plot so the Scatter artist gets real color indices.
+    layer_1 = create_image_layer_with_phasors()
+    viewer.add_layer(layer_1)
+    plotter.plot_type = 'SCATTER'
+    scatter_artist = plotter.canvas_widget.artists['SCATTER']
+    assert scatter_artist._color_indices is not None
+
+    # Remove the layer — this empties the mpl artists.
+    viewer.layers.remove(layer_1)
+    assert scatter_artist._mpl_artists == {}
+    # Invariant restored: no mpl artists => no stale color indices.
+    assert scatter_artist._color_indices is None
+
+    # Switch to density and import a new layer. Previously this raised
+    # KeyError: 'scatter' from biaplotter's _colorize.
+    plotter.plot_type = 'HISTOGRAM2D'
+    layer_2 = create_image_layer_with_phasors()
+    viewer.add_layer(layer_2)
+
+    assert plotter.plot_type == 'HISTOGRAM2D'
+    assert plotter.canvas_widget.active_artist.__class__.__name__ == (
+        'Histogram2D'
+    )
+
+    plotter.deleteLater()
+
+
 def test_layer_settings_persistence_across_layer_switches(make_viewer_model):
     """Test that settings persist when switching between layers."""
     viewer = make_viewer_model()

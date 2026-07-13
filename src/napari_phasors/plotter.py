@@ -6025,6 +6025,15 @@ class PlotterWidget(QWidget):
             self._harmonics_array = None
             for artist in self.canvas_widget.artists.values():
                 artist._remove_artists()
+                # ``_remove_artists`` empties ``_mpl_artists`` but leaves
+                # ``_color_indices`` populated. biaplotter's ``_colorize``
+                # (invoked when the active artist is later switched) then
+                # indexes into the now-empty ``_mpl_artists`` and raises
+                # ``KeyError``. Clear the stale indices to restore the
+                # invariant that an artist with no mpl artists has none.
+                artist._color_indices = None
+            self._last_histogram_color_indices = None
+            self._last_scatter_color_indices = None
             self._remove_colorbar()
             self._clear_all_tab_artists()
             self.set_axes_labels()
@@ -8460,5 +8469,25 @@ class PlotterWidget(QWidget):
 
         # Undo the viewer-wide bottom-corner reassignment made when docking.
         self._restore_bottom_corners()
+
+        # Remove the dock widgets this widget added to the napari window.
+        # They wrap our (now closing) child containers; if left registered,
+        # napari's own window teardown later tries to delete a dock whose
+        # inner widget has already been reparented/deleted, which double-frees
+        # under PySide6 and segfaults the xdist worker at end-of-file teardown.
+        window = getattr(self.viewer, 'window', None)
+        if window is not None:
+            for dock_attr in (
+                '_analysis_dock',
+                '_histogram_dock',
+                '_statistics_dock',
+            ):
+                dock = getattr(self, dock_attr, None)
+                if dock is not None:
+                    with contextlib.suppress(
+                        Exception  # noqa: BLE001 - teardown best-effort
+                    ):
+                        window.remove_dock_widget(dock)
+                    setattr(self, dock_attr, None)
 
         super().closeEvent(event)
