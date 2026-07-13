@@ -1996,7 +1996,8 @@ class PlotterWidget(QWidget):
 
         import_buttons_layout.addStretch(1)
         import_box_layout.addLayout(import_buttons_layout)
-        self.settings_tab.layout().addWidget(import_box)
+
+        self._import_settings_box = import_box
 
         # Build the plotter inputs widget (formerly loaded from a .ui file)
         self.plotter_inputs_widget = self._build_plotter_inputs_widget()
@@ -4630,10 +4631,11 @@ class PlotterWidget(QWidget):
         and rearranged at runtime by :meth:`_reflow_plot_settings_rows`. Here
         we split them into three titled :class:`QGroupBox` sections — "Plot
         type & background", "Appearance" and "Phasor centers" — to match the
-        other analysis tabs. The Appearance grid becomes the reflow target
-        (``_plotter_settings_layout``); its reflowable rows keep their original
-        row indices (3-10) so the reflow logic is unchanged. The empty leading
-        rows collapse to zero height.
+        other analysis tabs, and place them below the "Load and apply
+        settings" section so all sections scroll together. The Appearance
+        grid becomes the reflow target (``_plotter_settings_layout``); its
+        reflowable rows keep their original row indices (3-10) so the reflow
+        logic is unchanged. The empty leading rows collapse to zero height.
         """
         piw = self.plotter_inputs_widget
         contents = piw.findChild(QWidget, "scrollAreaWidgetContents")
@@ -4691,6 +4693,7 @@ class PlotterWidget(QWidget):
         QWidget().setLayout(old_grid)
         sections_layout = QVBoxLayout(contents)
         sections_layout.setContentsMargins(0, 0, 0, 0)
+        sections_layout.addWidget(self._import_settings_box)
         sections_layout.addWidget(type_box)
         sections_layout.addWidget(appearance_box)
         sections_layout.addWidget(pc_box)

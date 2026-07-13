@@ -234,11 +234,35 @@ def _cleanup_widgets_after_test(request):
             w.close()
             w.deleteLater()
 
-    # 4. Process all pending Qt events to execute deleteLater calls
-    from qtpy.QtCore import QCoreApplication
+    # 4. Process all pending Qt events to execute deleteLater calls.
+    # ``processEvents()`` alone does NOT deliver ``DeferredDelete`` events,
+    # so without the explicit ``sendPostedEvents`` flush the C++ side of the
+    # widgets deleteLater()'d above is destroyed at some arbitrary later
+    # event-loop spin — e.g. while the next test is constructing its napari
+    # viewer — leaving Python wrappers pointing at freed Qt objects.
+    from qtpy.QtCore import QCoreApplication, QEvent
 
     with contextlib.suppress(Exception):
         QCoreApplication.processEvents()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        QCoreApplication.processEvents()
+
+    # 5. Collect cyclic garbage now, at a controlled point.
+    # The root conftest disables automatic GC under PySide6, so reference
+    # cycles (matplotlib Figure <-> canvas, closed widgets captured by
+    # lambdas/signal closures) otherwise accumulate for the worker's whole
+    # lifetime. The first ``make_napari_viewer`` test then detonates them:
+    # napari's fixture calls ``gc.collect()`` during *setup*, destroying
+    # hundreds of stale Qt wrappers mid-viewer-construction, which
+    # segfaults PySide6 xdist workers ("worker 'gwN' crashed" at the first
+    # make_napari_viewer test after widget-heavy files). Collecting here —
+    # right after the plugin widgets were closed and their deferred
+    # deletions flushed, with no viewer half-built — keeps every collection
+    # small and safe.
+    import gc
+
+    with contextlib.suppress(Exception):
+        gc.collect()
 
 
 @pytest.fixture
