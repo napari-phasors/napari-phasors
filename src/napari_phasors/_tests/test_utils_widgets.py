@@ -30,8 +30,7 @@ def test_histogram_widget_update_data_and_clear(qtbot):
     assert -1.0 in widget._raw_valid_data
     assert np.all(np.isfinite(widget._raw_valid_data))
     assert widget._settings_button.isEnabled()
-    assert widget.save_png_button.isEnabled()
-    assert widget.save_csv_button.isEnabled()
+    assert widget.save_button.isEnabled()
 
     widget.clear()
 
@@ -41,8 +40,7 @@ def test_histogram_widget_update_data_and_clear(qtbot):
     assert widget._datasets == {}
     assert widget._raw_valid_data is None
     assert not widget._settings_button.isEnabled()
-    assert not widget.save_png_button.isEnabled()
-    assert not widget.save_csv_button.isEnabled()
+    assert not widget.save_button.isEnabled()
 
 
 def test_histogram_widget_save_csv(qtbot, tmp_path, monkeypatch):

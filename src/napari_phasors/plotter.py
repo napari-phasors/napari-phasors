@@ -1985,6 +1985,7 @@ class PlotterWidget(QWidget):
         import_buttons_layout.setSpacing(5)
 
         import_label = QLabel("Load and Apply Settings from:")
+        import_label.setWordWrap(True)
         import_buttons_layout.addWidget(import_label)
 
         self.import_from_layer_button = QPushButton("Layer")
@@ -3335,7 +3336,6 @@ class PlotterWidget(QWidget):
         layout.addWidget(QLabel("Select layer to import settings from:"))
 
         layer_combo = QComboBox()
-        selected_layer_names = set(self.get_selected_layer_names())
         available_layers = [
             layer.name
             for layer in self.viewer.layers
@@ -3344,7 +3344,6 @@ class PlotterWidget(QWidget):
                 key in layer.metadata
                 for key in ["G", "S", "G_original", "S_original"]
             )
-            and layer.name not in selected_layer_names
         ]
         layer_combo.addItems(available_layers)
         layout.addWidget(layer_combo)
@@ -4535,14 +4534,16 @@ class PlotterWidget(QWidget):
         outer = QGridLayout(widget)
 
         scroll_area = QScrollArea()
-        scroll_area.setMinimumHeight(200)
+        scroll_area.setMinimumHeight(120)
         scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
         contents = QWidget()
         contents.setObjectName("scrollAreaWidgetContents")
         grid = QGridLayout(contents)
 
         widget.label_5 = QLabel("Full Polar Plot (Spectral Phasor)")
+        widget.label_5.setWordWrap(True)
         widget.semi_circle_checkbox = QToggleSwitch()
 
         widget.label_6 = QLabel("White Background:")
@@ -4551,6 +4552,10 @@ class PlotterWidget(QWidget):
 
         widget.label_2 = QLabel("Plot Type:")
         widget.plot_type_combobox = QComboBox()
+        widget.plot_type_combobox.setMinimumContentsLength(10)
+        widget.plot_type_combobox.setSizeAdjustPolicy(
+            QComboBox.AdjustToMinimumContentsLengthWithIcon
+        )
 
         widget.label_3 = QLabel("Colormap:")
         widget.colormap_combobox = QComboBox()
