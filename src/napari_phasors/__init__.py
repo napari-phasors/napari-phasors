@@ -10,7 +10,7 @@ from ._sample_data import (
     embryo_FLIM_sample_data,
     paramecium_HSI_sample_data,
 )
-from ._utils import register_extra_colormaps
+from ._utils import reference_lifetimes, register_extra_colormaps
 from ._widget import PhasorTransform, WriterWidget
 from ._writer import export_layer_as_csv, export_layer_as_image, write_ome_tiff
 from .plotter import PlotterWidget
@@ -29,4 +29,5 @@ __all__ = (
     "PlotterWidget",
     "WriterWidget",
     "BatchAnalysisWidget",
+    "reference_lifetimes",
 )

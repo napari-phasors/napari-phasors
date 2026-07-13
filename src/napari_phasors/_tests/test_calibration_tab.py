@@ -785,3 +785,40 @@ def test_close_event_unhooking(make_viewer_model, qtbot):
     # The event is accepted and a second close is harmless (already unhooked).
     widget.closeEvent(event)
     assert True  # accept() may be handled by base class
+
+
+def test_fluorophore_combobox_populates_lifetime(make_viewer_model, qtbot):
+    """Selecting a reference fluorophore fills the lifetime edit."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.calibration_tab
+
+    combobox = widget.calibration_widget.fluorophore_combobox
+    lifetime_edit = widget.calibration_widget.lifetime_line_edit_widget
+
+    # First item is the placeholder and carries no lifetime.
+    assert combobox.itemData(0) is None
+    assert combobox.count() > 1
+
+    # Select the first real fluorophore entry.
+    combobox.setCurrentIndex(1)
+    expected = combobox.itemData(1)
+    assert lifetime_edit.text() == f"{expected:g}"
+
+
+def test_fluorophore_reset_on_manual_lifetime_edit(make_viewer_model, qtbot):
+    """Editing the lifetime by hand resets the fluorophore selection."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.calibration_tab
+
+    combobox = widget.calibration_widget.fluorophore_combobox
+    lifetime_edit = widget.calibration_widget.lifetime_line_edit_widget
+
+    combobox.setCurrentIndex(1)
+    assert combobox.currentIndex() == 1
+
+    # Simulate a user editing the field (textEdited fires only on user input).
+    lifetime_edit.setText("2.5")
+    widget._on_lifetime_edited("2.5")
+    assert combobox.currentIndex() == 0

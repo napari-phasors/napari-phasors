@@ -4212,6 +4212,99 @@ def read_ome_tiff_settings(file_path):
     return settings
 
 
+#: Citation for the reference fluorophore lifetimes returned by
+#: :func:`reference_lifetimes`.
+REFERENCE_LIFETIMES_SOURCE = (
+    "ISS, Inc. — Lifetime Data of Selected Fluorophores. "
+    "https://iss.com/resources#lifetime-data-of-selected-fluorophores"
+)
+
+#: Known fluorescence lifetimes of common calibration reference fluorophores,
+#: as ``(name, lifetime_ns, solvent)`` tuples. Only fluorophores with a
+#: well-defined single lifetime value are included. Values are taken from
+#: :data:`REFERENCE_LIFETIMES_SOURCE`.
+_REFERENCE_LIFETIMES = (
+    ("ATTO 565", 3.4, "Water"),
+    ("ATTO 655", 3.6, "Water"),
+    ("Acridine Orange", 2.0, "PB pH 7.8"),
+    ("Alexa Fluor 488", 4.1, "PB pH 7.4"),
+    ("Alexa Fluor 546", 4.0, "PB pH 7.4"),
+    ("Alexa Fluor 633", 3.2, "Water"),
+    ("Alexa Fluor 647", 1.0, "Water"),
+    ("Alexa Fluor 680", 1.2, "PB pH 7.5"),
+    ("BODIPY FL", 5.7, "Methanol"),
+    ("BODIPY TR-X", 5.4, "Methanol"),
+    ("Coumarin 6", 2.5, "Ethanol"),
+    ("CY3", 0.3, "PBS"),
+    ("CY3.5", 0.5, "PBS"),
+    ("CY3B", 2.8, "PBS"),
+    ("CY5", 1.0, "PBS"),
+    ("CY5.5", 1.0, "PBS"),
+    ("DAPI", 0.16, "TRIS/EDTA"),
+    ("DAPI + ssDNA", 1.88, "TRIS/EDTA"),
+    ("DAPI + dsDNA", 2.20, "TRIS/EDTA"),
+    ("Ethidium Bromide - no DNA", 1.6, "TRIS/EDTA"),
+    ("Ethidium Bromide + ssDNA", 25.1, "TRIS/EDTA"),
+    ("Ethidium Bromide + dsDNA", 28.3, "TRIS/EDTA"),
+    ("FITC", 4.1, "PB pH 7.8"),
+    ("Fluorescein", 4.0, "PB pH 7.5"),
+    ("GFP", 3.2, "Buffer pH 8"),
+    ("HPTS", 5.4, "PB pH 7.8"),
+    ("Hoechst 33258 - no DNA", 0.2, "TRIS/EDTA"),
+    ("Hoechst 33258 + ssDNA", 1.22, "TRIS/EDTA"),
+    ("Hoechst 33258 + dsDNA", 1.94, "TRIS/EDTA"),
+    ("Hoechst 33342 - no DNA", 0.35, "TRIS/EDTA"),
+    ("Hoechst 33342 + ssDNA", 1.05, "TRIS/EDTA"),
+    ("Hoechst 33342 + dsDNA", 2.21, "TRIS/EDTA"),
+    ("Indocyanine Green", 0.52, "Water"),
+    ("Lucifer Yellow", 5.7, "Water"),
+    ("Oregon Green 488", 4.1, "Buffer pH 9"),
+    ("Oregon Green 500", 2.18, "Buffer pH 2"),
+    ("Prodan", 1.41, "Water"),
+    ("Rhodamine 101", 4.32, "Water"),
+    ("Rhodamine 110", 4.0, "Water"),
+    ("Rhodamine 6G", 4.08, "Water"),
+    ("Rhodamine B", 1.68, "Water"),
+    ("Ru(bpy)2(dcpby)[PF6]2", 375.0, "Buffer pH 7"),
+    ("Ru(bpy)3[PF6]2", 600.0, "Water"),
+    ("SeTau-380-NHS", 32.5, "Water"),
+    ("SeTau-404-NHS", 9.3, "Water"),
+    ("SeTau-405-NHS", 9.3, "Water"),
+    ("SeTau-425-NHS", 26.2, "Water"),
+    ("Texas Red", 4.2, "Water"),
+    ("TOTO-1", 2.2, "Water"),
+    ("YOYO-1 no DNA", 2.1, "TRIS/EDTA"),
+    ("YOYO-1 + ssDNA", 1.67, "TRIS/EDTA"),
+    ("YOYO-1 + dsDNA", 2.3, "TRIS/EDTA"),
+)
+
+
+def reference_lifetimes():
+    """Return known lifetimes of common calibration reference fluorophores.
+
+    These values can be used as the ``reference_lifetime`` when calibrating a
+    FLIM measurement against a homogeneous solution of a fluorophore with a
+    known fluorescence lifetime. Only fluorophores with a well-defined single
+    lifetime value are included.
+
+    Data source
+    -----------
+    ISS, Inc. "Lifetime Data of Selected Fluorophores."
+    https://iss.com/resources#lifetime-data-of-selected-fluorophores
+
+    Returns
+    -------
+    list of dict
+        One entry per fluorophore, sorted alphabetically by name, each with
+        keys ``name`` (str), ``lifetime`` (float, ns) and ``solvent`` (str,
+        the solution the reference is prepared in).
+    """
+    return [
+        {"name": name, "lifetime": lifetime, "solvent": solvent}
+        for name, lifetime, solvent in _REFERENCE_LIFETIMES
+    ]
+
+
 def compute_calibration_parameters(
     calibration_layer, frequency, reference_lifetime
 ):
