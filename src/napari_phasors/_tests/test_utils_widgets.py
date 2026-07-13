@@ -3,6 +3,7 @@ import csv
 import numpy as np
 
 from napari_phasors._utils import (
+    CurrentPageStackedWidget,
     HistogramDockWidget,
     HistogramWidget,
     StatisticsDockWidget,
@@ -1198,6 +1199,30 @@ def test_file_order_dialog_reorder_and_getters(qtbot):
     assert dlg.get_ordered_paths() == ["/d/b.lsm", "/d/c.lsm", "/d/a.lsm"]
 
 
+def test_file_order_dialog_items_not_drop_enabled(qtbot):
+    """Items must not carry ``Qt.ItemIsDropEnabled``.
+
+    Combined with ``QAbstractItemView.InternalMove``, a per-item drop flag
+    lets Qt treat a drag as landing *on* another item instead of *between*
+    rows, which can make the dragged item vanish (``takeItem`` fires but the
+    reinsert doesn't land in the right spot). See the ``FileOrderDialog``
+    docstring / PR history for the reported bug.
+    """
+    from qtpy.QtCore import Qt
+
+    from napari_phasors._utils import FileOrderDialog
+
+    dlg = FileOrderDialog(["/d/a.lsm", "/d/b.lsm"], estimated_shape=(4, 4))
+    qtbot.addWidget(dlg)
+
+    for row in range(dlg.file_list.count()):
+        item = dlg.file_list.item(row)
+        assert not (item.flags() & Qt.ItemIsDropEnabled)
+        assert item.flags() & Qt.ItemIsDragEnabled
+        assert item.flags() & Qt.ItemIsSelectable
+        assert item.flags() & Qt.ItemIsEnabled
+
+
 def test_file_order_dialog_axis_label_defaults(qtbot):
     from napari_phasors._utils import FileOrderDialog
 
@@ -1606,6 +1631,113 @@ def test_histogram_widget_taller_default_canvas_height(qtbot):
     widget = HistogramWidget()
     qtbot.addWidget(widget)
     assert widget.fig.canvas.minimumHeight() >= 180
+
+
+def test_histogram_widget_save_menu_dispatches_to_png_and_csv(qtbot):
+    """The merged "Save Histogram…" button opens a menu that dispatches to
+    the correct export routine depending on which action is chosen."""
+    from unittest.mock import MagicMock, patch
+
+    widget = HistogramWidget(bins=4)
+    qtbot.addWidget(widget)
+    widget.update_data(np.array([1.0, 2.0, 3.0]))
+    assert widget.save_button.isEnabled()
+
+    def _mock_menu_returning(chosen_index):
+        mock_menu = MagicMock()
+        png_action = MagicMock(name="png_action")
+        csv_action = MagicMock(name="csv_action")
+        mock_menu.addAction.side_effect = [png_action, csv_action]
+        actions = [png_action, csv_action]
+        mock_menu.exec.return_value = (
+            actions[chosen_index] if chosen_index is not None else None
+        )
+        return mock_menu
+
+    # Choosing "Save as PNG" calls the PNG export only.
+    with (
+        patch.object(widget, '_save_histogram_png') as mock_png,
+        patch.object(widget, '_save_histogram_csv') as mock_csv,
+        patch('napari_phasors._utils.QMenu') as mock_menu_cls,
+    ):
+        mock_menu_cls.return_value = _mock_menu_returning(0)
+        widget._show_save_menu()
+        mock_png.assert_called_once()
+        mock_csv.assert_not_called()
+
+    # Choosing "Save as CSV" calls the CSV export only.
+    with (
+        patch.object(widget, '_save_histogram_png') as mock_png,
+        patch.object(widget, '_save_histogram_csv') as mock_csv,
+        patch('napari_phasors._utils.QMenu') as mock_menu_cls,
+    ):
+        mock_menu_cls.return_value = _mock_menu_returning(1)
+        widget._show_save_menu()
+        mock_csv.assert_called_once()
+        mock_png.assert_not_called()
+
+    # Dismissing the menu without a choice triggers neither export.
+    with (
+        patch.object(widget, '_save_histogram_png') as mock_png,
+        patch.object(widget, '_save_histogram_csv') as mock_csv,
+        patch('napari_phasors._utils.QMenu') as mock_menu_cls,
+    ):
+        mock_menu_cls.return_value = _mock_menu_returning(None)
+        widget._show_save_menu()
+        mock_png.assert_not_called()
+        mock_csv.assert_not_called()
+
+
+def test_histogram_widget_save_button_wired_to_save_menu(qtbot):
+    """The merged save button's ``clicked`` signal is wired to the
+    export-format menu handler (not to the old per-format buttons)."""
+    widget = HistogramWidget(bins=4)
+    qtbot.addWidget(widget)
+    widget.update_data(np.array([1.0, 2.0, 3.0]))
+
+    assert widget.save_button.receivers(widget.save_button.clicked) >= 1
+    assert not hasattr(widget, 'save_png_button')
+    assert not hasattr(widget, 'save_csv_button')
+
+
+def test_current_page_stacked_widget_sizes_to_active_page(qtbot):
+    """``CurrentPageStackedWidget`` must not let a hidden page's larger size
+    hint force the container wider than the currently active page needs.
+
+    Regression test for the FRET/Selection tab bug where a plain
+    ``QStackedWidget`` reported the max size hint across *all* pages
+    (including hidden ones), preventing the tab from shrinking below the
+    widest page even when a much narrower page was on display.
+    """
+    from qtpy.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QWidget
+
+    stack = CurrentPageStackedWidget()
+    qtbot.addWidget(stack)
+
+    small_page = QLineEdit()
+
+    big_page = QWidget()
+    big_layout = QHBoxLayout(big_page)
+    big_layout.setContentsMargins(0, 0, 0, 0)
+    big_layout.addWidget(QLabel("A" * 60))
+    big_layout.addWidget(QLineEdit())
+    big_layout.addWidget(QLineEdit())
+
+    stack.addWidget(small_page)
+    stack.addWidget(big_page)
+    stack.show()
+
+    stack.setCurrentIndex(1)
+    big_page_min_width = stack.minimumSizeHint().width()
+    assert big_page_min_width > small_page.minimumSizeHint().width()
+
+    stack.setCurrentIndex(0)
+    # The stack's own hint must match the small page alone, not the max
+    # across all pages (the default QStackedWidget behavior).
+    assert (
+        stack.minimumSizeHint().width() == small_page.minimumSizeHint().width()
+    )
+    assert stack.minimumSizeHint().width() < big_page_min_width
 
 
 def test_statistics_dock_export_csv(qtbot, tmp_path, monkeypatch):

@@ -112,6 +112,9 @@ def test_phasor_mapping_widget_initialization_values(make_viewer_model, qtbot):
     assert len(scroll_areas) == 1
     scroll_area = scroll_areas[0]
     assert scroll_area.widgetResizable()
+    # The horizontal scrollbar must only appear once the content genuinely
+    # can't shrink further, not be permanently suppressed.
+    assert scroll_area.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
 
     # Histogram widget is now hosted in the shared dock stack.
     assert (

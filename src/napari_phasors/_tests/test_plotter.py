@@ -372,6 +372,14 @@ def test_canvas_container_resize_starts_debounce_timer(make_viewer_model):
         "None",
     ]
 
+    # The plot-type combobox must not force the Plot Settings tab wide just
+    # to display its longest item text ("Density Plot (2D Histogram)") --
+    # it should truncate/elide instead of setting a large minimum width.
+    assert (
+        plotter.plotter_inputs_widget.plot_type_combobox.minimumSizeHint().width()
+        < 200
+    )
+
     # Test colormap combobox has items (should have all available colormaps)
     assert plotter.plotter_inputs_widget.colormap_combobox.count() > 0
 
@@ -395,6 +403,41 @@ def test_canvas_container_resize_starts_debounce_timer(make_viewer_model):
     ylim = plotter.canvas_widget.axes.get_ylim()
     assert xlim[0] == -0.1 and xlim[1] == 1.1
     assert ylim[0] == -0.1 and ylim[1] == 0.7
+
+
+def test_plot_settings_tab_labels_wrap_and_scroll_policy(
+    make_viewer_model, qtbot
+):
+    """Long, non-wrapping labels/comboboxes used to force the Plot Settings
+    tab (and its inner scroll area) far wider/taller than necessary before
+    a horizontal scrollbar would appear. Word-wrapping the long labels and
+    letting the scrollbar show "as needed" (instead of never) fixes that."""
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QLabel, QScrollArea
+
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    qtbot.addWidget(plotter)
+
+    # "Full Polar Plot (Spectral Phasor)" must wrap instead of setting a
+    # ~240px-wide floor on the settings grid's label column.
+    assert plotter.plotter_inputs_widget.label_5.wordWrap()
+
+    # "Load and Apply Settings from:" (above the Layer/OME-TIFF buttons)
+    # must also wrap rather than force the import row wide.
+    import_labels = [
+        label
+        for label in plotter.settings_tab.findChildren(QLabel)
+        if label.text() == "Load and Apply Settings from:"
+    ]
+    assert len(import_labels) == 1
+    assert import_labels[0].wordWrap()
+
+    # The inner scroll area around the settings grid must show its
+    # horizontal scrollbar only when needed, not be permanently suppressed.
+    scroll_area = plotter.settings_tab.findChild(QScrollArea)
+    assert scroll_area is not None
+    assert scroll_area.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
 
 
 def test_phasor_plotter_initialization_plot_not_called(make_viewer_model):

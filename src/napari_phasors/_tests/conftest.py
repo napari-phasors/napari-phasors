@@ -1,6 +1,6 @@
 import pytest
 from qtpy.QtCore import Qt
-from qtpy.QtWidgets import QDialog
+from qtpy.QtWidgets import QDialog, QWidget
 
 # Patch napari's _QtMainWindow.eventFilter to guard against PySide6 passing
 # QWidgetItem (a non-QObject) as the `watched` argument, which causes a
@@ -110,14 +110,58 @@ def _ensure_qapp(qapp):
 
 
 @pytest.fixture(autouse=True)
-def _hide_qdialog(monkeypatch):
-    orig_show = QDialog.show
+def _hide_widgets_on_screen(monkeypatch):
+    """Keep every widget/dialog shown during a test off the physical screen.
 
-    def hidden_show(self):
-        self.setAttribute(Qt.WA_DontShowOnScreen, True)
-        orig_show(self)
+    Several plugin widgets call ``self.show()`` themselves (e.g.
+    ``HistogramWidget.update_data``, the ``PopoutWindowMixin`` "Phasor
+    Custom Import" window) in addition to the dialogs tests open directly.
+    Left unpatched, those calls pop up real windows/plots while the suite
+    runs. Setting ``Qt.WA_DontShowOnScreen`` before ``show()`` keeps Qt's
+    normal layout/rendering machinery working (so ``isVisible()``, size
+    hints, ``showEvent`` etc. all still behave the same) without mapping a
+    window onto the display. ``QWidget.show`` and ``QDialog.show`` are
+    separate bound methods in PyQt/PySide, so both need patching.
+    """
 
-    monkeypatch.setattr(QDialog, "show", hidden_show)
+    def _make_hidden_show(orig_show):
+        def hidden_show(self, *args, **kwargs):
+            self.setAttribute(Qt.WA_DontShowOnScreen, True)
+            return orig_show(self, *args, **kwargs)
+
+        return hidden_show
+
+    monkeypatch.setattr(QWidget, "show", _make_hidden_show(QWidget.show))
+    monkeypatch.setattr(QDialog, "show", _make_hidden_show(QDialog.show))
+
+
+@pytest.fixture(autouse=True)
+def _stub_color_dialog(monkeypatch):
+    """Prevent ``QColorDialog.getColor`` from opening a real color picker.
+
+    Several color-swatch buttons (marker color, contour color, cursor
+    color, ...) call ``QColorDialog.getColor(...)`` on click. On most
+    platforms this uses the *native* OS color panel rather than going
+    through Qt's own ``QDialog``/``QWidget`` machinery, so it bypasses the
+    ``_hide_widgets_on_screen`` patch above entirely and pops up a real
+    little window during the test run. Default to returning the initial
+    color unchanged (as if the user closed the picker without changing
+    anything); a test that needs to simulate picking a specific color can
+    still override this locally with its own ``monkeypatch.setattr``.
+    """
+    from qtpy.QtGui import QColor
+    from qtpy.QtWidgets import QColorDialog
+
+    def _fake_get_color(*args, **kwargs):
+        for arg in args:
+            if isinstance(arg, QColor):
+                return arg
+        initial = kwargs.get("initial")
+        if isinstance(initial, QColor):
+            return initial
+        return QColor()
+
+    monkeypatch.setattr(QColorDialog, "getColor", _fake_get_color)
 
 
 @pytest.fixture(autouse=True)
