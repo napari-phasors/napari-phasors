@@ -7253,15 +7253,30 @@ class PlotterWidget(QWidget):
 
             toolbar.release_pan = _release_pan_patched
 
-        if _original_home is not None:
+        def _reset_user_limits_to_home(*args, **kwargs):
+            # Clear user-defined limits so _redefine_axes_limits recomputes
+            # the correct default for the current mode (semi-circle vs full
+            # circle). This must persist so later replots (e.g. colormap
+            # changes) don't restore the stale zoom stored in
+            # _user_axes_limits.
+            plotter._user_axes_limits = None
+            # Re-apply the correct default limits for the current mode.
+            plotter._redefine_axes_limits()
+
+        # Matplotlib's Qt toolbar wires the Home button to the *bound*
+        # ``home`` method captured at toolbar construction time, so simply
+        # reassigning ``toolbar.home`` here would never run. Connect an extra
+        # slot to the Home QAction's ``triggered`` signal instead; Qt fires
+        # slots in connection order, so the original ``home`` (which resets
+        # the view) runs first, then our handler clears the stored zoom.
+        home_action = getattr(toolbar, '_actions', {}).get('home')
+        if home_action is not None:
+            home_action.triggered.connect(_reset_user_limits_to_home)
+        elif _original_home is not None:
 
             def _home_patched(*args, **kwargs):
-                # Clear user-defined limits so _redefine_axes_limits recomputes
-                # the correct default for the current mode (semi-circle vs full circle)
-                plotter._user_axes_limits = None
                 _original_home(*args, **kwargs)
-                # Re-apply the correct default limits for the current mode
-                plotter._redefine_axes_limits()
+                _reset_user_limits_to_home()
 
             toolbar.home = _home_patched
 
