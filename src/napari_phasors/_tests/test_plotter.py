@@ -372,6 +372,14 @@ def test_canvas_container_resize_starts_debounce_timer(make_viewer_model):
         "None",
     ]
 
+    # The plot-type combobox must not force the Plot Settings tab wide just
+    # to display its longest item text ("Density Plot (2D Histogram)") --
+    # it should truncate/elide instead of setting a large minimum width.
+    assert (
+        plotter.plotter_inputs_widget.plot_type_combobox.minimumSizeHint().width()
+        < 200
+    )
+
     # Test colormap combobox has items (should have all available colormaps)
     assert plotter.plotter_inputs_widget.colormap_combobox.count() > 0
 
@@ -395,6 +403,41 @@ def test_canvas_container_resize_starts_debounce_timer(make_viewer_model):
     ylim = plotter.canvas_widget.axes.get_ylim()
     assert xlim[0] == -0.1 and xlim[1] == 1.1
     assert ylim[0] == -0.1 and ylim[1] == 0.7
+
+
+def test_plot_settings_tab_labels_wrap_and_scroll_policy(
+    make_viewer_model, qtbot
+):
+    """Long, non-wrapping labels/comboboxes used to force the Plot Settings
+    tab (and its inner scroll area) far wider/taller than necessary before
+    a horizontal scrollbar would appear. Word-wrapping the long labels and
+    letting the scrollbar show "as needed" (instead of never) fixes that."""
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QLabel, QScrollArea
+
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    qtbot.addWidget(plotter)
+
+    # "Full Polar Plot (Spectral Phasor)" must wrap instead of setting a
+    # ~240px-wide floor on the settings grid's label column.
+    assert plotter.plotter_inputs_widget.label_5.wordWrap()
+
+    # "Load and Apply Settings from:" (above the Layer/OME-TIFF buttons)
+    # must also wrap rather than force the import row wide.
+    import_labels = [
+        label
+        for label in plotter.settings_tab.findChildren(QLabel)
+        if label.text() == "Load and Apply Settings from:"
+    ]
+    assert len(import_labels) == 1
+    assert import_labels[0].wordWrap()
+
+    # The inner scroll area around the settings grid must show its
+    # horizontal scrollbar only when needed, not be permanently suppressed.
+    scroll_area = plotter.settings_tab.findChild(QScrollArea)
+    assert scroll_area is not None
+    assert scroll_area.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
 
 
 def test_phasor_plotter_initialization_plot_not_called(make_viewer_model):
@@ -530,6 +573,45 @@ def test_adding_removing_layers_updates_plot(make_viewer_model):
             plotter.image_layer_with_phasor_features_combobox.currentText()
             == intensity_image_layer_2.name
         )
+
+    plotter.deleteLater()
+
+
+def test_switch_plot_type_after_removing_scatter_layer(make_viewer_model):
+    """Regression: SCATTER → remove layer → HISTOGRAM2D → add layer.
+
+    Removing the last layer calls ``artist._remove_artists()`` which empties
+    biaplotter's ``_mpl_artists`` but used to leave ``_color_indices``
+    populated. When a new layer was later added and the active artist was
+    switched, biaplotter's ``_colorize`` indexed into the now-empty
+    ``_mpl_artists`` and raised ``KeyError: 'scatter'``.
+    """
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+
+    # Draw a scatter plot so the Scatter artist gets real color indices.
+    layer_1 = create_image_layer_with_phasors()
+    viewer.add_layer(layer_1)
+    plotter.plot_type = 'SCATTER'
+    scatter_artist = plotter.canvas_widget.artists['SCATTER']
+    assert scatter_artist._color_indices is not None
+
+    # Remove the layer — this empties the mpl artists.
+    viewer.layers.remove(layer_1)
+    assert scatter_artist._mpl_artists == {}
+    # Invariant restored: no mpl artists => no stale color indices.
+    assert scatter_artist._color_indices is None
+
+    # Switch to density and import a new layer. Previously this raised
+    # KeyError: 'scatter' from biaplotter's _colorize.
+    plotter.plot_type = 'HISTOGRAM2D'
+    layer_2 = create_image_layer_with_phasors()
+    viewer.add_layer(layer_2)
+
+    assert plotter.plot_type == 'HISTOGRAM2D'
+    assert plotter.canvas_widget.active_artist.__class__.__name__ == (
+        'Histogram2D'
+    )
 
     plotter.deleteLater()
 

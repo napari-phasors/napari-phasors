@@ -24,7 +24,6 @@ from qtpy.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSlider,
-    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -32,6 +31,7 @@ from superqt import QToggleSwitch
 
 from ._utils import (
     CheckableComboBox,
+    CurrentPageStackedWidget,
     HistogramWidget,
     analysis_section_stylesheet,
     make_section,
@@ -145,7 +145,7 @@ class FretWidget(QWidget):
         form.addRow("Donor lifetime source:", donor_source_row)
 
         # Donor lifetime stacked input
-        self.donor_stack = QStackedWidget()
+        self.donor_stack = CurrentPageStackedWidget()
 
         # Page 0: Manual lifetime
         donor_manual_page = QWidget()
@@ -251,7 +251,7 @@ class FretWidget(QWidget):
         form.addRow("Background source:", bg_source_row)
 
         # Background stacked input
-        self.bg_stack = QStackedWidget()
+        self.bg_stack = CurrentPageStackedWidget()
 
         # Page 0: Manual G,S
         bg_manual_page = QWidget()

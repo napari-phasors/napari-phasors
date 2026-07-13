@@ -112,6 +112,9 @@ def test_phasor_mapping_widget_initialization_values(make_viewer_model, qtbot):
     assert len(scroll_areas) == 1
     scroll_area = scroll_areas[0]
     assert scroll_area.widgetResizable()
+    # The horizontal scrollbar must only appear once the content genuinely
+    # can't shrink further, not be permanently suppressed.
+    assert scroll_area.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
 
     # Histogram widget is now hosted in the shared dock stack.
     assert (
@@ -258,7 +261,7 @@ def test_phasor_mapping_widget_plot_histogram_no_data(
     assert lifetime_widget.histogram_widget.counts is None
     assert not lifetime_widget.histogram_widget.isHidden()
     assert not lifetime_widget.histogram_widget._settings_button.isEnabled()
-    assert not lifetime_widget.histogram_widget.save_png_button.isEnabled()
+    assert not lifetime_widget.histogram_widget.save_button.isEnabled()
 
 
 def test_phasor_mapping_widget_ui_layout(make_viewer_model, qtbot):
@@ -873,7 +876,7 @@ def test_phasor_mapping_widget_image_layer_changed_no_layer(
     assert lifetime_widget.lifetime_data_original is None
     assert lifetime_widget.histogram_widget.counts is None
     assert not lifetime_widget.histogram_widget._settings_button.isEnabled()
-    assert not lifetime_widget.histogram_widget.save_png_button.isEnabled()
+    assert not lifetime_widget.histogram_widget.save_button.isEnabled()
 
 
 def test_phasor_mapping_widget_colormap_changed_callback(

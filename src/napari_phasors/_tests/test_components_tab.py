@@ -857,6 +857,9 @@ def test_components_widget_harmonic_signal_connection(
 
 def test_components_widget_scroll_area_exists(make_viewer_model, qtbot):
     """Test that a scroll area is created for the components widget."""
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QScrollArea
+
     viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     comp_widget = parent.components_tab
@@ -864,6 +867,12 @@ def test_components_widget_scroll_area_exists(make_viewer_model, qtbot):
     # The layout should contain a scroll area
     assert comp_widget.layout() is not None
     assert comp_widget.layout().count() > 0
+
+    # The horizontal scrollbar must only appear once the content genuinely
+    # can't shrink further, not be permanently suppressed.
+    scroll_area = comp_widget.findChild(QScrollArea)
+    assert scroll_area is not None
+    assert scroll_area.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
 
 
 def test_components_fraction_range_updates_layer_and_is_reversible(

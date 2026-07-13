@@ -191,16 +191,19 @@ class FilterWidget(QWidget):
         )
         self.threshold_method_combobox.setCurrentText("None")
         threshold_method_layout.addWidget(self.threshold_method_combobox)
-
-        # Add log scale toggle to the same line as threshold method
-        threshold_method_layout.addSpacing(10)
-        self.log_scale_checkbox = QToggleSwitch("Log Scale Histogram")
-        self.log_scale_checkbox.onColor = QColor("#27ae60")  # Nice Green
-        self.log_scale_checkbox.setChecked(False)
-        threshold_method_layout.addWidget(self.log_scale_checkbox)
         threshold_method_layout.addStretch()
 
         threshold_box_layout.addLayout(threshold_method_layout)
+
+        # Log scale toggle on its own line so it doesn't force the section
+        # wider than the threshold method row needs.
+        log_scale_layout = QHBoxLayout()
+        self.log_scale_checkbox = QToggleSwitch("Log Scale Histogram")
+        self.log_scale_checkbox.onColor = QColor("#27ae60")  # Nice Green
+        self.log_scale_checkbox.setChecked(False)
+        log_scale_layout.addWidget(self.log_scale_checkbox)
+        log_scale_layout.addStretch()
+        threshold_box_layout.addLayout(log_scale_layout)
 
         # Threshold range slider with min/max edits
         theshold_slider_layout = QHBoxLayout()

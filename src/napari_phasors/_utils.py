@@ -55,6 +55,7 @@ from qtpy.QtWidgets import (
     QMenu,
     QPushButton,
     QSizePolicy,
+    QStackedWidget,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionButton,
@@ -97,6 +98,34 @@ def make_section(title):
     box = QGroupBox(title)
     layout = QVBoxLayout(box)
     return box, layout
+
+
+class CurrentPageStackedWidget(QStackedWidget):
+    """A ``QStackedWidget`` that sizes itself to the visible page only.
+
+    The default ``QStackedWidget`` reports a size hint wide enough for its
+    *widest* page even while that page is hidden, which stops a parent
+    layout (e.g. a ``QFormLayout`` field column) from shrinking below a page
+    the user cannot currently see. This subclass reports the current page's
+    size instead, so hidden pages no longer set a floor on the container's
+    width.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.currentChanged.connect(lambda _index: self.updateGeometry())
+
+    def sizeHint(self):
+        widget = self.currentWidget()
+        return widget.sizeHint() if widget is not None else super().sizeHint()
+
+    def minimumSizeHint(self):
+        widget = self.currentWidget()
+        return (
+            widget.minimumSizeHint()
+            if widget is not None
+            else super().minimumSizeHint()
+        )
 
 
 # Green-outlined "ready" look for a tab's primary action button. ``#27ae60``
@@ -2518,22 +2547,16 @@ class HistogramWidget(QWidget):
 
         controls_layout.addStretch()
 
-        self.save_png_button = QPushButton("Save Histogram as PNG")
-        self.save_png_button.setMinimumWidth(180)
-        self.save_png_button.clicked.connect(self._save_histogram_png)
-        controls_layout.addWidget(self.save_png_button)
-
-        self.save_csv_button = QPushButton("Save Histogram as CSV")
-        self.save_csv_button.setMinimumWidth(180)
-        self.save_csv_button.clicked.connect(self._save_histogram_csv)
-        controls_layout.addWidget(self.save_csv_button)
+        self.save_button = QPushButton("Save Histogram…")
+        self.save_button.setMinimumWidth(180)
+        self.save_button.clicked.connect(self._show_save_menu)
+        controls_layout.addWidget(self.save_button)
 
         layout.addLayout(controls_layout)
 
         # Buttons are disabled until data is loaded
         self._settings_button.setEnabled(False)
-        self.save_png_button.setEnabled(False)
-        self.save_csv_button.setEnabled(False)
+        self.save_button.setEnabled(False)
 
     def _filter_valid_values(self, data: np.ndarray) -> np.ndarray:
         """Return finite values, optionally excluding non-positive entries."""
@@ -2672,6 +2695,19 @@ class HistogramWidget(QWidget):
         self.range_slider.setValue((lo_s, hi_s))
         lo_out, hi_out = self.get_range()
         self.rangeChanged.emit(lo_out, hi_out)
+
+    def _show_save_menu(self):
+        """Show a menu to choose the histogram export format."""
+        menu = QMenu(self)
+        png_action = menu.addAction("Save as PNG")
+        csv_action = menu.addAction("Save as CSV")
+        action = menu.exec(
+            self.save_button.mapToGlobal(self.save_button.rect().bottomLeft())
+        )
+        if action == png_action:
+            self._save_histogram_png()
+        elif action == csv_action:
+            self._save_histogram_csv()
 
     def _save_histogram_png(self):
         """Save the histogram as a high-DPI PNG image."""
@@ -2892,8 +2928,7 @@ class HistogramWidget(QWidget):
             self._style_axes()
             self.fig.canvas.draw_idle()
             self._settings_button.setEnabled(False)
-            self.save_png_button.setEnabled(False)
-            self.save_csv_button.setEnabled(False)
+            self.save_button.setEnabled(False)
             self.show()
             self.dataChanged.emit()
             return
@@ -2912,8 +2947,7 @@ class HistogramWidget(QWidget):
 
         self._render()
         self._settings_button.setEnabled(True)
-        self.save_png_button.setEnabled(True)
-        self.save_csv_button.setEnabled(True)
+        self.save_button.setEnabled(True)
         self.show()
         self.dataChanged.emit()
 
@@ -2941,8 +2975,7 @@ class HistogramWidget(QWidget):
             self._style_axes()
             self.fig.canvas.draw_idle()
             self._settings_button.setEnabled(False)
-            self.save_png_button.setEnabled(False)
-            self.save_csv_button.setEnabled(False)
+            self.save_button.setEnabled(False)
             self.show()
             self.dataChanged.emit()
             return
@@ -2967,8 +3000,7 @@ class HistogramWidget(QWidget):
 
         self._render()
         self._settings_button.setEnabled(True)
-        self.save_png_button.setEnabled(True)
-        self.save_csv_button.setEnabled(True)
+        self.save_button.setEnabled(True)
         self.show()
         self.dataChanged.emit()
 
@@ -3030,8 +3062,7 @@ class HistogramWidget(QWidget):
         self._style_axes()
         self.fig.canvas.draw_idle()
         self._settings_button.setEnabled(False)
-        self.save_png_button.setEnabled(False)
-        self.save_csv_button.setEnabled(False)
+        self.save_button.setEnabled(False)
         self.dataChanged.emit()
 
     @property
@@ -4090,10 +4121,7 @@ class FileOrderDialog(QDialog):
             item.setToolTip(path)
             item.setData(Qt.UserRole, path)
             item.setFlags(
-                Qt.ItemIsSelectable
-                | Qt.ItemIsEnabled
-                | Qt.ItemIsDragEnabled
-                | Qt.ItemIsDropEnabled
+                Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsDragEnabled
             )
             self.file_list.addItem(item)
 

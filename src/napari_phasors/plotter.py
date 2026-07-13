@@ -1985,6 +1985,7 @@ class PlotterWidget(QWidget):
         import_buttons_layout.setSpacing(5)
 
         import_label = QLabel("Load and Apply Settings from:")
+        import_label.setWordWrap(True)
         import_buttons_layout.addWidget(import_label)
 
         self.import_from_layer_button = QPushButton("Layer")
@@ -1995,7 +1996,8 @@ class PlotterWidget(QWidget):
 
         import_buttons_layout.addStretch(1)
         import_box_layout.addLayout(import_buttons_layout)
-        self.settings_tab.layout().addWidget(import_box)
+
+        self._import_settings_box = import_box
 
         # Build the plotter inputs widget (formerly loaded from a .ui file)
         self.plotter_inputs_widget = self._build_plotter_inputs_widget()
@@ -3335,7 +3337,6 @@ class PlotterWidget(QWidget):
         layout.addWidget(QLabel("Select layer to import settings from:"))
 
         layer_combo = QComboBox()
-        selected_layer_names = set(self.get_selected_layer_names())
         available_layers = [
             layer.name
             for layer in self.viewer.layers
@@ -3344,7 +3345,6 @@ class PlotterWidget(QWidget):
                 key in layer.metadata
                 for key in ["G", "S", "G_original", "S_original"]
             )
-            and layer.name not in selected_layer_names
         ]
         layer_combo.addItems(available_layers)
         layout.addWidget(layer_combo)
@@ -4535,14 +4535,16 @@ class PlotterWidget(QWidget):
         outer = QGridLayout(widget)
 
         scroll_area = QScrollArea()
-        scroll_area.setMinimumHeight(200)
+        scroll_area.setMinimumHeight(120)
         scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
         contents = QWidget()
         contents.setObjectName("scrollAreaWidgetContents")
         grid = QGridLayout(contents)
 
         widget.label_5 = QLabel("Full Polar Plot (Spectral Phasor)")
+        widget.label_5.setWordWrap(True)
         widget.semi_circle_checkbox = QToggleSwitch()
 
         widget.label_6 = QLabel("White Background:")
@@ -4551,6 +4553,10 @@ class PlotterWidget(QWidget):
 
         widget.label_2 = QLabel("Plot Type:")
         widget.plot_type_combobox = QComboBox()
+        widget.plot_type_combobox.setMinimumContentsLength(10)
+        widget.plot_type_combobox.setSizeAdjustPolicy(
+            QComboBox.AdjustToMinimumContentsLengthWithIcon
+        )
 
         widget.label_3 = QLabel("Colormap:")
         widget.colormap_combobox = QComboBox()
@@ -4625,10 +4631,11 @@ class PlotterWidget(QWidget):
         and rearranged at runtime by :meth:`_reflow_plot_settings_rows`. Here
         we split them into three titled :class:`QGroupBox` sections — "Plot
         type & background", "Appearance" and "Phasor centers" — to match the
-        other analysis tabs. The Appearance grid becomes the reflow target
-        (``_plotter_settings_layout``); its reflowable rows keep their original
-        row indices (3-10) so the reflow logic is unchanged. The empty leading
-        rows collapse to zero height.
+        other analysis tabs, and place them below the "Load and apply
+        settings" section so all sections scroll together. The Appearance
+        grid becomes the reflow target (``_plotter_settings_layout``); its
+        reflowable rows keep their original row indices (3-10) so the reflow
+        logic is unchanged. The empty leading rows collapse to zero height.
         """
         piw = self.plotter_inputs_widget
         contents = piw.findChild(QWidget, "scrollAreaWidgetContents")
@@ -4686,6 +4693,7 @@ class PlotterWidget(QWidget):
         QWidget().setLayout(old_grid)
         sections_layout = QVBoxLayout(contents)
         sections_layout.setContentsMargins(0, 0, 0, 0)
+        sections_layout.addWidget(self._import_settings_box)
         sections_layout.addWidget(type_box)
         sections_layout.addWidget(appearance_box)
         sections_layout.addWidget(pc_box)
@@ -6020,6 +6028,15 @@ class PlotterWidget(QWidget):
             self._harmonics_array = None
             for artist in self.canvas_widget.artists.values():
                 artist._remove_artists()
+                # ``_remove_artists`` empties ``_mpl_artists`` but leaves
+                # ``_color_indices`` populated. biaplotter's ``_colorize``
+                # (invoked when the active artist is later switched) then
+                # indexes into the now-empty ``_mpl_artists`` and raises
+                # ``KeyError``. Clear the stale indices to restore the
+                # invariant that an artist with no mpl artists has none.
+                artist._color_indices = None
+            self._last_histogram_color_indices = None
+            self._last_scatter_color_indices = None
             self._remove_colorbar()
             self._clear_all_tab_artists()
             self.set_axes_labels()
@@ -7248,15 +7265,30 @@ class PlotterWidget(QWidget):
 
             toolbar.release_pan = _release_pan_patched
 
-        if _original_home is not None:
+        def _reset_user_limits_to_home(*args, **kwargs):
+            # Clear user-defined limits so _redefine_axes_limits recomputes
+            # the correct default for the current mode (semi-circle vs full
+            # circle). This must persist so later replots (e.g. colormap
+            # changes) don't restore the stale zoom stored in
+            # _user_axes_limits.
+            plotter._user_axes_limits = None
+            # Re-apply the correct default limits for the current mode.
+            plotter._redefine_axes_limits()
+
+        # Matplotlib's Qt toolbar wires the Home button to the *bound*
+        # ``home`` method captured at toolbar construction time, so simply
+        # reassigning ``toolbar.home`` here would never run. Connect an extra
+        # slot to the Home QAction's ``triggered`` signal instead; Qt fires
+        # slots in connection order, so the original ``home`` (which resets
+        # the view) runs first, then our handler clears the stored zoom.
+        home_action = getattr(toolbar, '_actions', {}).get('home')
+        if home_action is not None:
+            home_action.triggered.connect(_reset_user_limits_to_home)
+        elif _original_home is not None:
 
             def _home_patched(*args, **kwargs):
-                # Clear user-defined limits so _redefine_axes_limits recomputes
-                # the correct default for the current mode (semi-circle vs full circle)
-                plotter._user_axes_limits = None
                 _original_home(*args, **kwargs)
-                # Re-apply the correct default limits for the current mode
-                plotter._redefine_axes_limits()
+                _reset_user_limits_to_home()
 
             toolbar.home = _home_patched
 
@@ -8440,5 +8472,25 @@ class PlotterWidget(QWidget):
 
         # Undo the viewer-wide bottom-corner reassignment made when docking.
         self._restore_bottom_corners()
+
+        # Remove the dock widgets this widget added to the napari window.
+        # They wrap our (now closing) child containers; if left registered,
+        # napari's own window teardown later tries to delete a dock whose
+        # inner widget has already been reparented/deleted, which double-frees
+        # under PySide6 and segfaults the xdist worker at end-of-file teardown.
+        window = getattr(self.viewer, 'window', None)
+        if window is not None:
+            for dock_attr in (
+                '_analysis_dock',
+                '_histogram_dock',
+                '_statistics_dock',
+            ):
+                dock = getattr(self, dock_attr, None)
+                if dock is not None:
+                    with contextlib.suppress(
+                        Exception  # noqa: BLE001 - teardown best-effort
+                    ):
+                        window.remove_dock_widget(dock)
+                    setattr(self, dock_attr, None)
 
         super().closeEvent(event)
