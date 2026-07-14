@@ -386,7 +386,7 @@ def test_cursor_add_polar_defaults(make_viewer_model, qtbot):
 
 
 def test_cursor_type_change_field_visibility(make_viewer_model, qtbot):
-    """Changing the row shape combobox shows/hides the matching fields."""
+    """Changing the shape combobox shows/hides the matching editor fields."""
     viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
@@ -399,23 +399,113 @@ def test_cursor_type_change_field_visibility(make_viewer_model, qtbot):
     assert isinstance(combo, QComboBox)
 
     # Circular: center fields shown, others hidden.
-    assert cursor['center_widget'].isVisibleTo(cursor['row'])
-    assert not cursor['elliptic_widget'].isVisibleTo(cursor['row'])
-    assert not cursor['polar_widget'].isVisibleTo(cursor['row'])
+    assert cursor['center_widget'].isVisibleTo(cursor['detail'])
+    assert not cursor['elliptic_widget'].isVisibleTo(cursor['detail'])
+    assert not cursor['polar_widget'].isVisibleTo(cursor['detail'])
 
     # Switch to elliptical.
     combo.setCurrentIndex(combo.findData("elliptic"))
     assert cursor['type'] == 'elliptic'
-    assert cursor['center_widget'].isVisibleTo(cursor['row'])
-    assert cursor['elliptic_widget'].isVisibleTo(cursor['row'])
-    assert not cursor['polar_widget'].isVisibleTo(cursor['row'])
+    assert cursor['center_widget'].isVisibleTo(cursor['detail'])
+    assert cursor['elliptic_widget'].isVisibleTo(cursor['detail'])
+    assert not cursor['polar_widget'].isVisibleTo(cursor['detail'])
 
     # Switch to polar.
     combo.setCurrentIndex(combo.findData("polar"))
     assert cursor['type'] == 'polar'
-    assert not cursor['center_widget'].isVisibleTo(cursor['row'])
-    assert not cursor['elliptic_widget'].isVisibleTo(cursor['row'])
-    assert cursor['polar_widget'].isVisibleTo(cursor['row'])
+    assert not cursor['center_widget'].isVisibleTo(cursor['detail'])
+    assert not cursor['elliptic_widget'].isVisibleTo(cursor['detail'])
+    assert cursor['polar_widget'].isVisibleTo(cursor['detail'])
+
+
+def test_cursor_selection_follows_add_and_row_click(make_viewer_model, qtbot):
+    """Adding a cursor selects it; left-clicking a row selects that cursor."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    # No cursors yet: the editor is hidden.
+    assert widget._selected_cursor is None
+    assert not widget._editor_box.isVisible()
+
+    # Adding a cursor selects it and shows its editor page.
+    widget._add_cursor()
+    first = widget._cursors[0]
+    assert widget._selected_cursor is first
+    assert widget._details_stack.currentWidget() is first['detail']
+    assert first['row'].property("selected")
+
+    # Adding a second cursor moves the selection to the new cursor.
+    widget._add_cursor()
+    second = widget._cursors[1]
+    assert widget._selected_cursor is second
+    assert not first['row'].property("selected")
+    assert second['row'].property("selected")
+
+    # Left-clicking the first cursor's row selects it again (exercises
+    # ClickableFrame.mousePressEvent -> clicked -> _select_cursor).
+    qtbot.mouseClick(first['row'], Qt.LeftButton)
+    assert widget._selected_cursor is first
+    assert first['row'].property("selected")
+    assert widget._details_stack.currentWidget() is first['detail']
+    # The editor title reflects the selected cursor's number and shape.
+    assert "Circular" in widget._editor_box.title()
+
+
+def test_select_cursor_ignores_foreign_cursor(make_viewer_model, qtbot):
+    """``_select_cursor`` ignores a cursor dict that is not in the list."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor()
+    selected = widget._selected_cursor
+    assert selected is not None
+
+    # Passing a dict that is not one of the widget's cursors is a no-op.
+    widget._select_cursor({'not': 'a real cursor'})
+    assert widget._selected_cursor is selected
+
+
+def test_refresh_editor_title_without_selection(make_viewer_model, qtbot):
+    """``_refresh_editor_title`` is a no-op when nothing is selected."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    # No cursors -> no selection: must not raise.
+    assert widget._selected_cursor is None
+    widget._refresh_editor_title()
+
+
+def test_editor_title_updates_with_shape(make_viewer_model, qtbot):
+    """The editor title tracks the selected cursor's shape."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor()
+    cursor = widget._cursors[0]
+    assert "Circular" in widget._editor_box.title()
+
+    combo = cursor['type_combo']
+    combo.setCurrentIndex(combo.findData("polar"))
+    assert "Polar" in widget._editor_box.title()
+
+
+def test_make_spinbox_default_width_ref(make_viewer_model, qtbot):
+    """``_make_spinbox`` sizes itself from its own range when no ref given."""
+    from napari_phasors.selection_tab import CursorSelectionWidget
+
+    spin = CursorSelectionWidget._make_spinbox(-1.5, 1.5, 0.5, 2, 0.01)
+    assert isinstance(spin, QDoubleSpinBox)
+    assert spin.value() == 0.5
+    # A width was derived and applied as a hard minimum (default ref path).
+    assert spin.minimumWidth() >= 70
 
 
 def test_cursor_remove(make_viewer_model, qtbot):

@@ -116,7 +116,19 @@ class SelectionWidget(QWidget):
 
         # Main layout
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
         self.setStyleSheet(analysis_section_stylesheet())
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.NoFrame)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        layout.addWidget(scroll_area)
+
+        content = QWidget()
+        scroll_area.setWidget(content)
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
 
         # Selection mode combobox at the top
         mode_box, mode_box_layout = make_section("Selection mode")
@@ -132,11 +144,11 @@ class SelectionWidget(QWidget):
         )
         mode_layout.addWidget(self.selection_mode_combobox, 1)
         mode_box_layout.addLayout(mode_layout)
-        layout.addWidget(mode_box)
+        content_layout.addWidget(mode_box)
 
         # Stacked widget to switch between modes
         self.stacked_widget = CurrentPageStackedWidget()
-        layout.addWidget(self.stacked_widget)
+        content_layout.addWidget(self.stacked_widget)
 
         # === Manual Selection Mode Widget ===
         self.manual_selection_widget = QWidget()
@@ -1784,15 +1796,28 @@ class ColorButton(QPushButton):
         self._update_style()
 
 
+class ClickableFrame(QFrame):
+    """A ``QFrame`` that emits ``clicked`` when pressed with the left button."""
+
+    clicked = Signal()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+
 class CursorSelectionWidget(QWidget):
     """
     Unified widget for cursor-based selection in phasor plots.
 
-    Provides a single list of cursor "rows". The first element of each row
-    is a shape combobox (Circular / Elliptical / Polar); the remaining fields
-    in the row are shown or hidden dynamically based on the chosen shape. All
-    cursors (regardless of shape) contribute to a single combined
-    ``Cursor Selection: <image>`` labels layer.
+    Uses a master/detail layout: a compact list of cursor rows (color,
+    shape, pixel statistics, visibility and remove controls) and a single
+    "Selected Cursor" editor below it showing the selected cursor's
+    parameters. Clicking a row — or dragging a cursor on the plot — selects
+    it. The shape-specific parameter fields are shown or hidden dynamically
+    based on the chosen shape. All cursors (regardless of shape) contribute
+    to a single combined ``Cursor Selection: <image>`` labels layer.
 
     Parameters
     ----------
@@ -1815,6 +1840,7 @@ class CursorSelectionWidget(QWidget):
 
         # Each cursor is a dict carrying both its data and its row widgets.
         self._cursors = []
+        self._selected_cursor = None
         self._phasors_selected_layer = None
 
         # Dragging state
@@ -1838,9 +1864,10 @@ class CursorSelectionWidget(QWidget):
     # ------------------------------------------------------------------ UI
     def _setup_ui(self):
         """Set up the user interface."""
+        self.setStyleSheet(analysis_section_stylesheet())
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 5, 0, 0)
-        self.setStyleSheet(analysis_section_stylesheet())
 
         # Cursors section ----------------------------------------------------
         cursors_box, cursors_box_layout = make_section("Cursors")
@@ -1859,6 +1886,13 @@ class CursorSelectionWidget(QWidget):
         self.add_cursor_button.clicked.connect(lambda: self._add_cursor())
         cursors_box_layout.addWidget(self.add_cursor_button)
         layout.addWidget(cursors_box)
+
+        # Editor for the selected cursor's parameters.
+        self._editor_box, editor_layout = make_section("Selected Cursor")
+        self._details_stack = CurrentPageStackedWidget()
+        editor_layout.addWidget(self._details_stack)
+        self._editor_box.setVisible(False)
+        layout.addWidget(self._editor_box)
 
         # Prominent "Calculate" button — the primary action of the tab.
         self.calculate_button = QPushButton("Calculate Selection")
@@ -1925,17 +1959,27 @@ class CursorSelectionWidget(QWidget):
             return (xlim[0] + xlim[1]) / 2.0, (ylim[0] + ylim[1]) / 2.0
         return 0.5, 0.5
 
-    @staticmethod
-    def _make_spinbox(low, high, value, decimals, step):
+    SPINBOX_CHROME = 46
+
+    UNIFORM_SPIN_REF = "-360.0"
+
+    @classmethod
+    def _make_spinbox(cls, low, high, value, decimals, step, width_ref=None):
         spin = QDoubleSpinBox()
         spin.setRange(low, high)
         spin.setSingleStep(step)
         spin.setDecimals(decimals)
         spin.setValue(value)
-        spin.setMaximumWidth(75)
+        if width_ref is None:
+            width_ref = max(
+                f"{low:.{decimals}f}", f"{high:.{decimals}f}", key=len
+            )
+        text_width = spin.fontMetrics().horizontalAdvance(width_ref)
+        width = max(70, text_width + cls.SPINBOX_CHROME)
+        spin.setStyleSheet(f"min-width: {width}px; max-width: {width + 12}px;")
+        spin.setMinimumWidth(width)
         return spin
 
-    # ------------------------------------------------------------- add row
     def _add_cursor(
         self,
         cursor_type="circular",
@@ -2035,6 +2079,7 @@ class CursorSelectionWidget(QWidget):
         self._cursors.append(cursor)
 
         self._update_row_visibility()
+        self._select_cursor(cursor)
         self._update_cursor_patch(cursor)
         self._refresh_calculate_button_if_ready()
 
@@ -2043,8 +2088,25 @@ class CursorSelectionWidget(QWidget):
         else:
             self._update_cursor_statistics()
 
+    ROW_STYLE = (
+        "QFrame#cursorRow {"
+        "  border: 1px solid rgba(128, 128, 128, 0.35);"
+        "  border-radius: 4px;"
+        "}"
+        'QFrame#cursorRow[selected="true"] {'
+        "  border: 1px solid rgba(108, 158, 217, 0.9);"
+        "  background-color: rgba(108, 158, 217, 0.12);"
+        "}"
+    )
+
     def _build_row(self, cursor):
-        """Construct the QFrame row and store widget refs on ``cursor``."""
+        """Construct a compact list row plus an editor page for ``cursor``.
+
+        The row shows identity, statistics and actions; the parameter
+        fields live on a separate page of ``self._details_stack`` that is
+        shown only while this cursor is selected. Widget refs are stored
+        on ``cursor``.
+        """
 
         def _labeled(layout, text, widget, tooltip):
             """Add a ``text`` label + ``widget`` to ``layout``, sharing tooltip."""
@@ -2054,10 +2116,13 @@ class CursorSelectionWidget(QWidget):
             layout.addWidget(label)
             layout.addWidget(widget)
 
-        frame = QFrame()
-        frame.setFrameShape(QFrame.StyledPanel)
+        frame = ClickableFrame()
+        frame.setObjectName("cursorRow")
+        frame.setStyleSheet(self.ROW_STYLE)
+        frame.setToolTip("Click to select this cursor and edit it below.")
+        frame.setCursor(Qt.PointingHandCursor)
         row_layout = QHBoxLayout(frame)
-        row_layout.setContentsMargins(4, 2, 4, 2)
+        row_layout.setContentsMargins(6, 2, 4, 2)
         row_layout.setSpacing(4)
 
         number_label = QLabel("")
@@ -2077,97 +2142,149 @@ class CursorSelectionWidget(QWidget):
             "Color of this cursor's region in the selection overlay."
         )
 
-        # Center fields (circular + elliptic).
-        center_widget = QWidget()
-        center_line = QHBoxLayout(center_widget)
-        center_line.setContentsMargins(0, 0, 0, 0)
-        center_line.setSpacing(2)
-        g_spin = self._make_spinbox(-1.5, 1.5, cursor['g'], 2, 0.01)
-        s_spin = self._make_spinbox(-1.5, 1.5, cursor['s'], 2, 0.01)
-        radius_spin = self._make_spinbox(0.001, 1.0, cursor['radius'], 3, 0.01)
-        _labeled(
-            center_line,
-            "G",
-            g_spin,
-            "G coordinate (horizontal axis) of the cursor center.",
+        ref = self.UNIFORM_SPIN_REF
+
+        def _grid_label(text, spin, tooltip):
+            """QLabel sharing ``tooltip`` with its spin, for a grid cell."""
+            lbl = QLabel(text)
+            lbl.setToolTip(tooltip)
+            spin.setToolTip(tooltip)
+            return lbl
+
+        g_spin = self._make_spinbox(-1.5, 1.5, cursor['g'], 2, 0.01, ref)
+        s_spin = self._make_spinbox(-1.5, 1.5, cursor['s'], 2, 0.01, ref)
+        radius_spin = self._make_spinbox(
+            0.001, 1.0, cursor['radius'], 3, 0.01, ref
         )
-        _labeled(
-            center_line,
-            "S",
-            s_spin,
-            "S coordinate (vertical axis) of the cursor center.",
+        radius_minor_spin = self._make_spinbox(
+            0.001, 1.0, cursor['radius_minor'], 3, 0.01, ref
         )
-        _labeled(
-            center_line,
-            "r",
+        angle_spin = self._make_spinbox(
+            -360.0, 360.0, cursor['angle'], 1, 1.0, ref
+        )
+
+        radius_label = _grid_label(
+            "Radius:",
             radius_spin,
             "Radius of the circular cursor, or the major-axis radius of the "
             "elliptical cursor.",
         )
+        radius_minor_label = _grid_label(
+            "rₘ:",
+            radius_minor_spin,
+            "Minor-axis radius of the elliptical cursor.",
+        )
 
-        # Elliptic-only fields.
+        center_widget = QWidget()
+        ce_grid = QGridLayout(center_widget)
+        ce_grid.setContentsMargins(0, 0, 0, 0)
+        ce_grid.setHorizontalSpacing(4)
+        ce_grid.setVerticalSpacing(2)
+        ce_grid.addWidget(
+            _grid_label(
+                "Center G:",
+                g_spin,
+                "G coordinate (horizontal axis) of the cursor center.",
+            ),
+            0,
+            0,
+        )
+        ce_grid.addWidget(g_spin, 0, 1)
+        ce_grid.addWidget(
+            _grid_label(
+                "S:",
+                s_spin,
+                "S coordinate (vertical axis) of the cursor center.",
+            ),
+            0,
+            2,
+        )
+        ce_grid.addWidget(s_spin, 0, 3)
+        ce_grid.addWidget(radius_minor_label, 1, 2)
+        ce_grid.addWidget(radius_minor_spin, 1, 3)
+        ce_grid.setColumnStretch(6, 1)
+
         elliptic_widget = QWidget()
         elliptic_line = QHBoxLayout(elliptic_widget)
         elliptic_line.setContentsMargins(0, 0, 0, 0)
         elliptic_line.setSpacing(2)
-        radius_minor_spin = self._make_spinbox(
-            0.001, 1.0, cursor['radius_minor'], 3, 0.01
-        )
-        angle_spin = self._make_spinbox(-360.0, 360.0, cursor['angle'], 1, 1.0)
         _labeled(
             elliptic_line,
-            "rₘ",
-            radius_minor_spin,
-            "Minor-axis radius of the elliptical cursor.",
-        )
-        _labeled(
-            elliptic_line,
-            "∠",
+            "Angle (°):",
             angle_spin,
             "Rotation angle of the elliptical cursor, in degrees.",
         )
+        ce_grid.addWidget(elliptic_widget, 1, 4, 1, 2)
 
-        # Polar-only fields.
-        polar_widget = QWidget()
-        polar_line = QHBoxLayout(polar_widget)
-        polar_line.setContentsMargins(0, 0, 0, 0)
-        polar_line.setSpacing(2)
         phase_min_spin = self._make_spinbox(
-            -360.0, 360.0, cursor['phase_min'], 1, 1.0
+            -360.0, 360.0, cursor['phase_min'], 1, 1.0, ref
         )
         phase_max_spin = self._make_spinbox(
-            -360.0, 360.0, cursor['phase_max'], 1, 1.0
+            -360.0, 360.0, cursor['phase_max'], 1, 1.0, ref
         )
         mod_min_spin = self._make_spinbox(
-            0.0, 1.0, cursor['modulation_min'], 2, 0.01
+            0.0, 1.0, cursor['modulation_min'], 2, 0.01, ref
         )
         mod_max_spin = self._make_spinbox(
-            0.0, 1.0, cursor['modulation_max'], 2, 0.01
+            0.0, 1.0, cursor['modulation_max'], 2, 0.01, ref
         )
-        _labeled(
-            polar_line,
-            "φ₋",
-            phase_min_spin,
-            "Lower phase bound of the polar cursor, in degrees.",
+        polar_widget = QWidget()
+        polar_grid = QGridLayout(polar_widget)
+        polar_grid.setContentsMargins(0, 0, 0, 0)
+        polar_grid.setHorizontalSpacing(4)
+        polar_grid.setVerticalSpacing(2)
+        polar_grid.addWidget(
+            _grid_label(
+                "Phase (°):",
+                phase_min_spin,
+                "Lower phase bound of the polar cursor, in degrees.",
+            ),
+            0,
+            0,
         )
-        _labeled(
-            polar_line,
-            "φ₊",
-            phase_max_spin,
-            "Upper phase bound of the polar cursor, in degrees.",
+        polar_grid.addWidget(phase_min_spin, 0, 1)
+        polar_grid.addWidget(
+            _grid_label(
+                "to",
+                phase_max_spin,
+                "Upper phase bound of the polar cursor, in degrees.",
+            ),
+            0,
+            2,
         )
-        _labeled(
-            polar_line,
-            "m₋",
-            mod_min_spin,
-            "Lower modulation (radial distance) bound of the polar cursor.",
+        polar_grid.addWidget(phase_max_spin, 0, 3)
+        polar_grid.addWidget(
+            _grid_label(
+                "Modulation:",
+                mod_min_spin,
+                "Lower modulation (radial distance) bound of the polar "
+                "cursor.",
+            ),
+            1,
+            0,
         )
-        _labeled(
-            polar_line,
-            "m₊",
-            mod_max_spin,
-            "Upper modulation (radial distance) bound of the polar cursor.",
+        polar_grid.addWidget(mod_min_spin, 1, 1)
+        polar_grid.addWidget(
+            _grid_label(
+                "to",
+                mod_max_spin,
+                "Upper modulation (radial distance) bound of the polar "
+                "cursor.",
+            ),
+            1,
+            2,
         )
+        polar_grid.addWidget(mod_max_spin, 1, 3)
+        polar_grid.setColumnStretch(4, 1)
+
+        # Assemble the editor page. The radius label/spin are placed onto the
+        # circular+elliptic grid by ``_apply_type_visibility``.
+        detail = QWidget()
+        detail_layout = QVBoxLayout(detail)
+        detail_layout.setContentsMargins(0, 0, 0, 0)
+        detail_layout.setSpacing(2)
+        detail_layout.addWidget(center_widget)
+        detail_layout.addWidget(polar_widget)
 
         count_label = QLabel("-")
         count_label.setAlignment(Qt.AlignCenter)
@@ -2187,8 +2304,6 @@ class CursorSelectionWidget(QWidget):
             "Percentage of valid pixels inside this cursor's region."
         )
 
-        # A plain (non-checkable) button so its background always matches the
-        # neighbouring "×" remove button; the icon conveys the visible state.
         visibility_button = QPushButton()
         visibility_button.setFixedSize(25, 25)
         visibility_button.setIconSize(QSize(18, 18))
@@ -2198,11 +2313,8 @@ class CursorSelectionWidget(QWidget):
         remove_button.setToolTip("Remove this cursor.")
 
         row_layout.addWidget(number_label)
-        row_layout.addWidget(type_combo)
         row_layout.addWidget(color_button)
-        row_layout.addWidget(center_widget)
-        row_layout.addWidget(elliptic_widget)
-        row_layout.addWidget(polar_widget)
+        row_layout.addWidget(type_combo)
         row_layout.addStretch()
         row_layout.addWidget(n_label)
         row_layout.addWidget(count_label)
@@ -2214,15 +2326,19 @@ class CursorSelectionWidget(QWidget):
         cursor.update(
             {
                 'row': frame,
+                'detail': detail,
                 'number_label': number_label,
                 'type_combo': type_combo,
                 'color_button': color_button,
                 'center_widget': center_widget,
+                'ce_grid': ce_grid,
                 'g_spin': g_spin,
                 's_spin': s_spin,
+                'radius_label': radius_label,
                 'radius_spin': radius_spin,
-                'elliptic_widget': elliptic_widget,
+                'radius_minor_label': radius_minor_label,
                 'radius_minor_spin': radius_minor_spin,
+                'elliptic_widget': elliptic_widget,
                 'angle_spin': angle_spin,
                 'polar_widget': polar_widget,
                 'phase_min_spin': phase_min_spin,
@@ -2237,10 +2353,16 @@ class CursorSelectionWidget(QWidget):
         )
 
         self._rows_layout.addWidget(frame)
+        self._details_stack.addWidget(detail)
         self._apply_type_visibility(cursor)
         self._update_visibility_button(cursor)
 
         # Wire signals (lambdas capture the cursor dict directly).
+        frame.clicked.connect(lambda c=cursor: self._select_cursor(c))
+        # Interacting with the row's shape combo also selects the cursor.
+        type_combo.activated.connect(
+            lambda _=0, c=cursor: self._select_cursor(c)
+        )
         type_combo.currentIndexChanged.connect(
             lambda _=0, c=cursor: self._on_cursor_type_changed(c)
         )
@@ -2305,11 +2427,61 @@ class CursorSelectionWidget(QWidget):
             self._update_cursor_statistics()
 
     def _apply_type_visibility(self, cursor):
-        """Show/hide the shape-specific field groups for a cursor row."""
+        """Show/hide (and re-place) the shape-specific fields for a cursor."""
         cursor_type = cursor['type']
-        cursor['center_widget'].setVisible(cursor_type != "polar")
-        cursor['elliptic_widget'].setVisible(cursor_type == "elliptic")
+        grid = cursor['ce_grid']
+        radius_label = cursor['radius_label']
+        radius = cursor['radius_spin']
+
+        grid.removeWidget(radius_label)
+        grid.removeWidget(radius)
+        if cursor_type == "elliptic":
+            grid.addWidget(radius_label, 1, 0)
+            grid.addWidget(radius, 1, 1)
+        else:  # circular (shown on row 0) or polar (added then hidden)
+            grid.addWidget(radius_label, 0, 4)
+            grid.addWidget(radius, 0, 5)
+
+        show_center = cursor_type != "polar"
+        show_elliptic = cursor_type == "elliptic"
+        cursor['center_widget'].setVisible(show_center)
+        radius_label.setVisible(show_center)
+        radius.setVisible(show_center)
+        cursor['radius_minor_label'].setVisible(show_elliptic)
+        cursor['radius_minor_spin'].setVisible(show_elliptic)
+        cursor['elliptic_widget'].setVisible(show_elliptic)
         cursor['polar_widget'].setVisible(cursor_type == "polar")
+
+    def _select_cursor(self, cursor):
+        """Show ``cursor``'s editor page and highlight its list row.
+
+        Passing ``None`` hides the editor (no cursors on this harmonic).
+        """
+        if cursor is not None and cursor not in self._cursors:
+            return
+        self._selected_cursor = cursor
+        for c in self._cursors:
+            selected = c is cursor
+            row = c['row']
+            if row.property("selected") != selected:
+                row.setProperty("selected", selected)
+                row.style().unpolish(row)
+                row.style().polish(row)
+        if cursor is None:
+            self._editor_box.setVisible(False)
+            return
+        self._details_stack.setCurrentWidget(cursor['detail'])
+        self._editor_box.setVisible(True)
+        self._refresh_editor_title()
+
+    def _refresh_editor_title(self):
+        """Sync the editor box title with the selected cursor's identity."""
+        cursor = self._selected_cursor
+        if cursor is None:
+            return
+        number = cursor['number_label'].text().rstrip('.')
+        shape = cursor['type_combo'].currentText()
+        self._editor_box.setTitle(f"Cursor {number} — {shape}")
 
     def _resolve_cursor(self, cursor_or_idx):
         """Accept either a cursor dict or its index in ``self._cursors``."""
@@ -2319,7 +2491,6 @@ class CursorSelectionWidget(QWidget):
             return self._cursors[cursor_or_idx]
         return None
 
-    # --------------------------------------------------------- row updates
     def _update_row_visibility(self):
         """Show only rows belonging to the current harmonic and renumber."""
         current_harmonic = (
@@ -2332,6 +2503,15 @@ class CursorSelectionWidget(QWidget):
             if visible:
                 cursor['number_label'].setText(f"{number}.")
                 number += 1
+        # Keep the selection on a visible row: after a harmonic switch the
+        # selected cursor's row may have been hidden.
+        harmonic_cursors = self._current_harmonic_cursors()
+        if self._selected_cursor not in harmonic_cursors:
+            self._select_cursor(
+                harmonic_cursors[0] if harmonic_cursors else None
+            )
+        else:
+            self._refresh_editor_title()
 
     def _current_harmonic_cursors(self):
         current_harmonic = (
@@ -2344,8 +2524,10 @@ class CursorSelectionWidget(QWidget):
         ]
 
     def _on_cursor_type_changed(self, cursor):
-        """Handle the shape combobox changing for a row."""
+        """Handle the shape combobox changing for a cursor."""
         cursor['type'] = cursor['type_combo'].currentData()
+        if cursor is self._selected_cursor:
+            self._refresh_editor_title()
         self._apply_type_visibility(cursor)
         self._update_cursor_patch(cursor)
         if self._dragging_cursor is None:
@@ -2392,9 +2574,19 @@ class CursorSelectionWidget(QWidget):
 
         cursor['row'].setParent(None)
         cursor['row'].deleteLater()
+        self._details_stack.removeWidget(cursor['detail'])
+        cursor['detail'].deleteLater()
+        was_selected = cursor is self._selected_cursor
         self._cursors.remove(cursor)
+        if was_selected:
+            self._selected_cursor = None
 
         self._update_row_visibility()
+        if was_selected:
+            harmonic_cursors = self._current_harmonic_cursors()
+            self._select_cursor(
+                harmonic_cursors[-1] if harmonic_cursors else None
+            )
         self._refresh_calculate_button_if_ready()
 
         if not self._cursors:
@@ -2416,13 +2608,15 @@ class CursorSelectionWidget(QWidget):
                     cursor['patch'].remove()
             cursor['row'].setParent(None)
             cursor['row'].deleteLater()
+            self._details_stack.removeWidget(cursor['detail'])
+            cursor['detail'].deleteLater()
         self._cursors.clear()
+        self._select_cursor(None)
         self._remove_selection_layer()
         self._selection_active = False
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
-    # ------------------------------------------------------------- patches
     def _update_cursor_patch(self, cursor_or_idx):
         """Update or create the matplotlib patch for a cursor."""
         cursor = self._resolve_cursor(cursor_or_idx)
@@ -2518,7 +2712,6 @@ class CursorSelectionWidget(QWidget):
         else:
             self._update_cursor_statistics()
 
-    # ----------------------------------------------------------- selection
     def _get_current_layer(self):
         """Helper to get the currently selected image layer."""
         if self.parent_widget is None:
@@ -2868,7 +3061,6 @@ class CursorSelectionWidget(QWidget):
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
-    # --------------------------------------------------------------- drag
     def _connect_drag_events(self):
         """Connect matplotlib events for dragging cursors."""
         if self.parent_widget is None:
@@ -2887,6 +3079,9 @@ class CursorSelectionWidget(QWidget):
         for cursor in self._cursors:
             if cursor.get('patch') == event.artist:
                 self._dragging_cursor = cursor
+                # Editing on the plot selects the cursor, so its parameters
+                # are shown in the editor while dragging.
+                self._select_cursor(cursor)
                 click_pos = (event.mouseevent.xdata, event.mouseevent.ydata)
                 modifiers = QApplication.keyboardModifiers()
                 is_shift = bool(modifiers & Qt.ShiftModifier)
