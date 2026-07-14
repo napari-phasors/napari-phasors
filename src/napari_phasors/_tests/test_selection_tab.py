@@ -1748,6 +1748,40 @@ def test_automatic_clustering_apply_gmm(make_viewer_model, qtbot):
     assert layer_name in [layer.name for layer in viewer.layers]
 
 
+def test_automatic_clustering_table_has_no_internal_scrollbar(
+    make_viewer_model, qtbot
+):
+    """The cluster table should never scroll internally.
+
+    It must grow to fit all rows so the tab's own scroll area is what
+    scrolls the table into view, instead of nesting a second scrollbar.
+    """
+    viewer = make_viewer_model()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.automatic_clustering_widget
+
+    assert (
+        widget.cluster_table.verticalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
+    )
+
+    empty_height = widget.cluster_table.maximumHeight()
+
+    widget.num_clusters_spinbox.setValue(5)
+    widget._apply_clustering()
+
+    assert widget.cluster_table.rowCount() == 5
+    populated_height = widget.cluster_table.maximumHeight()
+    assert populated_height > empty_height
+
+    widget._clear_clusters()
+    # Allow a small tolerance for frame-metric jitter across Qt style
+    # recalculations; the important invariant is that it shrinks back down
+    # instead of staying at the populated height.
+    assert widget.cluster_table.maximumHeight() <= empty_height + 5
+
+
 def test_automatic_clustering_clear_clusters(make_viewer_model, qtbot):
     """Test clearing automatic clusters."""
     viewer = make_viewer_model()
