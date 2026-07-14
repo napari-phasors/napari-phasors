@@ -1257,3 +1257,157 @@ def test_filter_on_image_layer_changed_restores_full_settings(
     assert fw.median_filter_repetition_spinbox.value() == 2
     assert fw.wavelet_sigma_spinbox.value() == 3.0
     assert fw.wavelet_levels_spinbox.value() == 4
+
+
+def test_slider_minimum_tracks_data_minimum(make_viewer_model, qtbot):
+    """An image whose intensities start above zero bounds the slider minimum.
+
+    Regression: importing an already-thresholded image left the lower
+    threshold line to the left of the visible histogram because the slider
+    minimum was hard-coded to zero.
+    """
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    # Simulate an already-thresholded intensity image: nothing below 5.0.
+    mean = layer.metadata["original_mean"].astype(float)
+    mean[:] = np.linspace(5.0, 40.0, mean.size).reshape(mean.shape)
+    layer.metadata["original_mean"] = mean
+    layer.metadata["settings"] = {}  # no stored threshold
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    fw = parent.filter_tab
+    fw._on_image_layer_changed()
+
+    expected_min = int(5.0 * fw.threshold_factor)
+    assert fw.threshold_slider.minimum() == expected_min
+    lower_val, _ = fw.threshold_slider.value()
+    assert lower_val == expected_min
+    assert fw.min_threshold_edit.text() == f"{5.0:.2f}"
+
+
+def test_apply_stores_none_for_unconstrained_bounds(make_viewer_model, qtbot):
+    """Threshold handles left at the slider extremes persist as ``None``.
+
+    Regression: leaving the max handle at the top stored the current data max
+    as an explicit ``threshold_upper``. While a mask was active this froze the
+    reduced max, which then persisted after the mask was removed.
+    """
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    fw = parent.filter_tab
+
+    # Manual thresholding with both handles left at their extremes.
+    fw.threshold_slider.setValue(
+        (fw.threshold_slider.minimum(), fw.threshold_slider.maximum())
+    )
+    fw.threshold_method_combobox.setCurrentText("Manual")
+
+    with patch(
+        'napari_phasors.filter_tab.apply_filter_and_threshold'
+    ) as mock_apply:
+        fw.apply_button_clicked()
+        call_kwargs = mock_apply.call_args[1]
+        assert call_kwargs['threshold'] is None
+        assert call_kwargs['threshold_upper'] is None
+
+    # A constrained max should still be persisted as a concrete value.
+    upper = fw.threshold_slider.maximum() - 1
+    fw.threshold_slider.setValue((fw.threshold_slider.minimum(), upper))
+    with patch(
+        'napari_phasors.filter_tab.apply_filter_and_threshold'
+    ) as mock_apply:
+        fw.apply_button_clicked()
+        call_kwargs = mock_apply.call_args[1]
+        assert call_kwargs['threshold_upper'] == upper / fw.threshold_factor
+
+
+def test_unconstrained_upper_sits_at_slider_maximum(make_viewer_model, qtbot):
+    """A ``None`` stored upper threshold pins the handle to the slider maximum.
+
+    Regression: because the slider maximum is ``ceil``-rounded while the upper
+    value was ``int``-truncated, an unconstrained max landed one tick below the
+    maximum, was mistaken for a user constraint, and got frozen.
+    """
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    layer.metadata["settings"] = {
+        "threshold": 0.05,
+        "threshold_upper": None,
+        "threshold_method": "Manual",
+    }
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    fw = parent.filter_tab
+    fw._on_image_layer_changed()
+
+    _, upper_val = fw.threshold_slider.value()
+    assert upper_val == fw.threshold_slider.maximum()
+
+
+def test_max_threshold_restored_after_mask_removed(make_viewer_model, qtbot):
+    """Removing a mask restores the unconstrained max to the full-data max.
+
+    Regression: masking lowered the slider maximum, and the reduced max stuck
+    after the mask was removed instead of returning to the original range.
+    """
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    layer.metadata["settings"] = {
+        "threshold": 0.05,
+        "threshold_method": "Manual",
+    }
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    fw = parent.filter_tab
+    fw._on_image_layer_changed()
+
+    om = layer.metadata["original_mean"]
+    full_max_real = np.nanmax(om)
+    full_factor = fw.threshold_factor
+    full_max = fw.threshold_slider.maximum()
+    _, upper_full = fw.threshold_slider.value()
+    # Unconstrained upper pinned to the maximum (real units ~ data max).
+    assert upper_full == full_max
+
+    # Mask in only the below-median pixels so the visible max drops.
+    masked_max_real = np.nanmax(om[om <= np.median(om)])
+    layer.metadata["mask"] = (om <= np.median(om)).astype(int)
+    fw._on_image_layer_changed()
+
+    # The visible max drops in real units (the scaled value is not comparable
+    # because ``threshold_factor`` rescales with the magnitude).
+    assert masked_max_real < full_max_real
+    _, upper_masked = fw.threshold_slider.value()
+    assert upper_masked == fw.threshold_slider.maximum()
+    assert upper_masked / fw.threshold_factor < full_max_real
+
+    # Remove the mask: the full range and unconstrained max must return.
+    del layer.metadata["mask"]
+    fw._on_image_layer_changed()
+
+    assert fw.threshold_factor == full_factor
+    assert fw.threshold_slider.maximum() == full_max
+    _, upper_restored = fw.threshold_slider.value()
+    assert upper_restored == full_max
+
+
+def test_histogram_cleared_when_no_layer_selected(make_viewer_model, qtbot):
+    """Deselecting all phasor layers clears the intensity histogram."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    fw = parent.filter_tab
+    fw._on_image_layer_changed()
+    fw.plot_mean_histogram()
+    assert fw._histogram_data is not None
+    assert len(fw.hist_ax.patches) > 0
+
+    # Simulate all layers deselected in the phasor-layer combobox.
+    with patch.object(parent, 'get_selected_layers', return_value=[]):
+        fw._on_image_layer_changed()
+
+    assert fw._histogram_data is None
+    assert len(fw.hist_ax.patches) == 0

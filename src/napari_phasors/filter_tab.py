@@ -427,11 +427,14 @@ class FilterWidget(QWidget):
 
         method = self.threshold_method_combobox.currentText()
         max_value = self.threshold_slider.maximum()
+        min_value = self.threshold_slider.minimum()
 
         if method == "None":
             self._updating_threshold = True
-            self.threshold_slider.setValue((0, max_value))
-            self.min_threshold_edit.setText("0.00")
+            self.threshold_slider.setValue((min_value, max_value))
+            self.min_threshold_edit.setText(
+                f'{min_value / self.threshold_factor:.2f}'
+            )
             self.max_threshold_edit.setText(
                 f'{max_value / self.threshold_factor:.2f}'
             )
@@ -480,28 +483,40 @@ class FilterWidget(QWidget):
         self._refresh_apply_button()
         selected_layers = self.parent_widget.get_selected_layers()
         if not selected_layers:
+            self._clear_histogram()
+            self._histogram_needs_update = False
             return
 
         # Use primary layer metadata for settings restoration
         primary_layer = selected_layers[0]
         layer_metadata = primary_layer.metadata
 
-        # Calculate max mean value across all selected layers
+        # Calculate min and max mean values across all selected layers.
+        # The minimum is used to bound the slider so the lower-threshold line
+        # never falls to the left of the visible histogram range (which happens
+        # when an already-thresholded image is imported and its intensities
+        # start well above zero).
         max_mean_values = []
+        min_mean_values = []
         for layer in selected_layers:
             mean_data = layer.metadata.get("original_mean")
             if mean_data is None:
                 continue
             if 'mask' in layer.metadata:
-                max_val = np.nanmax(mean_data[layer.metadata['mask'] > 0])
+                valid_data = mean_data[layer.metadata['mask'] > 0]
             else:
-                max_val = np.nanmax(mean_data)
-            max_mean_values.append(max_val)
+                valid_data = mean_data
+            valid_data = valid_data[np.isfinite(valid_data)]
+            if valid_data.size == 0:
+                continue
+            max_mean_values.append(np.nanmax(valid_data))
+            min_mean_values.append(np.nanmin(valid_data))
 
         if not max_mean_values:
             return
 
         max_mean_value = max(max_mean_values)
+        min_mean_value = min(min_mean_values)
         if max_mean_value > 0:
             magnitude = int(log10(max_mean_value))
             self.threshold_factor = (
@@ -510,9 +525,13 @@ class FilterWidget(QWidget):
         else:
             self.threshold_factor = 1
 
+        # Scaled slider bounds. ``slider_min`` is the smallest selectable
+        # threshold and doubles as the "no lower threshold" default.
+        slider_min = int(min_mean_value * self.threshold_factor)
         self.threshold_slider.setMaximum(
             ceil(max_mean_value * self.threshold_factor)
         )
+        self.threshold_slider.setMinimum(slider_min)
 
         self._updating_threshold = True
 
@@ -526,12 +545,23 @@ class FilterWidget(QWidget):
             else:
                 self.threshold_method_combobox.setCurrentText("None")
 
-            if "threshold" in settings:
-                lower_val = int(settings["threshold"] * self.threshold_factor)
-                upper_val = int(
-                    (settings.get("threshold_upper") or max_mean_value)
-                    * self.threshold_factor
+            if "threshold" in settings and settings["threshold"] is not None:
+                lower_val = max(
+                    slider_min,
+                    int(settings["threshold"] * self.threshold_factor),
                 )
+                # An absent/None upper is "no limit": pin the handle exactly to
+                # the (ceil-rounded) slider maximum so it is not mistaken for a
+                # user-constrained value and frozen across mask changes.
+                if settings.get("threshold_upper") is not None:
+                    upper_val = min(
+                        int(
+                            settings["threshold_upper"] * self.threshold_factor
+                        ),
+                        self.threshold_slider.maximum(),
+                    )
+                else:
+                    upper_val = self.threshold_slider.maximum()
                 self.threshold_slider.setValue((lower_val, upper_val))
                 self.min_threshold_edit.setText(
                     f'{lower_val / self.threshold_factor:.2f}'
@@ -540,7 +570,7 @@ class FilterWidget(QWidget):
                     f'{upper_val / self.threshold_factor:.2f}'
                 )
             else:
-                lower_val = 0
+                lower_val = slider_min
                 upper_val = self.threshold_slider.maximum()
                 self.threshold_slider.setValue((lower_val, upper_val))
                 self.min_threshold_edit.setText(
@@ -602,7 +632,7 @@ class FilterWidget(QWidget):
             self.median_filter_repetition_spinbox.setValue(1)
             self.wavelet_sigma_spinbox.setValue(2.0)
             self.wavelet_levels_spinbox.setValue(1)
-            lower_val = 0
+            lower_val = slider_min
             upper_val = self.threshold_slider.maximum()
             self.threshold_slider.setValue((lower_val, upper_val))
             self.min_threshold_edit.setText(
@@ -635,7 +665,7 @@ class FilterWidget(QWidget):
 
             if not (
                 current_method == "None"
-                and lower_val == 0
+                and lower_val == self.threshold_slider.minimum()
                 and upper_val == self.threshold_slider.maximum()
             ):
                 self.threshold_method_combobox.setCurrentText("Manual")
@@ -665,8 +695,9 @@ class FilterWidget(QWidget):
             _, upper_val = self.threshold_slider.value()
 
             slider_max = self.threshold_slider.maximum()
+            slider_min = self.threshold_slider.minimum()
             new_slider_value = max(
-                0, min(new_slider_value, upper_val, slider_max)
+                slider_min, min(new_slider_value, upper_val, slider_max)
             )
 
             self._updating_threshold = True
@@ -679,7 +710,7 @@ class FilterWidget(QWidget):
             current_method = self.threshold_method_combobox.currentText()
             if current_method not in ["Manual"] and not (
                 current_method == "None"
-                and new_slider_value == 0
+                and new_slider_value == self.threshold_slider.minimum()
                 and upper_val == self.threshold_slider.maximum()
             ):
                 self.threshold_method_combobox.setCurrentText("Manual")
@@ -715,7 +746,7 @@ class FilterWidget(QWidget):
             current_method = self.threshold_method_combobox.currentText()
             if current_method not in ["Manual"] and not (
                 current_method == "None"
-                and lower_val == 0
+                and lower_val == self.threshold_slider.minimum()
                 and new_slider_value == self.threshold_slider.maximum()
             ):
                 self.threshold_method_combobox.setCurrentText("Manual")
@@ -756,10 +787,26 @@ class FilterWidget(QWidget):
         else:
             self.hist_ax.set_yscale('linear')
 
+    def _clear_histogram(self):
+        """Clear the histogram plot and its threshold overlays.
+
+        Used when no phasor layer is selected so the canvas does not keep
+        showing stale data from a previously selected layer.
+        """
+        self._histogram_data = None
+        self.hist_ax.clear()
+        self.threshold_line_lower = None
+        self.threshold_line_upper = None
+        self.threshold_area_lower = None
+        self.threshold_area_upper = None
+        self.style_histogram_axes()
+        self.hist_fig.canvas.draw_idle()
+
     def plot_mean_histogram(self):
         """Plot the histogram of the mean intensity data from all selected layers."""
         selected_layers = self.parent_widget.get_selected_layers()
         if not selected_layers:
+            self._clear_histogram()
             return
 
         # Collect mean data from all selected layers
@@ -940,8 +987,14 @@ class FilterWidget(QWidget):
         threshold_upper = None
         if threshold_method != "None":
             lower_val, upper_val = self.threshold_slider.value()
-            threshold_lower = lower_val / self.threshold_factor
-            threshold_upper = upper_val / self.threshold_factor
+            # Only persist a bound the user actually constrained. Leaving a
+            # handle at the slider extreme means "no limit" and must be stored
+            # as ``None`` so it can't get frozen to a transient data min/max
+            # (e.g. the reduced max while a mask is active).
+            if lower_val > self.threshold_slider.minimum():
+                threshold_lower = lower_val / self.threshold_factor
+            if upper_val < self.threshold_slider.maximum():
+                threshold_upper = upper_val / self.threshold_factor
 
         current_filter_method = (
             self.filter_method_combobox.currentText().lower()
