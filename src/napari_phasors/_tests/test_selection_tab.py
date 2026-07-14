@@ -386,7 +386,7 @@ def test_cursor_add_polar_defaults(make_viewer_model, qtbot):
 
 
 def test_cursor_type_change_field_visibility(make_viewer_model, qtbot):
-    """Changing the row shape combobox shows/hides the matching fields."""
+    """Changing the shape combobox shows/hides the matching editor fields."""
     viewer = make_viewer_model()
     intensity_image_layer = create_image_layer_with_phasors()
     viewer.add_layer(intensity_image_layer)
@@ -399,23 +399,23 @@ def test_cursor_type_change_field_visibility(make_viewer_model, qtbot):
     assert isinstance(combo, QComboBox)
 
     # Circular: center fields shown, others hidden.
-    assert cursor['center_widget'].isVisibleTo(cursor['row'])
-    assert not cursor['elliptic_widget'].isVisibleTo(cursor['row'])
-    assert not cursor['polar_widget'].isVisibleTo(cursor['row'])
+    assert cursor['center_widget'].isVisibleTo(cursor['detail'])
+    assert not cursor['elliptic_widget'].isVisibleTo(cursor['detail'])
+    assert not cursor['polar_widget'].isVisibleTo(cursor['detail'])
 
     # Switch to elliptical.
     combo.setCurrentIndex(combo.findData("elliptic"))
     assert cursor['type'] == 'elliptic'
-    assert cursor['center_widget'].isVisibleTo(cursor['row'])
-    assert cursor['elliptic_widget'].isVisibleTo(cursor['row'])
-    assert not cursor['polar_widget'].isVisibleTo(cursor['row'])
+    assert cursor['center_widget'].isVisibleTo(cursor['detail'])
+    assert cursor['elliptic_widget'].isVisibleTo(cursor['detail'])
+    assert not cursor['polar_widget'].isVisibleTo(cursor['detail'])
 
     # Switch to polar.
     combo.setCurrentIndex(combo.findData("polar"))
     assert cursor['type'] == 'polar'
-    assert not cursor['center_widget'].isVisibleTo(cursor['row'])
-    assert not cursor['elliptic_widget'].isVisibleTo(cursor['row'])
-    assert cursor['polar_widget'].isVisibleTo(cursor['row'])
+    assert not cursor['center_widget'].isVisibleTo(cursor['detail'])
+    assert not cursor['elliptic_widget'].isVisibleTo(cursor['detail'])
+    assert cursor['polar_widget'].isVisibleTo(cursor['detail'])
 
 
 def test_cursor_remove(make_viewer_model, qtbot):
