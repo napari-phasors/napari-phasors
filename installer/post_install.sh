@@ -2,12 +2,17 @@
 # Post-install script: install napari-phasors and create launchers
 "${PREFIX}/bin/pip" install napari-phasors
 
-# Create a launcher script
+# Create a launcher script. Activate the conda environment before starting
+# napari so Qt can find its platform plugins and libraries. Without
+# activation, the environment's activate.d scripts (which set QT_PLUGIN_PATH,
+# FONTCONFIG_PATH, GSETTINGS_SCHEMA_DIR, LD_LIBRARY_PATH, ...) never run and
+# napari aborts on launch with "could not load the Qt platform plugin 'xcb'".
 cat > "${PREFIX}/napari-phasors" << 'LAUNCHER'
 #!/bin/bash
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export PATH="${DIR}/bin:${DIR}/lib:${PATH}"
-exec "${DIR}/bin/napari" "$@"
+# shellcheck disable=SC1091
+source "${DIR}/bin/activate" "${DIR}"
+exec "${DIR}/bin/python" -m napari "$@"
 LAUNCHER
 chmod +x "${PREFIX}/napari-phasors"
 
