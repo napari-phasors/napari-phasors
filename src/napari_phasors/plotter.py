@@ -1565,6 +1565,8 @@ class PlotterWidget(QWidget):
         self.layout().setContentsMargins(0, 0, 0, 0)
         self.layout().setSpacing(2)
 
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+
         # Initialize data attributes
         self._g_array = None
         self._s_array = None
@@ -1582,9 +1584,6 @@ class PlotterWidget(QWidget):
         self._last_histogram_color_indices = None
         self._last_scatter_color_indices = None
 
-        # User-defined axes limits: set when user explicitly zooms/pans.
-        # When not None, these limits are always restored after every plot()
-        # so that layer selection changes never reset the user's zoom.
         # Cleared only on fresh layer load.
         self._user_axes_limits = None
 
@@ -1960,11 +1959,6 @@ class PlotterWidget(QWidget):
         self._bins_timer.setInterval(500)  # 500ms delay
         self._bins_timer.timeout.connect(self._process_bins_change)
 
-        # Debounce canvas resizes triggered from eventFilter. Parented to self
-        # (single-shot) so Qt destroys it with the widget: a bare
-        # ``QTimer.singleShot(0, self._resize_canvas_to_available_space)`` would
-        # be orphaned and could still fire after the widget is deleted during
-        # teardown, calling into a freed C++ object — a PySide6 segfault.
         self._resize_canvas_timer = QTimer(self)
         self._resize_canvas_timer.setSingleShot(True)
         self._resize_canvas_timer.setInterval(0)
@@ -2334,13 +2328,8 @@ class PlotterWidget(QWidget):
             and self.viewer.window is not None
             and hasattr(self.viewer.window, '_qt_window')
         ):
-            # Give the bottom area's corners to the left/right dock areas so
-            # the layer list and plotter/analysis columns keep their full
-            # height and the bottom docks are squeezed into the centre column.
             self._assign_bottom_corners_to_side_docks()
 
-            # Analysis tabs go to the right area, beneath the plotter, so they
-            # extend full height alongside the phasor plot.
             self._analysis_dock = self.viewer.window.add_dock_widget(
                 self.analysis_widget,
                 name="Phasor Analysis",
@@ -4646,7 +4635,6 @@ class PlotterWidget(QWidget):
         while old_grid.count():
             old_grid.takeAt(0)
 
-        # Plot type & background -------------------------------------------
         type_box, _ = make_section("Plot type & background")
         type_grid = QGridLayout()
         type_box.layout().addLayout(type_grid)
@@ -4660,7 +4648,6 @@ class PlotterWidget(QWidget):
             type_grid.addWidget(label, row, 0)
             type_grid.addWidget(field, row, 1)
 
-        # Appearance (reflow target) ---------------------------------------
         appearance_box, _ = make_section("Appearance")
         appearance_grid = QGridLayout()
         appearance_box.layout().addLayout(appearance_grid)
@@ -4682,7 +4669,6 @@ class PlotterWidget(QWidget):
         appearance_grid.addWidget(piw.label_contour_layer_settings, 99, 0)
         appearance_grid.addWidget(piw.contour_layer_settings_button, 99, 1)
 
-        # Phasor centers ----------------------------------------------------
         pc_box, _ = make_section("Phasor centers")
         pc_grid = QGridLayout()
         pc_box.layout().addLayout(pc_grid)
