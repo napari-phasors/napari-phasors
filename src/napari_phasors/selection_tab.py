@@ -119,12 +119,6 @@ class SelectionWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         self.setStyleSheet(analysis_section_stylesheet())
 
-        # Everything (mode selector + whichever mode's controls are active)
-        # lives inside a scroll area, so a tall cursor list scrolls together
-        # with the mode selector instead of growing this tab's minimum size
-        # (which would squeeze the other tabs and docks). A horizontal
-        # scrollbar appears if the dock is narrower than the content needs,
-        # instead of clipping fields.
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QFrame.NoFrame)
@@ -1872,11 +1866,6 @@ class CursorSelectionWidget(QWidget):
         """Set up the user interface."""
         self.setStyleSheet(analysis_section_stylesheet())
 
-        # This widget's content is scrolled by the ``QScrollArea`` that
-        # ``SelectionWidget`` wraps around the mode selector and the whole
-        # stacked mode widget, so a long list of cursors scrolls together
-        # with the mode selector instead of growing this widget's minimum
-        # height (which would squeeze the other tabs and docks).
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 5, 0, 0)
 
@@ -1898,9 +1887,7 @@ class CursorSelectionWidget(QWidget):
         cursors_box_layout.addWidget(self.add_cursor_button)
         layout.addWidget(cursors_box)
 
-        # Editor for the selected cursor's parameters. One page per cursor
-        # (so each cursor keeps its own spinboxes and signal wiring); only
-        # the selected cursor's page is shown.
+        # Editor for the selected cursor's parameters.
         self._editor_box, editor_layout = make_section("Selected Cursor")
         self._details_stack = CurrentPageStackedWidget()
         editor_layout.addWidget(self._details_stack)
@@ -1972,20 +1959,8 @@ class CursorSelectionWidget(QWidget):
             return (xlim[0] + xlim[1]) / 2.0, (ylim[0] + ylim[1]) / 2.0
         return 0.5, 0.5
 
-    # napari's QSS (00_base.qss) pads QAbstractSpinBox by 10px on each side
-    # and draws a 20px-wide up-button and down-button on the right/left
-    # edges (unlike plain Qt, where both arrows stack in one ~16px column on
-    # the right only) — wider chrome than a generic Qt spinbox needs. This is
-    # fed into an inline "min-width" rule (see ``_make_spinbox``); Qt's CSS
-    # box model then adds the 20px of left+right padding *again* on top of
-    # that value, so this constant is deliberately smaller than the ~60px of
-    # true on-screen chrome to compensate and avoid an oversized box.
     SPINBOX_CHROME = 46
 
-    # Common value string used to size every editor spinbox to the same
-    # width, so fields line up vertically between the two rows of the
-    # elliptical and polar layouts. It is the widest value any field shows
-    # ("-360.0" for the angle/phase fields).
     UNIFORM_SPIN_REF = "-360.0"
 
     @classmethod
@@ -1995,27 +1970,16 @@ class CursorSelectionWidget(QWidget):
         spin.setSingleStep(step)
         spin.setDecimals(decimals)
         spin.setValue(value)
-        # Size the box from ``width_ref`` (a shared widest-value string, so a
-        # group of boxes ends up identical) or, if not given, from this
-        # field's own widest possible value — plus napari's real
-        # button/padding chrome, so all decimals stay visible.
         if width_ref is None:
             width_ref = max(
                 f"{low:.{decimals}f}", f"{high:.{decimals}f}", key=len
             )
         text_width = spin.fontMetrics().horizontalAdvance(width_ref)
         width = max(70, text_width + cls.SPINBOX_CHROME)
-        # The inline stylesheet has the highest cascade priority and pins the
-        # on-screen box size even when Qt re-polishes the widget (napari's
-        # app-level QSS otherwise wins). ``setMinimumWidth`` additionally
-        # feeds the widget's minimum into the QGridLayout column sizing —
-        # the CSS ``min-width`` alone does not, so without it the box
-        # overflows its grid cell and covers the next label.
         spin.setStyleSheet(f"min-width: {width}px; max-width: {width + 12}px;")
         spin.setMinimumWidth(width)
         return spin
 
-    # ------------------------------------------------------------- add row
     def _add_cursor(
         self,
         cursor_type="circular",
@@ -2124,8 +2088,6 @@ class CursorSelectionWidget(QWidget):
         else:
             self._update_cursor_statistics()
 
-    # Rounded box around each cursor row; the selected row gets an accent
-    # border. rgba keeps both legible in the light and dark napari themes.
     ROW_STYLE = (
         "QFrame#cursorRow {"
         "  border: 1px solid rgba(128, 128, 128, 0.35);"
@@ -2180,10 +2142,6 @@ class CursorSelectionWidget(QWidget):
             "Color of this cursor's region in the selection overlay."
         )
 
-        # ---- Editor page field groups ----------------------------------
-        # All parameter spinboxes share one width (UNIFORM_SPIN_REF) so they
-        # line up vertically between the two rows of the elliptical and polar
-        # grids below.
         ref = self.UNIFORM_SPIN_REF
 
         def _grid_label(text, spin, tooltip):
@@ -2217,13 +2175,6 @@ class CursorSelectionWidget(QWidget):
             "Minor-axis radius of the elliptical cursor.",
         )
 
-        # Circular + elliptic grid. Row 0 is the centre (G, S); for elliptic
-        # cursors the radius, minor radius (rₘ) and angle occupy row 1,
-        # column-aligned under G/S. For circular cursors the radius is moved
-        # up beside G/S onto row 0 (repositioning happens in
-        # ``_apply_type_visibility``). The spinboxes' uniform minimum width
-        # (set in ``_make_spinbox``) makes each column the same size, so the
-        # two rows line up.
         center_widget = QWidget()
         ce_grid = QGridLayout(center_widget)
         ce_grid.setContentsMargins(0, 0, 0, 0)
@@ -2253,8 +2204,6 @@ class CursorSelectionWidget(QWidget):
         ce_grid.addWidget(radius_minor_spin, 1, 3)
         ce_grid.setColumnStretch(6, 1)
 
-        # Angle field (elliptic only), spanning the third column pair of the
-        # grid so it aligns to the right of rₘ.
         elliptic_widget = QWidget()
         elliptic_line = QHBoxLayout(elliptic_widget)
         elliptic_line.setContentsMargins(0, 0, 0, 0)
@@ -2267,8 +2216,6 @@ class CursorSelectionWidget(QWidget):
         )
         ce_grid.addWidget(elliptic_widget, 1, 4, 1, 2)
 
-        # Polar grid: phase range on row 0, modulation range on row 1, with
-        # the min/max spinboxes column-aligned between the two rows.
         phase_min_spin = self._make_spinbox(
             -360.0, 360.0, cursor['phase_min'], 1, 1.0, ref
         )
@@ -2357,8 +2304,6 @@ class CursorSelectionWidget(QWidget):
             "Percentage of valid pixels inside this cursor's region."
         )
 
-        # A plain (non-checkable) button so its background always matches the
-        # neighbouring "×" remove button; the icon conveys the visible state.
         visibility_button = QPushButton()
         visibility_button.setFixedSize(25, 25)
         visibility_button.setIconSize(QSize(18, 18))
@@ -2367,8 +2312,6 @@ class CursorSelectionWidget(QWidget):
         remove_button.setFixedSize(25, 25)
         remove_button.setToolTip("Remove this cursor.")
 
-        # Assemble the compact list row. The shape combobox lives here so the
-        # cursor's type can be changed without opening the editor.
         row_layout.addWidget(number_label)
         row_layout.addWidget(color_button)
         row_layout.addWidget(type_combo)
@@ -2489,9 +2432,7 @@ class CursorSelectionWidget(QWidget):
         grid = cursor['ce_grid']
         radius_label = cursor['radius_label']
         radius = cursor['radius_spin']
-        # The radius sits beside G/S on row 0 for circular cursors, and on
-        # row 1 (column-aligned under G) for elliptical cursors. Detach then
-        # re-add it at the position for the current shape.
+
         grid.removeWidget(radius_label)
         grid.removeWidget(radius)
         if cursor_type == "elliptic":
@@ -2511,7 +2452,6 @@ class CursorSelectionWidget(QWidget):
         cursor['elliptic_widget'].setVisible(show_elliptic)
         cursor['polar_widget'].setVisible(cursor_type == "polar")
 
-    # ------------------------------------------------------------ selection
     def _select_cursor(self, cursor):
         """Show ``cursor``'s editor page and highlight its list row.
 
@@ -2551,7 +2491,6 @@ class CursorSelectionWidget(QWidget):
             return self._cursors[cursor_or_idx]
         return None
 
-    # --------------------------------------------------------- row updates
     def _update_row_visibility(self):
         """Show only rows belonging to the current harmonic and renumber."""
         current_harmonic = (
@@ -2678,7 +2617,6 @@ class CursorSelectionWidget(QWidget):
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
-    # ------------------------------------------------------------- patches
     def _update_cursor_patch(self, cursor_or_idx):
         """Update or create the matplotlib patch for a cursor."""
         cursor = self._resolve_cursor(cursor_or_idx)
@@ -2774,7 +2712,6 @@ class CursorSelectionWidget(QWidget):
         else:
             self._update_cursor_statistics()
 
-    # ----------------------------------------------------------- selection
     def _get_current_layer(self):
         """Helper to get the currently selected image layer."""
         if self.parent_widget is None:
@@ -3124,7 +3061,6 @@ class CursorSelectionWidget(QWidget):
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
-    # --------------------------------------------------------------- drag
     def _connect_drag_events(self):
         """Connect matplotlib events for dragging cursors."""
         if self.parent_widget is None:
