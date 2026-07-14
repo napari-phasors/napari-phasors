@@ -11,6 +11,7 @@ from phasorpy.lifetime import (
 from phasorpy.phasor import phasor_center
 
 from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
+from napari_phasors.calibration_tab import _HTML_LABEL_ROLE
 from napari_phasors.plotter import PlotterWidget
 
 
@@ -785,3 +786,132 @@ def test_close_event_unhooking(make_viewer_model, qtbot):
     # The event is accepted and a second close is harmless (already unhooked).
     widget.closeEvent(event)
     assert True  # accept() may be handled by base class
+
+
+def test_fluorophore_combobox_populates_lifetime(make_viewer_model, qtbot):
+    """Selecting a reference fluorophore fills the lifetime edit."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.calibration_tab
+
+    combobox = widget.calibration_widget.fluorophore_combobox
+    lifetime_edit = widget.calibration_widget.lifetime_line_edit_widget
+
+    # First item is the placeholder and carries no lifetime.
+    assert combobox.itemData(0) is None
+    assert combobox.count() > 1
+
+    # Select the first real fluorophore entry.
+    combobox.setCurrentIndex(1)
+    expected = combobox.itemData(1)
+    assert lifetime_edit.text() == f"{expected:g}"
+
+
+def test_fluorophore_reset_on_manual_lifetime_edit(make_viewer_model, qtbot):
+    """Editing the lifetime by hand resets the fluorophore selection."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.calibration_tab
+
+    combobox = widget.calibration_widget.fluorophore_combobox
+    lifetime_edit = widget.calibration_widget.lifetime_line_edit_widget
+
+    combobox.setCurrentIndex(1)
+    assert combobox.currentIndex() == 1
+
+    # Simulate a user editing the field (textEdited fires only on user input).
+    lifetime_edit.setText("2.5")
+    widget._on_lifetime_edited("2.5")
+    assert combobox.currentIndex() == 0
+
+
+def test_fluorophore_placeholder_selection_noop(make_viewer_model, qtbot):
+    """Selecting the placeholder entry leaves the lifetime edit untouched."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.calibration_tab
+
+    lifetime_edit = widget.calibration_widget.lifetime_line_edit_widget
+
+    # Put a value in the lifetime edit, then select the placeholder (index 0,
+    # itemData is None). The handler should hit its early return and not touch
+    # the lifetime edit.
+    lifetime_edit.setText("3.14")
+    widget._on_fluorophore_selected(0)
+    assert lifetime_edit.text() == "3.14"
+
+
+def test_lifetime_edit_from_combo_does_not_reset(make_viewer_model, qtbot):
+    """Programmatic lifetime edits (from the combo) must not reset the combo."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.calibration_tab
+
+    combobox = widget.calibration_widget.fluorophore_combobox
+
+    combobox.setCurrentIndex(1)
+    assert combobox.currentIndex() == 1
+
+    # While the guard flag is set (as it is during _on_fluorophore_selected),
+    # _on_lifetime_edited must early-return and leave the selection alone.
+    widget._setting_lifetime_from_combo = True
+    widget._on_lifetime_edited("9.9")
+    assert combobox.currentIndex() == 1
+
+
+def test_rich_text_delegate_paint_with_html(make_viewer_model, qtbot):
+    """The delegate renders an item's HTML label without raising."""
+    from qtpy.QtGui import QPainter, QPixmap
+    from qtpy.QtWidgets import QStyle, QStyleOptionViewItem
+
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.calibration_tab
+
+    combobox = widget.calibration_widget.fluorophore_combobox
+    delegate = combobox.itemDelegate()
+    model = combobox.model()
+
+    pixmap = QPixmap(200, 20)
+    painter = QPainter(pixmap)
+    try:
+        option = QStyleOptionViewItem()
+        option.rect = pixmap.rect()
+
+        # Item 1 carries an HTML label -> the rich-text rendering branch.
+        html_index = model.index(1, 0)
+        assert html_index.data(_HTML_LABEL_ROLE) is not None
+        delegate.paint(painter, option, html_index)
+
+        # Same item painted while selected exercises the highlighted-text color.
+        option.state |= QStyle.State_Selected
+        delegate.paint(painter, option, html_index)
+    finally:
+        painter.end()
+
+
+def test_rich_text_delegate_paint_without_html(make_viewer_model, qtbot):
+    """Items without an HTML label fall back to the default painting path."""
+    from qtpy.QtGui import QPainter, QPixmap
+    from qtpy.QtWidgets import QStyleOptionViewItem
+
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.calibration_tab
+
+    combobox = widget.calibration_widget.fluorophore_combobox
+    delegate = combobox.itemDelegate()
+    model = combobox.model()
+
+    pixmap = QPixmap(200, 20)
+    painter = QPainter(pixmap)
+    try:
+        option = QStyleOptionViewItem()
+        option.rect = pixmap.rect()
+
+        # Item 0 is the placeholder and carries no HTML label -> super().paint.
+        plain_index = model.index(0, 0)
+        assert plain_index.data(_HTML_LABEL_ROLE) is None
+        delegate.paint(painter, option, plain_index)
+    finally:
+        painter.end()

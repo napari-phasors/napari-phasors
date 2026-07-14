@@ -1,4 +1,5 @@
 import contextlib
+from html import escape
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -6,7 +7,10 @@ from napari.layers import Image
 from napari.utils.notifications import show_error
 from phasorpy.lifetime import phasor_from_lifetime, polar_from_reference_phasor
 from phasorpy.phasor import phasor_center, phasor_transform
+from qtpy.QtCore import QRectF, QSize, Qt
+from qtpy.QtGui import QAbstractTextDocumentLayout, QPalette, QTextDocument
 from qtpy.QtWidgets import (
+    QApplication,
     QComboBox,
     QGridLayout,
     QLabel,
@@ -14,19 +18,92 @@ from qtpy.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QVBoxLayout,
     QWidget,
 )
 
 from ._utils import (
+    REFERENCE_LIFETIMES_SOURCE,
     analysis_section_stylesheet,
     apply_filter_and_threshold,
     make_section,
+    reference_lifetimes,
     setup_primary_button,
 )
 
 if TYPE_CHECKING:
     import napari
+
+#: Qt.ItemDataRole slot used to stash the HTML label rendered by
+#: ``_RichTextItemDelegate``, kept separate from the plain-text
+#: ``Qt.DisplayRole`` so ``currentText``/``itemText`` stay unaffected.
+_HTML_LABEL_ROLE = Qt.UserRole + 1
+
+
+class _RichTextItemDelegate(QStyledItemDelegate):
+    """Item delegate that renders an item's HTML label, if any, in a popup.
+
+    Only affects the dropdown popup list; the combobox's own closed-state
+    display always shows the plain-text ``Qt.DisplayRole``.
+    """
+
+    def paint(self, painter, option, index):
+        html = index.data(_HTML_LABEL_ROLE)
+        if html is None:
+            super().paint(painter, option, index)
+            return
+
+        options = QStyleOptionViewItem(option)
+        self.initStyleOption(options, index)
+        style = (
+            options.widget.style() if options.widget else QApplication.style()
+        )
+
+        doc = QTextDocument()
+        doc.setHtml(html)
+
+        options.text = ""
+        style.drawControl(
+            QStyle.CE_ItemViewItem, options, painter, options.widget
+        )
+
+        painter.save()
+        text_rect = style.subElementRect(
+            QStyle.SE_ItemViewItemText, options, options.widget
+        )
+        painter.translate(text_rect.topLeft())
+        doc.setTextWidth(text_rect.width())
+
+        # QTextDocument defaults to black text, ignoring the item's palette
+        # (e.g. white text in napari's dark theme). Drawing through the
+        # document layout with an explicit paint context, rather than
+        # doc.drawContents(), lets the correct themed color come through.
+        ctx = QAbstractTextDocumentLayout.PaintContext()
+        text_color = options.palette.color(
+            QPalette.HighlightedText
+            if options.state & QStyle.State_Selected
+            else QPalette.Text
+        )
+        ctx.palette.setColor(QPalette.Text, text_color)
+        ctx.clip = QRectF(0, 0, text_rect.width(), text_rect.height())
+        doc.documentLayout().draw(painter, ctx)
+        painter.restore()
+
+    def sizeHint(self, option, index):
+        html = index.data(_HTML_LABEL_ROLE)
+        if html is None:
+            return super().sizeHint(option, index)
+
+        options = QStyleOptionViewItem(option)
+        self.initStyleOption(options, index)
+        doc = QTextDocument()
+        doc.setHtml(html)
+        doc.setTextWidth(max(options.rect.width(), 1))
+        return QSize(int(doc.idealWidth()), int(doc.size().height()))
 
 
 class CalibrationWidget(QWidget):
@@ -57,6 +134,16 @@ class CalibrationWidget(QWidget):
         )
         self.calibration_widget.lifetime_line_edit_widget.textChanged.connect(
             lambda _=None: self._refresh_calibrate_button()
+        )
+
+        # Fill the lifetime edit when a reference fluorophore is picked, and
+        # clear the selection back to the placeholder if the user then edits
+        # the lifetime by hand (so the shown fluorophore never contradicts it).
+        self.calibration_widget.fluorophore_combobox.currentIndexChanged.connect(
+            self._on_fluorophore_selected
+        )
+        self.calibration_widget.lifetime_line_edit_widget.textEdited.connect(
+            self._on_lifetime_edited
         )
         self.calibration_widget.calibration_layer_combobox.currentTextChanged.connect(
             lambda _=None: self._refresh_calibrate_button()
@@ -115,19 +202,82 @@ class CalibrationWidget(QWidget):
         parameters_layout.addLayout(parameters_grid)
         widget.frequency_label_widget = QLabel("Frequency (MHz):")
         widget.frequency_input = QLineEdit()
+        widget.fluorophore_label_widget = QLabel("Reference fluorophore:")
+        widget.fluorophore_combobox = QComboBox()
         widget.lifetime_label_widget = QLabel("Lifetime (ns):")
         widget.lifetime_line_edit_widget = QLineEdit()
         parameters_grid.addWidget(widget.frequency_label_widget, 0, 0)
         parameters_grid.addWidget(widget.frequency_input, 0, 1)
-        parameters_grid.addWidget(widget.lifetime_label_widget, 1, 0)
-        parameters_grid.addWidget(widget.lifetime_line_edit_widget, 1, 1)
+        parameters_grid.addWidget(widget.fluorophore_label_widget, 1, 0)
+        parameters_grid.addWidget(widget.fluorophore_combobox, 1, 1)
+        parameters_grid.addWidget(widget.lifetime_label_widget, 2, 0)
+        parameters_grid.addWidget(widget.lifetime_line_edit_widget, 2, 1)
         layout.addWidget(parameters_box)
+
+        self._populate_fluorophore_combobox(widget.fluorophore_combobox)
 
         widget.calibrate_push_button = QPushButton("Calibrate")
         layout.addWidget(widget.calibrate_push_button)
 
         layout.addStretch(1)
         return widget
+
+    def _populate_fluorophore_combobox(self, combobox):
+        """Fill the reference-fluorophore combobox from the known lifetimes.
+
+        The first entry is a placeholder; each fluorophore entry stores its
+        lifetime (ns) as item data so selecting it can fill the lifetime edit.
+        """
+        combobox.setItemDelegate(_RichTextItemDelegate(combobox))
+
+        combobox.addItem("Select fluorophore (optional)", None)
+        for entry in reference_lifetimes():
+            name = escape(entry['name'])
+            rest = f"({escape(entry['solvent'])}): {entry['lifetime']:g} ns"
+            combobox.addItem(f"{entry['name']} {rest}", entry["lifetime"])
+            combobox.setItemData(
+                combobox.count() - 1,
+                f"<b>{name}</b> {rest}",
+                _HTML_LABEL_ROLE,
+            )
+        # Long fluorophore labels shouldn't force the combobox (and thus the
+        # whole tab) to widen; let it size to a modest content length and
+        # shrink/grow with the layout instead. The full label is still shown
+        # via the tooltip-less native elided text and the dropdown popup.
+        combobox.setMinimumContentsLength(8)
+        combobox.setSizeAdjustPolicy(
+            QComboBox.AdjustToMinimumContentsLengthWithIcon
+        )
+        combobox.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        combobox.setToolTip(
+            "Pick a reference fluorophore to fill in its known lifetime.\n"
+            f"Source: {REFERENCE_LIFETIMES_SOURCE}"
+        )
+
+    def _on_fluorophore_selected(self, index):
+        """Populate the lifetime edit with the selected fluorophore lifetime."""
+        lifetime = self.calibration_widget.fluorophore_combobox.itemData(index)
+        if lifetime is None:
+            return
+        lifetime_edit = self.calibration_widget.lifetime_line_edit_widget
+        # Setting the text programmatically must not reset the combobox, so
+        # guard against the ``_on_lifetime_edited`` handler (it only reacts to
+        # user edits, but stay explicit).
+        self._setting_lifetime_from_combo = True
+        try:
+            lifetime_edit.setText(f"{lifetime:g}")
+        finally:
+            self._setting_lifetime_from_combo = False
+
+    def _on_lifetime_edited(self, _text=None):
+        """Reset the fluorophore selection when the lifetime is edited by hand."""
+        if getattr(self, '_setting_lifetime_from_combo', False):
+            return
+        combobox = self.calibration_widget.fluorophore_combobox
+        if combobox.currentIndex() != 0:
+            combobox.blockSignals(True)
+            combobox.setCurrentIndex(0)
+            combobox.blockSignals(False)
 
     def _populate_comboboxes(self, event=None):
         """Populate calibration layer combobox with image layers."""
