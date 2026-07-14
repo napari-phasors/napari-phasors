@@ -32,6 +32,7 @@ from qtpy.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QStyle,
     QTableWidget,
@@ -1087,6 +1088,13 @@ class AutomaticClusteringWidget(QWidget):
         self.cluster_table.setColumnWidth(6, 60)
         self.cluster_table.setColumnWidth(7, 40)
         self.cluster_table.verticalHeader().setVisible(False)
+        # The table should grow to show every row instead of scrolling
+        # internally — the outer tab scroll area handles scrolling instead.
+        self.cluster_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.cluster_table.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed
+        )
+        self._update_cluster_table_height()
         layout.addWidget(self.cluster_table)
 
         # Clear button
@@ -1234,6 +1242,23 @@ class AutomaticClusteringWidget(QWidget):
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
+    def _update_cluster_table_height(self):
+        """Resize the table to exactly fit its header and rows.
+
+        The table's own vertical scrollbar is disabled (see ``_setup_ui``) so
+        it never scrolls internally; instead it reports a fixed height that
+        fits all rows, and the enclosing tab's scroll area scrolls the whole
+        table into view.
+        """
+        self.cluster_table.resizeRowsToContents()
+        header_height = self.cluster_table.horizontalHeader().height()
+        rows_height = sum(
+            self.cluster_table.rowHeight(row)
+            for row in range(self.cluster_table.rowCount())
+        )
+        frame = 2 * self.cluster_table.frameWidth()
+        self.cluster_table.setFixedHeight(header_height + rows_height + frame)
+
     def _populate_cluster_table(self):
         """Populate the table with cluster information."""
         self.cluster_table.setRowCount(0)
@@ -1288,6 +1313,8 @@ class AutomaticClusteringWidget(QWidget):
                 lambda _, idx=cluster_idx: self._remove_cluster(idx)
             )
             self.cluster_table.setCellWidget(table_row, 7, remove_button)
+
+        self._update_cluster_table_height()
 
     def _on_cluster_color_changed(self, cluster_idx, new_color):
         """Handle color change for a cluster."""
@@ -1597,6 +1624,7 @@ class AutomaticClusteringWidget(QWidget):
         if not clear_patches_only:
             # Clear table
             self.cluster_table.setRowCount(0)
+            self._update_cluster_table_height()
 
             # Remove all labels layers
             self._clear_all_labels_layers()

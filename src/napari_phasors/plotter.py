@@ -3578,6 +3578,8 @@ class PlotterWidget(QWidget):
             self.components_tab.clear_artists()
         if hasattr(self, 'fret_tab'):
             self.fret_tab.clear_artists()
+        if hasattr(self, 'filter_tab'):
+            self.filter_tab._clear_histogram()
         self._clear_phasor_center_artists()
 
     def _show_tab_artists(self, current_tab):
