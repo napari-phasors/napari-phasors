@@ -5509,6 +5509,42 @@ class ComponentsWidget(QWidget):
 
         return {}, False
 
+    def _label_fraction_datasets(
+        self, data_by_image, fraction_layers_map, selected_text, invert
+    ):
+        """Label per-image fraction data after the analysis (fraction) layer.
+
+        Parameters
+        ----------
+        data_by_image : dict
+            ``{image_layer_name: np.ndarray}`` fraction data per source image
+            (already inverted for the Linear Projection second component).
+        fraction_layers_map : dict
+            ``{image_layer_name: napari.layers.Image}`` underlying fraction
+            layers.
+        selected_text : str
+            The component display name selected in the combobox.
+        invert : bool
+            True when showing the Linear Projection second component, whose
+            fraction is ``1 - first`` and has no layer of its own. In that
+            case a virtual ``"<component> fractions: <image>"`` label is
+            built, since the underlying layer belongs to the first component.
+
+        Returns
+        -------
+        dict
+            ``{analysis_layer_name: flattened np.ndarray}``.
+        """
+        labeled = {}
+        for img_name, data in data_by_image.items():
+            if invert:
+                label = f"{selected_text} fractions: {img_name}"
+            else:
+                fl = fraction_layers_map.get(img_name)
+                label = fl.name if fl is not None else img_name
+            labeled[label] = np.asarray(data, dtype=float).ravel()
+        return labeled
+
     def _update_histogram_combobox(self):
         """Populate the component selector comboboxes with fraction layers.
 
@@ -5631,27 +5667,18 @@ class ComponentsWidget(QWidget):
             gamma=first_layer.gamma,
         )
 
-        # Pool the (clipped) data from every selected layer into a single
-        # merged histogram so all layers contribute, rather than showing a
-        # per-layer mean +/- SD that visually resembles a single layer.
-        # Name the histogram dataset after the analysis (fraction) layer, not
-        # the intensity image layer, matching the statistics Name column to the
-        # created layers (as in the FRET tab). Pooled multi-image data is
-        # labelled with the component's display name.
-        if len(clipped_data) > 1:
-            pooled = np.concatenate(
-                [
-                    np.asarray(d, dtype=float).ravel()
-                    for d in clipped_data.values()
-                ]
-            )
-            self.histogram_widget.update_data(pooled, label=selected_text)
+        # Feed the histogram one dataset per selected layer (labelled after
+        # the analysis fraction layer, as in the FRET tab) so the Merged /
+        # Individual layers / Grouped display modes and per-row statistics
+        # all work.
+        per_layer = self._label_fraction_datasets(
+            clipped_data, fraction_layers_map, selected_text, invert
+        )
+        if len(per_layer) > 1:
+            self.histogram_widget.update_multi_data(per_layer)
         else:
-            first_layer = next(iter(fraction_layers_map.values()))
-            first_data = next(iter(clipped_data.values()))
-            self.histogram_widget.update_data(
-                first_data, label=first_layer.name
-            )
+            label, data = next(iter(per_layer.items()))
+            self.histogram_widget.update_data(data, label=label)
 
         self.draw_line_between_components()
 
@@ -5740,32 +5767,26 @@ class ComponentsWidget(QWidget):
                 slider_max=data_max,
             )
 
-        # Pool the data from every selected layer into a single merged
-        # histogram so all layers contribute, rather than showing a per-layer
-        # mean +/- SD that visually resembles a single layer.
-        # Name the histogram dataset after the analysis (fraction) layer -
-        # e.g. "Component 2 fraction: <image>" - rather than the intensity
-        # image layer, so the statistics Name column matches the created
-        # layers (as in the FRET tab). Multiple selected images are pooled
-        # into one merged histogram, so it is labelled with the component's
-        # display name.
-        if len(fraction_layers_map) > 1:
-            pooled_layers = [
-                (
-                    1.0 - np.asarray(fl.data, dtype=float)
-                    if invert
-                    else np.asarray(fl.data, dtype=float)
-                ).ravel()
-                for fl in fraction_layers_map.values()
-            ]
-            self.histogram_widget.update_data(
-                np.concatenate(pooled_layers), label=selected_text
+        # Feed the histogram one dataset per selected layer (labelled after
+        # the analysis fraction layer - e.g. "Component 2 fraction: <image>" -
+        # as in the FRET tab) so the Merged / Individual layers / Grouped
+        # display modes and per-row statistics all work.
+        raw_data = {
+            img_name: (
+                1.0 - np.asarray(fl.data, dtype=float)
+                if invert
+                else np.asarray(fl.data, dtype=float)
             )
+            for img_name, fl in fraction_layers_map.items()
+        }
+        per_layer = self._label_fraction_datasets(
+            raw_data, fraction_layers_map, selected_text, invert
+        )
+        if len(per_layer) > 1:
+            self.histogram_widget.update_multi_data(per_layer)
         else:
-            data = first_layer.data
-            if invert:
-                data = 1.0 - np.asarray(data, dtype=float)
-            self.histogram_widget.update_data(data, label=first_layer.name)
+            label, data = next(iter(per_layer.items()))
+            self.histogram_widget.update_data(data, label=label)
 
         self.histogram_widget.show()
 

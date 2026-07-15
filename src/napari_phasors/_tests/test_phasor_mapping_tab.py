@@ -2311,3 +2311,107 @@ def test_get_mesh_grid_resolution_exception_fallback(make_viewer_model, qtbot):
     ax.get_window_extent.side_effect = RuntimeError("boom")
 
     assert mapping_widget._get_mesh_grid_resolution(ax) == 1000
+
+
+def test_histogram_datasets_named_after_output_layers(
+    make_viewer_model, qtbot
+):
+    """Histogram datasets are keyed by the analysis output layer name
+    (e.g. 'Apparent Phase Lifetime: <image>'), not the intensity image."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    mt = parent.phasor_mapping_tab
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    mt._on_image_layer_changed()
+    mt.frequency_input.setText("80.0")
+    mt._on_frequency_changed()
+    mt.lifetime_type_combobox.setCurrentText("Apparent Phase Lifetime")
+    mt._on_calculate_lifetime_clicked()
+
+    keys = list(mt.histogram_widget._datasets.keys())
+    layer_names = {lyr.name for lyr in viewer.layers}
+    assert keys, "histogram should have a dataset"
+    assert keys[0] != layer.name
+    assert keys[0] in layer_names, (keys, layer_names)
+    parent.deleteLater()
+
+
+def test_histogram_multi_layer_datasets_named_after_output_layers(
+    make_viewer_model, qtbot
+):
+    """With multiple selected layers, each output layer feeds its own
+    histogram dataset via update_multi_data."""
+    viewer = make_viewer_model()
+    layer_1 = create_image_layer_with_phasors()
+    layer_1.name = "img_one"
+    layer_2 = create_image_layer_with_phasors()
+    layer_2.name = "img_two"
+    viewer.add_layer(layer_1)
+    viewer.add_layer(layer_2)
+    parent = PlotterWidget(viewer)
+    mt = parent.phasor_mapping_tab
+    with patch.object(
+        parent, "get_selected_layers", return_value=[layer_1, layer_2]
+    ):
+        mt.frequency_input.setText("80.0")
+        mt._on_frequency_changed()
+        mt.lifetime_type_combobox.setCurrentText("Apparent Phase Lifetime")
+        mt._on_calculate_lifetime_clicked()
+
+    keys = set(mt.histogram_widget._datasets.keys())
+    assert keys == {
+        "Apparent Phase Lifetime: img_one",
+        "Apparent Phase Lifetime: img_two",
+    }, keys
+    parent.deleteLater()
+
+
+def test_coloring_box_visibility_follows_output_mode(make_viewer_model, qtbot):
+    """The Coloring section is hidden for Lifetime output and shown for
+    Phase / Modulation."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    mt = parent.phasor_mapping_tab
+
+    mt.output_mode_combobox.setCurrentText("Lifetime")
+    assert mt.coloring_box.isVisible() is False or mt.coloring_box.isHidden()
+
+    mt.output_mode_combobox.setCurrentText("Phase")
+    assert not mt.coloring_box.isHidden()
+
+    mt.output_mode_combobox.setCurrentText("Modulation")
+    assert not mt.coloring_box.isHidden()
+
+    mt.output_mode_combobox.setCurrentText("Lifetime")
+    assert mt.coloring_box.isHidden()
+    parent.deleteLater()
+
+
+def test_restore_on_layer_change_refreshes_primary_button(
+    make_viewer_model, qtbot
+):
+    """The deferred restore path re-evaluates the primary button so it shows
+    the green ready style when the frequency was restored from metadata."""
+    from napari_phasors._utils import (
+        _PRIMARY_BUTTON_BLOCKED_QSS,
+        _PRIMARY_BUTTON_READY_QSS,
+    )
+
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    layer.metadata["settings"] = {"frequency": 80.0}
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    mt = parent.phasor_mapping_tab
+
+    # Force a stale blocked style, then run the deferred restore path.
+    mt.calculate_lifetime_button.setStyleSheet(_PRIMARY_BUTTON_BLOCKED_QSS)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    mt._restore_on_layer_change()
+    assert mt._mapping_validation() is None
+    assert (
+        mt.calculate_lifetime_button.styleSheet() == _PRIMARY_BUTTON_READY_QSS
+    )
+    parent.deleteLater()

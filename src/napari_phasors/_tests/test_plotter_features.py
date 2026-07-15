@@ -1855,3 +1855,77 @@ def test_dock_helpers_are_safe_without_window(make_viewer_model):
     # No hosting dock -> the parent walk returns None and split returns early.
     assert plotter._find_plotter_dock() is None
     plotter._split_analysis_below_plotter()
+
+
+def test_canvas_size_for_ratio_overhead_model(make_viewer_model, qtbot):
+    """The canvas is sized from the aspect-locked axes plus fixed pixel
+    overheads, so the plot fills the container tightly."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    qtbot.addWidget(plotter)
+
+    # Give the canvas a realistic drawn size so the overhead path runs.
+    plotter.canvas_widget.resize(520, 470)
+    plotter.canvas_widget.canvas.resize(500, 400)
+
+    w, h = plotter._canvas_size_for_ratio(1.0, 800, 700)
+    assert 0 < w <= 800
+    assert 0 < h <= 700
+    # The horizontal overhead (y-label + colorbar) exceeds the vertical one,
+    # so a square plot needs a wider-than-tall canvas.
+    assert w > h
+
+    # Semicircle ratio also stays within the available box.
+    w2, h2 = plotter._canvas_size_for_ratio(1.5, 800, 700)
+    assert 0 < w2 <= 800 and 0 < h2 <= 700
+
+
+def test_canvas_size_for_ratio_fallbacks(make_viewer_model, qtbot):
+    """Aspect-fit fallbacks: undrawn figure, no room for the axes, and a
+    canvas that cannot report numeric sizes."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    qtbot.addWidget(plotter)
+
+    def fit(ratio, aw, ah):
+        if aw / ah >= ratio:
+            return ah * ratio, ah
+        return aw, aw / ratio
+
+    # fig_w <= 0 → plain aspect fit (wide and tall containers).
+    with patch.object(plotter.canvas_widget.canvas, 'width', return_value=0):
+        assert plotter._canvas_size_for_ratio(1.0, 900, 300) == fit(
+            1.0, 900, 300
+        )
+        assert plotter._canvas_size_for_ratio(1.5, 300, 900) == fit(
+            1.5, 300, 900
+        )
+
+    # Available space smaller than the overheads → aspect fit.
+    plotter.canvas_widget.canvas.resize(500, 400)
+    assert plotter._canvas_size_for_ratio(1.0, 60, 40) == fit(1.0, 60, 40)
+
+    # Non-numeric canvas size (e.g. mocked in tests) → aspect fit.
+    with patch.object(
+        plotter.canvas_widget.canvas, 'width', return_value="bogus"
+    ):
+        assert plotter._canvas_size_for_ratio(1.0, 900, 300) == fit(
+            1.0, 900, 300
+        )
+
+
+def test_resize_canvas_to_available_space_sets_fixed_size(
+    make_viewer_model, qtbot
+):
+    """_resize_canvas_to_available_space fixes the canvas within its
+    container using the computed target size."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    qtbot.addWidget(plotter)
+
+    plotter.canvas_container.resize(500, 400)
+    plotter.canvas_widget.canvas.resize(480, 350)
+    plotter._resize_canvas_to_available_space()
+
+    assert 0 < plotter.canvas_widget.width() <= 500
+    assert 0 < plotter.canvas_widget.height() <= 400

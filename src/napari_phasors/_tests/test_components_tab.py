@@ -1158,15 +1158,18 @@ def test_components_histogram_multi_layer_linear_projection(
     comp_widget.histogram_component_combobox.setCurrentText(name1)
     comp_widget.update_component_histogram()
 
-    # All selected layers are pooled into a single merged histogram (rather
-    # than a per-layer mean +/- SD that looks like just one layer). The pooled
-    # dataset is named after the analysed component, not the intensity image.
-    assert set(comp_widget.histogram_widget._datasets.keys()) == {name1}
-    assert comp_widget.histogram_widget._show_sd is False
+    # Each selected layer feeds its own dataset (as in the FRET tab), so the
+    # Merged / Individual layers / Grouped display modes and per-row
+    # statistics all work. Rows are named after the analysis fraction layers.
+    expected_keys = {
+        f"{name1} fractions: layer_a",
+        f"{name1} fractions: layer_b",
+    }
+    assert set(comp_widget.histogram_widget._datasets.keys()) == expected_keys
 
-    # The range slider clips every layer and keeps the merged histogram.
+    # The range slider clips every layer and keeps the per-layer datasets.
     comp_widget._on_fraction_range_changed(0.2, 0.8)
-    assert set(comp_widget.histogram_widget._datasets.keys()) == {name1}
+    assert set(comp_widget.histogram_widget._datasets.keys()) == expected_keys
 
     # Early returns: an empty and an unresolved selection are both no-ops.
     comp_widget.histogram_component_combobox.blockSignals(True)
@@ -2999,3 +3002,258 @@ def test_draw_components_overlay_draws_fraction_histogram():
         mock_draw.assert_called_once()
     finally:
         plt.close(fig)
+
+
+def _setup_component_fit(comp, coords=(("0.2", "0.1"), ("0.8", "0.5"))):
+    """Configure components and run a Component Fit analysis."""
+    comp.analysis_type_combo.setCurrentText("Component Fit")
+    for i, (g, s) in enumerate(coords):
+        comp.components[i].g_edit.setText(g)
+        comp.components[i].s_edit.setText(s)
+        comp._on_component_coords_changed(i)
+    comp._run_analysis()
+
+
+def _setup_two_image_layers(make_viewer_model):
+    """Two phasor image layers plus a plotter, for multi-layer tests."""
+    viewer = make_viewer_model()
+    layer_a = create_image_layer_with_phasors()
+    layer_a.name = "img_a"
+    layer_b = create_image_layer_with_phasors()
+    layer_b.name = "img_b"
+    layer_a.metadata["settings"] = {"frequency": 80.0}
+    layer_b.metadata["settings"] = {"frequency": 80.0}
+    viewer.add_layer(layer_a)
+    viewer.add_layer(layer_b)
+    parent = PlotterWidget(viewer)
+    comp = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp)
+    return viewer, layer_a, layer_b, parent, comp
+
+
+def test_component_fit_rename_replaces_layers(make_viewer_model, qtbot):
+    """Renaming components between runs relabels the fraction layers instead
+    of leaving stale default-named duplicates behind."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    _setup_component_fit(comp)
+    first_run = sorted(
+        lyr.name for lyr in viewer.layers if " fraction: " in lyr.name
+    )
+    assert len(first_run) == 2
+
+    comp.components[0].name_edit.setText("Alpha")
+    comp._on_component_name_changed(0)
+    comp.components[1].name_edit.setText("Beta")
+    comp._on_component_name_changed(1)
+    comp._run_analysis()
+
+    second_run = sorted(
+        lyr.name for lyr in viewer.layers if " fraction: " in lyr.name
+    )
+    assert len(second_run) == 2, second_run
+    assert all("Alpha" in n or "Beta" in n for n in second_run)
+    assert not any(
+        "Component 1" in n or "Component 2" in n for n in second_run
+    )
+
+
+def test_manually_renamed_fraction_layer_updated_in_place(
+    make_viewer_model, qtbot
+):
+    """A manually renamed fraction layer is matched by its metadata tag on
+    re-run: data updates in place, the custom name is kept, no duplicate."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    _setup_component_fit(comp)
+
+    tagged = [
+        lyr
+        for lyr in viewer.layers
+        if lyr.metadata.get('phasor_component_fraction')
+    ]
+    assert len(tagged) == 2
+    target = tagged[1]
+    assert target.metadata['phasor_component_fraction']['component_index'] == 1
+    target.name = "MyRenamedFractions"
+    data_before = np.array(target.data, copy=True)
+
+    # Nudge a component and re-run: the renamed layer must be found via
+    # _find_component_fraction_layer's tag path and replaced in place.
+    comp.components[1].g_edit.setText("0.75")
+    comp._on_component_coords_changed(1)
+    comp._run_analysis()
+
+    names = [lyr.name for lyr in viewer.layers]
+    assert "MyRenamedFractions" in names
+    tagged_after = [
+        lyr
+        for lyr in viewer.layers
+        if lyr.metadata.get('phasor_component_fraction')
+    ]
+    assert len(tagged_after) == 2, [lyr.name for lyr in tagged_after]
+    renamed = viewer.layers["MyRenamedFractions"]
+    assert (
+        renamed.metadata['phasor_component_fraction']['component_index'] == 1
+    )
+    assert not np.array_equal(renamed.data, data_before)
+
+
+def test_source_rename_updates_fraction_tags(make_viewer_model, qtbot):
+    """rename_layer keeps the metadata tag's source_layer in sync, including
+    for fraction layers the user renamed manually."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    _setup_component_fit(comp)
+    fracs = [
+        lyr
+        for lyr in viewer.layers
+        if lyr.metadata.get('phasor_component_fraction')
+    ]
+    fracs[0].name = "CustomFrac"
+
+    old = layer.name
+    comp.rename_layer(old, "renamed_source")
+    layer.name = "renamed_source"
+
+    for lyr in [viewer.layers["CustomFrac"], fracs[1]]:
+        tag = lyr.metadata['phasor_component_fraction']
+        assert tag['source_layer'] == "renamed_source", (lyr.name, tag)
+    # Default-named layer's name suffix followed the source rename too.
+    assert fracs[1].name.endswith(" fraction: renamed_source")
+
+    # Re-run: the custom-named layer is still matched (no duplicate).
+    comp.components[1].g_edit.setText("0.75")
+    comp._on_component_coords_changed(1)
+    comp._run_analysis()
+    tagged = [
+        lyr
+        for lyr in viewer.layers
+        if lyr.metadata.get('phasor_component_fraction')
+    ]
+    assert len(tagged) == 2, [lyr.name for lyr in tagged]
+    assert "CustomFrac" in [lyr.name for lyr in viewer.layers]
+
+
+def test_renamed_fraction_layer_stays_in_histogram_combobox(
+    make_viewer_model, qtbot
+):
+    """Discovery and resolution are metadata-aware: a renamed fraction layer
+    keeps its component listed and selectable in the histogram combobox."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    _setup_component_fit(comp)
+
+    frac2 = comp._get_fraction_layers_for_component("Component 2")
+    target = next(iter(frac2.values()))
+    target.name = "SomethingCustom"
+
+    assert "Component 2" in comp._get_component_names_from_fraction_layers()
+    resolved = comp._get_fraction_layers_for_component("Component 2")
+    assert any(lyr.name == "SomethingCustom" for lyr in resolved.values())
+
+    comp._update_histogram_combobox()
+    assert comp.histogram_component_combobox.findText("Component 2") >= 0
+    comp.histogram_component_combobox.setCurrentText("Component 2")
+    comp.update_component_histogram()
+    assert list(comp.histogram_widget._datasets.keys()) == ["SomethingCustom"]
+
+
+def test_component_display_name_from_tag(make_viewer_model, qtbot):
+    """Unit checks for the tag → display-name resolution helper."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    # Non-dict tags resolve to None.
+    assert comp._component_display_name_from_tag(None) is None
+    assert comp._component_display_name_from_tag("bogus") is None
+    # Default name when the source layer has no custom component name.
+    tag = {'source_layer': layer.name, 'component_index': 1}
+    assert comp._component_display_name_from_tag(tag) == "Component 2"
+    # Custom name from the source layer's component settings.
+    _setup_component_fit(comp)
+    comp.components[1].name_edit.setText("Bound")
+    comp._on_component_name_changed(1)
+    assert comp._component_display_name_from_tag(tag) == "Bound"
+    # Unknown component index without a source falls back to the default.
+    assert (
+        comp._component_display_name_from_tag({'component_index': 4})
+        == "Component 5"
+    )
+
+
+def test_find_component_fraction_layer_paths(make_viewer_model, qtbot):
+    """_find_component_fraction_layer matches by tag, falls back to the
+    default name, and returns None when nothing matches."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    assert (
+        comp._find_component_fraction_layer(layer.name, 0, "missing") is None
+    )
+    _setup_component_fit(comp)
+    default_name = f"Component 1 fraction: {layer.name}"
+    found = comp._find_component_fraction_layer(layer.name, 0, default_name)
+    assert found is not None and found.name == default_name
+    # Tag path: still found after a manual rename.
+    found.name = "Camouflaged"
+    refound = comp._find_component_fraction_layer(layer.name, 0, default_name)
+    assert refound is not None and refound.name == "Camouflaged"
+    # Fallback path: an untagged layer matching the default name is found.
+    del refound.metadata['phasor_component_fraction']
+    refound.name = default_name
+    fallback = comp._find_component_fraction_layer(layer.name, 0, default_name)
+    assert fallback is not None and fallback.name == default_name
+
+
+def test_plot_settings_dialog_histogram_group_disabled_in_component_fit(
+    make_viewer_model, qtbot
+):
+    """The fraction-histogram overlay group is only enabled for a
+    two-component Linear Projection."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    comp.analysis_type_combo.setCurrentText("Linear Projection")
+    comp._open_plot_settings_dialog()
+    assert comp.fraction_histogram_checkbox.isEnabled()
+    comp.plot_dialog.close()
+    comp.plot_dialog = None
+
+    comp.analysis_type_combo.setCurrentText("Component Fit")
+    comp._open_plot_settings_dialog()
+    assert not comp.fraction_histogram_checkbox.isEnabled()
+    comp.plot_dialog.close()
+
+
+def test_component_fit_multi_layer_per_row_datasets(make_viewer_model, qtbot):
+    """Multi-image Component Fit feeds one histogram dataset per image,
+    labelled after the analysis fraction layers."""
+    viewer, layer_a, layer_b, parent, comp = _setup_two_image_layers(
+        make_viewer_model
+    )
+    with patch.object(
+        parent, "get_selected_layers", return_value=[layer_a, layer_b]
+    ):
+        _setup_component_fit(comp)
+    comp.histogram_component_combobox.setCurrentText("Component 1")
+    comp.update_component_histogram()
+    assert set(comp.histogram_widget._datasets.keys()) == {
+        "Component 1 fraction: img_a",
+        "Component 1 fraction: img_b",
+    }
+
+
+def test_linear_projection_second_component_per_row(make_viewer_model, qtbot):
+    """The Linear Projection second component (fraction = 1 - first) gets
+    per-image datasets with virtual '<component> fractions: <image>' labels."""
+    viewer, layer_a, layer_b, parent, comp = _setup_two_image_layers(
+        make_viewer_model
+    )
+    comp.analysis_type_combo.setCurrentText("Linear Projection")
+    for i, (g, s) in enumerate([("0.2", "0.1"), ("0.8", "0.5")]):
+        comp.components[i].g_edit.setText(g)
+        comp.components[i].s_edit.setText(s)
+        comp._on_component_coords_changed(i)
+    with patch.object(
+        parent, "get_selected_layers", return_value=[layer_a, layer_b]
+    ):
+        comp._run_analysis()
+    name1, name2 = comp._linear_projection_component_names()
+    comp._update_histogram_combobox()
+    comp.histogram_component_combobox.setCurrentText(name2)
+    comp.update_component_histogram()
+    assert set(comp.histogram_widget._datasets.keys()) == {
+        f"{name2} fractions: img_a",
+        f"{name2} fractions: img_b",
+    }

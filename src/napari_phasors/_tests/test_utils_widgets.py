@@ -1970,3 +1970,19 @@ def test_popout_window_mixin_with_napari_viewer(qtbot):
 
     assert widget.viewer.window.removed_widget is widget
     assert widget.parent() is widget.viewer.window._qt_window
+
+
+def test_update_data_label_parameter(qtbot):
+    """update_data stores the dataset under the given label (defaulting to
+    'Layer'), which drives the statistics Name column."""
+    widget = HistogramWidget(bins=8)
+    qtbot.addWidget(widget)
+    data = np.linspace(0.0, 1.0, 50)
+
+    widget.update_data(data)
+    assert list(widget._datasets.keys()) == ["Layer"]
+    assert list(widget._counts_per_dataset.keys()) == ["Layer"]
+
+    widget.update_data(data, label="Lifetime: my image")
+    assert list(widget._datasets.keys()) == ["Lifetime: my image"]
+    assert list(widget._counts_per_dataset.keys()) == ["Lifetime: my image"]
