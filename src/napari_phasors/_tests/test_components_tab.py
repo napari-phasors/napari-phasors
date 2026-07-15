@@ -3257,3 +3257,48 @@ def test_linear_projection_second_component_per_row(make_viewer_model, qtbot):
         f"{name2} fractions: img_a",
         f"{name2} fractions: img_b",
     }
+
+
+def test_switch_to_linear_projection_hides_stale_component_fit(
+    make_viewer_model, qtbot
+):
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    # 3-component fit -> Component 1/2/3 fraction layers (tagged).
+    comp._add_component()
+    _setup_component_fit(
+        comp, coords=(("0.2", "0.1"), ("0.5", "0.3"), ("0.8", "0.5"))
+    )
+    assert len(comp.fraction_layers) == 3
+
+    # In Component Fit mode all three components are offered.
+    comp._update_histogram_combobox()
+    fit_names = [
+        comp.histogram_component_combobox.itemText(i)
+        for i in range(comp.histogram_component_combobox.count())
+    ]
+    assert {"Component 1", "Component 2", "Component 3"} <= set(fit_names)
+
+    # Drop the 3rd component so Linear Projection becomes available, switch,
+    # and run it. The component-fit fraction layers remain in the viewer.
+    comp._remove_component()
+    comp._update_analysis_options()
+    comp.analysis_type_combo.setCurrentText("Linear Projection")
+    assert comp.analysis_type == "Linear Projection"
+    comp._run_analysis()
+
+    comp._update_histogram_combobox()
+    lp_names = [
+        comp.histogram_component_combobox.itemText(i)
+        for i in range(comp.histogram_component_combobox.count())
+    ]
+    assert "Component 1" in lp_names
+    assert "Component 2" in lp_names
+    assert "Component 3" not in lp_names
+
+    # Component 2 must resolve to the complementary (invert=True) using the
+    # linear-projection Component 1 layer, NOT the stale component-fit layer.
+    fmap, invert = comp._resolve_histogram_component("Component 2")
+    assert invert is True, "Component 2 should be the complementary fraction"
+    only_layer = next(iter(fmap.values()))
+    assert only_layer.metadata.get('phasor_component_fraction') is None
+    assert only_layer.name.startswith("Component 1 fractions: ")

@@ -5337,13 +5337,32 @@ class ComponentsWidget(QWidget):
             return f"Component {idx + 1}"
         return None
 
+    def _layer_matches_analysis_type(self, layer):
+        """Return True if ``layer`` is a fraction layer of the current method.
+
+        Component Fit layers carry the ``phasor_component_fraction`` tag and
+        use the singular ``"<comp> fraction: <image>"`` name; Linear Projection
+        layers are untagged and use the plural ``"<comp> fractions: <image>"``.
+        Filtering by the active ``analysis_type`` keeps the histogram selector
+        showing only the current method's components, even when stale layers
+        from the other method are still present in the viewer.
+        """
+        has_tag = isinstance(
+            layer.metadata.get('phasor_component_fraction'), dict
+        )
+        if self.analysis_type == "Component Fit":
+            return has_tag or " fraction: " in layer.name
+        # Linear Projection
+        return (not has_tag) and " fractions: " in layer.name
+
     def _get_fraction_layers_for_component(self, component_name):
         """Get all fraction layers in the viewer for a given component name.
 
         Searches the viewer for fraction layers matching the component name,
-        regardless of which image layer they belong to. Component-fit layers
-        are matched first by their ``phasor_component_fraction`` metadata tag
-        (so manually renamed layers are still found), then by name pattern.
+        regardless of which image layer they belong to, restricted to the
+        current analysis method. Component-fit layers are matched first by
+        their ``phasor_component_fraction`` metadata tag (so manually renamed
+        layers are still found), then by name pattern.
 
         Parameters
         ----------
@@ -5361,6 +5380,8 @@ class ComponentsWidget(QWidget):
         # Component fit:     "<comp_name> fraction: <layer_name>"
         for layer in self.viewer.layers:
             if not isinstance(layer, Image):
+                continue
+            if not self._layer_matches_analysis_type(layer):
                 continue
             tag = layer.metadata.get('phasor_component_fraction')
             if (
@@ -5395,6 +5416,10 @@ class ComponentsWidget(QWidget):
         layer_based_names = {}
         for layer in self.viewer.layers:
             if not isinstance(layer, Image):
+                continue
+            # Only surface components of the current analysis method, so stale
+            # layers from the other method are not offered in the combobox.
+            if not self._layer_matches_analysis_type(layer):
                 continue
             # Component-fit layers carry an identifying tag: resolve their
             # display name from it so a manually renamed layer still surfaces
