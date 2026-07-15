@@ -1680,30 +1680,32 @@ class PlotterWidget(QWidget):
         image_layer_layout.addWidget(self.image_layers_checkable_combobox, 1)
 
         # "All | None" clickable labels for quick bulk selection
-        select_all_label = QLabel('<a href="all" style="color: gray;">All</a>')
-        select_all_label.setTextFormat(Qt.RichText)
-        select_all_label.setCursor(Qt.PointingHandCursor)
-        select_all_label.setToolTip("Select all layers")
-        image_layer_layout.addWidget(select_all_label)
+        self._select_all_label = QLabel(
+            '<a href="all" style="color: gray;">All</a>'
+        )
+        self._select_all_label.setTextFormat(Qt.RichText)
+        self._select_all_label.setCursor(Qt.PointingHandCursor)
+        self._select_all_label.setToolTip("Select all layers")
+        image_layer_layout.addWidget(self._select_all_label)
 
         separator_label = QLabel("|")
         separator_label.setStyleSheet("color: gray;")
         image_layer_layout.addWidget(separator_label)
 
-        deselect_all_label = QLabel(
+        self._deselect_all_label = QLabel(
             '<a href="none" style="color: gray;">None</a>'
         )
-        deselect_all_label.setTextFormat(Qt.RichText)
-        deselect_all_label.setCursor(Qt.PointingHandCursor)
-        deselect_all_label.setToolTip("Deselect all layers")
-        image_layer_layout.addWidget(deselect_all_label)
+        self._deselect_all_label.setTextFormat(Qt.RichText)
+        self._deselect_all_label.setCursor(Qt.PointingHandCursor)
+        self._deselect_all_label.setToolTip("Deselect all layers")
+        image_layer_layout.addWidget(self._deselect_all_label)
 
         # Connect All/None labels (use lambdas to consume the href argument)
-        select_all_label.linkActivated.connect(
-            lambda _: self.image_layers_checkable_combobox.selectAll()
+        self._select_all_label.linkActivated.connect(
+            lambda _: self._on_select_all_clicked()
         )
-        deselect_all_label.linkActivated.connect(
-            lambda _: self.image_layers_checkable_combobox.deselectAll()
+        self._deselect_all_label.linkActivated.connect(
+            lambda _: self._on_deselect_all_clicked()
         )
 
         image_layer_widget = QWidget()
@@ -2659,6 +2661,40 @@ class PlotterWidget(QWidget):
                 tick_label.set_fontsize(fs)
 
         self.canvas_widget.figure.canvas.draw_idle()
+
+    def _on_select_all_clicked(self):
+        """Select all layers, briefly flashing the "All" label bold green."""
+        # Highlight (and force an immediate repaint) before the selection work
+        # runs so the feedback is instant rather than lagging behind the
+        # synchronous plot update triggered by ``selectAll``.
+        self._select_all_label.setText(
+            '<a href="all" style="color: green; font-weight: bold;">All</a>'
+        )
+        self._select_all_label.repaint()
+        self.image_layers_checkable_combobox.selectAll()
+        QTimer.singleShot(
+            200,
+            lambda: self._select_all_label.setText(
+                '<a href="all" style="color: gray;">All</a>'
+            ),
+        )
+
+    def _on_deselect_all_clicked(self):
+        """Deselect all layers, briefly flashing the "None" label bold red."""
+        # Highlight (and force an immediate repaint) before the selection work
+        # runs so the feedback is instant rather than lagging behind the
+        # synchronous plot update triggered by ``deselectAll``.
+        self._deselect_all_label.setText(
+            '<a href="none" style="color: red; font-weight: bold;">None</a>'
+        )
+        self._deselect_all_label.repaint()
+        self.image_layers_checkable_combobox.deselectAll()
+        QTimer.singleShot(
+            200,
+            lambda: self._deselect_all_label.setText(
+                '<a href="none" style="color: gray;">None</a>'
+            ),
+        )
 
     def get_selected_layer_names(self):
         """Get the names of all selected (checked) layers.
