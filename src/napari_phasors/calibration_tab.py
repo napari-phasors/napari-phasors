@@ -185,10 +185,16 @@ class CalibrationWidget(QWidget):
         layout = QVBoxLayout(widget)
 
         # Calibration reference -------------------------------------------
-        reference_box, reference_layout = make_section("Calibration reference")
+        # Borderless, no section title: just a bold label + the layer combobox.
+        reference_box = QWidget()
+        reference_layout = QVBoxLayout(reference_box)
+        reference_layout.setContentsMargins(0, 0, 0, 0)
         reference_grid = QGridLayout()
         reference_layout.addLayout(reference_grid)
         widget.calibration_layer_label_widget = QLabel("Calibration Layer:")
+        widget.calibration_layer_label_widget.setStyleSheet(
+            "font-weight: 600;"
+        )
         widget.calibration_layer_combobox = QComboBox()
         reference_grid.addWidget(widget.calibration_layer_label_widget, 0, 0)
         reference_grid.addWidget(widget.calibration_layer_combobox, 0, 1)

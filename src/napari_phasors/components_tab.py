@@ -398,20 +398,25 @@ class ComponentsWidget(QWidget):
         layout = QVBoxLayout()
         content_widget.setLayout(layout)
 
-        # Analysis type section
-        analysis_box, analysis_box_layout = make_section("Analysis type")
+        # Analysis method row: a bold label + the method combobox on a single
+        # borderless row (no section title).
+        analysis_box = QWidget()
+        analysis_box.setLayout(QVBoxLayout())
+        analysis_box.layout().setContentsMargins(0, 0, 0, 0)
         analysis_layout = QHBoxLayout()
-        analysis_layout.addWidget(QLabel("Analysis Type:"))
+        analysis_method_label = QLabel("Analysis Method:")
+        analysis_method_label.setStyleSheet("font-weight: 600;")
+        analysis_layout.addWidget(analysis_method_label)
         self.analysis_type_combo = QComboBox()
         self.analysis_type_combo.currentTextChanged.connect(
             self._on_analysis_type_changed
         )
         self.analysis_type_combo.setToolTip(
-            "Select the type of component analysis to perform."
+            "Select the method of component analysis to perform."
         )
         analysis_layout.addWidget(self.analysis_type_combo)
         analysis_layout.addStretch()
-        analysis_box_layout.addLayout(analysis_layout)
+        analysis_box.layout().addLayout(analysis_layout)
         layout.addWidget(analysis_box)
 
         # Components section
@@ -469,7 +474,7 @@ class ComponentsWidget(QWidget):
             self.calculate_button,
             self._components_validation,
             self._run_analysis,
-            ready_tooltip="Run the selected analysis type on the defined "
+            ready_tooltip="Run the selected analysis method on the defined "
             "components.",
         )
         layout.addWidget(self.calculate_button)
@@ -1808,6 +1813,17 @@ class ComponentsWidget(QWidget):
             "magnitude is the distance from the line.",
         )
         hist_layout.addLayout(hist_offset_row)
+
+        # The fraction histogram overlay is only meaningful for a two-component
+        # Linear Projection. Disable the whole group in Component Fit mode so
+        # its controls cannot be edited when they have no effect.
+        histogram_available = self.analysis_type == "Linear Projection"
+        hist_group.setEnabled(histogram_available)
+        if not histogram_available:
+            hist_group.setToolTip(
+                "Fraction histogram overlay is only available in "
+                "two-component Linear Projection mode."
+            )
         vbox.addWidget(hist_group)
 
         # Buttons
@@ -4839,6 +4855,46 @@ class ComponentsWidget(QWidget):
         self._update_component_colors()
         self.draw_line_between_components()
 
+    def _find_component_fraction_layer(
+        self, source_layer_name, component_index, fallback_name
+    ):
+        """Return the existing Component Fit fraction layer for a component.
+
+        Matches on the ``phasor_component_fraction`` metadata tag (source
+        image + component index) so a layer the user renamed manually is still
+        recognised on the next run and updated in place rather than duplicated.
+        Falls back to the default-name lookup for layers created before the
+        tag existed.
+
+        Parameters
+        ----------
+        source_layer_name : str
+            Name of the analysed image layer.
+        component_index : int
+            Zero-based component index.
+        fallback_name : str
+            Default ``"<component> fraction: <image>"`` name to match when no
+            tagged layer is found.
+
+        Returns
+        -------
+        napari.layers.Image or None
+        """
+        for lyr in self.viewer.layers:
+            if not isinstance(lyr, Image):
+                continue
+            tag = lyr.metadata.get('phasor_component_fraction')
+            if (
+                isinstance(tag, dict)
+                and tag.get('analysis_type') == 'Component Fit'
+                and tag.get('source_layer') == source_layer_name
+                and tag.get('component_index') == component_index
+            ):
+                return lyr
+        if fallback_name in self.viewer.layers:
+            return self.viewer.layers[fallback_name]
+        return None
+
     def _run_component_fit(self):
         """Run multi-component analysis using phasor_component_fit on all selected layers."""
         selected_layers = self.parent_widget.get_selected_layers()
@@ -5024,7 +5080,25 @@ class ComponentsWidget(QWidget):
             for i, (fraction, name) in enumerate(
                 zip(fractions, component_names, strict=False)
             ):
-                fraction_layer_name = f"{name} fraction: {layer.name}"
+                default_name = f"{name} fraction: {layer.name}"
+
+                # Locate a previous fraction layer for this component, matching
+                # on metadata so a manually renamed layer is still recognised.
+                existing_layer = self._find_component_fraction_layer(
+                    layer.name, i, default_name
+                )
+                # Keep the user's custom name if they renamed the layer;
+                # otherwise use (and keep updating to) the default name so
+                # renaming a component still relabels its layer.
+                if (
+                    existing_layer is not None
+                    and not existing_layer.name.endswith(
+                        f" fraction: {layer.name}"
+                    )
+                ):
+                    fraction_layer_name = existing_layer.name
+                else:
+                    fraction_layer_name = default_name
 
                 colormap = None
                 gamma = None
@@ -5039,13 +5113,12 @@ class ComponentsWidget(QWidget):
                     contrast_limits = (0, 1)
                 idx_str = str(i)
 
-                # If the fraction layer is already displayed (the user clicked
-                # the button again), preserve its current colormap, contrast
-                # limits and gamma. This takes precedence over the stored
-                # defaults so manual display tweaks - including colormaps
-                # propagated from other analyzed images - survive a re-display.
-                if fraction_layer_name in self.viewer.layers:
-                    existing_layer = self.viewer.layers[fraction_layer_name]
+                # If the fraction layer already exists (the user clicked the
+                # button again), preserve its current colormap, contrast limits
+                # and gamma. This takes precedence over the stored defaults so
+                # manual display tweaks - including colormaps propagated from
+                # other analyzed images - survive a re-display.
+                if existing_layer is not None:
                     colormap = existing_layer.colormap
                     contrast_limits = existing_layer.contrast_limits
                     gamma = existing_layer.gamma
@@ -5088,6 +5161,12 @@ class ComponentsWidget(QWidget):
                     else:
                         colormap = 'viridis'
 
+                # Remove the previous layer for this component (found via
+                # metadata, so a rename does not leave a duplicate) and any
+                # layer already occupying the target name.
+                if existing_layer is not None:
+                    with contextlib.suppress(ValueError):
+                        self.viewer.layers.remove(existing_layer)
                 with contextlib.suppress(KeyError):
                     self.viewer.layers.remove(
                         self.viewer.layers[fraction_layer_name]
@@ -5099,6 +5178,14 @@ class ComponentsWidget(QWidget):
                     colormap=colormap,
                 )
                 new_layer.metadata['fraction_data_original'] = fraction.copy()
+                # Tag the layer so it can be recognised on the next run even if
+                # the user renames it manually.
+                new_layer.metadata['phasor_component_fraction'] = {
+                    'source_layer': layer.name,
+                    'component_index': i,
+                    'harmonic': current_harmonic,
+                    'analysis_type': 'Component Fit',
+                }
 
                 new_layer.contrast_limits = contrast_limits
                 if gamma is not None:
@@ -5161,6 +5248,29 @@ class ComponentsWidget(QWidget):
                         'gamma'
                     ] = new_layer.gamma
 
+            # Remove any leftover fraction layers from a previous run of this
+            # image that were not recreated this time (e.g. the component count
+            # was reduced, or names changed between runs). A layer belongs to
+            # this image's component fit if it carries the metadata tag or, for
+            # older untagged layers, matches the default name suffix. Keep the
+            # layers we just created (compared by identity so custom-named ones
+            # survive).
+            suffix = f" fraction: {layer.name}"
+            for existing in list(self.viewer.layers):
+                if not isinstance(existing, Image):
+                    continue
+                if existing in self.fraction_layers:
+                    continue
+                tag = existing.metadata.get('phasor_component_fraction')
+                belongs = (
+                    isinstance(tag, dict)
+                    and tag.get('analysis_type') == 'Component Fit'
+                    and tag.get('source_layer') == layer.name
+                ) or existing.name.endswith(suffix)
+                if belongs:
+                    with contextlib.suppress(KeyError, ValueError):
+                        self.viewer.layers.remove(existing)
+
             self._update_component_colors()
 
         except Exception as e:  # noqa: BLE001
@@ -5176,6 +5286,12 @@ class ComponentsWidget(QWidget):
                 if name.endswith(sep + old_name):
                     comp_part = name[: -len(sep + old_name)]
                     layer.name = f"{comp_part}{sep}{new_name}"
+            # Keep the identifying metadata tag in sync too. Matched by tag
+            # (not name) so fraction layers the user renamed manually still
+            # follow their source image.
+            tag = layer.metadata.get('phasor_component_fraction')
+            if isinstance(tag, dict) and tag.get('source_layer') == old_name:
+                tag['source_layer'] = new_name
 
         # Keep each component's remembered phasor-center selection in sync so a
         # renamed layer stays selected instead of being dropped.
@@ -5191,11 +5307,62 @@ class ComponentsWidget(QWidget):
                     comp.idx, comp.phasor_center_layers
                 )
 
+        # Refresh the histogram/statistics component selectors so a renamed
+        # fraction layer keeps its component listed (discovery is metadata
+        # aware). The current selection is preserved by name.
+        self._update_histogram_combobox()
+
+    def _component_display_name_from_tag(self, tag):
+        """Return a component's display name from its fraction-layer tag.
+
+        Uses the custom name stored in the source image's component settings,
+        falling back to the default ``"Component <n>"`` label. This lets the
+        histogram combobox recognise component-fit fraction layers even when
+        the user has renamed them manually (the tag survives the rename).
+        """
+        if not isinstance(tag, dict):
+            return None
+        idx = tag.get('component_index')
+        source = tag.get('source_layer')
+        if source and source in self.viewer.layers:
+            settings = (
+                self.viewer.layers[source]
+                .metadata.get('settings', {})
+                .get('component_analysis', {})
+            )
+            comp = settings.get('components', {}).get(str(idx))
+            if isinstance(comp, dict) and comp.get('name'):
+                return comp['name']
+        if isinstance(idx, int):
+            return f"Component {idx + 1}"
+        return None
+
+    def _layer_matches_analysis_type(self, layer):
+        """Return True if ``layer`` is a fraction layer of the current method.
+
+        Component Fit layers carry the ``phasor_component_fraction`` tag and
+        use the singular ``"<comp> fraction: <image>"`` name; Linear Projection
+        layers are untagged and use the plural ``"<comp> fractions: <image>"``.
+        Filtering by the active ``analysis_type`` keeps the histogram selector
+        showing only the current method's components, even when stale layers
+        from the other method are still present in the viewer.
+        """
+        has_tag = isinstance(
+            layer.metadata.get('phasor_component_fraction'), dict
+        )
+        if self.analysis_type == "Component Fit":
+            return has_tag or " fraction: " in layer.name
+        # Linear Projection
+        return (not has_tag) and " fractions: " in layer.name
+
     def _get_fraction_layers_for_component(self, component_name):
         """Get all fraction layers in the viewer for a given component name.
 
-        Searches the viewer for fraction layers matching the component name
-        pattern, regardless of which image layer they belong to.
+        Searches the viewer for fraction layers matching the component name,
+        regardless of which image layer they belong to, restricted to the
+        current analysis method. Component-fit layers are matched first by
+        their ``phasor_component_fraction`` metadata tag (so manually renamed
+        layers are still found), then by name pattern.
 
         Parameters
         ----------
@@ -5214,6 +5381,19 @@ class ComponentsWidget(QWidget):
         for layer in self.viewer.layers:
             if not isinstance(layer, Image):
                 continue
+            if not self._layer_matches_analysis_type(layer):
+                continue
+            tag = layer.metadata.get('phasor_component_fraction')
+            if (
+                isinstance(tag, dict)
+                and tag.get('analysis_type') == 'Component Fit'
+                and self._component_display_name_from_tag(tag)
+                == component_name
+            ):
+                source = tag.get('source_layer')
+                if source:
+                    result[source] = layer
+                    continue
             name = layer.name
             for sep in (" fractions: ", " fraction: "):
                 if name.startswith(component_name + sep):
@@ -5236,6 +5416,22 @@ class ComponentsWidget(QWidget):
         layer_based_names = {}
         for layer in self.viewer.layers:
             if not isinstance(layer, Image):
+                continue
+            # Only surface components of the current analysis method, so stale
+            # layers from the other method are not offered in the combobox.
+            if not self._layer_matches_analysis_type(layer):
+                continue
+            # Component-fit layers carry an identifying tag: resolve their
+            # display name from it so a manually renamed layer still surfaces
+            # its component in the combobox.
+            tag = layer.metadata.get('phasor_component_fraction')
+            if (
+                isinstance(tag, dict)
+                and tag.get('analysis_type') == 'Component Fit'
+            ):
+                display = self._component_display_name_from_tag(tag)
+                if display is not None:
+                    layer_based_names[display] = display
                 continue
             for sep in (" fractions: ", " fraction: "):
                 idx = layer.name.find(sep)
@@ -5337,6 +5533,42 @@ class ComponentsWidget(QWidget):
                 return comp1_layers, True
 
         return {}, False
+
+    def _label_fraction_datasets(
+        self, data_by_image, fraction_layers_map, selected_text, invert
+    ):
+        """Label per-image fraction data after the analysis (fraction) layer.
+
+        Parameters
+        ----------
+        data_by_image : dict
+            ``{image_layer_name: np.ndarray}`` fraction data per source image
+            (already inverted for the Linear Projection second component).
+        fraction_layers_map : dict
+            ``{image_layer_name: napari.layers.Image}`` underlying fraction
+            layers.
+        selected_text : str
+            The component display name selected in the combobox.
+        invert : bool
+            True when showing the Linear Projection second component, whose
+            fraction is ``1 - first`` and has no layer of its own. In that
+            case a virtual ``"<component> fractions: <image>"`` label is
+            built, since the underlying layer belongs to the first component.
+
+        Returns
+        -------
+        dict
+            ``{analysis_layer_name: flattened np.ndarray}``.
+        """
+        labeled = {}
+        for img_name, data in data_by_image.items():
+            if invert:
+                label = f"{selected_text} fractions: {img_name}"
+            else:
+                fl = fraction_layers_map.get(img_name)
+                label = fl.name if fl is not None else img_name
+            labeled[label] = np.asarray(data, dtype=float).ravel()
+        return labeled
 
     def _update_histogram_combobox(self):
         """Populate the component selector comboboxes with fraction layers.
@@ -5460,20 +5692,18 @@ class ComponentsWidget(QWidget):
             gamma=first_layer.gamma,
         )
 
-        # Pool the (clipped) data from every selected layer into a single
-        # merged histogram so all layers contribute, rather than showing a
-        # per-layer mean +/- SD that visually resembles a single layer.
-        if len(clipped_data) > 1:
-            pooled = np.concatenate(
-                [
-                    np.asarray(d, dtype=float).ravel()
-                    for d in clipped_data.values()
-                ]
-            )
-            self.histogram_widget.update_data(pooled)
+        # Feed the histogram one dataset per selected layer (labelled after
+        # the analysis fraction layer, as in the FRET tab) so the Merged /
+        # Individual layers / Grouped display modes and per-row statistics
+        # all work.
+        per_layer = self._label_fraction_datasets(
+            clipped_data, fraction_layers_map, selected_text, invert
+        )
+        if len(per_layer) > 1:
+            self.histogram_widget.update_multi_data(per_layer)
         else:
-            first_data = next(iter(clipped_data.values()))
-            self.histogram_widget.update_data(first_data)
+            label, data = next(iter(per_layer.items()))
+            self.histogram_widget.update_data(data, label=label)
 
         self.draw_line_between_components()
 
@@ -5562,24 +5792,26 @@ class ComponentsWidget(QWidget):
                 slider_max=data_max,
             )
 
-        # Pool the data from every selected layer into a single merged
-        # histogram so all layers contribute, rather than showing a per-layer
-        # mean +/- SD that visually resembles a single layer.
-        if len(fraction_layers_map) > 1:
-            pooled_layers = [
-                (
-                    1.0 - np.asarray(fl.data, dtype=float)
-                    if invert
-                    else np.asarray(fl.data, dtype=float)
-                ).ravel()
-                for fl in fraction_layers_map.values()
-            ]
-            self.histogram_widget.update_data(np.concatenate(pooled_layers))
+        # Feed the histogram one dataset per selected layer (labelled after
+        # the analysis fraction layer - e.g. "Component 2 fraction: <image>" -
+        # as in the FRET tab) so the Merged / Individual layers / Grouped
+        # display modes and per-row statistics all work.
+        raw_data = {
+            img_name: (
+                1.0 - np.asarray(fl.data, dtype=float)
+                if invert
+                else np.asarray(fl.data, dtype=float)
+            )
+            for img_name, fl in fraction_layers_map.items()
+        }
+        per_layer = self._label_fraction_datasets(
+            raw_data, fraction_layers_map, selected_text, invert
+        )
+        if len(per_layer) > 1:
+            self.histogram_widget.update_multi_data(per_layer)
         else:
-            data = first_layer.data
-            if invert:
-                data = 1.0 - np.asarray(data, dtype=float)
-            self.histogram_widget.update_data(data)
+            label, data = next(iter(per_layer.items()))
+            self.histogram_widget.update_data(data, label=label)
 
         self.histogram_widget.show()
 

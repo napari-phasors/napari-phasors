@@ -2353,3 +2353,29 @@ def test_draw_fret_trajectory_overlay_uses_jet_colormap_by_default():
         assert len(ax.patches) == 2
     finally:
         plt.close(fig)
+
+
+def test_single_layer_histogram_named_after_fret_layer(
+    make_viewer_model, qtbot
+):
+    """With one selected layer the histogram dataset is labelled with the
+    FRET output layer's name, not a generic 'Layer'."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+
+    widget.donor_line_edit.setText("2.0")
+    widget.frequency_input.setText("80")
+    widget.calculate_fret_efficiency_button.click()
+
+    fret_layer_name = "FRET efficiency: test_layer"
+    assert fret_layer_name in [layer.name for layer in viewer.layers]
+    assert list(widget.histogram_widget._datasets.keys()) == [fret_layer_name]
+
+    # The range-changed path re-labels the same way.
+    widget._on_fret_range_changed(0.1, 0.9)
+    assert list(widget.histogram_widget._datasets.keys()) == [fret_layer_name]

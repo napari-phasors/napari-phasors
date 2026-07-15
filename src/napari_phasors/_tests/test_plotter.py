@@ -423,15 +423,16 @@ def test_plot_settings_tab_labels_wrap_and_scroll_policy(
     # ~240px-wide floor on the settings grid's label column.
     assert plotter.plotter_inputs_widget.label_5.wordWrap()
 
-    # "Load and Apply Settings from:" (above the Layer/OME-TIFF buttons)
-    # must also wrap rather than force the import row wide.
+    # "Load and Apply Settings from:" sits inline with the Layer/OME-TIFF
+    # buttons on a single row (bold, no title), so it is intentionally not
+    # word-wrapped. The scroll policy below keeps that row from forcing the
+    # tab permanently wide.
     import_labels = [
         label
         for label in plotter.settings_tab.findChildren(QLabel)
         if label.text() == "Load and Apply Settings from:"
     ]
     assert len(import_labels) == 1
-    assert import_labels[0].wordWrap()
 
     # The inner scroll area around the settings grid must show its
     # horizontal scrollbar only when needed, not be permanently suppressed.

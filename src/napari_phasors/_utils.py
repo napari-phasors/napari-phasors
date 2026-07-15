@@ -2908,7 +2908,7 @@ class HistogramWidget(QWidget):
                 self._render()
             self.dataChanged.emit()
 
-    def update_data(self, data: np.ndarray) -> None:
+    def update_data(self, data: np.ndarray, label: str = "Layer") -> None:
         """Compute histogram from *data* and render.
 
         NaN/Inf values are always excluded. Non-positive values are
@@ -2920,6 +2920,10 @@ class HistogramWidget(QWidget):
         ----------
         data : np.ndarray
             Scalar data array (any shape – will be flattened internally).
+        label : str, optional
+            Name shown for this dataset (e.g. in the statistics Name
+            column). Defaults to ``"Layer"``; callers should pass the
+            analyzed image layer's name so it matches the multi-layer view.
         """
         valid = self._filter_valid_values(data)
 
@@ -2933,7 +2937,7 @@ class HistogramWidget(QWidget):
             self.dataChanged.emit()
             return
 
-        self._datasets = {"Layer": valid}
+        self._datasets = {label: valid}
         self._raw_valid_data = valid
         self._previous_dataset_count = 0
 
@@ -2943,7 +2947,7 @@ class HistogramWidget(QWidget):
         )
         self.bin_centers = (self.bin_edges[:-1] + self.bin_edges[1:]) / 2
 
-        self._counts_per_dataset = {"Layer": self.counts}
+        self._counts_per_dataset = {label: self.counts}
 
         self._render()
         self._settings_button.setEnabled(True)

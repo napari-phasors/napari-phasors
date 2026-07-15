@@ -300,8 +300,8 @@ class PhasorMappingWidget(QWidget):
         self.current_output_type = "Apparent Phase Lifetime"
         self._overlay_imshow = None
         self._mesh_overlay_imshow = None
-        self._phase_colormap_name = "jet"
-        self._modulation_colormap_name = "viridis"
+        self._phase_colormap_name = "cool"
+        self._modulation_colormap_name = "PiYG"
         self._coloring_paused_by_tab = False
         self.min_lifetime = None
         self.max_lifetime = None
@@ -398,7 +398,10 @@ class PhasorMappingWidget(QWidget):
         self.main_layout.addWidget(output_box)
 
         # Coloring section ---------------------------------------------------
+        # Only relevant for Phase/Modulation output; hidden for Lifetime (see
+        # _sync_mode_widgets).
         coloring_box, coloring_box_layout = make_section("Coloring")
+        self.coloring_box = coloring_box
 
         # 2D phasor custom-color controls (visible for Phase/Modulation modes)
         self.colormap_widget = QWidget()
@@ -787,6 +790,9 @@ class PhasorMappingWidget(QWidget):
         pw = self.parent_widget
         self.lifetime_output_widget.setVisible(is_lifetime_mode)
         self.frequency_widget.setVisible(is_lifetime_mode)
+        # Hide the whole Coloring section for Lifetime; show it (and its
+        # controls) for Phase/Modulation.
+        self.coloring_box.setVisible(not is_lifetime_mode)
         self.colormap_widget.setVisible(not is_lifetime_mode)
         self.coloring_checkbox_widget.setVisible(not is_lifetime_mode)
 
@@ -1050,9 +1056,9 @@ class PhasorMappingWidget(QWidget):
     @staticmethod
     def _get_output_colormap_name(output_type: str) -> str:
         if output_type == "Phase":
-            return "jet"
+            return "cool"
         if output_type == "Modulation":
-            return "viridis"
+            return "PiYG"
         return "plasma"
 
     def _configure_histogram_labels_for_output(self, output_type: str):
@@ -1693,10 +1699,21 @@ class PhasorMappingWidget(QWidget):
         output_type = self._get_selected_output_type()
         if output_type in {"Phase", "Modulation"}:
             self._apply_histogram_coloring(output_type)
-        if self.per_layer_metric_data and len(self.per_layer_metric_data) > 1:
-            self.histogram_widget.update_multi_data(self.per_layer_metric_data)
+        # Name the histogram datasets after the analysis output layers
+        # (e.g. "Lifetime: <image>"), not the intensity image layers, so the
+        # statistics Name column matches the created layers (as in the FRET
+        # tab). The output layers are named ``f"{output_type}: {image_name}"``.
+        named = {
+            f"{output_type}: {name}": data
+            for name, data in (self.per_layer_metric_data or {}).items()
+        }
+        if len(named) > 1:
+            self.histogram_widget.update_multi_data(named)
         else:
-            self.histogram_widget.update_data(self.current_metric_data)
+            self.histogram_widget.update_data(
+                self.current_metric_data,
+                label=next(iter(named), "Layer"),
+            )
 
     def rename_layer(self, old_name: str, new_name: str):
         """Update internal dictionaries and rename derived layers when a layer is renamed."""
@@ -1930,6 +1947,14 @@ class PhasorMappingWidget(QWidget):
                 )
             )
             self._clear_2d_coloring()
+
+        # Refresh the primary button's ready/blocked style. This runs on both
+        # the direct layer-change path and the deferred tab-switch path, so the
+        # button reflects the current validation state (e.g. a selected layer
+        # with the frequency already filled from metadata) instead of keeping a
+        # stale blocked (grey) style.
+        if hasattr(self, '_refresh_calculate_button'):
+            self._refresh_calculate_button()
 
     def _on_calculate_lifetime_clicked(self):
         """Callback when Calculate button is clicked.
