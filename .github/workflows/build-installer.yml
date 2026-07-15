@@ -159,8 +159,24 @@ jobs:
           cat > "${APP_DIR}/Contents/MacOS/napari-phasors" << 'LAUNCHER'
           #!/bin/bash
           SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-          ENV_DIR="${SCRIPT_DIR}/../Resources/env"
-          source "${ENV_DIR}/bin/activate"
+          ENV_DIR="$(cd "${SCRIPT_DIR}/../Resources/env" && pwd)"
+          # NOTE: constructor envs do not ship bin/activate (no conda inside),
+          # so we export what napari/Qt need directly instead of activating.
+          export PATH="${ENV_DIR}/bin:${PATH}"
+          export CONDA_PREFIX="${ENV_DIR}"
+          # Conda bakes the build-time install prefix into the env, so Qt's
+          # compiled-in plugin path points at a directory that no longer
+          # exists once the .app is moved (into the bundle at build time,
+          # then into /Applications by the user). Point Qt at the bundled
+          # plugins explicitly — env vars override the baked-in path.
+          for PLUGIN_DIR in "${ENV_DIR}/lib/qt6/plugins" "${ENV_DIR}/lib/qt/plugins" "${ENV_DIR}/plugins"; do
+            if [ -d "${PLUGIN_DIR}/platforms" ]; then
+              export QT_PLUGIN_PATH="${PLUGIN_DIR}"
+              export QT_QPA_PLATFORM_PLUGIN_PATH="${PLUGIN_DIR}/platforms"
+              break
+            fi
+          done
+          export FONTCONFIG_PATH="${ENV_DIR}/etc/fonts"
           exec "${ENV_DIR}/bin/python" -m napari "$@"
           LAUNCHER
           chmod +x "${APP_DIR}/Contents/MacOS/napari-phasors"

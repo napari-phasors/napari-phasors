@@ -2,16 +2,26 @@
 # Post-install script: install napari-phasors and create launchers
 "${PREFIX}/bin/pip" install napari-phasors
 
-# Create a launcher script. Activate the conda environment before starting
-# napari so Qt can find its platform plugins and libraries. Without
-# activation, the environment's activate.d scripts (which set QT_PLUGIN_PATH,
-# FONTCONFIG_PATH, GSETTINGS_SCHEMA_DIR, LD_LIBRARY_PATH, ...) never run and
-# napari aborts on launch with "could not load the Qt platform plugin 'xcb'".
+# Create a launcher script. Constructor envs do not ship bin/activate
+# (no conda inside), so export what napari/Qt need directly: the env's
+# bin dir on PATH and explicit Qt plugin/fontconfig paths. Without these,
+# Qt cannot find its platform plugin and napari aborts silently (the
+# .desktop file uses Terminal=false, so no error is ever shown).
 cat > "${PREFIX}/napari-phasors" << 'LAUNCHER'
 #!/bin/bash
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck disable=SC1091
-source "${DIR}/bin/activate" "${DIR}"
+export PATH="${DIR}/bin:${PATH}"
+export CONDA_PREFIX="${DIR}"
+for PLUGIN_DIR in "${DIR}/lib/qt6/plugins" "${DIR}/lib/qt/plugins" "${DIR}/plugins"; do
+    if [ -d "${PLUGIN_DIR}/platforms" ]; then
+        export QT_PLUGIN_PATH="${PLUGIN_DIR}"
+        export QT_QPA_PLATFORM_PLUGIN_PATH="${PLUGIN_DIR}/platforms"
+        break
+    fi
+done
+if [ -d "${DIR}/etc/fonts" ]; then
+    export FONTCONFIG_PATH="${DIR}/etc/fonts"
+fi
 exec "${DIR}/bin/python" -m napari "$@"
 LAUNCHER
 chmod +x "${PREFIX}/napari-phasors"
