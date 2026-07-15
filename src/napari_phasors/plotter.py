@@ -59,7 +59,6 @@ from ._utils import (
     available_colormap_names,
     build_group_styles_from_layer_metadata,
     build_groups_from_layer_metadata,
-    make_flat_section,
     make_section,
     make_solid_contour_cmap,
     normalize_rgb,
@@ -1982,27 +1981,24 @@ class PlotterWidget(QWidget):
         self.settings_tab.setStyleSheet(analysis_section_stylesheet())
         self.tab_widget.addTab(self.settings_tab, "Plot Settings")
 
-        # Import buttons in a titled section at the top of the Plot Settings
-        # tab. Borderless to save vertical space (it is the first section).
-        import_box, import_box_layout = make_flat_section(
-            "Load and apply settings"
-        )
-        import_buttons_layout = QHBoxLayout()
-        import_buttons_layout.setContentsMargins(0, 0, 0, 0)
-        import_buttons_layout.setSpacing(5)
+        # Import buttons at the top of the Plot Settings tab: a bold label and
+        # both buttons on a single borderless row (no section title).
+        import_box = QWidget()
+        import_box.setLayout(QHBoxLayout())
+        import_box.layout().setContentsMargins(0, 0, 0, 0)
+        import_box.layout().setSpacing(5)
 
         import_label = QLabel("Load and Apply Settings from:")
-        import_label.setWordWrap(True)
-        import_buttons_layout.addWidget(import_label)
+        import_label.setStyleSheet("font-weight: 600;")
+        import_box.layout().addWidget(import_label)
 
         self.import_from_layer_button = QPushButton("Layer")
-        import_buttons_layout.addWidget(self.import_from_layer_button)
+        import_box.layout().addWidget(self.import_from_layer_button)
 
         self.import_from_file_button = QPushButton("OME-TIFF File")
-        import_buttons_layout.addWidget(self.import_from_file_button)
+        import_box.layout().addWidget(self.import_from_file_button)
 
-        import_buttons_layout.addStretch(1)
-        import_box_layout.addLayout(import_buttons_layout)
+        import_box.layout().addStretch(1)
 
         self._import_settings_box = import_box
 

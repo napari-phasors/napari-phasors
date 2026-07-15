@@ -53,7 +53,6 @@ from ._utils import (
     CheckableComboBox,
     HistogramWidget,
     analysis_section_stylesheet,
-    make_flat_section,
     make_section,
     required_component_harmonics,
     setup_primary_button,
@@ -399,13 +398,15 @@ class ComponentsWidget(QWidget):
         layout = QVBoxLayout()
         content_widget.setLayout(layout)
 
-        # Analysis method section. Borderless to save vertical space (it is
-        # the first section).
-        analysis_box, analysis_box_layout = make_flat_section(
-            "Analysis Method"
-        )
+        # Analysis method row: a bold label + the method combobox on a single
+        # borderless row (no section title).
+        analysis_box = QWidget()
+        analysis_box.setLayout(QVBoxLayout())
+        analysis_box.layout().setContentsMargins(0, 0, 0, 0)
         analysis_layout = QHBoxLayout()
-        analysis_layout.addWidget(QLabel("Analysis Method:"))
+        analysis_method_label = QLabel("Analysis Method:")
+        analysis_method_label.setStyleSheet("font-weight: 600;")
+        analysis_layout.addWidget(analysis_method_label)
         self.analysis_type_combo = QComboBox()
         self.analysis_type_combo.currentTextChanged.connect(
             self._on_analysis_type_changed
@@ -415,7 +416,7 @@ class ComponentsWidget(QWidget):
         )
         analysis_layout.addWidget(self.analysis_type_combo)
         analysis_layout.addStretch()
-        analysis_box_layout.addLayout(analysis_layout)
+        analysis_box.layout().addLayout(analysis_layout)
         layout.addWidget(analysis_box)
 
         # Components section
@@ -5306,11 +5307,43 @@ class ComponentsWidget(QWidget):
                     comp.idx, comp.phasor_center_layers
                 )
 
+        # Refresh the histogram/statistics component selectors so a renamed
+        # fraction layer keeps its component listed (discovery is metadata
+        # aware). The current selection is preserved by name.
+        self._update_histogram_combobox()
+
+    def _component_display_name_from_tag(self, tag):
+        """Return a component's display name from its fraction-layer tag.
+
+        Uses the custom name stored in the source image's component settings,
+        falling back to the default ``"Component <n>"`` label. This lets the
+        histogram combobox recognise component-fit fraction layers even when
+        the user has renamed them manually (the tag survives the rename).
+        """
+        if not isinstance(tag, dict):
+            return None
+        idx = tag.get('component_index')
+        source = tag.get('source_layer')
+        if source and source in self.viewer.layers:
+            settings = (
+                self.viewer.layers[source]
+                .metadata.get('settings', {})
+                .get('component_analysis', {})
+            )
+            comp = settings.get('components', {}).get(str(idx))
+            if isinstance(comp, dict) and comp.get('name'):
+                return comp['name']
+        if isinstance(idx, int):
+            return f"Component {idx + 1}"
+        return None
+
     def _get_fraction_layers_for_component(self, component_name):
         """Get all fraction layers in the viewer for a given component name.
 
-        Searches the viewer for fraction layers matching the component name
-        pattern, regardless of which image layer they belong to.
+        Searches the viewer for fraction layers matching the component name,
+        regardless of which image layer they belong to. Component-fit layers
+        are matched first by their ``phasor_component_fraction`` metadata tag
+        (so manually renamed layers are still found), then by name pattern.
 
         Parameters
         ----------
@@ -5329,6 +5362,17 @@ class ComponentsWidget(QWidget):
         for layer in self.viewer.layers:
             if not isinstance(layer, Image):
                 continue
+            tag = layer.metadata.get('phasor_component_fraction')
+            if (
+                isinstance(tag, dict)
+                and tag.get('analysis_type') == 'Component Fit'
+                and self._component_display_name_from_tag(tag)
+                == component_name
+            ):
+                source = tag.get('source_layer')
+                if source:
+                    result[source] = layer
+                    continue
             name = layer.name
             for sep in (" fractions: ", " fraction: "):
                 if name.startswith(component_name + sep):
@@ -5351,6 +5395,18 @@ class ComponentsWidget(QWidget):
         layer_based_names = {}
         for layer in self.viewer.layers:
             if not isinstance(layer, Image):
+                continue
+            # Component-fit layers carry an identifying tag: resolve their
+            # display name from it so a manually renamed layer still surfaces
+            # its component in the combobox.
+            tag = layer.metadata.get('phasor_component_fraction')
+            if (
+                isinstance(tag, dict)
+                and tag.get('analysis_type') == 'Component Fit'
+            ):
+                display = self._component_display_name_from_tag(tag)
+                if display is not None:
+                    layer_based_names[display] = display
                 continue
             for sep in (" fractions: ", " fraction: "):
                 idx = layer.name.find(sep)

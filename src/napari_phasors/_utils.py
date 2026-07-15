@@ -100,26 +100,6 @@ def make_section(title):
     return box, layout
 
 
-def make_flat_section(title):
-    """Return ``(container, layout)`` for a borderless titled section.
-
-    Like :func:`make_section` but without the ``QGroupBox`` frame, so the
-    section takes less vertical space (no border, title margin or padding).
-    A bold title label sits directly above the content layout. Used for the
-    first section of a tab, where the frame is redundant.
-    """
-    container = QWidget()
-    outer = QVBoxLayout(container)
-    outer.setContentsMargins(0, 0, 0, 0)
-    outer.setSpacing(2)
-    label = QLabel(title)
-    label.setStyleSheet("font-weight: 600;")
-    outer.addWidget(label)
-    layout = QVBoxLayout()
-    outer.addLayout(layout)
-    return container, layout
-
-
 class CurrentPageStackedWidget(QStackedWidget):
     """A ``QStackedWidget`` that sizes itself to the visible page only.
 

@@ -2263,10 +2263,9 @@ def test_draw_phasor_mesh_falls_back_when_interpolation_stage_unsupported(
 def test_get_output_colormap_name_branches():
     """_get_output_colormap_name returns the colormap per output type and
     falls back to 'plasma' for lifetime-style (or any other) outputs."""
-    assert PhasorMappingWidget._get_output_colormap_name("Phase") == "jet"
+    assert PhasorMappingWidget._get_output_colormap_name("Phase") == "cool"
     assert (
-        PhasorMappingWidget._get_output_colormap_name("Modulation")
-        == "viridis"
+        PhasorMappingWidget._get_output_colormap_name("Modulation") == "PiYG"
     )
     assert (
         PhasorMappingWidget._get_output_colormap_name("Normal Lifetime")

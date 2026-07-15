@@ -300,8 +300,8 @@ class PhasorMappingWidget(QWidget):
         self.current_output_type = "Apparent Phase Lifetime"
         self._overlay_imshow = None
         self._mesh_overlay_imshow = None
-        self._phase_colormap_name = "jet"
-        self._modulation_colormap_name = "viridis"
+        self._phase_colormap_name = "cool"
+        self._modulation_colormap_name = "PiYG"
         self._coloring_paused_by_tab = False
         self.min_lifetime = None
         self.max_lifetime = None
@@ -398,7 +398,10 @@ class PhasorMappingWidget(QWidget):
         self.main_layout.addWidget(output_box)
 
         # Coloring section ---------------------------------------------------
+        # Only relevant for Phase/Modulation output; hidden for Lifetime (see
+        # _sync_mode_widgets).
         coloring_box, coloring_box_layout = make_section("Coloring")
+        self.coloring_box = coloring_box
 
         # 2D phasor custom-color controls (visible for Phase/Modulation modes)
         self.colormap_widget = QWidget()
@@ -787,6 +790,9 @@ class PhasorMappingWidget(QWidget):
         pw = self.parent_widget
         self.lifetime_output_widget.setVisible(is_lifetime_mode)
         self.frequency_widget.setVisible(is_lifetime_mode)
+        # Hide the whole Coloring section for Lifetime; show it (and its
+        # controls) for Phase/Modulation.
+        self.coloring_box.setVisible(not is_lifetime_mode)
         self.colormap_widget.setVisible(not is_lifetime_mode)
         self.coloring_checkbox_widget.setVisible(not is_lifetime_mode)
 
@@ -1050,9 +1056,9 @@ class PhasorMappingWidget(QWidget):
     @staticmethod
     def _get_output_colormap_name(output_type: str) -> str:
         if output_type == "Phase":
-            return "jet"
+            return "cool"
         if output_type == "Modulation":
-            return "viridis"
+            return "PiYG"
         return "plasma"
 
     def _configure_histogram_labels_for_output(self, output_type: str):
