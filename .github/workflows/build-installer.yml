@@ -1,9 +1,17 @@
 name: Build standalone installers
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: >-
+          Release tag to build installers for and attach them to
+          (e.g. v0.7.0). The tag must already exist as a published
+          GitHub release. Run this after the corresponding
+          napari-phasors conda-forge feedstock update has merged and
+          the new version is available on the conda-forge channel.
+        required: true
+        type: string
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -30,6 +38,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
 
       - name: Set up Miniforge
         uses: conda-incubator/setup-miniconda@v3
@@ -45,12 +55,8 @@ jobs:
         id: version
         shell: bash -el {0}
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            VERSION="${{ github.event.release.tag_name }}"
-            VERSION="${VERSION#v}"
-          else
-            VERSION="dev"
-          fi
+          TAG="${{ inputs.tag }}"
+          VERSION="${TAG#v}"
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
       - name: Generate construct.yaml and build
@@ -256,7 +262,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload to GitHub Release
-        if: github.event_name == 'release'
         uses: softprops/action-gh-release@4fabdc8bec0ad32a2eb09fb8fd1d04fd30a75562 # v2.0.5
         with:
+          tag_name: ${{ inputs.tag }}
           files: installer/napari-phasors-*
