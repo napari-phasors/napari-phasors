@@ -1693,10 +1693,21 @@ class PhasorMappingWidget(QWidget):
         output_type = self._get_selected_output_type()
         if output_type in {"Phase", "Modulation"}:
             self._apply_histogram_coloring(output_type)
-        if self.per_layer_metric_data and len(self.per_layer_metric_data) > 1:
-            self.histogram_widget.update_multi_data(self.per_layer_metric_data)
+        # Name the histogram datasets after the analysis output layers
+        # (e.g. "Lifetime: <image>"), not the intensity image layers, so the
+        # statistics Name column matches the created layers (as in the FRET
+        # tab). The output layers are named ``f"{output_type}: {image_name}"``.
+        named = {
+            f"{output_type}: {name}": data
+            for name, data in (self.per_layer_metric_data or {}).items()
+        }
+        if len(named) > 1:
+            self.histogram_widget.update_multi_data(named)
         else:
-            self.histogram_widget.update_data(self.current_metric_data)
+            self.histogram_widget.update_data(
+                self.current_metric_data,
+                label=next(iter(named), "Layer"),
+            )
 
     def rename_layer(self, old_name: str, new_name: str):
         """Update internal dictionaries and rename derived layers when a layer is renamed."""
@@ -1930,6 +1941,14 @@ class PhasorMappingWidget(QWidget):
                 )
             )
             self._clear_2d_coloring()
+
+        # Refresh the primary button's ready/blocked style. This runs on both
+        # the direct layer-change path and the deferred tab-switch path, so the
+        # button reflects the current validation state (e.g. a selected layer
+        # with the frequency already filled from metadata) instead of keeping a
+        # stale blocked (grey) style.
+        if hasattr(self, '_refresh_calculate_button'):
+            self._refresh_calculate_button()
 
     def _on_calculate_lifetime_clicked(self):
         """Callback when Calculate button is clicked.

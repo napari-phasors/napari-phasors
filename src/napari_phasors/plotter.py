@@ -59,6 +59,7 @@ from ._utils import (
     available_colormap_names,
     build_group_styles_from_layer_metadata,
     build_groups_from_layer_metadata,
+    make_flat_section,
     make_section,
     make_solid_contour_cmap,
     normalize_rgb,
@@ -1549,6 +1550,13 @@ class PlotterWidget(QWidget):
     }
     PLOT_TYPE_KEYS = {v: k for k, v in PLOT_TYPE_DISPLAY_NAMES.items()}
 
+    # Pixel bands the figure reserves around the axes for the y-label +
+    # colorbar (horizontal) and the x-label (vertical). Used to size the
+    # canvas so the aspect-locked plot fills the container tightly. See
+    # :meth:`_canvas_size_for_ratio`.
+    _CANVAS_H_OVERHEAD = 150
+    _CANVAS_V_OVERHEAD = 55
+
     def __init__(self, napari_viewer):
         """Initialize the PlotterWidget."""
         super().__init__()
@@ -1635,7 +1643,9 @@ class PlotterWidget(QWidget):
         # Create bottom widget for controls
         self.controls_container = QWidget()
         self.controls_container.setLayout(QVBoxLayout())
-        self.controls_container.layout().setContentsMargins(10, 10, 10, 10)
+        # Keep only a small top margin so the controls sit close beneath the
+        # phasor plot (the plot already reserves its own x-label band).
+        self.controls_container.layout().setContentsMargins(10, 2, 10, 10)
         self.controls_container.layout().setSpacing(3)
         self.controls_container.setSizePolicy(
             QSizePolicy.Preferred, QSizePolicy.Maximum
@@ -1972,8 +1982,11 @@ class PlotterWidget(QWidget):
         self.settings_tab.setStyleSheet(analysis_section_stylesheet())
         self.tab_widget.addTab(self.settings_tab, "Plot Settings")
 
-        # Import buttons in a titled section at the top of the Plot Settings tab
-        import_box, import_box_layout = make_section("Load and apply settings")
+        # Import buttons in a titled section at the top of the Plot Settings
+        # tab. Borderless to save vertical space (it is the first section).
+        import_box, import_box_layout = make_flat_section(
+            "Load and apply settings"
+        )
         import_buttons_layout = QHBoxLayout()
         import_buttons_layout.setContentsMargins(0, 0, 0, 0)
         import_buttons_layout.setSpacing(5)
@@ -2428,6 +2441,16 @@ class PlotterWidget(QWidget):
                 [600],
                 Qt.Horizontal,
             )
+            # Give the analysis tabs a taller default height so their controls
+            # are visible without scrolling. The plotter and analysis docks
+            # share the right column's vertical split.
+            plotter_dock = self._find_plotter_dock()
+            if plotter_dock is not None:
+                qt_window.resizeDocks(
+                    [plotter_dock, self._analysis_dock],
+                    [500, 400],
+                    Qt.Vertical,
+                )
             # Height of the bottom (central) histogram/statistics area.
             # Request 1 px so Qt clamps it to the dock's minimum height,
             # keeping the histogram as short as allowed by default.
@@ -2509,16 +2532,12 @@ class PlotterWidget(QWidget):
             return
 
         ratio = self._get_canvas_target_ratio()
-        container_ratio = available_w / available_h
-        if container_ratio >= ratio:
-            target_h = available_h
-            target_w = int(round(target_h * ratio))
-        else:
-            target_w = available_w
-            target_h = int(round(target_w / ratio))
+        target_w, target_h = self._canvas_size_for_ratio(
+            ratio, available_w, available_h
+        )
 
-        target_w = max(int(target_w), 1)
-        target_h = max(int(target_h), 1)
+        target_w = max(int(round(target_w)), 1)
+        target_h = max(int(round(target_h)), 1)
 
         if (
             self.canvas_widget.width() != target_w
@@ -2527,6 +2546,70 @@ class PlotterWidget(QWidget):
             self.canvas_widget.setFixedSize(target_w, target_h)
 
         self._update_text_sizes_for_canvas(min(target_w, target_h))
+
+    def _canvas_size_for_ratio(self, ratio, available_w, available_h):
+        """Return the (width, height) for the canvas widget.
+
+        ``ratio`` is the axes data aspect (width / height). The canvas widget
+        wraps the matplotlib figure - which also carries the axis labels and
+        the colorbar - plus the toolbar. Sizing the canvas to the raw data
+        aspect ignores that the horizontal overhead (y-label + colorbar) is
+        much larger than the vertical overhead (x-label). For the full
+        (square) plot that left wide empty bands above and below the axes.
+
+        Instead, size the canvas so the aspect-locked axes fills the tight
+        dimension and the figure wraps it, accounting for the pixel overhead
+        around the axes. ``h_over`` (y-label + colorbar) is measured live - it
+        is reliable because the plot is horizontally constrained. ``v_over``
+        (x-label band) is estimated from the plot height, avoiding the
+        inflated value measured when the axes is centered in an over-tall
+        figure. Falls back to a plain aspect-fit before the figure is drawn.
+        """
+
+        def _fit(r):
+            if available_w / available_h >= r:
+                th = available_h
+                tw = th * r
+            else:
+                tw = available_w
+                th = tw / r
+            return tw, th
+
+        try:
+            canvas = self.canvas_widget.canvas
+            fig_w = float(canvas.width())
+            fig_h = float(canvas.height())
+            if fig_w <= 0 or fig_h <= 0:
+                return _fit(ratio)
+
+            # Widget chrome (figure border + toolbar), stable and measured live.
+            border_w = max(float(self.canvas_widget.width()) - fig_w, 0)
+            toolbar_h = max(float(self.canvas_widget.height()) - fig_h, 0)
+            # Overhead the figure reserves around the axes for labels and the
+            # colorbar. These are treated as constants rather than measured
+            # from the current draw: an aspect-locked axes that is limited by
+            # one dimension gets *inflated* margins on the other, so feeding
+            # the live margin back into the size would spiral the plot smaller
+            # each pass. Values are the minimal (non-inflated) pixel bands
+            # observed for the y-label + colorbar (horizontal) and the x-label
+            # (vertical).
+            h_over = self._CANVAS_H_OVERHEAD
+            v_over = self._CANVAS_V_OVERHEAD
+
+            # Largest axes height fitting both dims while preserving aspect.
+            axes_h_target = min(
+                (available_w - border_w - h_over) / ratio,
+                available_h - toolbar_h - v_over,
+            )
+            if axes_h_target <= 0:
+                return _fit(ratio)
+
+            axes_w_target = axes_h_target * ratio
+            target_w = min(axes_w_target + h_over + border_w, available_w)
+            target_h = min(axes_h_target + v_over + toolbar_h, available_h)
+            return target_w, target_h
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            return _fit(ratio)
 
     @staticmethod
     def _compute_font_size(side):

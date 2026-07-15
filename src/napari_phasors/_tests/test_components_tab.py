@@ -1159,13 +1159,14 @@ def test_components_histogram_multi_layer_linear_projection(
     comp_widget.update_component_histogram()
 
     # All selected layers are pooled into a single merged histogram (rather
-    # than a per-layer mean +/- SD that looks like just one layer).
-    assert set(comp_widget.histogram_widget._datasets.keys()) == {"Layer"}
+    # than a per-layer mean +/- SD that looks like just one layer). The pooled
+    # dataset is named after the analysed component, not the intensity image.
+    assert set(comp_widget.histogram_widget._datasets.keys()) == {name1}
     assert comp_widget.histogram_widget._show_sd is False
 
     # The range slider clips every layer and keeps the merged histogram.
     comp_widget._on_fraction_range_changed(0.2, 0.8)
-    assert set(comp_widget.histogram_widget._datasets.keys()) == {"Layer"}
+    assert set(comp_widget.histogram_widget._datasets.keys()) == {name1}
 
     # Early returns: an empty and an unresolved selection are both no-ops.
     comp_widget.histogram_component_combobox.blockSignals(True)

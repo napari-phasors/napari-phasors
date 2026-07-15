@@ -100,6 +100,26 @@ def make_section(title):
     return box, layout
 
 
+def make_flat_section(title):
+    """Return ``(container, layout)`` for a borderless titled section.
+
+    Like :func:`make_section` but without the ``QGroupBox`` frame, so the
+    section takes less vertical space (no border, title margin or padding).
+    A bold title label sits directly above the content layout. Used for the
+    first section of a tab, where the frame is redundant.
+    """
+    container = QWidget()
+    outer = QVBoxLayout(container)
+    outer.setContentsMargins(0, 0, 0, 0)
+    outer.setSpacing(2)
+    label = QLabel(title)
+    label.setStyleSheet("font-weight: 600;")
+    outer.addWidget(label)
+    layout = QVBoxLayout()
+    outer.addLayout(layout)
+    return container, layout
+
+
 class CurrentPageStackedWidget(QStackedWidget):
     """A ``QStackedWidget`` that sizes itself to the visible page only.
 
@@ -2908,7 +2928,7 @@ class HistogramWidget(QWidget):
                 self._render()
             self.dataChanged.emit()
 
-    def update_data(self, data: np.ndarray) -> None:
+    def update_data(self, data: np.ndarray, label: str = "Layer") -> None:
         """Compute histogram from *data* and render.
 
         NaN/Inf values are always excluded. Non-positive values are
@@ -2920,6 +2940,10 @@ class HistogramWidget(QWidget):
         ----------
         data : np.ndarray
             Scalar data array (any shape – will be flattened internally).
+        label : str, optional
+            Name shown for this dataset (e.g. in the statistics Name
+            column). Defaults to ``"Layer"``; callers should pass the
+            analyzed image layer's name so it matches the multi-layer view.
         """
         valid = self._filter_valid_values(data)
 
@@ -2933,7 +2957,7 @@ class HistogramWidget(QWidget):
             self.dataChanged.emit()
             return
 
-        self._datasets = {"Layer": valid}
+        self._datasets = {label: valid}
         self._raw_valid_data = valid
         self._previous_dataset_count = 0
 
@@ -2943,7 +2967,7 @@ class HistogramWidget(QWidget):
         )
         self.bin_centers = (self.bin_edges[:-1] + self.bin_edges[1:]) / 2
 
-        self._counts_per_dataset = {"Layer": self.counts}
+        self._counts_per_dataset = {label: self.counts}
 
         self._render()
         self._settings_button.setEnabled(True)

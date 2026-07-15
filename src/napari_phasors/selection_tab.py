@@ -45,6 +45,7 @@ from ._utils import (
     CurrentPageStackedWidget,
     analysis_section_stylesheet,
     colormap_to_dict,
+    make_flat_section,
     make_section,
     setup_primary_button,
 )
@@ -131,8 +132,9 @@ class SelectionWidget(QWidget):
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Selection mode combobox at the top
-        mode_box, mode_box_layout = make_section("Selection mode")
+        # Selection mode combobox at the top. Borderless to save vertical
+        # space (it is the first section).
+        mode_box, mode_box_layout = make_flat_section("Selection mode")
         mode_layout = QHBoxLayout()
         mode_layout.addWidget(QLabel("Selection Mode:"))
         self.selection_mode_combobox = QComboBox()

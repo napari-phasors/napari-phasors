@@ -1638,7 +1638,10 @@ class FretWidget(QWidget):
         if len(per_layer) > 1:
             self.histogram_widget.update_multi_data(per_layer)
         else:
-            self.histogram_widget.update_data(merged)
+            self.histogram_widget.update_data(
+                merged,
+                label=next(iter(per_layer), "Layer"),
+            )
 
     def _on_fret_range_changed(self, min_val, max_val):
         """Handle range slider changes – clip FRET layers and update histogram."""
@@ -1676,7 +1679,10 @@ class FretWidget(QWidget):
             if len(per_layer) > 1:
                 self.histogram_widget.update_multi_data(per_layer)
             else:
-                self.histogram_widget.update_data(merged)
+                self.histogram_widget.update_data(
+                    merged,
+                    label=next(iter(per_layer), "Layer"),
+                )
 
         self.plot_donor_trajectory()
 

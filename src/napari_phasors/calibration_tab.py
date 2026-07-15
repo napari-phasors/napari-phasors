@@ -30,6 +30,7 @@ from ._utils import (
     REFERENCE_LIFETIMES_SOURCE,
     analysis_section_stylesheet,
     apply_filter_and_threshold,
+    make_flat_section,
     make_section,
     reference_lifetimes,
     setup_primary_button,
@@ -185,7 +186,10 @@ class CalibrationWidget(QWidget):
         layout = QVBoxLayout(widget)
 
         # Calibration reference -------------------------------------------
-        reference_box, reference_layout = make_section("Calibration reference")
+        # Borderless to save vertical space (it is the first section).
+        reference_box, reference_layout = make_flat_section(
+            "Calibration reference"
+        )
         reference_grid = QGridLayout()
         reference_layout.addLayout(reference_grid)
         widget.calibration_layer_label_widget = QLabel("Calibration Layer:")
