@@ -3028,6 +3028,39 @@ class HistogramWidget(QWidget):
             self.fig.canvas.draw_idle()
             self.dataChanged.emit()
 
+    def remap_dataset_keys(self, old_to_new: dict) -> None:
+        """Migrate persisted grouping/color state to new dataset labels.
+
+        Group assignments and per-layer colors are keyed by dataset label. When
+        the caller re-feeds the *same* underlying datasets under different
+        labels (e.g. the components tab relabelling fraction data when the
+        selected component changes), those persisted mappings would otherwise
+        no longer match and the datasets would collapse into the default group.
+
+        This copies the existing ``_group_assignments`` and ``_layer_colors``
+        entries from each old label to its new label. It does not re-render;
+        call the appropriate ``update_*_data`` method afterwards.
+
+        Parameters
+        ----------
+        old_to_new : dict
+            ``{old_label: new_label}`` mapping for datasets that persist across
+            the relabel.
+        """
+        new_group_assignments = dict(self._group_assignments)
+        new_layer_colors = dict(self._layer_colors)
+        for old_label, new_label in old_to_new.items():
+            if old_label == new_label:
+                continue
+            if old_label in self._group_assignments:
+                new_group_assignments[new_label] = self._group_assignments[
+                    old_label
+                ]
+            if old_label in self._layer_colors:
+                new_layer_colors[new_label] = self._layer_colors[old_label]
+        self._group_assignments = new_group_assignments
+        self._layer_colors = new_layer_colors
+
     def update_colormap(
         self,
         colormap_colors: np.ndarray = None,

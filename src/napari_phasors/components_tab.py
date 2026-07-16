@@ -341,6 +341,10 @@ class ComponentsWidget(QWidget):
         self.histogram_offset = 0.0
         self.histogram_alpha = 0.75
         self.component_histogram = None
+        # {source_image_name: histogram dataset label} for the component
+        # currently shown, used to carry group/color state across the label
+        # change when a different component is selected.
+        self._histogram_label_by_image = None
 
         # Flag to prevent clearing lifetime when updating from lifetime
         self._updating_from_lifetime = False
@@ -5562,13 +5566,54 @@ class ComponentsWidget(QWidget):
         """
         labeled = {}
         for img_name, data in data_by_image.items():
-            if invert:
-                label = f"{selected_text} fractions: {img_name}"
-            else:
-                fl = fraction_layers_map.get(img_name)
-                label = fl.name if fl is not None else img_name
+            label = self._histogram_label_for_image(
+                img_name, fraction_layers_map, selected_text, invert
+            )
             labeled[label] = np.asarray(data, dtype=float).ravel()
         return labeled
+
+    def _histogram_label_for_image(
+        self, img_name, fraction_layers_map, selected_text, invert
+    ):
+        """Return the histogram dataset label used for ``img_name``.
+
+        Mirrors the labelling in :meth:`_label_fraction_datasets` so callers
+        can build an ``{image: label}`` mapping without the data arrays.
+        """
+        if invert:
+            return f"{selected_text} fractions: {img_name}"
+        fl = fraction_layers_map.get(img_name)
+        return fl.name if fl is not None else img_name
+
+    def _apply_histogram_group_remap(
+        self, fraction_layers_map, selected_text, invert
+    ):
+        """Carry histogram grouping/colors across a component change.
+
+        The histogram widget keys its group assignments and per-layer colors by
+        dataset label. Switching the selected component relabels every dataset
+        (e.g. ``"Component 1 fractions: img"`` -> ``"Component 2 fractions:
+        img"``), which would otherwise orphan those mappings and collapse every
+        dataset into the default group in Grouped mode. Remap the persisted
+        state from the previously displayed labels to the new ones, keyed by the
+        shared source image, before feeding the new data.
+        """
+        image_to_label = {
+            img_name: self._histogram_label_for_image(
+                img_name, fraction_layers_map, selected_text, invert
+            )
+            for img_name in fraction_layers_map
+        }
+        previous = getattr(self, '_histogram_label_by_image', None)
+        if previous:
+            old_to_new = {
+                previous[img_name]: label
+                for img_name, label in image_to_label.items()
+                if img_name in previous
+            }
+            if old_to_new:
+                self.histogram_widget.remap_dataset_keys(old_to_new)
+        self._histogram_label_by_image = image_to_label
 
     def _update_histogram_combobox(self):
         """Populate the component selector comboboxes with fraction layers.
@@ -5696,6 +5741,9 @@ class ComponentsWidget(QWidget):
         # the analysis fraction layer, as in the FRET tab) so the Merged /
         # Individual layers / Grouped display modes and per-row statistics
         # all work.
+        self._apply_histogram_group_remap(
+            fraction_layers_map, selected_text, invert
+        )
         per_layer = self._label_fraction_datasets(
             clipped_data, fraction_layers_map, selected_text, invert
         )
@@ -5804,6 +5852,9 @@ class ComponentsWidget(QWidget):
             )
             for img_name, fl in fraction_layers_map.items()
         }
+        self._apply_histogram_group_remap(
+            fraction_layers_map, selected_text, invert
+        )
         per_layer = self._label_fraction_datasets(
             raw_data, fraction_layers_map, selected_text, invert
         )
