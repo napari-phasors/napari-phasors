@@ -48,8 +48,16 @@ Customizable parameters include:
 
 When multiple layers are selected, you can choose between **Merged**, **Individual**, or **Group** modes, each with customizable colors.
 
+**Merged** pools every selected layer into a single contour:
+
 <video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/phasor%20plot%20contour.gif">
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/phasor%20plot%20contour.mp4" type="video/mp4">
+</video>
+
+**Group** draws one contour per configured group of layers, each with its own color:
+
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/phasor%20plot%20contour%20group.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/phasor%20plot%20contour%20group.mp4" type="video/mp4">
 </video>
 
 ## Phasor Centers

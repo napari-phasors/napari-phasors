@@ -32,6 +32,10 @@ significantly streamlines the workflow for experimental series.
 > You can quickly select or deselect all layers using the **All** and **None**
 > links next to the layer selection dropdown.
 
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/multi-layer.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/multi-layer.mp4" type="video/mp4">
+</video>
+
 ## Copying and Importing Settings
 
 You can reuse analysis parameters and plot configurations from existing layers
@@ -49,12 +53,14 @@ To copy settings from one layer to another:
 2. Click the **Layer** button.
 3. Select the source layer from the dialog.
 4. Choose the categories of settings you wish to copy:
-    - **Frequency & Harmonic**
+    - **Frequency**
     - **Plot Settings** (background, type, colormap, log scale, etc.)
     - **Calibration Parameters**
     - **Filter & Threshold Settings**
+    - **Region Selection (Cursors)**
+    - **Component Positions, Names and Display Settings**
     - **Phasor Mapping Parameters**
-    - **FRET & Component Analysis Positions**
+    - **FRET**
 
 <video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/copy%20from%20layer.gif">
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/copy%20from%20layer.mp4" type="video/mp4">

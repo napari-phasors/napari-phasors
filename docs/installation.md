@@ -53,6 +53,18 @@ If you already have Anaconda or Miniconda, you can use `conda` instead of
 mamba create -y -n napari-phasors-env napari pyqt6 python=3.14 # or 3.12, 3.13
 ```
 
+```{tip}
+napari-phasors is also published on the
+[conda-forge](https://anaconda.org/conda-forge/napari-phasors) channel. That
+recipe pulls in napari, PyQt6, and every other dependency, so you can
+replace Steps 2 and 4 with a single command and skip `pip` entirely:
+
+    mamba create -y -n napari-phasors-env -c conda-forge napari-phasors
+
+The conda-forge release can lag a little behind the version on PyPI; use
+the pip steps below if you need the very latest release right away.
+```
+
 ### Step 3: Activate the environment
 
 ```bash

@@ -33,12 +33,12 @@ Use **File → Open File(s)** or drag-and-drop your file into napari.
 
 Alternatively, load the built-in sample data: **File → Open Sample → napari-phasors**.
 
-## 2. Compute phasors
+## 2. Visualize phasors and perform analysis
 
 Once a FLIM file is loaded, the phasor transform is computed automatically and stored in the layer metadata. Open the **Phasor Plot** widget via **Plugins → napari-phasors → Phasor Plot**.
 
-<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/phasor%20plot%202dhist.gif">
-  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/phasor%20plot%202dhist.mp4" type="video/mp4">
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/flim%20workflow.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/flim%20workflow.mp4" type="video/mp4">
 </video>
 
 ## 3. Select layers
@@ -55,12 +55,15 @@ Use the **Filter** tab to apply median or wavelet filters, and set automatic thr
 
 ## 6. Select regions of interest
 
-Use the **Selection** tab to identify regions in phasor space using circular cursors, manual drawing, or automatic clustering. See {doc}`phasor_selection` for details.
+Use the **Selection** tab to identify regions in phasor space using circular, elliptical or polar cursors, manual drawing, or automatic clustering. See {doc}`phasor_selection` for details.
 
 ## 7. Analyze phasor outputs
 
 Run **Component Analysis** when you want to decompose mixtures into two or
 more components and generate fraction maps. See {doc}`component_analysis` for details.
+
+Use the **FRET** tab to perform Förster Resonance Energy Transfer analysis and
+calculate apparent FRET efficiency for each pixel. See {doc}`fret_analysis` for details.
 
 Use the **Phasor Mapping** tab to colormap each pixel by its apparent lifetime,
 phasor phase, or phasor modulation. An interactive 1D histogram and statistics
@@ -72,6 +75,6 @@ For practical visualization examples and plot customization tools, see
 
 ## 8. Export results
 
-Export your phasor coordinates, selections, and analysis results as OME-TIF or
+Export your phasor coordinates, selections, and analysis results as OME-TIF, PNG or
 CSV. Multiple layers can be exported simultaneously. See {doc}`exporting` for
 details.

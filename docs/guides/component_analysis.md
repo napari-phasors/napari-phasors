@@ -27,6 +27,10 @@ To set or modify a component's coordinates, click the **Select** button next to 
 ### Select on plot
 Allows manual selection by clicking on any position within the phasor plot. You can cancel the selection process at any time by pressing the **Esc** key on your keyboard.
 
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/component%20select%20plot.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/component%20select%20plot.mp4" type="video/mp4">
+</video>
+
 ### Select from cursor center
 Hovering over this option opens a submenu listing all active cursors (Circular, Polar, Elliptical, and GMM Clusters). Selecting a cursor instantly snaps the component to that cursor's center of gravity.
 
@@ -44,8 +48,8 @@ Selecting **Select from layer(s) phasor center** opens a dialog where you can se
 ### Auto intersect semicircle
 For Component 2 and subsequent components, selecting **Auto intersect semicircle** automatically positions the component on the universal semicircle. The position is calculated at the intersection point of the universal semicircle and a line drawn from the previous component's coordinates through the center of the active phasor data.
 
-<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/intersect%20semicircle.gif">
-  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/intersect%20semicircle.mp4" type="video/mp4">
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/component%20intersect%20semicircle.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/component%20intersect%20semicircle.mp4" type="video/mp4">
 </video>
 
 ## Two-component linear projection

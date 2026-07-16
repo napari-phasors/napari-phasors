@@ -2,6 +2,7 @@
 
 [![License BSD-3](https://img.shields.io/pypi/l/napari-phasors.svg?color=green)](https://github.com/napari-phasors/napari-phasors/raw/main/LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/napari-phasors.svg?color=green)](https://pypi.org/project/napari-phasors)
+[![Conda Version](https://img.shields.io/conda/vn/conda-forge/napari-phasors.svg)](https://anaconda.org/conda-forge/napari-phasors)
 [![Python Version](https://img.shields.io/pypi/pyversions/napari-phasors.svg?color=green)](https://python.org)
 [![tests](https://github.com/napari-phasors/napari-phasors/actions/workflows/run-tests.yml/badge.svg?branch=main)](https://github.com/napari-phasors/napari-phasors/actions/workflows/run-tests.yml)
 [![codecov](https://codecov.io/gh/napari-phasors/napari-phasors/branch/main/graph/badge.svg)](https://codecov.io/gh/napari-phasors/napari-phasors)
@@ -34,6 +35,7 @@ available at **[https://napari-phasors.readthedocs.io](https://napari-phasors.re
 - **FRET analysis** with donor trajectory visualization and multi-layer donor/background source selection
 - **Selections** via manual drawing, circular/polar/elliptical cursors, and automatic clustering
 - **Exporting** results as OME-TIF or CSV (multiple layers simultaneously)
+- **Batch Analysis** — apply the same reading and analysis pipeline (calibration, filtering, masking, component analysis, phasor mapping, FRET, selections) to every file in a folder and export the results headlessly
 
 ## Installation
 
@@ -54,10 +56,25 @@ page. Download and run — no Python installation
 needed. Installers are ~350–470 MB and bundle
 everything required.
 
+### Using conda (conda-forge)
+
+napari-phasors is available on the
+[conda-forge](https://anaconda.org/conda-forge/napari-phasors) channel,
+which installs napari, Qt, and every dependency in one step. We recommend
+using [miniforge](https://conda-forge.org/download/). If you use Anaconda or
+Miniconda, replace `mamba` with `conda`.
+
+    mamba create -y -n napari-phasors-env -c conda-forge napari-phasors
+
+Activate the environment:
+
+    conda activate napari-phasors-env
+    napari
+
 ### Using conda + pip
 
-We recommend using [miniforge](https://conda-forge.org/download/). If you
-use Anaconda or Miniconda, replace `mamba` with `conda`.
+Alternatively, create a plain conda environment and install napari-phasors
+from PyPI (useful to get a release before it lands on conda-forge):
 
     mamba create -y -n napari-phasors-env napari pyqt6 python=3.14 # or 3.12, 3.13
 

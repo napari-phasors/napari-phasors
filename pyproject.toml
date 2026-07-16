@@ -1,7 +1,7 @@
 [project]
 name = "napari-phasors"
 dynamic = ["version"]
-description = "A simple plugin to use phasor analysis"
+description = "A plugin for performing phasor analysis of fluorescence microscopy data"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { file = "LICENSE" }

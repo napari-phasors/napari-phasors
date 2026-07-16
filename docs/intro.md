@@ -17,6 +17,7 @@ napari-phasors is a comprehensive plugin, based on the [phasorpy](https://www.ph
 - **Filtering** with median, wavelet, and automatic thresholding (Otsu, Li, Yen)
 - **Selections** via manual drawing, circular/polar/elliptical cursors, and automatic clustering
 - **Exporting** results as OME-TIF or CSV (multiple layers simultaneously)
+- **Batch Analysis** — apply the same reading and analysis pipeline to every file in a folder and export the results headlessly
 
 ## Quick start
 
