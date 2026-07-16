@@ -223,8 +223,8 @@ class PhasorCenterSelectionDialog(QDialog):
     def __init__(self, layers, parent=None, preselected=None):
         super().__init__(parent)
         self.setWindowTitle("Select Phasor Center Layers")
-        self.setMinimumWidth(360)
-        self.resize(360, 150)
+        self.setMinimumWidth(520)
+        self.resize(520, 150)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(15, 15, 15, 15)

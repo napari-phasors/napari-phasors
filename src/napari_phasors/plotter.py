@@ -297,7 +297,7 @@ class MaskAssignmentDialog(QDialog):
     ):
         super().__init__(parent)
         self.setWindowTitle("Assign Mask Layers")
-        self.setMinimumWidth(400)
+        self.setMinimumWidth(560)
 
         if current_assignments is None:
             current_assignments = {}
@@ -613,7 +613,7 @@ class ContourLayerSettingsDialog(QDialog):
         self.setWindowTitle(
             "Configure Groups" if groups_only else "Contour Layer Settings"
         )
-        self.setMinimumWidth(550)
+        self.setMinimumWidth(720)
 
         self._layer_labels = list(layer_labels or [])
         self._group_row_data = []
@@ -1118,7 +1118,7 @@ class PhasorCenterLayerSettingsDialog(QDialog):
             self.setWindowTitle("Phasor Center Settings")
         else:
             self.setWindowTitle("Phasor Center Settings (Multi-Layer)")
-        self.setMinimumWidth(500)
+        self.setMinimumWidth(680)
 
         self._group_row_data = []
 
