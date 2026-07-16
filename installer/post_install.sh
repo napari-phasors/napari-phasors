@@ -1,7 +1,20 @@
 #!/bin/bash
-# Post-install script: create launchers. napari-phasors and its dependencies
-# are bundled into the env by constructor (see specs in the build workflow),
-# so nothing is downloaded here and the install needs no network.
+# Post-install script: install napari-phasors where it cannot be bundled,
+# then create launchers.
+#
+# Linux: napari-phasors and its dependencies are bundled into the env by
+# constructor (see specs in the build workflow), so nothing is downloaded
+# here and the install needs no network.
+#
+# macOS: phasorpy, fbdfile and ptufile have no osx-arm64 packages on
+# conda-forge, so napari-phasors cannot be part of the solved env and is
+# installed from PyPI here instead. This runs on the CI runner rather than on
+# a user machine: the DMG step executes this installer and packages the
+# resulting env into the .app, so the DMG users download is still
+# self-contained.
+if [ "$(uname)" = "Darwin" ]; then
+    "${PREFIX}/bin/pip" install "napari-phasors${INSTALLER_VER:+==${INSTALLER_VER}}"
+fi
 
 # Create a launcher script. Constructor envs do not ship bin/activate
 # (no conda inside), so export what napari/Qt need directly: the env's
