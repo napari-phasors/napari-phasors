@@ -319,6 +319,11 @@ class PopoutWindowMixin:
     ``_popout_max_width``
         Upper bound on the window width, so wide content (e.g. many tabs) never
         overflows small displays.
+    ``_popout_min_width``
+        Lower bound on the *initial* window width, for content whose natural
+        width hint is narrower than is comfortable to work in. This only sets
+        the size the window opens at; the widget's ``minimumWidth`` still
+        governs how far the user can shrink it afterwards.
     ``_popout_height``
         Fixed window height. Leave ``None`` to use the widget's natural height
         (appropriate for compact, non-scrolling widgets); set a value for tall,
@@ -327,6 +332,7 @@ class PopoutWindowMixin:
 
     _popout_title = None
     _popout_max_width = 540
+    _popout_min_width = 360
     _popout_height = None
 
     def showEvent(self, event):
@@ -376,7 +382,12 @@ class PopoutWindowMixin:
         # never spills off smaller displays.
         screen = QApplication.primaryScreen().availableGeometry()
         max_width = min(self._popout_max_width, screen.width() - 80)
-        width = max(360, min(self.sizeHint().width(), max_width))
+        width = max(
+            self._popout_min_width, min(self.sizeHint().width(), max_width)
+        )
+        # The minimum is a comfort floor, not a guarantee: never let it push the
+        # window past what the screen allows.
+        width = min(width, max_width)
         if self._popout_height:
             height = min(self._popout_height, screen.height() - 120)
         else:
@@ -2040,7 +2051,7 @@ class HistogramSettingsDialog(QDialog):
     ):
         super().__init__(parent)
         self.setWindowTitle("Histogram Settings")
-        self.setMinimumWidth(340)
+        self.setMinimumWidth(520)
 
         layout = QVBoxLayout(self)
 
@@ -4049,7 +4060,7 @@ class FileOrderDialog(QDialog):
     ):
         super().__init__(parent)
         self.setWindowTitle("Reorder Files for 3D Stack")
-        self.setMinimumWidth(500)
+        self.setMinimumWidth(680)
         self.setMinimumHeight(400)
 
         self._paths = list(file_paths)

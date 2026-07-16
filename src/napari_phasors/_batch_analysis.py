@@ -1105,7 +1105,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
 
     # Shown as a standalone (non-dockable) window; see ``PopoutWindowMixin``.
     _popout_title = "Batch Analysis"
-    _popout_max_width = 540
+    _popout_max_width = 900
+    _popout_min_width = 760
     _popout_height = 840
 
     # Display labels for the phasor-plot type comboboxes. The canonical key
@@ -1300,7 +1301,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         area.setWidget(widget)
         return area
 
-    def _enable_section(self, title, description=None):
+    def _enable_section(self, title, description=None, stretch_body=False):
         """Return ``(toggle, body, content)`` for an enableable analysis tab.
 
         ``toggle`` is a bold green :class:`superqt.QToggleSwitch` that doubles
@@ -1313,6 +1314,11 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         is the widget the caller should add to the tab layout (it wraps the
         toggle header, the description and the lockable body), so the caller no
         longer needs to add the toggle separately.
+
+        Set ``stretch_body`` for a tab whose body should grow into the tab's
+        spare height (e.g. one holding a scrollable list) rather than staying at
+        its natural height; the caller must also add ``content`` with a stretch
+        factor and omit any trailing stretch.
         """
         toggle = QToggleSwitch(title)
         toggle.onColor = QColor("#27ae60")
@@ -1370,7 +1376,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         content_layout.addWidget(header)
         if description:
             content_layout.addWidget(self._note(description))
-        content_layout.addWidget(section)
+        content_layout.addWidget(section, 1 if stretch_body else 0)
 
         def _on_toggled(checked):
             body.setEnabled(checked)
@@ -2278,6 +2284,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "Enable masks",
             "Restrict each image to a region of interest using mask image "
             "files matched to inputs by name.",
+            stretch_body=True,
         )
         group_layout = QVBoxLayout(body)
         group_layout.setContentsMargins(0, 0, 0, 0)
@@ -2309,6 +2316,9 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         rows_scroll.setWidgetResizable(True)
         rows_scroll.setFrameShape(QFrame.NoFrame)
         rows_scroll.setWidget(self._mask_rows_container)
+        # The list is the point of this tab: give it a tall floor and let it
+        # take the tab's spare height instead of scrolling within a thin strip.
+        rows_scroll.setMinimumHeight(360)
         group_layout.addWidget(rows_scroll, 1)
 
         note = QLabel(
@@ -2321,8 +2331,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         note.setStyleSheet("color: gray; font-size: 11px;")
         group_layout.addWidget(note)
 
-        outer.addWidget(content)
-        outer.addStretch()
+        outer.addWidget(content, 1)
         return self._scrollable(tab)
 
     def _on_add_mask_folder(self):
