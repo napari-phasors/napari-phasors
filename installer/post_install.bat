@@ -1,5 +1,6 @@
-REM Post-install script: install napari-phasors and create shortcuts
-call "%PREFIX%\Scripts\pip.exe" install napari-phasors
+REM Post-install script: create shortcuts. napari-phasors and its dependencies
+REM are bundled into the env by constructor (see specs in the build workflow),
+REM so nothing is downloaded here and the install needs no network.
 
 REM Create a launcher batch file
 echo @echo off > "%PREFIX%\napari-phasors.bat"

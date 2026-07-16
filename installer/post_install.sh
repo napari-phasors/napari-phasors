@@ -1,6 +1,7 @@
 #!/bin/bash
-# Post-install script: install napari-phasors and create launchers
-"${PREFIX}/bin/pip" install napari-phasors
+# Post-install script: create launchers. napari-phasors and its dependencies
+# are bundled into the env by constructor (see specs in the build workflow),
+# so nothing is downloaded here and the install needs no network.
 
 # Create a launcher script. Constructor envs do not ship bin/activate
 # (no conda inside), so export what napari/Qt need directly: the env's
