@@ -21,6 +21,8 @@ Define one or more cursors on the phasor plot to select regions of interest. Eac
 
 A separate labels layer is created for each cursor, color-coded for easy identification. Statistics for each cursor region are displayed in the table.
 
+> [!TIP]
+> Enable the **Autoupdate** toggle to automatically recompute the selection (and any dependent analysis) whenever a cursor changes, instead of clicking **Calculate Selection** each time.
 
 ### Circular cursors
 

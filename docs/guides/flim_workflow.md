@@ -51,7 +51,7 @@ If you have a reference image of a known fluorophore, calibrate your data in the
 
 ## 5. Filter and threshold
 
-Use the **Filter** tab to apply median or wavelet filters, and set automatic thresholds (Otsu, Li, Yen) to remove background noise. See {doc}`filtering_thresholding` for details.
+Use the **Filter** tab to apply median or wavelet (binlet pawFLIM) filters, and set automatic thresholds (Otsu, Li, Yen) to remove background noise. See {doc}`filtering_thresholding` for details.
 
 ## 6. Select regions of interest
 

@@ -29,7 +29,7 @@ available at **[https://napari-phasors.readthedocs.io](https://napari-phasors.re
         - `.ome.tif`, `.ome.tiff`, `.r64`, `.ref`, `.ifli`, `.lif`, `.json`
 - **Phasor analysis** on multiple layers simultaneously, including support for stacking multiple raw data files
 - **Calibration** using reference images with known lifetimes
-- **Filtering** with median, wavelet, and automatic thresholding (Otsu, Li, Yen)
+- **Filtering** with median, wavelet (binlet pawFLIM), and automatic thresholding (Otsu, Li, Yen)
 - **Component analysis** for multi-component systems
 - **Phasor Mapping** — colormap apparent/normal lifetime, phasor phase, and phasor modulation per pixel, with interactive 1D histograms, statistics tables, and arc overlay tools
 - **FRET analysis** with donor trajectory visualization and multi-layer donor/background source selection
