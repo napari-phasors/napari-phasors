@@ -51,7 +51,10 @@ def test_filter_widget_initialization_values(make_viewer_model, qtbot):
     assert filter_widget.filter_method_combobox.count() == 3
     assert filter_widget.filter_method_combobox.itemText(0) == "None"
     assert filter_widget.filter_method_combobox.itemText(1) == "Median"
-    assert filter_widget.filter_method_combobox.itemText(2) == "Wavelet"
+    assert (
+        filter_widget.filter_method_combobox.itemText(2)
+        == "Wavelet (binlet pawFLIM)"
+    )
     assert filter_widget.filter_method_combobox.currentText() == "None"
 
     # Test threshold method combobox
@@ -156,7 +159,9 @@ def test_filter_method_switching(make_viewer_model, qtbot):
     assert not filter_widget.median_filter_widget.isHidden()
     assert filter_widget.wavelet_filter_widget.isHidden()
 
-    filter_widget.filter_method_combobox.setCurrentText("Wavelet")
+    filter_widget.filter_method_combobox.setCurrentText(
+        "Wavelet (binlet pawFLIM)"
+    )
     filter_widget.on_filter_method_changed()
 
     assert filter_widget.median_filter_widget.isHidden()
@@ -277,7 +282,9 @@ def test_wavelet_harmonics_validation_compatible(make_viewer_model, qtbot):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    filter_widget.filter_method_combobox.setCurrentText("Wavelet")
+    filter_widget.filter_method_combobox.setCurrentText(
+        "Wavelet (binlet pawFLIM)"
+    )
     filter_widget.on_filter_method_changed()
 
     assert filter_widget.harmonic_warning_label.isHidden()
@@ -292,7 +299,9 @@ def test_wavelet_harmonics_validation_incompatible(make_viewer_model, qtbot):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    filter_widget.filter_method_combobox.setCurrentText("Wavelet")
+    filter_widget.filter_method_combobox.setCurrentText(
+        "Wavelet (binlet pawFLIM)"
+    )
     filter_widget.on_filter_method_changed()
 
     assert not filter_widget.harmonic_warning_label.isHidden()
@@ -315,7 +324,9 @@ def test_apply_button_with_wavelet_filter(make_viewer_model, qtbot):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    filter_widget.filter_method_combobox.setCurrentText("Wavelet")
+    filter_widget.filter_method_combobox.setCurrentText(
+        "Wavelet (binlet pawFLIM)"
+    )
     filter_widget.on_filter_method_changed()
     filter_widget.wavelet_sigma_spinbox.setValue(1.5)
     filter_widget.wavelet_levels_spinbox.setValue(2)
@@ -449,8 +460,14 @@ def test_settings_restoration_with_wavelet(make_viewer_model, qtbot):
     parent = PlotterWidget(viewer)
     filter_widget = parent.filter_tab
 
-    assert filter_widget.filter_method_combobox.currentText() == "Wavelet"
-    assert filter_widget.filter_method_combobox.currentText() == "Wavelet"
+    assert (
+        filter_widget.filter_method_combobox.currentText()
+        == "Wavelet (binlet pawFLIM)"
+    )
+    assert (
+        filter_widget.filter_method_combobox.currentText()
+        == "Wavelet (binlet pawFLIM)"
+    )
     assert filter_widget.wavelet_sigma_spinbox.value() == 3.5
     assert filter_widget.wavelet_levels_spinbox.value() == 4
     assert filter_widget.threshold_method_combobox.currentText() == "Li"

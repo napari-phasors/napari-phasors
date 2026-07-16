@@ -39,7 +39,7 @@ Multiple image layers can be selected simultaneously from the layer dropdown. Us
 
 ## 4. Filter and threshold
 
-Use the **Filter** tab to apply median or wavelet filters, and set automatic thresholds (Otsu, Li, Yen) to remove background noise. See {doc}`filtering_thresholding` for details.
+Use the **Filter** tab to apply median or wavelet (binlet pawFLIM) filters, and set automatic thresholds (Otsu, Li, Yen) to remove background noise. See {doc}`filtering_thresholding` for details.
 
 ## 5. Select regions of interest
 

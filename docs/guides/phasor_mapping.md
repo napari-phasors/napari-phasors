@@ -15,7 +15,7 @@ of three output modes:
 | Mode | Description |
 |------|-------------|
 | **Lifetime** | Computes apparent phase lifetime, apparent modulation lifetime, or normal lifetime (ns) |
-| **Phase** | Computes the polar angle of the phasor (radians or degrees) |
+| **Phase** | Computes the polar angle of the phasor (radians) |
 | **Modulation** | Computes the polar modulus of the phasor (0 – 1) |
 
 ## Lifetime mode
