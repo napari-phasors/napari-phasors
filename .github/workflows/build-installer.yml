@@ -31,19 +31,12 @@ jobs:
           - os: ubuntu-latest
             platform: linux
             post_install: post_install.sh
-            bundle: "true"
-          # phasorpy, fbdfile and ptufile ship no osx-arm64 packages on
-          # conda-forge, so napari-phasors cannot be part of the solved env
-          # here. post_install.sh pip installs it instead, which happens while
-          # the DMG is built - see the DMG step below.
           - os: macos-14
             platform: macos
             post_install: post_install.sh
-            bundle: "false"
           - os: windows-latest
             platform: windows
             post_install: post_install.bat
-            bundle: "true"
 
     steps:
       - uses: actions/checkout@v4
@@ -67,13 +60,11 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          # Linux and Windows bundle napari-phasors into the env rather than
-          # pip installing it, so the version has to exist on conda-forge.
-          # Resolve against the channel up front so a missing version fails
-          # here with a clear message instead of deep inside constructor's
-          # solver. macOS pip installs from PyPI instead (see post_install.sh)
-          # but is held to the same version so every platform ships the same
-          # release.
+          # The installer bundles napari-phasors itself rather than pip
+          # installing it, so every buildable version must exist on
+          # conda-forge. Resolve against the channel up front so a missing
+          # version fails here with a clear message instead of deep inside
+          # constructor's solver.
           # conda search returns one record per build, so de-duplicate and
           # sort with conda's own version ordering rather than trusting the
           # order packages come back in.
@@ -138,13 +129,6 @@ jobs:
           # indentation, so the heredoc content is at column 0.
           sed -i.bak "s/VERSION_PLACEHOLDER/${{ steps.version.outputs.version }}/" construct.yaml
           sed -i.bak "s/POST_INSTALL_PLACEHOLDER/${{ matrix.post_install }}/" construct.yaml
-          if [ "${{ matrix.bundle }}" != "true" ]; then
-            # No osx-arm64 conda packages for phasorpy/fbdfile/ptufile, so the
-            # env cannot contain napari-phasors; post_install.sh pip installs
-            # it on Darwin instead.
-            sed -i.bak "/- napari-phasors=/d" construct.yaml
-            echo "Not bundling napari-phasors on this platform - post_install will pip install it"
-          fi
           if [ -f icon.png ]; then
             python -c "from PIL import Image; img = Image.open('icon.png'); img.save('icon.ico', format='ICO'); img.save('app.icns', format='ICNS')"
             echo "icon_image: icon.png" >> construct.yaml
