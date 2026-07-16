@@ -159,7 +159,9 @@ class FilterWidget(QWidget):
         filter_method_layout = QHBoxLayout()
         filter_method_layout.addWidget(QLabel("Filter Method:"))
         self.filter_method_combobox = QComboBox()
-        self.filter_method_combobox.addItems(["None", "Median", "Wavelet"])
+        self.filter_method_combobox.addItems(
+            ["None", "Median", "Wavelet (binlet pawFLIM)"]
+        )
         self.filter_method_combobox.setCurrentText("None")
         filter_method_layout.addWidget(self.filter_method_combobox)
         filter_box_layout.addLayout(filter_method_layout)
@@ -341,7 +343,7 @@ class FilterWidget(QWidget):
         elif method == "Median":
             self.median_filter_widget.setVisible(True)
             self.wavelet_filter_widget.setVisible(False)
-        elif method == "Wavelet":
+        elif method == "Wavelet (binlet pawFLIM)":
             self.median_filter_widget.setVisible(False)
             self.wavelet_filter_widget.setVisible(True)
 
@@ -594,7 +596,7 @@ class FilterWidget(QWidget):
                             and validate_harmonics_for_wavelet(harmonics)
                         ):
                             self.filter_method_combobox.setCurrentText(
-                                "Wavelet"
+                                "Wavelet (binlet pawFLIM)"
                             )
                         else:
                             self.filter_method_combobox.setCurrentText(
@@ -996,9 +998,11 @@ class FilterWidget(QWidget):
             if upper_val < self.threshold_slider.maximum():
                 threshold_upper = upper_val / self.threshold_factor
 
-        current_filter_method = (
-            self.filter_method_combobox.currentText().lower()
-        )
+        current_filter_method_text = self.filter_method_combobox.currentText()
+        if current_filter_method_text == "Wavelet (binlet pawFLIM)":
+            current_filter_method = "wavelet"
+        else:
+            current_filter_method = current_filter_method_text.lower()
 
         # Apply filter and threshold to each selected layer
         for layer in selected_layers:

@@ -175,10 +175,10 @@ analysis runs. See {doc}`filtering_thresholding` for the concept.
 
 | Parameter | Description |
 |---|---|
-| **Filter method** | **None**, **Median**, or **Wavelet**. |
+| **Filter method** | **None**, **Median**, or **Wavelet (binlet pawFLIM)**. |
 | **Median kernel size** *(Median)* | Side length (pixels) of the square median-filter window; larger windows smooth more. |
 | **Median repetitions** *(Median)* | Number of times the median filter is applied in succession. |
-| **Wavelet sigma** *(Wavelet)* | Noise standard deviation used by the wavelet filter; higher values remove more noise. Requires harmonics with a double/half counterpart (e.g. 1 and 2). |
+| **Wavelet sigma** *(Wavelet)* | Noise standard deviation used by the wavelet (binlet pawFLIM) filter; higher values remove more noise. Requires harmonics with a double/half counterpart (e.g. 1 and 2). |
 | **Wavelet levels** *(Wavelet)* | Number of wavelet decomposition levels used for denoising. |
 
 ### Threshold
