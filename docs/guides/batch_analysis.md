@@ -268,7 +268,7 @@ equivalent and for the analysis-type concepts.
 ### Outputs
 
 Formats for exporting the component fraction images, per-file histogram,
-statistics table (CSV), and the phasor plot with the components overlay — see
+statistics table (CSV), and the phasor plot with the components overlay. See
 [Outputs (shared pattern)](#outputs-shared-pattern) below.
 
 
@@ -301,7 +301,7 @@ per file. See {doc}`phasor_mapping` for the interactive-widget equivalent.
 ### Outputs
 
 Formats for exporting the mapped images, per-file histogram, statistics table
-(CSV), and the phasor plot with the mesh/coloring overlay — see
+(CSV), and the phasor plot with the mesh/coloring overlay. See
 [Outputs (shared pattern)](#outputs-shared-pattern) below.
 
 
@@ -332,7 +332,7 @@ interactive-widget equivalent and the underlying concept.
 ### Outputs
 
 Formats for exporting the FRET-efficiency images, per-file histogram,
-statistics table (CSV), and the phasor plot with the FRET overlay — see
+statistics table (CSV), and the phasor plot with the FRET overlay. See
 [Outputs (shared pattern)](#outputs-shared-pattern) below.
 
 
@@ -346,7 +346,7 @@ section layout:
 | **Export \<analysis\> as** | Formats for the colormapped analysis image (one per file): PNG (rendered image) and/or CSV (raw per-pixel values). |
 | **Export histogram as** | Formats for the per-file histogram of the analysis values: PNG and/or CSV. |
 | **Configure groups and display…** | Enabled once a histogram format is selected. Sets the merged/individual/grouped display mode (shared across tabs), assigns files to groups for combined grouped histograms/statistics, and sets histogram display options. |
-| **Export statistics table (CSV)** | Writes per-file (and per-group, if grouped) descriptive statistics — see {doc}`histogram_statistics`. |
+| **Export statistics table (CSV)** | Writes per-file (and per-group, if grouped) descriptive statistics. See {doc}`histogram_statistics`. |
 | **Export Phasor Plot with \<analysis\> Overlay (PNG)** | Exports the phasor plot styled per the **Phasor Plot Settings** tab, with the tab's analysis overlay (components, mesh, or FRET trajectory) drawn on top. |
 
 ## Running the batch

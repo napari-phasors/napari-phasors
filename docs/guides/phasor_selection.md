@@ -15,7 +15,7 @@ Below, each mode is described in detail.
 
 Define one or more cursors on the phasor plot to select regions of interest. Each cursor can be:
 
-- Positioned and reshaped directly on the plot: circular and elliptical cursors are repositioned by clicking and dragging their body; polar cursors have no single body to drag — instead, click near any of its four edges (the two phase bounds or the two modulation bounds) and drag to move that edge independently
+- Positioned and reshaped directly on the plot: circular and elliptical cursors are repositioned by clicking and dragging their body; polar cursors have no single body to drag; instead, click near any of its four edges (the two phase bounds or the two modulation bounds) and drag to move that edge independently
 - Switched between **Circular**, **Polar (Sector)**, and **Elliptical** modes
 - Configured with specific coordinates and other parameters in the table
 
@@ -70,7 +70,7 @@ Each of these four bounds is one edge of the wedge, and can be dragged directly 
 
 Cluster phasors automatically using a Gaussian Mixture Model (GMM). The number of clusters can be specified, and the results are mapped back to the image as a labels layer, one ellipse per cluster.
 
-Each ellipse is centered on the fitted Gaussian's mean, with its major/minor radii scaled from the eigenvalues of the fitted covariance by a fixed scaling factor (sigma = 2, not user-adjustable in this tab). At that default scaling, each ellipse is a **~98.2% confidence ellipse** of its cluster's distribution — i.e., about 98.2% of the pixels belonging to that Gaussian component are expected to fall inside the drawn ellipse.
+Each ellipse is centered on the fitted Gaussian's mean, with its major/minor radii scaled from the eigenvalues of the fitted covariance by a fixed scaling factor (sigma = 2, not user-adjustable in this tab). At that default scaling, each ellipse is a **~98.2% confidence ellipse** of its cluster's distribution  (i.e., about 98.2% of the pixels belonging to that Gaussian component are expected to fall inside the drawn ellipse).
 
 <video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/automatic%20clustering.gif">
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/automatic%20clustering.mp4" type="video/mp4">

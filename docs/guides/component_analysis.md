@@ -40,7 +40,7 @@ Hovering over this option opens a submenu listing all active cursors (Circular, 
 </video>
 
 ### Select from phasor center (layer selection)
-Selecting **Select from layer(s) phasor center** opens a dialog where you can select one or more image layers with phasor data. The widget will calculate the pooled phasor center of gravity of those layers and use it as the component coordinate.
+Selecting **Select from layer(s) phasor center** opens a dialog where you can select one or more image layers with phasor data. The widget will calculate the pooled phasor G and S centers of those layers and use it as the component coordinate.
 
 <video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/component%20from%20layers.gif">
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/component%20from%20layers.mp4" type="video/mp4">

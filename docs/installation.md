@@ -19,7 +19,7 @@ If you already have [napari](https://napari.org) installed, this is the simplest
 4. Click **Install**
 5. Restart napari
 
-That's it — no terminal or command line needed.
+That's it, no terminal or command line needed.
 
 ```{note}
 If you don't have napari yet, see [Option 2](#option-2-using-conda--pip-recommended) to install both napari and napari-phasors together.
@@ -98,7 +98,7 @@ Pre-built installers for Windows, macOS, and Linux are
 available on the
 [latest release](https://github.com/napari-phasors/napari-phasors/releases/latest)
 page. Download the installer for your platform, run it,
-and you're ready to go — no Python installation needed.
+and you're ready to go, no Python installation needed.
 
 | Platform  | File type | How to install                             |
 |-----------|-----------|--------------------------------------------|
@@ -108,7 +108,7 @@ and you're ready to go — no Python installation needed.
 
 ```{tip}
 Installers are ~350–470 MB because they bundle
-Python, napari, and all dependencies — nothing else
+Python, napari, and all dependencies, nothing else
 to install.
 ```
 

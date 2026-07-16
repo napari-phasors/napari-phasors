@@ -11,7 +11,7 @@ Multiple layers can be selected and exported simultaneously in a single operatio
 
 ## CSV export
 
-Phasor coordinates and selections can be exported as CSV files using the **Export Phasor** widget. Analysis results — such as lifetime, FRET efficiency, and component fractions — can also be exported to CSV. Similarly, labels layers can be exported to CSV, where the pixel coordinates and corresponding label values/IDs are saved.
+Phasor coordinates and selections can be exported as CSV files using the **Export Phasor** widget. Analysis results, such as lifetime, FRET efficiency, and component fractions, can also be exported to CSV. Similarly, labels layers can be exported to CSV, where the pixel coordinates and corresponding label values/IDs are saved.
 
 ## Image export
 
