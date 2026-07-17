@@ -1808,6 +1808,48 @@ def test_histogram_widget_save_png(qtbot, tmp_path, monkeypatch):
     w._save_histogram_png()
 
 
+def test_histogram_widget_square_aspect_keeps_data(
+    qtbot, tmp_path, monkeypatch
+):
+    """The square option squares the axes box without squashing the data.
+
+    The x axis is in data units and y is in counts, so a 1:1 *data* aspect
+    collapses the x range. Only the box aspect may be constrained, and it
+    must survive an export so the viewer plot stays square.
+    """
+    from qtpy.QtWidgets import QFileDialog
+
+    w = HistogramWidget(bins=50)
+    qtbot.addWidget(w)
+    # Counts far larger than the x range: the regime a data aspect ruins.
+    w.update_data(np.repeat(np.linspace(0.0, 10.0, 50), 400))
+
+    w._aspect_ratio = "equal"
+    w._render()
+    expected_xlim = w.ax.get_xlim()
+
+    assert w.ax.get_box_aspect() == 1
+    assert w.ax.get_aspect() == "auto"
+
+    out = tmp_path / "square.png"
+    monkeypatch.setattr(
+        QFileDialog, "getSaveFileName", lambda *a, **k: (str(out), "")
+    )
+    w._save_histogram_png()
+    assert out.exists()
+
+    # The exported figure keeps the full x range, and the on-screen plot is
+    # still square once the export has finished.
+    assert w.ax.get_xlim() == expected_xlim
+    assert w.ax.get_box_aspect() == 1
+    assert w.ax.get_aspect() == "auto"
+
+    # Switching back to auto releases the box constraint.
+    w._aspect_ratio = "auto"
+    w._render()
+    assert w.ax.get_box_aspect() is None
+
+
 def test_checkable_combobox_event_filter(qtbot):
     """Drive the CheckableComboBox event filter: line-edit clicks, hover,
     header All/None clicks, item toggle and leave."""

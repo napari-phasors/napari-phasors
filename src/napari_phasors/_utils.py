@@ -2097,7 +2097,7 @@ class HistogramSettingsDialog(QDialog):
 
         # --- Aspect ratio ---
         aspect_layout = QHBoxLayout()
-        aspect_layout.addWidget(QLabel("Export aspect ratio:"))
+        aspect_layout.addWidget(QLabel("Aspect ratio:"))
         self.aspect_ratio_combo = QComboBox()
         self.aspect_ratio_combo.addItem("Auto (Rectangle)", "auto")
         self.aspect_ratio_combo.addItem("Equal (Square)", "equal")
@@ -2736,10 +2736,6 @@ class HistogramWidget(QWidget):
             file_path += '.png'
 
         self._style_axes(export_mode=True)
-        if self._aspect_ratio == "equal":
-            self.ax.set_aspect(1, adjustable='box')
-        else:
-            self.ax.set_aspect("auto")
         self.fig.canvas.draw_idle()
 
         use_transparent = not self._white_background
@@ -3198,6 +3194,17 @@ class HistogramWidget(QWidget):
             self.ax.tick_params(
                 axis="y", which=which, labelsize=7, colors=color
             )
+
+        self._apply_aspect_ratio()
+
+    def _apply_aspect_ratio(self) -> None:
+        """Make the axes box square or let it fill the canvas.
+
+        ``set_box_aspect`` constrains the shape of the axes box only. The
+        data aspect must stay "auto": x is in data units and y is in counts,
+        so tying them together would collapse one of the axes.
+        """
+        self.ax.set_box_aspect(1 if self._aspect_ratio == "equal" else None)
 
     def _get_cmap_and_norm(self):
         """Return (cmap, norm) from current colormap state."""
