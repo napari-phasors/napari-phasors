@@ -112,14 +112,17 @@ class CurrentPageStackedWidget(QStackedWidget):
     """
 
     def __init__(self, parent=None):
+        """Build the stack and re-query geometry whenever the page changes."""
         super().__init__(parent)
         self.currentChanged.connect(lambda _index: self.updateGeometry())
 
     def sizeHint(self):
+        """Return the visible page's size hint, ignoring hidden pages."""
         widget = self.currentWidget()
         return widget.sizeHint() if widget is not None else super().sizeHint()
 
     def minimumSizeHint(self):
+        """Return the visible page's minimum size hint, ignoring hidden pages."""
         widget = self.currentWidget()
         return (
             widget.minimumSizeHint()
@@ -336,6 +339,7 @@ class PopoutWindowMixin:
     _popout_height = None
 
     def showEvent(self, event):
+        """Schedule the one-time pop-out to a window on first show."""
         super().showEvent(event)
         if not getattr(self, "_floated", False):
             self._floated = True
@@ -583,6 +587,7 @@ class ColormapLegendProxy:
     """
 
     def __init__(self, cmap, linewidth, style="full", n_colors=6):
+        """Store the colormap and line style used to draw the legend entry."""
         self.cmap = cmap
         self.linewidth = linewidth
         self.style = style
@@ -603,6 +608,11 @@ class ColormapLegendHandler(HandlerBase):
         fontsize,
         trans,
     ):
+        """Return the artists drawing *orig_handle*'s colormap sample line.
+
+        Renders discrete blocks for a "categorical" handle and a continuous
+        gradient otherwise.
+        """
         y = ydescent + (height * 0.5)
 
         if getattr(orig_handle, "style", "full") == "categorical":
@@ -677,24 +687,27 @@ class _NullProgress:
     """
 
     def update(self, *args, **kwargs):
-        pass
+        """Accept a progress update and discard it."""
 
     def set_description(self, *args, **kwargs):
-        pass
+        """Accept a description change and discard it."""
 
     def increment(self, *args, **kwargs):
-        pass
+        """Accept a progress increment and discard it."""
 
     def close(self):
-        pass
+        """Close the progress bar; a no-op here."""
 
     def __enter__(self):
+        """Enter the context manager, returning this no-op progress bar."""
         return self
 
     def __exit__(self, *exc):
+        """Exit the context manager without suppressing exceptions."""
         return False
 
     def __iter__(self):
+        """Return an empty iterator, matching the wrapped progress API."""
         return iter(())
 
 
@@ -1358,6 +1371,7 @@ class _ColormapDelegate(QStyledItemDelegate):
     """Custom delegate to ensure colormap icons have vertical spacing in dropdowns."""
 
     def sizeHint(self, option, index):
+        """Return the item size, heightened to fit the colormap icon."""
         size = super().sizeHint(option, index)
         # Ensure a minimum height of 18 to comfortably fit the icon
         return QSize(size.width(), 18)
@@ -1372,6 +1386,11 @@ class _PrimaryLayerDelegate(QStyledItemDelegate):
     PRIMARY_ROLE = int(Qt.UserRole) + 100
 
     def __init__(self, parent=None, enable_primary_layer=True):
+        """Build the delegate and its underlined/italic action fonts.
+
+        Set ``enable_primary_layer`` to False to render plain rows without
+        the primary-layer action or indicator.
+        """
         super().__init__(parent)
         self._action_font = QFont()
         self._action_font.setUnderline(True)
@@ -1381,10 +1400,12 @@ class _PrimaryLayerDelegate(QStyledItemDelegate):
         self._enable_primary_layer = enable_primary_layer
 
     def sizeHint(self, option, index):
+        """Return the item size, heightened to fit the primary-layer action."""
         base = super().sizeHint(option, index)
         return QSize(base.width(), max(base.height(), 24))
 
     def paint(self, painter, option, index):
+        """Draw the item plus its primary-layer action or indicator."""
         painter.save()
 
         self.initStyleOption(option, index)
@@ -1591,6 +1612,12 @@ class CheckableComboBox(QComboBox):
         no_selection_text=None,
         show_checked_list=False,
     ):
+        """Build the combobox and its checkable item model.
+
+        ``placeholder`` is shown while nothing is checked, ``unit`` names the
+        items in the summary text (e.g. "3 layers"), and ``no_selection_text``
+        overrides the empty-selection label.
+        """
         super().__init__(parent)
         self.setModel(QStandardItemModel(self))
         self.setEditable(True)
@@ -2049,6 +2076,7 @@ class HistogramSettingsDialog(QDialog):
         group_names: dict = None,
         parent: QWidget = None,
     ):
+        """Build the dialog with its controls set to the given settings."""
         super().__init__(parent)
         self.setWindowTitle("Histogram Settings")
         self.setMinimumWidth(520)
@@ -2445,6 +2473,7 @@ class HistogramWidget(QWidget):
         viewer=None,
         parent: QWidget = None,
     ):
+        """Build the histogram canvas, optional range slider and controls."""
         super().__init__(parent)
         self.xlabel = xlabel
         self.ylabel = ylabel
@@ -2650,14 +2679,17 @@ class HistogramWidget(QWidget):
         self.range_max_edit.setText(f"{hi_f:.2f}")
 
     def _on_slider_pressed(self):
+        """Flag the range slider as being dragged, suppressing range updates."""
         self._slider_being_dragged = True
 
     def _on_slider_released(self):
+        """Clear the dragging flag and emit the range settled on."""
         self._slider_being_dragged = False
         lo, hi = self.range_slider.value()
         self.rangeChanged.emit(lo / self.range_factor, hi / self.range_factor)
 
     def _on_range_min_edit(self):
+        """Apply the typed minimum to the slider, keeping it below the maximum."""
         if not self._range_slider_enabled:
             return
         try:
@@ -2684,6 +2716,7 @@ class HistogramWidget(QWidget):
         self.rangeChanged.emit(lo_out, hi_out)
 
     def _on_range_max_edit(self):
+        """Apply the typed maximum to the slider, keeping it above the minimum."""
         if not self._range_slider_enabled:
             return
         try:
@@ -3120,6 +3153,7 @@ class HistogramWidget(QWidget):
 
     @display_mode.setter
     def display_mode(self, value: str):
+        """Set the display mode and re-render if data is loaded."""
         self._display_mode = value
         if self.counts is not None:
             self._render()
@@ -3131,6 +3165,7 @@ class HistogramWidget(QWidget):
 
     @show_sd.setter
     def show_sd(self, value: bool):
+        """Toggle SD shading and re-render if data is loaded."""
         self._show_sd = value
         if self.counts is not None:
             self._render()
@@ -3142,6 +3177,7 @@ class HistogramWidget(QWidget):
 
     @white_background.setter
     def white_background(self, value: bool):
+        """Toggle the white background, restyle the axes and re-render."""
         self._white_background = value
         self._style_axes()
         if self.counts is not None:
@@ -3592,6 +3628,7 @@ class CollapsibleSection(QWidget):
         text_color="grey",
         parent=None,
     ):
+        """Build the section header and its collapsible content area."""
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -3656,6 +3693,7 @@ class StatisticsTableWidget(QTableWidget):
     COLUMNS = ["Name", "Center of Mass", "Mean", "Median", "Std Dev"]
 
     def __init__(self, parent=None):
+        """Build the read-only statistics table with its fixed columns."""
         super().__init__(parent)
         self.setColumnCount(len(self.COLUMNS))
         self.setHorizontalHeaderLabels(self.COLUMNS)
@@ -3842,6 +3880,7 @@ class HistogramDockWidget(QWidget):
         title: str = "Histogram",
         parent: QWidget = None,
     ):
+        """Wrap *histogram_widget* in a dockable container titled *title*."""
         super().__init__(parent)
         self._title = title
         self.histogram_widget = histogram_widget
@@ -3888,6 +3927,7 @@ class StatisticsDockWidget(QWidget):
         title: str = "Statistics",
         parent: QWidget = None,
     ):
+        """Build the layer and group statistics tables for *histogram_widget*."""
         super().__init__(parent)
         self._title = title
         self.histogram_widget = histogram_widget
@@ -4058,6 +4098,7 @@ class FileOrderDialog(QDialog):
         initial_z_spacing=None,
         estimated_shape=None,
     ):
+        """Build the reorderable file list for the given *file_paths*."""
         super().__init__(parent)
         self.setWindowTitle("Reorder Files for 3D Stack")
         self.setMinimumWidth(680)

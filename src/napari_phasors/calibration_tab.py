@@ -52,6 +52,7 @@ class _RichTextItemDelegate(QStyledItemDelegate):
     """
 
     def paint(self, painter, option, index):
+        """Draw the item, rendering its HTML label in the themed text color."""
         html = index.data(_HTML_LABEL_ROLE)
         if html is None:
             super().paint(painter, option, index)
@@ -94,6 +95,7 @@ class _RichTextItemDelegate(QStyledItemDelegate):
         painter.restore()
 
     def sizeHint(self, option, index):
+        """Return the size the item's rendered HTML label needs."""
         html = index.data(_HTML_LABEL_ROLE)
         if html is None:
             return super().sizeHint(option, index)

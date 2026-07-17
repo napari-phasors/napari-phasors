@@ -99,3 +99,19 @@ This section documents the public Python API of napari-phasors.
    :members:
    :undoc-members:
 ```
+
+### Batch Analysis
+
+```{eval-rst}
+.. automodule:: napari_phasors._batch_analysis
+   :members:
+   :undoc-members:
+```
+
+### Custom Import
+
+```{eval-rst}
+.. automodule:: napari_phasors._widget
+   :members:
+   :undoc-members:
+```

@@ -80,7 +80,14 @@ class ComponentState:
 
 
 class ColorActionWidget(QLabel):
+    """A menu entry drawn in *color* that triggers *action* when clicked.
+
+    Accepts the colour as a ``QColor``, an RGB(A) sequence in either 0-1 or
+    0-255 range, or any value with a usable string form.
+    """
+
     def __init__(self, text, color, action, parent=None):
+        """Build the label for *action*, styled in *color*."""
         super().__init__(text, parent)
         self.action = action
 
@@ -126,6 +133,7 @@ class ColorActionWidget(QLabel):
         self.setMouseTracking(True)
 
     def mouseReleaseEvent(self, event):
+        """Trigger the action on left-click and close the enclosing menu."""
         if event.button() == Qt.LeftButton:
             self.action.trigger()
             parent = self.parent()
@@ -148,6 +156,7 @@ class CenterFillSlider(QSlider):
     fill_color = QColor("#3b82f6")
 
     def __init__(self, *args, **kwargs):
+        """Build the slider and neutralise Qt's default groove fill."""
         super().__init__(*args, **kwargs)
         # Neutralise the default directional groove fill so only the
         # centre-anchored fill drawn below is visible.
@@ -171,6 +180,7 @@ class CenterFillSlider(QSlider):
             """)
 
     def paintEvent(self, event):
+        """Draw the slider, then the fill spanning zero to the handle."""
         super().paintEvent(event)
         span = self.maximum() - self.minimum()
         if span == 0:
@@ -220,7 +230,14 @@ class CenterFillSlider(QSlider):
 
 
 class PhasorCenterSelectionDialog(QDialog):
+    """Dialog to choose which image layers a phasor center is computed from."""
+
     def __init__(self, layers, parent=None, preselected=None):
+        """Build the dialog offering *layers*, checking *preselected* ones.
+
+        Nothing is checked by default, so a component with no prior
+        selection starts empty.
+        """
         super().__init__(parent)
         self.setWindowTitle("Select Phasor Center Layers")
         self.setMinimumWidth(520)
@@ -267,6 +284,7 @@ class PhasorCenterSelectionDialog(QDialog):
         self.setLayout(layout)
 
     def get_selected_layers(self):
+        """Return the names of the layers the user checked."""
         return self.layer_combo.checkedItems()
 
 
@@ -274,6 +292,7 @@ class ComponentsWidget(QWidget):
     """Widget to perform component analysis on phasor coordinates."""
 
     def __init__(self, viewer: "napari.viewer.Viewer", parent=None):
+        """Build the component analysis tab for *viewer*."""
         super().__init__()
         self.viewer = viewer
         self.parent_widget = parent

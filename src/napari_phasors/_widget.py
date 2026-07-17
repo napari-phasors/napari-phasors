@@ -497,6 +497,7 @@ class AdvancedOptionsWidget(QWidget):
         self.mainLayout.addWidget(self.kwargs_section)
 
     def _add_kwarg_row(self):
+        """Append an empty name/value row to the extra kwargs section."""
         row_widget = QWidget()
         row_layout = QHBoxLayout(row_widget)
         row_layout.setContentsMargins(0, 0, 0, 0)
@@ -536,6 +537,7 @@ class AdvancedOptionsWidget(QWidget):
         del_btn.clicked.connect(lambda: self._remove_kwarg_row(kwarg_entry))
 
     def _remove_kwarg_row(self, kwarg_entry):
+        """Delete *kwarg_entry*'s row and refresh the signal plot."""
         if kwarg_entry in self.kwargs_widgets:
             self.kwargs_widgets.remove(kwarg_entry)
         key_edit, val_edit, row_widget = kwarg_entry
@@ -609,6 +611,7 @@ class AdvancedOptionsWidget(QWidget):
         self._apply_axis_selection_to_options()
 
     def _on_axis_changed(self, index):
+        """Callback when the phasor axis combobox selection is changed."""
         self._apply_axis_selection_to_options()
         self._update_shape_preview()
         # Update signal plot if available to reflect new axis selection
