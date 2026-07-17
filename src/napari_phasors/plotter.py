@@ -295,6 +295,8 @@ class MaskAssignmentDialog(QDialog):
         parent=None,
         mask_layer_names=None,
     ):
+        """Build a mask assignment row per image layer, pre-filled from
+        the current assignments."""
         super().__init__(parent)
         self.setWindowTitle("Assign Mask Layers")
         self.setMinimumWidth(560)
@@ -553,6 +555,7 @@ class _ListWidgetCompatWrapper:
     """
 
     def __init__(self, plotter_widget):
+        """Wrap *plotter_widget* so its primary layer reads like a combobox."""
         self._plotter = plotter_widget
 
     def currentText(self):
@@ -605,6 +608,7 @@ class ContourLayerSettingsDialog(QDialog):
         groups_only=False,
         parent=None,
     ):
+        """Build the dialog with its controls set to the given settings."""
         super().__init__(parent)
         # ``groups_only`` hides the merged/grouped mode selector (and the
         # merged + per-layer sections) and locks the dialog to Grouped mode, so
@@ -796,6 +800,7 @@ class ContourLayerSettingsDialog(QDialog):
 
     @staticmethod
     def _set_btn_color(btn, color):
+        """Store *color* (an RGB triple in 0-1) on *btn* and restyle it."""
         r, g, b = color[:3]
         btn._color = (float(r), float(g), float(b))
         btn.setStyleSheet(
@@ -803,6 +808,7 @@ class ContourLayerSettingsDialog(QDialog):
         )
 
     def _pick_color(self, btn):
+        """Prompt for a colour and apply it to *btn* if one was chosen."""
         from qtpy.QtWidgets import QColorDialog
 
         r, g, b = btn._color
@@ -847,6 +853,7 @@ class ContourLayerSettingsDialog(QDialog):
         self._update_custom_color_visibility()
 
     def _update_ui_for_mode(self, mode):
+        """Show only the controls that apply to the *mode* display mode."""
         is_individual = mode == "Individual layers"
         is_grouped = mode == "Grouped"
         is_merged = mode == "Merged"
@@ -857,6 +864,7 @@ class ContourLayerSettingsDialog(QDialog):
         self._update_custom_color_visibility()
 
     def _update_custom_color_visibility(self):
+        """Show each colour button only where "Select color..." is chosen."""
         mode = self.mode_combo.currentText()
         is_individual = mode == "Individual layers"
         is_grouped = mode == "Grouped"
@@ -879,6 +887,7 @@ class ContourLayerSettingsDialog(QDialog):
             )
 
     def _update_layer_style_row(self, layer_name, visible=True):
+        """Set the visibility of *layer_name*'s colormap and colour controls."""
         row = self._layer_style_widgets.get(layer_name)
         if row is None:
             return
@@ -888,6 +897,7 @@ class ContourLayerSettingsDialog(QDialog):
         )
 
     def _populate_colormap_combobox(self, combo, selected=None):
+        """Fill *combo* with the available colormaps plus "Select color..."."""
         populate_colormap_combobox(
             combo,
             include_select_color=True,
@@ -903,6 +913,7 @@ class ContourLayerSettingsDialog(QDialog):
         style="colormap",
         colormap_name="jet",
     ):
+        """Append a group row, defaulting to the next unused tab10 colour."""
         default_tab10 = plt.cm.tab10.colors
         idx = len(self._group_row_data)
         if color is None:
@@ -968,11 +979,13 @@ class ContourLayerSettingsDialog(QDialog):
         self._update_custom_color_visibility()
 
     def _on_add_group(self):
+        """Add a new auto-named group row, up to ``MAX_GROUPS``."""
         if len(self._group_row_data) >= self.MAX_GROUPS:
             return
         self._add_group_row(name=f"Group {len(self._group_row_data) + 1}")
 
     def _on_remove_group(self, row_widget):
+        """Remove *row_widget*'s group, keeping at least one group present."""
         if len(self._group_row_data) <= 1:
             return
         idx = None
@@ -986,29 +999,37 @@ class ContourLayerSettingsDialog(QDialog):
         row["container"].setParent(None)
 
     def get_display_mode(self):
+        """Return the selected display mode name."""
         return self.mode_combo.currentText()
 
     def get_individual_color_mode(self):
+        """Return the colouring mode used for individual layers."""
         # Always use colormap mode (style selector removed)
         return "Use colormap"
 
     def get_grouped_color_mode(self):
+        """Return the colouring mode used for groups."""
         # Always use colormap mode (style selector removed)
         return "Use colormap"
 
     def get_merged_colormap(self):
+        """Return the colormap name chosen for merged display."""
         return self._merged_colormap_combo.currentText()
 
     def get_merged_style(self):
+        """Return the style ("solid" or "colormap") for merged display."""
         return self._current_merged_style
 
     def get_merged_color(self):
+        """Return the solid colour chosen for merged display."""
         return self._merged_color_btn._color
 
     def get_show_legend(self):
+        """Return whether the legend should be drawn."""
         return self._show_legend_checkbox.isChecked()
 
     def get_layer_styles(self):
+        """Return ``{layer_name: {mode, colormap, color}}`` for every layer."""
         styles = {}
         for name, row in self._layer_style_widgets.items():
             selected = row["cmap_combo"].currentText()
@@ -1021,6 +1042,7 @@ class ContourLayerSettingsDialog(QDialog):
         return styles
 
     def get_group_styles(self):
+        """Return ``{group_id: {mode, colormap, color}}`` for every group."""
         styles = {}
         for gid, row in enumerate(self._group_row_data, start=1):
             selected = row["cmap_combo"].currentText()
@@ -1033,12 +1055,14 @@ class ContourLayerSettingsDialog(QDialog):
         return styles
 
     def get_layer_colors(self):
+        """Return ``{layer_name: color}`` for every layer."""
         return {
             name: style["color"]
             for name, style in self.get_layer_styles().items()
         }
 
     def get_group_assignments(self):
+        """Return ``{layer_name: group_id}`` for every grouped layer."""
         assignments = {}
         for gid, row in enumerate(self._group_row_data, start=1):
             for layer_name in row["layer_combo"].checkedItems():
@@ -1046,6 +1070,7 @@ class ContourLayerSettingsDialog(QDialog):
         return assignments
 
     def get_group_names(self):
+        """Return ``{group_id: name}``, falling back to "Group N" if unnamed."""
         names = {}
         for gid, row in enumerate(self._group_row_data, start=1):
             text = row["name_edit"].text().strip()
@@ -1053,6 +1078,7 @@ class ContourLayerSettingsDialog(QDialog):
         return names
 
     def get_group_colors(self):
+        """Return ``{group_id: color}`` for every group."""
         return {
             gid: style["color"]
             for gid, style in self.get_group_styles().items()
@@ -1110,6 +1136,11 @@ class PhasorCenterLayerSettingsDialog(QDialog):
         group_names=None,
         parent=None,
     ):
+        """Build the dialog with its controls set to the given settings.
+
+        With one layer or fewer the grouping controls are dropped, leaving a
+        plain per-layer settings dialog.
+        """
         super().__init__(parent)
         self._layer_labels = list(layer_labels or [])
         single_layer = len(self._layer_labels) <= 1
@@ -1263,6 +1294,7 @@ class PhasorCenterLayerSettingsDialog(QDialog):
 
     @staticmethod
     def _set_btn_color(btn, color):
+        """Store *color* (an RGB triple in 0-1) on *btn* and restyle it."""
         r, g, b = color[:3]
         btn._color = (float(r), float(g), float(b))
         btn.setStyleSheet(
@@ -1270,6 +1302,7 @@ class PhasorCenterLayerSettingsDialog(QDialog):
         )
 
     def _pick_color(self, btn):
+        """Prompt for a colour and apply it to *btn* if one was chosen."""
         from qtpy.QtWidgets import QColorDialog
 
         r, g, b = btn._color
@@ -1280,6 +1313,7 @@ class PhasorCenterLayerSettingsDialog(QDialog):
             self._set_btn_color(btn, chosen.getRgbF()[:3])
 
     def _update_ui_for_mode(self, mode):
+        """Show only the controls that apply to the *mode* display mode."""
         is_individual = mode == "Individual layers"
         is_grouped = mode == "Grouped"
         is_merged = mode == "Merged"
@@ -1289,6 +1323,7 @@ class PhasorCenterLayerSettingsDialog(QDialog):
         self._group_section.setVisible(is_grouped)
 
     def _add_group_row(self, name="Group", color=None, checked_layers=None):
+        """Append a group row, defaulting to the next unused tab10 colour."""
         default_tab10 = plt.cm.tab10.colors
         idx = len(self._group_row_data)
         if color is None:
@@ -1340,11 +1375,13 @@ class PhasorCenterLayerSettingsDialog(QDialog):
         )
 
     def _on_add_group(self):
+        """Add a new auto-named group row, up to ``MAX_GROUPS``."""
         if len(self._group_row_data) >= self.MAX_GROUPS:
             return
         self._add_group_row(name=f"Group {len(self._group_row_data) + 1}")
 
     def _on_remove_group(self, row_widget):
+        """Remove *row_widget*'s group, keeping at least one group present."""
         if len(self._group_row_data) <= 1:
             return
         idx = None
@@ -1358,26 +1395,33 @@ class PhasorCenterLayerSettingsDialog(QDialog):
         row["container"].setParent(None)
 
     def get_display_mode(self):
+        """Return the selected display mode name."""
         return self.mode_combo.currentText()
 
     def get_center_method(self):
+        """Return the selected phasor center method name."""
         return self._method_combo.currentText()
 
     def get_marker_size(self):
+        """Return the marker size for the phasor center markers."""
         return self._size_spinbox.value()
 
     def get_alpha(self):
+        """Return the opacity for the phasor center markers."""
         return self._alpha_spinbox.value()
 
     def get_merged_color(self):
+        """Return the solid colour chosen for merged display."""
         return self._merged_color_btn._color
 
     def get_layer_colors(self):
+        """Return ``{layer_name: color}`` for every layer."""
         return {
             name: btn._color for name, btn in self._layer_color_buttons.items()
         }
 
     def get_group_assignments(self):
+        """Return ``{layer_name: group_id}`` for every grouped layer."""
         assignments = {}
         for gid, row in enumerate(self._group_row_data, start=1):
             for layer_name in row["layer_combo"].checkedItems():
@@ -1385,6 +1429,7 @@ class PhasorCenterLayerSettingsDialog(QDialog):
         return assignments
 
     def get_group_names(self):
+        """Return ``{group_id: name}``, falling back to "Group N" if unnamed."""
         names = {}
         for gid, row in enumerate(self._group_row_data, start=1):
             text = row["name_edit"].text().strip()
@@ -1392,6 +1437,7 @@ class PhasorCenterLayerSettingsDialog(QDialog):
         return names
 
     def get_group_colors(self):
+        """Return ``{group_id: color}`` for every group."""
         return {
             gid: row["color_btn"]._color
             for gid, row in enumerate(self._group_row_data, start=1)
@@ -1414,6 +1460,7 @@ class PhasorCenterStatisticsWidget(QWidget):
     COLUMNS = ["Name", "G (center)", "S (center)", "Phase (°)", "Modulation"]
 
     def __init__(self, parent=None):
+        """Build the layer and group phasor center statistics tables."""
         super().__init__(parent)
         self.setMinimumWidth(300)
 
@@ -3582,6 +3629,7 @@ class PlotterWidget(QWidget):
             )
 
     def _apply_imported_settings(self, settings, selected_tabs):
+        """Apply the *selected_tabs* portions of *settings* to every selected layer."""
         selected_layers = self.get_selected_layers()
         if not selected_layers:
             notifications.WarningNotification("No layer selected")
@@ -3976,28 +4024,37 @@ class PlotterWidget(QWidget):
                 self.switch_plot_type(new_plot_type)
 
     def _on_marker_size_changed(self, value):
+        """Callback when the scatter marker size spinbox is changed."""
         self._update_setting_in_metadata('marker_size', value)
         if not self._updating_settings and self.plot_type == 'SCATTER':
             self.canvas_widget.artists['SCATTER'].size = value
             self.canvas_widget.figure.canvas.draw_idle()
 
     def _on_marker_alpha_changed(self, value):
+        """Callback when the scatter marker opacity spinbox is changed."""
         self._update_setting_in_metadata('marker_alpha', value)
         if not self._updating_settings and self.plot_type == 'SCATTER':
             self.canvas_widget.artists['SCATTER'].alpha = value
             self.canvas_widget.figure.canvas.draw_idle()
 
     def _on_contour_levels_changed(self, value):
+        """Callback when the contour levels spinbox is changed."""
         self._update_setting_in_metadata('contour_levels', value)
         if not self._updating_settings and self.plot_type == 'CONTOUR':
             self.plot()
 
     def _on_contour_linewidth_changed(self, value):
+        """Callback when the contour line width spinbox is changed."""
         self._update_setting_in_metadata('contour_linewidth', value)
         if not self._updating_settings and self.plot_type == 'CONTOUR':
             self.plot()
 
     def _on_contour_layer_settings_clicked(self):
+        """Open the contour layer settings dialog and apply the result.
+
+        The dialog only applies to multi-layer plots, so a single selection
+        shows an explanatory notification instead.
+        """
         selected_names = self.get_selected_layer_names()
         if len(selected_names) <= 1:
             notifications.show_info(
@@ -4514,6 +4571,7 @@ class PlotterWidget(QWidget):
         self.canvas_widget.figure.canvas.draw_idle()
 
     def _update_single_contour_color_button(self):
+        """Restyle the solid-colour button to match the active plot's colour."""
         if self.plot_type == 'HISTOGRAM2D':
             rgb = self._normalize_rgb(self._histogram_color)
         else:
@@ -4527,6 +4585,7 @@ class PlotterWidget(QWidget):
     def _populate_main_colormap_combobox(
         self, include_select_color=True, selected=None
     ):
+        """Fill the main colormap combobox, optionally with "Select color..."."""
         populate_colormap_combobox(
             self.plotter_inputs_widget.colormap_combobox,
             include_select_color=include_select_color,
@@ -4534,6 +4593,11 @@ class PlotterWidget(QWidget):
         )
 
     def _refresh_main_colormap_control_for_mode(self):
+        """Re-sync the colormap combobox and colour button to the plot type.
+
+        A solid colour is only offered for 2D histograms and single-layer
+        contours; multi-layer contours are always colormapped.
+        """
         is_histogram = self.plot_type == 'HISTOGRAM2D'
         is_contour = self.plot_type == 'CONTOUR'
         single_layer = not self._has_multiple_selected_layers()
@@ -4563,6 +4627,7 @@ class PlotterWidget(QWidget):
         self._update_single_contour_color_button()
 
     def _on_single_contour_color_clicked(self):
+        """Prompt for a solid colour and apply it to the active plot type."""
         from qtpy.QtWidgets import QColorDialog
 
         color = QColorDialog.getColor(parent=self)
@@ -4594,9 +4659,11 @@ class PlotterWidget(QWidget):
             self.plot()
 
     def _has_multiple_selected_layers(self):
+        """Return whether more than one layer is currently selected."""
         return len(self.get_selected_layer_names()) > 1
 
     def _update_contour_controls_visibility(self):
+        """Show only the plot controls that apply to the active plot type."""
         if self._is_closing or not self._has_plot_type_controls():
             return
         plot_type = self.plot_type
@@ -4869,6 +4936,7 @@ class PlotterWidget(QWidget):
             layout.addWidget(right_widget, target_row, 1)
 
     def _on_marker_color_clicked(self):
+        """Prompt for a colour and apply it to the scatter markers."""
         from qtpy.QtWidgets import QColorDialog
 
         color = QColorDialog.getColor(parent=self)
@@ -4883,6 +4951,7 @@ class PlotterWidget(QWidget):
                 self._update_scatter_colormap()
 
     def _update_scatter_colormap(self):
+        """Recolour the scatter artist to the current single marker colour."""
         from matplotlib.colors import ListedColormap
 
         current_color = getattr(self, '_marker_color', '#1f77b4')
@@ -7851,6 +7920,11 @@ class PlotterWidget(QWidget):
     def _compute_contour_histogram(
         self, x_data, y_data, bins, range_xlim, range_ylim
     ):
+        """Return ``(counts, x_centers, y_centers)`` for the contour plot.
+
+        Empty bins become NaN so they are left undrawn; counts are kept in
+        count-space because the log scaling is applied by ``contour()``.
+        """
         h, xedges, yedges = np.histogram2d(
             x_data, y_data, bins=bins, range=[range_xlim, range_ylim]
         )
@@ -7865,6 +7939,7 @@ class PlotterWidget(QWidget):
 
     @staticmethod
     def _normalize_rgb(color):
+        """Return *color* as an RGB triple of 0-1 floats."""
         return normalize_rgb(color)
 
     def _make_solid_contour_cmap(self, name, target_color):
@@ -7877,6 +7952,7 @@ class PlotterWidget(QWidget):
         return make_solid_contour_cmap(name, target_color)
 
     def _sample_colors_from_cmap(self, cmap, n_colors):
+        """Return *n_colors* evenly spaced colours sampled from *cmap*."""
         if n_colors <= 1:
             return [cmap(0.6)]
         return [cmap(i / max(n_colors - 1, 1)) for i in range(n_colors)]

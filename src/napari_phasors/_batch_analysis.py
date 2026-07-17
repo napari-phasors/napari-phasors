@@ -810,6 +810,7 @@ class BatchReadOptionsWidget(QWidget):
     """
 
     def __init__(self, parent=None):
+        """Build the empty options form; call ``set_extension`` to fill it."""
         super().__init__(parent)
         self._extension = None
         self._param_widgets = {}
@@ -852,6 +853,11 @@ class BatchReadOptionsWidget(QWidget):
             self._form.addRow(QLabel(f"{arg}:"), widget)
 
     def _make_param_widget(self, kind, default):
+        """Return an input widget of type *kind* pre-set to *default*.
+
+        Anything other than "int" or "bool" falls back to a free-text line
+        edit, which ``get_reader_options`` parses back to the right type.
+        """
         if kind == "int":
             w = QSpinBox()
             w.setRange(-1, 1_000_000)
@@ -868,6 +874,7 @@ class BatchReadOptionsWidget(QWidget):
         return w
 
     def _add_kwarg_row(self, key="", value=""):
+        """Append an additional reader kwarg row, pre-filled with *key*/*value*."""
         row = QWidget()
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -888,6 +895,7 @@ class BatchReadOptionsWidget(QWidget):
         remove.clicked.connect(lambda: self._remove_kwarg_row(entry))
 
     def _remove_kwarg_row(self, entry):
+        """Delete *entry*'s additional reader kwarg row."""
         row, _, _ = entry
         if entry in self._kwargs_rows:
             self._kwargs_rows.remove(entry)
@@ -927,6 +935,7 @@ class CopySettingsDialog(QDialog):
     """Modal chooser for copying analysis settings from a layer or OME-TIFF."""
 
     def __init__(self, layer_names, parent=None):
+        """Build the dialog offering *layer_names* or an OME-TIFF as source."""
         super().__init__(parent)
         self.setWindowTitle("Copy analysis settings")
         self._file_path = ""
@@ -967,6 +976,7 @@ class CopySettingsDialog(QDialog):
         layout.addWidget(buttons)
 
     def _browse(self):
+        """Prompt for an OME-TIFF source, clearing any layer selection."""
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Select OME-TIFF settings source",
@@ -981,6 +991,7 @@ class CopySettingsDialog(QDialog):
             self.layer_combo.blockSignals(False)
 
     def _on_layer_changed(self, _index):
+        """Clear any chosen file when a layer is picked, keeping one source."""
         if self.layer_combo.currentIndex() > 0:
             self._file_path = ""
             self.file_label.setText("<i>No file selected</i>")
@@ -1063,6 +1074,7 @@ class _SectionLockOverlay(QWidget):
     """
 
     def __init__(self, parent, on_click):
+        """Build a transparent overlay calling *on_click* when clicked."""
         super().__init__(parent)
         self._on_click = on_click
         self.setAttribute(Qt.WA_NoSystemBackground, True)
@@ -1070,6 +1082,7 @@ class _SectionLockOverlay(QWidget):
         self.setCursor(Qt.PointingHandCursor)
 
     def mousePressEvent(self, event):
+        """Invoke the click callback, then defer to the base implementation."""
         if self._on_click is not None:
             self._on_click()
         super().mousePressEvent(event)
@@ -1079,6 +1092,7 @@ class _LockableBody(QWidget):
     """Hold an analysis section's body plus a click-catching lock overlay."""
 
     def __init__(self, body, on_locked_click):
+        """Wrap *body* with a hidden overlay that calls *on_locked_click*."""
         super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1096,6 +1110,7 @@ class _LockableBody(QWidget):
             self._overlay.hide()
 
     def resizeEvent(self, event):
+        """Keep the lock overlay covering the whole body as it resizes."""
         self._overlay.setGeometry(self.rect())
         super().resizeEvent(event)
 
@@ -1136,6 +1151,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
     _TAB_IMAGE_TABS = {"components", "phasor_mapping", "fret", "selection"}
 
     def __init__(self, viewer: "napari.viewer.Viewer"):
+        """Build the batch analysis window and all of its tabs."""
         super().__init__()
         self.viewer = viewer
         self._floated = False
@@ -1150,26 +1166,16 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self._mask_folders = []  # selected mask folders
         self._mask_files = []  # scanned mask file paths
         self._mask_rows = {}  # input path -> {"combo", "invert"}
-        # Component overlay style (mirrors ComponentsWidget defaults) so the
-        # exported component phasor plot matches the interactive Components tab.
+        # Component overlay style (mirrors ComponentsWidget defaults)
         self._component_line_style = default_component_line_style()
         self._component_label_style = default_component_label_style()
-        # Shared per-output contrast limits computed across all files when the
-        # contrast "Auto" is on (so exported images are comparable). Keyed by
-        # output label (e.g. "Phase", "Component 1 fraction"). Populated during
-        # ``run_batch``; the ``_acc`` variant holds the running min/max while a
-        # run is in progress and deferred outputs wait to be written.
         self._global_contrast = {}
         self._global_contrast_acc = {}
         self._auto_tabs = set()
         self._deferred_exports = []
         self._deferred_store = None
         self._deferred_dir = None
-        # Signal-export state. ``_signal_capable_cache`` memoizes per-file
-        # "can this file yield a signal?" checks (keyed by path). ``_signal_
-        # export_cfg`` is the resolved per-run config (or None). ``_signal_
-        # combined`` accumulates per-group signal profiles for the combined
-        # mean +/- SD plot during a run.
+        # Signal-export state.
         self._signal_capable_cache = {}
         self._signal_export_cfg = None
         self._signal_combined = {}
@@ -1191,14 +1197,9 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         layout.addWidget(intro)
 
         self.setStyleSheet(self._cohesive_stylesheet())
-        # Keep a sensible minimum so the window stays usable on small displays
-        # without the nine tabs forcing an over-wide layout.
         self.setMinimumWidth(360)
 
         self.tabs = QTabWidget()
-        # Let the tab bar show scroll arrows when the nine tabs don't fit, so a
-        # narrow window stays usable without the tabs forcing an over-wide
-        # minimum width (this is the Qt default; set explicitly for clarity).
         self.tabs.setUsesScrollButtons(True)
         self.tabs.addTab(self._build_setup_tab(), "Setup")
         self.tabs.addTab(self._build_signal_tab(), "Signal Export")
@@ -1217,10 +1218,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self._build_run_footer(layout)
 
         # Connect a bound method (not a lambda) so ``closeEvent`` can
-        # disconnect it. The napari viewer outlives this top-level widget; a
-        # lingering connection to a destroyed widget fires during teardown and
-        # segfaults under PySide6 (where PyQt would raise a catchable
-        # RuntimeError). A lambda cannot be disconnected by reference.
+        # disconnect it.
+
         self.viewer.layers.events.inserted.connect(self._on_layers_changed)
         self.viewer.layers.events.removed.connect(self._on_layers_changed)
         self._connect_run_enabled_signals()
@@ -1267,16 +1266,9 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             for key in ("image", "histogram"):
                 control[key].selectionChanged.connect(self._update_run_enabled)
 
-    # -- UI construction ---------------------------------------------------
-
     @staticmethod
     def _cohesive_stylesheet():
-        """Return a theme-friendly stylesheet shared by every tab.
-
-        Uses ``palette(...)`` roles so the look stays consistent in both the
-        light and dark napari themes: section boxes get a titled, rounded
-        frame and required-field markers read clearly.
-        """
+        """Return a theme-friendly stylesheet shared by every tab."""
         return (
             "QGroupBox {"
             "  font-weight: 600;"
@@ -1302,24 +1294,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return area
 
     def _enable_section(self, title, description=None, stretch_body=False):
-        """Return ``(toggle, body, content)`` for an enableable analysis tab.
-
-        ``toggle`` is a bold green :class:`superqt.QToggleSwitch` that doubles
-        as the tab heading; ``description`` (if given) is shown as muted text
-        directly beneath it. ``body`` is the container the caller fills with
-        the tab's sections; it is greyed out (disabled) while the toggle is off.
-        Clicking the disabled body briefly reveals a hint next to the toggle
-        ("Enable this analysis to edit its settings") and flashes a highlight
-        around the toggle and hint so the user knows where to look. ``content``
-        is the widget the caller should add to the tab layout (it wraps the
-        toggle header, the description and the lockable body), so the caller no
-        longer needs to add the toggle separately.
-
-        Set ``stretch_body`` for a tab whose body should grow into the tab's
-        spare height (e.g. one holding a scrollable list) rather than staying at
-        its natural height; the caller must also add ``content`` with a stretch
-        factor and omit any trailing stretch.
-        """
+        """Return ``(toggle, body, content)`` for an enableable analysis tab."""
         toggle = QToggleSwitch(title)
         toggle.onColor = QColor("#27ae60")
         font = toggle.font()
@@ -1327,15 +1302,11 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         font.setPointSizeF(font.pointSizeF() + 1)
         toggle.setFont(font)
 
-        # Transient reminder shown beside the toggle on a locked click.
         hint = QLabel("← Enable this analysis to edit its settings")
         hint.setStyleSheet("color: #e67e22; font-weight: 600;")
         hint.hide()
 
-        # ``flash_box`` wraps the toggle and hint so the flash highlight frames
-        # both; the trailing stretch keeps them packed to the left.
         flash_box = QWidget()
-        # A plain QWidget only paints a stylesheet background with this set.
         flash_box.setAttribute(Qt.WA_StyledBackground, True)
         flash_layout = QHBoxLayout(flash_box)
         flash_layout.setContentsMargins(4, 2, 4, 2)
@@ -1406,12 +1377,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
 
     @staticmethod
     def _form(parent=None):
-        """Return a left-aligned :class:`QFormLayout`.
-
-        Labels and the form body are pinned to the left (rather than the
-        platform default, which right-aligns labels and can center the fields)
-        so every tab lays its controls out consistently on the left edge.
-        """
+        """Return a left-aligned :class:`QFormLayout`."""
         form = QFormLayout(parent) if parent is not None else QFormLayout()
         form.setContentsMargins(0, 0, 0, 0)
         form.setLabelAlignment(Qt.AlignLeft)
@@ -1436,12 +1402,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return QLabel(f"{text} <span style='color:#e74c3c;'>*</span>")
 
     def _phasor_export_toggle(self, overlay_name=None):
-        """Return a checkbox for exporting the phasor plot of a tab.
-
-        When ``overlay_name`` is given the label spells out which analysis
-        overlay is drawn on the exported plot, e.g. ``"Export Phasor Plot with
-        Components Overlay (PNG)"``.
-        """
+        """Return a checkbox for exporting the phasor plot of a tab."""
         if overlay_name:
             label = f"Export Phasor Plot with {overlay_name} Overlay (PNG)"
         else:
@@ -1524,13 +1485,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
     def _output_controls(
         self, overlay_name, image_export_label="Export image as:"
     ):
-        """Return the unified per-tab Outputs group box.
-
-        One section gathers every output of a tab: which formats to export the
-        colormapped analysis image in (PNG / CSV), which formats to export the
-        histogram in (PNG / CSV), the statistics table, and the phasor plot
-        overlay. Returns a dict with the widgets plus the ``widget`` group box.
-        """
+        """Return the unified per-tab Outputs group box."""
         container = QGroupBox("Outputs")
         form = self._form(container)
 
@@ -1584,6 +1539,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         }
 
     def _build_setup_tab(self):
+        """Build and return the Setup tab: input folder, format and export."""
         tab = QWidget()
         outer = QVBoxLayout(tab)
         outer.addWidget(
@@ -1595,7 +1551,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             )
         )
 
-        # Copy settings -----------------------------------------------------
         copy_row = QHBoxLayout()
         self.copy_settings_button = QPushButton(
             "Copy settings from layer / OME-TIFF…"
@@ -1609,7 +1564,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         copy_row.addStretch()
         outer.addLayout(copy_row)
 
-        # Input folder ------------------------------------------------------
         input_group = QGroupBox("Input folder")
         input_layout = QVBoxLayout(input_group)
         input_layout.addWidget(
@@ -1658,7 +1612,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         read_layout.addWidget(self.read_options_widget)
         outer.addWidget(read_group)
 
-        # Export ------------------------------------------------------------
         export_group = QGroupBox("Export")
         export_layout = QVBoxLayout(export_group)
         export_layout.addWidget(
@@ -1742,7 +1695,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         export_layout.addWidget(self.load_into_viewer_checkbox)
         outer.addWidget(export_group)
 
-        # Performance ------------------------------------------------------
         performance_group = QGroupBox("Performance")
         performance_layout = QVBoxLayout(performance_group)
         self.streaming_checkbox = QCheckBox(
@@ -1771,18 +1723,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         outer.addStretch()
         return self._scrollable(tab)
 
-    # -- Signal export tab -------------------------------------------------
-
     def _build_signal_tab(self):
-        """Build the signal-export tab (average signal along the phasor axis).
-
-        The tab exports the average signal (decay for FLIM, spectrum for HSI)
-        along the axis the phasor is computed on. It is only usable for files
-        that can provide a signal (all raw files; napari-phasors OME-TIFFs that
-        stored ``summed_signal``). When the selected format cannot provide a
-        signal the body is locked and clicking it flashes an explanation, the
-        same affordance used for disabled analysis tabs.
-        """
+        """Build the signal-export tab (average signal along the phasor axis)."""
         self._signal_available = False
 
         tab = QWidget()
@@ -1797,9 +1739,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             )
         )
 
-        # Master toggle for the whole section, matching the analysis tabs.
-        # ``_refresh_signal_availability`` disables it (and shows the red
-        # explanation below) when the selected format cannot provide a signal.
         self.signal_group, body, content = self._enable_section(
             "Enable signal export",
             "For raw files the signal is averaged per pixel over the batch "
@@ -1809,7 +1748,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         )
         outer.addWidget(content)
 
-        # Shown (red) only when the selected format cannot provide a signal.
         self._signal_status = QLabel()
         self._signal_status.setWordWrap(True)
         self._signal_status.setStyleSheet("color: #e74c3c; font-weight: 600;")
@@ -1819,7 +1757,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Individual per-file plots ---------------------------------------
         ind_box, ind_layout = self._section("Individual signal plots")
         self.signal_individual_checkbox = QCheckBox(
             "Export individual signal plots (one per file)"
@@ -1839,7 +1776,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         ind_layout.addLayout(color_row)
         body_layout.addWidget(ind_box)
 
-        # Combined (grouped) plot -----------------------------------------
         comb_box, comb_layout = self._section("Combined signal plot")
         self.signal_combined_checkbox = QCheckBox(
             "Export combined signal plot (mean ± shaded SD)"
@@ -1874,7 +1810,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         )
         body_layout.addWidget(comb_box)
 
-        # Shared export format (PNG image and/or CSV data) ----------------
         fmt_row = QHBoxLayout()
         fmt_row.addWidget(QLabel("Export plots as:"))
         self.signal_format_combo = self._format_combo(
@@ -1888,7 +1823,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         fmt_row.addStretch()
         body_layout.addLayout(fmt_row)
 
-        # Shared normalization --------------------------------------------
         norm_row = QHBoxLayout()
         norm_row.addWidget(QLabel("Normalization:"))
         self.signal_normalize_combo = QComboBox()
@@ -1923,13 +1857,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return self._scrollable(tab)
 
     def _signal_file_capable(self, path, ext):
-        """Return whether ``path`` can provide a signal for export (cached).
-
-        Raw and ambiguous (raw-or-processed) formats always yield a signal
-        from the raw reader. Processed OME-TIFFs only carry a signal when they
-        were written by napari-phasors (``summed_signal`` stored in settings);
-        other processed formats (R64/REF/IFLI) store only phasor coordinates.
-        """
+        """Return whether ``path`` can provide a signal for export (cached)."""
         if path in self._signal_capable_cache:
             return self._signal_capable_cache[path]
         processed_exts = set(extension_mapping["processed"])
@@ -1975,12 +1903,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         )
 
     def _refresh_signal_availability(self):
-        """Enable/disable the signal tab from the selected format's capability.
-
-        When the format cannot provide a signal the master toggle is unchecked
-        and disabled and a red explanation is shown beneath it; otherwise the
-        toggle is re-enabled so the user can activate the section.
-        """
+        """Enable/disable the signal tab from the selected format's capability."""
         ext = self.format_combobox.currentData()
         available, explanation = self._signal_availability(ext)
         self._signal_available = available
@@ -2029,6 +1952,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return "Mean signal per pixel"
 
     def _build_calibration_tab(self):
+        """Build and return the Calibration tab."""
         tab = QWidget()
         outer = QVBoxLayout(tab)
 
@@ -2152,6 +2076,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return self._scrollable(tab)
 
     def _build_filter_tab(self):
+        """Build and return the Filter tab: filter method and thresholding."""
         tab = QWidget()
         outer = QVBoxLayout(tab)
 
@@ -2163,7 +2088,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         v = QVBoxLayout(body)
         v.setContentsMargins(0, 0, 0, 0)
 
-        # -- Filter --------------------------------------------------------
         filter_box, filter_layout = self._section("Filter")
         method_row = QHBoxLayout()
         method_row.addWidget(QLabel("Filter method:"))
@@ -2222,7 +2146,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         filter_layout.addWidget(self.wavelet_filter_widget)
         v.addWidget(filter_box)
 
-        # -- Threshold -----------------------------------------------------
         threshold_box, threshold_layout = self._section("Threshold")
         threshold_row = QHBoxLayout()
         threshold_row.addWidget(QLabel("Threshold method:"))
@@ -2272,15 +2195,18 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return self._scrollable(tab)
 
     def _on_filter_method_changed(self, method):
+        """Show only the settings belonging to the chosen filter *method*."""
         self.median_filter_widget.setVisible(method == "Median")
         self.wavelet_filter_widget.setVisible(
             method == "Wavelet (binlet pawFLIM)"
         )
 
     def _on_threshold_method_changed(self, method):
+        """Show the manual threshold input only for the "Manual" method."""
         self.threshold_manual_widget.setVisible(method == "Manual")
 
     def _build_masks_tab(self):
+        """Build and return the Masks tab: mask folders and per-file pairing."""
         tab = QWidget()
         outer = QVBoxLayout(tab)
 
@@ -2320,8 +2246,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         rows_scroll.setWidgetResizable(True)
         rows_scroll.setFrameShape(QFrame.NoFrame)
         rows_scroll.setWidget(self._mask_rows_container)
-        # The list is the point of this tab: give it a tall floor and let it
-        # take the tab's spare height instead of scrolling within a thin strip.
+
         rows_scroll.setMinimumHeight(360)
         group_layout.addWidget(rows_scroll, 1)
 
@@ -2339,16 +2264,23 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return self._scrollable(tab)
 
     def _on_add_mask_folder(self):
+        """Prompt for a mask folder and rescan, ignoring duplicates."""
         folder = QFileDialog.getExistingDirectory(self, "Select mask folder")
         if folder and folder not in self._mask_folders:
             self._mask_folders.append(folder)
             self._scan_mask_files()
 
     def _on_clear_mask_folders(self):
+        """Drop every mask folder and rescan."""
         self._mask_folders = []
         self._scan_mask_files()
 
     def _scan_mask_files(self):
+        """Rescan the mask folders and refresh the per-file pairing rows.
+
+        Honours the "include subfolders" checkbox, and skips folders that
+        cannot be listed.
+        """
         recursive = self.mask_subfolders_checkbox.isChecked()
         files = []
         for folder in self._mask_folders:
@@ -2400,6 +2332,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return [mask for _score, mask in scored]
 
     def _rebuild_mask_rows(self):
+        """Rebuild one mask-pairing row per input file, best match preselected."""
         layout = self._mask_rows_layout
         for i in reversed(range(layout.count())):
             widget = layout.itemAt(i).widget()
@@ -2447,6 +2380,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return (row["combo"].currentData(), row["invert"].isChecked())
 
     def _build_components_tab(self):
+        """Build and return the Components tab."""
         tab = QWidget()
         outer = QVBoxLayout(tab)
 
@@ -2460,7 +2394,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         group_layout = QVBoxLayout(body)
         group_layout.setContentsMargins(0, 0, 0, 0)
 
-        # -- Component locations (inputs) ----------------------------------
         inputs_box, inputs_layout = self._section("Component locations")
 
         type_row = QHBoxLayout()
@@ -2491,8 +2424,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "more than 3 components needs locations at several harmonics: "
             "switch this selector and enter G/S for each required harmonic."
         )
-        # Harmonic currently shown in the G/S fields; component coordinates are
-        # stored per harmonic so >3-component (multi-harmonic) fits are possible.
+
         self._component_current_harmonic = 1
         self.components_harmonic_spin.valueChanged.connect(
             self._on_component_harmonic_changed
@@ -2519,7 +2451,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         inputs_layout.addWidget(self.components_note)
         group_layout.addWidget(inputs_box)
 
-        # -- Fraction image styling ----------------------------------------
         style_section_box, style_section_layout = self._section(
             "Fraction images and phasor plot styling"
         )
@@ -2535,8 +2466,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         contrast_row.addStretch()
         style_section_layout.addLayout(contrast_row)
 
-        # Plot overlay style: edit how the components, connecting line and
-        # labels look in the exported phasor plot (matches the Components tab).
         overlay_row = QHBoxLayout()
         overlay_row.addWidget(QLabel("Phasor plot overlay:"))
         line_style_btn = QPushButton("Edit line layout…")
@@ -2558,7 +2487,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         style_section_layout.addLayout(overlay_row)
         group_layout.addWidget(style_section_box)
 
-        # -- Outputs --------------------------------------------------------
         self.components_export_controls = self._output_controls(
             "Components", "Export component fractions as:"
         )
@@ -2575,6 +2503,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return self._scrollable(tab)
 
     def _build_mapping_tab(self):
+        """Build and return the Phasor Mapping tab."""
         tab = QWidget()
         outer = QVBoxLayout(tab)
 
@@ -2586,7 +2515,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Output images ----------------------------------------------------
         output_box = QGroupBox("Output images")
         output_form = self._form(output_box)
 
@@ -2650,10 +2578,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         output_form.addRow(note)
         body_layout.addWidget(output_box)
 
-        # Phasor plot mesh & coloring --------------------------------------
         body_layout.addWidget(self._build_mapping_mesh_box())
 
-        # Outputs ----------------------------------------------------------
         self.mapping_export_controls = self._output_controls(
             "Mapping", "Export phasor mapped as:"
         )
@@ -2666,12 +2592,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return self._scrollable(tab)
 
     def _build_mapping_mesh_box(self):
-        """Return a box with phase/modulation mesh + color-by controls.
-
-        Mirrors the mesh overlay controls of the interactive Phasor Mapping tab
-        (colormap, alpha and customizable phase/modulation ranges) so the
-        exported phasor plot matches the interactive look.
-        """
+        """Return a box with phase/modulation mesh + color-by controls."""
         box = QGroupBox("Phasor plot mesh and coloring")
         layout = QVBoxLayout(box)
 
@@ -2715,9 +2636,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         )
         top_form.addRow("", self.mapping_mesh_clip_checkbox)
 
-        # Auto range: when on, disables the manual range fields and the range
-        # is pooled from every file at export (mirrors the contrast-limits
-        # "Auto" checkbox), so the mesh is the same across all files.
         self.mapping_range_auto_checkbox = QCheckBox(
             "Auto (range from all files)"
         )
@@ -2732,7 +2650,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         top_form.addRow("Range:", self.mapping_range_auto_checkbox)
         layout.addLayout(top_form)
 
-        # Phase range ------------------------------------------------------
         self.mapping_phase_min_spin = QDoubleSpinBox()
         self.mapping_phase_min_spin.setRange(0.0, 2.0 * float(np.pi))
         self.mapping_phase_min_spin.setDecimals(2)
@@ -2751,7 +2668,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         phase_row.addStretch()
         layout.addLayout(phase_row)
 
-        # Modulation range -------------------------------------------------
         self.mapping_mod_min_spin = QDoubleSpinBox()
         self.mapping_mod_min_spin.setRange(0.0, 1.0)
         self.mapping_mod_min_spin.setDecimals(2)
@@ -2770,7 +2686,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         mod_row.addStretch()
         layout.addLayout(mod_row)
 
-        # Start with the manual range fields disabled (Auto on by default).
         self._on_mapping_range_auto_toggled(True)
 
         note = QLabel(
@@ -2795,13 +2710,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             spin.setEnabled(not checked)
 
     def _resolve_mesh_ranges(self):
-        """Return ``(phase_range, modulation_range)`` for the mapping mesh.
-
-        With the Auto checkbox on, the ranges are pooled from every scanned
-        file (so the mesh is identical across files); otherwise the manual
-        spinbox values are used. Falls back to the manual values when no files
-        are available.
-        """
+        """Return ``(phase_range, modulation_range)`` for the mapping mesh."""
         manual_phase = (
             self.mapping_phase_min_spin.value(),
             self.mapping_phase_max_spin.value(),
@@ -2835,13 +2744,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return phase_range, mod_range
 
     def _auto_mapping_ranges(self):
-        """Set the mesh phase/modulation ranges from *all* scanned files.
-
-        Gathers the phasor coordinates of every file of the selected format
-        (with the configured calibration and filter applied), pools them, and
-        derives a single phase/modulation range. Using the same pooled range
-        for every file makes the exported mesh/plots directly comparable.
-        """
+        """Set the mesh phase/modulation ranges from *all* scanned files."""
         from napari.utils.notifications import show_warning
 
         harmonic = self.mapping_harmonic_spin.value()
@@ -2866,13 +2769,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             self.mapping_mod_max_spin.setValue(float(np.nanmax(modulation)))
 
     def _gather_all_phasor_coords(self, harmonic):
-        """Return pooled ``(G, S)`` for ``harmonic`` across every scanned file.
-
-        Reads each file of the selected format and applies the coordinate-
-        affecting pipeline steps (calibration and filter/threshold) so the
-        pooled coordinates match what the export would produce. Returns
-        ``None`` when there is nothing to read.
-        """
+        """Return pooled ``(G, S)`` for ``harmonic`` across every scanned file."""
         ext = self.format_combobox.currentData()
         files = self._scanned.get(ext, []) if ext else []
         if not files:
@@ -2884,9 +2781,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             harmonics = None
         reader_options = self.read_options_widget.get_reader_options()
 
-        # Coordinate-only pipeline: only calibration + filter move the phasor
-        # coordinates, so the analyses (components/mapping/fret/...) are left
-        # out to keep the gather cheap.
         coord_pipeline = BatchPipeline(
             filter=(
                 self._collect_filter_kwargs()
@@ -2937,6 +2831,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return np.concatenate(reals), np.concatenate(imags)
 
     def _build_fret_tab(self):
+        """Build and return the FRET tab."""
         tab = QWidget()
         outer = QVBoxLayout(tab)
 
@@ -2948,7 +2843,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(0, 0, 0, 0)
 
-        # -- Donor trajectory (inputs) -------------------------------------
         inputs_box, inputs_layout = self._section("Donor trajectory")
         form = self._form()
 
@@ -3026,7 +2920,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         group_layout = body_layout
         group_layout.addWidget(inputs_box)
 
-        # -- Image styling --------------------------------------------------
         style_box, style_layout = self._section("Image styling")
         style_form = self._form()
         self.fret_colormap_combo = self._make_colormap_combo("viridis")
@@ -3046,7 +2939,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         style_layout.addLayout(style_form)
         group_layout.addWidget(style_box)
 
-        # -- Outputs --------------------------------------------------------
         self.fret_export_controls = self._output_controls(
             "FRET", "Export FRET efficiencies as:"
         )
@@ -3058,6 +2950,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return self._scrollable(tab)
 
     def _on_mapping_output_changed(self):
+        """Enable the frequency input only if an output selected needs it."""
         selected = self.mapping_output_combo.checkedItems()
         requires_frequency = any(
             output in MAPPING_LIFETIME_TYPES for output in selected
@@ -3066,6 +2959,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self.mapping_frequency_spin.setEnabled(requires_frequency)
 
     def _build_selection_tab(self):
+        """Build and return the Selection tab: selection mode and cursors."""
         tab = QWidget()
         outer = QVBoxLayout(tab)
 
@@ -3077,7 +2971,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         group_layout = QVBoxLayout(body)
         group_layout.setContentsMargins(0, 0, 0, 0)
 
-        # -- Selection definition (inputs) ---------------------------------
         inputs_box, inputs_layout = self._section("Selection definition")
 
         config_row = QHBoxLayout()
@@ -3152,7 +3045,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         )
         group_layout.addWidget(inputs_box)
 
-        # -- Outputs --------------------------------------------------------
         outputs_box, outputs_layout = self._section("Outputs")
         form = self._form()
 
@@ -3194,11 +3086,13 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return self._scrollable(tab)
 
     def _on_selection_mode_changed(self):
+        """Show only the settings belonging to the chosen selection mode."""
         mode = self.selection_mode_combo.currentData()
         self.selection_manual_widget.setVisible(mode == "manual")
         self.selection_cluster_widget.setVisible(mode == "cluster")
 
     def _add_cursor_row(self, g=0.0, s=0.0, radius=0.05):
+        """Append a cursor row centred at (*g*, *s*) with the given *radius*."""
         frame = QFrame()
         frame.setFrameShape(QFrame.StyledPanel)
         row_layout = QHBoxLayout(frame)
@@ -3222,7 +3116,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             spin.setMaximumWidth(70)
             return spin
 
-        # Center fields (circular + elliptic) on one line.
+        # Center fields (circular + elliptic).
         center_widget = QWidget()
         center_line = QHBoxLayout(center_widget)
         center_line.setContentsMargins(0, 0, 0, 0)
@@ -3312,12 +3206,14 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self._update_cursor_remove_buttons()
 
     def _on_cursor_type_changed(self, entry):
+        """Show only the inputs that apply to *entry*'s cursor shape."""
         cursor_type = entry["type"].currentData()
         entry["center_widget"].setVisible(cursor_type != "polar")
         entry["elliptic_widget"].setVisible(cursor_type == "elliptic")
         entry["polar_widget"].setVisible(cursor_type == "polar")
 
     def _remove_cursor_row(self, entry):
+        """Remove *entry*'s cursor row and renumber, keeping at least one."""
         if len(self._cursor_rows) <= 1:
             return
         if entry in self._cursor_rows:
@@ -3329,11 +3225,13 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self._update_cursor_remove_buttons()
 
     def _update_cursor_remove_buttons(self):
+        """Enable the remove buttons only while more than one cursor exists."""
         enabled = len(self._cursor_rows) > 1
         for entry in self._cursor_rows:
             entry["remove"].setEnabled(enabled)
 
     def _build_plot_settings_tab(self):
+        """Build and return the Plot Settings tab."""
         tab = QWidget()
         outer = QVBoxLayout(tab)
         outer.addWidget(
@@ -3346,7 +3244,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             )
         )
 
-        # -- Shared appearance --------------------------------------------
         shared_box, shared_layout = self._section("Common appearance")
         shared_form = self._form()
         semicircle_row = QHBoxLayout()
@@ -3436,7 +3333,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         shared_layout.addLayout(shared_form)
         outer.addWidget(shared_box)
 
-        # -- Individual (per-file) plots ----------------------------------
         self.plot_individual_checkbox = QCheckBox(
             "Export individual phasor plots (one per file)"
         )
@@ -3449,8 +3345,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         ind_layout.addWidget(self.plot_individual_checkbox)
         self._plot_individual_controls = self._plot_mode_controls("Histogram")
         ind_layout.addWidget(self._plot_individual_controls["widget"])
-        # Backwards-compatible aliases: the individual controls are the
-        # historical ``plot_*`` widgets used elsewhere / by tests.
+
         self.plot_type_combo = self._plot_individual_controls["type"]
         self.plot_colormap_combo = self._plot_individual_controls["colormap"]
         self.plot_bins_spin = self._plot_individual_controls["bins"]
@@ -3469,7 +3364,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         )
         outer.addWidget(ind_box)
 
-        # -- Combined (pooled) plot ---------------------------------------
         self.plot_combined_checkbox = QCheckBox(
             "Export combined phasor plot (all files pooled)"
         )
@@ -3485,9 +3379,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self._plot_combined_controls = self._plot_mode_controls("Contour")
         comb_layout.addWidget(self._plot_combined_controls["widget"])
 
-        # Merged / grouped selector for the combined contour. Only meaningful
-        # for the contour plot type (histogram / scatter always pool into a
-        # single density), so it is shown only when Contour is selected.
         self._combined_mode_row = QWidget()
         mode_row = QHBoxLayout(self._combined_mode_row)
         mode_row.setContentsMargins(0, 0, 0, 0)
@@ -3526,9 +3417,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             self.plot_combined_mode_combo.setEnabled(combined_on)
             groups_button.setVisible(is_contour and is_grouped)
             groups_button.setEnabled(is_contour and is_grouped and combined_on)
-            # Colormap applies to a density / merged-contour plot, but a
-            # grouped contour colors each group from the Configure Groups
-            # dialog, so the single combined colormap is hidden there.
+
             plot_type = self._plot_combined_controls["type"].currentData()
             show_cmap = plot_type in ("Histogram", "Contour") and not (
                 is_contour and is_grouped
@@ -3563,7 +3452,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         comb_layout.addLayout(grp_row)
         outer.addWidget(comb_box)
 
-        # -- Zoomed section ------------------------------------------------
         outer.addWidget(self._build_plot_zoom_box())
 
         outer.addStretch()
@@ -3574,12 +3462,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
 
         Returns a dict of the created widgets plus a ``widget`` container; the
         plot type, colormap, bins, log-scale, scatter-marker and contour
-        parameters can be set independently per export mode. The controls that
-        do not apply to the selected plot type are hidden, mirroring the main
-        Plotter's Plot Settings tab: a density plot shows colormap / bins /
-        log-scale, a scatter plot shows the marker controls, and a contour plot
-        shows colormap / bins and the contour parameters (but no log-scale).
-        """
+        parameters can be set independently per export mode."""
         container = QWidget()
         form = self._form(container)
 
@@ -3616,8 +3499,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         )
         form.addRow(log_checkbox)
 
-        # Scatter-only marker controls (mirrors the main Plotter's scatter
-        # parameters: marker size / color / alpha).
         scatter_widget = QWidget()
         scatter_form = self._form(scatter_widget)
         marker_size_spin = QSpinBox()
@@ -3658,13 +3539,13 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             is_scatter = plot_type == "Scatter"
             is_contour = plot_type == "Contour"
             is_histogram = plot_type == "Histogram"
-            # Colormap and bins drive both the density and the contour density.
+
             show_density = is_histogram or is_contour
             colormap_label.setVisible(show_density)
             colormap_combo.setVisible(show_density)
             bins_label.setVisible(show_density)
             bins_spin.setVisible(show_density)
-            # Log scale only applies to the 2-D histogram color scale.
+
             log_checkbox.setVisible(is_histogram)
             scatter_widget.setVisible(is_scatter)
             contour_widget.setVisible(is_contour)
@@ -3747,7 +3628,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         )
         layout.addWidget(self.plot_zoom_rect_checkbox)
 
-        # The limit fields and rectangle option only matter when zooming.
         self._plot_zoom_limits_widgets = [
             self.plot_zoom_xmin,
             self.plot_zoom_xmax,
@@ -3774,6 +3654,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return box
 
     def _open_group_dialog(self):
+        """Open the histogram grouping dialog and store the chosen config."""
         ext = self.format_combobox.currentData()
         files = self._scanned.get(ext, [])
         names = [os.path.basename(f) for f in files]
@@ -3799,8 +3680,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         )
 
         if dialog.exec() == QDialog.Accepted:
-            # Merge in place so contour-specific styling (set by the Plot
-            # Settings dialog) survives. Grouping is shared/global.
             self._group_config.update(
                 {
                     "mode": dialog.mode_combo.currentText(),
@@ -3819,13 +3698,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             )
 
     def _open_plot_group_dialog(self):
-        """Assign files to groups for the combined grouped contour.
-
-        Reuses :class:`plotter.ContourLayerSettingsDialog` in *groups-only*
-        mode (no merged/grouped selector — that lives in the Plot Settings
-        tab), so the grouping uses the same colored checkable-combobox group
-        rows as the other tabs and keeps per-group contour styling.
-        """
+        """Assign files to groups for the combined grouped contour."""
         from .plotter import ContourLayerSettingsDialog
 
         ext = self.format_combobox.currentData()
@@ -3874,6 +3747,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return (gid, name, color)
 
     def _build_run_footer(self, layout):
+        """Add the run button and progress footer to *layout*."""
         self.run_button = QPushButton("Run batch analysis")
         self.run_button.clicked.connect(self.run_batch)
         layout.addWidget(self.run_button)
@@ -3886,9 +3760,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
-    # -- Component rows ----------------------------------------------------
-
     def _add_component_row(self, name="", g=0.0, s=0.0):
+        """Append a component row at phasor coordinates (*g*, *s*)."""
         row = QWidget()
         row_layout = QHBoxLayout(row)
         row_layout.setContentsMargins(0, 0, 0, 0)
@@ -3904,8 +3777,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         s_spin.setValidator(QDoubleValidator())
 
         lifetime_edit = QLineEdit()
-        # Per-harmonic G/S store: {harmonic -> (g, s)}. Seeded with the initial
-        # location at the harmonic currently being edited.
+
         coords = {self._component_current_harmonic: (float(g), float(s))}
         lifetime_edit.setPlaceholderText("τ (ns)")
         lifetime_edit.setMaximumWidth(70)
@@ -3948,7 +3820,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         lifetime_edit.editingFinished.connect(
             lambda e=entry: self._on_component_lifetime_edited(e)
         )
-        # Persist edited G/S into the current harmonic's store as they change.
+
         g_spin.editingFinished.connect(
             lambda e=entry: self._store_component_coord(e)
         )
@@ -3987,12 +3859,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             return None
 
     def _store_component_coord(self, entry):
-        """Persist a row's visible G/S into the current harmonic's store.
-
-        Rows with both fields blank are treated as *not provided* for the
-        current harmonic (so merely viewing an empty harmonic does not mark it
-        as having component locations).
-        """
+        """Persist a row's visible G/S into the current harmonic's store."""
         g = self._parse_float(entry["g"].text())
         s = self._parse_float(entry["s"].text())
         harmonic = self._component_current_harmonic
@@ -4024,8 +3891,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
 
     def _on_component_harmonic_changed(self, value):
         """Swap the visible G/S fields to a different harmonic's locations."""
-        # Commit edits made under the previously-shown harmonic, then load the
-        # newly-selected harmonic's stored coordinates.
         self._sync_component_coords()
         self._component_current_harmonic = value
         self._load_component_coords()
@@ -4041,6 +3906,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return sorted(common)
 
     def _remove_component_row(self, entry):
+        """Remove *entry*'s component row, keeping the two-component minimum."""
         if len(self._component_rows) <= 2:
             return
         if entry in self._component_rows:
@@ -4052,16 +3918,12 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self._update_component_controls()
 
     def _set_component_rows(self, parsed):
-        """Replace all rows with ``parsed`` ``(name, g, s)`` tuples.
-
-        The ``(g, s)`` locations are stored at harmonic 1; additional harmonics
-        can be filled in afterwards via :meth:`_set_component_harmonic_coords`.
-        """
+        """Replace all rows with ``parsed`` ``(name, g, s)`` tuples."""
         for entry in list(self._component_rows):
             entry["row"].setParent(None)
             entry["row"].deleteLater()
         self._component_rows = []
-        # Start editing at harmonic 1 so the parsed locations are stored there.
+
         self.components_harmonic_spin.blockSignals(True)
         self.components_harmonic_spin.setValue(1)
         self.components_harmonic_spin.blockSignals(False)
@@ -4071,12 +3933,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self._update_component_controls()
 
     def _set_component_harmonic_coords(self, per_harmonic):
-        """Seed component rows with G/S at additional harmonics.
-
-        ``per_harmonic`` maps ``harmonic -> list of (g, s)`` aligned with the
-        existing component rows. Used when copying multi-harmonic component
-        settings so >3-component fits round-trip.
-        """
+        """Seed component rows with G/S at additional harmonics."""
         for harmonic, coords in per_harmonic.items():
             if int(harmonic) == 1:
                 continue
@@ -4090,6 +3947,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self._update_component_note()
 
     def _update_component_controls(self):
+        """Re-sync the component controls to the row count and analysis type."""
         count = len(self._component_rows)
         for entry in self._component_rows:
             entry["remove"].setEnabled(count > 2)
@@ -4141,8 +3999,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             self.components_note.setStyleSheet(
                 "color: #d35400; font-size: 11px;"
             )
-
-    # -- Component overlay style dialogs -----------------------------------
 
     def _open_component_line_style_dialog(self):
         """Edit the component dot/line style used in the exported plot."""
@@ -4202,7 +4058,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         form.addRow("Default line color:", color_container)
         vbox.addLayout(form)
 
-        # Fraction histogram overlay (Linear Projection, 2 components).
         hist_group = QGroupBox("Fraction histogram overlay")
         hist_form = QFormLayout(hist_group)
         hist_cb = QCheckBox("Overlay fraction histogram on the line")
@@ -4311,11 +4166,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 "color": color_button.color().name(),
             }
 
-    # Standalone-window behaviour is provided by ``PopoutWindowMixin``.
-
-    # -- Callbacks ---------------------------------------------------------
-
     def _phasor_layer_names(self):
+        """Return the names of the viewer's layers holding phasor data."""
         return [
             layer.name
             for layer in self.viewer.layers
@@ -4331,15 +4183,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self._populate_layer_comboboxes()
 
     def closeEvent(self, event):
-        """Disconnect viewer events so teardown can't fire into a freed widget.
-
-        The napari viewer outlives this (top-level) widget, so its
-        ``layers.events`` connections must be dropped here. Without this, the
-        emitter keeps a reference to a bound method of a destroyed widget and
-        firing it during teardown segfaults under PySide6 — the same class of
-        crash that leaks BatchAnalysisWidget instances across a ``loadfile``
-        worker until it dies near the end of ``test_batch_analysis.py``.
-        """
+        """Disconnect viewer events so teardown can't fire into a freed widget."""
         with contextlib.suppress(TypeError, ValueError, AttributeError):
             self.viewer.layers.events.inserted.disconnect(
                 self._on_layers_changed
@@ -4351,6 +4195,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         event.accept()
 
     def _populate_layer_comboboxes(self):
+        """Refill the reference layer combobox, keeping any valid selection."""
         names = self._phasor_layer_names()
         combo = getattr(self, "calib_reference_combo", None)
         if combo is None:
@@ -4364,6 +4209,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         combo.blockSignals(False)
 
     def _on_select_folder(self):
+        """Prompt for the input folder and rescan it."""
         folder = QFileDialog.getExistingDirectory(self, "Select input folder")
         if not folder:
             return
@@ -4372,12 +4218,13 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self._rescan()
 
     def _rescan(self):
+        """Rescan the input folder and repopulate the format combobox."""
         if not self._input_folder:
             return
         self._scanned = scan_folder(
             self._input_folder, self.subfolders_checkbox.isChecked()
         )
-        # Files changed: drop the memoized signal-capability probe results.
+
         self._signal_capable_cache = {}
         self.format_combobox.blockSignals(True)
         self.format_combobox.clear()
@@ -4395,6 +4242,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self._refresh_signal_availability()
 
     def _on_format_changed(self):
+        """Rebuild the reader options and dependent rows for the new format."""
         ext = self.format_combobox.currentData()
         if ext:
             self.read_options_widget.set_extension(ext)
@@ -4408,6 +4256,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self._refresh_signal_availability()
 
     def _on_calib_source_changed(self):
+        """Show only the settings belonging to the chosen calibration source."""
         source = self.calib_source_combo.currentData()
         self.calib_same_widget.setVisible(source == "same")
         self.calib_subfolder_widget.setVisible(source == "subfolder")
@@ -4426,11 +4275,13 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return rel.split(os.sep)[0]
 
     def _subfolder_keys(self):
+        """Return the sorted subfolders holding files of the chosen format."""
         ext = self.format_combobox.currentData()
         files = self._scanned.get(ext, [])
         return sorted({self._subfolder_key(f) for f in files})
 
     def _rebuild_subfolder_rows(self):
+        """Rebuild one reference-file row per subfolder of the input folder."""
         layout = self.calib_subfolder_rows_layout
         for i in reversed(range(layout.count())):
             widget = layout.itemAt(i).widget()
@@ -4472,6 +4323,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return f"Supported files ({patterns});;All files (*)"
 
     def _browse_subfolder_ref(self, edit):
+        """Prompt for a subfolder's reference file and write it into *edit*."""
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Select reference file",
@@ -4482,6 +4334,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             edit.setText(path)
 
     def _on_browse_calibration_file(self):
+        """Prompt for the calibration reference file."""
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Select reference file",
@@ -4492,6 +4345,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             self.calib_file_edit.setText(path)
 
     def _on_select_export(self):
+        """Prompt for the export folder and re-check whether the run can start."""
         folder = QFileDialog.getExistingDirectory(self, "Select export folder")
         if folder:
             self._export_folder = folder
@@ -4503,6 +4357,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return self.export_dpi_combo.currentData()
 
     def _on_copy_settings(self):
+        """Copy analysis settings from a chosen layer or OME-TIFF into the tabs."""
         dialog = CopySettingsDialog(self._phasor_layer_names(), self)
         if dialog.exec_() != QDialog.Accepted:
             return
@@ -4519,9 +4374,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             if name and name in self.viewer.layers:
                 layer_metadata = self.viewer.layers[name].metadata
                 settings = dict(layer_metadata.get("settings", {}))
-                # Harmonics live on the layer, not in its settings dict; expose
-                # them so a copied calibration can be matched to targets by
-                # harmonic value.
+
                 if layer_metadata.get("harmonics") is not None:
                     settings.setdefault(
                         "harmonics", layer_metadata["harmonics"]
@@ -4570,6 +4423,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return False
 
     def _update_run_enabled(self):
+        """Enable the run button only once the batch is fully configured."""
         has_files = self.format_combobox.count() > 0
         has_export = bool(self._export_folder)
         has_type = (
@@ -4593,8 +4447,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         else:
             tip = "Run the batch analysis."
         self.run_button.setToolTip(tip)
-
-    # -- Copy settings -> UI ----------------------------------------------
 
     def _apply_settings_to_ui(self, settings):
         """Populate the analysis tabs from a settings dict."""
@@ -4641,6 +4493,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self._apply_fret_settings_to_ui(settings)
 
     def _apply_plot_settings_to_ui(self, settings):
+        """Apply copied plot *settings* to the Plot Settings tab."""
         if "semi_circle" in settings:
             self.plot_semicircle_checkbox.setChecked(
                 not settings["semi_circle"]
@@ -4655,6 +4508,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             self.plot_bins_spin.setValue(int(settings["bins"]))
 
     def _apply_mapping_settings_to_ui(self, settings):
+        """Apply copied lifetime/mapping *settings* to the Phasor Mapping tab."""
         lifetime = settings.get("lifetime")
         if not lifetime:
             return
@@ -4668,20 +4522,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                     break
 
     def _apply_selection_settings_to_ui(self, settings):
-        """Populate the Selection tab from persisted manual cursors.
-
-        The interactive Selection tab stores its cursors (for the harmonic
-        active when they were saved) under
-        ``settings["selections"]`` in three per-type lists:
-
-        - ``"circular_cursors"``: ``{g, s, radius, color}``
-        - ``"elliptical_cursors"``: ``{g, s, radius, radius_minor, angle, color}``
-        - ``"polar_cursors"``: ``{phase_min, phase_max, modulation_min,
-          modulation_max, color}``
-
-        ``angle`` is in degrees and ``color`` is an RGBA tuple/list; both match
-        the batch cursor-row widgets directly.
-        """
+        """Populate the Selection tab from persisted manual cursors."""
         selections = settings.get("selections") or {}
         circular = selections.get("circular_cursors") or []
         elliptical = selections.get("elliptical_cursors") or []
@@ -4750,6 +4591,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             _set_color(entry, c.get("color"))
 
     def _apply_fret_settings_to_ui(self, settings):
+        """Apply copied FRET *settings* to the FRET tab."""
         fret = settings.get("fret_analysis")
         if not fret:
             return
@@ -4768,6 +4610,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             self.fret_bg_imag_spin.setValue(float(fret["background_imag"]))
 
     def _apply_group_config_from_settings(self, settings):
+        """Restore the histogram grouping config from copied *settings*."""
         stored = settings.get("batch_group_config")
         if not stored:
             return
@@ -4786,6 +4629,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         }
 
     def _apply_filter_settings_to_ui(self, settings):
+        """Apply copied filter and threshold *settings* to the Filter tab."""
         filter_settings = settings.get("filter") or {}
         method = filter_settings.get("method")
         enabled = False
@@ -4832,12 +4676,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             self.filter_group.setChecked(True)
 
     def _apply_component_settings_to_ui(self, settings):
+        """Apply copied component *settings* to the Components tab."""
         component_analysis = settings.get("component_analysis") or {}
-
-        # Copy the persisted phasor-plot line / fraction-histogram overlay
-        # style so an exported plot matches what was configured interactively.
-        # User edits are saved under ``two_component_line_settings`` (older
-        # metadata used ``line_settings``).
         line_settings = (
             component_analysis.get("two_component_line_settings")
             or component_analysis.get("line_settings")
@@ -4858,7 +4698,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             if key in line_settings:
                 self._component_line_style[key] = line_settings[key]
 
-        # Same for the component label font style.
         label_settings = (
             component_analysis.get("two_components_label_settings")
             or component_analysis.get("label_settings")
@@ -4877,7 +4716,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             items = list(components.items())
 
         parsed = []
-        # harmonic -> list of (g, s) aligned with ``parsed`` rows.
+
         per_harmonic = {}
         for _key, comp_data in items:
             gs_harmonics = (comp_data or {}).get("gs_harmonics") or {}
@@ -4905,18 +4744,11 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self._set_component_harmonic_coords(per_harmonic)
         self.components_group.setChecked(True)
 
-        # Restore the analysis type. Rebuilding the rows transiently drops the
-        # count below 2, which forces the combo off "Linear Projection"; if the
-        # source used Linear Projection, that would otherwise silently switch
-        # the export to a Component Fit and drop the colormap line / fraction
-        # histogram overlay (both Linear-Projection-only).
         analysis_type = component_analysis.get("analysis_type")
         if analysis_type:
             index = self.analysis_type_combo.findText(analysis_type)
             if index >= 0:
                 self.analysis_type_combo.setCurrentIndex(index)
-
-    # -- Pipeline building -------------------------------------------------
 
     def _load_reference_layer(self, path, harmonics):
         """Load the first phasor layer from a file as an in-memory Image."""
@@ -4934,12 +4766,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         )
 
     def build_pipeline(self, harmonics):
-        """Resolve the configured filter/component steps into a pipeline.
-
-        Calibration is resolved separately (per file) via
-        :meth:`_resolve_calibration_map`, because references may differ per
-        subfolder.
-        """
+        """Resolve the configured filter/component steps into a pipeline."""
         pipeline = BatchPipeline()
         if self.filter_group.isChecked():
             pipeline.filter = self._collect_filter_kwargs()
@@ -4954,6 +4781,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return pipeline
 
     def _collect_mapping(self):
+        """Return the Phasor Mapping tab's settings as a dict for the run."""
         output_types = self.mapping_output_combo.checkedItems()
         if not output_types:
             output_types = [MAPPING_OUTPUT_TYPES[0]]
@@ -4981,6 +4809,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         }
 
     def _collect_fret(self):
+        """Return the FRET tab's settings as a dict for the run."""
         return {
             "donor_lifetime": self.fret_donor_lifetime_spin.value(),
             "frequency": float(self.fret_frequency_spin.text() or 0.0),
@@ -4994,6 +4823,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         }
 
     def _collect_selection(self):
+        """Return the Selection tab's settings as a dict for the run."""
         cursors = []
         for entry in self._cursor_rows:
             cursor_type = entry["type"].currentData()
@@ -5042,6 +4872,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         }
 
     def _collect_filter_kwargs(self):
+        """Return the filter keyword arguments for the chosen filter method."""
         kwargs = {}
         method = self.filter_method_combo.currentText()
         if method == "Median":
@@ -5063,7 +4894,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return kwargs
 
     def _collect_components(self, harmonics):
-        # Capture any in-progress edits in the visible fields first.
+        """Return the component settings for *harmonics* as a dict for the run."""
         self._sync_component_coords()
 
         names, colormaps = [], []
@@ -5086,12 +4917,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "names": names,
             "colormaps": colormaps,
             "contrast_limits": contrast,
-            # Overlay style for the exported phasor plot (matches the
-            # interactive Components tab look).
             "line_style": dict(self._component_line_style),
             "label_style": dict(self._component_label_style),
-            # Color ramp + limits driving the colormap line and colormap-end
-            # dot colors (derived from the first component's colormap).
             "fractions_colormap": _colormap_color_list(
                 colormaps[0] if colormaps else "jet"
             ),
@@ -5100,7 +4927,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
 
         required = required_component_harmonics(count)
         if required <= 1:
-            # Single-harmonic fit/projection from the harmonic on display.
             harmonic = self._component_current_harmonic
             reals, imags = self._component_coords_at(harmonic)
             config.update(
@@ -5112,7 +4938,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             )
             return config
 
-        # Multi-harmonic fit: need component locations at ``required`` harmonics.
         active = self._active_component_harmonics()
         if len(active) < required:
             raise ValueError(
@@ -5183,7 +5008,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 }
             }
 
-        # Per-subfolder references.
         result = {}
         for key, edit in self._subfolder_ref_edits.items():
             path = edit.text().strip()
@@ -5209,6 +5033,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return result
 
     def _resolve_same_reference(self, harmonics):
+        """Return the single reference used for every file, for *harmonics*."""
         file_path = self.calib_file_edit.text().strip()
         if file_path:
             return self._load_reference_layer(file_path, harmonics)
@@ -5219,8 +5044,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "Calibration is enabled but no reference layer or file was "
             "selected."
         )
-
-    # -- Batch execution ---------------------------------------------------
 
     def run_batch(self):
         """Run the configured pipeline over every file of the chosen format."""
@@ -5267,8 +5090,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
 
         want_individual = self.plot_individual_checkbox.isChecked()
         want_combined = self.plot_combined_checkbox.isChecked()
-        # Individual (per-file) and combined (pooled) plots are styled
-        # independently; each mode reads its own controls.
+
         display = self._collect_plot_settings("individual")
         display_combined = self._collect_plot_settings("combined")
         persist_plot = want_individual or want_combined
@@ -5279,9 +5101,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         analysis_jobs = self._collect_analysis_export_jobs(pipeline)
         analysis_stats = {job["name"]: [] for job in analysis_jobs}
 
-        # Signal export: resolve the per-run config and, for raw/ambiguous
-        # formats, ask the reader to retain the per-pixel signal so it can be
-        # masked and averaged. Processed OME-TIFFs reuse their stored signal.
         signal_formats = self.signal_format_combo.checkedItems()
         signal_enabled = (
             self._signal_available
@@ -5314,8 +5133,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         else:
             self._signal_export_cfg = None
 
-        # Per-cursor / per-cluster selection statistics (CSV), accumulated
-        # across files on the main thread in ``_emit_file_outputs``.
         self._selection_stats_config = (
             pipeline.selection
             if (
@@ -5333,13 +5150,10 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             else None
         )
         combined_phasor = want_combined
-        # Combined analysis-tab phasor plots are available whenever the
-        # combined checkbox is on.
+
         tab_combined = want_combined
         aggregate = {
             "streaming": streaming,
-            # Combined phasor coordinates are pooled per key for any plot type;
-            # the renderer picks contour overlay vs pooled density at write time.
             "combined_phasor": combined_phasor,
             "plot_type": display_combined.get("plot_type", "Histogram"),
             "contour": combined_phasor,
@@ -5348,9 +5162,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "centers_data": {},
             "hist_data": {},
             "group_meta": {},
-            # Per analysis-tab phasor plots (components/mapping/fret/selection):
-            # pooled coordinates keyed by (harmonic, group key) per job suffix,
-            # plus the (static) overlay and subfolder for each.
             "tab_phasor": tab_combined,
             "tab_phasor_data": {},  # suffix -> {(harmonic, key): [(r, i), ...]}
             "tab_phasor_overlay": {},  # suffix -> overlay spec
@@ -5383,12 +5194,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         load_into_viewer = self.load_into_viewer_checkbox.isChecked()
         workers = self.threads_spin.value()
         masks_enabled = self.masks_group.isChecked()
-
-        # Single analysis pass: when a tab's contrast is set to Auto, its
-        # colored outputs (images + histograms) are deferred and written only
-        # after every file has been analyzed, using a single range pooled
-        # across all files so the images are directly comparable. The analysis
-        # runs once per file; only the per-output arrays are spilled to disk.
         self._auto_tabs = self._auto_contrast_tabs()
         self._global_contrast = {}
         self._global_contrast_acc = {}
@@ -5443,8 +5248,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                     analysis_stats,
                     aggregate,
                 )
-            # Signal export is handled per file (all channels at once) so the
-            # "Together" channel mode can overlay a file's channels.
+
             if self._signal_export_cfg is not None:
                 self._emit_signal_outputs(path, results, ext, suffix, preserve)
 
@@ -5466,9 +5270,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                     (path, executor.submit(read_compute, path))
                     for path in files
                 ]
-                # Read/compute runs in worker threads; file writes, plot
-                # rendering and accumulation stay on the main thread (Qt and
-                # matplotlib are not thread-safe).
                 for index, (path, future) in enumerate(futures):
                     try:
                         emit(path, future.result())
@@ -5486,8 +5287,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 update_progress(index)
 
         try:
-            # Render the deferred Auto-contrast images / histograms now that
-            # every file has been analyzed and the shared range is known.
             self._flush_deferred_exports()
             if export_centers and center_rows:
                 self._write_centers_csv(center_rows)
@@ -5510,9 +5309,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         summary = f"Batch complete: {processed}/{len(files)} files processed."
         if failed:
             summary += f" {len(failed)} failed."
-            # Show which file failed and at which step (e.g. "Components
-            # failed: ...") so the user knows which tab to fix, rather than a
-            # bare list of file names.
             details = "\n".join(f"  • {name}: {msg}" for name, msg in failed)
             show_error(f"{summary}\n{details}")
         else:
@@ -5545,10 +5341,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
     ):
         """Read ``path`` and apply the pipeline (thread-safe, no IO/render).
 
-        Returns a list of ``(layer, extra_layers)``. Calibration and the
-        per-file mask are passed in so a per-file pipeline copy can be used
-        without mutating shared state (safe under parallel execution).
-        """
+        Returns a list of ``(layer, extra_layers)``."""
         import dataclasses
 
         reader = napari_get_reader(
@@ -5576,21 +5369,12 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             )
             extra_layers = apply_pipeline(layer, local_pipeline)
             if self._signal_export_cfg is not None:
-                # Compute the 1-D signal profile here (in the worker thread) so
-                # the heavy per-pixel signal never crosses to the main thread.
                 self._attach_signal_profile(layer, mask)
             results.append((layer, extra_layers))
         return results
 
     def _attach_signal_profile(self, layer, mask):
-        """Store the file's 1-D signal profile in ``layer.metadata``.
-
-        For raw files the reader retained the per-pixel signal (``signal_full``
-        + ``signal_axis``); it is averaged over the masked region and dropped.
-        For processed OME-TIFFs the stored ``summed_signal`` (a sum over all
-        pixels) is converted to a per-pixel average. The result is a 1-D array
-        under ``_signal_profile`` (or nothing if no signal is available).
-        """
+        """Store the file's 1-D signal profile in ``layer.metadata``."""
         meta = layer.metadata
         full = meta.pop("signal_full", None)
         axis = meta.pop("signal_axis", None)
@@ -5634,12 +5418,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return tabs
 
     def _subfolder_for_layer(self, layer_name):
-        """Return the analysis-tab *key* that produced ``layer_name``.
-
-        One of ``"components"``, ``"phasor_mapping"``, ``"fret"``,
-        ``"selection"`` or ``None`` (unknown). Map keys to folder names via
-        :data:`_TAB_FOLDERS`.
-        """
+        """Return the analysis-tab *key* that produced ``layer_name``."""
         if "fraction: " in layer_name:
             return "components"
         elif any(
@@ -5662,6 +5441,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return None
 
     def _clean_layer_name(self, layer_name):
+        """Return *layer_name* without its trailing ``": <source>"`` suffix."""
         if ": " in layer_name:
             return layer_name.split(": ", 1)[0]
         return layer_name
@@ -5693,8 +5473,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         if persist_plot and display is not None:
             _store_plot_settings(layer, display, self._group_config)
 
-        # Primary processed layer: OME-TIFF / CSV into their own folders, the
-        # intensity image PNG into "Intensity Images".
         non_png_types = [t for t in output_types if t != "png"]
         if non_png_types:
             self._export_layer_files(
@@ -5710,9 +5488,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 ["png"],
                 name_suffix="_Intensity_Image",
             )
-        # Per-file analysis output layers: file exports + statistics +
-        # histograms, all from the single computed output (no re-analysis).
-        # For Auto-contrast tabs the colored PNGs are deferred to the end.
+
         job_by_tab = {j["name"]: j for j in (analysis_jobs or [])}
         for extra in extra_layers:
             self._handle_output_layer(
@@ -5743,8 +5519,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         want_combined = self.plot_combined_checkbox.isChecked()
         for job in plot_jobs or []:
             tab = job.get("tab")
-            # Base phasor plot -> "Phasor Plots/Individual"; analysis-tab plots
-            # -> "<tab>/Individual/Phasor Plots".
             if tab is None:
                 subfolder = os.path.join(
                     "Individual image analysis", "Phasor Plots"
@@ -5762,9 +5536,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 self._render_phasor_plot(
                     layer, job_base_out, display, job["suffix"], job["overlay"]
                 )
-            # Combined (merged/grouped) outputs for the analysis-tab phasor
-            # plots; the base phasor plot is pooled by
-            # ``_accumulate_phasor_aggregate`` instead.
             if (
                 want_combined
                 and aggregate is not None
@@ -5812,12 +5583,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return os.path.join(target_dir, f"{stem}{suffix}")
 
     def _layer_output_subfolder(self, out_type, tab):
-        """Return the subfolder for a layer file of ``out_type``.
-
-        Primary processed layers go into top-level type folders ("OME-TIFF",
-        "CSV", "Intensity Images"); analysis-tab output layers go under
-        ``"<tab>/Individual/<type>"``.
-        """
+        """Return the subfolder for a layer file of ``out_type``."""
         if tab is None:
             if out_type == "png":
                 return "Intensity Images"
@@ -5859,8 +5625,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                     include_colorbar=include_colorbar,
                     dpi=self._export_dpi(),
                 )
-
-    # -- Per-tab output exports --------------------------------------------
 
     @staticmethod
     def _checked_formats(combo):
@@ -5932,14 +5696,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         aggregate,
         group,
     ):
-        """Export + record one analysis output layer from the single pass.
-
-        Writes the output layer's files (OME-TIFF / CSV always; PNG image too
-        when not deferred), records statistics, and writes the per-file
-        histogram. For tabs whose contrast is Auto the colored PNGs (image and
-        histogram) are deferred to :meth:`_flush_deferred_exports` so they can
-        share a single all-files range.
-        """
+        """Export + record one analysis output layer from the single pass."""
         tab = self._subfolder_for_layer(output.name)
         label = self._clean_layer_name(output.name)
         safe_label = _safe_suffix(label)
@@ -5949,16 +5706,11 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         values = np.asarray(output.data).ravel()
         valid = values[np.isfinite(values)]
 
-        # Image file formats: per-tab for the colormapped analysis tabs, else
-        # the global Setup formats (e.g. selection label images).
         if tab in self._TAB_IMAGE_TABS:
             image_formats = list(job["image_formats"]) if job else []
         else:
             image_formats = list(output_types)
 
-        # OME-TIFF / CSV hold raw data (range-independent) -> write now; the
-        # colormapped PNG image is deferred for Auto tabs (its colormap range
-        # depends on every file).
         immediate_image = [
             t for t in image_formats if not (is_auto and t == "png")
         ]
@@ -5975,7 +5727,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 include_colorbar=self.export_colorbar_checkbox.isChecked(),
             )
 
-        # Running shared range across files (used by deferred outputs).
         if is_auto and valid.size:
             low, high = float(np.nanmin(valid)), float(np.nanmax(valid))
             current = self._global_contrast_acc.get(label)
@@ -5985,7 +5736,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 current[0] = min(current[0], low)
                 current[1] = max(current[1], high)
 
-        # Statistics (do not depend on the range -> always immediate).
         if job and job["stats"] and stats_accum is not None:
             row = _compute_stats(valid, 100)
             row["file"] = layer.name
@@ -6002,8 +5752,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         want_image_png = is_auto and "png" in image_formats
 
         if is_auto:
-            # Everything range-dependent (colored PNG image + histogram PNG/CSV)
-            # waits for the pooled all-files range computed at the flush.
             if want_image_png or want_hist:
                 self._defer_output_export(
                     output,
@@ -6019,7 +5767,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                     want_image_png,
                 )
         elif want_hist:
-            # Fixed range: bound the histogram to the layer's contrast limits.
             self._write_histogram_outputs(
                 src_path,
                 ext,
@@ -6034,9 +5781,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 getattr(output, "contrast_limits", None),
             )
 
-        # Grouped/combined accumulation feeds both the combined grouped
-        # histograms and the grouped statistics, so accumulate whenever the
-        # tab exports either a histogram or a statistics table.
         if (
             job
             and (job["stats"] or job["histogram"])
@@ -6046,9 +5790,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             key, gname, gcolor = group
             aggregate["group_meta"][key] = (gname, gcolor)
             if aggregate.get("streaming"):
-                # Spill each file's values under its own member key so the
-                # grouped histogram can still draw a per-file standard-deviation
-                # band (bounded memory: the arrays live on disk, not in RAM).
                 members = (
                     aggregate["hist_struct"]
                     .setdefault(tab, {})
@@ -6077,11 +5818,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         cmap_colors,
         value_range,
     ):
-        """Write the per-file histogram in the requested formats (PNG/CSV).
-
-        ``value_range`` bounds the histogram to the selected range limits so it
-        matches the range-limited image.
-        """
+        """Write the per-file histogram in the requested formats (PNG/CSV)."""
         if "png" in hist_formats:
             png_base = self._derive_output_path(
                 src_path,
@@ -6162,12 +5899,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         )
 
     def _flush_deferred_exports(self):
-        """Write deferred Auto outputs using the pooled all-files range.
-
-        Reloads each spilled output array and renders its histogram and/or
-        image PNG with the shared per-label range computed across every file,
-        so the exported images and histograms are directly comparable.
-        """
+        """Write deferred Auto outputs using the pooled all-files range."""
         self._global_contrast = {
             label: (lo, hi)
             for label, (lo, hi) in self._global_contrast_acc.items()
@@ -6218,6 +5950,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 )
 
     def _write_analysis_export_csvs(self, jobs, stats_accum):
+        """Write each job's accumulated statistics to its export CSV."""
         for job in jobs:
             name = job["name"]
             if job["stats"] and stats_accum.get(name):
@@ -6327,8 +6060,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                     ]
                 )
 
-    # -- Phasor centers ----------------------------------------------------
-
     def _record_phasor_centers(self, layer, center_rows):
         """Append the per-harmonic phasor center of ``layer``."""
         mean = layer.metadata.get("original_mean")
@@ -6350,6 +6081,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             )
 
     def _write_centers_csv(self, center_rows):
+        """Write the collected phasor centers to ``phasor_centers.csv``."""
         target_dir = os.path.join(self._export_folder, "Phasor Centers")
         os.makedirs(target_dir, exist_ok=True)
         path = os.path.join(target_dir, "phasor_centers.csv")
@@ -6366,8 +6098,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                     ]
                 )
 
-    # -- Grouped / aggregate outputs ---------------------------------------
-
     def _accumulate_phasor_aggregate(self, layer, aggregate, group):
         """Accumulate per-group phasor data for combined plots."""
         if not (aggregate["contour"] or aggregate["centers"]):
@@ -6381,10 +6111,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             if real is None:
                 continue
             if aggregate["centers"] and mean is not None:
-                # Accumulate intensity-weighted partial sums per group so the
-                # combined plot shows a single center for the group as a whole
-                # (equivalent to phasor_center over the pooled pixels), matching
-                # the interactive Plotter's merged/grouped center.
                 flat_mean = np.asarray(mean).ravel()
                 flat_r = np.asarray(real).ravel()
                 flat_i = np.asarray(imag).ravel()
@@ -6424,13 +6150,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                     )
 
     def _accumulate_tab_phasor(self, layer, aggregate, job, group):
-        """Pool an analysis-tab phasor plot's coordinates for combined output.
-
-        Stores the layer's phasor coordinates keyed by ``(harmonic, group key)``
-        under the job's suffix, plus the job's (static) overlay and subfolder,
-        so :meth:`_write_tab_phasor_outputs` can render a pooled plot with the
-        same overlay the per-file plots use.
-        """
+        """Pool an analysis-tab phasor plot's coordinates for combined output."""
         if not aggregate.get("tab_phasor"):
             return
         suffix = job["suffix"]
@@ -6473,13 +6193,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 )
 
     def _write_tab_phasor_outputs(self, aggregate, display):
-        """Render combined (merged/grouped) analysis-tab phasor plots.
-
-        One pooled plot per ``(suffix, harmonic, group key)`` using the stored
-        overlay. Merged mode yields a single key; Grouped/Individual yield one
-        plot per group/file. Files land in each analysis subfolder named
-        ``combined_<suffix>[_<group>]_H<n>.png``.
-        """
+        """Render combined (merged/grouped) analysis-tab phasor plots."""
         if not aggregate.get("tab_phasor"):
             return
         streaming = aggregate.get("streaming")
@@ -6497,17 +6211,14 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 target_dir = os.path.join(target_dir, subfolder)
                 os.makedirs(target_dir, exist_ok=True)
             entries = self._tab_phasor_items(aggregate, suffix, streaming)
-            # Distinguish per-group filenames only when more than one key for a
-            # given harmonic (i.e. grouped/individual modes).
+
             harmonic_keys = {}
             for harmonic, key in entries:
                 harmonic_keys.setdefault(harmonic, []).append(key)
             colors = self._resolve_group_colors(group_meta)
             legend = display.get("show_legend", True)
             is_contour = display.get("plot_type") == "Contour"
-            # Collect the per-group arrays of each multi-group harmonic so an
-            # "all groups in one plot" overlay can be drawn after the per-group
-            # plots.
+
             grouped_by_harmonic = {}
             for harmonic, key, real, imag in self._tab_phasor_arrays(
                 aggregate, suffix, streaming
@@ -6526,9 +6237,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                     fname = f"combined_{suffix}_H{harmonic}.png"
                 path = os.path.join(target_dir, fname)
                 if is_contour and multi:
-                    # Per-group contour drawn with that group's own contour
-                    # style (colormap/color from the Configure Groups dialog),
-                    # plus the analysis overlay.
                     item = [(key, real, imag)]
                     _save_combined_contour(
                         item,
@@ -6555,7 +6263,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                     target_dir, f"combined_{suffix}_all_groups_H{harmonic}.png"
                 )
                 if is_contour:
-                    # All groups overlaid as contours, each in its own style.
                     _save_combined_contour(
                         group_items,
                         group_meta,
@@ -6615,6 +6322,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 )
 
     def _resolve_group_colors(self, group_meta):
+        """Return ``{group_key: color}``, filling gaps from the default cycle."""
         colors = {}
         for idx, key in enumerate(group_meta):
             _, color = group_meta[key]
@@ -6647,14 +6355,14 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return styles
 
     def _write_aggregate_outputs(self, aggregate, display):
+        """Write the combined plots and statistics pooled across every file."""
         group_meta = aggregate["group_meta"]
         colors = self._resolve_group_colors(group_meta)
         legend = display.get("show_legend", True)
         streaming = aggregate.get("streaming")
 
         plot_type = aggregate.get("plot_type", "Histogram")
-        # In Merged mode there is a single pooled center, drawn with the chosen
-        # center color; in Grouped/Individual each center takes its group color.
+
         mode = self._group_config.get("mode", "Merged")
         merged_center_color = (
             display.get("center_color") if mode == "Merged" else None
@@ -6680,9 +6388,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             )
             os.makedirs(combined_dir, exist_ok=True)
             if plot_type == "Contour":
-                # Overlay one styled contour per key (merged / individual /
-                # grouped) into a single combined PNG, mirroring the Plotter.
-                # The phasor center(s) are drawn onto this same plot.
                 path = os.path.join(
                     combined_dir, f"combined_contour_H{harmonic}.png"
                 )
@@ -6699,9 +6404,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                     dpi=self._export_dpi(),
                 )
             else:
-                # Histogram/Scatter cannot be overlaid: render one pooled
-                # density per key (single PNG when fully merged). The group's
-                # center is drawn onto its own PNG.
                 single = len(items) == 1
                 for key, real, imag in items:
                     if single:
@@ -6726,8 +6428,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                         center_color=merged_center_color or colors.get(key),
                         dpi=self._export_dpi(),
                     )
-                # Besides the per-group plots, also export one plot with every
-                # group overlaid (group-colored) in the same phasor plot.
                 if not single:
                     all_path = os.path.join(
                         combined_dir,
@@ -6818,14 +6518,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
 
     @staticmethod
     def _hist_group_items(aggregate, tab, label, groups, streaming):
-        """Yield ``(key, file_arrays)`` per group, one group at a time.
-
-        ``file_arrays`` is a list of per-file 1-D arrays so the grouped
-        renderer can draw each group's mean curve and the standard-deviation
-        band *across the files* of the group. In streaming mode the per-file
-        arrays are reloaded from disk (each spilled under its own member key),
-        so the SD band is available there too.
-        """
+        """Yield ``(key, file_arrays)`` per group, one group at a time."""
         if streaming:
             for key, member_keys in groups.items():
                 yield key, [
@@ -6837,6 +6530,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 yield key, list(arrays)
 
     def _write_grouped_stats_csv(self, target_dir, tab, stats_rows):
+        """Write *tab*'s per-group statistics into *target_dir* as a CSV."""
         path = os.path.join(target_dir, f"{tab}_grouped_statistics.csv")
         with open(path, "w", newline="") as handle:
             writer = csv.writer(handle)
@@ -6863,8 +6557,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                         row["n"],
                     ]
                 )
-
-    # -- Plot settings -----------------------------------------------------
 
     def _collect_plot_settings(self, mode="individual"):
         """Return the phasor-plot display dict for ``mode``.
@@ -7031,15 +6723,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
 
     @staticmethod
     def _components_overlay_with_fraction_data(overlay, real, imag):
-        """Attach the first-component fraction data to a components overlay.
-
-        The fraction histogram overlay (Linear Projection) needs the per-pixel
-        first-component fraction for the harmonic being plotted. This is
-        computed here from the plotted ``real``/``imag`` and the component
-        locations, then returned in a shallow copy of ``overlay`` so the
-        original (shared across harmonics) is left untouched. Non-component or
-        non-linear overlays are returned unchanged.
-        """
+        """Attach the first-component fraction data to a components overlay."""
         if overlay is None or overlay.get("kind") != "components":
             return overlay
         components = overlay.get("components") or {}
@@ -7070,8 +6754,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         new_overlay["fraction_data"] = np.asarray(fraction, dtype=float)
         return new_overlay
 
-    # -- Signal export outputs ---------------------------------------------
-
     @staticmethod
     def _channel_label(layer, index):
         """Return a stable channel label for ``layer`` (settings, name or index)."""
@@ -7089,12 +6771,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         return index
 
     def _emit_signal_outputs(self, path, results, ext, suffix, preserve):
-        """Export / accumulate the signal profiles for one file's channels.
-
-        ``results`` is the list of ``(layer, extra_layers)`` produced for
-        ``path`` (one entry per channel). Channels are drawn separately or
-        overlaid per the ``channel_mode`` config.
-        """
+        """Export / accumulate the signal profiles for one file's channels."""
         cfg = self._signal_export_cfg
         channels = []
         for index, (layer, _extra) in enumerate(results):
@@ -7202,7 +6879,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             return
         cfg = self._signal_export_cfg
         ylabel = self._signal_ylabel(cfg["normalize"])
-        # Distinct channel labels in first-seen order across all groups.
+
         channel_labels = []
         for entry in self._signal_combined.values():
             for label in entry["channels"]:
@@ -7218,7 +6895,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         os.makedirs(combined_dir, exist_ok=True)
 
         if multichannel and cfg["channel_mode"] == "separate":
-            # One figure per channel, overlaying the per-group bands.
             for label in channel_labels:
                 bands = []
                 for entry in self._signal_combined.values():
@@ -7258,7 +6934,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                     _save_signal_bands_csv(bands, f"{stem}.csv", ylabel)
             return
 
-        # Single channel, or "Together": one figure with all group×channel bands.
         bands = []
         for entry in self._signal_combined.values():
             for idx, label in enumerate(channel_labels):
@@ -7309,14 +6984,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
 
 
 def _masked_signal_mean(full, axis, mask):
-    """Return the per-pixel mean signal over the mask along ``axis``.
-
-    ``full`` is the per-pixel signal array (histogram/spectral axis at
-    ``axis``); ``mask`` is ``None`` or ``{"array", "invert"}`` from the batch
-    Masks tab. Pixels inside the mask (respecting ``invert``) are averaged; if
-    the mask shape does not match the spatial dimensions, or no pixels remain,
-    every pixel is averaged instead.
-    """
+    """Return the per-pixel mean signal over the mask along ``axis``."""
     arr = np.asarray(full, dtype=float)
     if arr.ndim == 0:
         return arr.reshape(1)
@@ -8337,11 +8005,13 @@ class _SpillStore:
     """
 
     def __init__(self, root):
+        """Create the store, backing it with files under the *root* directory."""
         self._root = root
         os.makedirs(root, exist_ok=True)
         self._paths = {}
 
     def append(self, key, array):
+        """Append *array* to *key*'s data, creating its file on first use."""
         path = self._paths.get(key)
         if path is None:
             path = os.path.join(self._root, f"{len(self._paths)}.f64")
@@ -8350,12 +8020,14 @@ class _SpillStore:
             np.asarray(array, dtype=np.float64).ravel().tofile(handle)
 
     def load(self, key):
+        """Return everything appended under *key* as one flat array."""
         path = self._paths.get(key)
         if path is None:
             return np.empty(0, dtype=np.float64)
         return np.fromfile(path, dtype=np.float64)
 
     def keys(self):
+        """Return the keys that have data stored."""
         return list(self._paths)
 
 

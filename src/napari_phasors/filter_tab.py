@@ -683,6 +683,7 @@ class FilterWidget(QWidget):
         self.update_threshold_lines()
 
     def on_median_kernel_size_change(self):
+        """Callback when the median filter kernel size spinbox is changed."""
         kernel_value = self.median_filter_spinbox.value()
         self.median_filter_label.setText(
             'Kernel Size: ' + f'{kernel_value} x {kernel_value}'

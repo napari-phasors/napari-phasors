@@ -1835,6 +1835,7 @@ class ClickableFrame(QFrame):
     clicked = Signal()
 
     def mousePressEvent(self, event):
+        """Emit ``clicked`` for left-button presses, then defer to the base."""
         if event.button() == Qt.LeftButton:
             self.clicked.emit()
         super().mousePressEvent(event)
@@ -1998,6 +1999,11 @@ class CursorSelectionWidget(QWidget):
 
     @classmethod
     def _make_spinbox(cls, low, high, value, decimals, step, width_ref=None):
+        """Return a ``QDoubleSpinBox`` sized to fit its widest expected value.
+
+        ``width_ref`` overrides the string used to measure the fixed width,
+        so related spinboxes can be aligned on a common reference.
+        """
         spin = QDoubleSpinBox()
         spin.setRange(low, high)
         spin.setSingleStep(step)
@@ -2547,6 +2553,7 @@ class CursorSelectionWidget(QWidget):
             self._refresh_editor_title()
 
     def _current_harmonic_cursors(self):
+        """Return the cursors belonging to the harmonic on display."""
         current_harmonic = (
             self.parent_widget.harmonic if self.parent_widget else 1
         )

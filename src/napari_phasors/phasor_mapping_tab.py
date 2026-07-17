@@ -280,6 +280,7 @@ class PhasorMappingWidget(QWidget):
     """Signal emitted with the new output type name when the mapping output changes."""
 
     def __init__(self, viewer: "napari.viewer.Viewer", parent=None):
+        """Build the phasor mapping tab for *viewer*."""
         super().__init__()
         self.viewer = viewer
         self.parent_widget = parent
@@ -679,6 +680,7 @@ class PhasorMappingWidget(QWidget):
             self._connect_axes_limit_callbacks()
 
     def _connect_axes_limit_callbacks(self):
+        """Subscribe to the plot's x/y limit changes, if not already subscribed."""
         if self.parent_widget is None:
             return
         axes = getattr(self.parent_widget.canvas_widget, 'axes', None)
@@ -696,6 +698,7 @@ class PhasorMappingWidget(QWidget):
         ]
 
     def _disconnect_axes_limit_callbacks(self):
+        """Unsubscribe from the plot's x/y limit changes."""
         if self.parent_widget is None:
             return
         axes = getattr(self.parent_widget.canvas_widget, 'axes', None)
@@ -707,6 +710,7 @@ class PhasorMappingWidget(QWidget):
         self._axes_limit_callback_cids = []
 
     def _on_axes_limits_changed(self, _axes):
+        """Debounce a mesh overlay refresh when the plot is panned or zoomed."""
         if self._coloring_paused_by_tab:
             return
         output_type = self._get_selected_output_type()
@@ -717,6 +721,7 @@ class PhasorMappingWidget(QWidget):
             self._mesh_axes_update_timer.start()
 
     def _apply_mesh_after_axes_change(self):
+        """Re-apply the mesh overlay once panning or zooming has settled."""
         if self._coloring_paused_by_tab:
             return
         output_type = self._get_selected_output_type()
@@ -775,6 +780,7 @@ class PhasorMappingWidget(QWidget):
         self._custom_color = color
 
     def _update_calculate_button_text(self):
+        """Label the calculate button after the selected output mode."""
         mode = self.output_mode_combobox.currentText()
         if mode == "Lifetime":
             self.calculate_lifetime_button.setText("Display Lifetime Map")
@@ -784,6 +790,7 @@ class PhasorMappingWidget(QWidget):
             self.calculate_lifetime_button.setText("Display Modulation Map")
 
     def _sync_mode_widgets(self):
+        """Show only the controls that apply to the selected output mode."""
         is_lifetime_mode = (
             self.output_mode_combobox.currentText() == "Lifetime"
         )
@@ -814,6 +821,11 @@ class PhasorMappingWidget(QWidget):
                 pw._remove_mapping_colorbar()
 
     def _is_semicircle_mode(self) -> bool:
+        """Return whether the plot shows the universal semicircle.
+
+        Defaults to True when the plotter cannot be queried, since the
+        semicircle is the default geometry.
+        """
         if self.parent_widget is None:
             return True
         with contextlib.suppress(AttributeError):
@@ -825,9 +837,11 @@ class PhasorMappingWidget(QWidget):
         return True
 
     def _phase_max_allowed(self) -> float:
+        """Return the largest phase value the sliders may reach, in radians."""
         return 2.0 * np.pi
 
     def _update_phase_slider_bounds_from_plot_mode(self):
+        """Rescale the phase slider to the current plot geometry's phase range."""
         max_phase = self._phase_max_allowed()
         max_phase_i = int(max_phase * self.phase_range_factor)
         min_phase_i, cur_max_phase_i = self.phase_range_slider.value()
@@ -848,6 +862,10 @@ class PhasorMappingWidget(QWidget):
             self._updating_settings = False
 
     def _initialize_mesh_ranges_from_current_data(self):
+        """Set the phase and modulation sliders to span the data's own range.
+
+        Used when the layer has no stored mesh ranges to restore.
+        """
         pw = self.parent_widget
         if pw is None:
             return
@@ -921,6 +939,7 @@ class PhasorMappingWidget(QWidget):
         self._persist_current_mesh_ranges_to_metadata()
 
     def _on_plot_geometry_mode_toggled(self, _checked):
+        """Callback when the plot switches between semicircle and full polar."""
         self._update_phase_slider_bounds_from_plot_mode()
         self._sync_mode_widgets()
         if self.mesh_overlay_checkbox.isChecked():
@@ -931,6 +950,7 @@ class PhasorMappingWidget(QWidget):
         self.reapply_if_active()
 
     def _refresh_mesh_overlay_if_needed(self):
+        """Re-apply the mesh overlay when it is enabled for the current output."""
         output_type = self._get_selected_output_type()
         if (
             output_type in {"Phase", "Modulation"}
@@ -939,6 +959,11 @@ class PhasorMappingWidget(QWidget):
             self._apply_histogram_coloring(output_type)
 
     def get_selected_output_display_name(self) -> str:
+        """Return the selected output's user-facing name.
+
+        The three lifetime variants all collapse to "Lifetime"; other
+        outputs use their own name.
+        """
         output_type = self._get_selected_output_type()
         if output_type in {
             "Apparent Phase Lifetime",
@@ -968,6 +993,11 @@ class PhasorMappingWidget(QWidget):
         }
 
     def _get_current_layer_mapping_settings(self, create: bool = False):
+        """Return the primary layer's mapping settings, or None if unavailable.
+
+        Set ``create`` to add a default settings entry when the layer has
+        none yet.
+        """
         layer_name = self.parent_widget.get_primary_layer_name()
         if not layer_name:
             return None
@@ -975,6 +1005,11 @@ class PhasorMappingWidget(QWidget):
         return self._get_phasor_mapping_settings(layer, create=create)
 
     def _persist_current_mesh_ranges_to_metadata(self):
+        """Save the mesh slider ranges and toggles to the layer's metadata.
+
+        Does nothing while the widgets are being updated programmatically,
+        so restoring settings cannot write them straight back.
+        """
         if self._updating_settings:
             return
         phase_min_i, phase_max_i = self.phase_range_slider.value()
@@ -1001,6 +1036,11 @@ class PhasorMappingWidget(QWidget):
         )
 
     def _restore_mesh_ranges_from_settings(self, settings) -> bool:
+        """Apply stored mesh ranges to the sliders.
+
+        Returns False when *settings* is missing or incomplete, leaving the
+        widgets untouched so the caller can fall back to the data ranges.
+        """
         if settings is None:
             return False
 
@@ -1045,9 +1085,11 @@ class PhasorMappingWidget(QWidget):
 
     @staticmethod
     def _output_requires_frequency(output_type: str) -> bool:
+        """Return whether *output_type* can only be computed with a frequency."""
         return output_type in LIFETIME_OUTPUT_TYPES
 
     def _get_selected_output_type(self) -> str:
+        """Return the selected output type, resolving the lifetime sub-type."""
         mode = self.output_mode_combobox.currentText()
         if mode == "Lifetime":
             return self.lifetime_type_combobox.currentText()
@@ -1055,6 +1097,7 @@ class PhasorMappingWidget(QWidget):
 
     @staticmethod
     def _get_output_colormap_name(output_type: str) -> str:
+        """Return the default colormap name to use for *output_type*."""
         if output_type == "Phase":
             return "cool"
         if output_type == "Modulation":
@@ -1062,6 +1105,7 @@ class PhasorMappingWidget(QWidget):
         return "plasma"
 
     def _configure_histogram_labels_for_output(self, output_type: str):
+        """Relabel the histogram axis and range slider to *output_type*'s units."""
         if output_type in {
             "Apparent Phase Lifetime",
             "Apparent Modulation Lifetime",
@@ -1078,6 +1122,11 @@ class PhasorMappingWidget(QWidget):
         self.histogram_widget._range_label_prefix = "Modulation range"
 
     def _on_output_mode_changed(self, mode: str):
+        """Callback when the output mode combobox is changed.
+
+        Re-syncs the dependent controls, colormap, histogram labels and 2D
+        colouring, and records the new output type in the layer metadata.
+        """
         is_lifetime_mode = mode == "Lifetime"
         self.lifetime_type_combobox.setEnabled(is_lifetime_mode)
         self._sync_mode_widgets()
@@ -1113,6 +1162,11 @@ class PhasorMappingWidget(QWidget):
             )
 
     def _on_colormap_combobox_changed(self, name: str):
+        """Callback when the colormap combobox is changed.
+
+        The choice is remembered per output type, so Phase and Modulation
+        keep their own colormaps.
+        """
         self.custom_color_button.setVisible(name == "Select color...")
         output_type = self._get_selected_output_type()
 
@@ -1150,6 +1204,7 @@ class PhasorMappingWidget(QWidget):
         return cmap_name if resolved is None else resolved
 
     def _on_apply_2d_colormap_checkbox_changed(self, checked):
+        """Callback when the "apply colormap to plot" checkbox is toggled."""
         output_type = self._get_selected_output_type()
         if output_type not in {"Phase", "Modulation"}:
             self._clear_2d_coloring()
@@ -1160,6 +1215,7 @@ class PhasorMappingWidget(QWidget):
             self._clear_2d_coloring()
 
     def _clear_2d_coloring(self):
+        """Remove the mapping overlay and colorbar, restoring the density plot."""
         self._remove_overlay()
         pw = self.parent_widget
         if pw is not None:
@@ -1383,6 +1439,7 @@ class PhasorMappingWidget(QWidget):
                 self.histogram_widget.update_data(np.array([]))
 
     def _set_frequency_input_enabled(self, enabled: bool):
+        """Enable or disable the frequency input field."""
         self.frequency_input.setEnabled(enabled)
 
     def _on_range_changed_from_histogram(self, min_float, max_float):
@@ -2121,10 +2178,12 @@ class PhasorMappingWidget(QWidget):
             img.set_visible(visible)
 
     def _remove_overlay(self):
+        """Remove both the plot and mesh overlays from the phasor plot."""
         self._remove_plot_overlay()
         self._remove_mesh_overlay()
 
     def _remove_plot_overlay(self):
+        """Remove the colormapped plot overlay and its clipping patch."""
         if getattr(self, '_overlay_imshow', None) is not None:
             with contextlib.suppress(ValueError, AttributeError):
                 self._overlay_imshow.remove()
@@ -2135,12 +2194,14 @@ class PhasorMappingWidget(QWidget):
             self._overlay_clip_patch = None
 
     def _remove_mesh_overlay(self):
+        """Remove the mesh overlay image from the phasor plot."""
         if getattr(self, '_mesh_overlay_imshow', None) is not None:
             with contextlib.suppress(ValueError, AttributeError):
                 self._mesh_overlay_imshow.remove()
             self._mesh_overlay_imshow = None
 
     def _get_mesh_grid_resolution(self, ax) -> int:
+        """Return the mesh sampling resolution suited to *ax*'s on-screen size."""
         # Sample the mesh grid well above the on-screen pixel size so the mesh
         # outline (the curved semicircle / range boundaries) stays finely
         # detailed - especially when zoomed out, where a coarse grid spreads
@@ -2154,6 +2215,7 @@ class PhasorMappingWidget(QWidget):
         return 1000
 
     def _make_mesh_grid_cache_key(self, ax, resolution: int):
+        """Return the cache key identifying a mesh grid for the current view."""
         x_min, x_max = ax.get_xlim()
         y_min, y_max = ax.get_ylim()
         return (
@@ -2166,6 +2228,11 @@ class PhasorMappingWidget(QWidget):
         )
 
     def _get_mesh_polar_grid(self, ax, resolution: int):
+        """Return the phase/modulation grid covering *ax*'s current view.
+
+        Grids are cached per view and evicted least-recently-used first, so
+        panning back to a previous zoom level avoids recomputing them.
+        """
         key = self._make_mesh_grid_cache_key(ax, resolution)
         cached = self._mesh_grid_cache.get(key)
         if cached is not None:
@@ -2208,6 +2275,11 @@ class PhasorMappingWidget(QWidget):
     def _get_mesh_alpha_map(
         self, mesh_mask, alpha_key, mesh_alpha: float, resolution: int, ax
     ):
+        """Return the mesh's blurred alpha map, scaled by *mesh_alpha*.
+
+        The blurred base is cached under *alpha_key* so changing only the
+        opacity re-uses it instead of re-running the Gaussian filter.
+        """
         cached = self._mesh_alpha_cache.get(alpha_key)
         if cached is not None:
             with contextlib.suppress(ValueError):
@@ -2235,6 +2307,7 @@ class PhasorMappingWidget(QWidget):
         return alpha_base * mesh_alpha
 
     def _get_clim_from_metric_layers(self):
+        """Return the first metric layer's contrast limits, or (None, None)."""
         for layer in self.metric_layers:
             if layer in self.viewer.layers:
                 with contextlib.suppress(
@@ -2245,6 +2318,11 @@ class PhasorMappingWidget(QWidget):
         return None, None
 
     def _apply_histogram_coloring(self, output_type: str):
+        """Colour the phasor plot by *output_type* and draw the mesh overlay.
+
+        Only "Phase" and "Modulation" are colourable; any other output type
+        returns without touching the plot.
+        """
         if output_type not in {"Phase", "Modulation"}:
             return
         pw = self.parent_widget
@@ -2568,6 +2646,7 @@ class PhasorMappingWidget(QWidget):
         pw.canvas_widget.figure.canvas.draw_idle()
 
     def reapply_if_active(self):
+        """Redraw the histogram and colouring unless the tab is hidden."""
         if self._coloring_paused_by_tab:
             self._clear_2d_coloring()
             return
@@ -2584,6 +2663,7 @@ class PhasorMappingWidget(QWidget):
             self._clear_2d_coloring()
 
     def on_tab_visibility_changed(self, is_visible: bool):
+        """Pause plot colouring while the tab is hidden, restoring it on show."""
         self._coloring_paused_by_tab = not is_visible
         if not is_visible:
             self._clear_2d_coloring()
