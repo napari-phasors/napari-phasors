@@ -1,9 +1,19 @@
 name: Build standalone installers
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: >-
+          Optional. Release tag to build installers for and attach them
+          to (e.g. v0.7.0). The tag must already exist as a published
+          GitHub release, and its version must already be on conda-forge
+          (run this after the napari-phasors feedstock update has merged).
+          Leave empty to build from the current branch against the latest
+          napari-phasors release on conda-forge; the installers are then
+          only uploaded as workflow artifacts and no release is touched.
+        required: false
+        type: string
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -30,6 +40,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
 
       - name: Set up Miniforge
         uses: conda-incubator/setup-miniconda@v3
@@ -44,12 +56,38 @@ jobs:
       - name: Determine version
         id: version
         shell: bash -el {0}
+        env:
+          TAG: ${{ inputs.tag }}
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            VERSION="${{ github.event.release.tag_name }}"
-            VERSION="${VERSION#v}"
+          set -euo pipefail
+          # The installer bundles napari-phasors itself rather than pip
+          # installing it, so every buildable version must exist on
+          # conda-forge. Resolve against the channel up front so a missing
+          # version fails here with a clear message instead of deep inside
+          # constructor's solver.
+          # conda search returns one record per build, so de-duplicate and
+          # sort with conda's own version ordering rather than trusting the
+          # order packages come back in.
+          AVAILABLE=$(
+            conda search -c conda-forge --override-channels --json napari-phasors \
+              | python -c "
+          import json, sys
+          from conda.models.version import VersionOrder
+          records = json.load(sys.stdin)['napari-phasors']
+          print(' '.join(sorted({r['version'] for r in records}, key=VersionOrder)))
+          "
+          )
+          echo "Available on conda-forge: ${AVAILABLE}"
+          if [ -n "${TAG}" ]; then
+            VERSION="${TAG#v}"
+            if ! printf '%s\n' ${AVAILABLE} | grep -qx "${VERSION}"; then
+              echo "::error::napari-phasors ${VERSION} (tag ${TAG}) is not on conda-forge, so it cannot be bundled. Available: ${AVAILABLE}"
+              exit 1
+            fi
+            echo "Building version ${VERSION} from tag ${TAG}"
           else
-            VERSION="dev"
+            VERSION="${AVAILABLE##* }"
+            echo "No tag supplied - building latest conda-forge release ${VERSION}"
           fi
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
@@ -83,6 +121,7 @@ jobs:
             - napari
             - pyqt6
             - pip
+            - napari-phasors=VERSION_PLACEHOLDER
           post_install: POST_INSTALL_PLACEHOLDER
           license_file: LICENSE.ascii.txt
           ENDOFYAML
@@ -159,8 +198,24 @@ jobs:
           cat > "${APP_DIR}/Contents/MacOS/napari-phasors" << 'LAUNCHER'
           #!/bin/bash
           SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-          ENV_DIR="${SCRIPT_DIR}/../Resources/env"
-          source "${ENV_DIR}/bin/activate"
+          ENV_DIR="$(cd "${SCRIPT_DIR}/../Resources/env" && pwd)"
+          # NOTE: constructor envs do not ship bin/activate (no conda inside),
+          # so we export what napari/Qt need directly instead of activating.
+          export PATH="${ENV_DIR}/bin:${PATH}"
+          export CONDA_PREFIX="${ENV_DIR}"
+          # Conda bakes the build-time install prefix into the env, so Qt's
+          # compiled-in plugin path points at a directory that no longer
+          # exists once the .app is moved (into the bundle at build time,
+          # then into /Applications by the user). Point Qt at the bundled
+          # plugins explicitly — env vars override the baked-in path.
+          for PLUGIN_DIR in "${ENV_DIR}/lib/qt6/plugins" "${ENV_DIR}/lib/qt/plugins" "${ENV_DIR}/plugins"; do
+            if [ -d "${PLUGIN_DIR}/platforms" ]; then
+              export QT_PLUGIN_PATH="${PLUGIN_DIR}"
+              export QT_QPA_PLATFORM_PLUGIN_PATH="${PLUGIN_DIR}/platforms"
+              break
+            fi
+          done
+          export FONTCONFIG_PATH="${ENV_DIR}/etc/fonts"
           exec "${ENV_DIR}/bin/python" -m napari "$@"
           LAUNCHER
           chmod +x "${APP_DIR}/Contents/MacOS/napari-phasors"
@@ -240,7 +295,8 @@ jobs:
           if-no-files-found: error
 
       - name: Upload to GitHub Release
-        if: github.event_name == 'release'
+        if: inputs.tag != ''
         uses: softprops/action-gh-release@4fabdc8bec0ad32a2eb09fb8fd1d04fd30a75562 # v2.0.5
         with:
+          tag_name: ${{ inputs.tag }}
           files: installer/napari-phasors-*
