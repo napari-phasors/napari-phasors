@@ -1,6 +1,6 @@
 # Histogram and Statistics Table
 
-The **1D Histogram** and **Statistics Table** panels in napari-phasors provide quantitative analysis for a variety of workflows, including:
+The **Histogram** and **Statistics Table** panels in napari-phasors provide quantitative analysis for a variety of workflows, including:
 
 - **Component analysis**
 - **Phasor mapping** (lifetime, phase, modulation)
@@ -10,19 +10,38 @@ For component-analysis-specific setup and interpretation, see {doc}`component_an
 
 The statistics table can also display phasor center data for each layer or group.
 
-## 1D Histogram
+## Histogram
 
-After running an analysis (component, mapping, or FRET), a **1D Histogram** dock panel opens automatically below the Phasor Plot widget. It shows the distribution of the computed metric values (e.g., lifetime, phase, modulation, or component fraction) across all valid pixels of all selected layers.
+After running an analysis (component, mapping, or FRET), a **Histogram** dock panel opens automatically below the Phasor Plot widget. It shows the distribution of the computed metric values (e.g., lifetime, phase, modulation, or component fraction) across all valid pixels of all selected layers.
 
 ### Histogram display modes
 
-The histogram can be shown in three modes:
+The histogram can be shown in three modes, switched in the **Histogram
+Settings** dialog:
 
-- **Merged**: All selected layers' data are pooled and shown as a single curve.
-- **Individual layers**: Each selected layer is shown as a separate curve, allowing direct comparison.
-- **Grouped**: Layers can be assigned to custom groups, and each group's data is pooled and shown as a separate curve.
+#### Merged
 
-You can switch between these modes in the **Histogram Settings** dialog.
+All selected layers' data are pooled and shown as a single curve.
+
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/histogram%20merged.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/histogram%20merged.mp4" type="video/mp4">
+</video>
+
+#### Individual layers
+
+Each selected layer is shown as a separate curve, allowing direct comparison.
+
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/histogram%20individual.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/histogram%20individual.mp4" type="video/mp4">
+</video>
+
+#### Grouped
+
+Layers can be assigned to custom groups, and each group's data is pooled and shown as a separate curve.
+
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/histogram%20grouped.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/histogram%20grouped.mp4" type="video/mp4">
+</video>
 
 ### Histogram features
 
@@ -33,7 +52,7 @@ You can switch between these modes in the **Histogram Settings** dialog.
 - **White background**: Switches to a white plot background for figures.
 - **Smooth curves**: Applies Gaussian smoothing to improve curve readability.
 - **Layer/group colours**: Picker for per-layer or per-group histogram colours.
-- **Save Histogram as PNG**: Exports the histogram at 300 DPI.
+- **Save Histogram**: Exports the histogram, either as a PNG image (at 300 DPI) or as a CSV of the underlying bin centers and counts (per layer or per group, depending on the current display mode).
 
 ## Statistics Table
 
@@ -43,6 +62,10 @@ The **Statistics** dock panel, linked to the histogram, displays per-layer (and 
 - Component fractions (component analysis)
 - FRET efficiency or related metrics (FRET analysis)
 - Phasor center coordinates (if enabled)
+
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/table.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/table.mp4" type="video/mp4">
+</video>
 
 ### Table columns
 
@@ -63,7 +86,3 @@ Right-clicking on the table provides **Copy**, **Copy with Headers**, and **Sele
 2. View the histogram and statistics table for all selected layers.
 3. Switch between merged, individual, or grouped display modes as needed.
 4. Export the histogram or statistics for publication or further analysis.
-
-<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/histogram%20table.gif">
-  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/histogram%20table.mp4" type="video/mp4">
-</video>

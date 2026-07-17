@@ -836,7 +836,7 @@ def test_filter_param_visibility(qtbot, make_viewer_model):
     widget.filter_method_combo.setCurrentText("Median")
     assert not widget.median_filter_widget.isHidden()
     assert widget.wavelet_filter_widget.isHidden()
-    widget.filter_method_combo.setCurrentText("Wavelet")
+    widget.filter_method_combo.setCurrentText("Wavelet (binlet pawFLIM)")
     assert widget.median_filter_widget.isHidden()
     assert not widget.wavelet_filter_widget.isHidden()
     widget.threshold_method_combo.setCurrentText("Manual")
@@ -3683,7 +3683,9 @@ def test_apply_settings_to_ui_populates_all_tabs(qtbot, make_viewer_model):
     assert widget.calibration_group.isChecked()
     assert widget._copied_calibration is not None
     assert widget.filter_group.isChecked()
-    assert widget.filter_method_combo.currentText() == "Wavelet"
+    assert (
+        widget.filter_method_combo.currentText() == "Wavelet (binlet pawFLIM)"
+    )
     assert widget.wavelet_sigma_spin.value() == 2.5
     assert widget.wavelet_levels_spin.value() == 3
     assert widget.threshold_max_spin.value() == 9.0
@@ -3815,7 +3817,7 @@ def test_collect_filter_kwargs_wavelet_and_manual(qtbot, make_viewer_model):
     widget = BatchAnalysisWidget(make_viewer_model())
     qtbot.addWidget(widget)
 
-    widget.filter_method_combo.setCurrentText("Wavelet")
+    widget.filter_method_combo.setCurrentText("Wavelet (binlet pawFLIM)")
     widget.wavelet_sigma_spin.setValue(1.5)
     widget.wavelet_levels_spin.setValue(4)
     widget.threshold_method_combo.setCurrentText("Manual")

@@ -14,9 +14,10 @@ napari-phasors is a comprehensive plugin, based on the [phasorpy](https://www.ph
 - **Component analysis** for multi-component systems
 - **Phasor Mapping** — colormap apparent/normal lifetime, phasor phase, and phasor modulation per pixel, with interactive 1D histograms, statistics tables, and arc overlay tools
 - **FRET analysis** with donor trajectory visualization and multi-layer donor/background source selection
-- **Filtering** with median, wavelet, and automatic thresholding (Otsu, Li, Yen)
+- **Filtering** with median, wavelet (binlet pawFLIM), and automatic thresholding (Otsu, Li, Yen)
 - **Selections** via manual drawing, circular/polar/elliptical cursors, and automatic clustering
 - **Exporting** results as OME-TIF or CSV (multiple layers simultaneously)
+- **Batch Analysis** — apply the same reading and analysis pipeline to every file in a folder and export the results headlessly
 
 ## Quick start
 

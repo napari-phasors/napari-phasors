@@ -24,6 +24,7 @@ parts:
   - file: guides/fret_analysis
   - file: guides/histogram_statistics
   - file: guides/exporting
+  - file: guides/batch_analysis
 - caption: API Reference
   chapters:
   - file: api/index

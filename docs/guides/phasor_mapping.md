@@ -15,10 +15,10 @@ of three output modes:
 | Mode | Description |
 |------|-------------|
 | **Lifetime** | Computes apparent phase lifetime, apparent modulation lifetime, or normal lifetime (ns) |
-| **Phase** | Computes the polar angle of the phasor (radians or degrees) |
+| **Phase** | Computes the polar angle of the phasor (radians) |
 | **Modulation** | Computes the polar modulus of the phasor (0 – 1) |
 
-### Lifetime mode
+## Lifetime mode
 
 When **Lifetime** is selected, a secondary drop-down lets you choose between:
 
@@ -36,7 +36,7 @@ from the calibration tab when calibration is applied).
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/lifetime.mp4" type="video/mp4">
 </video>
 
-### Phase and Modulation modes
+## Phase and Modulation modes
 
 These modes derive the polar coordinates of the phasor directly with no
 frequency input required.  A **Colormap** drop-down lets you choose the
@@ -52,17 +52,6 @@ phasor plot and the image.
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/phase%20modulation.mp4" type="video/mp4">
 </video>
 
-## Calculating the output
-
-Click **Calculate Output** to compute the selected metric for all currently
-selected layers. A new napari image layer is created (or updated if it already
-exists) with the selected colormap applied. The colormapped image can be
-exported as a PNG or OME-TIF file. For histogram and statistics options, see
-{doc}`histogram_statistics`.
-
-For practical FLIM examples and visualization/customization tools (contours,
-and phasor centers), see {doc}`plot_customization`.
-
 ## Arc Overlay Tool
 
 The **Phase & Modulation Arcs** tool helps visualize analysis boundaries by
@@ -77,3 +66,18 @@ component or reflects mixed lifetimes.
 <video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/phase%20arc.gif">
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/phase%20arc.mp4" type="video/mp4">
 </video>
+
+## Calculating the output
+
+Click **Calculate Output** to compute the selected metric for all currently
+selected layers. A new napari image layer is created (or updated if it
+already exists) with the selected colormap applied.
+
+- View value distributions as histograms and summary statistics in the **Histogram and Statistics Table** widget
+- Compare layers as merged, individual, or grouped data
+- Export the colormapped image as a PNG or OME-TIF file
+- Export summary statistics to CSV
+
+For full histogram/table options, see {doc}`histogram_statistics`. For
+practical FLIM examples and visualization/customization tools (contours and
+phasor centers), see {doc}`plot_customization`.

@@ -2168,10 +2168,12 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         method_row = QHBoxLayout()
         method_row.addWidget(QLabel("Filter method:"))
         self.filter_method_combo = QComboBox()
-        self.filter_method_combo.addItems(["None", "Median", "Wavelet"])
+        self.filter_method_combo.addItems(
+            ["None", "Median", "Wavelet (binlet pawFLIM)"]
+        )
         self.filter_method_combo.setToolTip(
             "Smoothing applied to the phasor coordinates before analysis: "
-            "none, a median filter, or a wavelet filter."
+            "none, a median filter, or a wavelet (binlet pawFLIM) filter."
         )
         self.filter_method_combo.currentTextChanged.connect(
             self._on_filter_method_changed
@@ -2271,7 +2273,9 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
 
     def _on_filter_method_changed(self, method):
         self.median_filter_widget.setVisible(method == "Median")
-        self.wavelet_filter_widget.setVisible(method == "Wavelet")
+        self.wavelet_filter_widget.setVisible(
+            method == "Wavelet (binlet pawFLIM)"
+        )
 
     def _on_threshold_method_changed(self, method):
         self.threshold_manual_widget.setVisible(method == "Manual")
@@ -4799,7 +4803,9 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                         int(filter_settings["repeat"])
                     )
             elif method == "wavelet":
-                self.filter_method_combo.setCurrentText("Wavelet")
+                self.filter_method_combo.setCurrentText(
+                    "Wavelet (binlet pawFLIM)"
+                )
                 if filter_settings.get("sigma") is not None:
                     self.wavelet_sigma_spin.setValue(
                         float(filter_settings["sigma"])
@@ -5042,7 +5048,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             kwargs["filter_method"] = "median"
             kwargs["size"] = self.median_size_spin.value()
             kwargs["repeat"] = self.median_repeat_spin.value()
-        elif method == "Wavelet":
+        elif method == "Wavelet (binlet pawFLIM)":
             kwargs["filter_method"] = "wavelet"
             kwargs["sigma"] = self.wavelet_sigma_spin.value()
             kwargs["levels"] = self.wavelet_levels_spin.value()

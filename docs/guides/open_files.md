@@ -16,11 +16,11 @@ By default, standard opening reads the first 1<sup>st</sup> and second 2<sup>nd<
 
 Use the **Phasor Custom Import** widget when you need to override those defaults (for example, choose a specific channel/frame, set LIF image/dimension, select the phasor axis, or build a custom 3D stack with z spacing and axis order).
 
-The **Phasor Custom Import** widget (**PhasorTransformWidget**) provides format-aware import options for FLIM and hyperspectral files.
+The **Phasor Custom Import** widget provides format-aware import options for FLIM and hyperspectral files.
 
 Open it from:
 
-**Plugins -> napari-phasors -> Phasor Transform**
+**Plugins -> napari-phasors -> Phasor Custom Import**
 
 ### Default reader parameters by format
 

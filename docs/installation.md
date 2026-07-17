@@ -19,7 +19,7 @@ If you already have [napari](https://napari.org) installed, this is the simplest
 4. Click **Install**
 5. Restart napari
 
-That's it — no terminal or command line needed.
+That's it, no terminal or command line needed.
 
 ```{note}
 If you don't have napari yet, see [Option 2](#option-2-using-conda--pip-recommended) to install both napari and napari-phasors together.
@@ -51,6 +51,18 @@ If you already have Anaconda or Miniconda, you can use `conda` instead of
 
 ```bash
 mamba create -y -n napari-phasors-env napari pyqt6 python=3.14 # or 3.12, 3.13
+```
+
+```{tip}
+napari-phasors is also published on the
+[conda-forge](https://anaconda.org/conda-forge/napari-phasors) channel. That
+recipe pulls in napari, PyQt6, and every other dependency, so you can
+replace Steps 2 and 4 with a single command and skip `pip` entirely:
+
+    mamba create -y -n napari-phasors-env -c conda-forge napari-phasors
+
+The conda-forge release can lag a little behind the version on PyPI; use
+the pip steps below if you need the very latest release right away.
 ```
 
 ### Step 3: Activate the environment
@@ -86,7 +98,7 @@ Pre-built installers for Windows, macOS, and Linux are
 available on the
 [latest release](https://github.com/napari-phasors/napari-phasors/releases/latest)
 page. Download the installer for your platform, run it,
-and you're ready to go — no Python installation needed.
+and you're ready to go, no Python installation needed.
 
 | Platform  | File type | How to install                             |
 |-----------|-----------|--------------------------------------------|
@@ -96,7 +108,7 @@ and you're ready to go — no Python installation needed.
 
 ```{tip}
 Installers are ~350–470 MB because they bundle
-Python, napari, and all dependencies — nothing else
+Python, napari, and all dependencies, nothing else
 to install.
 ```
 

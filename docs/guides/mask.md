@@ -56,12 +56,16 @@ You can invert a mask so that pixels **outside** the drawn region are included i
 
 When using the **Assign Masks** dialog (for multiple image layers), each layer has its own **Invert** checkbox, allowing independent inversion per layer.
 
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/invert%20mask.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/invert%20mask.mp4" type="video/mp4">
+</video>
+
 ## Assigning masks to image layers
 
 - You can assign a mask to a single image layer, restricting phasor analysis to that region only.
 - Different image layers can have different masks assigned, allowing for independent region-of-interest analysis across multiple images.
 - To do this, select the desired image layer, then choose the appropriate mask layer in the **Phasor Plot** widget.
 
-<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/mask%20multiple.gif">
-  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/mask%20multiple.mp4" type="video/mp4">
+<video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/assign%20masks.gif">
+  <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/assign%20masks.mp4" type="video/mp4">
 </video>
