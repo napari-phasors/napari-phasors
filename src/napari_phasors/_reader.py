@@ -15,12 +15,13 @@ from typing import Any, Union
 import numpy as np
 import phasorpy.io as io
 import tifffile
-import xarray as xr
 from napari.utils.colormaps.colormap_utils import CYMRGB, MAGENTA_GREEN
 from napari.utils.notifications import show_error
 from phasorpy.phasor import phasor_from_signal
 
 from ._utils import show_activity_progress
+
+_signal_from_brighteyes_mcs = io.signal_from_brighteyes_mcs
 
 extension_mapping = {
     "raw": {
@@ -94,6 +95,17 @@ extension_mapping = {
             {"channel": (0, False), "dtype": (None, False)},
             reader_options,
         ),
+        ".h5": lambda path, reader_options: _parse_and_call_io_function(
+            path,
+            _signal_from_brighteyes_mcs,
+            {
+                "dataset": (None, False),
+                "time": (0, False),
+                "depth": (0, False),
+                "channel": (0, False),
+            },
+            reader_options,
+        ),
     },
     "processed": {
         ".ome.tif": lambda path, reader_options: _parse_and_call_io_function(
@@ -144,6 +156,7 @@ iter_index_mapping = {
     ".lif": None,
     ".bin": None,
     ".json": "C",
+    ".h5": None,
 }
 """This dictionary contains the mapping for the axis to iterate over
 when calculating phasor coordinates in the file.
@@ -391,6 +404,15 @@ def raw_file_reader(
         and 'frequency' in raw_data.attrs
     ):
         settings['frequency'] = raw_data.attrs['frequency']
+    if file_extension == ".h5" and hasattr(raw_data, "attrs"):
+        settings.update(raw_data.attrs.get("h5_selection", {}))
+        if "h5_dataset" in raw_data.attrs:
+            settings["h5_dataset"] = raw_data.attrs["h5_dataset"]
+            settings.setdefault("dataset", raw_data.attrs["h5_dataset"])
+        if "reference_lifetime_ns" in raw_data.attrs:
+            settings["reference_lifetime_ns"] = raw_data.attrs[
+                "reference_lifetime_ns"
+            ]
 
     layers = []
     iter_axis = iter_index_mapping[file_extension]
@@ -440,7 +462,9 @@ def raw_file_reader(
                 summed_signal = summed_signal.values
 
             # Only set channel for files that actually have channels (FLIM files)
-            if file_extension not in [".lsm", ".tif", ".tiff"]:
+            if file_extension == ".h5":
+                settings.setdefault('channel', 0)
+            elif file_extension not in [".lsm", ".tif", ".tiff"]:
                 settings['channel'] = 0
 
             # Determine number of histogram samples along selected axis
@@ -463,7 +487,44 @@ def raw_file_reader(
                 raw_data, axis=axis, harmonic=harmonics_to_use
             )
             pbr.update(n_steps)
-            channel_suffix = " Intensity Image"
+            if file_extension == ".h5" and settings.get("dataset") in {
+                "reference",
+                "irf",
+            }:
+                calibration_name = (
+                    "IRF" if settings.get("dataset") == "irf" else "Reference"
+                )
+                channel = settings.get("channel")
+                channel_suffix = (
+                    f" {calibration_name}"
+                    if channel is None
+                    else (
+                        f" {calibration_name}: "
+                        f"{_format_channel_label(channel)}"
+                    )
+                )
+            elif file_extension == ".h5" and {
+                "time",
+                "depth",
+            }.issubset(settings):
+                dataset_label = _format_h5_dataset_label(
+                    settings.get("dataset")
+                )
+                channel = settings.get("channel")
+                channel_text = (
+                    ""
+                    if channel is None
+                    else f", {_format_channel_label(channel)}"
+                )
+                channel_suffix = (
+                    " Intensity Image: "
+                    f"{dataset_label}, "
+                    f"Time {settings['time']}, "
+                    f"Z {settings['depth']}"
+                    f"{channel_text}"
+                )
+            else:
+                channel_suffix = " Intensity Image"
             add_kwargs = {
                 "name": f"{filename}{channel_suffix}",
                 "metadata": {
@@ -594,6 +655,40 @@ def raw_file_reader(
             layer[1]['blending'] = 'additive'
 
     return layers
+
+
+def _format_channel_label(channel):
+    """Return display label for a channel selection."""
+    return "Sum" if channel == "sum" else f"Channel {channel}"
+
+
+def _format_raw_view_label(name):
+    """Return display label for an MCS-H5 virtual raw channel."""
+    label = str(name).removeprefix("data_").replace("_", " ")
+    return f"Raw view: {label}"
+
+
+def _format_h5_dataset_label(path):
+    """Return display label for an MCS-H5 dataset path."""
+    if not path:
+        return "raw/spad"
+    path = str(path).strip("/")
+    parts = path.split("/")
+    if len(parts) >= 4 and parts[0] == "output" and parts[2] == "products":
+        return (
+            f"output/{parts[1]}"
+            if parts[3] == "image"
+            else f"output/{parts[1]}/products/{parts[3]}"
+        )
+    if len(parts) >= 4 and parts[:2] == ["output", "virtual_channels"]:
+        return _format_raw_view_label("/".join(parts[2:]))
+    if len(parts) >= 2 and parts[0] == "output":
+        name = parts[1]
+        if name.startswith(("data_channel_", "data_aux_channel_")):
+            return _format_raw_view_label(name)
+    if len(parts) >= 2 and parts[0] == "raw":
+        return _format_raw_view_label(path)
+    return path
 
 
 def raw_file_stack_reader(

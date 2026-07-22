@@ -452,9 +452,13 @@ def register_extra_colormaps() -> None:
         if name in AVAILABLE_COLORMAPS:
             continue
         colors = plt.get_cmap(name)(np.linspace(0, 1, 256))
-        AVAILABLE_COLORMAPS.add_colormap_if_missing(
-            NapariColormap(colors=colors, name=name, display_name=name)
+        colormap = NapariColormap(
+            colors=colors, name=name, display_name=name
         )
+        if hasattr(AVAILABLE_COLORMAPS, "add_colormap_if_missing"):
+            AVAILABLE_COLORMAPS.add_colormap_if_missing(colormap)
+        else:
+            AVAILABLE_COLORMAPS[name] = colormap
 
 
 def available_colormap_names() -> list:

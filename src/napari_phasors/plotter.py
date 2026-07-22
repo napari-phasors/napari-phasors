@@ -5567,22 +5567,42 @@ class PlotterWidget(QWidget):
         return None
 
     def _sync_frequency_inputs_from_metadata(self):
-        """Sync the frequency widget input fields with metadata."""
+        """Sync frequency and reference lifetime inputs with metadata."""
         layer_name = (
             self.image_layer_with_phasor_features_combobox.currentText()
         )
         if not layer_name:
             self._broadcast_frequency_value_across_tabs("")
+            self._set_calibration_lifetime_from_metadata("")
             return
 
         layer = self.viewer.layers[layer_name]
         settings = layer.metadata.get('settings', {})
         frequency = settings.get('frequency', None)
+        reference_lifetime = settings.get('reference_lifetime_ns', None)
 
         if frequency is not None:
             self._broadcast_frequency_value_across_tabs(str(frequency))
         else:
             self._broadcast_frequency_value_across_tabs("")
+
+        if reference_lifetime is not None:
+            self._set_calibration_lifetime_from_metadata(
+                str(reference_lifetime)
+            )
+        else:
+            self._set_calibration_lifetime_from_metadata("")
+
+    def _set_calibration_lifetime_from_metadata(self, value):
+        """Set Calibration tab reference lifetime without feedback loops."""
+        field = (
+            self.calibration_tab.calibration_widget.lifetime_line_edit_widget
+        )
+        field.blockSignals(True)
+        field.setText(value)
+        field.blockSignals(False)
+        if hasattr(self.calibration_tab, '_refresh_calibrate_button'):
+            self.calibration_tab._refresh_calibrate_button()
 
     def _broadcast_frequency_value_across_tabs(self, value):
         """

@@ -42,6 +42,7 @@ from superqt import QRangeSlider
 
 from ._reader import (
     _get_filename_extension,
+    _signal_from_brighteyes_mcs,
     napari_get_reader,
     raw_file_stack_reader,
 )
@@ -141,6 +142,7 @@ class PhasorTransform(PopoutWindowMixin, QWidget):
             ".ifli": IfliWidget,
             ".lif": LifWidget,
             ".json": JsonWidget,
+            ".h5": H5Widget,
         }
 
         # Unobtrusive, throttled check for a newer release (see module docs).
@@ -155,7 +157,7 @@ class PhasorTransform(PopoutWindowMixin, QWidget):
         supported_filter = (
             "All files (*.tif *.tiff *.ome.tif *.ome.tiff *.ptu *.fbd *.sdt "
             "*.lsm *.czi *.flif *.bh *.b&h *.bhz *.bin *.r64 *.ref *.ifli "
-            "*.lif *.json)"
+            "*.lif *.json *.h5)"
         )
         selected_files, _ = QFileDialog.getOpenFileNames(
             self,
@@ -246,6 +248,7 @@ class PhasorTransform(PopoutWindowMixin, QWidget):
             "*.ifli",
             "*.lif",
             "*.json",
+            "*.h5",
         )
 
         selected_entries, _ = QFileDialog.getOpenFileNames(
@@ -2397,6 +2400,231 @@ class JsonWidget(AdvancedOptionsWidget):
         """Callback whenever the calculate phasor button is clicked."""
         self._sync_json_reader_options()
         super()._on_click(path, reader_options, harmonics)
+
+
+class H5Widget(AdvancedOptionsWidget):
+    """Widget for BrightEyes-MCS HDF5 histogram files."""
+
+    def __init__(self, viewer, path):
+        """Initialize the widget."""
+        self.all_time = 1
+        self.all_depth = 1
+        self.h5_products = []
+        self._read_h5_products(path)
+        super().__init__(viewer, path)
+
+    def _read_h5_products(self, path):
+        """Read available BrightEyes-MCS datasets."""
+        try:
+            from brighteyes_mcs_reader import list_datasets
+
+            self.h5_products = [
+                {
+                    "label": info.label,
+                    "path": info.path,
+                    "shape": tuple(info.shape),
+                    "axes": tuple(info.axes),
+                    "default": info.is_default,
+                }
+                for info in list_datasets(path)
+                if info.kind == "data"
+            ]
+        except Exception:  # noqa: BLE001
+            pass
+
+        if not self.h5_products:
+            self.h5_products = [
+                {
+                    "label": "raw/spad",
+                    "path": "raw/spad",
+                    "shape": (),
+                    "axes": (),
+                    "default": False,
+                }
+            ]
+        self._set_h5_counts_from_product(0)
+
+    def _h5_axis_count(self, product, axis_names, fallback_index):
+        """Return count for one selectable HDF5 axis."""
+        shape = product.get("shape", ())
+        axes = [str(axis).strip().lower() for axis in product.get("axes", ())]
+        for index, axis in enumerate(axes):
+            if axis in axis_names and index < len(shape):
+                return max(1, int(shape[index]))
+        if axes:
+            return 1
+        if len(shape) > fallback_index:
+            return max(1, int(shape[fallback_index]))
+        return 1
+
+    def _set_h5_counts_from_product(self, index):
+        """Set time and z counts from selected product metadata."""
+        try:
+            product = self.h5_products[index]
+        except (IndexError, KeyError, TypeError):
+            product = {}
+        except Exception:  # noqa: BLE001
+            product = {}
+
+        self.all_time = self._h5_axis_count(
+            product, {"repetition", "rep", "r"}, 0
+        )
+        self.all_depth = self._h5_axis_count(product, {"z", "depth"}, 1)
+
+    def _update_h5_index_combo(self, combo, count):
+        """Refresh one zero-based HDF5 index selector."""
+        current = min(combo.currentIndex(), max(0, int(count) - 1))
+        combo.blockSignals(True)
+        combo.clear()
+        for index in range(max(1, int(count))):
+            combo.addItem(str(index))
+        combo.setCurrentIndex(current)
+        combo.blockSignals(False)
+
+    def initUI(self):
+        """Initialize the user interface."""
+        self.mainLayout = QVBoxLayout()
+        self.setLayout(self.mainLayout)
+
+        self.mainLayout.addWidget(self.canvas)
+        self._harmonic_widget()
+        self._h5_selection_widgets()
+
+        self.btn = QPushButton("Phasor Transform")
+        self.btn.clicked.connect(
+            lambda: self._on_click(
+                self.path, self.reader_options, self.harmonics
+            )
+        )
+        self.mainLayout.addWidget(self.btn)
+
+        self.btn_data_calibration = QPushButton(
+            "Phasor Transform Data + REF/IRF"
+        )
+        self.btn_data_calibration.clicked.connect(
+            lambda: self._on_click_data_and_calibration(
+                self.path, self.reader_options, self.harmonics
+            )
+        )
+        self.mainLayout.addWidget(self.btn_data_calibration)
+
+        self._sync_h5_reader_options()
+        self._update_signal_plot()
+
+    def _h5_selection_widgets(self):
+        """Add HDF5 output product, repetition, and z selectors."""
+        product_layout = QHBoxLayout()
+        product_layout.addWidget(QLabel("Output: "))
+        self.product_combo = QComboBox()
+        for product in self.h5_products:
+            self.product_combo.addItem(product["label"], product["path"])
+        self.product_combo.currentIndexChanged.connect(
+            self._on_h5_product_changed
+        )
+        product_layout.addWidget(self.product_combo)
+        product_layout.addStretch()
+        self.mainLayout.addLayout(product_layout)
+
+        self.time_combo = self._add_h5_index_combo(
+            "Time",
+            self.all_time,
+        )
+        self.depth_combo = self._add_h5_index_combo("Z", self.all_depth)
+
+        calibration_layout = QHBoxLayout()
+        self.reference_checkbox = QCheckBox("Acquire calibration")
+        self.reference_checkbox.stateChanged.connect(
+            self._on_h5_selection_changed
+        )
+        calibration_layout.addWidget(self.reference_checkbox)
+
+        calibration_layout.addWidget(QLabel("Use: "))
+        self.calibration_combo = QComboBox()
+        self.calibration_combo.addItems(["REF", "IRF"])
+        self.calibration_combo.currentIndexChanged.connect(
+            self._on_h5_selection_changed
+        )
+        calibration_layout.addWidget(self.calibration_combo)
+        calibration_layout.addStretch()
+        self.mainLayout.addLayout(calibration_layout)
+
+    def _add_h5_index_combo(self, label, count):
+        """Add one zero-based HDF5 index selector."""
+        layout = QHBoxLayout()
+        layout.addWidget(QLabel(f"{label}: "))
+
+        combo = QComboBox()
+        for index in range(max(1, int(count))):
+            combo.addItem(str(index))
+        combo.currentIndexChanged.connect(self._on_h5_selection_changed)
+
+        layout.addWidget(combo)
+        layout.addStretch()
+        self.mainLayout.addLayout(layout)
+        return combo
+
+    def _sync_h5_reader_options(self):
+        """Sync HDF5 selector state into reader options."""
+        calibration = self.reference_checkbox.isChecked()
+        self.reader_options["dataset"] = (
+            "irf"
+            if calibration and self.calibration_combo.currentText() == "IRF"
+            else (
+                "reference"
+                if calibration
+                else self.product_combo.currentData() or None
+            )
+        )
+        self.reader_options["time"] = self.time_combo.currentIndex()
+        self.reader_options["depth"] = self.depth_combo.currentIndex()
+        self.reader_options["channel"] = 0
+        self.time_combo.setEnabled(not calibration)
+        self.depth_combo.setEnabled(not calibration)
+        self.product_combo.setEnabled(not calibration)
+
+    def _on_h5_product_changed(self, index):
+        """Callback whenever HDF5 output product changes."""
+        self._set_h5_counts_from_product(index)
+        self._update_h5_index_combo(self.time_combo, self.all_time)
+        self._update_h5_index_combo(self.depth_combo, self.all_depth)
+        self._on_h5_selection_changed(index)
+
+    def _on_h5_selection_changed(self, index):
+        """Callback whenever HDF5 selection changes."""
+        self._sync_h5_reader_options()
+        self._update_signal_plot()
+
+    def _get_signal_data(self):
+        """Get selected HDF5 histogram signal."""
+        try:
+            return _signal_from_brighteyes_mcs(
+                self.path,
+                **self.reader_options.copy(),
+            )
+        except Exception as e:  # noqa: BLE001
+            show_error(f"Error reading HDF5 signal: {str(e)}")
+            return None
+
+    def _on_click(self, path, reader_options, harmonics):
+        """Callback whenever the calculate phasor button is clicked."""
+        self._sync_h5_reader_options()
+        super()._on_click(path, reader_options, harmonics)
+
+    def _on_click_data_and_calibration(self, path, reader_options, harmonics):
+        """Import selected HDF5 data and matching REF or IRF."""
+        self._sync_h5_reader_options()
+
+        data_options = reader_options.copy()
+        data_options["dataset"] = self.product_combo.currentData() or None
+        super()._on_click(path, data_options, harmonics)
+
+        calibration_options = reader_options.copy()
+        calibration_options["dataset"] = (
+            "irf"
+            if self.calibration_combo.currentText() == "IRF"
+            else "reference"
+        )
+        super()._on_click(path, calibration_options, harmonics)
 
 
 class ProcessedOnlyWidget(AdvancedOptionsWidget):
