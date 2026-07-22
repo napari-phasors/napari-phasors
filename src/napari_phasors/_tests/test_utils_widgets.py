@@ -1,5 +1,6 @@
 import csv
 
+import matplotlib.pyplot as plt
 import numpy as np
 
 from napari_phasors._utils import (
@@ -1509,7 +1510,6 @@ def test_available_colormap_names_includes_extras():
 
 
 def test_colormap_legend_proxy_and_handler(qtbot):
-    import matplotlib.pyplot as plt
     from matplotlib.transforms import IdentityTransform
 
     from napari_phasors._utils import (
