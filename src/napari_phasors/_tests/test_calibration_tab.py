@@ -236,8 +236,8 @@ def test_calibrate_layer_success(make_viewer_model, qtbot):
         mean_original,
         g_reshaped,
         s_reshaped,
-        frequency,
-        lifetime,
+        frequency=frequency,
+        lifetime=lifetime,
     )
     _, real_center, imag_center = phasor_center(
         mean_original, g_reshaped, s_reshaped
