@@ -531,9 +531,13 @@ class FretWidget(QWidget):
                 ] = {'real': real, 'imag': imag}
 
                 layer_name = self.parent_widget.get_primary_layer_name()
-                if layer_name and (
-                    not hasattr(self, '_updating_settings')
-                    or not self._updating_settings
+                if (
+                    layer_name
+                    and layer_name in self.viewer.layers
+                    and (
+                        not hasattr(self, '_updating_settings')
+                        or not self._updating_settings
+                    )
                 ):
                     current_layer = self.viewer.layers[layer_name]
                     if 'settings' not in current_layer.metadata:
@@ -1307,7 +1311,7 @@ class FretWidget(QWidget):
             return
 
         layer_name = self.parent_widget.get_primary_layer_name()
-        if not layer_name:
+        if not layer_name or layer_name not in self.viewer.layers:
             return
 
         layer = self.viewer.layers[layer_name]
@@ -1328,9 +1332,6 @@ class FretWidget(QWidget):
     def _restore_fret_settings_from_metadata(self):
         """Restore all FRET settings from the current layer's metadata."""
         layer_name = self.parent_widget.get_primary_layer_name()
-        # The combobox can still hold a name whose layer has already been
-        # removed (a deferred tab update queued before the removal), so guard
-        # the lookup as the components tab does.
         if not layer_name or layer_name not in self.viewer.layers:
             self.background_positions_by_harmonic = {}
             return
@@ -1475,7 +1476,7 @@ class FretWidget(QWidget):
     def _recreate_fret_from_metadata(self):
         """Recreate FRET analysis from metadata if it was previously performed."""
         layer_name = self.parent_widget.get_primary_layer_name()
-        if layer_name:
+        if layer_name and layer_name in self.viewer.layers:
             layer = self.viewer.layers[layer_name]
             if (
                 'settings' in layer.metadata

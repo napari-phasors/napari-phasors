@@ -1000,7 +1000,7 @@ class PhasorMappingWidget(QWidget):
         none yet.
         """
         layer_name = self.parent_widget.get_primary_layer_name()
-        if not layer_name:
+        if not layer_name or layer_name not in self.viewer.layers:
             return None
         layer = self.viewer.layers[layer_name]
         return self._get_phasor_mapping_settings(layer, create=create)
@@ -1283,7 +1283,7 @@ class PhasorMappingWidget(QWidget):
             return
 
         layer_name = self.parent_widget.get_primary_layer_name()
-        if layer_name:
+        if layer_name and layer_name in self.viewer.layers:
             layer = self.viewer.layers[layer_name]
             mapping_settings = self._get_phasor_mapping_settings(
                 layer, create=True
@@ -1304,7 +1304,7 @@ class PhasorMappingWidget(QWidget):
     def _restore_lifetime_settings_from_metadata(self):
         """Restore all lifetime settings from the current layer's metadata."""
         layer_name = self.parent_widget.get_primary_layer_name()
-        if not layer_name:
+        if not layer_name or layer_name not in self.viewer.layers:
             return
 
         layer = self.viewer.layers[layer_name]
@@ -2113,7 +2113,7 @@ class PhasorMappingWidget(QWidget):
     def _restore_lifetime_range_from_metadata(self):
         """Restore lifetime range from metadata after calculation."""
         layer_name = self.parent_widget.get_primary_layer_name()
-        if not layer_name:
+        if not layer_name or layer_name not in self.viewer.layers:
             return
 
         layer = self.viewer.layers[layer_name]

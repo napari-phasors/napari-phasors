@@ -5915,7 +5915,7 @@ class PlotterWidget(QWidget):
         layer_name = (
             self.image_layer_with_phasor_features_combobox.currentText()
         )
-        if layer_name == "":
+        if layer_name == "" or layer_name not in self.viewer.layers:
             return None
         layer = self.viewer.layers[layer_name]
         if "settings" in layer.metadata:
@@ -5933,7 +5933,7 @@ class PlotterWidget(QWidget):
         layer_name = (
             self.image_layer_with_phasor_features_combobox.currentText()
         )
-        if not layer_name:
+        if not layer_name or layer_name not in self.viewer.layers:
             self._broadcast_frequency_value_across_tabs("")
             return
 
@@ -5962,7 +5962,7 @@ class PlotterWidget(QWidget):
                 layer_name = (
                     self.image_layer_with_phasor_features_combobox.currentText()
                 )
-                if layer_name:
+                if layer_name and layer_name in self.viewer.layers:
                     layer = self.viewer.layers[layer_name]
                     update_frequency_in_metadata(layer, freq_val)
         except (ValueError, TypeError):

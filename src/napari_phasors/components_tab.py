@@ -1168,7 +1168,7 @@ class ComponentsWidget(QWidget):
     def _update_components_setting_in_metadata(self, key_path, value):
         """Update a specific component setting in the current layer's metadata."""
         layer_name = self.parent_widget.get_primary_layer_name()
-        if not layer_name:
+        if not layer_name or layer_name not in self.viewer.layers:
             return
 
         layer = self.viewer.layers[layer_name]
@@ -1197,7 +1197,7 @@ class ComponentsWidget(QWidget):
 
         layer_name = self.parent_widget.get_primary_layer_name()
 
-        if not layer_name:
+        if not layer_name or layer_name not in self.viewer.layers:
             return
 
         layer = self.viewer.layers[layer_name]
@@ -1339,7 +1339,7 @@ class ComponentsWidget(QWidget):
 
         layer_name = self.parent_widget.get_primary_layer_name()
 
-        if not layer_name:
+        if not layer_name or layer_name not in self.viewer.layers:
             return
 
         layer = self.viewer.layers[layer_name]
@@ -4455,7 +4455,7 @@ class ComponentsWidget(QWidget):
         self._update_lifetime_inputs_visibility()
 
         layer_name = self.parent_widget.get_primary_layer_name()
-        if layer_name:
+        if layer_name and layer_name in self.viewer.layers:
             self._reconnect_existing_fraction_layers(layer_name)
 
             self._restore_components_ui_only_from_metadata()

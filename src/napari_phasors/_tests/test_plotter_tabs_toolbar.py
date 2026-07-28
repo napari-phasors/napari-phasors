@@ -700,3 +700,49 @@ def test_phasor_plotter_visibility_methods_integration_with_tab_changes(
             assert not call[0][0]
         # The last FRET call should be True (show FRET)
         assert calls_fret[-1][0][0]
+
+
+def test_deferred_tab_update_after_primary_layer_removed(make_viewer_model):
+    """Deferred tab updates must survive the primary layer being removed.
+
+    The FRET and Phasor Mapping tabs resolve their layer by name. Once the
+    plotter is closed its viewer connections are gone, so removing a layer
+    leaves the combobox reporting a stale name while the layer is no longer
+    in ``viewer.layers``. A pending update for a non-visible tab then runs
+    against that stale name and used to raise ``KeyError``.
+    """
+    viewer = make_viewer_model()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    plotter = PlotterWidget(viewer)
+
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [intensity_image_layer.name]
+    )
+    plotter._process_layer_selection_change()
+
+    # Keep the analysis tabs non-visible so their updates stay deferred.
+    plotter.tab_widget.setCurrentWidget(plotter.settings_tab)
+    plotter.close()
+    viewer.layers.remove(intensity_image_layer)
+
+    # The stale name is what makes this a regression test: the guards, not
+    # an empty selection, are what keep the lookups from raising.
+    stale_name = plotter.get_primary_layer_name()
+    assert stale_name == intensity_image_layer.name
+    assert stale_name not in viewer.layers
+    assert plotter.fret_tab._needs_update
+    assert plotter.phasor_mapping_tab._needs_update
+
+    plotter.tab_widget.setCurrentWidget(plotter.fret_tab)
+    plotter.tab_widget.setCurrentWidget(plotter.phasor_mapping_tab)
+
+    # The individual guarded lookups, exercised directly.
+    plotter.fret_tab._update_fret_setting_in_metadata('donor_lifetime', 1.0)
+    plotter.fret_tab._restore_fret_settings_from_metadata()
+
+    mapping_tab = plotter.phasor_mapping_tab
+    assert mapping_tab._get_current_layer_mapping_settings() is None
+    assert mapping_tab._get_current_layer_mapping_settings(create=True) is None
+    mapping_tab._restore_lifetime_settings_from_metadata()
+    mapping_tab._restore_lifetime_range_from_metadata()
