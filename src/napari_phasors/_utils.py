@@ -5,6 +5,7 @@ This module contains utility functions used by other modules.
 
 import os
 import warnings
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
@@ -4285,6 +4286,394 @@ class FileOrderDialog(QDialog):
         except ValueError:
             return 1.0
         return value if value > 0 else 1.0
+
+
+class TileLayoutDialog(QDialog):
+    """Dialog to describe how a set of files tiles a larger image.
+
+    The layout can come from three sources, offered in order of reliability:
+    stage positions recorded in the files, indices encoded in the file names,
+    or a manual specification. The manual mode is the one that covers
+    partially filled mosaics, where each row holds a different number of
+    tiles (``5, 7, 9, 9, 7, 5`` for a roughly circular sample, say); short
+    rows are positioned according to the chosen alignment.
+
+    A live map of the resulting arrangement is drawn so an incorrect
+    traversal order or start corner is caught before the tiles are read.
+
+    Parameters
+    ----------
+    file_paths : list of str
+        Tile paths, in acquisition order.
+    parent : QWidget, optional
+        Parent widget.
+    tile_shape : tuple of int, optional
+        ``(height, width)`` of a single tile, if already known.
+    """
+
+    def __init__(self, file_paths, parent=None, tile_shape=None):
+        """Build the layout controls and the arrangement preview."""
+        super().__init__(parent)
+        self.setWindowTitle("Tile Layout")
+        self.setMinimumWidth(620)
+
+        self._paths = list(file_paths)
+        self._tile_shape = tuple(tile_shape) if tile_shape else (0, 0)
+        self._geometry = None
+
+        layout = QVBoxLayout(self)
+
+        info = QLabel(
+            f"{len(self._paths)} file(s) selected. Describe how they tile "
+            "the image. Rows may hold different numbers of tiles."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        source_layout = QHBoxLayout()
+        source_layout.addWidget(QLabel("Layout from: "))
+        self.source_combo = QComboBox()
+        self.source_combo.addItems(
+            ["Rows (manual)", "File names", "Stage positions in files"]
+        )
+        self.source_combo.currentIndexChanged.connect(self._on_source_changed)
+        source_layout.addWidget(self.source_combo)
+        source_layout.addStretch()
+        layout.addLayout(source_layout)
+
+        # --- Manual rows -------------------------------------------------
+        self.rows_widget = QWidget()
+        rows_layout = QVBoxLayout(self.rows_widget)
+        rows_layout.setContentsMargins(0, 0, 0, 0)
+
+        spec_layout = QHBoxLayout()
+        spec_layout.addWidget(QLabel("Tiles per row: "))
+        self.rows_edit = QLineEdit()
+        self.rows_edit.setPlaceholderText("e.g. 5, 7, 9, 9, 7, 5  or  3x9")
+        self.rows_edit.setText(self._default_rows_spec())
+        self.rows_edit.setToolTip(
+            "Number of tiles in each row, separated by commas. "
+            "'3x9' is shorthand for three rows of nine."
+        )
+        self.rows_edit.editingFinished.connect(self._refresh)
+        spec_layout.addWidget(self.rows_edit)
+        rows_layout.addLayout(spec_layout)
+
+        options_layout = QHBoxLayout()
+        options_layout.addWidget(QLabel("Order: "))
+        self.traversal_combo = QComboBox()
+        self.traversal_combo.addItems(["Raster", "Snake"])
+        self.traversal_combo.setToolTip(
+            "Raster restarts each row on the same side. Snake alternates "
+            "direction, as most stage controllers do."
+        )
+        self.traversal_combo.currentIndexChanged.connect(self._refresh)
+        options_layout.addWidget(self.traversal_combo)
+
+        options_layout.addWidget(QLabel("Start: "))
+        self.corner_combo = QComboBox()
+        self.corner_combo.addItems(
+            ["Top-left", "Top-right", "Bottom-left", "Bottom-right"]
+        )
+        self.corner_combo.currentIndexChanged.connect(self._refresh)
+        options_layout.addWidget(self.corner_combo)
+
+        options_layout.addWidget(QLabel("Short rows: "))
+        self.alignment_combo = QComboBox()
+        self.alignment_combo.addItems(["Center", "Left", "Right"])
+        self.alignment_combo.setToolTip(
+            "Where rows with fewer tiles sit relative to the longest row."
+        )
+        self.alignment_combo.currentIndexChanged.connect(self._refresh)
+        options_layout.addWidget(self.alignment_combo)
+        options_layout.addStretch()
+        rows_layout.addLayout(options_layout)
+        layout.addWidget(self.rows_widget)
+
+        # --- File name pattern -------------------------------------------
+        self.pattern_widget = QWidget()
+        pattern_layout = QHBoxLayout(self.pattern_widget)
+        pattern_layout.setContentsMargins(0, 0, 0, 0)
+        pattern_layout.addWidget(QLabel("Pattern: "))
+        self.pattern_edit = QLineEdit()
+        self.pattern_edit.setText(r"(?P<row>\d+)\D+(?P<col>\d+)")
+        self.pattern_edit.setToolTip(
+            "Regular expression matched against each file name. Must define "
+            "'row' and 'col' groups, or a single 'index' group."
+        )
+        self.pattern_edit.editingFinished.connect(self._refresh)
+        pattern_layout.addWidget(self.pattern_edit)
+        layout.addWidget(self.pattern_widget)
+        self.pattern_widget.hide()
+
+        # --- Overlap ------------------------------------------------------
+        overlap_layout = QHBoxLayout()
+        overlap_layout.addWidget(QLabel("Overlap Y (%): "))
+        self.overlap_y_edit = QLineEdit("10")
+        self.overlap_y_edit.setFixedWidth(60)
+        self.overlap_y_edit.setValidator(QDoubleValidator(0.0, 90.0, 3))
+        self.overlap_y_edit.editingFinished.connect(self._refresh)
+        overlap_layout.addWidget(self.overlap_y_edit)
+
+        overlap_layout.addWidget(QLabel("Overlap X (%): "))
+        self.overlap_x_edit = QLineEdit("10")
+        self.overlap_x_edit.setFixedWidth(60)
+        self.overlap_x_edit.setValidator(QDoubleValidator(0.0, 90.0, 3))
+        self.overlap_x_edit.editingFinished.connect(self._refresh)
+        overlap_layout.addWidget(self.overlap_x_edit)
+
+        overlap_layout.addWidget(QLabel("Blending: "))
+        self.blend_combo = QComboBox()
+        self.blend_combo.addItems(["Feather", "Average", "Sum counts"])
+        self.blend_combo.setToolTip(
+            "How intensity is combined where tiles overlap. Feather "
+            "cross-fades for a seamless image; sum keeps the total photon "
+            "counts. Phasor coordinates are the same either way."
+        )
+        overlap_layout.addWidget(self.blend_combo)
+        overlap_layout.addStretch()
+        layout.addLayout(overlap_layout)
+
+        note = QLabel(
+            "The overlap can be re-tuned, or estimated from the data, after "
+            "the tiles have been read."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color: grey;")
+        layout.addWidget(note)
+
+        # --- Preview ------------------------------------------------------
+        self.preview = TileLayoutPreview()
+        layout.addWidget(self.preview)
+
+        self.status_label = QLabel("")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        self.ok_btn = QPushButton("OK")
+        self.ok_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(self.ok_btn)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(self.cancel_btn)
+        layout.addLayout(btn_layout)
+
+        self._refresh()
+
+    def _default_rows_spec(self):
+        """Guess a square-ish arrangement to pre-fill the row specification."""
+        count = len(self._paths)
+        if count < 1:
+            return ""
+        side = int(round(count**0.5))
+        for candidate in range(side, 0, -1):
+            if count % candidate == 0:
+                rows, columns = candidate, count // candidate
+                return f"{rows}x{columns}"
+        return str(count)
+
+    def _on_source_changed(self, index):
+        """Show the controls belonging to the selected layout source."""
+        self.rows_widget.setVisible(index == 0)
+        self.pattern_widget.setVisible(index == 1)
+        self._refresh()
+
+    def _overlaps(self):
+        """Return the overlap fractions currently entered."""
+
+        def _fraction(edit):
+            try:
+                return min(max(float(edit.text()) / 100.0, 0.0), 0.9)
+            except ValueError:
+                return 0.0
+
+        return _fraction(self.overlap_y_edit), _fraction(self.overlap_x_edit)
+
+    def _blend_mode(self):
+        """Return the blend mode key for the current combobox selection."""
+        return ("feather", "average", "sum")[self.blend_combo.currentIndex()]
+
+    def _build_geometry(self):
+        """Build the geometry for the current settings, or raise ValueError."""
+        from ._stitching import (
+            layout_from_filenames,
+            layout_from_rows,
+            layout_from_stage_positions,
+        )
+
+        overlap_y, overlap_x = self._overlaps()
+        blend_mode = self._blend_mode()
+        source = self.source_combo.currentIndex()
+
+        if source == 2:
+            geometry = layout_from_stage_positions(
+                self._paths,
+                tile_shape=self._tile_shape,
+                blend_mode=blend_mode,
+            )
+            if geometry is None:
+                raise ValueError(
+                    "Stage positions could not be read from every file. "
+                    "Only OME-TIFF files record them; use another source."
+                )
+            return geometry
+
+        row_kwargs = {
+            "tiles_per_row": self.rows_edit.text(),
+            "traversal": ("raster", "snake")[
+                self.traversal_combo.currentIndex()
+            ],
+            "start_corner": (
+                "top-left",
+                "top-right",
+                "bottom-left",
+                "bottom-right",
+            )[self.corner_combo.currentIndex()],
+            "alignment": ("center", "left", "right")[
+                self.alignment_combo.currentIndex()
+            ],
+        }
+
+        if source == 1:
+            return layout_from_filenames(
+                self._paths,
+                pattern=self.pattern_edit.text(),
+                tile_shape=self._tile_shape,
+                overlap_y=overlap_y,
+                overlap_x=overlap_x,
+                blend_mode=blend_mode,
+                **row_kwargs,
+            )
+
+        return layout_from_rows(
+            self._paths,
+            tile_shape=self._tile_shape,
+            overlap_y=overlap_y,
+            overlap_x=overlap_x,
+            blend_mode=blend_mode,
+            **row_kwargs,
+        )
+
+    def _refresh(self):
+        """Rebuild the geometry and redraw the preview."""
+        try:
+            self._geometry = self._build_geometry()
+        except ValueError as error:
+            self._geometry = None
+            self.preview.set_geometry(None)
+            self.status_label.setText(str(error))
+            self.status_label.setStyleSheet("color: #d97b7b;")
+            self.ok_btn.setEnabled(False)
+            return
+
+        self.preview.set_geometry(self._geometry)
+        rows = len({placement.row for placement in self._geometry.placements})
+        columns = len(
+            {placement.col for placement in self._geometry.placements}
+        )
+        message = (
+            f"{len(self._geometry.placements)} tile(s) in {rows} row(s), "
+            f"{columns} column position(s)."
+        )
+        if self._tile_shape[0] and self._tile_shape[1]:
+            canvas = self._geometry.canvas_shape()
+            message += f" Stitched size: {canvas[0]} x {canvas[1]} px."
+        self.status_label.setText(message)
+        self.status_label.setStyleSheet("color: grey;")
+        self.ok_btn.setEnabled(True)
+
+    def get_geometry(self):
+        """Return the :class:`~napari_phasors._stitching.TileGeometry` built.
+
+        Returns
+        -------
+        TileGeometry or None
+            ``None`` if the current settings are invalid.
+        """
+        return self._geometry
+
+    def get_ordered_paths(self):
+        """Return the tile paths in placement order."""
+        if self._geometry is None:
+            return list(self._paths)
+        return self._geometry.paths
+
+
+class TileLayoutPreview(QWidget):
+    """Small map of a mosaic layout, drawn from a ``TileGeometry``.
+
+    Each tile is drawn as a rectangle at its computed position and labelled
+    with its position in the acquisition order, so an incorrect traversal or
+    start corner is obvious at a glance.
+    """
+
+    def __init__(self, parent=None):
+        """Create an empty preview."""
+        super().__init__(parent)
+        self._geometry = None
+        self.setMinimumHeight(200)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+    def set_geometry(self, geometry):
+        """Set the geometry to draw, or ``None`` to clear the preview."""
+        self._geometry = geometry
+        self.update()
+
+    def paintEvent(self, event):
+        """Draw the tile rectangles scaled to fit the widget."""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        if self._geometry is None or not self._geometry.placements:
+            painter.setPen(QPen(QColor("#8a8a8a")))
+            painter.drawText(
+                self.rect(), Qt.AlignCenter, "No layout to preview"
+            )
+            painter.end()
+            return
+
+        geometry = self._geometry
+        # The tile size is unknown until the files are read, so preview with
+        # a nominal tile and let the overlap set the spacing.
+        height, width = geometry.tile_shape
+        if not height or not width:
+            height = width = 100
+            geometry = replace(geometry, tile_shape=(height, width))
+
+        origins = geometry.origins()
+        canvas_height, canvas_width = geometry.canvas_shape()
+        if not canvas_height or not canvas_width:
+            painter.end()
+            return
+
+        margin = 10
+        scale = min(
+            (self.width() - 2 * margin) / canvas_width,
+            (self.height() - 2 * margin) / canvas_height,
+        )
+        offset_x = (self.width() - canvas_width * scale) / 2
+        offset_y = (self.height() - canvas_height * scale) / 2
+
+        font = painter.font()
+        font.setPointSizeF(max(6.0, min(11.0, height * scale / 3.5)))
+        painter.setFont(font)
+
+        for index, (origin_y, origin_x) in enumerate(origins):
+            rect = QRect(
+                int(offset_x + origin_x * scale),
+                int(offset_y + origin_y * scale),
+                max(1, int(width * scale)),
+                max(1, int(height * scale)),
+            )
+            painter.setBrush(QColor(90, 140, 200, 60))
+            painter.setPen(QPen(QColor("#5a8cc8"), 1))
+            painter.drawRect(rect)
+            painter.setPen(QPen(QColor("#c7c7c7")))
+            painter.drawText(rect, Qt.AlignCenter, str(index + 1))
+
+        painter.end()
 
 
 def read_ome_tiff_settings(file_path):

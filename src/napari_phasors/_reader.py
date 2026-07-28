@@ -10,6 +10,7 @@ import itertools
 import json
 import os
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from typing import Any, Union
 
 import numpy as np
@@ -20,6 +21,7 @@ from napari.utils.colormaps.colormap_utils import CYMRGB, MAGENTA_GREEN
 from napari.utils.notifications import show_error
 from phasorpy.phasor import phasor_from_signal
 
+from ._stitching import blend_phasor_tiles
 from ._utils import show_activity_progress
 
 extension_mapping = {
@@ -756,6 +758,309 @@ def raw_file_stack_reader(
         stacked_layers.append((stacked_mean, add_kwargs))
 
     return stacked_layers
+
+
+class TileSet:
+    """Per-tile phasor coordinates of a mosaic, cached for re-stitching.
+
+    Reading and phasor-transforming the tiles is the expensive part of
+    importing a mosaic; placing and blending them is comparatively cheap.
+    Holding the transformed tiles in a :class:`TileSet` lets the overlap be
+    re-tuned interactively, since :meth:`stitch` can be called any number of
+    times without touching the files again.
+
+    Memory is ``n_tiles * (1 + 2 * n_harmonics)`` single precision planes,
+    which for FLIM data is typically one to two orders of magnitude less than
+    the raw signal the tiles were computed from.
+
+    Parameters
+    ----------
+    paths : list of str
+        Tile paths, in placement order.
+    tile_shape : tuple of int
+        ``(height, width)`` shared by every tile.
+    tiles : list of list of tuple
+        ``tiles[channel][index]`` is the ``(mean, G, S)`` triple of one tile.
+    templates : list of dict
+        Per-channel ``add_kwargs`` taken from the first tile, used as the
+        basis for the stitched layer's metadata.
+    """
+
+    def __init__(
+        self, paths, tile_shape, tiles, templates, summed_signals=None
+    ):
+        self.paths = list(paths)
+        self.tile_shape = tuple(tile_shape)
+        self.tiles = tiles
+        self.templates = templates
+        self.summed_signals = summed_signals or [None] * len(tiles)
+
+    @property
+    def n_channels(self):
+        """Number of channels each tile produced."""
+        return len(self.tiles)
+
+    @property
+    def n_tiles(self):
+        """Number of tiles in the mosaic."""
+        return len(self.paths)
+
+    def means(self, channel=0):
+        """Return the mean intensity image of every tile for *channel*."""
+        return [tile[0] for tile in self.tiles[channel]]
+
+    def nbytes(self):
+        """Return the total size of the cached arrays, in bytes."""
+        return sum(
+            array.nbytes
+            for channel in self.tiles
+            for tile in channel
+            for array in tile
+        )
+
+    def stitch(self, geometry, progress=None):
+        """Blend the cached tiles into napari layer-data tuples.
+
+        Parameters
+        ----------
+        geometry : TileGeometry
+            Mosaic layout. Its ``tile_shape`` is taken from this tile set, so
+            only the placements, overlap and blend mode need to be set.
+        progress : callable, optional
+            Called with ``(channel, tile_index)`` as blending proceeds.
+
+        Returns
+        -------
+        list of tuple
+            One ``(data, add_kwargs)`` tuple per channel.
+        """
+        geometry = replace(geometry, tile_shape=self.tile_shape)
+
+        layers = []
+        for channel in range(self.n_channels):
+            mean, real, imag, coverage = blend_phasor_tiles(
+                self.tiles[channel],
+                geometry,
+                progress=(
+                    None
+                    if progress is None
+                    else lambda index, ch=channel: progress(ch, index)
+                ),
+            )
+
+            template = self.templates[channel]
+            template_meta = template.get("metadata", {})
+
+            summed_signal = self.summed_signals[channel]
+            metadata = {
+                "original_mean": mean.copy(),
+                "settings": template_meta.get("settings", {}),
+                "summed_signal": (
+                    summed_signal.tolist()
+                    if summed_signal is not None
+                    else template_meta.get("summed_signal")
+                ),
+                "G": real,
+                "S": imag,
+                "G_original": real.copy(),
+                "S_original": imag.copy(),
+                "harmonics": template_meta.get("harmonics"),
+                "tile_files": [os.path.basename(p) for p in self.paths],
+                "tile_geometry": geometry.to_dict(),
+                "tile_coverage": coverage,
+            }
+
+            directory = os.path.basename(os.path.dirname(self.paths[0]))
+            channel_suffix = template["name"].split("Intensity Image")[-1]
+            name = (
+                f"{directory or 'mosaic'} Mosaic Intensity Image"
+                f"{channel_suffix}"
+            )
+
+            add_kwargs = {"name": name, "metadata": metadata}
+            for key in ("colormap", "blending"):
+                if key in template:
+                    add_kwargs[key] = template[key]
+            layers.append((mean, add_kwargs))
+
+        return layers
+
+
+def read_tile_phasors(
+    paths: list[str],
+    reader_options: dict | None = None,
+    harmonics: Union[int, Sequence[int], None] = None,
+) -> "TileSet":
+    """Read every tile of a mosaic and phasor-transform it.
+
+    Tiles are read one at a time and the raw signal is released as soon as
+    its phasor coordinates have been computed, so peak memory stays at one
+    raw tile rather than the whole mosaic.
+
+    Parameters
+    ----------
+    paths : list of str
+        Tile file paths, in placement order.
+    reader_options : dict, optional
+        Reader options forwarded to each single-file reader call.
+    harmonics : int or sequence of int, optional
+        Harmonics to compute.
+
+    Returns
+    -------
+    TileSet
+        Cached phasor coordinates, ready to be stitched.
+
+    Raises
+    ------
+    ValueError
+        If no paths are given, if the files do not share one extension, if a
+        tile fails to produce layers, or if the tiles disagree on shape or
+        channel count.
+    """
+    if not paths:
+        raise ValueError("No files provided for stitching.")
+
+    extensions = {_get_filename_extension(path)[1] for path in paths}
+    if len(extensions) > 1:
+        raise ValueError(
+            f"All tiles must share the same extension, got: {extensions}"
+        )
+
+    tiles: list[list[tuple]] = []
+    templates: list[dict] = []
+    summed_signals: list = []
+    tile_shape = None
+    n_channels = None
+    frequencies = set()
+
+    pbr = show_activity_progress(
+        desc=f"Reading {len(paths)} tile(s)...", total=len(paths)
+    )
+    try:
+        for index, path in enumerate(paths):
+            pbr.set_description(
+                f"Tile {index + 1}/{len(paths)}: {os.path.basename(path)}"
+            )
+            # Dispatch per file rather than calling the raw reader directly,
+            # so mosaics of already-transformed files (OME-TIFF, SimFCS,
+            # ISS) stitch just as well as mosaics of raw acquisitions.
+            reader = napari_get_reader(
+                path, reader_options=reader_options, harmonics=harmonics
+            )
+            if reader is None:
+                raise ValueError(f"No reader available for {path}.")
+            layers = reader(path)
+            if not layers:
+                raise ValueError(f"No data could be read from {path}.")
+
+            if n_channels is None:
+                n_channels = len(layers)
+                tiles = [[] for _ in range(n_channels)]
+                templates = [dict(layer[1]) for layer in layers]
+                summed_signals = [None] * n_channels
+            elif len(layers) != n_channels:
+                raise ValueError(
+                    f"{os.path.basename(path)} produced {len(layers)} "
+                    f"channel(s) but the first tile produced {n_channels}. "
+                    "All tiles must have the same number of channels."
+                )
+
+            for channel, (mean, add_kwargs) in enumerate(layers):
+                mean = np.asarray(mean, dtype=np.float32)
+                if mean.ndim != 2:
+                    raise ValueError(
+                        f"Tile {os.path.basename(path)} is "
+                        f"{mean.ndim}D; stitching expects 2D tiles."
+                    )
+                if tile_shape is None:
+                    tile_shape = mean.shape
+                elif mean.shape != tile_shape:
+                    raise ValueError(
+                        f"Shape mismatch: {os.path.basename(path)} has shape "
+                        f"{mean.shape} but expected {tile_shape}."
+                    )
+
+                metadata = add_kwargs["metadata"]
+                real = np.asarray(metadata["G"], dtype=np.float32)
+                imag = np.asarray(metadata["S"], dtype=np.float32)
+                if real.ndim == 2:
+                    real = real[np.newaxis]
+                    imag = imag[np.newaxis]
+                tiles[channel].append((mean, real, imag))
+
+                frequency = metadata.get("settings", {}).get("frequency")
+                if frequency is not None:
+                    frequencies.add(round(float(frequency), 6))
+
+                # The mosaic's signal profile is the sum of its tiles', which
+                # keeps the signal preview and harmonic limits meaningful.
+                signal = metadata.get("summed_signal")
+                if signal is not None:
+                    signal = np.asarray(signal, dtype=np.float64)
+                    accumulated = summed_signals[channel]
+                    if accumulated is None:
+                        summed_signals[channel] = signal
+                    elif accumulated.shape == signal.shape:
+                        summed_signals[channel] = accumulated + signal
+
+            pbr.update(1)
+    finally:
+        pbr.close()
+
+    if len(frequencies) > 1:
+        show_error(
+            "Tiles were acquired at different laser frequencies "
+            f"({sorted(frequencies)}); the stitched phasor is not "
+            "meaningful. Import them separately."
+        )
+
+    return TileSet(paths, tile_shape, tiles, templates, summed_signals)
+
+
+def raw_file_tile_reader(
+    paths: list[str],
+    geometry,
+    reader_options: dict | None = None,
+    harmonics: Union[int, Sequence[int], None] = None,
+) -> list[tuple]:
+    """Read a set of tiles and stitch them into a single phasor image.
+
+    Stitching happens in phasor space: the mean intensity and the G and S
+    coordinates of each tile are blended with photon weighting, which gives
+    exactly the result that summing the raw signals before the phasor
+    transform would have produced, at a fraction of the memory.
+
+    Parameters
+    ----------
+    paths : list of str
+        Tile file paths, in the order matching ``geometry.placements``.
+    geometry : TileGeometry
+        Mosaic layout. ``tile_shape`` is filled in from the data.
+    reader_options : dict, optional
+        Reader options forwarded to each single-file reader call.
+    harmonics : int or sequence of int, optional
+        Harmonics to compute.
+
+    Returns
+    -------
+    layer_data : list of tuple
+        Napari layer-data tuples, one per channel. Returns an empty list and
+        shows an error notification if the tiles could not be read.
+    """
+    try:
+        tile_set = read_tile_phasors(
+            paths, reader_options=reader_options, harmonics=harmonics
+        )
+    except ValueError as error:
+        show_error(str(error))
+        return []
+
+    try:
+        return tile_set.stitch(geometry)
+    except ValueError as error:
+        show_error(str(error))
+        return []
 
 
 def processed_file_reader(

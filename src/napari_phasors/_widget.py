@@ -32,9 +32,11 @@ from qtpy.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -51,6 +53,7 @@ from ._utils import (
     CollapsibleSection,
     FileOrderDialog,
     PopoutWindowMixin,
+    TileLayoutDialog,
     natural_sort_key,
 )
 from ._writer import export_layer_as_csv, export_layer_as_image, write_ome_tiff
@@ -106,6 +109,14 @@ class PhasorTransform(PopoutWindowMixin, QWidget):
         self.multi_file_button = QPushButton("Open 3D stack")
         self.multi_file_button.clicked.connect(self._open_multi_file_dialog)
         self.main_layout.addWidget(self.multi_file_button)
+
+        self.tile_button = QPushButton("Open tiled mosaic")
+        self.tile_button.setToolTip(
+            "Stitch several tiles into one image. Stitching is done on the "
+            "phasor coordinates rather than the raw data."
+        )
+        self.tile_button.clicked.connect(self._open_tile_dialog)
+        self.main_layout.addWidget(self.tile_button)
 
         self.main_layout.addWidget(QLabel("Path to the selected file(s): "))
 
@@ -343,6 +354,135 @@ class PhasorTransform(PopoutWindowMixin, QWidget):
             new_widget._update_signal_plot()
         self.dynamic_widget_layout.addWidget(new_widget)
 
+    def _ask_tile_source(self):
+        """Ask whether the tiles are picked individually or taken from a folder.
+
+        Returns
+        -------
+        str or None
+            ``'files'``, ``'folder'``, or ``None`` if the user cancelled.
+        """
+        choice = QMessageBox(self)
+        choice.setWindowTitle("Open tiled mosaic")
+        choice.setText("Where are the tiles?")
+        choice.setInformativeText(
+            "Pick the tile files individually, or a folder to use every "
+            "supported file it contains."
+        )
+        files_button = choice.addButton(
+            "Select files...", QMessageBox.AcceptRole
+        )
+        folder_button = choice.addButton(
+            "Select folder...", QMessageBox.AcceptRole
+        )
+        choice.addButton(QMessageBox.Cancel)
+        choice.exec()
+
+        clicked = choice.clickedButton()
+        if clicked is files_button:
+            return "files"
+        if clicked is folder_button:
+            return "folder"
+        return None
+
+    def _open_tile_dialog(self):
+        """Select tiles and describe how they are laid out in a mosaic."""
+        supported_extensions = (
+            "*.ome.tif",
+            "*.tif",
+            "*.tiff",
+            "*.lsm",
+            "*.ptu",
+            "*.fbd",
+            "*.sdt",
+            "*.czi",
+            "*.flif",
+            "*.bh",
+            "*.b&h",
+            "*.bhz",
+            "*.bin",
+            "*.r64",
+            "*.ref",
+            "*.ifli",
+            "*.lif",
+        )
+
+        source = self._ask_tile_source()
+        if source == "files":
+            file_paths, _ = QFileDialog.getOpenFileNames(
+                self,
+                "Select tiles",
+                "",
+                "Supported files (" + " ".join(supported_extensions) + ")",
+            )
+        elif source == "folder":
+            directory = QFileDialog.getExistingDirectory(
+                self, "Select a folder of tiles"
+            )
+            if not directory:
+                return
+            file_paths = []
+            for extension in supported_extensions:
+                file_paths.extend(
+                    glob.glob(os.path.join(directory, extension))
+                )
+        else:
+            return
+
+        file_paths = list(dict.fromkeys(file_paths))
+        if not file_paths:
+            show_error("No supported files found in the selection.")
+            return
+
+        extensions = {_get_filename_extension(p)[1] for p in file_paths}
+        if len(extensions) > 1:
+            show_error(
+                "All tiles must have the same extension. "
+                f"Found: {sorted(extensions)}"
+            )
+            return
+
+        common_ext = extensions.pop()
+        if common_ext not in self.reader_options:
+            show_error(f"Extension {common_ext} is not supported.")
+            return
+        if len(file_paths) < 2:
+            show_error("Select at least two tiles to stitch a mosaic.")
+            return
+
+        file_paths = sorted(file_paths, key=natural_sort_key)
+
+        # The tile size is only known once a file has been read; showing it
+        # in the layout dialog makes the stitched size meaningful there.
+        tile_shape = _estimate_output_shape_from_options(
+            file_paths[0], {}, [1]
+        )
+        if tile_shape is not None and len(tile_shape) != 2:
+            tile_shape = None
+
+        dialog = TileLayoutDialog(
+            file_paths, parent=self, tile_shape=tile_shape
+        )
+        if dialog.exec() != TileLayoutDialog.Accepted:
+            return
+
+        geometry = dialog.get_geometry()
+        if geometry is None:
+            return
+        file_paths = dialog.get_ordered_paths()
+
+        self._show_path_text(
+            f"{len(file_paths)} tile(s) selected for stitching "
+            f"(first: {os.path.basename(file_paths[0])})"
+        )
+        self._clear_dynamic_widgets()
+
+        create_widget_class = self.reader_options[common_ext]
+        new_widget = create_widget_class(self.viewer, file_paths[0])
+        new_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        new_widget.enable_tile_mode(file_paths, geometry)
+        self.dynamic_widget_layout.addWidget(new_widget)
+
     def _clear_dynamic_widgets(self):
         """Remove all widgets from the dynamic widget layout."""
         for i in reversed(range(self.dynamic_widget_layout.count())):
@@ -393,6 +533,11 @@ class AdvancedOptionsWidget(QWidget):
         self.path = path
         self._stack_z_spacing_layout = None
         self._stack_z_spacing_edit = None
+        self._tile_paths = None
+        self._tile_geometry = None
+        self._tile_set = None
+        self._tile_layers = []
+        self._tile_section = None
         self.reader_options = {}
         if not hasattr(self, 'harmonics'):
             self.harmonics = [1]
@@ -645,6 +790,12 @@ class AdvancedOptionsWidget(QWidget):
         grouped_paths = getattr(self, '_grouped_file_paths', None)
         multi_paths = getattr(self, '_multi_file_paths', None)
 
+        if self._tile_paths:
+            self.shape_preview_label.setText(
+                f"Estimated output shape: {self._tile_canvas_text()}"
+            )
+            return
+
         if grouped_paths:
             n_files = len(grouped_paths)
         elif multi_paths:
@@ -687,6 +838,27 @@ class AdvancedOptionsWidget(QWidget):
         self.shape_preview_label.setText(
             f"Estimated output shape: {shape_text}"
         )
+
+    def _tile_canvas_text(self):
+        """Return the stitched canvas size for the current tile settings.
+
+        Before the tiles are read the tile size is unknown, so it is taken
+        from the first tile's estimated shape.
+        """
+        from dataclasses import replace
+
+        geometry = self._current_tile_geometry()
+        tile_shape = geometry.tile_shape
+        if not (tile_shape and tile_shape[0] and tile_shape[1]):
+            estimated = _estimate_output_shape_from_options(
+                self.path, self.reader_options, self.harmonics
+            )
+            if estimated is None or len(estimated) != 2:
+                return "N/A"
+            geometry = replace(geometry, tile_shape=tuple(estimated))
+
+        canvas = geometry.canvas_shape()
+        return f"{tuple(canvas)} (Y, X)"
 
     def _get_preview_signal_data(self):
         """Return preview signal, averaging across selected stack/grouped files."""
@@ -943,6 +1115,241 @@ class AdvancedOptionsWidget(QWidget):
 
         self._stack_z_spacing = value
         self._stack_z_spacing_edit.setText(str(value))
+
+    def enable_tile_mode(self, paths, geometry):
+        """Switch this widget to stitching *paths* into a single mosaic.
+
+        Parameters
+        ----------
+        paths : list of str
+            Tile paths, in the order matching ``geometry.placements``.
+        geometry : TileGeometry
+            Mosaic layout produced by :class:`TileLayoutDialog`.
+        """
+        self._tile_paths = list(paths)
+        self._tile_geometry = geometry
+        self._tile_set = None
+        self._tile_layers = []
+        self._add_tile_controls()
+        if hasattr(self, 'btn'):
+            self.btn.setText(f"Stitch Mosaic ({len(paths)} tiles)")
+        self._update_shape_preview()
+
+    def _add_tile_controls(self):
+        """Add the mosaic stitching controls above the transform button."""
+        if self._tile_section is not None:
+            return
+
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.tile_overlap_y_slider, self.tile_overlap_y_label = (
+            self._add_overlap_row(
+                content_layout, "Overlap Y", self._tile_geometry.overlap_y
+            )
+        )
+        self.tile_overlap_x_slider, self.tile_overlap_x_label = (
+            self._add_overlap_row(
+                content_layout, "Overlap X", self._tile_geometry.overlap_x
+            )
+        )
+
+        blend_layout = QHBoxLayout()
+        blend_layout.addWidget(QLabel("Blending: "))
+        self.tile_blend_combo = QComboBox()
+        self.tile_blend_combo.addItems(["Feather", "Average", "Sum counts"])
+        self.tile_blend_combo.setCurrentIndex(
+            ("feather", "average", "sum").index(self._tile_geometry.blend_mode)
+        )
+        self.tile_blend_combo.setToolTip(
+            "How intensity is combined where tiles overlap. Feather "
+            "cross-fades for a seamless image; sum counts keeps the total "
+            "photons, so overlaps are brighter but have better statistics. "
+            "Phasor coordinates are identical either way."
+        )
+        self.tile_blend_combo.currentIndexChanged.connect(
+            self._on_tile_settings_changed
+        )
+        blend_layout.addWidget(self.tile_blend_combo)
+        blend_layout.addStretch()
+        content_layout.addLayout(blend_layout)
+
+        self.tile_estimate_btn = QPushButton("Estimate overlap from data")
+        self.tile_estimate_btn.setToolTip(
+            "Match neighbouring tiles to find the overlap that aligns them "
+            "best. Available once the tiles have been read."
+        )
+        self.tile_estimate_btn.setEnabled(False)
+        self.tile_estimate_btn.clicked.connect(self._on_estimate_overlap)
+        content_layout.addWidget(self.tile_estimate_btn)
+
+        self.tile_status_label = QLabel(
+            "Overlap and blending can be changed after stitching; "
+            "the tiles are not read again."
+        )
+        self.tile_status_label.setWordWrap(True)
+        self.tile_status_label.setStyleSheet("color: grey;")
+        content_layout.addWidget(self.tile_status_label)
+
+        self._tile_section = CollapsibleSection(
+            title="Mosaic stitching",
+            initially_collapsed=False,
+            text_color="#c7c7c7",
+        )
+        self._tile_section.add_widget(content)
+
+        inserted = False
+        if hasattr(self, 'shape_preview_label'):
+            index = self.mainLayout.indexOf(self.shape_preview_label)
+            if index >= 0:
+                self.mainLayout.insertWidget(index, self._tile_section)
+                inserted = True
+        if not inserted:
+            self.mainLayout.addWidget(self._tile_section)
+
+    def _add_overlap_row(self, layout, label, initial_fraction):
+        """Add one labelled overlap slider. Returns ``(slider, label)``."""
+        row = QHBoxLayout()
+        row.addWidget(QLabel(f"{label}: "))
+
+        slider = QSlider(Qt.Orientation.Horizontal)
+        # Tenths of a percent, so a slider step stays below one pixel for
+        # tiles up to about a thousand pixels across.
+        slider.setRange(0, 900)
+        slider.setValue(int(round(initial_fraction * 1000)))
+        slider.valueChanged.connect(self._on_overlap_slider_changed)
+        slider.sliderReleased.connect(self._on_tile_settings_changed)
+        row.addWidget(slider)
+
+        value_label = QLabel(f"{initial_fraction * 100:.1f} %")
+        value_label.setFixedWidth(55)
+        row.addWidget(value_label)
+        layout.addLayout(row)
+        return slider, value_label
+
+    def _current_tile_geometry(self):
+        """Return the layout with the overlap and blending currently set."""
+        from dataclasses import replace
+
+        geometry = self._tile_geometry
+        if not hasattr(self, 'tile_overlap_y_slider'):
+            return geometry
+        return replace(
+            geometry,
+            overlap_y=self.tile_overlap_y_slider.value() / 1000.0,
+            overlap_x=self.tile_overlap_x_slider.value() / 1000.0,
+            blend_mode=("feather", "average", "sum")[
+                self.tile_blend_combo.currentIndex()
+            ],
+        )
+
+    def _on_overlap_slider_changed(self):
+        """Keep the percentage labels in step with the sliders."""
+        for slider, label in (
+            (self.tile_overlap_y_slider, self.tile_overlap_y_label),
+            (self.tile_overlap_x_slider, self.tile_overlap_x_label),
+        ):
+            label.setText(f"{slider.value() / 10.0:.1f} %")
+
+        # Dragging emits a value for every pixel of travel; wait for the
+        # release before re-stitching, but respond immediately to the arrow
+        # keys and to programmatic changes.
+        if not (
+            self.tile_overlap_y_slider.isSliderDown()
+            or self.tile_overlap_x_slider.isSliderDown()
+        ):
+            self._on_tile_settings_changed()
+
+    def _on_tile_settings_changed(self):
+        """Re-stitch the mosaic with the current overlap and blending."""
+        self._tile_geometry = self._current_tile_geometry()
+        self._update_shape_preview()
+        if self._tile_set is not None:
+            self._restitch()
+
+    def _on_estimate_overlap(self):
+        """Measure the overlap from the tiles and apply it to the sliders."""
+        from ._stitching import estimate_overlap
+
+        if self._tile_set is None:
+            return
+
+        overlap_y, overlap_x = estimate_overlap(
+            self._tile_set.means(0), self._current_tile_geometry()
+        )
+        if overlap_y is None and overlap_x is None:
+            self.tile_status_label.setText(
+                "Could not match neighbouring tiles. Check the layout order, "
+                "or set the overlap manually."
+            )
+            return
+
+        found = []
+        for value, slider in (
+            (overlap_y, self.tile_overlap_y_slider),
+            (overlap_x, self.tile_overlap_x_slider),
+        ):
+            if value is None:
+                continue
+            slider.blockSignals(True)
+            slider.setValue(int(round(value * 1000)))
+            slider.blockSignals(False)
+            found.append(f"{value * 100:.1f} %")
+
+        self._on_overlap_slider_changed()
+        self._on_tile_settings_changed()
+        axes = (
+            "Y"
+            if overlap_x is None
+            else ("X" if overlap_y is None else "Y and X")
+        )
+        self.tile_status_label.setText(
+            f"Estimated overlap for {axes}: {', '.join(found)}."
+        )
+
+    def _restitch(self):
+        """Blend the cached tiles again and refresh the mosaic layer(s)."""
+        geometry = self._current_tile_geometry()
+        try:
+            layers = self._tile_set.stitch(geometry)
+        except ValueError as error:
+            show_error(f"Could not stitch mosaic: {error}")
+            return
+
+        live = [
+            layer for layer in self._tile_layers if layer in self.viewer.layers
+        ]
+
+        if len(live) == len(layers):
+            # Update in place so the mosaic keeps its position in the layer
+            # list, along with any contrast or colormap the user has set.
+            for layer, (data, add_kwargs) in zip(live, layers, strict=True):
+                layer.metadata.update(add_kwargs["metadata"])
+                layer.data = data
+                layer.reset_contrast_limits()
+        else:
+            # Some layers were removed; drop the rest rather than leaving
+            # half a stale mosaic behind next to the new one.
+            for layer in live:
+                self.viewer.layers.remove(layer)
+            self._tile_layers = []
+            for data, add_kwargs in layers:
+                add_kwargs = dict(add_kwargs)
+                self._tile_layers.append(
+                    self.viewer.add_image(
+                        data,
+                        name=add_kwargs.pop("name"),
+                        metadata=add_kwargs.pop("metadata"),
+                        **add_kwargs,
+                    )
+                )
+
+        canvas = geometry.canvas_shape()
+        self.tile_status_label.setText(
+            f"Stitched {self._tile_set.n_tiles} tile(s) into "
+            f"{canvas[0]} x {canvas[1]} px."
+        )
 
     def _get_signal_data(self):
         """Get signal data based on file type and current parameters.
@@ -1204,6 +1611,11 @@ class AdvancedOptionsWidget(QWidget):
         """
         if hasattr(self, '_apply_kwargs'):
             self._apply_kwargs(reader_options)
+
+        if self._tile_paths:
+            self._read_and_stitch_tiles(reader_options, harmonics)
+            return
+
         grouped_paths = getattr(self, '_grouped_file_paths', None)
         multi_paths = getattr(self, '_multi_file_paths', None)
         self._on_stack_z_spacing_changed()
@@ -1282,6 +1694,35 @@ class AdvancedOptionsWidget(QWidget):
                     metadata=add_kw.pop("metadata"),
                     **add_kw,
                 )
+
+    def _read_and_stitch_tiles(self, reader_options, harmonics):
+        """Read every tile once, then stitch it into the mosaic layer(s).
+
+        The transformed tiles are cached on the widget so the overlap and
+        blending can be changed afterwards without reading the files again.
+        """
+        from ._reader import read_tile_phasors
+
+        try:
+            self._tile_set = read_tile_phasors(
+                self._tile_paths,
+                reader_options=reader_options,
+                harmonics=harmonics,
+            )
+        except ValueError as error:
+            self._tile_set = None
+            show_error(str(error))
+            return
+
+        if hasattr(self, 'tile_estimate_btn'):
+            self.tile_estimate_btn.setEnabled(True)
+
+        cached_mb = self._tile_set.nbytes() / (1024 * 1024)
+        show_info(
+            f"Read {self._tile_set.n_tiles} tile(s); "
+            f"{cached_mb:.0f} MB of phasor data cached for re-stitching."
+        )
+        self._restitch()
 
     @staticmethod
     def _apply_axis_transform(add_kwargs, data, axis_order, axis_labels):
