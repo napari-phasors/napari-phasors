@@ -29,6 +29,7 @@ from qtpy.QtWidgets import (
 )
 from superqt import QToggleSwitch
 
+from ._timelapse import slice_datasets
 from ._utils import (
     CheckableComboBox,
     CurrentPageStackedWidget,
@@ -1327,7 +1328,10 @@ class FretWidget(QWidget):
     def _restore_fret_settings_from_metadata(self):
         """Restore all FRET settings from the current layer's metadata."""
         layer_name = self.parent_widget.get_primary_layer_name()
-        if not layer_name:
+        # The combobox can still hold a name whose layer has already been
+        # removed (a deferred tab update queued before the removal), so guard
+        # the lookup as the components tab does.
+        if not layer_name or layer_name not in self.viewer.layers:
             self.background_positions_by_harmonic = {}
             return
 
@@ -1602,15 +1606,17 @@ class FretWidget(QWidget):
         all_data = []
         for layer in self.fret_layers:
             if layer in self.viewer.layers:
-                data = layer.data.ravel()
-                all_data.append(data)
-                per_layer[layer.name] = data
+                all_data.append(layer.data.ravel())
+                per_layer[layer.name] = layer.data
 
         if not all_data:
             self.histogram_widget.hide()
             return
 
+        # ``merged`` stays pooled so the range slider spans the whole
+        # acquisition; only the histogram datasets follow the current frame.
         merged = np.concatenate(all_data)
+        per_layer = self._slice_datasets_for_frame(per_layer)
 
         # Update range slider to match data extent
         valid = merged[~np.isnan(merged) & np.isfinite(merged)]
@@ -1638,10 +1644,28 @@ class FretWidget(QWidget):
         if len(per_layer) > 1:
             self.histogram_widget.update_multi_data(per_layer)
         else:
-            self.histogram_widget.update_data(
-                merged,
-                label=next(iter(per_layer), "Layer"),
-            )
+            label, data = next(iter(per_layer.items()), ("Layer", merged))
+            self.histogram_widget.update_data(data, label=label)
+
+    def _frame_context(self):
+        """Return the plotter's time-lapse frame context, if available."""
+        return getattr(self.parent_widget, 'frame_context', None)
+
+    def _slice_datasets_for_frame(self, datasets):
+        """Restrict per-layer datasets to the displayed time-lapse frame.
+
+        The un-sliced arrays are handed to the histogram widget as well, so
+        the statistics dock can export per-timepoint numbers.
+        """
+        frame_context = self._frame_context()
+        self.histogram_widget.set_frame_source(frame_context, datasets)
+        return slice_datasets(frame_context, datasets)
+
+    def refresh_for_frame_change(self):
+        """Re-feed the histogram after the displayed frame changed."""
+        if not self.fret_layers:
+            return
+        self._update_fret_histogram()
 
     def _on_fret_range_changed(self, min_val, max_val):
         """Handle range slider changes – clip FRET layers and update histogram."""
@@ -1666,11 +1690,11 @@ class FretWidget(QWidget):
         all_data = []
         for layer in self.fret_layers:
             if layer in self.viewer.layers:
-                data = layer.data.ravel()
-                all_data.append(data)
-                per_layer[layer.name] = data
+                all_data.append(layer.data.ravel())
+                per_layer[layer.name] = layer.data
         if all_data:
             merged = np.concatenate(all_data)
+            per_layer = self._slice_datasets_for_frame(per_layer)
             self.histogram_widget.update_colormap(
                 colormap_colors=self.fret_colormap,
                 contrast_limits=[min_val, max_val],
@@ -1679,10 +1703,8 @@ class FretWidget(QWidget):
             if len(per_layer) > 1:
                 self.histogram_widget.update_multi_data(per_layer)
             else:
-                self.histogram_widget.update_data(
-                    merged,
-                    label=next(iter(per_layer), "Layer"),
-                )
+                label, data = next(iter(per_layer.items()), ("Layer", merged))
+                self.histogram_widget.update_data(data, label=label)
 
         self.plot_donor_trajectory()
 

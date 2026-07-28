@@ -30,6 +30,7 @@ from scipy.ndimage import gaussian_filter
 from scipy.stats import binned_statistic_2d
 from superqt import QRangeSlider, QToggleSwitch
 
+from ._timelapse import slice_datasets
 from ._utils import (
     LIFETIME_OUTPUT_TYPES,
     HistogramWidget,
@@ -1764,13 +1765,39 @@ class PhasorMappingWidget(QWidget):
             f"{output_type}: {name}": data
             for name, data in (self.per_layer_metric_data or {}).items()
         }
+        # In per-frame mode only the displayed timepoint is summarised. The
+        # range slider keeps using the pooled extent (set elsewhere) so the
+        # contrast limits don't jump around while playing.
+        named = self._slice_datasets_for_frame(named)
         if len(named) > 1:
             self.histogram_widget.update_multi_data(named)
+        elif named:
+            label, data = next(iter(named.items()))
+            self.histogram_widget.update_data(data, label=label)
         else:
             self.histogram_widget.update_data(
-                self.current_metric_data,
-                label=next(iter(named), "Layer"),
+                self.current_metric_data, label="Layer"
             )
+
+    def _frame_context(self):
+        """Return the plotter's time-lapse frame context, if available."""
+        return getattr(self.parent_widget, 'frame_context', None)
+
+    def _slice_datasets_for_frame(self, datasets):
+        """Restrict per-layer datasets to the displayed time-lapse frame.
+
+        The un-sliced arrays are handed to the histogram widget as well, so
+        the statistics dock can export per-timepoint numbers.
+        """
+        frame_context = self._frame_context()
+        self.histogram_widget.set_frame_source(frame_context, datasets)
+        return slice_datasets(frame_context, datasets)
+
+    def refresh_for_frame_change(self):
+        """Re-feed the histogram after the displayed frame changed."""
+        if self.current_metric_data is None:
+            return
+        self.plot_lifetime_histogram()
 
     def rename_layer(self, old_name: str, new_name: str):
         """Update internal dictionaries and rename derived layers when a layer is renamed."""
