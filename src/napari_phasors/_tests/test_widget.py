@@ -929,6 +929,10 @@ def test_signal_plot_error_handling(make_viewer_model, qtbot):
         ),
         patch("napari_phasors._widget.show_error"),
     ):
+        # Invalidate the preview cache so the failing decode is actually
+        # exercised (a cached signal from construction would otherwise be
+        # reused because the options are unchanged).
+        widget._preview_signal_cache_key = None
         # Should not raise; the plot must end up with no data lines.
         widget._update_signal_plot()
         assert len(widget.ax.get_lines()) == 0
