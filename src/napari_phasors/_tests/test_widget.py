@@ -33,6 +33,9 @@ from napari_phasors._widget import (
     PtuWidget,
     SdtWidget,
     WriterWidget,
+    _estimate_ptu_output_shape,
+    _phasor_output_shape_from_signal,
+    _reduce_ptu_signal_dims,
 )
 
 TEST_FORMATS = [
@@ -2504,3 +2507,242 @@ def test_fbd_widget_stack_z_spacing_and_harmonic_edits(
         widget.harmonic_start_edit.setText("abc")
         widget._on_harmonic_edit_changed()
         assert len(widget.harmonics) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Tests for the preview-signal caching and shape-estimation optimizations.
+# ---------------------------------------------------------------------------
+
+
+def test_reduce_ptu_signal_dims():
+    """PTU signal dims are reduced from metadata without decoding."""
+    shape = (5, 256, 256, 2, 133)
+    dims = ("T", "Y", "X", "C", "H")
+    bins = 132
+
+    # channel=None keeps the C axis; dtime=0 -> H is the number of period bins.
+    assert _reduce_ptu_signal_dims(shape, dims, bins, None, 0) == (
+        (256, 256, 2, 132),
+        ("Y", "X", "C", "H"),
+    )
+    # A selected channel drops the C axis.
+    assert _reduce_ptu_signal_dims(shape, dims, bins, 0, 0) == (
+        (256, 256, 132),
+        ("Y", "X", "H"),
+    )
+    # dtime > 0 sets the histogram length, clamped to the number of bins.
+    assert _reduce_ptu_signal_dims(shape, dims, bins, 0, 64)[0] == (
+        256,
+        256,
+        64,
+    )
+    assert _reduce_ptu_signal_dims(shape, dims, bins, 0, 1000)[0] == (
+        256,
+        256,
+        132,
+    )
+    # dtime < 0 integrates the delay-time axis away.
+    assert _reduce_ptu_signal_dims(shape, dims, bins, 0, -1) == (
+        (256, 256),
+        ("Y", "X"),
+    )
+
+
+def test_phasor_output_shape_from_signal():
+    """Output shape is derived from a decoded signal like the reader would."""
+    # Guard cases return None so the caller falls back to the reader.
+    assert _phasor_output_shape_from_signal(None, ".lsm", {}) is None
+    assert _phasor_output_shape_from_signal(np.array(3.0), ".lsm", {}) is None
+    # No dimension labels + no override + not TIFF -> cannot derive.
+    assert (
+        _phasor_output_shape_from_signal(np.zeros((4, 5)), ".sdt", {}) is None
+    )
+
+    # Plain TIFF uses axis 0 by convention even without dims.
+    assert _phasor_output_shape_from_signal(
+        np.zeros((10, 20, 30)), ".tif", {}
+    ) == (20, 30)
+
+    # Single-layer path: histogram axis 'H' is collapsed.
+    sdt = xr.DataArray(np.zeros((7, 8, 9)), dims=("Y", "X", "H"))
+    assert _phasor_output_shape_from_signal(sdt, ".sdt", {}) == (7, 8)
+
+    # Single-layer path: spectral 'C' axis is collapsed (LSM/CZI, iter None).
+    lsm = xr.DataArray(np.zeros((30, 40, 50)), dims=("C", "Y", "X"))
+    assert _phasor_output_shape_from_signal(lsm, ".lsm", {}) == (40, 50)
+    # phasor_axis override selects the collapsed axis.
+    assert _phasor_output_shape_from_signal(
+        lsm, ".lsm", {"phasor_axis": 1}
+    ) == (30, 50)
+    # An out-of-range override cannot be derived.
+    assert (
+        _phasor_output_shape_from_signal(lsm, ".lsm", {"phasor_axis": 9})
+        is None
+    )
+
+    # Fallback to axis 0 when neither 'H' nor 'C' is present.
+    misc = xr.DataArray(np.zeros((3, 4)), dims=("A", "B"))
+    assert _phasor_output_shape_from_signal(misc, ".bin", {}) == (4,)
+
+    # Multi-channel path: iteration axis 'C' and histogram 'H' both dropped.
+    fbd = xr.DataArray(np.zeros((2, 6, 7, 8)), dims=("C", "Y", "X", "H"))
+    assert _phasor_output_shape_from_signal(fbd, ".fbd", {}) == (6, 7)
+    # Override selects the histogram axis within the per-channel signal.
+    assert _phasor_output_shape_from_signal(
+        fbd, ".fbd", {"phasor_axis": 0}
+    ) == (7, 8)
+    # An out-of-range override in the multi-channel path returns None.
+    assert (
+        _phasor_output_shape_from_signal(fbd, ".fbd", {"phasor_axis": 10})
+        is None
+    )
+
+
+def test_estimate_ptu_output_shape():
+    """PTU output shape is estimated from metadata, with a safe fallback."""
+    path = get_test_file_path("test_file.ptu")
+
+    assert _estimate_ptu_output_shape(path, {}) == (256, 256)
+    assert _estimate_ptu_output_shape(path, {"channel": 0}) == (256, 256)
+    # phasor_axis override drops that axis (plus the iterated channel axis).
+    assert _estimate_ptu_output_shape(path, {"phasor_axis": 0}) == (256, 132)
+    # Unreadable file -> None (caller falls back).
+    assert _estimate_ptu_output_shape("/no/such/file.ptu", {}) is None
+
+
+def test_preview_signal_cache(make_viewer_model, qtbot):
+    """The preview signal is decoded once and reused across consumers."""
+    viewer = make_viewer_model()
+    widget = LsmWidget(viewer, path=get_test_file_path("test_file.lsm"))
+
+    calls = {"n": 0}
+
+    def counting():
+        calls["n"] += 1
+        return np.zeros((3, 3))
+
+    widget._compute_preview_signal_data = counting
+    widget._preview_signal_cache_key = None
+
+    first = widget._get_preview_signal_data()
+    second = widget._get_preview_signal_data()
+    assert calls["n"] == 1  # second call served from cache
+    assert first is second
+
+    # Changing an option that affects the decoded signal invalidates the cache.
+    widget.reader_options["frame"] = 0
+    widget._get_preview_signal_data()
+    assert calls["n"] == 2
+
+    # 'phasor_axis' does not affect the decoded signal, so it is excluded from
+    # the cache key and must not trigger a re-decode.
+    widget.reader_options["phasor_axis"] = 1
+    widget._get_preview_signal_data()
+    assert calls["n"] == 2
+
+
+def test_get_channel_preview_signal_slice_and_fallback(
+    make_viewer_model, qtbot
+):
+    """Multi-channel preview slices one decode; falls back without dims."""
+    viewer = make_viewer_model()
+    widget = LsmWidget(viewer, path=get_test_file_path("test_file.lsm"))
+
+    # Slice path: an all-channel signal with a 'C' axis is sliced per channel.
+    all_channels = xr.DataArray(
+        np.arange(2 * 4 * 5).reshape(2, 4, 5), dims=("C", "Y", "X")
+    )
+    widget._compute_preview_signal_data = lambda: all_channels
+    widget._preview_signal_cache_key = None
+    sliced = widget._get_channel_preview_signal(1)
+    np.testing.assert_array_equal(
+        np.asarray(sliced), np.asarray(all_channels)[1]
+    )
+    # The channel option is restored after slicing.
+    assert widget.reader_options.get("channel") is None
+
+    # Fallback path: without dims the requested channel is decoded directly.
+    seen = {}
+
+    def compute_nodims():
+        seen["channel"] = widget.reader_options.get("channel")
+        return np.zeros((4, 5))
+
+    widget._compute_preview_signal_data = compute_nodims
+    widget._preview_signal_cache_key = None
+    widget._get_channel_preview_signal(1)
+    assert seen["channel"] == 1
+
+
+def test_estimate_base_output_shape_derive_and_fallback(
+    make_viewer_model, qtbot
+):
+    """Base shape derives from the signal, falling back to the reader."""
+    viewer = make_viewer_model()
+    widget = LsmWidget(viewer, path=get_test_file_path("test_file.lsm"))
+
+    # Derived directly from the decoded (dims-carrying) preview signal.
+    assert widget._estimate_base_output_shape() == (512, 512)
+
+    # A dims-less signal cannot be derived, so the reader fallback is used and
+    # still returns the correct shape.
+    widget._compute_preview_signal_data = lambda: np.zeros((30, 512, 512))
+    widget._preview_signal_cache_key = None
+    assert widget._estimate_base_output_shape() == (512, 512)
+
+
+def test_ptu_preview_histogram_cache(make_viewer_model, qtbot):
+    """PTU previews use a cheap cached histogram and metadata-based shape."""
+    viewer = make_viewer_model()
+    widget = PtuWidget(viewer, path=get_test_file_path("test_file.ptu"))
+
+    # The histogram is cached (same object) until an option changes it.
+    hist_a = widget._decode_preview_histogram()
+    hist_b = widget._decode_preview_histogram()
+    assert hist_a is hist_b
+
+    # Changing dtime invalidates the histogram cache and limits the bins.
+    widget.dtime.setText("64")
+    hist_c = widget._decode_preview_histogram()
+    assert hist_c is not hist_a
+    assert hist_c.shape[-1] == 64
+
+    # dtime is part of the preview signature so the signal cache tracks it.
+    assert widget._extra_preview_signature() == ("dtime", 64)
+
+    # The output shape and signal dims come from metadata (no image decode).
+    widget.dtime.setText("0")
+    assert widget._estimate_base_output_shape() == (256, 256)
+    assert widget._preview_signal_dims()[1] == ("Y", "X", "C", "H")
+
+
+def test_fbd_preview_defaults_and_signature(make_viewer_model, qtbot):
+    """FBD sets reader defaults before previewing and tracks laser_factor."""
+    viewer = make_viewer_model()
+    widget = FbdWidget(viewer, path=get_test_file_path("test_file$EI0S.fbd"))
+
+    # Frame integration is applied before the first preview decode so the
+    # preview matches the final transform.
+    assert widget.reader_options["frame"] == -1
+    # Estimated shape derived without a second full decode + transform.
+    assert widget._estimate_base_output_shape() == (256, 256)
+
+    # laser_factor is part of the preview cache signature.
+    baseline = widget._preview_signature()
+    widget.laser_factor.setText("0.00022")
+    assert widget._preview_signature() != baseline
+    assert widget._extra_preview_signature() == ("laser_factor", "0.00022")
+
+
+def test_sdt_preview_signature(make_viewer_model, qtbot):
+    """SDT tracks the dataset index in the preview cache signature."""
+    viewer = make_viewer_model()
+    widget = SdtWidget(
+        viewer,
+        path=get_test_file_path("seminal_receptacle_FLIM_single_image.sdt"),
+    )
+
+    baseline = widget._preview_signature()
+    widget.index.setText("1")
+    assert widget._preview_signature() != baseline
+    assert widget._extra_preview_signature() == ("index", "1")
