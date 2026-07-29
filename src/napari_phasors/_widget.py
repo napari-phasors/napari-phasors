@@ -2029,8 +2029,6 @@ class PtuWidget(AdvancedOptionsWidget):
                 )
                 for path in paths_to_average
             ]
-            if not signals:
-                return None
             try:
                 return np.mean(np.stack(signals, axis=0), axis=0)
             except ValueError:
