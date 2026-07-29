@@ -43,6 +43,7 @@ from superqt import QToggleSwitch
 
 from ._utils import (
     CurrentPageStackedWidget,
+    active_selection_region,
     analysis_section_stylesheet,
     colormap_to_dict,
     make_section,
@@ -626,7 +627,7 @@ class SelectionWidget(QWidget):
                     g = g_array
                     s = s_array
 
-                valid = np.isfinite(g.ravel()) & np.isfinite(s.ravel())
+                valid = self._frame_valid_mask(g, s)
                 selection_data = selection_map.ravel()[valid]
                 all_selection_data.append(selection_data)
 
@@ -674,6 +675,73 @@ class SelectionWidget(QWidget):
             ) or candidate_name not in combobox_selections:
                 return candidate_name
             counter += 1
+
+    def _frame_context(self):
+        """Return the plotter's time-lapse frame context, if available."""
+        return getattr(self.parent_widget, 'frame_context', None)
+
+    def _frame_valid_mask(self, g, s):
+        """Return the flat finite-sample mask used by the phasor plot.
+
+        In per-frame mode this is restricted to the displayed frame, exactly
+        as :meth:`PlotterWidget.get_merged_features` does, so the selection
+        array stays aligned with the plotted points.
+        """
+        valid = np.isfinite(g.ravel()) & np.isfinite(s.ravel())
+        frame_context = self._frame_context()
+        if frame_context is None:
+            return valid
+        return frame_context.filter_valid(valid, g.shape)
+
+    def _extend_selection_to_all_frames(
+        self, selection_map_flat, g, s, layer_selection
+    ):
+        """Apply the region drawn in the phasor plot to every frame.
+
+        Only relevant in per-frame mode: the class value the user just
+        assigned is written to every pixel of the stack whose phasor
+        coordinates fall inside the drawn shape. In pooled mode (or when the
+        drawn geometry could not be captured, e.g. a selection restored from
+        metadata) this is a no-op and the current frame keeps whatever
+        :meth:`manual_selection_changed` already wrote.
+
+        Parameters
+        ----------
+        selection_map_flat : np.ndarray
+            Flat view of the layer's selection map; modified in place.
+        g, s : np.ndarray
+            Phasor coordinates of the layer at the current harmonic.
+        layer_selection : np.ndarray or None
+            Per-point class values just applied to the current frame, or None
+            when the selection was cleared.
+        """
+        frame_context = self._frame_context()
+        if frame_context is None or not frame_context.is_per_frame:
+            return
+        if layer_selection is None or not np.any(layer_selection):
+            return
+
+        region_contains = active_selection_region(
+            self.parent_widget.canvas_widget
+        )
+        if region_contains is None:
+            return
+
+        g_flat = g.ravel()
+        s_flat = s.ravel()
+        finite = np.isfinite(g_flat) & np.isfinite(s_flat)
+        if not np.any(finite):
+            return
+
+        inside = region_contains(
+            np.column_stack((g_flat[finite], s_flat[finite]))
+        )
+        if inside is None or not np.any(inside):
+            return
+
+        class_value = int(np.max(layer_selection))
+        target = np.flatnonzero(finite)[inside]
+        selection_map_flat[target] = class_value
 
     def manual_selection_changed(self, manual_selection):
         """Update the manual selection in the layer metadata."""
@@ -746,7 +814,7 @@ class SelectionWidget(QWidget):
                         g = g_array
                         s = s_array
 
-                    valid = np.isfinite(g.ravel()) & np.isfinite(s.ravel())
+                    valid = self._frame_valid_mask(g, s)
                     layer_valid_counts.append(np.sum(valid))
                 else:
                     layer_valid_counts.append(0)
@@ -817,12 +885,19 @@ class SelectionWidget(QWidget):
                 g = g_array
                 s = s_array
 
-            valid_pixels_mask = np.isfinite(g.ravel()) & np.isfinite(s.ravel())
+            valid_pixels_mask = self._frame_valid_mask(g, s)
 
             if layer_selection is None:
                 selection_map_flat[valid_pixels_mask] = 0
             else:
                 selection_map_flat[valid_pixels_mask] = layer_selection
+
+            # A region drawn in the phasor plot is a region in G/S space, so
+            # it applies to the whole acquisition even when only one frame is
+            # displayed. Replay the drawn shape against every timepoint.
+            self._extend_selection_to_all_frames(
+                selection_map_flat, g, s, layer_selection
+            )
 
             if "settings" not in layer.metadata:
                 layer.metadata["settings"] = {}
