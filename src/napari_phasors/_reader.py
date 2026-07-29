@@ -20,6 +20,9 @@ from napari.utils.notifications import show_error
 from phasorpy.phasor import phasor_from_signal
 
 from ._utils import show_activity_progress
+import xarray as xr
+
+_signal_from_brighteyes_mcs = io.signal_from_brighteyes_mcs
 
 _signal_from_brighteyes_mcs = io.signal_from_brighteyes_mcs
 
