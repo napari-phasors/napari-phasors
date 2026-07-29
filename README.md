@@ -34,6 +34,7 @@ available at **[https://napari-phasors.readthedocs.io](https://napari-phasors.re
 - **Phasor Mapping** — colormap apparent/normal lifetime, phasor phase, and phasor modulation per pixel, with interactive 1D histograms, statistics tables, and arc overlay tools
 - **FRET analysis** with donor trajectory visualization and multi-layer donor/background source selection
 - **Selections** via manual drawing, circular/polar/elliptical cursors, and automatic clustering
+- **Time-lapse analysis** — the phasor plot, histogram and statistics follow napari's own dimension slider (including its play button), with a per-frame statistics table, GIF animation export, and statistics exported pooled or per timepoint
 - **Exporting** results as OME-TIF or CSV (multiple layers simultaneously)
 - **Batch Analysis** — apply the same reading and analysis pipeline (calibration, filtering, masking, component analysis, phasor mapping, FRET, selections) to every file in a folder and export the results headlessly
 

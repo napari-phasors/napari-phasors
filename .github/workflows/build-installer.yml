@@ -149,6 +149,39 @@ jobs:
         shell: bash -el {0}
         run: ls -la installer/napari-phasors-*
 
+      # Install the built .sh and launch napari through the generated
+      # launcher under Xvfb, exactly like a user's desktop entry would
+      # (real xcb platform plugin, no terminal attached). This catches
+      # "installer builds fine but the app never opens" regressions,
+      # which are otherwise invisible until someone tests on real Linux.
+      - name: Smoke test Linux installer
+        if: matrix.platform == 'linux'
+        shell: bash -el {0}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y >/dev/null
+          sudo apt-get install -y xvfb >/dev/null
+          SH_INSTALLER=( installer/napari-phasors-*.sh )
+          if [[ ${#SH_INSTALLER[@]} -ne 1 ]]; then
+            echo "ERROR: Expected exactly one .sh installer, found: ${SH_INSTALLER[*]}"
+            exit 1
+          fi
+          INSTALL_DIR="${RUNNER_TEMP}/smoke-install"
+          echo "=== Installing ==="
+          bash "${SH_INSTALLER[0]}" -b -p "${INSTALL_DIR}"
+          echo "=== Import test ==="
+          QT_QPA_PLATFORM=offscreen "${INSTALL_DIR}/bin/python" \
+            -c "import napari, napari_phasors; print('imports OK')"
+          echo "=== Launcher test (xcb under Xvfb) ==="
+          STATUS=0
+          xvfb-run -a "${INSTALL_DIR}/napari-phasors" --info || STATUS=$?
+          echo "=== Launch log ==="
+          cat "${INSTALL_DIR}/last-launch.log" 2>/dev/null || echo "(no log written)"
+          if [ "${STATUS}" -ne 0 ]; then
+            echo "ERROR: launcher exited with status ${STATUS}"
+            exit "${STATUS}"
+          fi
+
       - name: Create macOS DMG
         if: matrix.platform == 'macos'
         shell: bash -el {0}

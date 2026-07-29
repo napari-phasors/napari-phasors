@@ -20,6 +20,7 @@ from phasorpy.phasor import phasor_to_polar
 from qtpy.QtCore import QEvent, Qt, QTimer
 from qtpy.QtGui import QColor, QCursor
 from qtpy.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -33,6 +34,7 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -44,6 +46,16 @@ from qtpy.QtWidgets import (
 )
 from superqt import QToggleSwitch
 
+from ._timelapse import CURRENT as FRAME_MODE_CURRENT
+from ._timelapse import POOLED as FRAME_MODE_POOLED
+from ._timelapse import (
+    AnimationExportDialog,
+    FrameContext,
+    TimelapseControlBar,
+    combine_frames,
+    export_animation,
+    figure_to_rgb,
+)
 from ._update_check import maybe_check_for_update
 from ._utils import (
     CheckableComboBox,
@@ -62,11 +74,14 @@ from ._utils import (
     make_section,
     make_solid_contour_cmap,
     normalize_rgb,
+    patch_biaplotter_capture_selection_geometry,
+    patch_biaplotter_fixed_histogram_range,
     populate_colormap_combobox,
     read_ome_tiff_settings,
     resolve_colormap_by_name,
     save_groups_to_layer_metadata,
     update_frequency_in_metadata,
+    write_rows_to_csv,
 )
 from .calibration_tab import CalibrationWidget
 from .components_tab import ComponentsWidget
@@ -242,6 +257,8 @@ def _patch_biaplotter_safe_toggle_sender():
 
 _patch_nap_plot_tools_safe_disconnect()
 _patch_biaplotter_safe_toggle_sender()
+patch_biaplotter_capture_selection_geometry()
+patch_biaplotter_fixed_histogram_range()
 
 
 def _apply_label_colors_to_combo(combo, labels_layer, unique_labels):
@@ -1487,6 +1504,15 @@ class PhasorCenterStatisticsWidget(QWidget):
         main_layout.addWidget(self.group_stats_section)
         self.group_stats_section.setVisible(False)
 
+        self.export_csv_button = QPushButton("Export Centers as CSV")
+        self.export_csv_button.setMinimumWidth(140)
+        self.export_csv_button.setEnabled(False)
+        self.export_csv_button.setToolTip(
+            "Export the phasor centers. For a time-lapse you can export one "
+            "row per timepoint."
+        )
+        main_layout.addWidget(self.export_csv_button)
+
         main_layout.addStretch()
 
     def update_centers(self, centers):
@@ -1499,6 +1525,7 @@ class PhasorCenterStatisticsWidget(QWidget):
         """
         self._update_table(self._layer_table, centers)
         self.layer_stats_section.setVisible(bool(centers))
+        self.export_csv_button.setEnabled(bool(centers))
 
     def update_group_centers(self, centers):
         """Update the group centers table.
@@ -1637,6 +1664,11 @@ class PlotterWidget(QWidget):
         self._last_histogram_norm = None
         self._last_histogram_color_indices = None
         self._last_scatter_color_indices = None
+
+        # Bin grid and count range shared by every time-lapse frame, so the
+        # 2D histogram's colours and colorbar stay put while stepping.
+        self._frame_histogram_cache = None
+        self._frame_histogram_cache_key = None
 
         # Cleared only on fresh layer load.
         self._user_axes_limits = None
@@ -1882,6 +1914,21 @@ class PlotterWidget(QWidget):
         self.controls_container.layout().addLayout(
             harmonics_and_mask_container
         )
+
+        # Time-lapse controls: pooled vs per-frame display, frame slider,
+        # playback and animation export. The bar hides itself when the
+        # selected layers have no non-spatial axis, so 2D data is unaffected.
+        self.frame_context = FrameContext(
+            self.viewer, self.get_selected_layers, parent=self
+        )
+        self.timelapse_bar = TimelapseControlBar(self.frame_context)
+        self.timelapse_bar.exportRequested.connect(
+            self._on_export_animation_clicked
+        )
+        self.frame_context.frameChanged.connect(self._on_frame_changed)
+        self.frame_context.modeChanged.connect(self._on_frame_mode_changed)
+        self.frame_context.axisChanged.connect(self._on_frame_axis_changed)
+        self.controls_container.layout().addWidget(self.timelapse_bar)
 
         # Dynamic buttons to re-open closed dock widgets
         dock_buttons_layout = QHBoxLayout()
@@ -2368,6 +2415,9 @@ class PlotterWidget(QWidget):
         self._phasor_center_stats_widget = PhasorCenterStatisticsWidget()
         self._phasor_center_stats_page_idx = self._statistics_stack.addWidget(
             self._phasor_center_stats_widget
+        )
+        self._phasor_center_stats_widget.export_csv_button.clicked.connect(
+            self._export_phasor_center_statistics
         )
 
         # Initialize phasor center UI visibility
@@ -2860,6 +2910,8 @@ class PlotterWidget(QWidget):
             'phasor_center_group_assignments': {},
             'phasor_center_group_colors': {},
             'phasor_center_group_names': {},
+            'timelapse_mode': FRAME_MODE_POOLED,
+            'timelapse_axis': 0,
         }
 
     def _initialize_plot_settings_in_metadata(self, layer):
@@ -2936,6 +2988,19 @@ class PlotterWidget(QWidget):
             # Restore harmonic
             if 'harmonic' in settings:
                 self.harmonic_spinbox.setValue(settings['harmonic'])
+
+            # Restore the time-lapse display mode / frame axis. The frame
+            # index itself is intentionally not persisted — it always comes
+            # from the napari dims slider.
+            if 'timelapse_axis' in settings:
+                with contextlib.suppress(TypeError, ValueError):
+                    self.frame_context.axis = int(settings['timelapse_axis'])
+            if 'timelapse_mode' in settings:
+                self.frame_context.mode = (
+                    FRAME_MODE_CURRENT
+                    if settings['timelapse_mode'] == FRAME_MODE_CURRENT
+                    else FRAME_MODE_POOLED
+                )
 
             # Only restore if explicitly set in metadata
             if 'white_background' in settings:
@@ -3697,7 +3762,20 @@ class PlotterWidget(QWidget):
         self.canvas_widget.figure.canvas.draw_idle()
 
     def _run_deferred_tab_update(self, current_tab):
-        """Run deferred _on_image_layer_changed for the given tab."""
+        """Run deferred _on_image_layer_changed for the given tab.
+
+        A deferred update can still be pending when the primary layer has
+        already been removed (the tab-change event is delivered after the
+        removal, e.g. during teardown). The restore paths look the layer up
+        by name, so skip the update entirely rather than let each of them
+        raise ``KeyError``.
+        """
+        if self._is_closing:
+            return
+        layer_name = self.get_primary_layer_name()
+        if layer_name and layer_name not in self.viewer.layers:
+            return
+
         deferrable_tabs = []
         for attr in (
             'phasor_mapping_tab',
@@ -3953,6 +4031,161 @@ class PlotterWidget(QWidget):
             self._update_plot_elements()
         if hasattr(self, 'selection_tab'):
             self.selection_tab.on_harmonic_changed()
+
+    # ------------------------------------------------------------------
+    # Time-lapse (frame) handling
+    # ------------------------------------------------------------------
+
+    def _refresh_timelapse_controls(self):
+        """Rebuild the time-lapse bar for the current layer selection."""
+        bar = getattr(self, 'timelapse_bar', None)
+        if bar is None:
+            return
+        with contextlib.suppress(RuntimeError):
+            bar.refresh()
+
+    def _replot_for_frame_state(self):
+        """Redraw the phasor plot and dependent tabs for the frame state.
+
+        The merged-features cache is keyed on the frame state, so it expires
+        on its own here — invalidating explicitly would also throw away the
+        per-frame histogram range, which is frame-independent and expensive
+        to recompute.
+
+        Skipped while settings are being restored from layer metadata — the
+        restore path replots once at the end.
+        """
+        if getattr(self, '_updating_settings', False):
+            return
+        self.refresh_current_plot()
+        self._update_plot_elements()
+        self._refresh_frame_dependent_tabs()
+
+    def _on_frame_changed(self, _index):
+        """Replot everything that depends on the current time-lapse frame."""
+        if self._is_closing or not self.frame_context.is_per_frame:
+            return
+        self._replot_for_frame_state()
+
+    def _on_frame_mode_changed(self, mode):
+        """Handle switching between pooled and per-frame display."""
+        if self._is_closing:
+            return
+        self._update_setting_in_metadata('timelapse_mode', mode)
+        self._refresh_timelapse_controls()
+        self._replot_for_frame_state()
+
+    def _on_frame_axis_changed(self, axis):
+        """Handle a change of which axis is stepped through."""
+        if self._is_closing:
+            return
+        self._update_setting_in_metadata('timelapse_axis', int(axis))
+        if self.frame_context.is_per_frame:
+            self._replot_for_frame_state()
+
+    def _refresh_frame_dependent_tabs(self):
+        """Re-feed the 1-D histogram of every analysis tab that holds data.
+
+        The histogram, and therefore the statistics table it drives, is
+        rebuilt from per-layer arrays sliced by the frame context. Refreshing
+        only the *focused* tab would leave a stale histogram on screen
+        whenever the dock still shows one tab's results while another tab is
+        selected, so every populated tab is refreshed. Each tab's
+        ``refresh_for_frame_change`` returns immediately when it has no
+        analysis results, and re-feeding is only a re-bin of arrays already
+        in memory, so this stays cheap during playback.
+        """
+        for tab_attr in ('phasor_mapping_tab', 'components_tab', 'fret_tab'):
+            tab = getattr(self, tab_attr, None)
+            if tab is None or not hasattr(tab, 'refresh_for_frame_change'):
+                continue
+            with contextlib.suppress(AttributeError, RuntimeError, ValueError):
+                tab.refresh_for_frame_change()
+
+    def _active_histogram_widget(self):
+        """Return the histogram widget of the visible tab, if it has data."""
+        current_tab = self.tab_widget.currentWidget()
+        for tab_attr in ('phasor_mapping_tab', 'components_tab', 'fret_tab'):
+            tab = getattr(self, tab_attr, None)
+            if tab is not None and tab is current_tab:
+                histogram = getattr(tab, 'histogram_widget', None)
+                if histogram is not None and getattr(
+                    histogram, '_datasets', None
+                ):
+                    return histogram
+        return None
+
+    def _on_export_animation_clicked(self):
+        """Render the time-lapse to an animated GIF."""
+        ctx = self.frame_context
+        if not ctx.is_per_frame or ctx.n_frames < 2:
+            notifications.show_info(
+                "Switch the Frames control to 'Current timepoint' on a "
+                "multi-frame layer to export an animation."
+            )
+            return
+
+        histogram = self._active_histogram_widget()
+        dialog = AnimationExportDialog(
+            ctx.n_frames,
+            histogram is not None,
+            parent=self,
+        )
+        if dialog.exec_() != QDialog.Accepted:
+            return
+
+        options = dialog.get_options()
+        if not options["include_phasor"] and not options["include_histogram"]:
+            notifications.show_warning("Select at least one figure to export.")
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Animation", "", "GIF Files (*.gif)"
+        )
+        if not file_path:
+            return
+        if not file_path.lower().endswith('.gif'):
+            file_path += '.gif'
+
+        frames = self._render_animation_frames(options, histogram)
+        if export_animation(file_path, frames, options["fps"]):
+            notifications.show_info(f"Animation saved to {file_path}")
+
+    def _render_animation_frames(self, options, histogram):
+        """Render one RGB image per requested frame.
+
+        The current frame is restored afterwards so exporting never leaves
+        the viewer on a different timepoint.
+        """
+        ctx = self.frame_context
+        original_index = ctx.index
+        images = []
+        try:
+            for frame in options["frames"]:
+                if frame < 0 or frame >= ctx.n_frames:
+                    continue
+                if ctx.index == frame:
+                    # The index setter is a no-op when the value is
+                    # unchanged, so redraw explicitly for the frame we
+                    # happened to start on.
+                    self._on_frame_changed(frame)
+                else:
+                    ctx.index = frame
+                QApplication.processEvents()
+
+                parts = []
+                if options["include_phasor"]:
+                    parts.append(figure_to_rgb(self.canvas_widget.figure))
+                if options["include_histogram"] and histogram is not None:
+                    parts.append(figure_to_rgb(histogram.fig))
+
+                combined = combine_frames(parts)
+                if combined is not None:
+                    images.append(combined)
+        finally:
+            ctx.index = original_index
+            QApplication.processEvents()
+        return images
 
     def _on_plot_type_changed(self):
         """Callback for plot type change."""
@@ -4319,8 +4552,19 @@ class PlotterWidget(QWidget):
                 artist.remove()
         self._phasor_center_artists.clear()
 
-    def _get_layer_phasor_samples(self, layer):
-        """Return flattened (intensity, G, S) arrays for one layer."""
+    def _get_layer_phasor_arrays(self, layer):
+        """Return the unflattened ``(intensity, G, S)`` arrays for one layer.
+
+        The G/S arrays are reduced to the currently selected harmonic and
+        keep the layer's own shape, so callers can slice them along a
+        time-lapse axis themselves.
+
+        Returns
+        -------
+        tuple or None
+            ``(mean, g, s)`` arrays, or None when the layer has no phasor
+            data for the current harmonic.
+        """
         g_array = layer.metadata.get("G")
         s_array = layer.metadata.get("S")
         harmonics = layer.metadata.get("harmonics")
@@ -4345,8 +4589,30 @@ class PlotterWidget(QWidget):
             g = g_array
             s = s_array
 
-        mean_data = layer.data
-        return mean_data.ravel(), g.ravel(), s.ravel()
+        return layer.data, g, s
+
+    def _get_layer_phasor_samples(self, layer):
+        """Return flattened (intensity, G, S) arrays for one layer.
+
+        In per-frame mode only the samples of the displayed timepoint are
+        returned, so phasor centers summarise what is on screen.
+        """
+        arrays = self._get_layer_phasor_arrays(layer)
+        if arrays is None:
+            return None
+        mean_data, g, s = arrays
+
+        mean_flat = mean_data.ravel()
+        g_flat = g.ravel()
+        s_flat = s.ravel()
+
+        frame_mask = self.frame_context.flat_frame_mask(g.shape)
+        if frame_mask is not None and frame_mask.shape == g_flat.shape:
+            mean_flat = mean_flat[frame_mask]
+            g_flat = g_flat[frame_mask]
+            s_flat = s_flat[frame_mask]
+
+        return mean_flat, g_flat, s_flat
 
     def _compute_center_from_samples(self, mean_flat, g_flat, s_flat):
         """Compute (g, s) center from flattened sample arrays."""
@@ -4379,6 +4645,102 @@ class PlotterWidget(QWidget):
             return None
         mean_flat, g_flat, s_flat = samples
         return self._compute_center_from_samples(mean_flat, g_flat, s_flat)
+
+    def _center_row(self, frame, name, center):
+        """Build one CSV row from a ``(g, s)`` phasor center."""
+        g_center, s_center = center
+        phase, modulation = phasor_to_polar(
+            np.array([g_center]), np.array([s_center])
+        )
+        return {
+            "Frame": frame,
+            "Name": name,
+            "G (center)": g_center,
+            "S (center)": s_center,
+            "Phase (deg)": float(np.degrees(phase[0])),
+            "Modulation": float(modulation[0]),
+        }
+
+    def _phasor_center_statistics_rows(self, per_frame):
+        """Compute phasor-center rows for every selected layer.
+
+        Parameters
+        ----------
+        per_frame : bool
+            When True, emit one row per timepoint per layer; otherwise one
+            pooled row per layer.
+
+        Returns
+        -------
+        list of dict
+            Rows ready to be written to CSV.
+        """
+        rows = []
+        for layer in self.get_selected_layers():
+            arrays = self._get_layer_phasor_arrays(layer)
+            if arrays is None:
+                continue
+            mean_data, g, s = arrays
+
+            axis = None
+            if per_frame:
+                candidate = self.frame_context.axis
+                if (
+                    g.ndim >= 3
+                    and 0 <= candidate < g.ndim - 2
+                    and g.shape[candidate] > 1
+                ):
+                    axis = candidate
+
+            if axis is None:
+                center = self._compute_center_from_samples(
+                    mean_data.ravel(), g.ravel(), s.ravel()
+                )
+                if center is not None:
+                    rows.append(self._center_row(0, layer.name, center))
+                continue
+
+            for frame in range(g.shape[axis]):
+                center = self._compute_center_from_samples(
+                    np.take(mean_data, frame, axis=axis).ravel(),
+                    np.take(g, frame, axis=axis).ravel(),
+                    np.take(s, frame, axis=axis).ravel(),
+                )
+                if center is not None:
+                    rows.append(self._center_row(frame, layer.name, center))
+
+        rows.sort(key=lambda row: (row["Frame"], str(row["Name"])))
+        return rows
+
+    def _export_phasor_center_statistics(self):
+        """Export phasor centers as CSV, pooled or one row per timepoint."""
+        per_frame = False
+        if self.frame_context.available_axes():
+            menu = QMenu(self)
+            pooled_action = menu.addAction("All timepoints pooled")
+            per_frame_action = menu.addAction("Per timepoint")
+            button = self._phasor_center_stats_widget.export_csv_button
+            chosen = menu.exec_(button.mapToGlobal(button.rect().bottomLeft()))
+            if chosen is None:
+                return
+            per_frame = chosen is per_frame_action
+            del pooled_action
+
+        rows = self._phasor_center_statistics_rows(per_frame)
+        if not rows:
+            notifications.show_warning("No phasor centers to export.")
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Phasor Centers as CSV", "", "CSV Files (*.csv)"
+        )
+        if not file_path:
+            return
+        if not file_path.endswith('.csv'):
+            file_path += '.csv'
+
+        write_rows_to_csv(file_path, rows)
+        notifications.show_info(f"Phasor centers saved to {file_path}")
 
     def _update_phasor_centers(self):
         """Calculate and plot phasor center dots on the axes."""
@@ -5553,7 +5915,7 @@ class PlotterWidget(QWidget):
         layer_name = (
             self.image_layer_with_phasor_features_combobox.currentText()
         )
-        if layer_name == "":
+        if layer_name == "" or layer_name not in self.viewer.layers:
             return None
         layer = self.viewer.layers[layer_name]
         if "settings" in layer.metadata:
@@ -5571,7 +5933,7 @@ class PlotterWidget(QWidget):
         layer_name = (
             self.image_layer_with_phasor_features_combobox.currentText()
         )
-        if not layer_name:
+        if not layer_name or layer_name not in self.viewer.layers:
             self._broadcast_frequency_value_across_tabs("")
             return
 
@@ -5600,7 +5962,7 @@ class PlotterWidget(QWidget):
                 layer_name = (
                     self.image_layer_with_phasor_features_combobox.currentText()
                 )
-                if layer_name:
+                if layer_name and layer_name in self.viewer.layers:
                     layer = self.viewer.layers[layer_name]
                     update_frequency_in_metadata(layer, freq_val)
         except (ValueError, TypeError):
@@ -6198,6 +6560,7 @@ class PlotterWidget(QWidget):
             self._g_original_array = None
             self._s_original_array = None
             self._harmonics_array = None
+            self._refresh_timelapse_controls()
             for artist in self.canvas_widget.artists.values():
                 artist._remove_artists()
                 # ``_remove_artists`` empties ``_mpl_artists`` but leaves
@@ -6258,6 +6621,7 @@ class PlotterWidget(QWidget):
 
         self._initialize_plot_settings_in_metadata(layer)
         self._restore_plot_settings_from_metadata()
+        self._refresh_timelapse_controls()
 
         if sync_frequency:
             self._sync_frequency_inputs_from_metadata()
@@ -6327,6 +6691,7 @@ class PlotterWidget(QWidget):
             selected_layers = self.get_selected_layers()
             self._update_grid_view(selected_layers)
             self._update_contour_controls_visibility()
+            self._refresh_timelapse_controls()
 
             layer_name = self.get_primary_layer_name()
             if not layer_name:
@@ -7263,6 +7628,133 @@ class PlotterWidget(QWidget):
             return g, s, valid
         return g, s
 
+    def _iter_layer_gs_arrays(self):
+        """Yield ``(g, s, frame_axis)`` for every selected layer.
+
+        ``frame_axis`` is None for layers with no stack axis (a plain 2-D
+        layer selected alongside a stack), which contribute all their samples
+        to every frame — matching what :meth:`get_merged_features` does.
+        """
+        for layer in self.get_selected_layers():
+            arrays = self._get_layer_phasor_arrays(layer)
+            if arrays is None:
+                continue
+            _mean, g, s = arrays
+            yield g, s, self.frame_context.axis_for_shape(g.shape)
+
+    @staticmethod
+    def _finite_gs(g, s):
+        """Return the flattened, finite ``(g, s)`` pairs of two arrays."""
+        g_flat = g.ravel()
+        s_flat = s.ravel()
+        valid = np.isfinite(g_flat) & np.isfinite(s_flat)
+        return g_flat[valid], s_flat[valid]
+
+    def _frame_histogram_reference(self):
+        """Bin edges and count range shared by every frame of the stack.
+
+        Left to itself, the 2D histogram re-bins and re-normalises on each
+        frame, so a given colour — and the colorbar beside it — stands for a
+        different number of pixels at every timepoint. Deriving one bin grid
+        and one count range from the whole acquisition (across every selected
+        layer) keeps frames directly comparable, which is the point of
+        stepping through them.
+
+        The result is cached; it only depends on the selected layers, the
+        harmonic, the bin count and the frame axis.
+
+        Returns
+        -------
+        dict or None
+            ``{"bins": [x_edges, y_edges], "vmin": float, "vmax": float}``,
+            or None when pooled or when there is nothing to compute.
+        """
+        ctx = self.frame_context
+        if not ctx.is_per_frame:
+            return None
+
+        selected_layers = self.get_selected_layers()
+        if not selected_layers:
+            return None
+
+        cache_key = (
+            tuple(layer.name for layer in selected_layers),
+            self.harmonic,
+            self.histogram_bins,
+            ctx.axis,
+            ctx.n_frames,
+        )
+        if self._frame_histogram_cache_key == cache_key:
+            return self._frame_histogram_cache
+
+        per_layer = list(self._iter_layer_gs_arrays())
+        if not per_layer:
+            return None
+
+        pooled_g = []
+        pooled_s = []
+        for g, s, _axis in per_layer:
+            layer_g, layer_s = self._finite_gs(g, s)
+            pooled_g.append(layer_g)
+            pooled_s.append(layer_s)
+
+        pooled_g = np.concatenate(pooled_g)
+        pooled_s = np.concatenate(pooled_s)
+        if pooled_g.size == 0:
+            return None
+
+        # Bin over the pooled cloud so the grid matches what "All timepoints"
+        # would draw, and stays put while stepping through frames.
+        _counts, x_edges, y_edges = np.histogram2d(
+            pooled_g, pooled_s, bins=self.histogram_bins
+        )
+
+        cmin = 1
+        vmax = 0.0
+        for frame in range(max(1, ctx.n_frames)):
+            frame_g = []
+            frame_s = []
+            for g, s, axis in per_layer:
+                if axis is None:
+                    layer_g, layer_s = self._finite_gs(g, s)
+                else:
+                    index = min(frame, g.shape[axis] - 1)
+                    layer_g, layer_s = self._finite_gs(
+                        np.take(g, index, axis=axis),
+                        np.take(s, index, axis=axis),
+                    )
+                frame_g.append(layer_g)
+                frame_s.append(layer_s)
+
+            frame_g = np.concatenate(frame_g)
+            frame_s = np.concatenate(frame_s)
+            if frame_g.size == 0:
+                continue
+
+            counts, _, _ = np.histogram2d(
+                frame_g, frame_s, bins=[x_edges, y_edges]
+            )
+            visible = counts[counts >= cmin]
+            if visible.size:
+                vmax = max(vmax, float(visible.max()))
+
+        if vmax <= 0:
+            return None
+
+        reference = {
+            "bins": [x_edges, y_edges],
+            "vmin": float(cmin),
+            "vmax": vmax,
+        }
+        self._frame_histogram_cache_key = cache_key
+        self._frame_histogram_cache = reference
+        return reference
+
+    def _invalidate_frame_histogram_cache(self):
+        """Drop the cached per-frame bin grid and count range."""
+        self._frame_histogram_cache = None
+        self._frame_histogram_cache_key = None
+
     def _invalidate_features_cache(self):
         """Invalidate the merged-features cache.
 
@@ -7273,6 +7765,7 @@ class PlotterWidget(QWidget):
         """
         self._features_cache = None
         self._features_cache_key = None
+        self._invalidate_frame_histogram_cache()
 
     def get_features(self):
         """Get the G and S features for the selected harmonic.
@@ -7311,6 +7804,7 @@ class PlotterWidget(QWidget):
         cache_key = (
             tuple(layer.name for layer in selected_layers),
             self.harmonic,
+            self.frame_context.state_key(),
         )
         if (
             self._features_cache is not None
@@ -7351,6 +7845,7 @@ class PlotterWidget(QWidget):
             g_flat = g.ravel()
             s_flat = s.ravel()
             valid = (~np.isnan(g_flat)) & (~np.isnan(s_flat))
+            valid = self.frame_context.filter_valid(valid, g.shape)
 
             all_g.append(g_flat[valid])
             all_s.append(s_flat[valid])
@@ -7750,12 +8245,40 @@ class PlotterWidget(QWidget):
             plot_data = np.column_stack((x_data, y_data))
             histogram_artist = self.canvas_widget.artists['HISTOGRAM2D']
 
+            # In per-frame mode pin the bin grid and the colour scale to the
+            # whole acquisition, so a colour means the same pixel count on
+            # every frame instead of being rescaled frame by frame.
+            frame_reference = self._frame_histogram_reference()
+            if frame_reference is None:
+                histogram_artist._napari_phasors_fixed_counts_range = None
+                bins_value = self.histogram_bins
+                bins_key = ('count', self.histogram_bins)
+            else:
+                histogram_artist._napari_phasors_fixed_counts_range = (
+                    frame_reference["vmin"],
+                    frame_reference["vmax"],
+                )
+                bins_value = frame_reference["bins"]
+                x_edges, y_edges = bins_value
+                bins_key = (
+                    'edges',
+                    len(x_edges),
+                    len(y_edges),
+                    float(x_edges[0]),
+                    float(x_edges[-1]),
+                    float(y_edges[0]),
+                    float(y_edges[-1]),
+                )
+
+            # ``data`` has to be assigned before ``bins``: biaplotter's bins
+            # setter refreshes immediately and would trip over an artist that
+            # has no data yet.
             histogram_artist.data = plot_data
             histogram_artist.cmin = 1
 
-            if self._last_histogram_bins != self.histogram_bins:
-                histogram_artist.bins = self.histogram_bins
-                self._last_histogram_bins = self.histogram_bins
+            if self._last_histogram_bins != bins_key:
+                histogram_artist.bins = bins_value
+                self._last_histogram_bins = bins_key
 
             histogram_is_solid = self._histogram_style == 'solid'
             if histogram_is_solid:
@@ -7910,6 +8433,7 @@ class PlotterWidget(QWidget):
             g_flat = g.ravel()
             s_flat = s.ravel()
             valid = (~np.isnan(g_flat)) & (~np.isnan(s_flat))
+            valid = self.frame_context.filter_valid(valid, g.shape)
             if not np.any(valid):
                 continue
 
@@ -8390,12 +8914,15 @@ class PlotterWidget(QWidget):
             if x_data is None or y_data is None:
                 features = self.get_features()
                 if features is None:
+                    self._blank_plot_for_empty_frame()
                     return
                 x_data, y_data = features
 
             if len(x_data) == 0 or len(y_data) == 0:
+                self._blank_plot_for_empty_frame()
                 return
 
+            self._unblank_plot_after_empty_frame()
             self._set_active_artist_and_plot(
                 self.plot_type, x_data, y_data, selection_id_data
             )
@@ -8416,6 +8943,32 @@ class PlotterWidget(QWidget):
                 self.canvas_widget.figure.canvas.draw_idle()
         finally:
             self._updating_plot = False
+
+    def _blank_plot_for_empty_frame(self):
+        """Blank the phasor plot when the displayed frame has no samples.
+
+        Only applies in per-frame mode. Without it, a frame that is entirely
+        masked or thresholded out would keep showing the previous frame's
+        cloud while stepping or playing through a time-lapse.
+        """
+        if not self.frame_context.is_per_frame:
+            return
+        for artist in getattr(self.canvas_widget, 'artists', {}).values():
+            if hasattr(artist, 'visible'):
+                artist.visible = False
+        self._clear_contour_plot()
+        self._frame_plot_blanked = True
+        self.canvas_widget.figure.canvas.draw_idle()
+
+    def _unblank_plot_after_empty_frame(self):
+        """Re-show the artist hidden by a previous empty frame."""
+        if not getattr(self, '_frame_plot_blanked', False):
+            return
+        self._frame_plot_blanked = False
+        active = getattr(self.canvas_widget, 'active_artist', None)
+        for artist in getattr(self.canvas_widget, 'artists', {}).values():
+            if hasattr(artist, 'visible'):
+                artist.visible = artist is active
 
     def refresh_current_plot(self):
         """Refresh the current plot with existing data."""
@@ -8553,6 +9106,8 @@ class PlotterWidget(QWidget):
             self._bins_timer.stop()
         with contextlib.suppress(AttributeError):
             self._resize_canvas_timer.stop()
+        with contextlib.suppress(AttributeError, RuntimeError):
+            self.frame_context.disconnect_viewer()
 
         # Disconnect timer callbacks to avoid queued invocations during teardown.
         with contextlib.suppress(TypeError, ValueError, AttributeError):
