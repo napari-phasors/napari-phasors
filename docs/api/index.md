@@ -26,6 +26,14 @@ This section documents the public Python API of napari-phasors.
    :undoc-members:
 ```
 
+## Time-lapse
+
+```{eval-rst}
+.. automodule:: napari_phasors._timelapse
+   :members:
+   :undoc-members:
+```
+
 ## Synthetic Data Generator
 
 ```{eval-rst}

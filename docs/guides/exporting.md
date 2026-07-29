@@ -13,6 +13,12 @@ Multiple layers can be selected and exported simultaneously in a single operatio
 
 Phasor coordinates and selections can be exported as CSV files using the **Export Phasor** widget. Analysis results, such as lifetime, FRET efficiency, and component fractions, can also be exported to CSV. Similarly, labels layers can be exported to CSV, where the pixel coordinates and corresponding label values/IDs are saved.
 
+## Animation and per-timepoint export
+
+For time-lapse acquisitions, the phasor plot and the histogram can be exported
+as an animated GIF, and both statistics tables can be exported with one row per
+timepoint. See {doc}`timelapse`.
+
 ## Image export
 
 The colormapped image layer can be exported with or without its associated colorbar. Labels layers can also be exported as images using their colored representation.
