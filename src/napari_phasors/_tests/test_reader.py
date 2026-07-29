@@ -109,6 +109,84 @@ def test_raw_reader_nonzero_channel_label(monkeypatch, extension):
     assert layer_data_list[0][1]["metadata"]["settings"]["channel"] == 3
 
 
+def test_reader_h5_reference_lifetime_setting(monkeypatch):
+    """H5 reader should expose MCS reference lifetime metadata in settings."""
+    signal = xr.DataArray(
+        np.ones((2, 2, 4), dtype=np.uint16),
+        dims=("Y", "X", "H"),
+        attrs={
+            "frequency": 80.0,
+            "reference_lifetime_ns": 2.7,
+            "h5_dataset": "/raw/spad",
+            "h5_selection": {"time": 0, "depth": 0, "channel": 0},
+        },
+    )
+
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".h5",
+        lambda path, reader_options: signal,
+    )
+
+    layer_data_list = reader_module.raw_file_reader("example.h5")
+
+    settings = layer_data_list[0][1]["metadata"]["settings"]
+    assert settings["frequency"] == 80.0
+    assert settings["reference_lifetime_ns"] == 2.7
+    assert settings["dataset"] == "/raw/spad"
+    assert settings["h5_dataset"] == "/raw/spad"
+
+
+def test_signal_from_brighteyes_mcs_uses_phasorpy(tmp_path):
+    """H5 adapter should use PhasorPy's BrightEyes-MCS reader."""
+    assert (
+        reader_module._signal_from_brighteyes_mcs
+        is reader_module.io.signal_from_brighteyes_mcs
+    )
+
+    pytest.importorskip("brighteyes_mcs_reader")
+    h5py = pytest.importorskip("h5py")
+
+    filename = tmp_path / "current_mcs.h5"
+    data = np.arange(1 * 1 * 2 * 3 * 4 * 1, dtype=np.uint16).reshape(
+        1, 1, 2, 3, 4, 1
+    )
+    with h5py.File(filename, "w") as h5:
+        h5.attrs["schema_name"] = "brighteyes_mcs_file"
+        h5.attrs["data_format_version"] = "0.0.6"
+        h5.attrs["default"] = "/raw/spad"
+        raw = h5.create_group("raw")
+        raw.create_group("metadata")
+        axes = raw.create_group("axes")
+        axes.create_dataset("digital_time_ns", data=np.arange(4))
+        dataset = raw.create_dataset("spad", data=data)
+        dataset.attrs["axis_order"] = (
+            "repetition,z,y,x,time_bin,detector_channel"
+        )
+        dataset.attrs["time_axis_path"] = "/raw/axes/digital_time_ns"
+
+    signal = reader_module._signal_from_brighteyes_mcs(filename)
+
+    assert signal.dims == ("Y", "X", "H")
+    np.testing.assert_array_equal(signal.values, data[0, 0, :, :, :, 0])
+    assert signal.attrs["h5_dataset"] == "/raw/spad"
+    assert signal.attrs["h5_selection"] == {
+        "time": 0,
+        "depth": 0,
+        "channel": 0,
+    }
+
+
+def test_format_h5_dataset_label_current_virtual_channel_path():
+    """Current grouped virtual-channel paths should keep kind and channel."""
+    assert (
+        reader_module._format_h5_dataset_label(
+            "/output/virtual_channels/spad/channel_0"
+        )
+        == "Raw view: spad/channel 0"
+    )
+
+
 def test_reader_fbd():
     """Test reading a FBD file"""
     fbd_file = get_test_file_path("test_file$EI0S.fbd")

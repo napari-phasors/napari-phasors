@@ -27,6 +27,7 @@ from napari_phasors._widget import (
     AdvancedOptionsWidget,
     CziWidget,
     FbdWidget,
+    H5Widget,
     LsmWidget,
     OmeTifWidget,
     PhasorTransform,
@@ -42,6 +43,39 @@ TEST_FORMATS = [
     (".sdt", SdtWidget),
     (".ome.tif", None),
 ]
+
+
+def test_h5_widget_current_output_default_product(tmp_path):
+    """Test current-schema output defaults can point to a non-spad product."""
+    import h5py
+
+    file_path = tmp_path / "current_output.h5"
+    with h5py.File(file_path, "w") as h5:
+        h5.attrs["schema_name"] = "brighteyes_mcs_file"
+        h5.attrs["data_format_version"] = "0.0.6"
+        raw = h5.create_group("raw")
+        raw.create_group("metadata")
+        raw.create_group("axes")
+        output = h5.create_group("output")
+        output.attrs["default"] = "/output/apr_001/products/apr_sum"
+        output.attrs["default_run"] = "/output/apr_001"
+        products = output.create_group("apr_001/products")
+        products.create_dataset("apr", data=np.zeros((1, 2, 3, 4, 5)))
+        dataset = products.create_dataset(
+            "apr_sum", data=np.zeros((1, 2, 3, 4, 5))
+        )
+        dataset.attrs["axis_order"] = "repetition,z,y,x,time_bin"
+
+        widget = H5Widget.__new__(H5Widget)
+        widget.h5_products = []
+        widget._read_h5_products(file_path)
+
+    assert widget.h5_products[0]["path"] == (
+        "/output/apr_001/products/apr_sum"
+    )
+    assert widget.h5_products[0]["default"] is True
+    assert widget.all_time == 1
+    assert widget.all_depth == 2
 
 
 def test_phasor_transform_widget(make_viewer_model, qtbot):
