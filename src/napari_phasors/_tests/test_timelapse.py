@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+from qtpy.QtWidgets import QDialog
 
 from napari_phasors._synthetic_generator import (
     make_intensity_layer_with_phasors,
@@ -1219,3 +1220,596 @@ def test_combine_frames_pads_to_a_common_height():
     assert combine_frames([]) is None
     assert combine_frames([left]).shape == (10, 4, 3)
     assert combine_frames([left, right]).shape == (10, 9, 3)
+
+
+# ---------------------------------------------------------------------------
+# Export handlers (the dialog-driven entry points)
+# ---------------------------------------------------------------------------
+
+
+class _DialogStub:
+    """Stand in for a modal dialog, returning a fixed result and options."""
+
+    def __init__(self, accepted, options=None):
+        self._accepted = accepted
+        self._options = options or {}
+        self.constructed_with = None
+
+    def __call__(self, *args, **kwargs):
+        self.constructed_with = (args, kwargs)
+        return self
+
+    def exec_(self):
+        return self._accepted
+
+    def exec(self):
+        return self._accepted
+
+    def get_options(self):
+        return self._options
+
+
+def _accept_save_dialog(monkeypatch, path):
+    """Make QFileDialog.getSaveFileName return *path* without a UI."""
+    monkeypatch.setattr(
+        "napari_phasors.plotter.QFileDialog.getSaveFileName",
+        staticmethod(lambda *a, **k: (str(path), "")),
+    )
+
+
+def test_export_animation_click_writes_a_gif(
+    make_viewer_model, monkeypatch, tmp_path
+):
+    """The Export Animation button renders and saves without a dialog."""
+    pytest.importorskip("imageio.v3")
+
+    viewer = make_viewer_model()
+    plotter = make_plotter_with_layer(viewer, create_stack_layer())
+    try:
+        plotter.frame_context.mode = CURRENT
+
+        target = tmp_path / "movie"  # no extension: handler must add .gif
+        stub = _DialogStub(
+            QDialog.Accepted,
+            {
+                "include_phasor": True,
+                "include_histogram": False,
+                "frames": list(range(N_FRAMES)),
+                "fps": 5,
+            },
+        )
+        monkeypatch.setattr(
+            "napari_phasors.plotter.AnimationExportDialog", stub
+        )
+        _accept_save_dialog(monkeypatch, target)
+
+        plotter._on_export_animation_clicked()
+
+        assert (tmp_path / "movie.gif").exists()
+    finally:
+        plotter.close()
+
+
+def test_export_animation_click_needs_per_frame_mode(
+    make_viewer_model, monkeypatch
+):
+    """In pooled mode the handler explains itself instead of exporting."""
+    viewer = make_viewer_model()
+    plotter = make_plotter_with_layer(viewer, create_stack_layer())
+    try:
+        messages = []
+        monkeypatch.setattr(
+            "napari_phasors.plotter.notifications.show_info", messages.append
+        )
+        # A dialog must never be constructed on this path.
+        monkeypatch.setattr(
+            "napari_phasors.plotter.AnimationExportDialog",
+            lambda *a, **k: pytest.fail("dialog opened in pooled mode"),
+        )
+
+        plotter._on_export_animation_clicked()
+
+        assert messages and "Current timepoint" in messages[0]
+    finally:
+        plotter.close()
+
+
+def test_export_animation_click_cancelled(make_viewer_model, monkeypatch):
+    """Rejecting the options dialog exports nothing."""
+    viewer = make_viewer_model()
+    plotter = make_plotter_with_layer(viewer, create_stack_layer())
+    try:
+        plotter.frame_context.mode = CURRENT
+        monkeypatch.setattr(
+            "napari_phasors.plotter.AnimationExportDialog",
+            _DialogStub(QDialog.Rejected),
+        )
+        monkeypatch.setattr(
+            "napari_phasors.plotter.QFileDialog.getSaveFileName",
+            staticmethod(
+                lambda *a, **k: pytest.fail("save dialog opened after cancel")
+            ),
+        )
+
+        plotter._on_export_animation_clicked()
+    finally:
+        plotter.close()
+
+
+def test_export_animation_click_requires_a_figure(
+    make_viewer_model, monkeypatch
+):
+    """Deselecting both figures warns rather than writing an empty GIF."""
+    viewer = make_viewer_model()
+    plotter = make_plotter_with_layer(viewer, create_stack_layer())
+    try:
+        plotter.frame_context.mode = CURRENT
+        warnings_seen = []
+        monkeypatch.setattr(
+            "napari_phasors.plotter.notifications.show_warning",
+            warnings_seen.append,
+        )
+        monkeypatch.setattr(
+            "napari_phasors.plotter.AnimationExportDialog",
+            _DialogStub(
+                QDialog.Accepted,
+                {
+                    "include_phasor": False,
+                    "include_histogram": False,
+                    "frames": [0],
+                    "fps": 5,
+                },
+            ),
+        )
+        monkeypatch.setattr(
+            "napari_phasors.plotter.QFileDialog.getSaveFileName",
+            staticmethod(lambda *a, **k: pytest.fail("save dialog opened")),
+        )
+
+        plotter._on_export_animation_clicked()
+
+        assert warnings_seen
+    finally:
+        plotter.close()
+
+
+def test_export_animation_click_no_path_chosen(make_viewer_model, monkeypatch):
+    """Dismissing the file dialog exports nothing."""
+    viewer = make_viewer_model()
+    plotter = make_plotter_with_layer(viewer, create_stack_layer())
+    try:
+        plotter.frame_context.mode = CURRENT
+        monkeypatch.setattr(
+            "napari_phasors.plotter.AnimationExportDialog",
+            _DialogStub(
+                QDialog.Accepted,
+                {
+                    "include_phasor": True,
+                    "include_histogram": False,
+                    "frames": [0],
+                    "fps": 5,
+                },
+            ),
+        )
+        monkeypatch.setattr(
+            "napari_phasors.plotter.QFileDialog.getSaveFileName",
+            staticmethod(lambda *a, **k: ("", "")),
+        )
+        monkeypatch.setattr(
+            "napari_phasors.plotter.export_animation",
+            lambda *a, **k: pytest.fail("exported without a path"),
+        )
+
+        plotter._on_export_animation_clicked()
+    finally:
+        plotter.close()
+
+
+def test_render_animation_frames_skips_out_of_range(make_viewer_model):
+    """Frame indices outside the stack are ignored, not clamped."""
+    viewer = make_viewer_model()
+    plotter = make_plotter_with_layer(viewer, create_stack_layer())
+    try:
+        plotter.frame_context.mode = CURRENT
+        frames = plotter._render_animation_frames(
+            {
+                "include_phasor": True,
+                "include_histogram": False,
+                "frames": [-1, 0, N_FRAMES, N_FRAMES + 5],
+                "fps": 5,
+            },
+            histogram=None,
+        )
+        assert len(frames) == 1
+    finally:
+        plotter.close()
+
+
+def test_render_animation_frames_redraws_the_starting_frame(
+    make_viewer_model,
+):
+    """The frame already displayed still gets rendered."""
+    viewer = make_viewer_model()
+    plotter = make_plotter_with_layer(viewer, create_stack_layer())
+    try:
+        plotter.frame_context.mode = CURRENT
+        plotter.frame_context.index = 2
+        frames = plotter._render_animation_frames(
+            {
+                "include_phasor": True,
+                "include_histogram": False,
+                "frames": [2],
+                "fps": 5,
+            },
+            histogram=None,
+        )
+        assert len(frames) == 1
+    finally:
+        plotter.close()
+
+
+def _choose_menu_action(monkeypatch, index):
+    """Pick the *index*-th action of the next QMenu shown, or None to cancel."""
+
+    def fake_exec(self, *args, **kwargs):
+        actions = self.actions()
+        return None if index is None else actions[index]
+
+    monkeypatch.setattr(
+        "napari_phasors.plotter.QMenu.exec_", fake_exec, raising=False
+    )
+
+
+def test_phasor_center_export_per_timepoint(
+    make_viewer_model, monkeypatch, tmp_path
+):
+    """Choosing 'Per timepoint' writes one row per frame."""
+    viewer = make_viewer_model()
+    plotter = make_plotter_with_layer(viewer, create_stack_layer())
+    try:
+        target = tmp_path / "centers"  # no extension: handler must add .csv
+        _choose_menu_action(monkeypatch, 1)  # "Per timepoint"
+        _accept_save_dialog(monkeypatch, target)
+
+        plotter._export_phasor_center_statistics()
+
+        lines = (tmp_path / "centers.csv").read_text().strip().splitlines()
+        assert len(lines) == N_FRAMES + 1
+        assert lines[0].startswith("Frame,Name,G (center)")
+    finally:
+        plotter.close()
+
+
+def test_phasor_center_export_pooled(make_viewer_model, monkeypatch, tmp_path):
+    """Choosing 'All timepoints pooled' writes a single row."""
+    viewer = make_viewer_model()
+    plotter = make_plotter_with_layer(viewer, create_stack_layer())
+    try:
+        target = tmp_path / "pooled.csv"
+        _choose_menu_action(monkeypatch, 0)  # "All timepoints pooled"
+        _accept_save_dialog(monkeypatch, target)
+
+        plotter._export_phasor_center_statistics()
+
+        lines = target.read_text().strip().splitlines()
+        assert len(lines) == 2
+    finally:
+        plotter.close()
+
+
+def test_phasor_center_export_menu_cancelled(make_viewer_model, monkeypatch):
+    """Dismissing the menu exports nothing."""
+    viewer = make_viewer_model()
+    plotter = make_plotter_with_layer(viewer, create_stack_layer())
+    try:
+        _choose_menu_action(monkeypatch, None)
+        monkeypatch.setattr(
+            "napari_phasors.plotter.QFileDialog.getSaveFileName",
+            staticmethod(lambda *a, **k: pytest.fail("save dialog opened")),
+        )
+
+        plotter._export_phasor_center_statistics()
+    finally:
+        plotter.close()
+
+
+def test_phasor_center_export_no_path_chosen(make_viewer_model, monkeypatch):
+    """Dismissing the file dialog writes nothing."""
+    viewer = make_viewer_model()
+    plotter = make_plotter_with_layer(viewer, create_stack_layer())
+    try:
+        _choose_menu_action(monkeypatch, 0)
+        monkeypatch.setattr(
+            "napari_phasors.plotter.QFileDialog.getSaveFileName",
+            staticmethod(lambda *a, **k: ("", "")),
+        )
+        monkeypatch.setattr(
+            "napari_phasors.plotter.write_rows_to_csv",
+            lambda *a, **k: pytest.fail("wrote without a path"),
+        )
+
+        plotter._export_phasor_center_statistics()
+    finally:
+        plotter.close()
+
+
+def test_phasor_center_export_for_2d_data_skips_the_menu(
+    make_viewer_model, monkeypatch, tmp_path
+):
+    """Without a stack axis there is nothing to choose, so no menu appears."""
+    viewer = make_viewer_model()
+    plotter = make_plotter_with_layer(viewer, create_flat_layer())
+    try:
+        target = tmp_path / "flat.csv"
+        monkeypatch.setattr(
+            "napari_phasors.plotter.QMenu.exec_",
+            lambda self, *a, **k: pytest.fail("menu opened for 2D data"),
+            raising=False,
+        )
+        _accept_save_dialog(monkeypatch, target)
+
+        plotter._export_phasor_center_statistics()
+
+        assert len(target.read_text().strip().splitlines()) == 2
+    finally:
+        plotter.close()
+
+
+def test_phasor_center_export_without_centers_warns(
+    make_viewer_model, monkeypatch
+):
+    """A selection with no computable centers warns instead of writing."""
+    viewer = make_viewer_model()
+    plotter = make_plotter_with_layer(viewer, create_stack_layer())
+    try:
+        warnings_seen = []
+        monkeypatch.setattr(
+            "napari_phasors.plotter.notifications.show_warning",
+            warnings_seen.append,
+        )
+        monkeypatch.setattr(
+            plotter, "_phasor_center_statistics_rows", lambda per_frame: []
+        )
+        monkeypatch.setattr(
+            "napari_phasors.plotter.QFileDialog.getSaveFileName",
+            staticmethod(lambda *a, **k: pytest.fail("save dialog opened")),
+        )
+        _choose_menu_action(monkeypatch, 0)
+
+        plotter._export_phasor_center_statistics()
+
+        assert warnings_seen
+    finally:
+        plotter.close()
+
+
+# ---------------------------------------------------------------------------
+# Guard branches
+# ---------------------------------------------------------------------------
+
+
+def test_frame_callbacks_are_inert_while_closing(make_viewer_model):
+    """Queued frame callbacks must not touch a widget that is tearing down."""
+    viewer = make_viewer_model()
+    plotter = make_plotter_with_layer(viewer, create_stack_layer())
+    try:
+        plotter.frame_context.mode = CURRENT
+        plotter._is_closing = True
+
+        replots = []
+        plotter._replot_for_frame_state = lambda: replots.append(True)
+
+        plotter._on_frame_changed(1)
+        plotter._on_frame_mode_changed(POOLED)
+        plotter._on_frame_axis_changed(0)
+
+        assert replots == []
+    finally:
+        plotter._is_closing = False
+        plotter.close()
+
+
+def test_frame_changed_is_inert_in_pooled_mode(make_viewer_model):
+    """A frame change while pooled changes nothing on screen."""
+    viewer = make_viewer_model()
+    plotter = make_plotter_with_layer(viewer, create_stack_layer())
+    try:
+        replots = []
+        plotter._replot_for_frame_state = lambda: replots.append(True)
+
+        plotter._on_frame_changed(2)
+
+        assert replots == []
+    finally:
+        plotter.close()
+
+
+def test_frame_axis_change_replots_only_per_frame(make_viewer_model):
+    """Switching axis matters only when a single frame is displayed."""
+    viewer = make_viewer_model()
+    plotter = make_plotter_with_layer(
+        viewer, create_stack_layer(shape=(2, 3, 5, 6))
+    )
+    try:
+        replots = []
+        plotter._replot_for_frame_state = lambda: replots.append(True)
+
+        plotter._on_frame_axis_changed(1)
+        assert replots == []
+
+        plotter.frame_context.mode = CURRENT
+        plotter._on_frame_axis_changed(0)
+        assert replots
+    finally:
+        plotter.close()
+
+
+def test_refresh_timelapse_controls_without_a_bar(make_viewer_model):
+    """The refresh helper tolerates being called before the bar exists."""
+    viewer = make_viewer_model()
+    plotter = make_plotter_with_layer(viewer, create_stack_layer())
+    try:
+        bar = plotter.timelapse_bar
+        del plotter.timelapse_bar
+        plotter._refresh_timelapse_controls()  # must not raise
+        plotter.timelapse_bar = bar
+    finally:
+        plotter.close()
+
+
+def test_refresh_frame_dependent_tabs_skips_missing_tabs(make_viewer_model):
+    """Tabs that are absent or lack the hook are stepped over."""
+    viewer = make_viewer_model()
+    plotter = make_plotter_with_layer(viewer, create_stack_layer())
+    try:
+        original = (
+            plotter.phasor_mapping_tab,
+            plotter.components_tab,
+            plotter.fret_tab,
+        )
+        plotter.phasor_mapping_tab = None
+        # An object that simply has no ``refresh_for_frame_change`` hook.
+        plotter.components_tab = object()
+
+        plotter._refresh_frame_dependent_tabs()  # must not raise
+
+        (
+            plotter.phasor_mapping_tab,
+            plotter.components_tab,
+            plotter.fret_tab,
+        ) = original
+    finally:
+        plotter.close()
+
+
+def test_active_histogram_widget_without_data(make_viewer_model):
+    """No analysis run means no histogram to offer the animation export."""
+    viewer = make_viewer_model()
+    plotter = make_plotter_with_layer(viewer, create_stack_layer())
+    try:
+        plotter.tab_widget.setCurrentWidget(plotter.settings_tab)
+        assert plotter._active_histogram_widget() is None
+    finally:
+        plotter.close()
+
+
+def test_deferred_tab_update_skipped_for_a_removed_layer(make_viewer_model):
+    """A pending tab update must not look up a layer that is already gone.
+
+    The tab-change event can arrive after the layer was removed; the restore
+    paths index the viewer by name, so the update is skipped wholesale.
+    """
+    viewer = make_viewer_model()
+    layer = create_stack_layer()
+    plotter = make_plotter_with_layer(viewer, layer)
+    try:
+        mapping_tab = plotter.phasor_mapping_tab
+        mapping_tab._needs_update = True
+        restores = []
+        mapping_tab._restore_on_layer_change = lambda: restores.append(True)
+
+        # The combobox still reports a layer the viewer no longer holds,
+        # which is exactly the state a late tab-change event arrives in.
+        plotter.get_primary_layer_name = lambda: "Gone Intensity Image"
+        plotter._run_deferred_tab_update(mapping_tab)
+        assert restores == []
+
+        # Tearing down short-circuits the same way.
+        plotter.get_primary_layer_name = lambda: layer.name
+        plotter._is_closing = True
+        plotter._run_deferred_tab_update(mapping_tab)
+        assert restores == []
+        plotter._is_closing = False
+
+        # With a live layer the deferred update still runs.
+        plotter._run_deferred_tab_update(mapping_tab)
+        assert restores == [True]
+    finally:
+        plotter.close()
+
+
+def test_layer_phasor_arrays_without_phasor_data(make_viewer_model):
+    """A layer with no G/S contributes nothing rather than raising."""
+    viewer = make_viewer_model()
+    plotter = make_plotter_with_layer(viewer, create_stack_layer())
+    try:
+        layer = plotter.get_selected_layers()[0]
+        layer.metadata.pop("G")
+
+        assert plotter._get_layer_phasor_arrays(layer) is None
+        assert list(plotter._iter_layer_gs_arrays()) == []
+        assert plotter._phasor_center_statistics_rows(per_frame=True) == []
+
+        plotter.frame_context.mode = CURRENT
+        assert plotter._frame_histogram_reference() is None
+    finally:
+        plotter.close()
+
+
+def test_frame_histogram_reference_without_a_selection(make_viewer_model):
+    """No selected layers means no shared range to compute."""
+    viewer = make_viewer_model()
+    plotter = make_plotter_with_layer(viewer, create_stack_layer())
+    try:
+        plotter.frame_context.mode = CURRENT
+        plotter.image_layers_checkable_combobox.setCheckedItems([])
+
+        assert plotter._frame_histogram_reference() is None
+    finally:
+        plotter.close()
+
+
+def test_frame_histogram_reference_with_all_nan_phasors(make_viewer_model):
+    """A fully masked stack yields no usable range."""
+    viewer = make_viewer_model()
+    layer = create_stack_layer()
+    layer.metadata["G"][:] = np.nan
+    layer.metadata["S"][:] = np.nan
+    plotter = make_plotter_with_layer(viewer, layer)
+    try:
+        plotter.frame_context.mode = CURRENT
+        assert plotter._frame_histogram_reference() is None
+    finally:
+        plotter.close()
+
+
+def test_frame_histogram_reference_includes_a_2d_layer(make_viewer_model):
+    """A plain 2D layer beside a stack contributes to every frame."""
+    viewer = make_viewer_model()
+    stack = create_stack_layer(name="Stack")
+    flat = create_flat_layer(name="Flat")
+    viewer.add_layer(stack)
+    viewer.add_layer(flat)
+
+    plotter = PlotterWidget(viewer)
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [stack.name, flat.name]
+    )
+    plotter._process_layer_selection_change()
+    try:
+        plotter.frame_context.mode = CURRENT
+        reference = plotter._frame_histogram_reference()
+
+        assert reference is not None
+        # One stack frame (30 px) plus the whole 2D layer (30 px).
+        assert plotter.get_merged_features()[0].size == 2 * 5 * 6
+    finally:
+        plotter.close()
+
+
+def test_plot_blanks_when_features_are_unavailable(make_viewer_model):
+    """``plot`` blanks the canvas when a frame yields no features at all."""
+    viewer = make_viewer_model()
+    plotter = make_plotter_with_layer(viewer, create_stack_layer())
+    try:
+        plotter.frame_context.mode = CURRENT
+        plotter.plot()
+        assert plotter.canvas_widget.artists['HISTOGRAM2D'].visible is True
+
+        plotter.get_features = lambda: None
+        plotter.plot()
+
+        assert plotter.canvas_widget.artists['HISTOGRAM2D'].visible is False
+        assert plotter._frame_plot_blanked is True
+    finally:
+        plotter.close()
