@@ -4301,6 +4301,11 @@ class TileLayoutDialog(QDialog):
     A live map of the resulting arrangement is drawn so an incorrect
     traversal order or start corner is caught before the tiles are read.
 
+    A mosaic may also be held entirely in one file, with its tiles stored
+    along a dedicated dimension such as the mosaic axis of a Zeiss CZI. Pass
+    the candidate axes as *tile_axes* and the dialog offers a choice of which
+    one holds the tiles.
+
     Parameters
     ----------
     file_paths : list of str
@@ -4309,16 +4314,38 @@ class TileLayoutDialog(QDialog):
         Parent widget.
     tile_shape : tuple of int, optional
         ``(height, width)`` of a single tile, if already known.
+    tile_axes : dict, optional
+        Maps each axis that could hold tiles inside a file to its size, as
+        returned by :func:`~napari_phasors._reader.probe_tile_axes`.
+    tile_positions : sequence of tuple, optional
+        Exact ``(y, x)`` pixel position of each tile, when the file records
+        them. Offered as a layout source and selected by default, since
+        measured positions beat any description of the arrangement.
     """
 
-    def __init__(self, file_paths, parent=None, tile_shape=None):
+    def __init__(
+        self,
+        file_paths,
+        parent=None,
+        tile_shape=None,
+        tile_axes=None,
+        tile_positions=None,
+    ):
         """Build the layout controls and the arrangement preview."""
         super().__init__(parent)
         self.setWindowTitle("Tile Layout")
         self.setMinimumWidth(620)
 
         self._paths = list(file_paths)
-        self._tile_shape = tuple(tile_shape) if tile_shape else (0, 0)
+        self._base_tile_shape = tuple(tile_shape) if tile_shape else (0, 0)
+        self._tile_shape = self._base_tile_shape
+        self._tile_axes = dict(tile_axes or {})
+        self._base_positions = (
+            [tuple(position) for position in tile_positions]
+            if tile_positions is not None
+            else None
+        )
+        self._positions = list(self._base_positions or [])
         self._geometry = None
 
         layout = QVBoxLayout(self)
@@ -4330,12 +4357,19 @@ class TileLayoutDialog(QDialog):
         info.setWordWrap(True)
         layout.addWidget(info)
 
+        self._add_tile_axis_row(layout)
+        self._add_binning_row(layout)
+
         source_layout = QHBoxLayout()
         source_layout.addWidget(QLabel("Layout from: "))
         self.source_combo = QComboBox()
-        self.source_combo.addItems(
-            ["Rows (manual)", "File names", "Stage positions in files"]
-        )
+        if self._base_positions is not None:
+            self.source_combo.addItem(
+                "Tile positions recorded in the file", "positions"
+            )
+        self.source_combo.addItem("Rows (manual)", "rows")
+        self.source_combo.addItem("File names", "names")
+        self.source_combo.addItem("Stage positions in files", "stage")
         self.source_combo.currentIndexChanged.connect(self._on_source_changed)
         source_layout.addWidget(self.source_combo)
         source_layout.addStretch()
@@ -4462,9 +4496,160 @@ class TileLayoutDialog(QDialog):
 
         self._refresh()
 
+    def _add_tile_axis_row(self, layout):
+        """Add the selector for the axis holding the tiles inside each file."""
+        self.tile_axis_combo = None
+        if not self._tile_axes:
+            return
+
+        from ._reader import describe_tile_axis
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Tiles inside each file: "))
+
+        self.tile_axis_combo = QComboBox()
+        self.tile_axis_combo.addItem("One tile per file", None)
+        for axis, size in self._tile_axes.items():
+            self.tile_axis_combo.addItem(
+                f"{describe_tile_axis(axis)} - {size} tiles", axis
+            )
+        # A file that carries a tile dimension almost always means the mosaic
+        # lives inside it, so start on the most likely axis rather than
+        # ignoring it.
+        self.tile_axis_combo.setCurrentIndex(1)
+        self.tile_axis_combo.setToolTip(
+            "Dimension along which a single file stores its tiles, for "
+            "example the mosaic axis of a CZI. Choose 'One tile per file' "
+            "when each selected file holds one tile."
+        )
+        self.tile_axis_combo.currentIndexChanged.connect(
+            self._on_tile_axis_changed
+        )
+        row.addWidget(self.tile_axis_combo)
+        row.addStretch()
+        layout.addLayout(row)
+
+    def _add_binning_row(self, layout):
+        """Add the spatial binning selector for large mosaics."""
+        self.binning_combo = None
+        if not self._base_tile_shape[0] or self._base_positions is None:
+            return
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Binning: "))
+        self.binning_combo = QComboBox()
+        for factor in (1, 2, 4, 8, 16):
+            self.binning_combo.addItem(
+                "None" if factor == 1 else f"{factor} x {factor}", factor
+            )
+        self.binning_combo.setToolTip(
+            "Sum square blocks of pixels while reading. Binning adds photons "
+            "together, so the phasor of a binned pixel is the "
+            "photon-weighted phasor of the pixels it covers, and it cuts the "
+            "memory a mosaic needs by the square of the factor."
+        )
+        row.addWidget(self.binning_combo)
+
+        self.memory_label = QLabel("")
+        self.memory_label.setStyleSheet("color: grey;")
+        row.addWidget(self.memory_label)
+        row.addStretch()
+        layout.addLayout(row)
+
+        # Start at a factor that keeps the stitched image manageable, rather
+        # than at a setting that would try to allocate tens of gigabytes.
+        # Set the value before connecting, since the rest of the dialog the
+        # refresh needs does not exist yet.
+        self.binning_combo.setCurrentIndex(
+            self.binning_combo.findData(self._suggested_binning())
+        )
+        self._apply_binning()
+        self.binning_combo.currentIndexChanged.connect(
+            self._on_binning_changed
+        )
+
+    def _suggested_binning(self, budget_bytes=512 * 1024 * 1024):
+        """Return the smallest binning whose canvas fits in *budget_bytes*.
+
+        Sized against one float32 plane of the stitched canvas; blending
+        needs several of those at once, so this stays conservative.
+        """
+        if self._base_positions is None or not self._base_tile_shape[0]:
+            return 1
+        for factor in (1, 2, 4, 8, 16):
+            height, width = self._canvas_for_binning(factor)
+            if height * width * 4 <= budget_bytes:
+                return factor
+        return 16
+
+    def _canvas_for_binning(self, factor):
+        """Return the stitched canvas size for a binning factor."""
+        height = self._base_tile_shape[0] // factor
+        width = self._base_tile_shape[1] // factor
+        return (
+            max(y // factor for y, _ in self._base_positions) + height,
+            max(x // factor for _, x in self._base_positions) + width,
+        )
+
+    def get_binning(self):
+        """Return the selected binning factor."""
+        if self.binning_combo is None:
+            return 1
+        return int(self.binning_combo.currentData() or 1)
+
+    def _apply_binning(self):
+        """Rescale the tile size and positions to the current binning."""
+        factor = self.get_binning()
+        if self._base_positions is None:
+            return
+        self._tile_shape = (
+            self._base_tile_shape[0] // factor,
+            self._base_tile_shape[1] // factor,
+        )
+        self._positions = [
+            (y // factor, x // factor) for y, x in self._base_positions
+        ]
+        if getattr(self, "memory_label", None) is not None:
+            height, width = self._canvas_for_binning(factor)
+            self.memory_label.setText(
+                f"{height} x {width} px, "
+                f"{height * width * 4 / (1024 ** 3):.2f} GB per plane"
+            )
+
+    def _on_binning_changed(self):
+        """Rescale the layout after the binning factor changed."""
+        self._apply_binning()
+        self._refresh()
+
+    def _on_tile_axis_changed(self):
+        """Re-derive the tile count and refresh the layout."""
+        self.rows_edit.setText(self._default_rows_spec())
+        self._refresh()
+
+    def get_tile_axis(self):
+        """Return the selected tile axis, or ``None`` for one tile per file."""
+        if self.tile_axis_combo is None:
+            return None
+        return self.tile_axis_combo.currentData()
+
+    def _sources(self):
+        """Return the tiles the current settings describe."""
+        from ._stitching import TileSource
+
+        axis = self.get_tile_axis()
+        if axis is None:
+            return [TileSource(path) for path in self._paths]
+
+        count = int(self._tile_axes.get(axis, 1))
+        return [
+            TileSource(path, index)
+            for path in self._paths
+            for index in range(count)
+        ]
+
     def _default_rows_spec(self):
         """Guess a square-ish arrangement to pre-fill the row specification."""
-        count = len(self._paths)
+        count = len(self._sources())
         if count < 1:
             return ""
         side = int(round(count**0.5))
@@ -4476,8 +4661,9 @@ class TileLayoutDialog(QDialog):
 
     def _on_source_changed(self, index):
         """Show the controls belonging to the selected layout source."""
-        self.rows_widget.setVisible(index == 0)
-        self.pattern_widget.setVisible(index == 1)
+        source = self.source_combo.currentData()
+        self.rows_widget.setVisible(source == "rows")
+        self.pattern_widget.setVisible(source == "names")
         self._refresh()
 
     def _overlaps(self):
@@ -4499,24 +4685,40 @@ class TileLayoutDialog(QDialog):
         """Build the geometry for the current settings, or raise ValueError."""
         from ._stitching import (
             layout_from_filenames,
+            layout_from_positions,
             layout_from_rows,
             layout_from_stage_positions,
         )
 
         overlap_y, overlap_x = self._overlaps()
         blend_mode = self._blend_mode()
-        source = self.source_combo.currentIndex()
+        source = self.source_combo.currentData()
+        tiles = self._sources()
 
-        if source == 2:
+        if source == "positions":
+            if len(self._positions) != len(tiles):
+                raise ValueError(
+                    f"The file records {len(self._positions)} position(s) "
+                    f"but {len(tiles)} tile(s) are selected. Choose the "
+                    "matching tile axis, or another layout source."
+                )
+            return layout_from_positions(
+                tiles,
+                self._positions,
+                tile_shape=self._tile_shape,
+                blend_mode=blend_mode,
+            )
+
+        if source == "stage":
             geometry = layout_from_stage_positions(
-                self._paths,
+                tiles,
                 tile_shape=self._tile_shape,
                 blend_mode=blend_mode,
             )
             if geometry is None:
                 raise ValueError(
-                    "Stage positions could not be read from every file. "
-                    "Only OME-TIFF files record them; use another source."
+                    "Stage positions could not be read. Only OME-TIFF files "
+                    "record them, one position per file; use another source."
                 )
             return geometry
 
@@ -4536,9 +4738,9 @@ class TileLayoutDialog(QDialog):
             ],
         }
 
-        if source == 1:
+        if source == "names":
             return layout_from_filenames(
-                self._paths,
+                tiles,
                 pattern=self.pattern_edit.text(),
                 tile_shape=self._tile_shape,
                 overlap_y=overlap_y,
@@ -4548,7 +4750,7 @@ class TileLayoutDialog(QDialog):
             )
 
         return layout_from_rows(
-            self._paths,
+            tiles,
             tile_shape=self._tile_shape,
             overlap_y=overlap_y,
             overlap_x=overlap_x,
@@ -4568,15 +4770,33 @@ class TileLayoutDialog(QDialog):
             self.ok_btn.setEnabled(False)
             return
 
+        # A layout built from recorded positions determines the overlap, so
+        # show what was measured instead of leaving a stale typed value.
+        if self.source_combo.currentData() == "positions":
+            self.overlap_y_edit.setText(
+                f"{self._geometry.overlap_y * 100:.2f}"
+            )
+            self.overlap_x_edit.setText(
+                f"{self._geometry.overlap_x * 100:.2f}"
+            )
+        self.overlap_y_edit.setEnabled(
+            self.source_combo.currentData() != "positions"
+        )
+        self.overlap_x_edit.setEnabled(
+            self.source_combo.currentData() != "positions"
+        )
+
         self.preview.set_geometry(self._geometry)
-        rows = len({placement.row for placement in self._geometry.placements})
-        columns = len(
-            {placement.col for placement in self._geometry.placements}
+        placements = self._geometry.placements
+        rows = len({placement.row for placement in placements})
+        columns = len({placement.col for placement in placements})
+        n_files = len({placement.path for placement in placements})
+        source = (
+            f"{len(placements)} tile(s)"
+            if n_files == len(placements)
+            else f"{len(placements)} tile(s) from {n_files} file(s)"
         )
-        message = (
-            f"{len(self._geometry.placements)} tile(s) in {rows} row(s), "
-            f"{columns} column position(s)."
-        )
+        message = f"{source} in {rows} row(s), {columns} column position(s)."
         if self._tile_shape[0] and self._tile_shape[1]:
             canvas = self._geometry.canvas_shape()
             message += f" Stitched size: {canvas[0]} x {canvas[1]} px."
@@ -4595,10 +4815,23 @@ class TileLayoutDialog(QDialog):
         return self._geometry
 
     def get_ordered_paths(self):
-        """Return the tile paths in placement order."""
+        """Return the tile paths in placement order, with repeats."""
         if self._geometry is None:
             return list(self._paths)
         return self._geometry.paths
+
+    def get_sources(self):
+        """Return the tiles in placement order.
+
+        Returns
+        -------
+        list of TileSource
+            One entry per tile. A single multi-tile file yields several
+            entries that share a path and differ by index.
+        """
+        if self._geometry is None:
+            return self._sources()
+        return self._geometry.sources
 
 
 class TileLayoutPreview(QWidget):

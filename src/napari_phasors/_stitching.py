@@ -28,11 +28,14 @@ import numpy as np
 __all__ = [
     "TilePlacement",
     "TileGeometry",
+    "TileSource",
+    "as_tile_sources",
     "blend_phasor_tiles",
     "compute_origins",
     "estimate_overlap",
     "feather_window",
     "layout_from_filenames",
+    "layout_from_positions",
     "layout_from_rows",
     "layout_from_stage_positions",
     "parse_tiles_per_row",
@@ -46,6 +49,61 @@ START_CORNERS = ("top-left", "top-right", "bottom-left", "bottom-right")
 
 #: Intensity blending modes understood by :func:`blend_phasor_tiles`.
 BLEND_MODES = ("feather", "average", "sum")
+
+
+@dataclass(frozen=True)
+class TileSource:
+    """Where a single tile comes from.
+
+    A mosaic may be spread over one file per tile, or held entirely in one
+    file that stores its tiles along a dedicated dimension (the mosaic axis
+    of a CZI, for example). Both are described the same way here: a path
+    plus the tile's position along that file's tile axis.
+
+    Parameters
+    ----------
+    path : str
+        Path of the file the tile is read from.
+    index : int, optional
+        Position of the tile along its file's tile axis. ``0`` for files
+        that hold a single tile.
+    """
+
+    path: str
+    index: int = 0
+
+    @property
+    def label(self):
+        """Short name identifying this tile, for display and metadata."""
+        name = os.path.basename(self.path)
+        return name if self.index == 0 else f"{name} [{self.index}]"
+
+
+def as_tile_sources(items):
+    """Normalize *items* into a list of :class:`TileSource`.
+
+    Accepts paths, ``(path, index)`` pairs, and :class:`TileSource` objects,
+    so callers can pass whichever is most convenient.
+
+    Parameters
+    ----------
+    items : iterable
+        Tile identifiers.
+
+    Returns
+    -------
+    list of TileSource
+    """
+    sources = []
+    for item in items:
+        if isinstance(item, TileSource):
+            sources.append(item)
+        elif isinstance(item, (tuple, list)):
+            path, index = item
+            sources.append(TileSource(str(path), int(index)))
+        else:
+            sources.append(TileSource(str(item)))
+    return sources
 
 
 @dataclass
@@ -67,6 +125,9 @@ class TilePlacement:
         grid position. Filled in by registration refinement.
     dx : int, optional
         Per-tile correction along X in pixels.
+    index : int, optional
+        Position of this tile along its file's tile axis, for files that
+        hold more than one tile.
     """
 
     path: str
@@ -74,6 +135,12 @@ class TilePlacement:
     col: float
     dy: int = 0
     dx: int = 0
+    index: int = 0
+
+    @property
+    def source(self):
+        """Return this placement's :class:`TileSource`."""
+        return TileSource(self.path, self.index)
 
 
 @dataclass
@@ -121,6 +188,11 @@ class TileGeometry:
         """Return the tile paths, in placement order."""
         return [placement.path for placement in self.placements]
 
+    @property
+    def sources(self):
+        """Return the tiles as :class:`TileSource` objects, in placement order."""
+        return [placement.source for placement in self.placements]
+
     def with_overlap(self, overlap_y, overlap_x):
         """Return a copy of this geometry using a different overlap."""
         return replace(
@@ -158,6 +230,7 @@ class TileGeometry:
                     "col": placement.col,
                     "dy": placement.dy,
                     "dx": placement.dx,
+                    "index": placement.index,
                 }
                 for placement in self.placements
             ],
@@ -178,6 +251,7 @@ class TileGeometry:
                     col=float(item["col"]),
                     dy=int(item.get("dy", 0)),
                     dx=int(item.get("dx", 0)),
+                    index=int(item.get("index", 0)),
                 )
                 for item in data.get("placements", [])
             ],
@@ -517,7 +591,7 @@ def parse_tiles_per_row(text, n_tiles=None):
 
 
 def layout_from_rows(
-    paths,
+    tiles,
     tiles_per_row,
     traversal="raster",
     start_corner="top-left",
@@ -527,7 +601,7 @@ def layout_from_rows(
     overlap_x=0.0,
     blend_mode="feather",
 ):
-    """Build a :class:`TileGeometry` by dealing *paths* into rows.
+    """Build a :class:`TileGeometry` by dealing *tiles* into rows.
 
     Rows may hold different numbers of tiles, which is how partially covered
     mosaics (for example ``5, 7, 9, 9, 7, 5`` for a roughly circular sample)
@@ -536,8 +610,9 @@ def layout_from_rows(
 
     Parameters
     ----------
-    paths : sequence of str
-        Tile file paths, in acquisition order.
+    tiles : sequence
+        Tiles in acquisition order, as paths, ``(path, index)`` pairs, or
+        :class:`TileSource` objects.
     tiles_per_row : sequence of int or str
         Number of tiles in each row, or a string parsed by
         :func:`parse_tiles_per_row`.
@@ -562,18 +637,18 @@ def layout_from_rows(
     Raises
     ------
     ValueError
-        If the row specification does not account for exactly ``len(paths)``
+        If the row specification does not account for exactly ``len(tiles)``
         tiles, or if an option is not recognized.
     """
-    paths = list(paths)
+    sources = as_tile_sources(tiles)
     if isinstance(tiles_per_row, str):
-        tiles_per_row = parse_tiles_per_row(tiles_per_row, len(paths))
+        tiles_per_row = parse_tiles_per_row(tiles_per_row, len(sources))
     else:
         tiles_per_row = [int(count) for count in tiles_per_row]
-        if sum(tiles_per_row) != len(paths):
+        if sum(tiles_per_row) != len(sources):
             raise ValueError(
                 f"Tiles per row sums to {sum(tiles_per_row)} but "
-                f"{len(paths)} file(s) were selected."
+                f"{len(sources)} tile(s) were selected."
             )
 
     if traversal not in TRAVERSAL_ORDERS:
@@ -599,7 +674,7 @@ def layout_from_rows(
     placements = []
     cursor = 0
     for row_index, count in enumerate(tiles_per_row):
-        row_paths = paths[cursor : cursor + count]
+        row_sources = sources[cursor : cursor + count]
         cursor += count
 
         if alignment == "center":
@@ -619,8 +694,15 @@ def layout_from_rows(
             if flip_y
             else float(row_index)
         )
-        for path, column in zip(row_paths, columns, strict=True):
-            placements.append(TilePlacement(path=path, row=row, col=column))
+        for source, column in zip(row_sources, columns, strict=True):
+            placements.append(
+                TilePlacement(
+                    path=source.path,
+                    row=row,
+                    col=column,
+                    index=source.index,
+                )
+            )
 
     return TileGeometry(
         tile_shape=tuple(tile_shape),
@@ -632,7 +714,7 @@ def layout_from_rows(
 
 
 def layout_from_filenames(
-    paths,
+    tiles,
     pattern=r"(?P<row>\d+)\D+(?P<col>\d+)",
     tile_shape=(0, 0),
     overlap_y=0.0,
@@ -648,10 +730,14 @@ def layout_from_filenames(
     :func:`layout_from_rows`, so ``tiles_per_row`` must be supplied through
     *row_kwargs*.
 
+    Only applies when every tile lives in its own file: a file name cannot
+    distinguish the tiles held inside a single multi-tile file.
+
     Parameters
     ----------
-    paths : sequence of str
-        Tile file paths.
+    tiles : sequence
+        Tiles as paths, ``(path, index)`` pairs, or :class:`TileSource`
+        objects.
     pattern : str, optional
         Regular expression with ``row``/``col`` or ``index`` named groups.
     tile_shape : tuple of int, optional
@@ -671,10 +757,17 @@ def layout_from_filenames(
     Raises
     ------
     ValueError
-        If the pattern is invalid, does not match every file, or provides
-        neither the ``row``/``col`` pair nor an ``index`` group.
+        If several tiles share a file, if the pattern is invalid, does not
+        match every file, or provides neither the ``row``/``col`` pair nor an
+        ``index`` group.
     """
-    paths = list(paths)
+    sources = as_tile_sources(tiles)
+    paths = [source.path for source in sources]
+    if len(set(paths)) != len(paths):
+        raise ValueError(
+            "File names cannot place tiles that share a file. Use the row "
+            "layout instead."
+        )
     try:
         regex = re.compile(pattern)
     except re.error as error:
@@ -740,6 +833,95 @@ def layout_from_filenames(
     )
 
 
+def layout_from_positions(
+    tiles,
+    positions,
+    tile_shape,
+    blend_mode="feather",
+):
+    """Build a :class:`TileGeometry` from exact tile positions in pixels.
+
+    Some formats record where every tile sits, so the layout does not have to
+    be described or guessed at all. The positions are still expressed in the
+    usual grid terms, with a row, a column and an overlap, so the overlap
+    stays adjustable afterwards; whatever the regular grid does not account
+    for is kept per tile in ``dy``/``dx``, making the reconstruction exact.
+
+    Parameters
+    ----------
+    tiles : sequence
+        Tiles as paths, ``(path, index)`` pairs, or :class:`TileSource`
+        objects.
+    positions : sequence of tuple
+        ``(y, x)`` pixel position of each tile, in the same order as *tiles*.
+        Any common offset is removed.
+    tile_shape : tuple of int
+        ``(height, width)`` of a single tile.
+    blend_mode : str, optional
+        Intensity blending mode stored on the geometry.
+
+    Returns
+    -------
+    TileGeometry
+
+    Raises
+    ------
+    ValueError
+        If the number of positions does not match the number of tiles.
+    """
+    sources = as_tile_sources(tiles)
+    positions = [(int(y), int(x)) for y, x in positions]
+    if len(positions) != len(sources):
+        raise ValueError(
+            f"Got {len(positions)} position(s) for {len(sources)} tile(s)."
+        )
+    if not sources:
+        return TileGeometry(tile_shape=tuple(tile_shape))
+
+    height, width = int(tile_shape[0]), int(tile_shape[1])
+    ys = np.array([p[0] for p in positions], dtype=float)
+    xs = np.array([p[1] for p in positions], dtype=float)
+    ys -= ys.min()
+    xs -= xs.min()
+
+    # Tiles nominally in the same row or column are rarely at exactly the
+    # same coordinate, so group them before ranking.
+    row_ranks = _cluster_positions(ys, tolerance=height * 0.5)
+    col_ranks = _cluster_positions(xs, tolerance=width * 0.5)
+
+    step_y = _median_step(ys, row_ranks) or height
+    step_x = _median_step(xs, col_ranks) or width
+    overlap_y = float(np.clip(1.0 - step_y / height, 0.0, 0.9))
+    overlap_x = float(np.clip(1.0 - step_x / width, 0.0, 0.9))
+
+    # Rebuild the grid the geometry will actually use, so the residuals below
+    # are measured against it rather than against the raw median step.
+    grid_step_y = max(1, int(round(height * (1.0 - overlap_y))))
+    grid_step_x = max(1, int(round(width * (1.0 - overlap_x))))
+
+    placements = [
+        TilePlacement(
+            path=source.path,
+            row=float(row),
+            col=float(col),
+            dy=int(round(y)) - int(round(row * grid_step_y)),
+            dx=int(round(x)) - int(round(col * grid_step_x)),
+            index=source.index,
+        )
+        for source, row, col, y, x in zip(
+            sources, row_ranks, col_ranks, ys, xs, strict=True
+        )
+    ]
+
+    return TileGeometry(
+        tile_shape=(height, width),
+        placements=placements,
+        overlap_y=overlap_y,
+        overlap_x=overlap_x,
+        blend_mode=blend_mode,
+    )
+
+
 def _cluster_positions(values, tolerance):
     """Group nearly-equal *values* and return the rank of each value."""
     order = np.argsort(values)
@@ -755,7 +937,7 @@ def _cluster_positions(values, tolerance):
 
 
 def layout_from_stage_positions(
-    paths,
+    tiles,
     tile_shape=(0, 0),
     blend_mode="feather",
 ):
@@ -768,8 +950,10 @@ def layout_from_stage_positions(
 
     Parameters
     ----------
-    paths : sequence of str
-        Tile file paths.
+    tiles : sequence
+        Tiles as paths, ``(path, index)`` pairs, or :class:`TileSource`
+        objects. Tiles sharing a file cannot be placed this way, since an
+        OME-TIFF records one position per file.
     tile_shape : tuple of int
         ``(height, width)`` of a single tile, needed to convert the measured
         step into an overlap fraction.
@@ -782,7 +966,9 @@ def layout_from_stage_positions(
         ``None`` if positions could not be read for every file, so the caller
         can fall back to another layout source.
     """
-    paths = list(paths)
+    paths = [source.path for source in as_tile_sources(tiles)]
+    if len(set(paths)) != len(paths):
+        return None
     positions = []
     for path in paths:
         position = _read_stage_position(path)

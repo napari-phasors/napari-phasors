@@ -2682,6 +2682,15 @@ def test_phasor_transform_opens_tile_layout_dialog(
         def get_ordered_paths(self):
             return paths
 
+        def get_sources(self):
+            return geometry.sources
+
+        def get_tile_axis(self):
+            return None
+
+        def get_binning(self):
+            return 1
+
     with (
         patch.object(
             PhasorTransform, "_ask_tile_source", return_value="folder"
@@ -2698,8 +2707,8 @@ def test_phasor_transform_opens_tile_layout_dialog(
     assert widget.dynamic_widget_layout.count() == 1
     added = widget.dynamic_widget_layout.itemAt(0).widget()
     assert isinstance(added, LsmWidget)
-    assert added._tile_paths == paths
-    assert "9 tile(s) selected" in widget.save_path.text()
+    assert [source.path for source in added._tile_paths] == paths
+    assert "9 tile(s) across 9 file(s)" in widget.save_path.text()
 
 
 def test_phasor_transform_tile_dialog_cancelled(make_viewer_model, qtbot):
@@ -2734,7 +2743,7 @@ def test_phasor_transform_tile_rejects_too_few_files(
         widget.tile_button.click()
 
     assert mocked_error.called
-    assert "at least two tiles" in mocked_error.call_args[0][0]
+    assert "nothing to stitch" in mocked_error.call_args[0][0]
     assert widget.dynamic_widget_layout.count() == 0
 
 
@@ -2761,3 +2770,187 @@ def test_tile_mode_replaces_a_partly_deleted_mosaic(
     assert len(viewer.layers) == 1
     # Only the X overlap changed, so only the width grows.
     assert viewer.layers[0].data.shape == (120, 134)
+
+
+def _write_single_file_mosaic(
+    directory, overlap=0.25, tile_size=48, n_bins=32
+):
+    """Write one TIFF holding a 3x3 mosaic along a leading tile axis."""
+    import tifffile
+
+    from napari_phasors._stitching import TileSource, layout_from_rows
+
+    rng = np.random.default_rng(0)
+    lifetime = np.linspace(1.0, 3.0, 200)[None, :] * np.ones((200, 1))
+    time = np.arange(n_bins)[:, None, None]
+    scene = 1000 * np.exp(-time / lifetime[None]) + 5
+    scene = scene + rng.normal(0, 2, scene.shape)
+
+    geometry = layout_from_rows(
+        [""] * 9,
+        "3,3,3",
+        tile_shape=(tile_size, tile_size),
+        overlap_y=overlap,
+        overlap_x=overlap,
+    )
+    stack = np.stack(
+        [
+            scene[
+                :,
+                int(round(p.row * geometry.step_y)) : int(
+                    round(p.row * geometry.step_y)
+                )
+                + tile_size,
+                int(round(p.col * geometry.step_x)) : int(
+                    round(p.col * geometry.step_x)
+                )
+                + tile_size,
+            ]
+            for p in geometry.placements
+        ]
+    ).astype(np.uint16)
+
+    path = os.path.join(directory, "mosaic.tif")
+    tifffile.imwrite(path, stack)
+
+    sources = [TileSource(path, index) for index in range(9)]
+    geometry = layout_from_rows(
+        sources,
+        "3,3,3",
+        tile_shape=(tile_size, tile_size),
+        overlap_y=overlap,
+        overlap_x=overlap,
+    )
+    return path, sources, geometry
+
+
+def test_tile_mode_stitches_a_mosaic_from_one_file(
+    make_viewer_model, qtbot, tmp_path
+):
+    """A single file holding every tile stitches like a folder of tiles."""
+    viewer = make_viewer_model()
+    path, sources, geometry = _write_single_file_mosaic(str(tmp_path))
+
+    widget = LsmWidget(viewer, path)
+    qtbot.addWidget(widget)
+    # The stored array is (tile, histogram, Y, X).
+    widget.reader_options["phasor_axis"] = 1
+    widget.enable_tile_mode(sources, geometry, tile_axis=0)
+
+    assert widget.btn.text() == "Stitch Mosaic (9 tiles)"
+
+    with patch("napari_phasors._widget.show_info"):
+        widget._on_click(path, widget.reader_options, widget.harmonics)
+
+    assert len(viewer.layers) == 1
+    layer = viewer.layers[0]
+    assert layer.data.shape == (120, 120)
+    assert widget._tile_set.n_files == 1
+    assert widget._tile_set.n_tiles == 9
+
+    # Re-tuning the overlap still works without re-reading the file.
+    widget.tile_overlap_x_slider.setValue(100)
+    assert viewer.layers[0] is layer
+    assert layer.data.shape == (120, 134)
+
+
+def test_tile_layout_dialog_offers_the_tile_axis(qtbot, tmp_path):
+    from napari_phasors._reader import probe_tile_axes
+    from napari_phasors._utils import TileLayoutDialog
+
+    path, _, _ = _write_single_file_mosaic(str(tmp_path))
+    tile_axes = probe_tile_axes(path)
+    assert tile_axes == {0: 9}
+
+    dialog = TileLayoutDialog([path], tile_shape=(48, 48), tile_axes=tile_axes)
+    qtbot.addWidget(dialog)
+
+    # A file that carries a tile axis defaults to splitting it.
+    assert dialog.get_tile_axis() == 0
+    assert len(dialog.get_sources()) == 9
+    assert dialog.rows_edit.text() == "3x3"
+    assert "9 tile(s) from 1 file(s)" in dialog.status_label.text()
+
+    # Switching back to one tile per file collapses to the single file.
+    dialog.tile_axis_combo.setCurrentIndex(0)
+    assert dialog.get_tile_axis() is None
+    assert len(dialog.get_sources()) == 1
+
+
+def test_phasor_transform_accepts_one_multi_tile_file(
+    make_viewer_model, qtbot, tmp_path
+):
+    """Selecting a single mosaic file is no longer rejected as 'too few'."""
+    viewer = make_viewer_model()
+    widget = PhasorTransform(viewer)
+    qtbot.addWidget(widget)
+    path, sources, geometry = _write_single_file_mosaic(str(tmp_path))
+
+    class _AcceptedDialog:
+        Accepted = 1
+        captured = {}
+
+        def __init__(self, paths, parent=None, **kwargs):
+            _AcceptedDialog.captured = {"paths": paths, **kwargs}
+
+        def exec(self):
+            return 1
+
+        def get_geometry(self):
+            return geometry
+
+        def get_sources(self):
+            return sources
+
+        def get_tile_axis(self):
+            return 0
+
+        def get_binning(self):
+            return 1
+
+    with (
+        patch.object(
+            PhasorTransform, "_ask_tile_source", return_value="files"
+        ),
+        patch(
+            "napari_phasors._widget.QFileDialog.getOpenFileNames",
+            return_value=([path], ""),
+        ),
+        patch("napari_phasors._widget.TileLayoutDialog", _AcceptedDialog),
+        patch("napari_phasors._widget.show_error") as mocked_error,
+    ):
+        widget.tile_button.click()
+
+    assert not mocked_error.called
+    assert _AcceptedDialog.captured.get("tile_axes") == {0: 9}
+    # A plain TIFF records no tile positions, so none are offered.
+    assert _AcceptedDialog.captured.get("tile_positions") is None
+    added = widget.dynamic_widget_layout.itemAt(0).widget()
+    assert added._tile_axis == 0
+    assert len(added._tile_paths) == 9
+    assert "9 tile(s) in mosaic.tif" in widget.save_path.text()
+
+
+def test_phasor_transform_still_rejects_a_single_plain_file(
+    make_viewer_model, qtbot, tmp_path
+):
+    viewer = make_viewer_model()
+    widget = PhasorTransform(viewer)
+    qtbot.addWidget(widget)
+    paths, _ = _write_tile_mosaic(str(tmp_path))
+
+    with (
+        patch.object(
+            PhasorTransform, "_ask_tile_source", return_value="files"
+        ),
+        patch(
+            "napari_phasors._widget.QFileDialog.getOpenFileNames",
+            return_value=([paths[0]], ""),
+        ),
+        patch("napari_phasors._widget.show_error") as mocked_error,
+    ):
+        widget.tile_button.click()
+
+    assert mocked_error.called
+    assert "nothing to stitch" in mocked_error.call_args[0][0]
+    assert widget.dynamic_widget_layout.count() == 0

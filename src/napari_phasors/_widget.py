@@ -43,8 +43,12 @@ from qtpy.QtWidgets import (
 from superqt import QRangeSlider
 
 from ._reader import (
+    CziMosaic,
     _get_filename_extension,
+    czi_mosaic_info,
+    describe_file_axes,
     napari_get_reader,
+    probe_tile_axes,
     raw_file_stack_reader,
 )
 from ._update_check import maybe_check_for_update
@@ -446,22 +450,50 @@ class PhasorTransform(PopoutWindowMixin, QWidget):
         if common_ext not in self.reader_options:
             show_error(f"Extension {common_ext} is not supported.")
             return
-        if len(file_paths) < 2:
-            show_error("Select at least two tiles to stitch a mosaic.")
-            return
 
         file_paths = sorted(file_paths, key=natural_sort_key)
 
-        # The tile size is only known once a file has been read; showing it
-        # in the layout dialog makes the stitched size meaningful there.
-        tile_shape = _estimate_output_shape_from_options(
-            file_paths[0], {}, [1]
-        )
-        if tile_shape is not None and len(tile_shape) != 2:
-            tile_shape = None
+        # A mosaic is either spread over several files or held inside one
+        # file along a tile dimension, so a single file is only rejected once
+        # it turns out to hold a single tile too.
+        tile_axes = probe_tile_axes(file_paths[0])
+        if len(file_paths) < 2 and not tile_axes:
+            show_error(
+                f"{os.path.basename(file_paths[0])} holds a single image "
+                f"({describe_file_axes(file_paths[0])}), so there is nothing "
+                "to stitch. Select several files, or one file that stores "
+                "its tiles along a dimension of their own."
+            )
+            return
+
+        # A mosaic file records where each of its tiles sits, which beats any
+        # description of the arrangement, so hand those positions to the
+        # dialog when they exist.
+        tile_positions = None
+        tile_shape = None
+        if len(file_paths) == 1:
+            mosaic = czi_mosaic_info(file_paths[0])
+            if mosaic is not None:
+                tile_shape = mosaic["tile_shape"]
+                with suppress(Exception):
+                    with CziMosaic(file_paths[0]) as reader:
+                        tile_positions = list(reader.positions)
+
+        if tile_shape is None:
+            # The tile size is only known once a file has been read; showing
+            # it in the dialog makes the stitched size meaningful there.
+            tile_shape = _estimate_output_shape_from_options(
+                file_paths[0], {}, [1]
+            )
+            if tile_shape is not None and len(tile_shape) != 2:
+                tile_shape = None
 
         dialog = TileLayoutDialog(
-            file_paths, parent=self, tile_shape=tile_shape
+            file_paths,
+            parent=self,
+            tile_shape=tile_shape,
+            tile_axes=tile_axes,
+            tile_positions=tile_positions,
         )
         if dialog.exec() != TileLayoutDialog.Accepted:
             return
@@ -469,18 +501,29 @@ class PhasorTransform(PopoutWindowMixin, QWidget):
         geometry = dialog.get_geometry()
         if geometry is None:
             return
-        file_paths = dialog.get_ordered_paths()
+        sources = dialog.get_sources()
+        tile_axis = dialog.get_tile_axis()
+        binning = dialog.get_binning()
+        if len(sources) < 2:
+            show_error("A mosaic needs at least two tiles.")
+            return
 
-        self._show_path_text(
-            f"{len(file_paths)} tile(s) selected for stitching "
-            f"(first: {os.path.basename(file_paths[0])})"
+        n_files = len({source.path for source in sources})
+        origin = (
+            f"{len(sources)} tile(s) in "
+            f"{os.path.basename(sources[0].path)}"
+            if n_files == 1
+            else f"{len(sources)} tile(s) across {n_files} file(s)"
         )
+        self._show_path_text(f"{origin} selected for stitching")
         self._clear_dynamic_widgets()
 
         create_widget_class = self.reader_options[common_ext]
-        new_widget = create_widget_class(self.viewer, file_paths[0])
+        new_widget = create_widget_class(self.viewer, sources[0].path)
         new_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
-        new_widget.enable_tile_mode(file_paths, geometry)
+        new_widget.enable_tile_mode(
+            sources, geometry, tile_axis=tile_axis, binning=binning
+        )
         self.dynamic_widget_layout.addWidget(new_widget)
 
     def _clear_dynamic_widgets(self):
@@ -534,6 +577,7 @@ class AdvancedOptionsWidget(QWidget):
         self._stack_z_spacing_layout = None
         self._stack_z_spacing_edit = None
         self._tile_paths = None
+        self._tile_axis = None
         self._tile_geometry = None
         self._tile_set = None
         self._tile_layers = []
@@ -1116,23 +1160,37 @@ class AdvancedOptionsWidget(QWidget):
         self._stack_z_spacing = value
         self._stack_z_spacing_edit.setText(str(value))
 
-    def enable_tile_mode(self, paths, geometry):
-        """Switch this widget to stitching *paths* into a single mosaic.
+    def enable_tile_mode(self, tiles, geometry, tile_axis=None, binning=1):
+        """Switch this widget to stitching *tiles* into a single mosaic.
 
         Parameters
         ----------
-        paths : list of str
-            Tile paths, in the order matching ``geometry.placements``.
+        tiles : list
+            Tiles in the order matching ``geometry.placements``, as paths or
+            :class:`~napari_phasors._stitching.TileSource` objects. Several
+            entries may share a path when one file holds many tiles.
         geometry : TileGeometry
             Mosaic layout produced by :class:`TileLayoutDialog`.
+        tile_axis : str or int, optional
+            Dimension along which a file stores its tiles. Detected
+            automatically when ``None``.
+        binning : int, optional
+            Spatial binning applied while reading each tile.
         """
-        self._tile_paths = list(paths)
+        from ._stitching import as_tile_sources
+
+        self._tile_paths = as_tile_sources(tiles)
+        self._tile_axis = tile_axis
+        if binning and binning > 1:
+            self.reader_options["binning"] = int(binning)
+        else:
+            self.reader_options.pop("binning", None)
         self._tile_geometry = geometry
         self._tile_set = None
         self._tile_layers = []
         self._add_tile_controls()
         if hasattr(self, 'btn'):
-            self.btn.setText(f"Stitch Mosaic ({len(paths)} tiles)")
+            self.btn.setText(f"Stitch Mosaic ({len(self._tile_paths)} tiles)")
         self._update_shape_preview()
 
     def _add_tile_controls(self):
@@ -1708,6 +1766,7 @@ class AdvancedOptionsWidget(QWidget):
                 self._tile_paths,
                 reader_options=reader_options,
                 harmonics=harmonics,
+                tile_axis=self._tile_axis,
             )
         except ValueError as error:
             self._tile_set = None
@@ -1719,8 +1778,9 @@ class AdvancedOptionsWidget(QWidget):
 
         cached_mb = self._tile_set.nbytes() / (1024 * 1024)
         show_info(
-            f"Read {self._tile_set.n_tiles} tile(s); "
-            f"{cached_mb:.0f} MB of phasor data cached for re-stitching."
+            f"Read {self._tile_set.n_tiles} tile(s) from "
+            f"{self._tile_set.n_files} file(s); {cached_mb:.0f} MB of phasor "
+            "data cached for re-stitching."
         )
         self._restitch()
 
@@ -2341,10 +2401,20 @@ class CziWidget(AdvancedOptionsWidget):
     def _get_signal_data(self):
         """Get signal data for CZI files."""
         try:
-            from phasorpy.io import signal_from_czi
-
             options = self.reader_options.copy()
             self._apply_kwargs(options)
+            binning = int(options.pop("binning", 1) or 1)
+
+            # A mosaic's nominal extent spans the whole scanned area, so
+            # reading it whole would mean allocating an array orders of
+            # magnitude larger than the file. Preview one tile instead.
+            if czi_mosaic_info(self.path) is not None:
+                with CziMosaic(self.path) as mosaic:
+                    return mosaic.read_tile(0, binning=binning)
+
+            from phasorpy.io import signal_from_czi
+
+            options.pop("phasor_axis", None)
             return signal_from_czi(self.path, **options)
         except Exception as e:  # noqa: BLE001
             show_error(f"Error reading CZI signal: {str(e)}")

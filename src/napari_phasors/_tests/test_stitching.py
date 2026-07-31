@@ -7,17 +7,21 @@ from phasorpy.phasor import phasor_from_signal
 
 from napari_phasors._reader import (
     TileSet,
+    probe_tile_axes,
     raw_file_tile_reader,
     read_tile_phasors,
 )
 from napari_phasors._stitching import (
     TileGeometry,
     TilePlacement,
+    TileSource,
+    as_tile_sources,
     blend_phasor_tiles,
     compute_origins,
     estimate_overlap,
     feather_window,
     layout_from_filenames,
+    layout_from_positions,
     layout_from_rows,
     layout_from_stage_positions,
     parse_tiles_per_row,
@@ -734,3 +738,417 @@ def test_stitching_already_processed_tiles(tmp_path):
     assert data.shape[0] < 2 * height and data.shape[1] < 2 * width
     # Calibration and other persisted settings survive stitching.
     assert add_kwargs["metadata"]["settings"]
+
+
+# --------------------------------------------------------------------------
+# Mosaics held inside a single file
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def single_file_mosaic(tmp_path):
+    """Write one TIFF holding a 3x3 mosaic along a leading tile axis.
+
+    The stored array is ``(tile, histogram, Y, X)``, so reading it needs both
+    a tile axis of 0 and a phasor axis of 1.
+    """
+    height = width = 48
+    geometry = layout_from_rows(
+        [""] * 9,
+        "3,3,3",
+        tile_shape=(height, width),
+        overlap_y=0.25,
+        overlap_x=0.25,
+    )
+    scene = make_scene(shape=(32, 200, 200))
+    stack = np.stack(
+        [
+            scene[
+                :,
+                int(round(p.row * geometry.step_y)) : int(
+                    round(p.row * geometry.step_y)
+                )
+                + height,
+                int(round(p.col * geometry.step_x)) : int(
+                    round(p.col * geometry.step_x)
+                )
+                + width,
+            ]
+            for p in geometry.placements
+        ]
+    ).astype(np.uint16)
+
+    path = str(tmp_path / "mosaic.tif")
+    tifffile.imwrite(path, stack)
+
+    sources = [TileSource(path, index) for index in range(9)]
+    geometry = layout_from_rows(
+        sources,
+        "3,3,3",
+        tile_shape=(height, width),
+        overlap_y=0.25,
+        overlap_x=0.25,
+    )
+    return path, sources, geometry
+
+
+def test_tile_source_normalization():
+    assert as_tile_sources(["a.tif"]) == [TileSource("a.tif", 0)]
+    assert as_tile_sources([("a.czi", 3)]) == [TileSource("a.czi", 3)]
+    assert as_tile_sources([TileSource("a.czi", 1)]) == [
+        TileSource("a.czi", 1)
+    ]
+
+
+def test_tile_source_label_distinguishes_tiles_in_one_file():
+    assert TileSource("/data/a.czi").label == "a.czi"
+    assert TileSource("/data/a.czi", 4).label == "a.czi [4]"
+
+
+def test_layout_carries_the_tile_index():
+    sources = [TileSource("m.czi", index) for index in range(4)]
+    geometry = layout_from_rows(sources, "2,2", tile_shape=(8, 8))
+    assert [p.index for p in geometry.placements] == [0, 1, 2, 3]
+    assert geometry.sources == sources
+    assert geometry.paths == ["m.czi"] * 4
+    # The index has to survive serialization or a reloaded mosaic would
+    # collapse onto a single tile.
+    assert TileGeometry.from_dict(geometry.to_dict()).sources == sources
+
+
+def test_filename_layout_refuses_tiles_sharing_a_file():
+    sources = [TileSource("m_1_2.czi", index) for index in range(2)]
+    with pytest.raises(ValueError, match="share a file"):
+        layout_from_filenames(sources)
+
+
+def test_stage_position_layout_declines_tiles_sharing_a_file():
+    sources = [TileSource("m.ome.tif", index) for index in range(2)]
+    assert layout_from_stage_positions(sources, tile_shape=(8, 8)) is None
+
+
+def test_probe_tile_axes_finds_the_tile_axis(single_file_mosaic):
+    path, _, _ = single_file_mosaic
+    assert probe_tile_axes(path) == {0: 9}
+
+
+def test_probe_tile_axes_empty_for_single_tile_files(tile_mosaic):
+    paths, _ = tile_mosaic
+    assert probe_tile_axes(paths[0]) == {}
+
+
+def test_probe_tile_axes_survives_unreadable_files(tmp_path):
+    path = tmp_path / "broken.tif"
+    path.write_bytes(b"not a tiff")
+    assert probe_tile_axes(str(path)) == {}
+
+
+def test_reading_a_mosaic_held_in_one_file(single_file_mosaic):
+    path, sources, geometry = single_file_mosaic
+    tile_set = read_tile_phasors(
+        sources,
+        reader_options={"phasor_axis": 1},
+        harmonics=[1, 2],
+        tile_axis=0,
+    )
+
+    assert tile_set.n_tiles == 9
+    assert tile_set.n_files == 1
+    assert tile_set.tile_shape == (48, 48)
+    assert tile_set.n_channels == 1
+
+    data, add_kwargs = tile_set.stitch(geometry)[0]
+    assert data.shape == (120, 120)
+    assert add_kwargs["metadata"]["G"].shape == (2, 120, 120)
+    # The layer is named after the file, not its folder.
+    assert add_kwargs["name"].startswith("mosaic Mosaic Intensity Image")
+    labels = add_kwargs["metadata"]["tile_files"]
+    assert labels[0] == "mosaic.tif"
+    assert labels[3] == "mosaic.tif [3]"
+
+
+def test_one_file_mosaic_matches_the_same_tiles_as_files(
+    single_file_mosaic, tmp_path
+):
+    """Splitting one file gives the same mosaic as one file per tile."""
+    path, sources, geometry = single_file_mosaic
+    combined = read_tile_phasors(
+        sources, reader_options={"phasor_axis": 1}, harmonics=[1], tile_axis=0
+    ).stitch(geometry)[0]
+
+    stack = tifffile.imread(path)
+    separate_paths = []
+    for index in range(stack.shape[0]):
+        tile_path = tmp_path / f"separate_{index:03d}.tif"
+        tifffile.imwrite(tile_path, stack[index])
+        separate_paths.append(str(tile_path))
+    separate_geometry = layout_from_rows(
+        separate_paths,
+        "3,3,3",
+        tile_shape=(48, 48),
+        overlap_y=0.25,
+        overlap_x=0.25,
+    )
+    separate = read_tile_phasors(separate_paths, harmonics=[1]).stitch(
+        separate_geometry
+    )[0]
+
+    np.testing.assert_allclose(combined[0], separate[0])
+    np.testing.assert_allclose(
+        combined[1]["metadata"]["G"],
+        separate[1]["metadata"]["G"],
+        equal_nan=True,
+    )
+
+
+def test_each_file_is_read_once_however_tiles_are_ordered(
+    single_file_mosaic, monkeypatch
+):
+    path, sources, geometry = single_file_mosaic
+
+    import napari_phasors._reader as reader_module
+
+    reads = []
+    original = reader_module.load_raw_signal
+
+    def counting_load(file_path, io_options=None):
+        reads.append(file_path)
+        return original(file_path, io_options)
+
+    monkeypatch.setattr(reader_module, "load_raw_signal", counting_load)
+
+    shuffled = [sources[i] for i in (4, 0, 8, 2, 6, 1, 7, 3, 5)]
+    tile_set = read_tile_phasors(
+        shuffled, reader_options={"phasor_axis": 1}, harmonics=[1], tile_axis=0
+    )
+
+    assert reads.count(path) == 1
+    # Placement order is preserved even though the file was read in index
+    # order, so tile 4 is still first.
+    assert tile_set.sources == shuffled
+
+
+def test_tiles_may_repeat_within_a_mosaic(single_file_mosaic):
+    path, _, _ = single_file_mosaic
+    repeated = [TileSource(path, 0), TileSource(path, 0)]
+    tile_set = read_tile_phasors(
+        repeated,
+        reader_options={"phasor_axis": 1},
+        harmonics=[1],
+        tile_axis=0,
+    )
+    assert tile_set.n_tiles == 2
+    np.testing.assert_array_equal(tile_set.means(0)[0], tile_set.means(0)[1])
+
+
+def test_tile_axis_errors_are_actionable(single_file_mosaic):
+    path, sources, _ = single_file_mosaic
+
+    with pytest.raises(ValueError, match="no dimension named 'M'"):
+        read_tile_phasors(sources, harmonics=[1], tile_axis="M")
+
+    with pytest.raises(ValueError, match="out of range"):
+        read_tile_phasors(sources, harmonics=[1], tile_axis=9)
+
+    with pytest.raises(ValueError, match="cannot read tile"):
+        read_tile_phasors(
+            [TileSource(path, 99)],
+            reader_options={"phasor_axis": 1},
+            harmonics=[1],
+            tile_axis=0,
+        )
+
+
+def test_processed_files_cannot_be_split_into_tiles():
+    from napari_phasors._tests.test_data_utils import get_test_file_path
+
+    source = get_test_file_path("test_file.ome.tif")
+    with pytest.raises(ValueError, match="cannot be split into tiles"):
+        read_tile_phasors(
+            [TileSource(source, 0), TileSource(source, 1)], harmonics=[1]
+        )
+
+
+@pytest.mark.parametrize(
+    "dims, shape, expected",
+    [
+        (("M", "H", "Y", "X"), (9, 32, 16, 16), 0),
+        (("S", "C", "Y", "X"), (4, 28, 16, 16), 0),
+        (("V", "M", "H", "Y", "X"), (2, 9, 32, 16, 16), 1),
+    ],
+)
+def test_tile_axis_detection_prefers_mosaic_dimensions(dims, shape, expected):
+    """A CZI mosaic axis is picked over other non-spatial dimensions."""
+    import xarray as xr
+
+    from napari_phasors._reader import _resolve_tile_axis
+
+    signal = xr.DataArray(np.zeros(shape), dims=dims)
+    assert _resolve_tile_axis(signal, None, "f.czi") == expected
+
+
+def test_tile_axis_detection_ignores_channel_and_spatial_axes():
+    import xarray as xr
+
+    from napari_phasors._reader import _resolve_tile_axis
+
+    signal = xr.DataArray(np.zeros((28, 16, 16)), dims=("C", "Y", "X"))
+    with pytest.raises(ValueError, match="no dimension holding tiles"):
+        _resolve_tile_axis(signal, None, "f.czi")
+
+
+def test_phasor_axis_is_corrected_after_the_tile_axis_is_dropped(
+    single_file_mosaic,
+):
+    """Slicing removes an axis, so a later phasor axis must shift down."""
+    path, sources, geometry = single_file_mosaic
+    tile_set = read_tile_phasors(
+        sources[:1],
+        reader_options={"phasor_axis": 1},
+        harmonics=[1],
+        tile_axis=0,
+    )
+    mean, real, _ = tile_set.tiles[0][0]
+    assert mean.shape == (48, 48)
+    # A phasor axis left at 1 would have transformed along Y and produced
+    # nonsense outside the universal semicircle.
+    assert np.all(real[np.isfinite(real)] <= 1.0)
+    assert np.all(real[np.isfinite(real)] >= 0.0)
+
+
+# --------------------------------------------------------------------------
+# Mosaics positioned by the file itself (CZI)
+# --------------------------------------------------------------------------
+
+
+def test_layout_from_positions_recovers_a_ragged_grid():
+    """Measured positions give back rows, columns and the overlap."""
+    height = width = 2048
+    step = 1945  # ~5 % overlap, as a slide scanner records it
+    rows = [16, 16, 15]
+    positions, sources = [], []
+    for row, count in enumerate(rows):
+        for col in range(count):
+            positions.append((94928 + row * step, 169175 + col * step))
+            sources.append(TileSource("m.czi", len(sources)))
+
+    geometry = layout_from_positions(sources, positions, (height, width))
+
+    assert geometry.overlap_y == pytest.approx(1 - step / height, abs=1e-3)
+    assert geometry.overlap_x == pytest.approx(1 - step / width, abs=1e-3)
+    per_row = {}
+    for placement in geometry.placements:
+        per_row.setdefault(placement.row, []).append(placement.col)
+    assert [len(v) for v in per_row.values()] == rows
+    # The common offset of the recorded coordinates is removed.
+    assert geometry.origins()[0] == (0, 0)
+    assert geometry.canvas_shape() == (2 * step + height, 15 * step + width)
+
+
+def test_layout_from_positions_is_exact():
+    """Whatever the regular grid misses is kept per tile, so nothing drifts."""
+    height = width = 100
+    # Deliberately irregular: a jittery stage.
+    positions = [(0, 0), (0, 95), (0, 191), (88, 3), (88, 97), (88, 190)]
+    sources = [TileSource("m.czi", i) for i in range(6)]
+
+    geometry = layout_from_positions(sources, positions, (height, width))
+    assert geometry.origins() == positions
+
+
+def test_layout_from_positions_rejects_a_count_mismatch():
+    with pytest.raises(ValueError, match="position"):
+        layout_from_positions(
+            [TileSource("m.czi", 0)], [(0, 0), (0, 90)], (10, 10)
+        )
+
+
+def test_binning_sums_photons():
+    """Binning must sum, so a binned tile keeps the photon statistics."""
+    from napari_phasors._reader import _bin_spatial
+
+    cube = np.arange(2 * 4 * 4, dtype=np.uint16).reshape(2, 4, 4)
+    binned = _bin_spatial(cube, 2)
+
+    assert binned.shape == (2, 2, 2)
+    assert binned[0, 0, 0] == cube[0, :2, :2].sum()
+    assert binned.sum() == cube.sum()
+    assert np.array_equal(_bin_spatial(cube, 1), cube)
+
+
+def test_binning_preserves_the_phasor_of_the_pooled_pixels():
+    """A binned tile's phasor equals the photon-weighted phasor of its pixels.
+
+    This is the same identity stitching relies on, so binning to fit a large
+    mosaic in memory does not bias the result.
+    """
+    from napari_phasors._reader import _bin_spatial
+
+    rng = np.random.default_rng(0)
+    cube = rng.poisson(40, (32, 4, 4)).astype(np.uint16)
+
+    mean, real, imag = phasor_from_signal(cube, axis=0, harmonic=[1])
+    binned = _bin_spatial(cube, 4)
+    binned_mean, binned_real, binned_imag = phasor_from_signal(
+        binned, axis=0, harmonic=[1]
+    )
+
+    weights = mean / mean.sum()
+    assert binned_real[0, 0, 0] == pytest.approx((real[0] * weights).sum())
+    assert binned_imag[0, 0, 0] == pytest.approx((imag[0] * weights).sum())
+
+
+def test_binning_rejects_a_factor_larger_than_the_tile():
+    from napari_phasors._reader import _bin_spatial
+
+    with pytest.raises(ValueError, match="leaves nothing"):
+        _bin_spatial(np.zeros((2, 4, 4), dtype=np.uint16), 8)
+
+
+def test_probe_reports_a_czi_mosaic(monkeypatch):
+    import napari_phasors._reader as reader_module
+
+    monkeypatch.setattr(
+        reader_module,
+        "czi_mosaic_info",
+        lambda path: {
+            "n_tiles": 171,
+            "tile_shape": (2048, 2048),
+            "canvas_shape": (21504, 31232),
+            "n_channels": 32,
+        },
+    )
+    assert reader_module.probe_tile_axes("scan.czi") == {"mosaic": 171}
+    assert reader_module.describe_tile_axis("mosaic") == "Mosaic tiles"
+
+
+def test_a_mosaic_is_never_read_as_one_image(monkeypatch):
+    """Reading a mosaic whole would allocate far more than the file holds."""
+    import napari_phasors._reader as reader_module
+
+    monkeypatch.setattr(
+        reader_module,
+        "czi_mosaic_info",
+        lambda path: {
+            "n_tiles": 171,
+            "tile_shape": (2048, 2048),
+            "canvas_shape": (21504, 31232),
+            "n_channels": 32,
+        },
+    )
+    with pytest.raises(ValueError, match="Open tiled mosaic"):
+        reader_module.load_raw_signal("scan.czi")
+
+
+def test_czi_mosaic_info_is_none_for_other_formats(tile_mosaic):
+    from napari_phasors._reader import czi_mosaic_info
+
+    paths, _ = tile_mosaic
+    assert czi_mosaic_info(paths[0]) is None
+
+
+def test_czi_mosaic_info_is_none_for_a_plain_czi():
+    from napari_phasors._reader import czi_mosaic_info
+    from napari_phasors._tests.test_data_utils import get_test_file_path
+
+    assert czi_mosaic_info(get_test_file_path("test_file.czi")) is None
