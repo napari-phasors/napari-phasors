@@ -588,6 +588,30 @@ def test_reader_r64():
         assert "G" in layer_data[1]["metadata"]
 
 
+def test_reader_r64_harmonics_metadata():
+    """R64 files carry two harmonics but report none, so they are inferred.
+
+    ``phasor_from_simfcs_referenced`` returns no ``'harmonic'`` metadata.
+    Without inference the layer's ``harmonics`` would be None and downstream
+    analyses would mistake the harmonic axis of G/S for image data.
+    """
+    r64_file = fetch("simfcs.r64")
+    metadata = napari_get_reader(r64_file)(r64_file)[0][1]["metadata"]
+    assert metadata["harmonics"] == [1, 2]
+    assert metadata["G"].shape[0] == 2
+
+    metadata = napari_get_reader(r64_file, harmonics=1)(r64_file)[0][1][
+        "metadata"
+    ]
+    assert metadata["harmonics"] == 1
+    assert metadata["G"].ndim == 2
+
+    metadata = napari_get_reader(r64_file, harmonics=[2])(r64_file)[0][1][
+        "metadata"
+    ]
+    assert metadata["harmonics"] == [2]
+
+
 def test_reader_json_imaging():
     """Test reading a JSON imaging file."""
     json_file = fetch("Fluorescein_Calibration_m2_1740751189_imaging.json")

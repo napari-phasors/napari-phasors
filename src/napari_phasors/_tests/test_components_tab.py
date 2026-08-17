@@ -118,6 +118,71 @@ def test_components_widget_lifetime_inputs_visibility_with_frequency(
     assert abs(s_val - expected_s) < 1e-3
 
 
+def test_components_lifetime_moves_component_on_plot(make_viewer_model, qtbot):
+    """Typing a lifetime places the component dot on the universal circle."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    layer.metadata["settings"] = {"frequency": 80.0}
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+    comp = comp_widget.components[0]
+
+    canvas = parent.canvas_widget.canvas
+    with patch.object(canvas, "draw", wraps=canvas.draw) as forced_draw:
+        comp.lifetime_edit.setText("3.0")
+        comp.lifetime_edit.editingFinished.emit()
+
+    expected_g, expected_s = phasor_from_lifetime(80.0, 3.0)
+    x, y = comp.dot.get_data()
+    assert abs(x[0] - expected_g) < 1e-3
+    assert abs(y[0] - expected_s) < 1e-3
+    # A dot moved only with ``draw_idle`` can be repainted from a stale blit
+    # background, leaving it visually at its old position.
+    assert forced_draw.call_count >= 1
+
+    # Moving it again keeps it on the circle and leaves the guard flag clear.
+    comp.lifetime_edit.setText("1.0")
+    comp.lifetime_edit.editingFinished.emit()
+    expected_g, expected_s = phasor_from_lifetime(80.0, 1.0)
+    x, y = comp.dot.get_data()
+    assert abs(x[0] - expected_g) < 1e-3
+    assert abs(y[0] - expected_s) < 1e-3
+    assert comp_widget._updating_from_lifetime is False
+
+
+def test_components_lifetime_without_harmonics_metadata(
+    make_viewer_model, qtbot
+):
+    """A layer that reports no harmonics still accepts a typed lifetime.
+
+    ``_get_available_harmonics`` returns an empty list for such layers, which
+    used to make the lifetime input a silent no-op while the G/S inputs kept
+    working.
+    """
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    layer.metadata["settings"] = {"frequency": 80.0}
+    layer.metadata["harmonics"] = None
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+    assert comp_widget._get_available_harmonics() == []
+
+    comp = comp_widget.components[0]
+    comp.lifetime_edit.setText("3.0")
+    comp.lifetime_edit.editingFinished.emit()
+
+    expected_g, expected_s = phasor_from_lifetime(80.0, 3.0)
+    assert abs(float(comp.g_edit.text()) - expected_g) < 1e-3
+    assert abs(float(comp.s_edit.text()) - expected_s) < 1e-3
+    assert comp.dot is not None
+
+
 def test_components_widget_component_creation_and_line(
     make_viewer_model, qtbot
 ):
