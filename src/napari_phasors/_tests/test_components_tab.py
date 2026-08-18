@@ -3512,3 +3512,60 @@ def test_components_histogram_updates_from_debounced_selection_signal(
         comp_widget._get_fraction_layers_for_component(comp_name)
     ) == ["img0", "img1"]
     assert viewer.layers[f"{comp_name} fractions: img2"].visible is False
+
+
+def test_get_selected_image_layer_names_without_parent_widget(
+    make_viewer_model, qtbot
+):
+    """Without a parent widget there is no selection to honour."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    with patch.object(comp, "parent_widget", None):
+        assert comp._get_selected_image_layer_names() == set()
+
+
+def test_get_selected_image_layer_names_survives_torn_down_widgets(
+    make_viewer_model, qtbot
+):
+    """A deleted Qt combobox is treated as an empty selection, not an error."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    with patch.object(
+        parent,
+        "get_selected_layers",
+        side_effect=RuntimeError("wrapped C/C++ object has been deleted"),
+    ):
+        assert comp._get_selected_image_layer_names() == set()
+
+    with patch.object(
+        parent, "get_selected_layers", side_effect=AttributeError
+    ):
+        assert comp._get_selected_image_layer_names() == set()
+
+
+def test_sync_fraction_layer_visibility_only_touches_fraction_layers(
+    make_viewer_model, qtbot
+):
+    """Fraction layers follow the selection; other layers are left alone."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    _setup_linear_projection(comp)
+    fraction_layer = comp.comp1_fractions_layer
+    assert fraction_layer is not None
+    assert fraction_layer.visible is True
+
+    unrelated = Image(np.zeros((2, 2)), name="unrelated")
+    viewer.add_layer(unrelated)
+
+    with patch.object(parent, "get_selected_layers", return_value=[]):
+        comp._sync_fraction_layer_visibility()
+
+    assert fraction_layer.visible is False
+    # Neither the source image nor an unrelated layer is touched.
+    assert unrelated.visible is True
+    assert layer.visible is True
+    # The guard flag is always released.
+    assert comp._updating_linked_layers is False
+
+    comp._sync_fraction_layer_visibility()
+
+    assert fraction_layer.visible is True
