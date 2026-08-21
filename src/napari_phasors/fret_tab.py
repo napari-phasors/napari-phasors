@@ -29,6 +29,7 @@ from qtpy.QtWidgets import (
 )
 from superqt import QToggleSwitch
 
+from ._parallel import parallel_map
 from ._utils import (
     CheckableComboBox,
     CurrentPageStackedWidget,
@@ -1889,37 +1890,62 @@ class FretWidget(QWidget):
                 donor_fretting=self.donor_fretting_proportion,
             )
 
-        # Process each selected layer
-        for layer in selected_layers:
-            # Retrieve arrays from metadata
+        # The nearest-neighbour search is the expensive step here and is
+        # independent per layer, so every efficiency map is computed up front
+        # in a thread pool. The harmonic is read once, on this thread,
+        # because it comes from a Qt spinbox.
+        harmonic = self.parent_widget.harmonic
+
+        def compute_efficiency(layer):
+            """Return one layer's FRET efficiency map, or ``None``.
+
+            Pure array work, safe to run in a worker thread.
+            """
             g_array = layer.metadata.get("G")
             s_array = layer.metadata.get("S")
             harmonics = layer.metadata.get("harmonics")
 
             if g_array is None or s_array is None:
-                continue
+                return None
 
             if harmonics is not None:
                 try:
-                    harmonics = np.atleast_1d(harmonics)
-                    harmonic_index = np.where(
-                        harmonics == self.parent_widget.harmonic
-                    )[0][0]
+                    harmonics_array = np.atleast_1d(harmonics)
+                    harmonic_index = np.where(harmonics_array == harmonic)[0][
+                        0
+                    ]
                     real = g_array[harmonic_index]
                     imag = s_array[harmonic_index]
                 except IndexError:
-                    continue
+                    return None
             else:
                 real = g_array
                 imag = s_array
 
-            fret_efficiency = phasor_nearest_neighbor(
+            return phasor_nearest_neighbor(
                 real,
                 imag,
                 neighbor_real,
                 neighbor_imag,
                 values=self._fret_efficiencies,
             )
+
+        efficiencies = parallel_map(
+            compute_efficiency, selected_layers, on_error="collect"
+        )
+
+        # Process each selected layer
+        for layer, fret_efficiency in zip(
+            selected_layers, efficiencies, strict=True
+        ):
+            if isinstance(fret_efficiency, BaseException):
+                show_error(
+                    f"FRET efficiency failed for {layer.name}: "
+                    f"{fret_efficiency}"
+                )
+                continue
+            if fret_efficiency is None:
+                continue
 
             fret_layer_name = f"FRET efficiency: {layer.name}"
 

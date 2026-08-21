@@ -612,6 +612,36 @@ def test_reader_r64_harmonics_metadata():
     assert metadata["harmonics"] == [2]
 
 
+def test_processed_reader_defaults_to_first_two_harmonics(tmp_path):
+    """Processed files default to the first two harmonics, like raw files."""
+    from phasorpy.io import phasor_to_ometiff
+
+    mean = np.random.rand(8, 8).astype(np.float32)
+    real = np.random.rand(5, 8, 8).astype(np.float32)
+    imag = np.random.rand(5, 8, 8).astype(np.float32)
+    path = str(tmp_path / "five.ome.tif")
+    phasor_to_ometiff(path, mean, real, imag, harmonic=[1, 2, 3, 4, 5])
+
+    metadata = napari_get_reader(path)(path)[0][1]["metadata"]
+    assert metadata["harmonics"] == [1, 2]
+    assert metadata["G"].shape == (2, 8, 8)
+
+    # An explicit request is never trimmed.
+    metadata = napari_get_reader(path, harmonics="all")(path)[0][1]["metadata"]
+    assert metadata["harmonics"] == [1, 2, 3, 4, 5]
+    metadata = napari_get_reader(path, harmonics=[1, 3, 5])(path)[0][1][
+        "metadata"
+    ]
+    assert metadata["harmonics"] == [1, 3, 5]
+
+    # A file with a single harmonic is left alone.
+    path = str(tmp_path / "one.ome.tif")
+    phasor_to_ometiff(path, mean, real[0], imag[0], harmonic=1)
+    metadata = napari_get_reader(path)(path)[0][1]["metadata"]
+    assert metadata["harmonics"] == 1
+    assert metadata["G"].shape == (8, 8)
+
+
 def test_reader_json_imaging():
     """Test reading a JSON imaging file."""
     json_file = fetch("Fluorescein_Calibration_m2_1740751189_imaging.json")

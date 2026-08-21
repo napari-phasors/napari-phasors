@@ -153,6 +153,43 @@ def test_components_lifetime_moves_component_on_plot(make_viewer_model, qtbot):
     assert comp_widget._updating_from_lifetime is False
 
 
+def test_components_lifetime_lands_on_universal_circle(
+    make_viewer_model, qtbot
+):
+    """A typed lifetime places the component exactly on the universal circle.
+
+    The G/S boxes show three decimals; placing the component from those
+    strings left it up to ~5e-4 off the circle, which is visible once the
+    plot is zoomed in.
+    """
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    layer.metadata["settings"] = {"frequency": 80.0}
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+    comp = comp_widget.components[0]
+
+    for harmonic in (1, 2, 3):
+        parent.harmonic = harmonic
+        for lifetime in (0.1, 0.5, 1.0, 3.0, 8.0, 20.0):
+            comp.lifetime_edit.setText(str(lifetime))
+            comp.lifetime_edit.editingFinished.emit()
+
+            x, y = comp.dot.get_data()
+            assert abs(np.hypot(x[0] - 0.5, y[0]) - 0.5) < 1e-12
+
+            stored = layer.metadata["settings"]["component_analysis"][
+                "components"
+            ]["0"]["gs_harmonics"][str(harmonic)]
+            assert abs(np.hypot(stored["g"] - 0.5, stored["s"]) - 0.5) < 1e-12
+            # Stored coordinates are serialised to JSON on export.
+            assert isinstance(stored["g"], float)
+            assert isinstance(stored["s"], float)
+
+
 def test_components_lifetime_without_harmonics_metadata(
     make_viewer_model, qtbot
 ):

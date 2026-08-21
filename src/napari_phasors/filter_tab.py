@@ -22,9 +22,10 @@ from qtpy.QtWidgets import (
 )
 from superqt import QRangeSlider, QToggleSwitch
 
+from ._lod import LodManager
 from ._utils import (
     analysis_section_stylesheet,
-    apply_filter_and_threshold,
+    apply_filter_and_threshold_to_layers,
     make_section,
     setup_primary_button,
     threshold_li,
@@ -81,6 +82,9 @@ class FilterWidget(QWidget):
         self._histogram_needs_update = (
             False  # Track if histogram needs updating
         )
+        # Built on first use by the `lod_manager` property, so a tab that
+        # never bins anything never allocates one.
+        self._lod_manager = None
 
         # Style the histogram axes and figure initially
         self.style_histogram_axes()
@@ -89,6 +93,7 @@ class FilterWidget(QWidget):
 
         # Connect signals after the full widget hierarchy is built.
         self._connect_signals()
+        self._connect_lod_controls()
 
     def _is_tab_visible(self):
         """Check if the filter tab is currently visible."""
@@ -151,6 +156,41 @@ class FilterWidget(QWidget):
         # Create a widget to hold the scrollable content
         scroll_content = QWidget()
         scroll_layout = QVBoxLayout(scroll_content)
+
+        # Level of detail section --------------------------------------------
+        detail_box, detail_box_layout = make_section("Level of Detail")
+
+        self.lod_checkbox = QToggleSwitch("Bin large images")
+        self.lod_checkbox.setToolTip(
+            "Bin very large images so filtering, the phasor plot and every "
+            "analysis tab work on fewer pixels. Binning is photon-weighted, "
+            "so a binned image is exactly the phasor of the summed signal. "
+            "The full-resolution data is kept and can be restored at any "
+            "time."
+        )
+        detail_box_layout.addWidget(self.lod_checkbox)
+
+        self.lod_zoom_checkbox = QToggleSwitch("Refine on zoom")
+        self.lod_zoom_checkbox.setToolTip(
+            "When you zoom in, recompute the visible region at finer detail, "
+            "down to full resolution once the region is small enough."
+        )
+        self.lod_zoom_checkbox.setEnabled(False)
+        detail_box_layout.addWidget(self.lod_zoom_checkbox)
+
+        detail_status_layout = QHBoxLayout()
+        self.lod_status_label = QLabel("Full resolution")
+        detail_status_layout.addWidget(self.lod_status_label)
+        detail_status_layout.addStretch()
+        self.lod_full_button = QPushButton("Full resolution")
+        self.lod_full_button.setToolTip(
+            "Restore this layer to full resolution."
+        )
+        self.lod_full_button.setEnabled(False)
+        detail_status_layout.addWidget(self.lod_full_button)
+        detail_box_layout.addLayout(detail_status_layout)
+
+        scroll_layout.addWidget(detail_box)
 
         # Filter section -----------------------------------------------------
         filter_box, filter_box_layout = make_section("Filter")
@@ -1005,7 +1045,10 @@ class FilterWidget(QWidget):
         else:
             current_filter_method = current_filter_method_text.lower()
 
-        # Apply filter and threshold to each selected layer
+        # Collect each layer's parameters first. Every widget read has to
+        # happen here on the main thread, because the filtering itself is
+        # handed to a worker pool below.
+        layer_params = []
         for layer in selected_layers:
             filter_method = None
             size = None
@@ -1033,18 +1076,36 @@ class FilterWidget(QWidget):
                         sigma = self.wavelet_sigma_spinbox.value()
                         levels = self.wavelet_levels_spinbox.value()
 
-            apply_filter_and_threshold(
-                layer,
-                threshold=threshold_lower,
-                threshold_upper=threshold_upper,
-                threshold_method=threshold_method,
-                filter_method=filter_method,
-                size=size,
-                repeat=repeat,
-                sigma=sigma,
-                levels=levels,
-                harmonics=harmonics,
+            layer_params.append(
+                (
+                    layer,
+                    {
+                        "threshold": threshold_lower,
+                        "threshold_upper": threshold_upper,
+                        "threshold_method": threshold_method,
+                        "filter_method": filter_method,
+                        "size": size,
+                        "repeat": repeat,
+                        "sigma": sigma,
+                        "levels": levels,
+                        "harmonics": harmonics,
+                    },
+                )
             )
+
+        # Filtering is the expensive part and is independent per layer, so the
+        # layers are computed in parallel and written back in order.
+        errors = apply_filter_and_threshold_to_layers(layer_params)
+        failed = [
+            (layer.name, error)
+            for (layer, _), error in zip(layer_params, errors, strict=True)
+            if isinstance(error, BaseException)
+        ]
+        if failed:
+            details = "\n".join(
+                f"  \u2022 {name}: {error}" for name, error in failed
+            )
+            show_error(f"Could not filter {len(failed)} layer(s):\n{details}")
 
         if self.parent_widget is not None:
             self.parent_widget.refresh_phasor_data()
@@ -1133,8 +1194,110 @@ class FilterWidget(QWidget):
             if not self._updating_threshold:
                 self.threshold_method_combobox.setCurrentText("Manual")
 
+    def _connect_lod_controls(self):
+        """Wire the level-of-detail controls to their manager."""
+        self.lod_checkbox.toggled.connect(self._on_lod_toggled)
+        self.lod_zoom_checkbox.toggled.connect(self._on_lod_zoom_toggled)
+        self.lod_full_button.clicked.connect(self._on_lod_full_clicked)
+
+    @property
+    def lod_manager(self):
+        """Return the level-of-detail manager, creating it on first use.
+
+        Built lazily so that a filter tab which never touches a large image
+        never allocates one, and so no camera connection exists until the
+        user asks for binning.
+        """
+        if self._lod_manager is None:
+            self._lod_manager = LodManager(self.viewer, parent=self)
+        return self._lod_manager
+
+    def _on_lod_toggled(self, checked):
+        """Bin (or restore) every selected layer."""
+        self.lod_zoom_checkbox.setEnabled(checked)
+        self.lod_full_button.setEnabled(checked)
+
+        manager = self.lod_manager
+        if not checked:
+            manager.set_enabled(False)
+            self.lod_zoom_checkbox.setChecked(False)
+            manager.detach_all()
+            self._update_lod_status()
+            self._refresh_after_lod_change()
+            return
+
+        layers = self.parent_widget.get_selected_layers()
+        if not layers:
+            show_error(
+                "Please select at least one image layer with phasor features."
+            )
+            self.lod_checkbox.setChecked(False)
+            return
+
+        for layer in layers:
+            manager.attach(layer, auto=True)
+        self._update_lod_status()
+        self._refresh_after_lod_change()
+
+    def _on_lod_zoom_toggled(self, checked):
+        """Start or stop following the camera."""
+        manager = self.lod_manager
+        manager.set_enabled(checked)
+        if checked:
+            manager.refine_now()
+            self._update_lod_status()
+            self._refresh_after_lod_change()
+
+    def _on_lod_full_clicked(self):
+        """Drop back to full resolution without leaving binning enabled."""
+        manager = self.lod_manager
+        for layer in manager.layers:
+            lod = manager.lod_for(layer)
+            if lod is not None:
+                lod.apply(1)
+        self._update_lod_status()
+        self._refresh_after_lod_change()
+
+    def _update_lod_status(self):
+        """Describe the detail currently on screen."""
+        manager = self._lod_manager
+        if manager is None or not manager.layers:
+            self.lod_status_label.setText("Full resolution")
+            return
+
+        factors = sorted(
+            {
+                manager.lod_for(layer).factor
+                for layer in manager.layers
+                if manager.lod_for(layer) is not None
+            }
+        )
+        if factors == [1]:
+            self.lod_status_label.setText("Full resolution")
+        elif len(factors) == 1:
+            self.lod_status_label.setText(f"Binned {factors[0]}x{factors[0]}")
+        else:
+            self.lod_status_label.setText(
+                "Binned "
+                + ", ".join(f"{factor}x{factor}" for factor in factors)
+            )
+
+    def _refresh_after_lod_change(self):
+        """Rebuild the plot and histogram for the new detail level."""
+        if self.parent_widget is None:
+            return
+        with contextlib.suppress(AttributeError, TypeError, ValueError):
+            self.parent_widget.refresh_phasor_data()
+
     def closeEvent(self, event):
         """Clean up signal connections before closing."""
+        # Release the level-of-detail manager's camera connections; leaving
+        # them attached to a closed widget is the usual cause of PySide6
+        # teardown crashes in this plugin.
+        if self._lod_manager is not None:
+            with contextlib.suppress(RuntimeError, TypeError, ValueError):
+                self._lod_manager.disconnect()
+
         # Disconnect parent widget signal if present
         if hasattr(self, 'parent_widget') and hasattr(
             self.parent_widget, 'image_layer_with_phasor_features_combobox'

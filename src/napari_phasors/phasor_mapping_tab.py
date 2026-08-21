@@ -30,6 +30,7 @@ from scipy.ndimage import gaussian_filter
 from scipy.stats import binned_statistic_2d
 from superqt import QRangeSlider, QToggleSwitch
 
+from ._parallel import parallel_map
 from ._utils import (
     LIFETIME_OUTPUT_TYPES,
     HistogramWidget,
@@ -1533,32 +1534,45 @@ class PhasorMappingWidget(QWidget):
         all_output_data = []
         per_layer_data = {}
 
-        for layer in selected_layers:
+        # Every layer's output map is independent, and the phasor conversions
+        # release the GIL, so they are computed in a thread pool. Values that
+        # come from the UI are read once here, on this thread, because the
+        # workers must not touch Qt.
+        harmonic = self.parent_widget.harmonic
+        requires_frequency = self._output_requires_frequency(output_type)
+        semicircle_mode = self._is_semicircle_mode()
+        effective_frequency = (
+            base_frequency * harmonic if requires_frequency else None
+        )
+
+        def compute_output(layer):
+            """Return one layer's output map, or ``None``.
+
+            Pure array work (NumPy's error state is thread-local), so this is
+            safe to run in a worker thread.
+            """
             g_array = layer.metadata.get("G")
             s_array = layer.metadata.get("S")
             harmonics = layer.metadata.get("harmonics")
 
             if g_array is None or s_array is None:
-                continue
+                return None
 
             if harmonics is not None:
                 try:
-                    harmonics = np.atleast_1d(harmonics)
-                    harmonic_index = np.where(
-                        harmonics == self.parent_widget.harmonic
-                    )[0][0]
+                    harmonics_array = np.atleast_1d(harmonics)
+                    harmonic_index = np.where(harmonics_array == harmonic)[0][
+                        0
+                    ]
                     real = g_array[harmonic_index]
                     imag = s_array[harmonic_index]
                 except IndexError:
-                    continue
+                    return None
             else:
                 real = g_array
                 imag = s_array
 
-            if self._output_requires_frequency(output_type):
-                effective_frequency = (
-                    base_frequency * self.parent_widget.harmonic
-                )
+            if requires_frequency:
                 with np.errstate(divide='ignore', invalid='ignore'):
                     if output_type == "Normal Lifetime":
                         output_values = phasor_to_normal_lifetime(
@@ -1585,7 +1599,7 @@ class PhasorMappingWidget(QWidget):
                     phase_values, modulation_values = phasor_to_polar(
                         real, imag
                     )
-                if output_type == "Phase" and not self._is_semicircle_mode():
+                if output_type == "Phase" and not semicircle_mode:
                     # Full polar mode expects phase in [0, 2pi].
                     with np.errstate(invalid='ignore'):
                         phase_values = np.mod(phase_values, 2.0 * np.pi)
@@ -1594,13 +1608,27 @@ class PhasorMappingWidget(QWidget):
                     if output_type == "Phase"
                     else modulation_values
                 )
+            return output_values
+
+        outputs = parallel_map(
+            compute_output, selected_layers, on_error="collect"
+        )
+
+        for layer, output_values in zip(selected_layers, outputs, strict=True):
+            if isinstance(output_values, BaseException):
+                show_error(
+                    f"{output_type} failed for {layer.name}: {output_values}"
+                )
+                continue
+            if output_values is None:
+                continue
 
             if 'derived_data' not in layer.metadata:
                 layer.metadata['derived_data'] = {}
             if output_type not in layer.metadata['derived_data']:
                 layer.metadata['derived_data'][output_type] = {}
             layer.metadata['derived_data'][output_type][
-                self.parent_widget.harmonic
+                harmonic
             ] = output_values
 
             all_output_data.append(output_values)
