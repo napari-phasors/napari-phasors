@@ -6,6 +6,7 @@ from matplotlib.collections import LineCollection
 from napari.layers import Image
 from phasorpy.component import phasor_component_fraction
 from phasorpy.lifetime import phasor_from_lifetime
+from qtpy.QtCore import Qt
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import QColorDialog
 
@@ -3390,6 +3391,36 @@ def _select_layers(parent, names):
     parent._process_layer_selection_change()
 
 
+def _click_phasor_layer(qtbot, parent, layer_name):
+    """Toggle a layer through the real checkable-combobox popup."""
+    combo = parent.image_layers_checkable_combobox
+    row = next(
+        row
+        for row in range(combo._header_count, combo.model().rowCount())
+        if combo.model().item(row).text() == layer_name
+    )
+    combo.showPopup()
+    view = combo.view()
+    rect = view.visualRect(combo.model().index(row, 0))
+    position = rect.center()
+    position.setX(rect.left() + 5)
+    qtbot.mouseClick(view.viewport(), Qt.LeftButton, pos=position)
+
+
+def _histogram_legend_labels(histogram):
+    """Return the labels currently rendered in the histogram legend."""
+    legend = histogram.ax.get_legend()
+    return [] if legend is None else [text.get_text() for text in legend.texts]
+
+
+def _assert_individual_histogram(histogram, expected_labels):
+    """Assert internal and rendered state for Individual layers mode."""
+    assert list(histogram._datasets) == expected_labels
+    assert list(histogram._counts_per_dataset) == expected_labels
+    assert len(histogram.ax.lines) == len(expected_labels)
+    assert _histogram_legend_labels(histogram) == expected_labels
+
+
 def test_components_histogram_follows_layer_selection(make_napari_viewer):
     """Histogram must track layers being unchecked and re-checked (issue #358)."""
     viewer = make_napari_viewer()
@@ -3512,6 +3543,93 @@ def test_components_histogram_updates_from_debounced_selection_signal(
         comp_widget._get_fraction_layers_for_component(comp_name)
     ) == ["img0", "img1"]
     assert viewer.layers[f"{comp_name} fractions: img2"].visible is False
+
+
+def test_components_individual_histogram_follows_real_popup_click(
+    make_napari_viewer, qtbot
+):
+    """A real non-primary uncheck removes its Linear Projection curve."""
+    viewer = make_napari_viewer()
+    parent, comp, comp_name = _setup_analysed_layers(viewer, count=2)
+    qtbot.addWidget(parent)
+    parent.show()
+    qtbot.wait(50)
+    histogram = comp.histogram_widget
+    histogram.display_mode = "Individual layers"
+    labels = [
+        f"{comp_name} fractions: img0",
+        f"{comp_name} fractions: img1",
+    ]
+    _assert_individual_histogram(histogram, labels)
+
+    selection_events = []
+    parent.image_layers_checkable_combobox.selectionChanged.connect(
+        lambda: selection_events.append(True)
+    )
+
+    _click_phasor_layer(qtbot, parent, "img1")
+
+    qtbot.waitUntil(
+        lambda: parent.get_selected_layer_names() == ["img0"]
+        and len(histogram._datasets) == 1,
+        timeout=5000,
+    )
+
+    assert selection_events
+    assert sorted(comp._get_fraction_layers_for_component(comp_name)) == [
+        "img0"
+    ]
+    _assert_individual_histogram(histogram, labels[:1])
+    assert viewer.layers[labels[1]].visible is False
+
+    comp._run_analysis()
+
+    _assert_individual_histogram(histogram, labels[:1])
+
+
+def test_component_fit_individual_histogram_follows_primary_popup_click(
+    make_napari_viewer, qtbot
+):
+    """A real primary uncheck removes its tagged Component Fit curve."""
+    viewer, _, _, parent, comp = _setup_two_image_layers(make_napari_viewer)
+    qtbot.addWidget(parent)
+    parent.show()
+    qtbot.wait(50)
+    _setup_component_fit(comp)
+    comp_name = comp.histogram_component_combobox.currentText()
+    histogram = comp.histogram_widget
+    histogram.display_mode = "Individual layers"
+    labels = [
+        f"{comp_name} fraction: img_a",
+        f"{comp_name} fraction: img_b",
+    ]
+    _assert_individual_histogram(histogram, labels)
+
+    selection_events = []
+    primary_events = []
+    combo = parent.image_layers_checkable_combobox
+    combo.selectionChanged.connect(lambda: selection_events.append(True))
+    combo.primaryLayerChanged.connect(primary_events.append)
+
+    _click_phasor_layer(qtbot, parent, "img_a")
+
+    qtbot.waitUntil(
+        lambda: parent.get_selected_layer_names() == ["img_b"]
+        and len(histogram._datasets) == 1,
+        timeout=5000,
+    )
+
+    assert selection_events
+    assert primary_events[-1] == "img_b"
+    assert sorted(comp._get_fraction_layers_for_component(comp_name)) == [
+        "img_b"
+    ]
+    _assert_individual_histogram(histogram, labels[1:])
+    assert viewer.layers[labels[0]].visible is False
+
+    comp._run_analysis()
+
+    _assert_individual_histogram(histogram, labels[1:])
 
 
 def test_get_selected_image_layer_names_without_parent_widget(
