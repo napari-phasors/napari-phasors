@@ -50,6 +50,7 @@ from qtpy.QtWidgets import (
 )
 
 from ._parallel import parallel_map
+from ._timelapse import slice_datasets
 from ._utils import (
     CheckableComboBox,
     HistogramWidget,
@@ -1168,7 +1169,7 @@ class ComponentsWidget(QWidget):
     def _update_components_setting_in_metadata(self, key_path, value):
         """Update a specific component setting in the current layer's metadata."""
         layer_name = self.parent_widget.get_primary_layer_name()
-        if not layer_name:
+        if not layer_name or layer_name not in self.viewer.layers:
             return
 
         layer = self.viewer.layers[layer_name]
@@ -1197,7 +1198,7 @@ class ComponentsWidget(QWidget):
 
         layer_name = self.parent_widget.get_primary_layer_name()
 
-        if not layer_name:
+        if not layer_name or layer_name not in self.viewer.layers:
             return
 
         layer = self.viewer.layers[layer_name]
@@ -1339,7 +1340,7 @@ class ComponentsWidget(QWidget):
 
         layer_name = self.parent_widget.get_primary_layer_name()
 
-        if not layer_name:
+        if not layer_name or layer_name not in self.viewer.layers:
             return
 
         layer = self.viewer.layers[layer_name]
@@ -4483,7 +4484,7 @@ class ComponentsWidget(QWidget):
         self._update_lifetime_inputs_visibility()
 
         layer_name = self.parent_widget.get_primary_layer_name()
-        if layer_name:
+        if layer_name and layer_name in self.viewer.layers:
             self._reconnect_existing_fraction_layers(layer_name)
 
             self._restore_components_ui_only_from_metadata()
@@ -5723,14 +5724,17 @@ class ComponentsWidget(QWidget):
         Returns
         -------
         dict
-            ``{analysis_layer_name: flattened np.ndarray}``.
+            ``{analysis_layer_name: np.ndarray}``. The arrays keep the shape
+            of the source layer — :class:`HistogramWidget` flattens them
+            itself, and preserving the shape is what lets a time-lapse be
+            sliced per frame.
         """
         labeled = {}
         for img_name, data in data_by_image.items():
             label = self._histogram_label_for_image(
                 img_name, fraction_layers_map, selected_text, invert
             )
-            labeled[label] = np.asarray(data, dtype=float).ravel()
+            labeled[label] = np.asarray(data, dtype=float)
         return labeled
 
     def _histogram_label_for_image(
@@ -5908,6 +5912,7 @@ class ComponentsWidget(QWidget):
         per_layer = self._label_fraction_datasets(
             clipped_data, fraction_layers_map, selected_text, invert
         )
+        per_layer = self._slice_datasets_for_frame(per_layer)
         if len(per_layer) > 1:
             self.histogram_widget.update_multi_data(per_layer)
         else:
@@ -6019,6 +6024,9 @@ class ComponentsWidget(QWidget):
         per_layer = self._label_fraction_datasets(
             raw_data, fraction_layers_map, selected_text, invert
         )
+        # In per-frame mode only the displayed timepoint is summarised; the
+        # slider bounds above stay pooled so they don't jump while playing.
+        per_layer = self._slice_datasets_for_frame(per_layer)
         if len(per_layer) > 1:
             self.histogram_widget.update_multi_data(per_layer)
         else:
@@ -6026,6 +6034,26 @@ class ComponentsWidget(QWidget):
             self.histogram_widget.update_data(data, label=label)
 
         self.histogram_widget.show()
+
+    def _frame_context(self):
+        """Return the plotter's time-lapse frame context, if available."""
+        return getattr(self.parent_widget, 'frame_context', None)
+
+    def _slice_datasets_for_frame(self, datasets):
+        """Restrict per-layer datasets to the displayed time-lapse frame.
+
+        The un-sliced arrays are handed to the histogram widget as well, so
+        the statistics dock can export per-timepoint numbers.
+        """
+        frame_context = self._frame_context()
+        self.histogram_widget.set_frame_source(frame_context, datasets)
+        return slice_datasets(frame_context, datasets)
+
+    def refresh_for_frame_change(self):
+        """Re-feed the histogram after the displayed frame changed."""
+        if not self.histogram_component_combobox.currentText():
+            return
+        self.update_component_histogram()
 
     def closeEvent(self, event):
         """Clean up signal connections before closing."""

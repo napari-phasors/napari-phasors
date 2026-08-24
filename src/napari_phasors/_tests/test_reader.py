@@ -1,4 +1,5 @@
 import json
+import warnings
 
 import numpy as np
 import pytest
@@ -1079,15 +1080,160 @@ def _patch_processed(monkeypatch, mean, real, imag, attrs):
     )
 
 
-def test_processed_reader_description_too_large_raises(monkeypatch):
-    """An oversized description dictionary raises a ValueError."""
+def test_processed_reader_description_too_large_warns(monkeypatch):
+    """An oversized description is ignored with a warning, not fatal."""
     mean = np.ones((4, 4))
     real = np.zeros((1, 4, 4))
     big = {"x": "a" * 300000}
     attrs = {"description": json.dumps(big), "harmonic": [1]}
     _patch_processed(monkeypatch, mean, real, real, attrs)
-    with pytest.raises(ValueError, match="too large"):
-        reader_module.processed_file_reader("x.ome.tif")
+    with pytest.warns(UserWarning, match="larger than"):
+        layers = reader_module.processed_file_reader("x.ome.tif")
+    assert layers[0][1]["metadata"]["settings"] == {}
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        pytest.param("ImageJ=1.54f\nunit=micron", id="plain_text"),
+        pytest.param("", id="empty_string"),
+        pytest.param('{"Info": "written by another tool"}', id="foreign_json"),
+        pytest.param("[1, 2, 3]", id="json_list"),
+        pytest.param("42", id="json_scalar"),
+    ],
+)
+def test_processed_reader_foreign_description_is_ignored(
+    monkeypatch, description
+):
+    """A description written by another tool is ignored, not fatal.
+
+    Regression test for the ``UnboundLocalError`` raised when a description
+    parsed as JSON but did not contain the plugin's settings key.
+    """
+    mean = np.ones((4, 4))
+    real = np.zeros((1, 4, 4))
+    attrs = {"description": description, "harmonic": [1]}
+    _patch_processed(monkeypatch, mean, real, real, attrs)
+    layers = reader_module.processed_file_reader("x.ome.tif")
+    assert layers[0][1]["metadata"]["settings"] == {}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param("{not-json", id="corrupt_json"),
+        pytest.param('"a string"', id="json_string"),
+        pytest.param("[1, 2]", id="json_list"),
+        pytest.param(17, id="not_a_string"),
+    ],
+)
+def test_processed_reader_corrupt_settings_entry_warns(monkeypatch, payload):
+    """A malformed settings entry is dropped with a warning."""
+    mean = np.ones((4, 4))
+    real = np.zeros((1, 4, 4))
+    attrs = {
+        "description": json.dumps({"napari_phasors_settings": payload}),
+        "harmonic": [1],
+    }
+    _patch_processed(monkeypatch, mean, real, real, attrs)
+    with pytest.warns(UserWarning):
+        layers = reader_module.processed_file_reader("x.ome.tif")
+    assert layers[0][1]["metadata"]["settings"] == {}
+
+
+def test_processed_reader_non_string_description_warns(monkeypatch):
+    """A non-string description is ignored with a warning."""
+    mean = np.ones((4, 4))
+    real = np.zeros((1, 4, 4))
+    attrs = {"description": {"already": "decoded"}, "harmonic": [1]}
+    _patch_processed(monkeypatch, mean, real, real, attrs)
+    with pytest.warns(UserWarning, match="expected a string"):
+        layers = reader_module.processed_file_reader("x.ome.tif")
+    assert layers[0][1]["metadata"]["settings"] == {}
+
+
+def test_processed_reader_missing_description_is_ignored(monkeypatch, recwarn):
+    """A file without any description reads cleanly and warns about nothing."""
+    mean = np.ones((4, 4))
+    real = np.zeros((1, 4, 4))
+    _patch_processed(monkeypatch, mean, real, real, {"harmonic": [1]})
+    layers = reader_module.processed_file_reader("x.ome.tif")
+    assert layers[0][1]["metadata"]["settings"] == {}
+    assert [w for w in recwarn if issubclass(w.category, UserWarning)] == []
+
+
+def test_processed_reader_frequency_survives_bad_description(monkeypatch):
+    """``frequency`` from file attrs is kept even if the description is bad."""
+    mean = np.ones((4, 4))
+    real = np.zeros((1, 4, 4))
+    attrs = {
+        "description": "not json at all",
+        "harmonic": [1],
+        "frequency": 80.0,
+    }
+    _patch_processed(monkeypatch, mean, real, real, attrs)
+    layers = reader_module.processed_file_reader("x.ome.tif")
+    assert layers[0][1]["metadata"]["settings"]["frequency"] == 80.0
+
+
+def test_parse_description_settings_unescapes_html():
+    """HTML-encoded descriptions written by tifffile are decoded."""
+    settings = {"frequency": 80.0, "calibrated": 1}
+    description = json.dumps(
+        {"napari_phasors_settings": json.dumps(settings)}
+    ).replace('"', "&quot;")
+    parsed = reader_module._parse_description_settings(description)
+    assert parsed["frequency"] == 80.0
+    assert parsed["calibrated"] is True
+
+
+def test_parse_description_settings_at_size_limit():
+    """A description exactly at the size limit is still parsed."""
+    padding = "a" * 100
+    settings = json.dumps({"pad": padding})
+    description = json.dumps({"napari_phasors_settings": settings})
+    description += " " * (
+        reader_module.MAX_DESCRIPTION_CHARS - len(description)
+    )
+    assert len(description) == reader_module.MAX_DESCRIPTION_CHARS
+    assert reader_module._parse_description_settings(description) == {
+        "pad": padding
+    }
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        pytest.param("ImageJ=1.54f\nunit=micron", id="plain_text"),
+        pytest.param('{"Info": "written by another tool"}', id="foreign_json"),
+        pytest.param("[1, 2, 3]", id="json_list"),
+        pytest.param('{"napari_phasors_settings": "{not-json"}', id="corrupt"),
+    ],
+)
+def test_read_real_ometiff_with_foreign_description(tmp_path, description):
+    """End-to-end: a real OME-TIF with a foreign description still opens.
+
+    Exercises the full phasorpy write/read round trip rather than a patched
+    reader, so it also covers the HTML escaping tifffile applies on write.
+    """
+    from phasorpy.io import phasor_to_ometiff
+
+    path = tmp_path / "foreign.ome.tif"
+    rng = np.random.default_rng(0)
+    mean = rng.random((8, 8)).astype(np.float32)
+    real = rng.random((8, 8)).astype(np.float32)
+    imag = rng.random((8, 8)).astype(np.float32)
+    phasor_to_ometiff(
+        path, mean, real, imag, harmonic=1, description=description
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        layers = reader_module.processed_file_reader(str(path))
+
+    assert len(layers) == 1
+    assert layers[0][1]["metadata"]["settings"] == {}
+    np.testing.assert_allclose(layers[0][0], mean, rtol=1e-6)
 
 
 def test_processed_reader_calibrated_and_frequency_settings(monkeypatch):

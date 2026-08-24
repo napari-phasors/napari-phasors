@@ -2667,6 +2667,13 @@ class HistogramWidget(QWidget):
         # Raw pooled data (for central tendency computation)
         self._raw_valid_data = None
 
+        # Full (un-sliced) per-layer arrays plus the time-lapse frame context
+        # they were sliced with. Set by the analysis tabs via
+        # :meth:`set_frame_source`; used only to export per-timepoint
+        # statistics, never to render.
+        self._frame_context = None
+        self._frame_source_datasets = {}
+
         # Display settings
         self._display_mode = (
             "Merged"  # "Merged", "Individual layers", "Grouped"
@@ -3112,6 +3119,31 @@ class HistogramWidget(QWidget):
             if self.counts is not None:
                 self._render()
             self.dataChanged.emit()
+
+    def set_frame_source(self, frame_context, datasets) -> None:
+        """Record the un-sliced per-layer arrays behind the displayed data.
+
+        The analysis tabs call this just before feeding the histogram so the
+        statistics dock can export per-timepoint numbers without having to
+        recompute the analysis. It never affects what is rendered.
+
+        Parameters
+        ----------
+        frame_context : napari_phasors._timelapse.FrameContext or None
+            Context used to slice the data, or None when the plugin has no
+            time-lapse context (e.g. in headless batch analysis).
+        datasets : dict
+            ``{label: np.ndarray}`` of full arrays shaped like the layer data.
+        """
+        self._frame_context = frame_context
+        self._frame_source_datasets = dict(datasets or {})
+
+    def has_frame_source(self) -> bool:
+        """Return True when per-timepoint statistics can be exported."""
+        context = self._frame_context
+        if context is None or not self._frame_source_datasets:
+            return False
+        return bool(context.available_axes())
 
     def update_data(self, data: np.ndarray, label: str = "Layer") -> None:
         """Compute histogram from *data* and render.
@@ -3840,6 +3872,13 @@ class CollapsibleSection(QWidget):
         self._content.setVisible(self._toggle_button.isChecked())
         self._update_button_text()
 
+    def set_title(self, title):
+        """Change the section header text."""
+        if title == self._title:
+            return
+        self._title = title
+        self._update_button_text()
+
     def add_widget(self, widget):
         """Add a widget to the collapsible content area."""
         self._content_layout.addWidget(widget)
@@ -3849,6 +3888,286 @@ class CollapsibleSection(QWidget):
         self._toggle_button.setChecked(visible)
         self._content.setVisible(visible)
         self._update_button_text()
+
+
+def write_rows_to_csv(file_path, rows, float_format="{:.6f}"):
+    """Write a list of uniform dict rows to a CSV file.
+
+    Column order follows the keys of the first row.
+
+    Parameters
+    ----------
+    file_path : str
+        Destination path.
+    rows : list of dict
+        Rows to write; must share the same keys.
+    float_format : str, optional
+        Format applied to float values, by default six decimals.
+    """
+    import csv
+
+    if not rows:
+        return
+
+    headers = list(rows[0].keys())
+    with open(file_path, 'w', newline='', encoding='utf-8') as handle:
+        writer = csv.writer(handle)
+        writer.writerow(headers)
+        for row in rows:
+            writer.writerow(
+                [
+                    (
+                        float_format.format(row[header])
+                        if isinstance(row[header], float)
+                        else row[header]
+                    )
+                    for header in headers
+                ]
+            )
+
+
+def patch_biaplotter_capture_selection_geometry():
+    """Make biaplotter's selectors remember the region the user drew.
+
+    biaplotter's selectors turn the drawn shape into indices into the data
+    that is *currently plotted* and then discard the geometry. That is enough
+    while the phasor plot shows every timepoint at once, but when it shows a
+    single time-lapse frame the indices only cover that frame, so a selection
+    could never be applied to the rest of the stack.
+
+    Wrapping the geometry-only ``on_select`` of each base selector records
+    the call on the instance, which lets
+    :func:`active_selection_region` replay it against any other set of
+    points — reusing biaplotter's own maths for every shape rather than
+    reimplementing it here.
+
+    Safe to call repeatedly; the patch installs at most once.
+    """
+    try:
+        from biaplotter.selectors import (
+            BaseEllipseSelector,
+            BaseLassoSelector,
+            BaseRectangleSelector,
+        )
+    except ImportError:  # pragma: no cover - biaplotter is a hard dependency
+        return
+
+    for selector_class in (
+        BaseRectangleSelector,
+        BaseEllipseSelector,
+        BaseLassoSelector,
+    ):
+        if getattr(
+            selector_class, "_napari_phasors_capture_geometry_patch", False
+        ):
+            continue
+
+        original_on_select = selector_class.on_select
+
+        def _on_select_recording(self, *args, _original=original_on_select):
+            self._napari_phasors_region = (_original, args)
+            return _original(self, *args)
+
+        selector_class.on_select = _on_select_recording
+        selector_class._napari_phasors_capture_geometry_patch = True
+
+
+def patch_biaplotter_fixed_histogram_range():
+    """Let a 2D histogram keep one colour scale across time-lapse frames.
+
+    biaplotter derives the histogram's colour normalisation from the counts
+    it is currently drawing. That is right for a static plot, but when the
+    phasor plot shows one timepoint at a time it rescales on every frame, so
+    the same colour — and the colorbar beside it — means a different number
+    of pixels at each timepoint.
+
+    The patch honours an optional ``_napari_phasors_fixed_counts_range``
+    attribute on the artist, pinning vmin/vmax for the histogram (never for
+    the selection overlay). When the attribute is absent or None,
+    biaplotter's own behaviour is used unchanged.
+
+    Safe to call repeatedly; the patch installs at most once.
+    """
+    try:
+        from biaplotter.artists import Histogram2D
+    except ImportError:  # pragma: no cover - biaplotter is a hard dependency
+        return
+
+    if getattr(Histogram2D, "_napari_phasors_fixed_range_patch", False):
+        return
+
+    original_get_normalization = Histogram2D._get_normalization
+
+    def _get_normalization_fixed(self, values, is_overlay: bool = True):
+        fixed = getattr(self, "_napari_phasors_fixed_counts_range", None)
+        if is_overlay or fixed is None:
+            return original_get_normalization(
+                self, values, is_overlay=is_overlay
+            )
+
+        method = self._histogram_color_normalization_method
+        norm_class = self._normalization_methods.get(method)
+        if norm_class is None or method not in ("linear", "log"):
+            return original_get_normalization(
+                self, values, is_overlay=is_overlay
+            )
+
+        vmin, vmax = (float(fixed[0]), float(fixed[1]))
+        if method == "log":
+            # LogNorm cannot represent a non-positive floor.
+            vmin = max(vmin, 0.01)
+            vmax = max(vmax, vmin * 1.000001)
+        elif vmax <= vmin:
+            vmax = vmin + 1.0
+        return norm_class(vmin=vmin, vmax=vmax)
+
+    Histogram2D._get_normalization = _get_normalization_fixed
+    Histogram2D._napari_phasors_fixed_range_patch = True
+
+
+def active_selection_region(canvas_widget):
+    """Return a predicate for the region last drawn on *canvas_widget*.
+
+    Requires :func:`patch_biaplotter_capture_selection_geometry` to have been
+    applied (it is, on importing the plotter module).
+
+    Parameters
+    ----------
+    canvas_widget : biaplotter.plotter.CanvasWidget
+        Canvas whose active selector should be inspected.
+
+    Returns
+    -------
+    callable or None
+        A function mapping an ``(N, 2)`` array of ``(G, S)`` points to a
+        boolean mask of the points inside the drawn region, or None when no
+        region has been drawn (or the geometry could not be captured).
+    """
+    selector = getattr(canvas_widget, "active_selector", None)
+    recorded = getattr(selector, "_napari_phasors_region", None)
+    if recorded is None:
+        return None
+    original_on_select, args = recorded
+
+    def region_contains(points):
+        """Return a boolean mask of *points* inside the drawn region."""
+        points = np.asarray(points, dtype=float)
+        mask = np.zeros(len(points), dtype=bool)
+        if len(points) == 0:
+            return mask
+        previous_data = selector._data
+        try:
+            selector._data = points
+            indices = original_on_select(selector, *args)
+        except (AttributeError, IndexError, TypeError, ValueError):
+            return None
+        finally:
+            selector._data = previous_data
+        if indices is None:
+            return mask
+        indices = np.asarray(indices, dtype=int)
+        if indices.size:
+            mask[indices] = True
+        return mask
+
+    return region_contains
+
+
+def compute_dataset_statistics(data, bin_centers=None, bin_edges=None):
+    """Summarise a scalar dataset the way the statistics table displays it.
+
+    Shared by :class:`StatisticsTableWidget` and the CSV exporters so the
+    exported numbers can never drift from the ones on screen.
+
+    Parameters
+    ----------
+    data : np.ndarray
+        Scalar data of any shape; flattened internally. NaN and infinite
+        values are discarded.
+    bin_centers : np.ndarray, optional
+        Bin centres used for the centre-of-mass computation.
+    bin_edges : np.ndarray, optional
+        Bin edges used for the centre-of-mass computation. When either
+        binning argument is missing, the centre of mass falls back to the
+        mean.
+
+    Returns
+    -------
+    dict
+        Keys ``"Center of Mass"``, ``"Mean"``, ``"Median"`` and
+        ``"Std Dev"``, all floats (NaN when there is no valid data).
+    """
+    flat = np.asarray(data).ravel()
+    valid = flat[~np.isnan(flat) & np.isfinite(flat)]
+
+    if len(valid) == 0:
+        nan = float("nan")
+        return {
+            "Center of Mass": nan,
+            "Mean": nan,
+            "Median": nan,
+            "Std Dev": nan,
+        }
+
+    mean_val = float(np.mean(valid))
+    median_val = float(np.median(valid))
+    std_val = float(np.std(valid))
+
+    if bin_centers is not None and bin_edges is not None:
+        counts, _ = np.histogram(valid, bins=bin_edges)
+        if counts.sum() > 0:
+            com_val = float(np.average(bin_centers, weights=counts))
+        else:
+            com_val = float("nan")
+    else:
+        com_val = mean_val
+
+    return {
+        "Center of Mass": com_val,
+        "Mean": mean_val,
+        "Median": median_val,
+        "Std Dev": std_val,
+    }
+
+
+def pooled_histogram_bins(datasets, bins, hist_range=None):
+    """Return ``(bin_centers, bin_edges)`` spanning every dataset pooled.
+
+    Per-frame statistics are only comparable to each other if every frame is
+    binned identically, so the centre-of-mass column uses bins derived from
+    the whole acquisition rather than from the frame currently displayed.
+
+    Parameters
+    ----------
+    datasets : dict
+        ``{label: np.ndarray}`` of the full (un-sliced) arrays.
+    bins : int
+        Number of bins to use.
+    hist_range : tuple, optional
+        ``(min, max)`` range the histogram is clipped to by its range
+        slider. Passing it keeps the per-frame centre of mass on the same
+        convention as the pooled row, which bins over that same range.
+
+    Returns
+    -------
+    tuple
+        ``(bin_centers, bin_edges)``, or ``(None, None)`` when there is no
+        finite data to bin.
+    """
+    values = []
+    for data in datasets.values():
+        flat = np.asarray(data, dtype=float).ravel()
+        values.append(flat[np.isfinite(flat)])
+
+    if not values:
+        return None, None
+
+    pooled = np.concatenate(values)
+    if pooled.size == 0:
+        return None, None
+
+    edges = np.histogram_bin_edges(pooled, bins=bins, range=hist_range)
+    return (edges[:-1] + edges[1:]) / 2, edges
 
 
 class StatisticsTableWidget(QTableWidget):
@@ -3863,6 +4182,10 @@ class StatisticsTableWidget(QTableWidget):
     """
 
     COLUMNS = ["Name", "Center of Mass", "Mean", "Median", "Std Dev"]
+    #: Column layout used when one row is shown per time-lapse frame.
+    FRAME_COLUMNS = ["Frame", *COLUMNS]
+    #: Background of the row for the frame currently on screen.
+    CURRENT_FRAME_COLOR = QColor(74, 111, 165, 120)
 
     def __init__(self, parent=None):
         """Build the read-only statistics table with its fixed columns."""
@@ -3963,33 +4286,77 @@ class StatisticsTableWidget(QTableWidget):
         bin_edges : np.ndarray, optional
             Bin edges for center-of-mass computation.
         """
+        self._apply_columns(self.COLUMNS)
         self.setRowCount(len(datasets))
         for row, (name, data) in enumerate(datasets.items()):
-            flat = np.asarray(data).ravel()
-            valid = flat[~np.isnan(flat) & np.isfinite(flat)]
-
-            if len(valid) > 0:
-                mean_val = float(np.mean(valid))
-                median_val = float(np.median(valid))
-                std_val = float(np.std(valid))
-
-                if bin_centers is not None and bin_edges is not None:
-                    counts, _ = np.histogram(valid, bins=bin_edges)
-                    if counts.sum() > 0:
-                        com_val = np.average(bin_centers, weights=counts)
-                    else:
-                        com_val = float("nan")
-                else:
-                    com_val = mean_val
-            else:
-                mean_val = median_val = com_val = std_val = float("nan")
+            stats = compute_dataset_statistics(data, bin_centers, bin_edges)
 
             # Columns: [Name, Center of Mass, Mean, Median, Std Dev]
             self.setItem(row, 0, QTableWidgetItem(str(name)))
-            self.setItem(row, 1, QTableWidgetItem(f"{com_val:.4f}"))
-            self.setItem(row, 2, QTableWidgetItem(f"{mean_val:.4f}"))
-            self.setItem(row, 3, QTableWidgetItem(f"{median_val:.4f}"))
-            self.setItem(row, 4, QTableWidgetItem(f"{std_val:.4f}"))
+            for col, column_name in enumerate(self.COLUMNS[1:], start=1):
+                self.setItem(
+                    row,
+                    col,
+                    QTableWidgetItem(f"{stats[column_name]:.4f}"),
+                )
+
+    def _apply_columns(self, columns):
+        """Switch the table to *columns*, leaving it alone if already set."""
+        current = [
+            (
+                self.horizontalHeaderItem(index).text()
+                if self.horizontalHeaderItem(index) is not None
+                else ""
+            )
+            for index in range(self.columnCount())
+        ]
+        if current == list(columns):
+            return
+        self.setColumnCount(len(columns))
+        self.setHorizontalHeaderLabels(list(columns))
+
+    def update_frame_statistics(self, rows, current_frame=None):
+        """Show one row per time-lapse frame, highlighting the current one.
+
+        Parameters
+        ----------
+        rows : list of dict
+            Rows as produced by
+            :func:`napari_phasors._timelapse.build_frame_statistics_rows`,
+            each with a ``"Frame"`` and ``"Name"`` key plus the statistic
+            columns.
+        current_frame : int, optional
+            Frame displayed in the viewer; its row is highlighted and
+            scrolled into view.
+        """
+        self._apply_columns(self.FRAME_COLUMNS)
+        self.setRowCount(len(rows))
+
+        highlight_row = None
+        for row_index, row in enumerate(rows):
+            is_current = (
+                current_frame is not None and row["Frame"] == current_frame
+            )
+            if is_current and highlight_row is None:
+                highlight_row = row_index
+
+            values = [str(row["Frame"]), str(row["Name"])]
+            values += [f"{row[column]:.4f}" for column in self.COLUMNS[1:]]
+
+            for col, text in enumerate(values):
+                item = QTableWidgetItem(text)
+                if is_current:
+                    item.setBackground(self.CURRENT_FRAME_COLOR)
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
+                self.setItem(row_index, col, item)
+
+        if highlight_row is not None:
+            self.scrollToItem(
+                self.item(highlight_row, 0),
+                QAbstractItemView.PositionAtCenter,
+            )
 
     def update_group_statistics(
         self,
@@ -4135,9 +4502,56 @@ class StatisticsDockWidget(QWidget):
 
         histogram_widget.dataChanged.connect(self._update_statistics)
 
+    def _shows_per_frame_rows(self):
+        """True when the table should list one row per time-lapse frame."""
+        hw = self.histogram_widget
+        context = hw._frame_context
+        return (
+            context is not None
+            and context.is_per_frame
+            and hw.has_frame_source()
+        )
+
+    def _pooled_bins(self):
+        """Bins spanning the whole acquisition, matching the histogram's."""
+        hw = self.histogram_widget
+        hist_range = hw.get_range() if hw._range_slider_enabled else None
+        return pooled_histogram_bins(
+            hw._frame_source_datasets, hw.bins, hist_range
+        )
+
+    def _frame_statistics_rows(self):
+        """Return per-frame rows plus the bins they were computed with."""
+        from ._timelapse import build_frame_statistics_rows
+
+        hw = self.histogram_widget
+        bin_centers, bin_edges = self._pooled_bins()
+        rows = build_frame_statistics_rows(
+            hw._frame_source_datasets,
+            hw._frame_context,
+            bin_edges,
+            bin_centers,
+        )
+        return rows, bin_centers, bin_edges
+
     def _update_statistics(self):
         """Recompute the statistics tables from the histogram's data."""
         hw = self.histogram_widget
+
+        if self._shows_per_frame_rows():
+            rows, _centers, _edges = self._frame_statistics_rows()
+            if rows:
+                self.layer_stats_table.update_frame_statistics(
+                    rows, hw._frame_context.index
+                )
+                self.layer_stats_section.set_title("Statistics per Frame")
+                self.layer_stats_section.setVisible(True)
+                # Group statistics stay a pooled, per-layer concept.
+                self.group_stats_section.setVisible(False)
+                self.export_csv_button.setEnabled(True)
+                return
+
+        self.layer_stats_section.set_title("Layer Statistics")
 
         has_multi = bool(hw._datasets)
         has_single = (
@@ -4174,7 +4588,31 @@ class StatisticsDockWidget(QWidget):
         self.export_csv_button.setEnabled(has_multi or has_single)
 
     def _export_table_csv_impl(self):
-        """Export the visible statistics table(s) to CSV file(s)."""
+        """Export the statistics to CSV, offering per-timepoint for stacks.
+
+        For plain 2D data this writes the tables exactly as displayed. For a
+        time-lapse the user is asked whether to export the current view, the
+        whole acquisition pooled, or one row per timepoint.
+        """
+        export_mode = "current"
+        if self.histogram_widget.has_frame_source():
+            menu = QMenu(self)
+            current_action = menu.addAction("Current view")
+            pooled_action = menu.addAction("All timepoints pooled")
+            per_frame_action = menu.addAction("Per timepoint")
+            chosen = menu.exec_(
+                self.export_csv_button.mapToGlobal(
+                    self.export_csv_button.rect().bottomLeft()
+                )
+            )
+            if chosen is None:
+                return
+            if chosen is pooled_action:
+                export_mode = "pooled"
+            elif chosen is per_frame_action:
+                export_mode = "per_frame"
+            del current_action
+
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "Export Statistics as CSV",
@@ -4188,12 +4626,49 @@ class StatisticsDockWidget(QWidget):
         if not file_path.endswith('.csv'):
             file_path += '.csv'
 
+        if export_mode != "current":
+            self._write_frame_statistics_to_csv(file_path, export_mode)
+            return
+
         if self.layer_stats_section.isVisible():
             self._write_table_to_csv(self.layer_stats_table, file_path)
 
         if self.group_stats_section.isVisible():
             group_file = file_path.replace('.csv', '_groups.csv')
             self._write_table_to_csv(self.group_stats_table, group_file)
+
+    def _write_frame_statistics_to_csv(self, file_path, export_mode):
+        """Write pooled or per-timepoint statistics for the whole stack.
+
+        Parameters
+        ----------
+        file_path : str
+            Destination path.
+        export_mode : {"pooled", "per_frame"}
+            Whether to summarise the whole acquisition in one row per layer
+            or to emit one row per timepoint per layer.
+        """
+        hw = self.histogram_widget
+        datasets = hw._frame_source_datasets
+        # Bin over the whole acquisition so every frame's centre of mass is
+        # computed on the same bins, matching the on-screen per-frame table.
+        bin_centers, bin_edges = self._pooled_bins()
+
+        if export_mode == "per_frame":
+            rows, bin_centers, bin_edges = self._frame_statistics_rows()
+        else:
+            rows = [
+                {
+                    "Frame": "all",
+                    "Name": name,
+                    **compute_dataset_statistics(
+                        data, bin_centers=bin_centers, bin_edges=bin_edges
+                    ),
+                }
+                for name, data in datasets.items()
+            ]
+
+        write_rows_to_csv(file_path, rows, float_format="{:.4f}")
 
     def _write_table_to_csv(self, table: QTableWidget, file_path: str):
         """Write a QTableWidget to a CSV file.

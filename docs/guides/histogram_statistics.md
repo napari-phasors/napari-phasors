@@ -80,6 +80,11 @@ The **Statistics** dock panel, linked to the histogram, displays per-layer (and 
 
 Right-clicking on the table provides **Copy**, **Copy with Headers**, and **Select All** options. The entire table can also be exported to CSV via the **Export Table as CSV** button.
 
+For time-lapse data the histogram follows the timepoint shown in the viewer,
+and the table switches to one row per timepoint with the displayed frame
+highlighted. The export button additionally offers *All timepoints pooled* and
+*Per timepoint*. See {doc}`timelapse`.
+
 ## Example usage
 
 1. Run any supported analysis (component, mapping, or FRET).

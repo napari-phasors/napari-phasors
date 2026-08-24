@@ -47,6 +47,7 @@ from ._reader import (
     _get_filename_extension,
     czi_mosaic_info,
     describe_file_axes,
+    iter_index_mapping,
     napari_get_reader,
     probe_tile_axes,
     raw_file_stack_reader,
@@ -751,24 +752,28 @@ class AdvancedOptionsWidget(QWidget):
                     val = val_str
                 options[key] = val
 
+    def _preview_shape_and_labels(self):
+        """Return ``(shape, labels)`` describing the decoded signal axes.
+
+        Used to populate the phasor-axis selector. The default implementation
+        decodes the preview signal, but subclasses may override this to derive
+        the shape from file metadata instead, avoiding large memory
+        allocations (see :class:`PtuWidget`).
+        """
+        preview = self._get_preview_signal_data()
+        if preview is None:
+            return (), []
+        if hasattr(preview, 'dims'):
+            return tuple(preview.shape), [str(d).upper() for d in preview.dims]
+        arr = np.asarray(preview)
+        return arr.shape, _default_axis_labels(len(arr.shape))
+
     def _update_axis_options(self):
         """Refresh axis options based on preview signal shape and dims."""
         if not hasattr(self, 'axis_combo'):
             return
 
-        preview = self._get_preview_signal_data()
-        # Determine shape and labels
-        if preview is None:
-            shape = ()
-            labels = []
-        else:
-            if hasattr(preview, 'dims'):
-                labels = [str(d).upper() for d in preview.dims]
-                shape = tuple(preview.shape)
-            else:
-                arr = np.asarray(preview)
-                shape = arr.shape
-                labels = _default_axis_labels(len(shape))
+        shape, labels = self._preview_shape_and_labels()
 
         # Build items: prefer dimension name, show size
         items = ["Auto"]
@@ -847,12 +852,13 @@ class AdvancedOptionsWidget(QWidget):
         else:
             n_files = 1
 
-        shape = _estimate_output_shape_from_options(
-            self.path,
-            self.reader_options,
-            self.harmonics,
-            n_files=n_files,
-        )
+        base_shape = self._estimate_base_output_shape()
+        if base_shape is None:
+            shape = None
+        elif n_files > 1:
+            shape = (n_files,) + tuple(base_shape)
+        else:
+            shape = tuple(base_shape)
 
         axis_order = getattr(self, '_stack_axis_order', None)
         axis_labels = getattr(self, '_stack_axis_labels', None)
@@ -904,8 +910,69 @@ class AdvancedOptionsWidget(QWidget):
         canvas = geometry.canvas_shape()
         return f"{tuple(canvas)} (Y, X)"
 
+    def _extra_preview_signature(self):
+        """Format-specific option fields affecting the preview signal.
+
+        Subclasses that read options from extra widgets (e.g. ``dtime``,
+        ``laser_factor``, ``index``) override this so the preview cache is
+        invalidated when those change. Returns a hashable value.
+        """
+        return ()
+
+    def _preview_signature(self):
+        """Hashable key identifying the inputs of the current preview signal.
+
+        Lets the plot, axis-selector, and shape-estimate consumers share a
+        single decode within a refresh while still invalidating when the user
+        changes an option (path, channel, extra fields, ...).
+        """
+        multi = tuple(getattr(self, '_multi_file_paths', None) or ())
+        grouped = tuple(getattr(self, '_grouped_file_paths', None) or ())
+        # 'phasor_axis' only affects which axis is transformed, not the decoded
+        # signal, so it is excluded to avoid needless cache invalidation.
+        opts = tuple(
+            sorted(
+                (k, repr(v))
+                for k, v in self.reader_options.items()
+                if k != 'phasor_axis'
+            )
+        )
+        kwargs = tuple(
+            (key_edit.text(), val_edit.text())
+            for key_edit, val_edit, _ in getattr(self, 'kwargs_widgets', [])
+        )
+        return (
+            self.path,
+            multi,
+            grouped,
+            opts,
+            kwargs,
+            self._extra_preview_signature(),
+        )
+
     def _get_preview_signal_data(self):
-        """Return preview signal, averaging across selected stack/grouped files."""
+        """Return the preview signal, decoding at most once per option set.
+
+        Wraps :meth:`_compute_preview_signal_data` with a single-entry cache
+        keyed on :meth:`_preview_signature`, so the signal-preview plot, the
+        phasor-axis selector, and the output-shape estimate reuse one decode
+        instead of decoding the file two or three times per refresh.
+        """
+        try:
+            signature = self._preview_signature()
+        except Exception:  # noqa: BLE001
+            return self._compute_preview_signal_data()
+
+        if getattr(self, '_preview_signal_cache_key', None) == signature:
+            return self._preview_signal_cache
+
+        signal = self._compute_preview_signal_data()
+        self._preview_signal_cache_key = signature
+        self._preview_signal_cache = signal
+        return signal
+
+    def _compute_preview_signal_data(self):
+        """Decode the preview signal, averaging across stack/grouped files."""
         multi_paths = getattr(self, '_multi_file_paths', None)
         grouped_paths = getattr(self, '_grouped_file_paths', None)
 
@@ -939,6 +1006,56 @@ class AdvancedOptionsWidget(QWidget):
         except ValueError:
             return signals[0]
 
+    def _estimate_base_output_shape(self):
+        """Return the estimated per-file mean-intensity output shape.
+
+        Derives the shape from the cached preview signal when possible so no
+        second decode + phasor transform is needed; falls back to running the
+        reader when the signal lacks the metadata required to derive it.
+        """
+        _, extension = _get_filename_extension(self.path)
+        shape = _phasor_output_shape_from_signal(
+            self._get_preview_signal_data(), extension, self.reader_options
+        )
+        if shape is not None:
+            return shape
+        return _estimate_output_shape_from_options(
+            self.path, self.reader_options, self.harmonics, n_files=1
+        )
+
+    def _get_channel_preview_signal(self, channel_idx):
+        """Return the preview signal for one channel.
+
+        Decodes the all-channel signal once (shared via the preview cache) and
+        slices out the requested channel, so previewing an N-channel file costs
+        a single decode instead of N. Falls back to decoding the channel
+        directly if the channel axis cannot be located.
+        """
+        original_channel = self.reader_options.get("channel")
+        self.reader_options["channel"] = None
+        try:
+            signal = self._get_preview_signal_data()
+        finally:
+            self.reader_options["channel"] = original_channel
+
+        dims = getattr(signal, "dims", None)
+        if signal is not None and dims is not None and "C" in dims:
+            c_axis = list(dims).index("C")
+            if channel_idx < signal.shape[c_axis]:
+                try:
+                    return signal.isel({"C": channel_idx})
+                except Exception:  # noqa: BLE001
+                    return np.take(
+                        np.asarray(signal), channel_idx, axis=c_axis
+                    )
+
+        # Fallback: decode the requested channel directly.
+        self.reader_options["channel"] = channel_idx
+        try:
+            return self._get_preview_signal_data()
+        finally:
+            self.reader_options["channel"] = original_channel
+
     def _update_signal_plot(self):
         """Update the signal plot based on current parameters."""
         try:
@@ -958,10 +1075,7 @@ class AdvancedOptionsWidget(QWidget):
                 colors = plt.cm.tab10(np.linspace(0, 1, self.all_channels))
 
                 for channel_idx in range(self.all_channels):
-                    original_channel = self.reader_options.get("channel")
-                    self.reader_options["channel"] = channel_idx
-                    signal = self._get_preview_signal_data()
-                    self.reader_options["channel"] = original_channel
+                    signal = self._get_channel_preview_signal(channel_idx)
 
                     if signal is None:
                         continue
@@ -1946,6 +2060,152 @@ def _estimate_result_shape(file_paths):
         return None
 
 
+def _reduce_ptu_signal_dims(
+    ptu_shape, ptu_dims, bins_in_period, channel, dtime
+):
+    """Return ``(shape, dims)`` of a decoded PTU signal from metadata only.
+
+    Mirrors the axis reduction of :func:`phasorpy.io.signal_from_ptu` with
+    ``keepdims=False`` for the import widget's options: the time axis is always
+    integrated away (``frame=-1``), the channel axis is kept only when no
+    channel is selected, and ``dtime`` sets the histogram length.
+    """
+    out_shape, out_dims = [], []
+    for size, dim in zip(ptu_shape, ptu_dims, strict=False):
+        dim = str(dim).upper()
+        if dim == "T":
+            continue
+        if dim == "C":
+            if channel is None:
+                out_shape.append(int(size))
+                out_dims.append(dim)
+            continue
+        if dim == "H":
+            if dtime < 0:
+                continue
+            out_shape.append(
+                min(dtime, bins_in_period) if dtime > 0 else bins_in_period
+            )
+            out_dims.append(dim)
+            continue
+        out_shape.append(int(size))
+        out_dims.append(dim)
+    return tuple(out_shape), tuple(out_dims)
+
+
+def _estimate_ptu_output_shape(path, reader_options):
+    """Estimate the per-layer mean-intensity shape of a PTU file from metadata.
+
+    Avoids running the full reader (decode + phasor transform), which can
+    allocate tens of GB for large files. The phasor transform collapses the
+    histogram axis and the channel axis is iterated into separate layers, so
+    both are dropped from the returned spatial shape.
+    """
+    import ptufile
+
+    reader_options = reader_options or {}
+    channel = reader_options.get("channel")
+    try:
+        dtime = int(float(reader_options.get("dtime", 0)))
+    except (TypeError, ValueError):
+        dtime = 0
+
+    try:
+        with _silence_ptufile_logger():
+            with ptufile.PtuFile(path) as ptu:
+                shape = tuple(int(s) for s in ptu.shape)
+                dims = tuple(str(d).upper() for d in ptu.dims)
+                bins = int(ptu.number_bins_in_period)
+    except Exception:  # noqa: BLE001
+        return None
+
+    sig_shape, sig_dims = _reduce_ptu_signal_dims(
+        shape, dims, bins, channel, dtime
+    )
+
+    drop = set()
+    phasor_axis = reader_options.get("phasor_axis")
+    if phasor_axis is not None and 0 <= phasor_axis < len(sig_dims):
+        drop.add(phasor_axis)
+    else:
+        drop.update(i for i, d in enumerate(sig_dims) if d == "H")
+    drop.update(i for i, d in enumerate(sig_dims) if d == "C")
+
+    return tuple(s for i, s in enumerate(sig_shape) if i not in drop)
+
+
+def _phasor_output_shape_from_signal(signal, extension, reader_options):
+    """Derive the per-layer mean-intensity shape from a decoded signal.
+
+    Mirrors the axis selection of :func:`napari_phasors._reader.raw_file_reader`
+    so the estimated output shape can be computed from the already-decoded
+    preview signal instead of running the full reader (decode + phasor
+    transform) a second time. Returns ``None`` if the shape cannot be derived,
+    so callers can fall back to the reader.
+    """
+    if signal is None:
+        return None
+    reader_options = reader_options or {}
+    axis_override = reader_options.get("phasor_axis")
+
+    has_dims = hasattr(signal, "dims")
+    dims = tuple(signal.dims) if has_dims else ()
+    try:
+        shape = tuple(int(s) for s in signal.shape)
+    except (AttributeError, TypeError):
+        shape = tuple(int(s) for s in np.asarray(signal).shape)
+    ndim = len(shape)
+    if ndim == 0:
+        return None
+
+    # Without dimension labels the histogram/channel axes cannot be located
+    # reliably, except for plain TIFF (axis 0 by convention) or an explicit
+    # phasor-axis override. Bail out so the caller falls back to the reader.
+    if (
+        not has_dims
+        and axis_override is None
+        and extension
+        not in (
+            ".tif",
+            ".tiff",
+        )
+    ):
+        return None
+
+    iter_axis = iter_index_mapping.get(extension)
+
+    if iter_axis is None or iter_axis not in dims:
+        # Single-layer path.
+        if axis_override is not None:
+            axis = axis_override
+        elif extension in (".tif", ".tiff"):
+            axis = 0
+        elif has_dims and "H" in dims:
+            axis = dims.index("H")
+        elif has_dims and "C" in dims:
+            axis = dims.index("C")
+        else:
+            axis = 0
+        if not 0 <= axis < ndim:
+            return None
+        return tuple(s for i, s in enumerate(shape) if i != axis)
+
+    # Multi-channel path: the channel axis is iterated into separate layers,
+    # and each layer's phasor axis (H) is collapsed.
+    iter_index = dims.index(iter_axis)
+    reduced_dims = tuple(d for i, d in enumerate(dims) if i != iter_index)
+    reduced_shape = tuple(s for i, s in enumerate(shape) if i != iter_index)
+    if axis_override is not None:
+        hist_axis = axis_override
+    elif "H" in reduced_dims:
+        hist_axis = reduced_dims.index("H")
+    else:
+        hist_axis = 0
+    if not 0 <= hist_axis < len(reduced_shape):
+        return None
+    return tuple(s for i, s in enumerate(reduced_shape) if i != hist_axis)
+
+
 def _estimate_output_shape_from_options(
     path,
     reader_options,
@@ -1955,6 +2215,15 @@ def _estimate_output_shape_from_options(
     """Estimate output shape with current reader options and harmonics."""
     try:
         _, extension = _get_filename_extension(path)
+
+        if extension == ".ptu":
+            base_shape = _estimate_ptu_output_shape(path, reader_options)
+            if base_shape is None:
+                return None
+            if n_files > 1:
+                return (n_files,) + base_shape
+            return base_shape
+
         reader = napari_get_reader(
             path,
             reader_options=reader_options,
@@ -1963,11 +2232,7 @@ def _estimate_output_shape_from_options(
         if reader is None:
             return None
 
-        if extension == ".ptu":
-            with _silence_ptufile_logger():
-                layers = reader(path)
-        else:
-            layers = reader(path)
+        layers = reader(path)
         if not layers:
             return None
         base_shape = tuple(np.shape(layers[0][0]))
@@ -1997,6 +2262,12 @@ class FbdWidget(AdvancedOptionsWidget):
 
     def initUI(self):
         """Initialize the user interface."""
+        # Match the reader defaults (integrate frames, keep all channels) before
+        # the first preview decode so the preview and estimated shape are
+        # consistent with the final transform.
+        self.reader_options["frame"] = -1
+        self.reader_options.setdefault("channel", None)
+
         self.mainLayout = QVBoxLayout()
         self.setLayout(self.mainLayout)
 
@@ -2056,6 +2327,10 @@ class FbdWidget(AdvancedOptionsWidget):
             show_error(f"Error reading FBD signal: {str(e)}")
             return None
 
+    def _extra_preview_signature(self):
+        """Include ``laser_factor`` so the preview cache tracks it."""
+        return ("laser_factor", self.laser_factor.text())
+
     def _on_frames_combobox_changed(self, index):
         """Callback whenever the frames combobox changes."""
         super()._on_frames_combobox_changed(index)
@@ -2085,6 +2360,12 @@ class PtuWidget(AdvancedOptionsWidget):
             with ptufile.PtuFile(path) as ptu:
                 self.all_frames = ptu.shape[0]
                 self.all_channels = ptu.shape[-2]
+                # Cache metadata so preview/estimation paths can derive shapes
+                # without decoding the full image (which can allocate tens of
+                # GB for large files).
+                self._ptu_shape = tuple(int(s) for s in ptu.shape)
+                self._ptu_dims = tuple(str(d).upper() for d in ptu.dims)
+                self._bins_in_period = int(ptu.number_bins_in_period)
 
         super().__init__(viewer, path)
         self.reader_options["frame"] = -1
@@ -2143,6 +2424,118 @@ class PtuWidget(AdvancedOptionsWidget):
             return signal
         except Exception as e:  # noqa: BLE001
             show_error(f"Error reading PTU signal: {str(e)}")
+            return None
+
+    def _dtime_option(self):
+        """Return the current ``dtime`` option as an int (0 if unset)."""
+        text = self.dtime.text().strip() if self.dtime.text() else ""
+        if not text:
+            return 0
+        try:
+            return int(float(text))
+        except ValueError:
+            return 0
+
+    def _preview_signal_dims(self):
+        """Return ``(shape, dims)`` of the decoded signal for current options.
+
+        Derived from cached PTU metadata rather than by decoding the image, so
+        it is instantaneous and allocates no memory. Mirrors the axis reduction
+        performed by :func:`phasorpy.io.signal_from_ptu` (``keepdims=False``)
+        for the widget's options (``frame=-1`` integrates the time axis, the
+        channel is selected/kept, and ``dtime`` sets the histogram length).
+        """
+        return _reduce_ptu_signal_dims(
+            self._ptu_shape,
+            self._ptu_dims,
+            self._bins_in_period,
+            self.reader_options.get("channel"),
+            self._dtime_option(),
+        )
+
+    def _preview_shape_and_labels(self):
+        """Derive the phasor-axis selector shape from metadata (no decode)."""
+        return self._preview_signal_dims()
+
+    def _extra_preview_signature(self):
+        """Include ``dtime`` so the preview cache tracks the histogram length."""
+        return ("dtime", self._dtime_option())
+
+    def _estimate_base_output_shape(self):
+        """Estimate the output shape from PTU metadata (no image decode)."""
+        options = dict(self.reader_options)
+        options["dtime"] = self._dtime_option()
+        return _estimate_ptu_output_shape(self.path, options)
+
+    def _decode_preview_histogram(self, path=None):
+        """Return the per-channel TCSPC histogram summed over all pixels.
+
+        Uses :meth:`ptufile.PtuFile.decode_histogram`, which builds a ``(C, H)``
+        array directly from the photon records without materializing the full
+        ``(T, Y, X, C, H)`` image. Decoding the whole image only to sum it away
+        for the preview plot can allocate tens of GB for large PTU files; this
+        keeps the preview at a few kilobytes. Cached per ``(path, dtime)`` so
+        the per-channel plotting loop decodes each file only once.
+        """
+        import ptufile
+
+        path = path or self.path
+        dtime = self._dtime_option()
+        cache_key = (path, dtime)
+        if getattr(self, "_preview_hist_cache_key", None) == cache_key:
+            return self._preview_hist_cache
+
+        with _silence_ptufile_logger():
+            with ptufile.PtuFile(path) as ptu:
+                hist = np.asarray(
+                    ptu.decode_histogram(dtype="uint32", dtime=dtime)
+                )
+
+        self._preview_hist_cache_key = cache_key
+        self._preview_hist_cache = hist
+        return hist
+
+    def _compute_preview_signal_data(self):
+        """Return a lightweight preview signal for the plot.
+
+        Overrides the base implementation (which decodes the full image via
+        :func:`signal_from_ptu`) with the pixel-summed histogram, so selecting a
+        large PTU file in the import widget no longer exhausts memory. The full
+        image is only decoded when the user runs the phasor transform.
+        """
+        multi_paths = getattr(self, "_multi_file_paths", None)
+        grouped_paths = getattr(self, "_grouped_file_paths", None)
+        paths_to_average = None
+        if grouped_paths and len(grouped_paths) > 1:
+            paths_to_average = grouped_paths
+        elif multi_paths and len(multi_paths) > 1:
+            paths_to_average = multi_paths
+
+        channel = self.reader_options.get("channel")
+
+        def _select_channel(hist):
+            if channel is None:
+                return hist
+            if 0 <= channel < hist.shape[0]:
+                return hist[channel]
+            return hist
+
+        try:
+            if paths_to_average is None:
+                return _select_channel(self._decode_preview_histogram())
+
+            signals = [
+                np.asarray(
+                    _select_channel(self._decode_preview_histogram(path))
+                )
+                for path in paths_to_average
+            ]
+            try:
+                return np.mean(np.stack(signals, axis=0), axis=0)
+            except ValueError:
+                return signals[0]
+        except Exception as e:  # noqa: BLE001
+            show_error(f"Error reading PTU signal preview: {str(e)}")
             return None
 
     def _on_frames_combobox_changed(self, index):
@@ -2362,6 +2755,10 @@ class SdtWidget(AdvancedOptionsWidget):
         except Exception as e:  # noqa: BLE001
             show_error(f"Error reading SDT signal: {str(e)}")
             return None
+
+    def _extra_preview_signature(self):
+        """Include the dataset ``index`` so the preview cache tracks it."""
+        return ("index", self.index.text())
 
     def _on_click(self, path, reader_options, harmonics):
         """Callback whenever the calculate phasor button is clicked."""

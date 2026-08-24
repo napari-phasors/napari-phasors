@@ -10,6 +10,7 @@ import itertools
 import json
 import os
 import threading
+import warnings
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import replace
@@ -870,6 +871,93 @@ def raw_file_stack_reader(
         stacked_layers.append((stacked_mean, add_kwargs))
 
     return stacked_layers
+
+
+#: Key under which this plugin stores its settings in the OME-TIF description.
+SETTINGS_DESCRIPTION_KEY = "napari_phasors_settings"
+
+#: Largest description string (in characters) that will be parsed. Descriptions
+#: are hand-sized JSON blobs; anything larger is treated as foreign content and
+#: ignored rather than parsed into memory.
+MAX_DESCRIPTION_CHARS = 512 * 512  # 256 KB
+
+
+def _parse_description_settings(description: Any) -> dict:
+    """Return this plugin's settings from an OME-TIF description field.
+
+    The ``description`` field of a TIFF is free-form text that any other tool
+    may legitimately write to, so it is treated as untrusted input: anything
+    that is not a well-formed napari-phasors settings payload is ignored with a
+    warning instead of raising, leaving the image data itself readable.
+
+    Parameters
+    ----------
+    description : Any
+        Raw value of the ``description`` entry of the file attributes. Normally
+        a string, but not guaranteed to be.
+
+    Returns
+    -------
+    settings : dict
+        The stored settings, or an empty dict if the description is missing,
+        oversized, malformed, or written by another application.
+    """
+    if description is None:
+        # No description entry at all: the common case for files written by
+        # other software. Nothing to warn about.
+        return {}
+
+    if not isinstance(description, str):
+        warnings.warn(
+            "Ignoring OME-TIF description: expected a string, got "
+            f"{type(description).__name__}.",
+            stacklevel=2,
+        )
+        return {}
+
+    # Guard on the raw string before parsing, so an oversized payload is never
+    # materialised as Python objects.
+    if len(description) > MAX_DESCRIPTION_CHARS:
+        warnings.warn(
+            "Ignoring OME-TIF description: it is larger than the "
+            f"{MAX_DESCRIPTION_CHARS} character limit.",
+            stacklevel=2,
+        )
+        return {}
+
+    try:
+        # tifffile may HTML-encode the description when writing it.
+        parsed = json.loads(html.unescape(description))
+    except (ValueError, TypeError):
+        # Not JSON at all: written by Fiji, Bio-Formats, or any other tool.
+        return {}
+
+    if not isinstance(parsed, dict) or SETTINGS_DESCRIPTION_KEY not in parsed:
+        # Valid JSON, but not ours. Nothing to recover, and nothing is wrong.
+        return {}
+
+    raw_settings = parsed[SETTINGS_DESCRIPTION_KEY]
+    try:
+        settings = json.loads(raw_settings)
+    except (ValueError, TypeError):
+        warnings.warn(
+            f"Ignoring corrupted '{SETTINGS_DESCRIPTION_KEY}' entry in the "
+            "OME-TIF description: it is not valid JSON.",
+            stacklevel=2,
+        )
+        return {}
+
+    if not isinstance(settings, dict):
+        warnings.warn(
+            f"Ignoring '{SETTINGS_DESCRIPTION_KEY}' entry in the OME-TIF "
+            f"description: expected an object, got {type(settings).__name__}.",
+            stacklevel=2,
+        )
+        return {}
+
+    if "calibrated" in settings:
+        settings["calibrated"] = bool(settings["calibrated"])
+    return settings
 
 
 #: Dimensions that hold mosaic tiles, in the order they are preferred when
@@ -2013,18 +2101,7 @@ def processed_file_reader(
             "processed"
         ][file_extension](path, filtered_reader_options)
         pbr.update(1)
-        if "description" in attrs:
-            # HTML-unescape the description to handle tifffile HTML encoding
-            description_str = html.unescape(attrs["description"])
-            description = json.loads(description_str)
-            if len(json.dumps(description)) > 512 * 512:  # Threshold: 256 KB
-                raise ValueError("Description dictionary is too large.")
-            if "napari_phasors_settings" in description:
-                settings = json.loads(description["napari_phasors_settings"])
-                if "calibrated" in settings:
-                    settings["calibrated"] = bool(settings["calibrated"])
-        else:
-            settings = {}
+        settings = _parse_description_settings(attrs.get("description"))
         if "frequency" in attrs:
             settings["frequency"] = attrs["frequency"]
         harmonics_read = attrs.get("harmonic", None)

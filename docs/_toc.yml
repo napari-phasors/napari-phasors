@@ -23,6 +23,7 @@ parts:
   - file: guides/phasor_mapping
   - file: guides/fret_analysis
   - file: guides/histogram_statistics
+  - file: guides/timelapse
   - file: guides/exporting
   - file: guides/batch_analysis
 - caption: API Reference
