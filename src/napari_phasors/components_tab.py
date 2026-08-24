@@ -4667,8 +4667,7 @@ class ComponentsWidget(QWidget):
         else:
             self._run_component_fit()
 
-        self._update_histogram_combobox()
-        self.update_component_histogram()
+        self.on_layer_selection_changed()
 
     def _run_linear_projection(self):
         """Run linear projection for 2-component analysis on all selected layers."""
@@ -5379,14 +5378,56 @@ class ComponentsWidget(QWidget):
         # Linear Projection
         return (not has_tag) and " fractions: " in layer.name
 
+    def _get_selected_image_layer_names(self) -> set:
+        """Get the names of the image layers currently selected in the plotter.
+
+        Returns
+        -------
+        set of str
+            Names of the layers checked in the "phasor layers" combobox. An
+            empty set if no layer is selected or the parent widget is gone.
+        """
+        if self.parent_widget is None:
+            return set()
+        try:
+            return {
+                layer.name
+                for layer in self.parent_widget.get_selected_layers()
+            }
+        except (AttributeError, RuntimeError):
+            return set()
+
+    def _fraction_layer_source_image(self, layer):
+        """Return the image layer name a fraction layer was computed from.
+
+        Component-fit layers carry the source in their
+        ``phasor_component_fraction`` tag (so manually renamed layers are still
+        resolved); otherwise it is parsed from the layer name.
+
+        Returns
+        -------
+        str or None
+            The source image layer name, or None if ``layer`` is not a
+            fraction layer.
+        """
+        tag = layer.metadata.get('phasor_component_fraction')
+        if isinstance(tag, dict) and tag.get('source_layer'):
+            return tag['source_layer']
+        for sep in (" fractions: ", " fraction: "):
+            idx = layer.name.find(sep)
+            if idx != -1:
+                return layer.name[idx + len(sep) :]
+        return None
+
     def _get_fraction_layers_for_component(self, component_name):
-        """Get all fraction layers in the viewer for a given component name.
+        """Get the fraction layers of the selected images for a component.
 
         Searches the viewer for fraction layers matching the component name,
-        regardless of which image layer they belong to, restricted to the
-        current analysis method. Component-fit layers are matched first by
-        their ``phasor_component_fraction`` metadata tag (so manually renamed
-        layers are still found), then by name pattern.
+        restricted to the current analysis method and to the image layers
+        currently checked in the "phasor layers" combobox, so the histogram
+        always matches the active selection. Component-fit layers are matched
+        first by their ``phasor_component_fraction`` metadata tag (so manually
+        renamed layers are still found), then by name pattern.
 
         Parameters
         ----------
@@ -5399,6 +5440,7 @@ class ComponentsWidget(QWidget):
             ``{image_layer_name: napari.layers.Image}`` mapping each source
             image layer name to its fraction layer.
         """
+        selected_names = self._get_selected_image_layer_names()
         result = {}
         # Linear projection: "<comp_name> fractions: <layer_name>"
         # Component fit:     "<comp_name> fraction: <layer_name>"
@@ -5416,27 +5458,31 @@ class ComponentsWidget(QWidget):
             ):
                 source = tag.get('source_layer')
                 if source:
-                    result[source] = layer
+                    if source in selected_names:
+                        result[source] = layer
                     continue
             name = layer.name
             for sep in (" fractions: ", " fraction: "):
                 if name.startswith(component_name + sep):
                     img_layer_name = name[len(component_name) + len(sep) :]
-                    result[img_layer_name] = layer
+                    if img_layer_name in selected_names:
+                        result[img_layer_name] = layer
                     break
         return result
 
     def _get_component_names_from_fraction_layers(self):
         """Discover unique component names from fraction layers in the viewer.
 
-        Uses custom names from metadata if available, otherwise falls back
-        to names extracted from layer names.
+        Only fraction layers belonging to the currently selected image layers
+        are considered. Uses custom names from metadata if available, otherwise
+        falls back to names extracted from layer names.
 
         Returns
         -------
         list of str
             Unique component names found in the viewer's fraction layers.
         """
+        selected_names = self._get_selected_image_layer_names()
         layer_based_names = {}
         for layer in self.viewer.layers:
             if not isinstance(layer, Image):
@@ -5444,6 +5490,9 @@ class ComponentsWidget(QWidget):
             # Only surface components of the current analysis method, so stale
             # layers from the other method are not offered in the combobox.
             if not self._layer_matches_analysis_type(layer):
+                continue
+            source = self._fraction_layer_source_image(layer)
+            if source is None or source not in selected_names:
                 continue
             # Component-fit layers carry an identifying tag: resolve their
             # display name from it so a manually renamed layer still surfaces
@@ -5704,6 +5753,39 @@ class ComponentsWidget(QWidget):
         finally:
             self._syncing_component_comboboxes = False
 
+    def _sync_fraction_layer_visibility(self):
+        """Match fraction layer visibility to the current layer selection.
+
+        Fraction layers of deselected image layers are hidden instead of
+        removed, so re-selecting the image layer restores them immediately.
+        No-op writes are skipped to avoid redundant napari redraw events.
+        """
+        selected_names = self._get_selected_image_layer_names()
+        self._updating_linked_layers = True
+        try:
+            for layer in self.viewer.layers:
+                if not isinstance(layer, Image):
+                    continue
+                source = self._fraction_layer_source_image(layer)
+                if source is None:
+                    continue
+                desired_visible = source in selected_names
+                if layer.visible != desired_visible:
+                    layer.visible = desired_visible
+        finally:
+            self._updating_linked_layers = False
+
+    def on_layer_selection_changed(self):
+        """Refresh the fraction histogram after the layer selection changed.
+
+        Called by the parent plotter whenever phasor layers are checked or
+        unchecked, so the histogram, statistics and fraction layer visibility
+        always follow the current selection.
+        """
+        self._sync_fraction_layer_visibility()
+        self._update_histogram_combobox()
+        self.update_component_histogram()
+
     def _on_fraction_range_changed(self, min_val, max_val):
         """Handle range slider changes on the fraction histogram.
 
@@ -5783,6 +5865,7 @@ class ComponentsWidget(QWidget):
         """Update the histogram with the fraction data of the selected component."""
         selected_text = self.histogram_component_combobox.currentText()
         if not selected_text:
+            self.histogram_widget.clear()
             self.histogram_widget.hide()
             return
 
@@ -5790,6 +5873,7 @@ class ComponentsWidget(QWidget):
             selected_text
         )
         if not fraction_layers_map:
+            self.histogram_widget.clear()
             self.histogram_widget.hide()
             return
 
