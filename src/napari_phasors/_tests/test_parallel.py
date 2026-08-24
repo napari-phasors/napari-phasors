@@ -12,6 +12,16 @@ from napari_phasors._parallel import (
 )
 
 
+@pytest.fixture(autouse=True)
+def clear_worker_env(monkeypatch):
+    """Never inherit a worker override from the ambient environment.
+
+    A ``NAPARI_PHASORS_WORKERS`` set in a shell or CI job would otherwise
+    silently rewrite every expectation in this module.
+    """
+    monkeypatch.delenv("NAPARI_PHASORS_WORKERS", raising=False)
+
+
 def test_default_workers_never_exceeds_item_count():
     """Idle threads cost memory, so the pool never outgrows the work."""
     assert default_workers(1) == 1
@@ -37,8 +47,11 @@ def test_env_override_forces_worker_count(monkeypatch):
 @pytest.mark.parametrize("value", ["", "0", "-2", "nonsense"])
 def test_bad_env_override_is_ignored(monkeypatch, value):
     """A stray env value must never break a read."""
+    baseline = default_workers(4)
     monkeypatch.setenv("NAPARI_PHASORS_WORKERS", value)
-    assert default_workers(4) == 4
+    assert default_workers(4) == baseline
+    # An explicit request still wins, so the value really was discarded.
+    assert default_workers(4, workers=2) == 2
 
 
 def test_parallel_map_preserves_order():
