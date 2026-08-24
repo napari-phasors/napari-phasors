@@ -3524,6 +3524,23 @@ def test_components_histogram_cleared_when_no_layers_selected(
     assert comp_widget.histogram_widget.isHidden()
 
 
+def test_components_histogram_clears_unresolved_component(
+    make_viewer_model, qtbot
+):
+    """A selected component without fraction layers cannot retain old data."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    comp = parent.components_tab
+    comp.histogram_widget.update_data(np.array([0.1, 0.2]))
+    comp.histogram_component_combobox.addItem("Missing component")
+
+    comp.update_component_histogram()
+
+    assert comp.histogram_widget.counts is None
+    assert comp.histogram_widget._datasets == {}
+    assert comp.histogram_widget.isHidden()
+
+
 def test_components_histogram_updates_from_debounced_selection_signal(
     make_napari_viewer, qtbot
 ):

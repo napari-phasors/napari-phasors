@@ -1515,3 +1515,16 @@ def test_single_layer_selection_restores_its_full_harmonic_range(
     plotter._process_layer_selection_change()
     assert plotter.harmonic_spinbox.minimum() == 1
     assert plotter.harmonic_spinbox.maximum() == 3
+
+
+def test_harmonic_bounds_ignore_empty_or_missing_harmonics(
+    make_viewer_model, qtbot
+):
+    """Harmonic-bound refresh safely ignores unavailable selections."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    layer = create_image_layer_with_phasors()
+    layer.metadata.pop("harmonics", None)
+
+    plotter._update_harmonic_bounds([])
+    plotter._update_harmonic_bounds([layer])

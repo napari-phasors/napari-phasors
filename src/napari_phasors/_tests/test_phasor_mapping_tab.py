@@ -2755,6 +2755,7 @@ def test_mapping_frequency_edit_rejects_nonpositive_and_invalid_values(
         assert mapping.histogram_widget.counts is not None
 
     parent._broadcast_frequency_value_across_tabs("-1")
+    parent._broadcast_frequency_value_across_tabs("not-a-number")
 
     assert mapping.frequency_input.text() == "80"
     assert layers[0].metadata['settings']['frequency'] == 80.0
@@ -2782,6 +2783,83 @@ def test_mapping_output_mode_syncs_custom_color_button(
     mapping.output_mode_combobox.setCurrentText("Phase")
     assert mapping.colormap_combobox.currentText() == "Select color..."
     assert not mapping.custom_color_button.isHidden()
+
+
+def test_mapping_defensive_selection_and_legacy_output_helpers(
+    make_viewer_model, qtbot
+):
+    """Defensive selection paths and legacy canonical outputs stay supported."""
+    viewer = make_viewer_model()
+    source = create_image_layer_with_phasors()
+    source.name = "legacy_source"
+    viewer.add_layer(source)
+    parent = PlotterWidget(viewer)
+    mapping = parent.phasor_mapping_tab
+    legacy = viewer.add_image(
+        np.ones((2, 2)),
+        name="Phase: legacy_source",
+    )
+
+    assert mapping._mapping_output_info(legacy) == (
+        "Phase",
+        "legacy_source",
+    )
+
+    with patch.object(mapping, "parent_widget", None):
+        assert mapping._get_selected_source_names() == set()
+    with patch.object(parent, "get_selected_layers", side_effect=RuntimeError):
+        assert mapping._get_selected_source_names() == set()
+    with patch.object(parent, "get_selected_layers", return_value=[]):
+        mapping._sync_mapping_output_visibility()
+    assert legacy.visible is False
+
+    mapping.rename_layer("legacy_source", "renamed_source")
+
+    assert legacy.name == "Phase: renamed_source"
+    assert legacy.metadata['phasor_mapping_output'] == {
+        'source_layer': 'renamed_source',
+        'output_type': 'Phase',
+    }
+
+
+def test_mapping_inactive_refresh_and_nonfrequency_edit_are_noops(
+    make_viewer_model, qtbot
+):
+    """Inactive refresh and Phase frequency editing return without calculation."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    mapping = parent.phasor_mapping_tab
+
+    with patch.object(mapping, "_calculate_and_display_output") as calculate:
+        mapping._refresh_active_output()
+        mapping.output_mode_combobox.setCurrentText("Phase")
+        mapping._on_frequency_changed()
+    calculate.assert_not_called()
+
+
+def test_mapping_calculation_clears_when_selected_layer_has_no_phasors(
+    make_viewer_model, qtbot
+):
+    """A selected layer without phasor arrays cannot reuse previous output."""
+    viewer = make_viewer_model()
+    valid = create_image_layer_with_phasors()
+    viewer.add_layer(valid)
+    parent = PlotterWidget(viewer)
+    mapping = parent.phasor_mapping_tab
+    missing = Image(np.ones((2, 2)), name="missing_phasors")
+    mapping.frequency_input.setText("80")
+
+    with (
+        patch.object(parent, "get_selected_layers", return_value=[missing]),
+        patch.object(parent, "has_phasor_data", return_value=True),
+    ):
+        assert (
+            mapping._calculate_and_display_output(show_warnings=False) is False
+        )
+
+    assert mapping.histogram_widget.counts is None
 
 
 def test_restore_on_layer_change_refreshes_primary_button(

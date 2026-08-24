@@ -2620,3 +2620,38 @@ def test_reconnect_existing_fret_layer_registers_output_once(
 
     assert fret.fret_layer is output
     assert fret.fret_layers == [output]
+
+
+def test_fret_defensive_selection_saved_reconnect_and_canonical_rename(
+    make_viewer_model, qtbot
+):
+    """Cover defensive selection, saved restore, and canonical rename paths."""
+    viewer = make_viewer_model()
+    source = create_image_layer_with_phasors()
+    source.name = "legacy_fret_source"
+    viewer.add_layer(source)
+    output = viewer.add_image(
+        np.linspace(0.0, 1.0, 10).reshape(2, 5),
+        name="FRET efficiency: legacy_fret_source",
+    )
+    parent = PlotterWidget(viewer)
+    fret = parent.fret_tab
+
+    with patch.object(fret, "parent_widget", None):
+        assert fret._get_selected_source_names() == set()
+    with patch.object(
+        parent, "get_selected_layers", side_effect=AttributeError
+    ):
+        assert fret._get_selected_source_names() == set()
+
+    fret._saved_colormap_name = "viridis"
+    with patch.object(fret, "_apply_saved_fret_colormap_settings") as apply:
+        fret._reconnect_existing_fret_layer(source.name)
+    apply.assert_called_once()
+
+    fret.rename_layer("legacy_fret_source", "renamed_fret_source")
+
+    assert output.name == "FRET efficiency: renamed_fret_source"
+    assert output.metadata['phasor_fret_output'] == {
+        'source_layer': 'renamed_fret_source'
+    }
