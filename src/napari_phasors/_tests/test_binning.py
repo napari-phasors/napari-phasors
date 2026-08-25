@@ -206,3 +206,11 @@ class TestPhasorPyramid:
         pyramid.clear()
         assert pyramid.available_factors() == []
         assert pyramid.nbytes() == 0
+
+
+def test_bin_factor_for_shape_declines_degenerate_input():
+    """Nothing to bin: a 1-D shape or a non-positive budget stays at 1."""
+    assert bin_factor_for_shape((1024,)) == 1
+    assert bin_factor_for_shape(()) == 1
+    assert bin_factor_for_shape((8000, 8000), budget=0) == 1
+    assert bin_factor_for_shape((8000, 8000), budget=-5) == 1

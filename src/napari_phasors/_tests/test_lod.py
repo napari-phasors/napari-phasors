@@ -395,3 +395,200 @@ class TestFilterTabLodControls:
 
         assert not tab._lod_manager.enabled
         assert not tab._lod_manager._timer.isActive()
+
+
+class TestLodEdgeCases:
+    """Guard rails that only trigger on odd layers or an odd camera."""
+
+    def test_layer_without_a_metadata_dict_is_unsupported(self):
+        """A layer-like object with no metadata mapping is simply skipped."""
+
+        class _Bare:
+            metadata = None
+
+        assert not layer_supports_lod(_Bare())
+        assert not layer_supports_lod(object())
+
+    def test_bin_mask_returns_the_original_at_factor_one(self):
+        from napari_phasors._lod import _bin_mask
+
+        mask = np.eye(4, dtype=np.uint8)
+        assert _bin_mask(mask, 1) is mask
+        assert _bin_mask(mask, 0) is mask
+
+    def test_bin_mask_pads_a_ragged_mask(self):
+        """A mask whose size is not a multiple of the factor is zero-padded."""
+        from napari_phasors._lod import _bin_mask
+
+        mask = np.zeros((5, 7), dtype=np.uint8)
+        mask[4, 6] = 3  # in the padded-away corner block
+
+        binned = _bin_mask(mask, 2)
+
+        assert binned.shape == (3, 4)
+        # Padding is zero, so block-max still reports the label.
+        assert binned[2, 3] == 3
+
+    def test_is_full_detail_tracks_level_and_crop(self, make_viewer_model):
+        viewer = make_viewer_model()
+        layer = make_lod_layer(viewer, size=64)
+        lod = PhasorLod(layer)
+
+        assert lod.is_full_detail
+
+        lod.apply(2)
+        assert not lod.is_full_detail
+
+        lod.apply(1, region=(0, 32, 0, 32))
+        assert not lod.is_full_detail
+
+        lod.apply(1)
+        assert lod.is_full_detail
+
+    def test_suggested_factor_matches_the_budget(self, make_viewer_model):
+        viewer = make_viewer_model()
+        layer = make_lod_layer(viewer, size=64)
+        lod = PhasorLod(layer)
+
+        assert lod.suggested_factor(budget=64 * 64) == 1
+        assert lod.suggested_factor(budget=256) > 1
+
+    def test_mask_is_cropped_with_the_region(self, make_viewer_model):
+        """A region view has to crop the mask as well as the arrays."""
+        viewer = make_viewer_model()
+        layer = make_lod_layer(viewer, size=64)
+        mask = np.zeros((64, 64), dtype=np.uint8)
+        mask[:32, :32] = 1
+        mask[32:, 32:] = 2
+        layer.metadata["mask"] = mask
+
+        lod = PhasorLod(layer)
+        lod.apply(1, region=(32, 64, 32, 64))
+
+        cropped = layer.metadata["mask"]
+        assert cropped.shape == (32, 32)
+        assert np.all(cropped == 2)
+
+
+class _StubCamera:
+    """Minimal stand-in for ``viewer.camera``."""
+
+    def __init__(self, zoom=1.0, center=(0.0, 0.0, 0.0)):
+        self.zoom = zoom
+        self.center = center
+
+
+class _StubViewer:
+    """Viewer stand-in whose camera and canvas can be made unusable."""
+
+    def __init__(self, camera=None, canvas=(100, 100)):
+        self.camera = camera
+        self._canvas_size = canvas
+
+
+class TestLodManagerWithoutACamera:
+    """A viewer with no camera must not break refinement."""
+
+    @staticmethod
+    def _cameraless(make_viewer_model):
+        viewer = make_viewer_model()
+        layer = make_lod_layer(viewer, size=32)
+        manager = LodManager(viewer)
+        lod = manager.attach(layer, auto=False)
+        manager.viewer = _StubViewer(camera=None)
+        return manager, lod
+
+    def test_connecting_is_a_no_op(self, make_viewer_model):
+        manager, _ = self._cameraless(make_viewer_model)
+        manager._connect_camera()
+        manager._disconnect_camera()
+
+    def test_visible_region_is_none(self, make_viewer_model):
+        manager, lod = self._cameraless(make_viewer_model)
+        assert manager.visible_region(lod) is None
+
+    def test_refine_now_skips_layers_it_cannot_place(self, make_viewer_model):
+        manager, _ = self._cameraless(make_viewer_model)
+        assert manager.refine_now() == []
+
+
+class TestVisibleRegionGuards:
+    """Every way the camera can fail to describe a rectangle."""
+
+    @staticmethod
+    def _manager(make_viewer_model, size=64):
+        viewer = make_viewer_model()
+        layer = make_lod_layer(viewer, size=size)
+        manager = LodManager(viewer)
+        return viewer, manager, manager.attach(layer, auto=False)
+
+    def test_missing_canvas_size(self, make_viewer_model):
+        _, manager, lod = self._manager(make_viewer_model)
+        manager.viewer = _StubViewer(camera=_StubCamera(), canvas=())
+        assert manager.visible_region(lod) is None
+
+    def test_one_dimensional_camera_center(self, make_viewer_model):
+        _, manager, lod = self._manager(make_viewer_model)
+        manager.viewer = _StubViewer(camera=_StubCamera(center=(5.0,)))
+        assert manager.visible_region(lod) is None
+
+    def test_zero_zoom(self, make_viewer_model):
+        _, manager, lod = self._manager(make_viewer_model)
+        manager.viewer = _StubViewer(camera=_StubCamera(zoom=0.0))
+        assert manager.visible_region(lod) is None
+
+    def test_degenerate_layer_scale(self, make_viewer_model):
+        viewer, manager, lod = self._manager(make_viewer_model)
+        viewer.camera.zoom = 1.0
+        lod.base_scale = np.array([0.0, 1.0])
+        assert manager.visible_region(lod) is None
+
+    def test_camera_looking_away_from_the_image(self, make_viewer_model):
+        """Panned entirely off the image, there is no rectangle to refine."""
+        viewer, manager, lod = self._manager(make_viewer_model, size=64)
+        viewer.camera.zoom = 50.0
+        viewer.camera.center = (0, -10_000, -10_000)
+        assert manager.visible_region(lod) is None
+
+
+class TestRefineReentrancy:
+    """The debounce timer and the re-entrancy guard."""
+
+    def test_camera_events_are_ignored_while_refining(self, make_viewer_model):
+        viewer = make_viewer_model()
+        layer = make_lod_layer(viewer, size=64)
+        manager = LodManager(viewer)
+        manager.attach(layer, auto=False)
+        manager.set_enabled(True)
+        manager._timer.stop()
+
+        manager._refining = True
+        manager._on_camera_moved()
+        assert not manager._timer.isActive()
+
+        # A refine that arrives while one is running returns immediately.
+        assert manager.refine_now() == []
+        manager._refining = False
+
+    def test_camera_events_are_ignored_without_attached_layers(
+        self, make_viewer_model
+    ):
+        viewer = make_viewer_model()
+        manager = LodManager(viewer)
+        manager.set_enabled(True)
+        manager._on_camera_moved()
+        assert not manager._timer.isActive()
+
+    def test_timeout_refines(self, make_viewer_model):
+        """The debounce timer's slot is what actually triggers the refine."""
+        viewer = make_viewer_model()
+        layer = make_lod_layer(viewer, size=256)
+        manager = LodManager(viewer, budget=4096)
+        manager.attach(layer, auto=True)
+        coarse = manager.lod_for(layer).factor
+
+        viewer.camera.zoom = 40.0
+        viewer.camera.center = (0, 128, 128)
+        manager._on_timeout()
+
+        assert manager.lod_for(layer).factor < coarse

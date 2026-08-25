@@ -49,7 +49,7 @@ from qtpy.QtWidgets import (
     QWidgetAction,
 )
 
-from ._parallel import parallel_map
+from ._parallel import parallel_map, parallel_rowwise
 from ._timelapse import slice_datasets
 from ._utils import (
     CheckableComboBox,
@@ -62,6 +62,23 @@ from ._utils import (
 
 if TYPE_CHECKING:
     import napari
+
+
+def _fit_components(mean, real, imag, component_g, component_s):
+    """Fit component fractions, splitting a large image across threads.
+
+    ``phasor_component_fit`` solves each pixel independently, so running it
+    on row bands concurrently gives the same answer as one call over the
+    whole image. Images too small to be worth splitting go straight through.
+    """
+    return parallel_rowwise(
+        lambda m, r, i: phasor_component_fit(
+            m, r, i, component_g, component_s
+        ),
+        mean,
+        real,
+        imag,
+    )
 
 
 @dataclass
@@ -5039,7 +5056,7 @@ class ComponentsWidget(QWidget):
             return
 
         fits = parallel_map(
-            lambda item: phasor_component_fit(*item[1][:5]),
+            lambda item: _fit_components(*item[1][:5]),
             fittable,
             on_error="collect",
         )
@@ -5230,7 +5247,7 @@ class ComponentsWidget(QWidget):
                 prepared
             )
             try:
-                fractions = phasor_component_fit(
+                fractions = _fit_components(
                     mean, real, imag, component_g, component_s
                 )
             except Exception as e:  # noqa: BLE001

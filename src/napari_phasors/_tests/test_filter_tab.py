@@ -1445,3 +1445,71 @@ def test_histogram_cleared_when_no_layer_selected(make_viewer_model, qtbot):
 
     assert fw._histogram_data is None
     assert len(fw.hist_ax.patches) == 0
+
+
+def test_apply_button_reports_layers_that_failed(make_viewer_model, qtbot):
+    """A layer whose filtering raised is named in a single grouped error."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    layer.name = "bad_layer"
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    filter_widget = parent.filter_tab
+
+    errors = []
+    with (
+        patch(
+            'napari_phasors.filter_tab.apply_filter_and_threshold_to_layers'
+        ) as mock_apply,
+        patch('napari_phasors.filter_tab.show_error', errors.append),
+        patch.object(parent, 'plot'),
+    ):
+        mock_apply.side_effect = lambda pairs, **kwargs: [
+            RuntimeError("kernel exploded") for _ in pairs
+        ]
+        filter_widget.apply_button_clicked()
+
+    assert len(errors) == 1
+    assert "Could not filter 1 layer(s)" in errors[0]
+    assert "bad_layer" in errors[0]
+    assert "kernel exploded" in errors[0]
+
+
+def test_lod_status_lists_every_distinct_factor(make_viewer_model, qtbot):
+    """Layers binned differently are all reported, not just the first."""
+    from napari_phasors._tests.test_lod import make_lod_layer
+
+    viewer = make_viewer_model()
+    first = make_lod_layer(viewer, size=64)
+    first.name = "first"
+    second = make_lod_layer(viewer, size=64)
+    second.name = "second"
+    parent = PlotterWidget(viewer)
+    tab = parent.filter_tab
+
+    manager = tab.lod_manager
+    manager.attach(first, auto=False).apply(2)
+    manager.attach(second, auto=False).apply(4)
+
+    tab._update_lod_status()
+
+    assert tab.lod_status_label.text() == "Binned 2x2, 4x4"
+
+
+def test_refresh_after_lod_change_without_a_parent_is_a_no_op(
+    make_viewer_model, qtbot
+):
+    """The filter tab can outlive its plotter; refreshing must not raise."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    tab = parent.filter_tab
+
+    tab.parent_widget = None
+    tab._refresh_after_lod_change()
+
+
+def test_apply_filter_to_no_layers_is_a_no_op():
+    """An empty batch returns an empty result rather than starting a pool."""
+    from napari_phasors._utils import apply_filter_and_threshold_to_layers
+
+    assert apply_filter_and_threshold_to_layers([]) == []

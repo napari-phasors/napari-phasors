@@ -25,6 +25,8 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 
+from ._parallel import band_bounds, parallel_map
+
 __all__ = [
     "TilePlacement",
     "TileGeometry",
@@ -33,6 +35,7 @@ __all__ = [
     "blend_phasor_tiles",
     "compute_origins",
     "estimate_overlap",
+    "feather_ramps",
     "feather_window",
     "layout_from_filenames",
     "layout_from_positions",
@@ -46,6 +49,11 @@ TRAVERSAL_ORDERS = ("raster", "snake")
 
 #: Corner the first tile is placed at, for :func:`layout_from_rows`.
 START_CORNERS = ("top-left", "top-right", "bottom-left", "bottom-right")
+
+#: Scratch-memory budget for one band of :func:`blend_phasor_tiles`. Only the
+#: bands in flight hold accumulators, so peak usage is roughly this times the
+#: worker count regardless of how large the mosaic is.
+BLEND_BAND_BUDGET_BYTES = 32 << 20
 
 #: Intensity blending modes understood by :func:`blend_phasor_tiles`.
 BLEND_MODES = ("feather", "average", "sum")
@@ -317,6 +325,33 @@ def feather_window(shape, overlap_px, edges=(True, True, True, True)):
     numpy.ndarray
         Float32 array of *shape* with values in ``(0, 1]``.
     """
+    window_y, window_x = feather_ramps(shape, overlap_px, edges)
+    return window_y[:, np.newaxis] * window_x[np.newaxis, :]
+
+
+def feather_ramps(shape, overlap_px, edges=(True, True, True, True)):
+    """Return the separable ``(row, column)`` factors of :func:`feather_window`.
+
+    The window is an outer product, so blending a horizontal band of the
+    mosaic only needs the rows of the first factor that the band covers.
+    Keeping the two 1-D ramps means a large tile's 2-D window is never
+    materialized at all.
+
+    Parameters
+    ----------
+    shape : tuple of int
+        ``(height, width)`` of the tile.
+    overlap_px : tuple of int
+        ``(overlap_y, overlap_x)`` in pixels.
+    edges : tuple of bool, optional
+        Whether the ``(top, bottom, left, right)`` borders should be ramped.
+
+    Returns
+    -------
+    tuple of numpy.ndarray
+        ``(window_y, window_x)``, float32, of lengths ``height`` and
+        ``width``.
+    """
     height, width = shape
     overlap_y, overlap_x = overlap_px
     top, bottom, left, right = edges
@@ -337,9 +372,10 @@ def feather_window(shape, overlap_px, edges=(True, True, True, True)):
             window[size - width_px :] = taper[::-1]
         return window
 
-    window_y = ramp(height, overlap_y, top, bottom)
-    window_x = ramp(width, overlap_x, left, right)
-    return window_y[:, np.newaxis] * window_x[np.newaxis, :]
+    return (
+        ramp(height, overlap_y, top, bottom),
+        ramp(width, overlap_x, left, right),
+    )
 
 
 def _tile_edges(geometry, index, origins):
@@ -431,6 +467,12 @@ def blend_phasor_tiles(
     if not tiles:
         raise ValueError("No tiles to blend.")
 
+    blend_mode = geometry.blend_mode
+    if blend_mode not in BLEND_MODES:
+        raise ValueError(
+            f"Unknown blend mode {blend_mode!r}, expected one of {BLEND_MODES}."
+        )
+
     height, width = geometry.tile_shape
     origins = compute_origins(geometry)
     canvas_y, canvas_x = geometry.canvas_shape()
@@ -438,30 +480,11 @@ def blend_phasor_tiles(
     first_real = np.asarray(tiles[0][1])
     n_harmonics = first_real.shape[0] if first_real.ndim == 3 else 1
 
-    num_mean = np.zeros((canvas_y, canvas_x), dtype=np.float64)
-    weight = np.zeros((canvas_y, canvas_x), dtype=np.float64)
-    num_real = np.zeros((n_harmonics, canvas_y, canvas_x), dtype=np.float64)
-    num_imag = np.zeros((n_harmonics, canvas_y, canvas_x), dtype=np.float64)
-    coverage = np.zeros((canvas_y, canvas_x), dtype=np.uint16)
-
-    overlap_px = (
-        int(round(height * geometry.overlap_y)),
-        int(round(width * geometry.overlap_x)),
-    )
-    blend_mode = geometry.blend_mode
-    if blend_mode not in BLEND_MODES:
-        raise ValueError(
-            f"Unknown blend mode {blend_mode!r}, expected one of {BLEND_MODES}."
-        )
-
-    for index, (tile, (origin_y, origin_x)) in enumerate(
-        zip(tiles, origins, strict=True)
-    ):
-        mean, real, imag = tile
-        mean = np.asarray(mean, dtype=np.float64)
-        real = np.asarray(real, dtype=np.float64)
-        imag = np.asarray(imag, dtype=np.float64)
-
+    # Validate every tile before touching the canvas, so a bad mosaic fails
+    # immediately instead of after allocating gigabytes of accumulators.
+    prepared = []
+    for index, tile in enumerate(tiles):
+        mean, real, imag = (np.asarray(part) for part in tile)
         if mean.shape != (height, width):
             raise ValueError(
                 f"Tile {index} has shape {mean.shape}, expected "
@@ -475,63 +498,145 @@ def blend_phasor_tiles(
                 f"Tile {index} has {real.shape[0]} harmonic(s), expected "
                 f"{n_harmonics}."
             )
+        prepared.append((mean, real, imag))
 
-        rows = slice(origin_y, origin_y + height)
-        cols = slice(origin_x, origin_x + width)
-
-        if blend_mode == "feather" and (overlap_px[0] or overlap_px[1]):
-            alpha = feather_window(
-                (height, width),
-                overlap_px,
-                edges=_tile_edges(geometry, index, origins),
-            ).astype(np.float64)
-        else:
-            alpha = np.ones((height, width), dtype=np.float64)
-
-        # A pixel only contributes where every phasor coordinate is finite;
-        # phasor_from_signal yields NaN wherever the signal has no photons.
-        valid = np.isfinite(mean)
-        valid &= np.all(np.isfinite(real), axis=0)
-        valid &= np.all(np.isfinite(imag), axis=0)
-
-        alpha = np.where(valid, alpha, 0.0)
-        # Photon weighting. Negative means (possible after background
-        # subtraction) would flip the convex combination, so clip at zero.
-        photons = np.where(valid, np.clip(mean, 0.0, None), 0.0)
-        photon_weight = alpha * photons
-
-        weight[rows, cols] += alpha
-        num_mean[rows, cols] += photon_weight
-        coverage[rows, cols] += valid.astype(np.uint16)
-
-        for harmonic in range(n_harmonics):
-            num_real[harmonic, rows, cols] += photon_weight * np.where(
-                valid, real[harmonic], 0.0
-            )
-            num_imag[harmonic, rows, cols] += photon_weight * np.where(
-                valid, imag[harmonic], 0.0
-            )
-
-        if progress is not None:
-            progress(index)
-
-    has_photons = num_mean > 0
-    safe_photons = np.where(has_photons, num_mean, 1.0)
-    real_out = np.where(has_photons, num_real / safe_photons, np.nan)
-    imag_out = np.where(has_photons, num_imag / safe_photons, np.nan)
-
-    if blend_mode == "sum":
-        mean_out = num_mean
-    else:
-        safe_weight = np.where(weight > 0, weight, 1.0)
-        mean_out = np.where(weight > 0, num_mean / safe_weight, 0.0)
-
-    return (
-        mean_out.astype(dtype),
-        real_out.astype(dtype),
-        imag_out.astype(dtype),
-        coverage,
+    overlap_px = (
+        int(round(height * geometry.overlap_y)),
+        int(round(width * geometry.overlap_x)),
     )
+    feathering = blend_mode == "feather" and bool(
+        overlap_px[0] or overlap_px[1]
+    )
+    if feathering:
+        # At most sixteen distinct edge combinations exist, and the ramps are
+        # 1-D, so every tile's window costs a couple of hundred bytes.
+        ramps = {}
+        for index in range(len(prepared)):
+            key = _tile_edges(geometry, index, origins)
+            if key not in ramps:
+                ramps[key] = feather_ramps((height, width), overlap_px, key)
+        tile_ramps = [
+            ramps[_tile_edges(geometry, index, origins)]
+            for index in range(len(prepared))
+        ]
+    else:
+        tile_ramps = [None] * len(prepared)
+
+    mean_out = np.zeros((canvas_y, canvas_x), dtype=dtype)
+    real_out = np.full((n_harmonics, canvas_y, canvas_x), np.nan, dtype=dtype)
+    imag_out = np.full((n_harmonics, canvas_y, canvas_x), np.nan, dtype=dtype)
+    coverage = np.zeros((canvas_y, canvas_x), dtype=np.uint16)
+
+    # The float64 accumulators dominate peak memory, so they are allocated per
+    # band rather than per canvas: only the bands actually in flight exist at
+    # any moment, which is a handful regardless of how large the mosaic is.
+    row_bytes = (2 + 2 * n_harmonics) * max(1, canvas_x) * 8
+    max_band = max(1, BLEND_BAND_BUDGET_BYTES // row_bytes)
+
+    def blend_band(row_start, row_stop):
+        band_rows = row_stop - row_start
+        num_mean = np.zeros((band_rows, canvas_x), dtype=np.float64)
+        weight = np.zeros((band_rows, canvas_x), dtype=np.float64)
+        num_real = np.zeros(
+            (n_harmonics, band_rows, canvas_x), dtype=np.float64
+        )
+        num_imag = np.zeros(
+            (n_harmonics, band_rows, canvas_x), dtype=np.float64
+        )
+
+        for index, (mean, real, imag) in enumerate(prepared):
+            origin_y, origin_x = origins[index]
+            top = max(row_start, origin_y)
+            bottom = min(row_stop, origin_y + height)
+            if bottom <= top:
+                continue
+
+            src = slice(top - origin_y, bottom - origin_y)
+            rows = slice(top - row_start, bottom - row_start)
+            cols = slice(origin_x, origin_x + width)
+
+            # Only the rows this band owns are upcast, so the float64 traffic
+            # over the whole mosaic still adds up to one pass per tile.
+            mean_band = np.asarray(mean[src], dtype=np.float64)
+            real_band = np.asarray(real[:, src], dtype=np.float64)
+            imag_band = np.asarray(imag[:, src], dtype=np.float64)
+
+            ramp = tile_ramps[index]
+            if ramp is None:
+                alpha = np.ones((bottom - top, width), dtype=np.float64)
+            else:
+                # Build the outer product in float32 and only then widen, so
+                # the weights match :func:`feather_window` bit for bit.
+                window_y, window_x = ramp
+                alpha = (
+                    window_y[src, np.newaxis] * window_x[np.newaxis, :]
+                ).astype(np.float64)
+
+            # A pixel only contributes where every phasor coordinate is
+            # finite; phasor_from_signal yields NaN wherever the signal has
+            # no photons.
+            valid = np.isfinite(mean_band)
+            valid &= np.all(np.isfinite(real_band), axis=0)
+            valid &= np.all(np.isfinite(imag_band), axis=0)
+
+            alpha = np.where(valid, alpha, 0.0)
+            # Photon weighting. Negative means (possible after background
+            # subtraction) would flip the convex combination, so clip at zero.
+            photons = np.where(valid, np.clip(mean_band, 0.0, None), 0.0)
+            photon_weight = alpha * photons
+
+            weight[rows, cols] += alpha
+            num_mean[rows, cols] += photon_weight
+            coverage[row_start:row_stop][rows, cols] += valid.astype(np.uint16)
+
+            for harmonic in range(n_harmonics):
+                num_real[harmonic, rows, cols] += photon_weight * np.where(
+                    valid, real_band[harmonic], 0.0
+                )
+                num_imag[harmonic, rows, cols] += photon_weight * np.where(
+                    valid, imag_band[harmonic], 0.0
+                )
+
+        # Normalize straight into the output, so the full-canvas float64
+        # quotient the old implementation built never exists.
+        has_photons = num_mean > 0
+        safe_photons = np.where(has_photons, num_mean, 1.0)
+        real_out[:, row_start:row_stop] = np.where(
+            has_photons, num_real / safe_photons, np.nan
+        ).astype(dtype)
+        imag_out[:, row_start:row_stop] = np.where(
+            has_photons, num_imag / safe_photons, np.nan
+        ).astype(dtype)
+
+        if blend_mode == "sum":
+            mean_out[row_start:row_stop] = num_mean.astype(dtype)
+        else:
+            covered = weight > 0
+            safe_weight = np.where(covered, weight, 1.0)
+            mean_out[row_start:row_stop] = np.where(
+                covered, num_mean / safe_weight, 0.0
+            ).astype(dtype)
+
+    bounds = band_bounds(canvas_y, max_band=max_band)
+    if progress is None:
+        parallel_map(lambda b: blend_band(*b), bounds)
+    else:
+        # Bands do not line up with tiles, so report each tile index once, in
+        # order, spread over the bands as they complete. Callers only use this
+        # to drive a progress bar, and it still advances smoothly.
+        reported = 0
+        n_tiles = len(prepared)
+
+        def report(position):
+            nonlocal reported
+            target = round((position + 1) * n_tiles / len(bounds))
+            while reported < target:
+                progress(reported)
+                reported += 1
+
+        parallel_map(lambda b: blend_band(*b), bounds, progress=report)
+
+    return mean_out, real_out, imag_out, coverage
 
 
 def parse_tiles_per_row(text, n_tiles=None):

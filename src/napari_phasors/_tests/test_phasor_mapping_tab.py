@@ -2415,3 +2415,70 @@ def test_restore_on_layer_change_refreshes_primary_button(
         mt.calculate_lifetime_button.styleSheet() == _PRIMARY_BUTTON_READY_QSS
     )
     parent.deleteLater()
+
+
+def _ready_mapping_widget(viewer, name="map_layer"):
+    """Return a phasor mapping tab ready to calculate a lifetime map."""
+    parent = PlotterWidget(viewer)
+    widget = parent.phasor_mapping_tab
+    layer = create_image_layer_with_phasors()
+    layer.name = name
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    widget._on_image_layer_changed()
+    widget.frequency_input.setText("80.0")
+    widget._on_frequency_changed()
+    widget.lifetime_type_combobox.setCurrentText("Apparent Phase Lifetime")
+    return parent, widget, layer
+
+
+def test_mapping_skips_a_layer_without_phasor_arrays(make_viewer_model, qtbot):
+    """A layer whose G/S went missing produces no output layer."""
+    viewer = make_viewer_model()
+    _, widget, layer = _ready_mapping_widget(viewer)
+    layer.metadata["S"] = None
+
+    before = len(viewer.layers)
+    widget.calculate_output_data()
+
+    assert len(viewer.layers) == before
+
+
+def test_mapping_skips_a_layer_missing_the_harmonic(make_viewer_model, qtbot):
+    """A layer that never computed the selected harmonic is skipped."""
+    viewer = make_viewer_model()
+    _, widget, layer = _ready_mapping_widget(viewer)
+    layer.metadata["harmonics"] = np.array([97])
+
+    before = len(viewer.layers)
+    widget.calculate_output_data()
+
+    assert len(viewer.layers) == before
+
+
+def test_mapping_reports_a_failing_layer(
+    make_viewer_model, qtbot, monkeypatch
+):
+    """A computation that raises is reported by name and output type."""
+    viewer = make_viewer_model()
+    _, widget, layer = _ready_mapping_widget(viewer)
+
+    errors = []
+    monkeypatch.setattr(
+        "napari_phasors.phasor_mapping_tab.show_error", errors.append
+    )
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        "napari_phasors.phasor_mapping_tab.phasor_to_apparent_lifetime",
+        explode,
+    )
+
+    before = len(viewer.layers)
+    widget.calculate_output_data()
+
+    assert any("boom" in message for message in errors)
+    assert any("map_layer" in message for message in errors)
+    assert len(viewer.layers) == before

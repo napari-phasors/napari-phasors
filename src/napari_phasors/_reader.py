@@ -22,9 +22,12 @@ import tifffile
 import xarray as xr
 from napari.utils.colormaps.colormap_utils import CYMRGB, MAGENTA_GREEN
 from napari.utils.notifications import show_error
-from phasorpy.phasor import phasor_from_signal
 
-from ._parallel import parallel_map, workers_for_memory
+from ._parallel import (
+    parallel_map,
+    parallel_phasor_from_signal,
+    workers_for_memory,
+)
 from ._stitching import as_tile_sources, blend_phasor_tiles
 from ._utils import show_activity_progress
 
@@ -559,8 +562,10 @@ def _phasor_layers_from_signal(
                 return []
 
             pbr.set_description("Computing phasor transform...")
-            mean_intensity_image, G_image, S_image = phasor_from_signal(
-                raw_data, axis=axis, harmonic=harmonics_to_use
+            mean_intensity_image, G_image, S_image = (
+                parallel_phasor_from_signal(
+                    raw_data, axis=axis, harmonic=harmonics_to_use
+                )
             )
             pbr.update(n_steps)
             channel_suffix = " Intensity Image"
@@ -650,10 +655,12 @@ def _phasor_layers_from_signal(
                     show_error(str(e))
                     return []
 
-                mean_intensity_image, G_image, S_image = phasor_from_signal(
-                    channel_data,
-                    axis=histogram_axis,
-                    harmonic=harmonics_to_use,
+                mean_intensity_image, G_image, S_image = (
+                    parallel_phasor_from_signal(
+                        channel_data,
+                        axis=histogram_axis,
+                        harmonic=harmonics_to_use,
+                    )
                 )
                 add_kwargs = {
                     "name": f"{filename} Intensity Image: Channel {channel_label}",

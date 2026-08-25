@@ -1,8 +1,10 @@
 import json
+import os
 import warnings
 
 import numpy as np
 import pytest
+import tifffile
 import xarray as xr
 from phasorpy.datasets import fetch
 from phasorpy.io import (
@@ -362,7 +364,7 @@ def test_raw_reader_tiff_does_not_forward_widget_axis_option_to_imread(
     def fake_imread(path):
         return np.arange(24, dtype=np.float32).reshape(2, 3, 4)
 
-    def fake_phasor_from_signal(signal, axis, harmonic):
+    def fake_phasor_from_signal(signal, *, axis, harmonic):
         mean_image = np.zeros((2, 4), dtype=np.float32)
         g_image = np.zeros((2, 2, 4), dtype=np.float32)
         s_image = np.zeros((2, 2, 4), dtype=np.float32)
@@ -371,7 +373,7 @@ def test_raw_reader_tiff_does_not_forward_widget_axis_option_to_imread(
     monkeypatch.setattr(reader_module.tifffile, "imread", fake_imread)
     monkeypatch.setattr(
         reader_module,
-        "phasor_from_signal",
+        "parallel_phasor_from_signal",
         fake_phasor_from_signal,
     )
 
@@ -1319,3 +1321,697 @@ def test_processed_reader_invalid_z_spacing_is_ignored(monkeypatch):
 
 
 # TODO: Add tests for .tif files
+
+
+# --- CZI mosaics ------------------------------------------------------------
+
+
+class _FakeSegment:
+    """Stand-in for a decoded CZI sub-block segment."""
+
+    def __init__(self, values):
+        self._values = values
+
+    def data(self):
+        return self._values
+
+
+class _FakeEntry:
+    """Stand-in for one entry of a CZI sub-block directory."""
+
+    def __init__(self, dims, start, shape, mosaic_index, values):
+        self.dims = dims
+        self.start = start
+        self.shape = shape
+        self.mosaic_index = mosaic_index
+        self._values = values
+
+    def read_segment_data(self, czi):
+        return _FakeSegment(self._values)
+
+
+class _FakeCziFile:
+    """Stand-in for :class:`czifile.CziFile` backed by an in-memory mosaic."""
+
+    directory = []
+    opened = 0
+    closed = 0
+
+    def __init__(self, path):
+        type(self).opened += 1
+        self.filtered_subblock_directory = list(type(self).directory)
+
+    def close(self):
+        type(self).closed += 1
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.close()
+
+
+def _install_fake_czi(
+    monkeypatch,
+    n_rows=2,
+    n_cols=3,
+    tile_shape=(8, 8),
+    n_planes=8,
+    overlap=0,
+    with_channel_axis=True,
+    reverse_planes=False,
+):
+    """Register a fake ``czifile`` module describing a small mosaic.
+
+    Each sub-block holds one 2-D plane, as a real CZI does; the planes of a
+    tile are what :class:`CziMosaic` stacks into its ``C`` axis, and for a
+    Zeiss FLIM file that stack is the histogram the phasor transform reads.
+
+    Returns the ``(y, x)`` position of every tile, in mosaic-index order.
+    """
+    import sys
+    import types
+
+    height, width = tile_shape
+    step_y = height - overlap
+    step_x = width - overlap
+
+    dims = ("H", "C", "Y", "X") if with_channel_axis else ("H", "Y", "X")
+    entries = []
+    positions = []
+    index = 0
+    for row in range(n_rows):
+        for col in range(n_cols):
+            origin_y, origin_x = row * step_y, col * step_x
+            positions.append((origin_y, origin_x))
+            planes = range(n_planes)
+            if reverse_planes:
+                planes = reversed(list(planes))
+            for plane in planes:
+                values = np.full(
+                    (height, width), (index + 1) * 10 + plane, dtype=np.uint16
+                )
+                start = (
+                    (plane, plane, origin_y, origin_x)
+                    if with_channel_axis
+                    else (plane, origin_y, origin_x)
+                )
+                shape = (
+                    (1, 1, height, width)
+                    if with_channel_axis
+                    else (1, height, width)
+                )
+                entries.append(
+                    _FakeEntry(
+                        dims=dims,
+                        start=start,
+                        shape=shape,
+                        mosaic_index=index,
+                        values=values,
+                    )
+                )
+            index += 1
+
+    _FakeCziFile.directory = entries
+    _FakeCziFile.opened = 0
+    _FakeCziFile.closed = 0
+
+    module = types.ModuleType("czifile")
+    module.CziFile = _FakeCziFile
+    monkeypatch.setitem(sys.modules, "czifile", module)
+    return positions
+
+
+def test_czi_mosaic_reads_tiles_and_positions(monkeypatch):
+    """The sub-block directory yields tile count, shape and positions."""
+    positions = _install_fake_czi(monkeypatch, n_rows=2, n_cols=3, n_planes=8)
+
+    with reader_module.CziMosaic("mosaic.czi") as mosaic:
+        assert mosaic.n_tiles == 6
+        assert mosaic.n_channels == 8
+        assert mosaic.tile_shape == (8, 8)
+        assert mosaic.positions == positions
+        assert mosaic.canvas_shape() == (16, 24)
+
+        tile = mosaic.read_tile(0)
+        assert tile.dims == ("C", "Y", "X")
+        assert tile.shape == (8, 8, 8)
+
+    assert _FakeCziFile.closed == 1
+
+
+def test_czi_mosaic_orders_planes_by_the_channel_axis(monkeypatch):
+    """Sub-blocks are restacked in channel order, not directory order."""
+    _install_fake_czi(
+        monkeypatch, n_rows=1, n_cols=2, n_planes=3, reverse_planes=True
+    )
+
+    with reader_module.CziMosaic("mosaic.czi") as mosaic:
+        tile = mosaic.read_tile(1)
+        assert tile.shape == (3, 8, 8)
+        # Seeded as (index + 1) * 10 + plane, so a correctly sorted tile 1
+        # counts upwards even though the directory listed it backwards.
+        assert [int(plane.max()) for plane in np.asarray(tile)] == [20, 21, 22]
+
+
+def test_czi_mosaic_without_a_channel_axis(monkeypatch):
+    """A file whose sub-blocks carry no ``C`` dimension still stacks."""
+    _install_fake_czi(
+        monkeypatch, n_rows=1, n_cols=2, n_planes=4, with_channel_axis=False
+    )
+
+    with reader_module.CziMosaic("mosaic.czi") as mosaic:
+        assert mosaic.n_channels == 4
+        assert np.asarray(mosaic.read_tile(0)).shape == (4, 8, 8)
+
+
+def test_czi_mosaic_rejects_an_out_of_range_tile(monkeypatch):
+    """Asking for a tile the file does not have names the real count."""
+    _install_fake_czi(monkeypatch, n_rows=1, n_cols=2)
+
+    with reader_module.CziMosaic("mosaic.czi") as mosaic:
+        with pytest.raises(ValueError, match="has 2 tile"):
+            mosaic.read_tile(5)
+        with pytest.raises(ValueError, match="cannot read tile -1"):
+            mosaic.read_tile(-1)
+
+
+def test_czi_mosaic_rejects_an_empty_file(monkeypatch):
+    """A directory with no entries is not a mosaic."""
+    _install_fake_czi(monkeypatch, n_rows=1, n_cols=1)
+    _FakeCziFile.directory = []
+
+    with pytest.raises(ValueError, match="no image data"):
+        reader_module.CziMosaic("empty.czi")
+
+
+def test_czi_mosaic_binning_shrinks_tiles_and_canvas(monkeypatch):
+    """Binning sums photon blocks and rescales the mosaic grid with them."""
+    _install_fake_czi(
+        monkeypatch, n_rows=2, n_cols=2, tile_shape=(8, 8), n_planes=2
+    )
+
+    with reader_module.CziMosaic("mosaic.czi") as mosaic:
+        full = np.asarray(mosaic.read_tile(0))
+        binned = np.asarray(mosaic.read_tile(0, binning=2))
+
+        assert binned.shape == (2, 4, 4)
+        # Summing 2x2 blocks preserves the total photon count.
+        assert binned.sum() == full.sum()
+
+        assert mosaic.binned_tile_shape(2) == (4, 4)
+        assert mosaic.binned_positions(2) == [(0, 0), (0, 4), (4, 0), (4, 4)]
+        assert mosaic.canvas_shape(2) == (8, 8)
+        # A factor of one is the identity for every accessor.
+        assert mosaic.binned_positions(1) == mosaic.positions
+        assert mosaic.canvas_shape(1) == (16, 16)
+
+
+def test_bin_spatial_trims_and_rejects_impossible_factors():
+    """Binning drops the ragged remainder, but refuses to erase the tile."""
+    cube = np.arange(2 * 5 * 7, dtype=np.uint16).reshape(2, 5, 7)
+
+    binned = reader_module._bin_spatial(cube, 2)
+    assert binned.shape == (2, 2, 3)
+    # The odd last row and column are trimmed before summing.
+    assert binned[0, 0, 0] == cube[0, :2, :2].sum()
+
+    assert reader_module._bin_spatial(cube, 1) is cube
+
+    with pytest.raises(ValueError, match="leaves nothing"):
+        reader_module._bin_spatial(cube, 16)
+
+
+def test_czi_mosaic_info_describes_or_declines(monkeypatch):
+    """Probing reports a real mosaic and quietly declines anything else."""
+    _install_fake_czi(monkeypatch, n_rows=2, n_cols=2, n_planes=8)
+    info = reader_module.czi_mosaic_info("mosaic.czi")
+    assert info == {
+        "n_tiles": 4,
+        "tile_shape": (8, 8),
+        "canvas_shape": (16, 16),
+        "n_channels": 8,
+    }
+
+    # A single-tile CZI is not a mosaic.
+    _install_fake_czi(monkeypatch, n_rows=1, n_cols=1)
+    assert reader_module.czi_mosaic_info("single.czi") is None
+
+    # Neither is a file that cannot be opened at all.
+    _FakeCziFile.directory = []
+    assert reader_module.czi_mosaic_info("broken.czi") is None
+
+    # Nor a file that is not a CZI in the first place.
+    assert reader_module.czi_mosaic_info("something.tif") is None
+
+
+def test_czi_dimension_sizes_renames_the_phase_axis(monkeypatch):
+    """phasorpy calls the CZI phase axis ``Q``, so probing matches it."""
+    _install_fake_czi(monkeypatch, n_rows=1, n_cols=2, n_planes=6)
+
+    sizes = reader_module._czi_dimension_sizes("mosaic.czi")
+    assert "H" not in sizes
+    assert sizes["Q"] == 6
+    assert sizes["Y"] == 8
+    assert sizes["X"] == 16
+
+    # A file that raises on open is reported as "unknown", not as an error.
+    def _boom(self, path):
+        raise OSError("nope")
+
+    monkeypatch.setattr(_FakeCziFile, "__init__", _boom)
+    assert reader_module._czi_dimension_sizes("broken.czi") is None
+
+
+def test_read_czi_mosaic_tiles_transforms_each_tile(monkeypatch):
+    """Requested tiles are decoded and phasor-transformed one by one."""
+    _install_fake_czi(monkeypatch, n_rows=2, n_cols=2, n_planes=8)
+
+    layers = reader_module._read_czi_mosaic_tiles(
+        "mosaic.czi", [0, 3], harmonics=[1]
+    )
+
+    assert sorted(layers) == [0, 3]
+    for index, per_channel in layers.items():
+        assert len(per_channel) == 1
+        data, add_kwargs = per_channel[0]
+        assert np.shape(data) == (8, 8)
+        assert f"[{index}]" in add_kwargs["name"]
+
+
+def test_read_czi_mosaic_tiles_rejects_out_of_range(monkeypatch):
+    """An index past the end names the tile count and the bad indices."""
+    _install_fake_czi(monkeypatch, n_rows=1, n_cols=2)
+
+    with pytest.raises(ValueError, match=r"has 2 tile\(s\).*\[7\]"):
+        reader_module._read_czi_mosaic_tiles("mosaic.czi", [0, 7])
+
+
+def test_read_file_tiles_routes_a_czi_mosaic_without_a_tile_axis(monkeypatch):
+    """A CZI mosaic is detected and split even with no axis chosen."""
+    _install_fake_czi(monkeypatch, n_rows=1, n_cols=3, n_planes=8)
+
+    layers = reader_module._read_file_tiles(
+        "mosaic.czi", [0, 1, 2], harmonics=[1]
+    )
+    assert sorted(layers) == [0, 1, 2]
+
+
+def test_read_file_tiles_honours_the_binning_option(monkeypatch):
+    """The binning reader option reaches the mosaic decode."""
+    _install_fake_czi(
+        monkeypatch, n_rows=1, n_cols=2, tile_shape=(16, 16), n_planes=8
+    )
+
+    layers = reader_module._read_file_tiles(
+        "mosaic.czi",
+        [0],
+        harmonics=[1],
+        tile_axis=reader_module.CZI_MOSAIC_AXIS,
+        reader_options={"binning": 4},
+    )
+    data, _ = layers[0][0]
+    assert np.shape(data) == (4, 4)
+
+
+# --- axis probing -----------------------------------------------------------
+
+
+def test_file_axis_sizes_falls_back_to_the_signal(monkeypatch, tmp_path):
+    """A CZI whose directory cannot be read is probed through its signal."""
+    import tifffile as tifffile_module
+
+    path = tmp_path / "plain.tif"
+    tifffile_module.imwrite(str(path), np.zeros((8, 6, 4), dtype=np.uint16))
+    assert reader_module.file_axis_sizes(str(path)) == {0: 8, 1: 6, 2: 4}
+
+    # A CZI reports its dimension names instead.
+    _install_fake_czi(monkeypatch, n_rows=1, n_cols=2, n_planes=4)
+    sizes = reader_module.file_axis_sizes("mosaic.czi")
+    assert sizes["Q"] == 4
+
+
+def test_describe_file_axes_says_unknown_when_nothing_can_be_read(tmp_path):
+    """An unreadable file is described as unknown rather than crashing."""
+    path = tmp_path / "broken.tif"
+    path.write_bytes(b"not a tiff")
+
+    assert reader_module.describe_file_axes(str(path)) == "unknown"
+
+
+def test_signal_dimension_sizes_returns_none_for_an_unreadable_file(tmp_path):
+    """Probing is best effort: a failure means 'unknown', not an exception."""
+    path = tmp_path / "broken.tif"
+    path.write_bytes(b"not a tiff")
+
+    assert reader_module._signal_dimension_sizes(str(path)) is None
+
+
+def test_resolve_tile_axis_by_name_and_error(tmp_path):
+    """A named axis is resolved, and an unknown name is refused by name."""
+    import xarray as xr_module
+
+    signal = xr_module.DataArray(
+        np.zeros((3, 4, 5), dtype=np.uint16), dims=("T", "Y", "X")
+    )
+
+    assert reader_module._resolve_tile_axis(signal, "T", "f.tif") == 0
+
+    with pytest.raises(ValueError, match="no dimension named 'Z'"):
+        reader_module._resolve_tile_axis(signal, "Z", "f.tif")
+
+
+def test_take_tile_uses_named_selection_when_available():
+    """A DataArray is sliced by dimension name so its coordinates survive."""
+    import xarray as xr_module
+
+    signal = xr_module.DataArray(
+        np.arange(2 * 3 * 4, dtype=np.uint16).reshape(2, 3, 4),
+        dims=("T", "Y", "X"),
+    )
+
+    tile = reader_module._take_tile(signal, 0, 1)
+    assert tile.dims == ("Y", "X")
+    assert np.array_equal(np.asarray(tile), np.asarray(signal)[1])
+
+    plain = np.arange(24).reshape(2, 3, 4)
+    assert np.array_equal(reader_module._take_tile(plain, 0, 1), plain[1])
+
+
+# --- tile reading errors ----------------------------------------------------
+
+
+def _write_flim_tiles(directory, n_tiles=4, tile_size=8, n_bins=8):
+    """Write *n_tiles* small FLIM TIFFs and return their paths."""
+    rng = np.random.default_rng(0)
+    paths = []
+    for index in range(n_tiles):
+        path = os.path.join(str(directory), f"tile_{index:02d}.tif")
+        tifffile.imwrite(
+            path,
+            (rng.random((n_bins, tile_size, tile_size)) * 100).astype(
+                np.uint16
+            ),
+        )
+        paths.append(path)
+    return paths
+
+
+def test_read_file_tiles_needs_a_reader(tmp_path):
+    """A file no reader handles is named in the error."""
+    path = tmp_path / "mystery.xyz"
+    path.write_text("nope")
+
+    with pytest.raises(ValueError, match="No reader available"):
+        reader_module._read_file_tiles(str(path), [0])
+
+
+def test_read_file_tiles_reports_progress(tmp_path):
+    """The progress object is driven for both the whole-file and split paths."""
+
+    class _Progress:
+        def __init__(self):
+            self.descriptions = []
+            self.updates = 0
+
+        def set_description(self, text):
+            self.descriptions.append(text)
+
+        def update(self, amount):
+            self.updates += amount
+
+    paths = _write_flim_tiles(tmp_path, n_tiles=1)
+
+    whole = _Progress()
+    reader_module._read_file_tiles(
+        paths[0], [0], harmonics=[1], progress=whole
+    )
+    assert whole.updates == 1
+    assert any("Reading" in text for text in whole.descriptions)
+
+    split = _Progress()
+    reader_module._read_file_tiles(
+        paths[0], [0, 1], harmonics=[1], tile_axis=0, progress=split
+    )
+    assert split.updates == 2
+    assert any("tile 1/2" in text for text in split.descriptions)
+
+
+def test_read_tile_phasors_rejects_tiles_of_different_shapes(tmp_path):
+    """Every tile must match the first one's shape."""
+    paths = _write_flim_tiles(tmp_path, n_tiles=2, tile_size=8)
+    odd = os.path.join(str(tmp_path), "odd.tif")
+    tifffile.imwrite(odd, np.zeros((8, 6, 6), dtype=np.uint16))
+
+    with pytest.raises(ValueError, match="Shape mismatch"):
+        reader_module.read_tile_phasors([paths[0], odd], harmonics=[1])
+
+
+def test_read_tile_phasors_rejects_non_2d_tiles(tmp_path):
+    """A tile that is still 3-D after reading cannot be placed on a canvas."""
+    path = os.path.join(str(tmp_path), "stack.tif")
+    tifffile.imwrite(path, np.zeros((4, 3, 6, 6), dtype=np.uint16))
+
+    with pytest.raises(ValueError, match="stitching expects"):
+        reader_module.read_tile_phasors([path, path], harmonics=[1])
+
+
+def test_read_tile_phasors_warns_about_mixed_frequencies(
+    tmp_path, monkeypatch
+):
+    """Tiles from different acquisitions must not be blended silently."""
+    paths = _write_flim_tiles(tmp_path, n_tiles=2)
+
+    real_reader = reader_module._read_file_tiles
+    seen = {"n": 0}
+
+    def tag_frequency(path, indices, **kwargs):
+        result = real_reader(path, indices, **kwargs)
+        seen["n"] += 1
+        for layers in result.values():
+            for _, add_kwargs in layers:
+                add_kwargs["metadata"].setdefault("settings", {})[
+                    "frequency"
+                ] = (80.0 * seen["n"])
+        return result
+
+    monkeypatch.setattr(reader_module, "_read_file_tiles", tag_frequency)
+
+    errors = []
+    monkeypatch.setattr(reader_module, "show_error", errors.append)
+    reader_module.read_tile_phasors(paths, harmonics=[1])
+
+    assert any("different laser frequencies" in message for message in errors)
+
+
+def test_raw_file_tile_reader_reports_both_failure_points(
+    tmp_path, monkeypatch
+):
+    """Reading and stitching each surface their error and return no layers."""
+    from napari_phasors._stitching import layout_from_rows
+
+    paths = _write_flim_tiles(tmp_path, n_tiles=4)
+    geometry = layout_from_rows(paths, "2,2", tile_shape=(8, 8))
+
+    errors = []
+    monkeypatch.setattr(reader_module, "show_error", errors.append)
+
+    monkeypatch.setattr(
+        reader_module,
+        "read_tile_phasors",
+        lambda *a, **k: (_ for _ in ()).throw(ValueError("cannot read")),
+    )
+    assert reader_module.raw_file_tile_reader(paths, geometry) == []
+    assert any("cannot read" in message for message in errors)
+
+    monkeypatch.undo()
+    errors.clear()
+    monkeypatch.setattr(reader_module, "show_error", errors.append)
+    monkeypatch.setattr(
+        reader_module.TileSet,
+        "stitch",
+        lambda self, geom, progress=None: (_ for _ in ()).throw(
+            ValueError("cannot stitch")
+        ),
+    )
+    assert reader_module.raw_file_tile_reader(paths, geometry) == []
+    assert any("cannot stitch" in message for message in errors)
+
+
+def test_infer_harmonics_without_a_harmonic_axis():
+    """A single-harmonic read reports the number it was asked for."""
+    mean = np.zeros((4, 4))
+    real = np.zeros((4, 4))
+
+    assert reader_module._infer_harmonics(3, real, mean) == 3
+    # A non-integer request with no harmonic axis falls back to the first.
+    assert reader_module._infer_harmonics("all", real, mean) == 1
+    assert reader_module._infer_harmonics(True, real, mean) == 1
+
+
+def test_keep_first_harmonics_normalizes_a_scalar_harmonic():
+    """A scalar harmonic is widened to a list before the stack is trimmed."""
+    real = np.zeros((4, 8, 8))
+    imag = np.zeros((4, 8, 8))
+
+    trimmed_real, trimmed_imag, harmonics = (
+        reader_module._keep_first_harmonics(
+            real, imag, 1, mean_ndim=2, limit=2
+        )
+    )
+
+    assert trimmed_real.shape[0] == 2
+    assert trimmed_imag.shape[0] == 2
+    assert harmonics == [1]
+
+
+def test_signal_dimension_sizes_keys_unnamed_axes_by_position(monkeypatch):
+    """A format returning a plain array is described by axis index."""
+    monkeypatch.setattr(
+        reader_module,
+        "load_raw_signal",
+        lambda path, io_options=None: np.zeros((3, 5, 7), dtype=np.uint16),
+    )
+
+    assert reader_module._signal_dimension_sizes("plain.bin") == {
+        0: 3,
+        1: 5,
+        2: 7,
+    }
+
+
+def test_signal_dimension_sizes_keys_named_axes_by_name(monkeypatch):
+    """A format returning a labelled array is described by dimension name."""
+    monkeypatch.setattr(
+        reader_module,
+        "load_raw_signal",
+        lambda path, io_options=None: xr.DataArray(
+            np.zeros((3, 5, 7), dtype=np.uint16), dims=("H", "Y", "X")
+        ),
+    )
+
+    assert reader_module._signal_dimension_sizes("labelled.ptu") == {
+        "H": 3,
+        "Y": 5,
+        "X": 7,
+    }
+
+
+def test_read_tile_phasors_promotes_tiles_without_a_harmonic_axis(
+    tmp_path, monkeypatch
+):
+    """A reader that returns 2-D G/S gets a harmonic axis before blending."""
+    paths = _write_flim_tiles(tmp_path, n_tiles=2)
+
+    real_reader = reader_module._read_file_tiles
+
+    def squeeze_harmonic(path, indices, **kwargs):
+        result = real_reader(path, indices, **kwargs)
+        for layers in result.values():
+            for _, add_kwargs in layers:
+                metadata = add_kwargs["metadata"]
+                metadata["G"] = np.asarray(metadata["G"])[0]
+                metadata["S"] = np.asarray(metadata["S"])[0]
+        return result
+
+    monkeypatch.setattr(reader_module, "_read_file_tiles", squeeze_harmonic)
+
+    tile_set = reader_module.read_tile_phasors(paths, harmonics=[1])
+    _, real, imag = tile_set.tiles[0][0]
+
+    assert real.shape[0] == 1
+    assert imag.shape[0] == 1
+
+
+def test_read_czi_mosaic_tiles_reports_progress(monkeypatch):
+    """The mosaic decode drives the caller's progress bar tile by tile."""
+    _install_fake_czi(monkeypatch, n_rows=1, n_cols=3, n_planes=8)
+
+    class _Progress:
+        def __init__(self):
+            self.descriptions = []
+            self.updates = 0
+
+        def set_description(self, text):
+            self.descriptions.append(text)
+
+        def update(self, amount):
+            self.updates += amount
+
+    progress = _Progress()
+    reader_module._read_czi_mosaic_tiles(
+        "mosaic.czi", [0, 1, 2], harmonics=[1], progress=progress
+    )
+
+    assert progress.updates == 3
+    assert any("tile 3/3" in text for text in progress.descriptions)
+
+
+def test_read_tile_phasors_rejects_a_file_that_produced_nothing(
+    tmp_path, monkeypatch
+):
+    """A reader that returns no layers for a tile is an error, not an empty tile."""
+    paths = _write_flim_tiles(tmp_path, n_tiles=2)
+
+    monkeypatch.setattr(
+        reader_module,
+        "_read_file_tiles",
+        lambda path, indices, **kwargs: {index: [] for index in indices},
+    )
+
+    with pytest.raises(ValueError, match="No data could be read"):
+        reader_module.read_tile_phasors(paths, harmonics=[1])
+
+
+def test_read_tile_phasors_rejects_a_changing_channel_count(
+    tmp_path, monkeypatch
+):
+    """Every tile must contribute the same number of channels."""
+    paths = _write_flim_tiles(tmp_path, n_tiles=2)
+
+    real_reader = reader_module._read_file_tiles
+    seen = {"n": 0}
+
+    def drop_a_channel(path, indices, **kwargs):
+        result = real_reader(path, indices, **kwargs)
+        seen["n"] += 1
+        if seen["n"] > 1:
+            for index, layers in result.items():
+                result[index] = layers + layers
+        return result
+
+    monkeypatch.setattr(reader_module, "_read_file_tiles", drop_a_channel)
+
+    with pytest.raises(ValueError, match="channel"):
+        reader_module.read_tile_phasors(paths, harmonics=[1])
+
+
+def test_read_tile_phasors_promotes_single_harmonic_tiles(tmp_path):
+    """A tile whose G/S have no harmonic axis is given one before blending."""
+    paths = _write_flim_tiles(tmp_path, n_tiles=2)
+
+    tile_set = reader_module.read_tile_phasors(paths, harmonics=1)
+
+    mean, real, imag = tile_set.tiles[0][0]
+    assert real.ndim == 3
+    assert imag.ndim == 3
+    assert real.shape[0] == 1
+    assert mean.shape == tile_set.tile_shape
+
+
+def test_stitched_layer_keeps_the_tiles_display_settings(tmp_path):
+    """Colormap and blending chosen for a tile carry over to the mosaic."""
+    from napari_phasors._stitching import layout_from_rows
+
+    paths = _write_flim_tiles(tmp_path, n_tiles=4)
+    geometry = layout_from_rows(paths, "2,2", tile_shape=(8, 8))
+
+    tile_set = reader_module.read_tile_phasors(paths, harmonics=[1])
+    tile_set.templates[0]["colormap"] = "magenta"
+    tile_set.templates[0]["blending"] = "additive"
+
+    layers = tile_set.stitch(geometry)
+    _, add_kwargs = layers[0]
+
+    assert add_kwargs["colormap"] == "magenta"
+    assert add_kwargs["blending"] == "additive"

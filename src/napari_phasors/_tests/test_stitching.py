@@ -1152,3 +1152,297 @@ def test_czi_mosaic_info_is_none_for_a_plain_czi():
     from napari_phasors._tests.test_data_utils import get_test_file_path
 
     assert czi_mosaic_info(get_test_file_path("test_file.czi")) is None
+
+
+# --- degenerate geometries --------------------------------------------------
+
+
+def test_empty_geometry_has_no_origins_and_no_canvas():
+    """A geometry with no placements describes nothing, rather than raising."""
+    empty = TileGeometry(placements=[], tile_shape=(32, 32))
+    assert compute_origins(empty) == []
+    assert empty.origins() == []
+    assert empty.canvas_shape() == (0, 0)
+
+
+def test_blending_nothing_is_an_error():
+    """An empty mosaic is a mistake worth naming, not an empty canvas."""
+    empty = TileGeometry(placements=[], tile_shape=(8, 8))
+    with pytest.raises(ValueError, match="No tiles to blend"):
+        blend_phasor_tiles([], empty)
+
+
+def test_blending_rejects_a_tile_with_the_wrong_harmonic_count():
+    """Every tile must carry the same harmonics as the first one."""
+    geometry = TileGeometry(
+        placements=[
+            TilePlacement(row=0, col=0, path="a"),
+            TilePlacement(row=0, col=1, path="b"),
+        ],
+        tile_shape=(8, 8),
+    )
+    two = (
+        np.ones((8, 8), dtype=np.float32),
+        np.zeros((2, 8, 8), dtype=np.float32),
+        np.zeros((2, 8, 8), dtype=np.float32),
+    )
+    three = (
+        np.ones((8, 8), dtype=np.float32),
+        np.zeros((3, 8, 8), dtype=np.float32),
+        np.zeros((3, 8, 8), dtype=np.float32),
+    )
+    with pytest.raises(ValueError, match="3 harmonic"):
+        blend_phasor_tiles([two, three], geometry)
+
+
+def test_blend_progress_reports_every_tile_once_in_order():
+    """The progress callback keeps its contract even though bands drive it."""
+    n_tiles = 6
+    geometry = TileGeometry(
+        placements=[
+            TilePlacement(row=r, col=c, path=f"t{r}{c}")
+            for r in range(2)
+            for c in range(3)
+        ],
+        tile_shape=(24, 24),
+        overlap_y=0.1,
+        overlap_x=0.1,
+    )
+    rng = np.random.default_rng(0)
+    tiles = [
+        (
+            (rng.random((24, 24)) * 10).astype(np.float32),
+            rng.random((1, 24, 24)).astype(np.float32),
+            rng.random((1, 24, 24)).astype(np.float32),
+        )
+        for _ in range(n_tiles)
+    ]
+
+    seen = []
+    blend_phasor_tiles(tiles, geometry, progress=seen.append)
+
+    assert seen == list(range(n_tiles))
+
+
+def test_layout_from_positions_with_no_tiles():
+    """No tiles means an empty geometry that still remembers the tile size."""
+    geometry = layout_from_positions([], [], tile_shape=(16, 24))
+    assert geometry.placements == []
+    assert geometry.tile_shape == (16, 24)
+
+
+# --- stage positions --------------------------------------------------------
+
+
+def test_stage_layout_declines_files_without_positions(tmp_path):
+    """A plain TIFF records no stage position, so no layout can be built."""
+    path = tmp_path / "plain.tif"
+    tifffile.imwrite(str(path), np.zeros((4, 4), dtype=np.uint8))
+
+    assert layout_from_stage_positions([str(path)], tile_shape=(4, 4)) is None
+
+
+def test_stage_layout_declines_an_unknown_tile_shape(tmp_path, monkeypatch):
+    """Without a tile size, micrometres cannot be turned into pixels."""
+    import napari_phasors._stitching as stitching
+
+    monkeypatch.setattr(
+        stitching, "_read_stage_position", lambda path: (0.0, 0.0, 1.0, 1.0)
+    )
+    assert (
+        layout_from_stage_positions(["a.ome.tif"], tile_shape=(0, 0)) is None
+    )
+
+
+def test_stage_layout_declines_a_zero_pixel_size(monkeypatch):
+    """A pixel size of zero would divide by zero when scaling positions."""
+    import napari_phasors._stitching as stitching
+
+    monkeypatch.setattr(
+        stitching, "_read_stage_position", lambda path: (0.0, 0.0, 0.0, 1.0)
+    )
+    assert (
+        layout_from_stage_positions(
+            ["a.ome.tif", "b.ome.tif"], tile_shape=(4, 4)
+        )
+        is None
+    )
+
+
+def test_median_step_needs_at_least_two_distinct_ranks():
+    """One row, or rows that never move, give no usable step."""
+    from napari_phasors._stitching import _median_step
+
+    positions = np.array([0.0, 1.0, 2.0])
+    assert _median_step(positions, np.array([0, 0, 0])) is None
+    # Two ranks whose centres coincide leave no positive step either.
+    assert _median_step(np.array([5.0, 5.0]), np.array([0, 1])) is None
+
+
+class TestReadStagePosition:
+    """Every way an OME-TIFF can fail to describe where its tile sits."""
+
+    @staticmethod
+    def _read(path):
+        from napari_phasors._stitching import _read_stage_position
+
+        return _read_stage_position(path)
+
+    def test_not_an_ome_tiff(self, tmp_path):
+        assert self._read(str(tmp_path / "plain.tif")) is None
+
+    def test_missing_ome_metadata(self, tmp_path):
+        path = tmp_path / "bare.ome.tif"
+        tifffile.imwrite(
+            str(path), np.zeros((4, 4), dtype=np.uint8), ome=False
+        )
+        assert self._read(str(path)) is None
+
+    def test_unreadable_file(self, tmp_path):
+        path = tmp_path / "broken.ome.tif"
+        path.write_bytes(b"not a tiff at all")
+        assert self._read(str(path)) is None
+
+    @pytest.mark.parametrize(
+        "pixels, expected",
+        [
+            ({}, None),
+            ({"@PhysicalSizeX": "0.5"}, None),
+            (
+                {
+                    "@PhysicalSizeX": "0.5",
+                    "@PhysicalSizeY": "0.5",
+                    "Plane": [],
+                },
+                None,
+            ),
+            (
+                {
+                    "@PhysicalSizeX": "0.5",
+                    "@PhysicalSizeY": "0.5",
+                    "Plane": {"@PositionX": "10"},
+                },
+                None,
+            ),
+            (
+                {
+                    "@PhysicalSizeX": {"#text": "0.5"},
+                    "@PhysicalSizeY": "0.5",
+                    "Plane": {"@PositionX": "10", "@PositionY": "20"},
+                },
+                (20.0, 10.0, 0.5, 0.5),
+            ),
+        ],
+    )
+    def test_metadata_shapes(self, tmp_path, monkeypatch, pixels, expected):
+        """Missing sizes, missing planes and nested values are all handled."""
+        import tifffile as tifffile_module
+
+        path = tmp_path / "tile.ome.tif"
+        tifffile.imwrite(str(path), np.zeros((4, 4), dtype=np.uint8))
+
+        monkeypatch.setattr(
+            tifffile_module,
+            "xml2dict",
+            lambda xml: {"OME": {"Image": {"Pixels": pixels}}},
+        )
+
+        class _Tif:
+            ome_metadata = "<OME/>"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(
+            tifffile_module, "TiffFile", lambda *a, **k: _Tif()
+        )
+        assert self._read(str(path)) == expected
+
+    def test_no_images_in_the_ome_block(self, tmp_path, monkeypatch):
+        import tifffile as tifffile_module
+
+        path = tmp_path / "tile.ome.tif"
+        tifffile.imwrite(str(path), np.zeros((4, 4), dtype=np.uint8))
+
+        monkeypatch.setattr(
+            tifffile_module, "xml2dict", lambda xml: {"OME": {"Image": []}}
+        )
+
+        class _Tif:
+            ome_metadata = "<OME/>"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(
+            tifffile_module, "TiffFile", lambda *a, **k: _Tif()
+        )
+        assert self._read(str(path)) is None
+
+
+# --- overlap estimation guards ---------------------------------------------
+
+
+def test_overlap_profile_is_empty_when_no_candidate_fits():
+    """A strip narrower than the smallest candidate leaves nothing to score."""
+    from napari_phasors._stitching import _overlap_ncc_profile
+
+    strip = np.zeros((4, 3))
+    overlaps, scores = _overlap_ncc_profile(strip, strip, 10, 20)
+    assert overlaps.size == 0
+    assert scores.size == 0
+
+
+def test_best_overlap_declines_mismatched_or_tiny_tiles():
+    """Different shapes, or a tile only one pixel wide, cannot be matched."""
+    from napari_phasors._stitching import _best_overlap
+
+    assert _best_overlap(np.zeros((4, 4)), np.zeros((5, 5)), 1, 2, 1) == (
+        None,
+        0.0,
+    )
+    assert _best_overlap(np.zeros((1, 8)), np.zeros((1, 8)), 1, 2, 1) == (
+        None,
+        0.0,
+    )
+    # A valid pair whose candidate range is empty also declines.
+    assert _best_overlap(np.zeros((8, 8)), np.zeros((8, 8)), 20, 4, 1) == (
+        None,
+        0.0,
+    )
+
+
+def test_estimate_overlap_declines_degenerate_input():
+    """Too few tiles, a count mismatch, or an unknown size all decline."""
+    geometry = TileGeometry(
+        placements=[
+            TilePlacement(row=0, col=0, path="a"),
+            TilePlacement(row=0, col=1, path="b"),
+        ],
+        tile_shape=(8, 8),
+    )
+    means = [np.zeros((8, 8)), np.zeros((8, 8))]
+
+    # Count mismatch.
+    assert estimate_overlap(means[:1], geometry) == (None, None)
+    # Fewer than two tiles.
+    single = TileGeometry(
+        placements=[TilePlacement(row=0, col=0, path="a")], tile_shape=(8, 8)
+    )
+    assert estimate_overlap(means[:1], single) == (None, None)
+
+    # An unknown tile size falls back to the data, and a zero-sized array
+    # leaves nothing to fall back to.
+    unknown = TileGeometry(
+        placements=list(geometry.placements), tile_shape=(0, 0)
+    )
+    assert estimate_overlap([np.zeros((0, 0)), np.zeros((0, 0))], unknown) == (
+        None,
+        None,
+    )

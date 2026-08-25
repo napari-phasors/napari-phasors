@@ -19,11 +19,7 @@ from matplotlib.legend_handler import HandlerBase
 from matplotlib.patches import Polygon as MplPolygon
 from napari.layers import Image
 from napari.utils import progress as _napari_progress
-from phasorpy.filter import (
-    phasor_filter_median,
-    phasor_filter_pawflim,
-    phasor_threshold,
-)
+from phasorpy.filter import phasor_filter_pawflim, phasor_threshold
 from qtpy.QtCore import QEvent, QRect, QSize, Qt, QThread, QTimer, Signal
 from qtpy.QtGui import (
     QColor,
@@ -68,6 +64,8 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 from superqt import QRangeSlider
+
+from ._parallel import parallel_filter_median
 
 
 def analysis_section_stylesheet():
@@ -1041,7 +1039,11 @@ def _apply_filter_and_threshold_to_phasor_arrays(
         # Filter each XY slice independently. For ndim>2, all leading axes are
         # treated as slice/index axes and therefore skipped by the median filter.
         skip_axis = tuple(range(mean.ndim - 2)) if mean.ndim > 2 else None
-        mean, real, imag = phasor_filter_median(
+        # Median filtering is by far the most expensive thing the filter tab
+        # does, and it re-runs on every slider move. ``parallel_filter_median``
+        # splits large images into row bands with enough halo to stay
+        # bit-identical to the unsplit call; small ones go straight through.
+        mean, real, imag = parallel_filter_median(
             mean,
             real,
             imag,
@@ -5292,11 +5294,12 @@ class TileLayoutDialog(QDialog):
         if count < 1:
             return ""
         side = int(round(count**0.5))
+        # ``candidate`` walks down to 1, which divides every count, so the
+        # loop always returns: a prime count simply becomes a single row.
         for candidate in range(side, 0, -1):
             if count % candidate == 0:
                 rows, columns = candidate, count // candidate
                 return f"{rows}x{columns}"
-        return str(count)
 
     def _on_source_changed(self, index):
         """Show the controls belonging to the selected layout source."""
