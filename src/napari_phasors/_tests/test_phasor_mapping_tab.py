@@ -2389,6 +2389,479 @@ def test_coloring_box_visibility_follows_output_mode(make_viewer_model, qtbot):
     parent.deleteLater()
 
 
+def _setup_mapping_selection_workflow(make_napari_viewer, qtbot):
+    """Create two selected source layers and calculate a Mapping output."""
+    viewer = make_napari_viewer()
+    layers = []
+    for name in ("mapping_a", "mapping_b"):
+        layer = create_image_layer_with_phasors()
+        layer.name = name
+        viewer.add_layer(layer)
+        layers.append(layer)
+
+    parent = PlotterWidget(viewer)
+    qtbot.addWidget(parent)
+    parent.show()
+    parent.image_layers_checkable_combobox.setCheckedItems(
+        [layer.name for layer in layers]
+    )
+    mapping = parent.phasor_mapping_tab
+    parent.tab_widget.setCurrentWidget(mapping)
+    mapping.frequency_input.setText("80.0")
+    mapping._on_calculate_lifetime_clicked()
+    mapping.histogram_widget.display_mode = "Individual layers"
+    return viewer, parent, mapping, layers
+
+
+def _click_mapping_source(qtbot, parent, source_name):
+    """Toggle a Phasor Layers row through the visible popup."""
+    combo = parent.image_layers_checkable_combobox
+    row = next(
+        row
+        for row in range(combo._header_count, combo.model().rowCount())
+        if combo.model().item(row).text() == source_name
+    )
+    combo.showPopup()
+    view = combo.view()
+    rect = view.visualRect(combo.model().index(row, 0))
+    point = rect.center()
+    point.setX(rect.left() + 5)
+    qtbot.mouseClick(view.viewport(), Qt.LeftButton, pos=point)
+
+
+def test_mapping_histogram_follows_real_source_selection(
+    make_napari_viewer, qtbot
+):
+    """Mapping curves, statistics, and outputs follow real popup clicks."""
+    viewer, parent, mapping, _ = _setup_mapping_selection_workflow(
+        make_napari_viewer, qtbot
+    )
+    output_a = "Apparent Phase Lifetime: mapping_a"
+    output_b = "Apparent Phase Lifetime: mapping_b"
+    stats = parent.phasor_map_statistics_dock_widget.layer_stats_table
+
+    assert list(mapping.histogram_widget._datasets) == [output_a, output_b]
+    assert len(mapping.histogram_widget.ax.lines) == 2
+    assert stats.rowCount() == 2
+
+    _click_mapping_source(qtbot, parent, "mapping_b")
+    qtbot.waitUntil(
+        lambda: parent.get_selected_layer_names() == ["mapping_a"]
+        and list(mapping.histogram_widget._datasets) == [output_a],
+        timeout=5000,
+    )
+
+    assert len(mapping.histogram_widget.ax.lines) == 1
+    assert stats.rowCount() == 1
+    assert viewer.layers[output_a].visible is True
+    assert viewer.layers[output_b].visible is False
+
+    _click_mapping_source(qtbot, parent, "mapping_b")
+    qtbot.waitUntil(
+        lambda: parent.get_selected_layer_names() == ["mapping_a", "mapping_b"]
+        and len(mapping.histogram_widget._datasets) == 2,
+        timeout=5000,
+    )
+
+    assert viewer.layers[output_b].visible is True
+    assert len(mapping.histogram_widget.ax.lines) == 2
+    assert stats.rowCount() == 2
+
+    viewer.layers.remove(output_b)
+    qtbot.waitUntil(
+        lambda: list(mapping.histogram_widget._datasets) == [output_a],
+        timeout=5000,
+    )
+
+    assert len(mapping.histogram_widget.ax.lines) == 1
+    assert stats.rowCount() == 1
+
+
+def test_mapping_output_controls_refresh_after_first_calculation(
+    make_napari_viewer, qtbot
+):
+    """Parameter and Lifetime Type changes refresh active Mapping output."""
+    viewer, _, mapping, _ = _setup_mapping_selection_workflow(
+        make_napari_viewer, qtbot
+    )
+
+    expected_modes = [
+        ("Phase", None, "Phase (rad)"),
+        ("Modulation", None, "Modulation"),
+        ("Lifetime", "Apparent Modulation Lifetime", "Lifetime (ns)"),
+        ("Lifetime", "Normal Lifetime", "Lifetime (ns)"),
+    ]
+    for mode, lifetime_type, xlabel in expected_modes:
+        mapping.output_mode_combobox.setCurrentText(mode)
+        if lifetime_type is not None:
+            mapping.lifetime_type_combobox.setCurrentText(lifetime_type)
+            output_type = lifetime_type
+        else:
+            output_type = mode
+
+        qtbot.waitUntil(
+            lambda output_type=output_type: set(
+                mapping.histogram_widget._datasets
+            )
+            == {
+                f"{output_type}: mapping_a",
+                f"{output_type}: mapping_b",
+            },
+            timeout=5000,
+        )
+
+        assert mapping.histogram_widget.xlabel == xlabel
+        for source_name in ("mapping_a", "mapping_b"):
+            output_layer = viewer.layers[f"{output_type}: {source_name}"]
+            assert output_layer.metadata['phasor_mapping_output'] == {
+                'source_layer': source_name,
+                'output_type': output_type,
+            }
+
+
+def test_mapping_output_controls_do_not_calculate_before_first_run(
+    make_napari_viewer, qtbot
+):
+    """Mapping dropdowns stay inert until Calculate succeeds once."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    layer.name = "mapping_source"
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    mapping = parent.phasor_mapping_tab
+
+    mapping.output_mode_combobox.setCurrentText("Phase")
+    mapping.output_mode_combobox.setCurrentText("Lifetime")
+    mapping.lifetime_type_combobox.setCurrentText("Normal Lifetime")
+    qtbot.wait(200)
+
+    assert mapping._has_calculated_output is False
+    assert mapping._mapping_output_layers() == {}
+    assert mapping.histogram_widget.counts is None
+
+
+def test_mapping_and_fret_follow_primary_source_change(
+    make_napari_viewer, qtbot
+):
+    """Primary changes refresh both Mapping and FRET after tab restoration."""
+    viewer, parent, mapping, _ = _setup_mapping_selection_workflow(
+        make_napari_viewer, qtbot
+    )
+    fret = parent.fret_tab
+    fret.donor_line_edit.setText("2.0")
+    fret.frequency_input.setText("80")
+    fret.background_real_edit.setText("0.1")
+    fret.background_imag_edit.setText("0.1")
+    fret.calculate_fret_efficiency_button.click()
+    fret.histogram_widget.display_mode = "Individual layers"
+
+    _click_mapping_source(qtbot, parent, "mapping_a")
+    qtbot.waitUntil(
+        lambda: parent.get_primary_layer_name() == "mapping_b"
+        and list(mapping.histogram_widget._datasets)
+        == ["Apparent Phase Lifetime: mapping_b"]
+        and list(fret.histogram_widget._datasets)
+        == ["FRET efficiency: mapping_b"],
+        timeout=5000,
+    )
+
+    assert viewer.layers["Apparent Phase Lifetime: mapping_a"].visible is False
+    assert viewer.layers["FRET efficiency: mapping_a"].visible is False
+    assert (
+        parent.phasor_map_statistics_dock_widget.layer_stats_table.rowCount()
+        == 1
+    )
+    assert parent.fret_statistics_dock_widget.layer_stats_table.rowCount() == 1
+
+
+def test_mapping_range_only_changes_selected_outputs(
+    make_napari_viewer, qtbot
+):
+    """Mapping range clipping leaves deselected output data untouched."""
+    viewer, parent, mapping, layers = _setup_mapping_selection_workflow(
+        make_napari_viewer, qtbot
+    )
+    output_a = viewer.layers["Apparent Phase Lifetime: mapping_a"]
+    output_b = viewer.layers["Apparent Phase Lifetime: mapping_b"]
+    output_b_before = output_b.data.copy()
+    original_a = layers[0].metadata['derived_data']["Apparent Phase Lifetime"][
+        parent.harmonic
+    ]
+
+    parent.image_layers_checkable_combobox.setCheckedItems(["mapping_a"])
+    parent._layer_selection_timer.stop()
+    parent._process_layer_selection_change()
+    slider_min, slider_max = mapping.lifetime_range_slider.value()
+    quarter = max(1, (slider_max - slider_min) // 4)
+    selected_range = (slider_min + quarter, slider_max - quarter)
+    mapping._on_lifetime_range_changed(selected_range)
+
+    expected = np.clip(
+        original_a,
+        selected_range[0] / mapping.lifetime_range_factor,
+        selected_range[1] / mapping.lifetime_range_factor,
+    )
+    np.testing.assert_allclose(output_a.data, expected, equal_nan=True)
+    np.testing.assert_array_equal(output_b.data, output_b_before)
+
+
+def test_mapping_empty_source_selection_clears_histogram(
+    make_napari_viewer, qtbot
+):
+    """Clearing Phasor Layers removes stale Mapping statistics and curves."""
+    viewer, parent, mapping, _ = _setup_mapping_selection_workflow(
+        make_napari_viewer, qtbot
+    )
+    parent.image_layers_checkable_combobox.setCheckedItems([])
+    parent._layer_selection_timer.stop()
+    parent._process_layer_selection_change()
+
+    assert mapping.histogram_widget.counts is None
+    assert mapping.histogram_widget._datasets == {}
+    assert (
+        parent.phasor_map_statistics_dock_widget.layer_stats_table.rowCount()
+        == 0
+    )
+    assert viewer.layers["Apparent Phase Lifetime: mapping_a"].visible is False
+    assert viewer.layers["Apparent Phase Lifetime: mapping_b"].visible is False
+
+
+def test_mapping_invalid_reactive_choice_clears_stale_histogram(
+    make_napari_viewer, qtbot
+):
+    """An active Mapping switch with missing input cannot show old data."""
+    _, parent, mapping, _ = _setup_mapping_selection_workflow(
+        make_napari_viewer, qtbot
+    )
+    mapping.output_mode_combobox.setCurrentText("Phase")
+    qtbot.waitUntil(
+        lambda: bool(mapping.histogram_widget._datasets)
+        and all(
+            name.startswith("Phase:")
+            for name in mapping.histogram_widget._datasets
+        ),
+        timeout=5000,
+    )
+
+    mapping.frequency_input.setText("-")
+    mapping.output_mode_combobox.setCurrentText("Lifetime")
+    qtbot.waitUntil(
+        lambda: mapping.histogram_widget.counts is None,
+        timeout=5000,
+    )
+
+    assert mapping.histogram_widget._datasets == {}
+    assert (
+        parent.phasor_map_statistics_dock_widget.layer_stats_table.rowCount()
+        == 0
+    )
+
+
+def test_mapping_custom_output_name_survives_rerun_range_and_source_rename(
+    make_napari_viewer, qtbot
+):
+    """Tagged Mapping outputs remain authoritative after manual renaming."""
+    viewer, parent, mapping, layers = _setup_mapping_selection_workflow(
+        make_napari_viewer, qtbot
+    )
+    output = viewer.layers["Apparent Phase Lifetime: mapping_a"]
+    output.name = "Custom lifetime result"
+    output_id = id(output)
+
+    mapping._on_calculate_lifetime_clicked()
+
+    assert id(viewer.layers["Custom lifetime result"]) == output_id
+    assert "Apparent Phase Lifetime: mapping_a" not in viewer.layers
+
+    parent.image_layers_checkable_combobox.setCheckedItems(["mapping_a"])
+    parent._layer_selection_timer.stop()
+    parent._process_layer_selection_change()
+    slider_min, slider_max = mapping.lifetime_range_slider.value()
+    selected_range = (
+        slider_min + max(1, (slider_max - slider_min) // 4),
+        slider_max,
+    )
+    mapping._on_lifetime_range_changed(selected_range)
+    original = layers[0].metadata['derived_data']["Apparent Phase Lifetime"][
+        parent.harmonic
+    ]
+    np.testing.assert_allclose(
+        output.data,
+        np.clip(
+            original,
+            selected_range[0] / mapping.lifetime_range_factor,
+            selected_range[1] / mapping.lifetime_range_factor,
+        ),
+        equal_nan=True,
+    )
+
+    mapping.rename_layer("mapping_a", "mapping_a_renamed")
+
+    assert output.name == "Custom lifetime result"
+    assert output.metadata['phasor_mapping_output'] == {
+        'source_layer': 'mapping_a_renamed',
+        'output_type': 'Apparent Phase Lifetime',
+    }
+
+
+def test_mapping_reactive_coloring_does_not_mutate_previous_metric(
+    make_napari_viewer, qtbot
+):
+    """Phase to Modulation refresh leaves existing Phase layer colors intact."""
+    viewer, _, mapping, _ = _setup_mapping_selection_workflow(
+        make_napari_viewer, qtbot
+    )
+    mapping.output_mode_combobox.setCurrentText("Phase")
+    qtbot.waitUntil(
+        lambda: "Phase: mapping_a" in viewer.layers,
+        timeout=5000,
+    )
+    mapping.apply_2d_colormap_checkbox.setChecked(True)
+    phase_layer = viewer.layers["Phase: mapping_a"]
+    phase_colors = np.asarray(phase_layer.colormap.colors).copy()
+
+    mapping.output_mode_combobox.setCurrentText("Modulation")
+    qtbot.waitUntil(
+        lambda: "Modulation: mapping_a" in viewer.layers
+        and all(
+            mapping._mapping_output_info(layer)[0] == "Modulation"
+            for layer in mapping.metric_layers
+        ),
+        timeout=5000,
+    )
+
+    np.testing.assert_array_equal(
+        np.asarray(phase_layer.colormap.colors), phase_colors
+    )
+
+
+def test_mapping_frequency_edit_rejects_nonpositive_and_invalid_values(
+    make_napari_viewer, qtbot
+):
+    """Frequency editing uses the same finite-positive validation as Calculate."""
+    _, parent, mapping, layers = _setup_mapping_selection_workflow(
+        make_napari_viewer, qtbot
+    )
+    for invalid_value in ("0", "-1", "-"):
+        mapping.frequency_input.setText(invalid_value)
+        mapping._on_frequency_changed()
+
+        assert mapping.frequency is None
+        assert mapping.histogram_widget.counts is None
+        assert mapping.histogram_widget._frame_source_datasets == {}
+
+        mapping.frequency_input.setText("80")
+        mapping._on_frequency_changed()
+        assert mapping.histogram_widget.counts is not None
+
+    parent._broadcast_frequency_value_across_tabs("-1")
+    parent._broadcast_frequency_value_across_tabs("not-a-number")
+
+    assert mapping.frequency_input.text() == "80"
+    assert layers[0].metadata['settings']['frequency'] == 80.0
+
+
+def test_mapping_output_mode_syncs_custom_color_button(
+    make_viewer_model, qtbot
+):
+    """Switching outputs keeps the custom-color control consistent."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    mapping = parent.phasor_mapping_tab
+
+    mapping.output_mode_combobox.setCurrentText("Phase")
+    mapping.colormap_combobox.setCurrentText("Select color...")
+    assert not mapping.custom_color_button.isHidden()
+
+    mapping.output_mode_combobox.setCurrentText("Modulation")
+    assert mapping.colormap_combobox.currentText() == "PiYG"
+    assert mapping.custom_color_button.isHidden()
+
+    mapping.colormap_combobox.setCurrentText("Select color...")
+    mapping.output_mode_combobox.setCurrentText("Phase")
+    assert mapping.colormap_combobox.currentText() == "Select color..."
+    assert not mapping.custom_color_button.isHidden()
+
+
+def test_mapping_defensive_selection_and_legacy_output_helpers(
+    make_viewer_model, qtbot
+):
+    """Defensive selection paths and legacy canonical outputs stay supported."""
+    viewer = make_viewer_model()
+    source = create_image_layer_with_phasors()
+    source.name = "legacy_source"
+    viewer.add_layer(source)
+    parent = PlotterWidget(viewer)
+    mapping = parent.phasor_mapping_tab
+    legacy = viewer.add_image(
+        np.ones((2, 2)),
+        name="Phase: legacy_source",
+    )
+
+    assert mapping._mapping_output_info(legacy) == (
+        "Phase",
+        "legacy_source",
+    )
+
+    with patch.object(mapping, "parent_widget", None):
+        assert mapping._get_selected_source_names() == set()
+    with patch.object(parent, "get_selected_layers", side_effect=RuntimeError):
+        assert mapping._get_selected_source_names() == set()
+    with patch.object(parent, "get_selected_layers", return_value=[]):
+        mapping._sync_mapping_output_visibility()
+    assert legacy.visible is False
+
+    mapping.rename_layer("legacy_source", "renamed_source")
+
+    assert legacy.name == "Phase: renamed_source"
+    assert legacy.metadata['phasor_mapping_output'] == {
+        'source_layer': 'renamed_source',
+        'output_type': 'Phase',
+    }
+
+
+def test_mapping_inactive_refresh_and_nonfrequency_edit_are_noops(
+    make_viewer_model, qtbot
+):
+    """Inactive refresh and Phase frequency editing return without calculation."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    mapping = parent.phasor_mapping_tab
+
+    with patch.object(mapping, "_calculate_and_display_output") as calculate:
+        mapping._refresh_active_output()
+        mapping.output_mode_combobox.setCurrentText("Phase")
+        mapping._on_frequency_changed()
+    calculate.assert_not_called()
+
+
+def test_mapping_calculation_clears_when_selected_layer_has_no_phasors(
+    make_viewer_model, qtbot
+):
+    """A selected layer without phasor arrays cannot reuse previous output."""
+    viewer = make_viewer_model()
+    valid = create_image_layer_with_phasors()
+    viewer.add_layer(valid)
+    parent = PlotterWidget(viewer)
+    mapping = parent.phasor_mapping_tab
+    missing = Image(np.ones((2, 2)), name="missing_phasors")
+    mapping.frequency_input.setText("80")
+
+    with (
+        patch.object(parent, "get_selected_layers", return_value=[missing]),
+        patch.object(parent, "has_phasor_data", return_value=True),
+    ):
+        assert (
+            mapping._calculate_and_display_output(show_warnings=False) is False
+        )
+
+    assert mapping.histogram_widget.counts is None
+
+
 def test_restore_on_layer_change_refreshes_primary_button(
     make_viewer_model, qtbot
 ):

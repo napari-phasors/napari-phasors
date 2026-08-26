@@ -51,6 +51,14 @@ if TYPE_CHECKING:
 
 # Default grid resolution used when a precomputed mesh grid is not supplied.
 _DEFAULT_MESH_RESOLUTION = 300
+_MAPPING_OUTPUT_METADATA_KEY = 'phasor_mapping_output'
+_MAPPING_OUTPUT_TYPES = (
+    "Apparent Phase Lifetime",
+    "Apparent Modulation Lifetime",
+    "Normal Lifetime",
+    "Phase",
+    "Modulation",
+)
 
 
 def compute_phasor_mesh_mask(
@@ -320,6 +328,11 @@ class PhasorMappingWidget(QWidget):
         )
         self._updating_settings = False  # Flag to prevent recursive updates
         self._needs_update = False  # Deferred update flag
+        self._has_calculated_output = False
+        self._output_refresh_timer = QTimer(self)
+        self._output_refresh_timer.setSingleShot(True)
+        self._output_refresh_timer.setInterval(50)
+        self._output_refresh_timer.timeout.connect(self._refresh_active_output)
         self._updating_linked_layers = (
             False  # Flag to prevent recursive layer updates
         )
@@ -1090,12 +1103,155 @@ class PhasorMappingWidget(QWidget):
         """Return whether *output_type* can only be computed with a frequency."""
         return output_type in LIFETIME_OUTPUT_TYPES
 
+    @staticmethod
+    def _parse_positive_frequency(text):
+        """Return a finite positive frequency, or None for invalid text."""
+        try:
+            frequency = float(text)
+        except (TypeError, ValueError):
+            return None
+        if not np.isfinite(frequency) or frequency <= 0:
+            return None
+        return frequency
+
     def _get_selected_output_type(self) -> str:
         """Return the selected output type, resolving the lifetime sub-type."""
         mode = self.output_mode_combobox.currentText()
         if mode == "Lifetime":
             return self.lifetime_type_combobox.currentText()
         return mode
+
+    def _get_selected_source_names(self) -> set[str]:
+        """Return names checked in the plotter's Phasor Layers selector."""
+        if self.parent_widget is None:
+            return set()
+        try:
+            return {
+                layer.name
+                for layer in self.parent_widget.get_selected_layers()
+            }
+        except (AttributeError, RuntimeError):
+            return set()
+
+    def _mapping_output_info(self, layer):
+        """Return ``(output_type, source_name)`` for a Mapping output layer."""
+        if not isinstance(layer, Image):
+            return None
+        tag = layer.metadata.get(_MAPPING_OUTPUT_METADATA_KEY)
+        if isinstance(tag, dict):
+            output_type = tag.get('output_type')
+            source_name = tag.get('source_layer')
+            if output_type in _MAPPING_OUTPUT_TYPES and source_name:
+                return output_type, source_name
+        for output_type in _MAPPING_OUTPUT_TYPES:
+            prefix = f"{output_type}: "
+            if layer.name.startswith(prefix):
+                source_name = layer.name[len(prefix) :]
+                if source_name in self.viewer.layers:
+                    source_layer = self.viewer.layers[source_name]
+                    if (
+                        isinstance(source_layer, Image)
+                        and 'G' in source_layer.metadata
+                        and 'S' in source_layer.metadata
+                    ):
+                        return output_type, source_name
+        return None
+
+    def _mapping_output_layers(self, output_type=None, selected_only=False):
+        """Return Mapping outputs keyed by source name."""
+        selected_names = (
+            self._get_selected_source_names() if selected_only else None
+        )
+        result = {}
+        for layer in self.viewer.layers:
+            info = self._mapping_output_info(layer)
+            if info is None:
+                continue
+            layer_output_type, source_name = info
+            if output_type is not None and layer_output_type != output_type:
+                continue
+            if (
+                selected_names is not None
+                and source_name not in selected_names
+            ):
+                continue
+            existing = result.get(source_name)
+            layer_is_tagged = isinstance(
+                layer.metadata.get(_MAPPING_OUTPUT_METADATA_KEY), dict
+            )
+            existing_is_tagged = existing is not None and isinstance(
+                existing.metadata.get(_MAPPING_OUTPUT_METADATA_KEY), dict
+            )
+            if existing is None or (
+                layer_is_tagged and not existing_is_tagged
+            ):
+                result[source_name] = layer
+        return result
+
+    def _set_metric_layers(self, layers):
+        """Replace the active Mapping layer registry without duplicate events."""
+        for layer in self.metric_layers:
+            with contextlib.suppress(
+                AttributeError, RuntimeError, TypeError, ValueError
+            ):
+                layer.events.colormap.disconnect(self._on_colormap_changed)
+                layer.events.contrast_limits.disconnect(
+                    self._on_colormap_changed
+                )
+                layer.events.gamma.disconnect(self._on_colormap_changed)
+
+        self.metric_layers = list(layers)
+        self.lifetime_layers = list(self.metric_layers)
+        self.lifetime_layer = (
+            self.metric_layers[0] if self.metric_layers else None
+        )
+
+        for layer in self.metric_layers:
+            with contextlib.suppress(
+                AttributeError, RuntimeError, TypeError, ValueError
+            ):
+                layer.events.colormap.disconnect(self._on_colormap_changed)
+                layer.events.contrast_limits.disconnect(
+                    self._on_colormap_changed
+                )
+                layer.events.gamma.disconnect(self._on_colormap_changed)
+            layer.events.colormap.connect(self._on_colormap_changed)
+            layer.events.contrast_limits.connect(self._on_colormap_changed)
+            layer.events.gamma.connect(self._on_colormap_changed)
+
+        if self.lifetime_layer is not None:
+            self.lifetime_colormap = self.lifetime_layer.colormap.colors
+            self.colormap_contrast_limits = self.lifetime_layer.contrast_limits
+            self.colormap_gamma = self.lifetime_layer.gamma
+
+    def _sync_mapping_output_visibility(self):
+        """Show Mapping outputs only when their source layer is selected."""
+        selected_names = self._get_selected_source_names()
+        self._updating_linked_layers = True
+        try:
+            for layer in self.viewer.layers:
+                info = self._mapping_output_info(layer)
+                if info is None:
+                    continue
+                _, source_name = info
+                desired_visible = source_name in selected_names
+                if layer.visible != desired_visible:
+                    layer.visible = desired_visible
+        finally:
+            self._updating_linked_layers = False
+
+    def on_layer_selection_changed(self):
+        """Refresh Mapping outputs after the Phasor Layers selection changes."""
+        self._sync_mapping_output_visibility()
+        output_type = self._get_selected_output_type()
+        selected_layers = self._mapping_output_layers(
+            output_type, selected_only=True
+        )
+        self._set_metric_layers(selected_layers.values())
+        self.plot_lifetime_histogram()
+
+        if not selected_layers:
+            self._clear_2d_coloring()
 
     @staticmethod
     def _get_output_colormap_name(output_type: str) -> str:
@@ -1133,12 +1289,21 @@ class PhasorMappingWidget(QWidget):
         self.lifetime_type_combobox.setEnabled(is_lifetime_mode)
         self._sync_mode_widgets()
         self._update_calculate_button_text()
-        if mode == "Phase":
-            self.colormap_combobox.setCurrentText(self._phase_colormap_name)
-        elif mode == "Modulation":
-            self.colormap_combobox.setCurrentText(
-                self._modulation_colormap_name
-            )
+        self.colormap_combobox.blockSignals(True)
+        try:
+            if mode == "Phase":
+                self.colormap_combobox.setCurrentText(
+                    self._phase_colormap_name
+                )
+            elif mode == "Modulation":
+                self.colormap_combobox.setCurrentText(
+                    self._modulation_colormap_name
+                )
+        finally:
+            self.colormap_combobox.blockSignals(False)
+        self.custom_color_button.setVisible(
+            self.colormap_combobox.currentText() == "Select color..."
+        )
         output_type = self._get_selected_output_type()
         self.current_output_type = output_type
         self._set_frequency_input_enabled(
@@ -1146,7 +1311,13 @@ class PhasorMappingWidget(QWidget):
         )
         self._configure_histogram_labels_for_output(output_type)
         self.outputTypeChanged.emit(output_type)
-        if output_type not in {"Phase", "Modulation"}:
+        is_reactive_transition = (
+            self._has_calculated_output and not self._updating_settings
+        )
+        if is_reactive_transition or output_type not in {
+            "Phase",
+            "Modulation",
+        }:
             self._clear_2d_coloring()
         else:
             can_apply_coloring = (
@@ -1162,6 +1333,7 @@ class PhasorMappingWidget(QWidget):
             self._update_lifetime_setting_in_metadata(
                 'output_type', output_type
             )
+        self._schedule_active_output_refresh()
 
     def _on_colormap_combobox_changed(self, name: str):
         """Callback when the colormap combobox is changed.
@@ -1188,10 +1360,19 @@ class PhasorMappingWidget(QWidget):
         ):
             actual_cmap_to_apply = self._resolve_layer_colormap(name)
 
-            for layer in self.metric_layers:
+            matching_layers = [
+                layer
+                for layer in self.metric_layers
+                if (
+                    (info := self._mapping_output_info(layer)) is not None
+                    and info[0] == output_type
+                )
+            ]
+            for layer in matching_layers:
                 if layer in self.viewer.layers:
                     layer.colormap = actual_cmap_to_apply
-            self._apply_histogram_coloring(output_type)
+            if matching_layers:
+                self._apply_histogram_coloring(output_type)
 
     def _resolve_layer_colormap(self, cmap_name: str):
         """Return a napari-compatible colormap value for image layers."""
@@ -1418,27 +1599,19 @@ class PhasorMappingWidget(QWidget):
         frequency_text = self.frequency_input.text().strip()
         output_type = self._get_selected_output_type()
 
-        if not self._updating_settings:
-            if not self._output_requires_frequency(output_type):
-                return
+        if self._updating_settings or not self._output_requires_frequency(
+            output_type
+        ):
+            return
+        frequency = self._parse_positive_frequency(frequency_text)
+        if frequency is None:
+            self.frequency = None
+            self._clear_current_output_display()
             if frequency_text:
-                try:
-                    self.frequency = float(frequency_text)
-                    self.calculate_output_data()
-                    self._update_lifetime_range_slider()
-                    self.create_output_layers()
-                    self._restore_lifetime_range_from_metadata()
-                    self._on_lifetime_range_changed(
-                        self.lifetime_range_slider.value()
-                    )
-                    self.plot_lifetime_histogram()
-                except ValueError:
-                    show_error(
-                        "Invalid frequency value. Please enter a valid number."
-                    )
-            elif frequency_text == "":
-                self.frequency = None
-                self.histogram_widget.update_data(np.array([]))
+                show_error("Invalid frequency value. Enter a positive number.")
+            return
+        self.frequency = frequency
+        self._calculate_and_display_output(show_warnings=False)
 
     def _set_frequency_input_enabled(self, enabled: bool):
         """Enable or disable the frequency input field."""
@@ -1467,6 +1640,7 @@ class PhasorMappingWidget(QWidget):
             self.lifetime_data = self.current_metric_data
 
         selected_layers = self.parent_widget.get_selected_layers()
+        output_layers = self._mapping_output_layers(output_type)
 
         self._updating_contrast_limits = True
         self._updating_linked_layers = True
@@ -1485,10 +1659,8 @@ class PhasorMappingWidget(QWidget):
                     output_values, min_lifetime, max_lifetime
                 )
 
-                lifetime_layer_name = f"{output_type}: {layer.name}"
-
-                if lifetime_layer_name in self.viewer.layers:
-                    lifetime_layer = self.viewer.layers[lifetime_layer_name]
+                lifetime_layer = output_layers.get(layer.name)
+                if lifetime_layer is not None:
                     lifetime_layer.data = clipped_lifetime
                     lifetime_layer.contrast_limits = [
                         min_lifetime,
@@ -1768,12 +1940,33 @@ class PhasorMappingWidget(QWidget):
 
     def plot_lifetime_histogram(self):
         """Plot the histogram of the merged lifetime data from all selected layers."""
-        if (
-            self.current_metric_data is None
-            or not self.parent_widget.has_phasor_data()
-            or self.parent_widget.harmonic is None
-        ):
-            self.histogram_widget.update_data(np.array([]))
+        selected_names = self._get_selected_source_names()
+        if not selected_names or self.parent_widget.harmonic is None:
+            self.histogram_widget.clear()
+            return
+
+        output_type = self._get_selected_output_type()
+        output_layers = self._mapping_output_layers(
+            output_type, selected_only=True
+        )
+        if output_layers:
+            layers = list(output_layers.values())
+            if layers != self.metric_layers:
+                self._set_metric_layers(layers)
+            named = {layer.name: layer.data for layer in layers}
+        elif not self._has_calculated_output:
+            # Keep a narrow fallback for calculations that have populated
+            # per-layer arrays but have not created the viewer layers yet.
+            named = {
+                f"{output_type}: {name}": data
+                for name, data in (self.per_layer_metric_data or {}).items()
+                if name in selected_names
+            }
+        else:
+            named = {}
+
+        if not named:
+            self.histogram_widget.clear()
             return
 
         self.histogram_widget.update_colormap(
@@ -1782,17 +1975,6 @@ class PhasorMappingWidget(QWidget):
             gamma=self.colormap_gamma,
         )
 
-        output_type = self._get_selected_output_type()
-        if output_type in {"Phase", "Modulation"}:
-            self._apply_histogram_coloring(output_type)
-        # Name the histogram datasets after the analysis output layers
-        # (e.g. "Lifetime: <image>"), not the intensity image layers, so the
-        # statistics Name column matches the created layers (as in the FRET
-        # tab). The output layers are named ``f"{output_type}: {image_name}"``.
-        named = {
-            f"{output_type}: {name}": data
-            for name, data in (self.per_layer_metric_data or {}).items()
-        }
         # In per-frame mode only the displayed timepoint is summarised. The
         # range slider keeps using the pooled extent (set elsewhere) so the
         # contrast limits don't jump around while playing.
@@ -1802,10 +1984,9 @@ class PhasorMappingWidget(QWidget):
         elif named:
             label, data = next(iter(named.items()))
             self.histogram_widget.update_data(data, label=label)
-        else:
-            self.histogram_widget.update_data(
-                self.current_metric_data, label="Layer"
-            )
+
+        if output_type in {"Phase", "Modulation"}:
+            self._apply_histogram_coloring(output_type)
 
     def _frame_context(self):
         """Return the plotter's time-lapse frame context, if available."""
@@ -1840,18 +2021,36 @@ class PhasorMappingWidget(QWidget):
                 if dict_obj is not None and old_name in dict_obj:
                     dict_obj[new_name] = dict_obj.pop(old_name)
 
-        # Rename derived layers
-        for output_type in [
-            "Phase",
-            "Modulation",
-            "Apparent Phase Lifetime",
-            "Apparent Modulation Lifetime",
-            "Normal Lifetime",
-        ]:
-            layer_name = f"{output_type}: {old_name}"
-            if layer_name in self.viewer.layers:
-                self.viewer.layers[layer_name].name = (
-                    f"{output_type}: {new_name}"
+        for output_layer in list(self.viewer.layers):
+            tag = output_layer.metadata.get(_MAPPING_OUTPUT_METADATA_KEY)
+            if (
+                isinstance(tag, dict)
+                and tag.get('source_layer') == old_name
+                and tag.get('output_type') in _MAPPING_OUTPUT_TYPES
+            ):
+                output_type = tag['output_type']
+            else:
+                output_type = next(
+                    (
+                        candidate
+                        for candidate in _MAPPING_OUTPUT_TYPES
+                        if output_layer.name == f"{candidate}: {old_name}"
+                    ),
+                    None,
+                )
+            if output_type is None:
+                continue
+
+            old_output_name = output_layer.name
+            output_layer.metadata[_MAPPING_OUTPUT_METADATA_KEY] = {
+                'source_layer': new_name,
+                'output_type': output_type,
+            }
+            if old_output_name == f"{output_type}: {old_name}":
+                output_layer.name = f"{output_type}: {new_name}"
+            if output_layer.name != old_output_name:
+                self.histogram_widget.rename_dataset(
+                    old_output_name, output_layer.name
                 )
 
     def create_output_layers(self):
@@ -1868,19 +2067,9 @@ class PhasorMappingWidget(QWidget):
         else:
             cmap_name = self._get_output_colormap_name(output_type)
 
-        for layer in self.metric_layers:
-            if layer in self.viewer.layers:
-                with contextlib.suppress(
-                    AttributeError, RuntimeError, TypeError, ValueError
-                ):
-                    layer.events.colormap.disconnect(self._on_colormap_changed)
-                    layer.events.contrast_limits.disconnect(
-                        self._on_colormap_changed
-                    )
-                    layer.events.gamma.disconnect(self._on_colormap_changed)
-        self.metric_layers = []
-        self.lifetime_layers = []
-        self.lifetime_layer = None
+        self._set_metric_layers([])
+        created_layers = []
+        existing_outputs = self._mapping_output_layers(output_type)
 
         for layer in selected_layers:
             derived_data = layer.metadata.get('derived_data', {})
@@ -1900,34 +2089,35 @@ class PhasorMappingWidget(QWidget):
             max_lifetime = max_val / self.lifetime_range_factor
             clipped_output = np.clip(output_values, min_lifetime, max_lifetime)
 
-            selected_output_layer = Image(
-                clipped_output,
-                name=output_layer_name,
-                scale=layer.scale,
-                colormap=cmap_name,
-                contrast_limits=[min_lifetime, max_lifetime],
-            )
-
-            if output_layer_name in self.viewer.layers:
-                self.viewer.layers.remove(
-                    self.viewer.layers[output_layer_name]
+            output_layer = existing_outputs.get(layer.name)
+            output_metadata = {
+                'source_layer': layer.name,
+                'output_type': output_type,
+            }
+            if output_layer is None:
+                selected_output_layer = Image(
+                    clipped_output,
+                    name=output_layer_name,
+                    scale=layer.scale,
+                    colormap=cmap_name,
+                    contrast_limits=[min_lifetime, max_lifetime],
+                    metadata={_MAPPING_OUTPUT_METADATA_KEY: output_metadata},
                 )
+                output_layer = self.viewer.add_layer(selected_output_layer)
+            else:
+                output_layer.data = clipped_output
+                output_layer.scale = layer.scale
+                output_layer.colormap = cmap_name
+                output_layer.contrast_limits = [
+                    min_lifetime,
+                    max_lifetime,
+                ]
+                output_layer.metadata[_MAPPING_OUTPUT_METADATA_KEY] = (
+                    output_metadata
+                )
+            created_layers.append(output_layer)
 
-            output_layer = self.viewer.add_layer(selected_output_layer)
-
-            self.metric_layers.append(output_layer)
-            self.lifetime_layers.append(output_layer)
-            output_layer.events.colormap.connect(self._on_colormap_changed)
-            output_layer.events.contrast_limits.connect(
-                self._on_colormap_changed
-            )
-            output_layer.events.gamma.connect(self._on_colormap_changed)
-
-            if self.lifetime_layer is None:
-                self.lifetime_layer = output_layer
-                self.lifetime_colormap = output_layer.colormap.colors
-                self.colormap_contrast_limits = output_layer.contrast_limits
-                self.colormap_gamma = output_layer.gamma
+        self._set_metric_layers(created_layers)
 
     def create_lifetime_layer(self):
         """Backward-compatible alias for output layer creation."""
@@ -1993,11 +2183,12 @@ class PhasorMappingWidget(QWidget):
         if not self.parent_widget.get_selected_layers():
             return "Select at least one image layer with phasor features."
         output_type = self._get_selected_output_type()
-        if (
-            self._output_requires_frequency(output_type)
-            and not self.frequency_input.text().strip()
-        ):
-            return "Enter the frequency (MHz)."
+        if self._output_requires_frequency(output_type):
+            frequency_text = self.frequency_input.text().strip()
+            if not frequency_text:
+                return "Enter the frequency (MHz)."
+            if self._parse_positive_frequency(frequency_text) is None:
+                return "Enter a valid positive frequency (MHz)."
         return None
 
     def _on_image_layer_changed(self):
@@ -2013,6 +2204,7 @@ class PhasorMappingWidget(QWidget):
 
     def _teardown_on_layer_change(self):
         """Immediate cleanup: disconnect signals and clear data."""
+        self._output_refresh_timer.stop()
         layer_name = self.parent_widget.get_primary_layer_name()
         if not layer_name:
             self.histogram_widget.update_data(np.array([]))
@@ -2047,6 +2239,7 @@ class PhasorMappingWidget(QWidget):
 
     def _restore_on_layer_change(self):
         """Deferred restore: update UI state from metadata."""
+        self._output_refresh_timer.stop()
         self._needs_update = False
 
         layer_name = self.parent_widget.get_primary_layer_name()
@@ -2073,19 +2266,52 @@ class PhasorMappingWidget(QWidget):
 
         Runs the lifetime calculation and creates/updates lifetime layers.
         """
-        selected_layers = self.parent_widget.get_selected_layers()
-        if not selected_layers:
-            show_warning("Select at least one layer")
-            return
+        if self._calculate_and_display_output(show_warnings=True):
+            self._has_calculated_output = True
 
+    def _clear_current_output_display(self):
+        """Clear stale data for the currently selected Mapping output."""
+        self.current_metric_data = None
+        self.current_metric_data_original = None
+        self.per_layer_metric_data = {}
+        self.per_layer_metric_data_original = {}
+        self._set_metric_layers([])
+        self.histogram_widget.clear()
+        self._clear_2d_coloring()
+
+    def _calculate_and_display_output(self, *, show_warnings):
+        """Calculate and render the selected Mapping output.
+
+        Returns
+        -------
+        bool
+            True when output data and layers were created.
+        """
+        validation_message = self._mapping_validation()
+        if validation_message is not None:
+            if show_warnings:
+                warning = (
+                    "Enter frequency"
+                    if validation_message == "Enter the frequency (MHz)."
+                    else validation_message
+                )
+                show_warning(warning)
+            self._clear_current_output_display()
+            return False
+
+        selected_layers = self.parent_widget.get_selected_layers()
         output_type = self._get_selected_output_type()
         frequency = self.frequency_input.text().strip()
-        if self._output_requires_frequency(output_type) and frequency == "":
-            show_warning("Enter frequency")
-            return
 
-        # Run the calculation
+        self.current_metric_data = None
+        self.current_metric_data_original = None
+        self.per_layer_metric_data = {}
+        self.per_layer_metric_data_original = {}
         self.calculate_output_data()
+        if self.current_metric_data is None:
+            self._clear_current_output_display()
+            return False
+
         self._update_lifetime_range_slider()
         self.create_output_layers()
         settings = self._get_current_layer_mapping_settings(create=False)
@@ -2098,12 +2324,7 @@ class PhasorMappingWidget(QWidget):
         if self.current_metric_data is not None:
             self.plot_lifetime_histogram()
 
-        if output_type in {"Phase", "Modulation"} and (
-            self.apply_2d_colormap_checkbox.isChecked()
-            or self.mesh_overlay_checkbox.isChecked()
-        ):
-            self._apply_histogram_coloring(output_type)
-        else:
+        if output_type not in {"Phase", "Modulation"}:
             self._clear_2d_coloring()
 
         # Update frequency in metadata for frequency-dependent outputs
@@ -2116,6 +2337,27 @@ class PhasorMappingWidget(QWidget):
                     update_frequency_in_metadata(layer, frequency_float)
             except ValueError:
                 pass
+        return bool(self.metric_layers)
+
+    def _schedule_active_output_refresh(self):
+        """Coalesce Mapping control changes after the first calculation."""
+        if (
+            self._updating_settings
+            or not self._has_calculated_output
+            or getattr(self.parent_widget, '_is_closing', False)
+        ):
+            return
+        self._output_refresh_timer.start()
+
+    def _refresh_active_output(self):
+        """Recalculate Mapping output after a reactive control change."""
+        if (
+            self._updating_settings
+            or not self._has_calculated_output
+            or getattr(self.parent_widget, '_is_closing', False)
+        ):
+            return
+        self._calculate_and_display_output(show_warnings=False)
 
     def _on_lifetime_type_changed(self, text):
         """Callback when lifetime type combobox selection changes.
@@ -2136,7 +2378,7 @@ class PhasorMappingWidget(QWidget):
             self._update_lifetime_setting_in_metadata(
                 'output_type', output_type
             )
-        # Don't auto-calculate - user must click Calculate
+        self._schedule_active_output_refresh()
 
     def _restore_lifetime_range_from_metadata(self):
         """Restore lifetime range from metadata after calculation."""
@@ -2709,12 +2951,7 @@ class PhasorMappingWidget(QWidget):
         self.plot_lifetime_histogram()
 
         output_type = self._get_selected_output_type()
-        if output_type in {"Phase", "Modulation"} and (
-            self.apply_2d_colormap_checkbox.isChecked()
-            or self.mesh_overlay_checkbox.isChecked()
-        ):
-            self._apply_histogram_coloring(output_type)
-        else:
+        if output_type not in {"Phase", "Modulation"}:
             self._clear_2d_coloring()
 
     def on_tab_visibility_changed(self, is_visible: bool):
@@ -2727,6 +2964,7 @@ class PhasorMappingWidget(QWidget):
 
     def closeEvent(self, event):
         """Clean up signal connections before closing."""
+        self._output_refresh_timer.stop()
         self._mesh_axes_update_timer.stop()
         self._disconnect_axes_limit_callbacks()
 

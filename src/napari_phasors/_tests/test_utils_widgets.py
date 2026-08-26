@@ -60,6 +60,35 @@ def test_histogram_widget_update_data_and_clear(qtbot):
     assert not widget.save_button.isEnabled()
 
 
+def test_histogram_empty_updates_reset_previous_data(qtbot):
+    """Empty single- and multi-data updates cannot retain stale bins."""
+    widget = HistogramWidget(bins=8)
+    qtbot.addWidget(widget)
+    widget.update_multi_data(
+        {
+            "Layer A": np.array([1.0, 2.0]),
+            "Layer B": np.array([2.0, 3.0]),
+        }
+    )
+
+    widget.update_data(np.array([np.nan, np.inf]))
+
+    assert widget.counts is None
+    assert widget.bin_edges is None
+    assert widget._datasets == {}
+    assert widget._counts_per_dataset == {}
+    assert widget._raw_valid_data is None
+
+    widget.update_data(np.array([1.0, 2.0]))
+    widget.update_multi_data({"Empty": np.array([np.nan])})
+
+    assert widget.counts is None
+    assert widget.bin_edges is None
+    assert widget._datasets == {}
+    assert widget._counts_per_dataset == {}
+    assert widget._raw_valid_data is None
+
+
 def test_histogram_widget_save_csv(qtbot, tmp_path, monkeypatch):
     """HistogramWidget should export CSV accurately in all modes."""
     from qtpy.QtWidgets import QFileDialog
@@ -284,6 +313,14 @@ def test_statistics_dock_widget_updates_for_single_and_grouped_data(qtbot):
     assert not stats_dock.group_stats_section.isHidden()
     assert stats_dock.group_stats_table.rowCount() == 2
 
+    histogram_widget.clear()
+
+    assert stats_dock.layer_stats_table.rowCount() == 0
+    assert stats_dock.group_stats_table.rowCount() == 0
+    assert stats_dock.layer_stats_section.isHidden()
+    assert stats_dock.group_stats_section.isHidden()
+    assert not stats_dock.export_csv_button.isEnabled()
+
 
 def test_histogram_dock_widget_links_statistics_dock(qtbot):
     """HistogramDockWidget should store a linked statistics dock."""
@@ -297,6 +334,27 @@ def test_histogram_dock_widget_links_statistics_dock(qtbot):
     hist_dock.link_statistics_dock(stats_dock)
 
     assert hist_dock._stats_dock is stats_dock
+
+
+def test_histogram_clear_resets_frame_sources_and_rename_migrates_them(qtbot):
+    """Explicit clear removes stale frame data; rename keeps frame keys synced."""
+    widget = HistogramWidget()
+    qtbot.addWidget(widget)
+    source = np.arange(8, dtype=float).reshape(2, 2, 2)
+    widget.set_frame_source(None, {"Old name": source})
+    widget.update_data(source, label="Old name")
+
+    widget.rename_dataset("Old name", "New name")
+
+    assert "Old name" not in widget._frame_source_datasets
+    assert widget._frame_source_datasets["New name"] is source
+
+    widget.clear()
+
+    assert widget._frame_source_datasets == {}
+    assert widget._frame_context is None
+    assert widget.counts is None
+    assert widget._datasets == {}
 
 
 def test_phasor_center_statistics_widget_update(qtbot):

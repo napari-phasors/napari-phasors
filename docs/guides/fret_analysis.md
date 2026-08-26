@@ -43,3 +43,9 @@ frequency described above:
 ## Results
 
 FRET efficiency values are computed per-pixel and can be visualized as a colormapped image layer. The results can also be explored quantitatively in the **Histogram and Statistics Table** widget, allowing you to analyze the distribution and summary statistics of FRET efficiency across your data. Results can be exported to CSV.
+
+The histogram and statistics table include only FRET outputs whose source
+layers are checked in **Phasor Layers**. Unchecking a source hides its FRET
+efficiency layer and removes it from the histogram without deleting the
+result. Rechecking the source restores the existing output. The FRET range
+control clips only outputs belonging to currently checked sources.
