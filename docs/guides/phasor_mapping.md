@@ -40,8 +40,8 @@ from the calibration tab when calibration is applied).
 
 These modes derive the polar coordinates of the phasor directly with no
 frequency input required.  A **Colormap** drop-down lets you choose the
-colormap for the output layer; the default colormap for Phase is *jet* and
-for Modulation is *viridis*.
+colormap for the output layer; the default colormap for Phase is *cool* and
+for Modulation is *PiYG*.
 
 An optional **Apply colormap to 2D Histogram** checkbox, when enabled,
 colors the phasor 2D histogram according to the phase or modulation value of
@@ -72,6 +72,17 @@ component or reflects mixed lifetimes.
 Click **Calculate Output** to compute the selected metric for all currently
 selected layers. A new napari image layer is created (or updated if it
 already exists) with the selected colormap applied.
+
+After the first successful calculation, changing **Parameter to Analyze** or
+the lifetime type automatically recalculates the new output for the currently
+selected layers. Before the first calculation, these controls only configure
+the requested output and do not start processing.
+
+The histogram and statistics table follow the layers checked in **Phasor
+Layers**. Unchecking a source removes its output from the histogram and hides
+its derived image layer without deleting it. Rechecking the source restores
+the existing output. Range changes affect only outputs whose source layers are
+currently checked.
 
 - View value distributions as histograms and summary statistics in the **Histogram and Statistics Table** widget
 - Compare layers as merged, individual, or grouped data

@@ -3000,13 +3000,8 @@ class HistogramWidget(QWidget):
         valid = self._filter_valid_values(data)
 
         if len(valid) == 0:
-            self.ax.clear()
-            self._style_axes()
-            self.fig.canvas.draw_idle()
-            self._settings_button.setEnabled(False)
-            self.save_button.setEnabled(False)
+            self._clear_histogram_data(clear_frame_source=False)
             self.show()
-            self.dataChanged.emit()
             return
 
         self._datasets = {label: valid}
@@ -3047,13 +3042,8 @@ class HistogramWidget(QWidget):
                 self._datasets[label] = valid
 
         if not self._datasets:
-            self.ax.clear()
-            self._style_axes()
-            self.fig.canvas.draw_idle()
-            self._settings_button.setEnabled(False)
-            self.save_button.setEnabled(False)
+            self._clear_histogram_data(clear_frame_source=False)
             self.show()
-            self.dataChanged.emit()
             return
 
         all_valid = np.concatenate(list(self._datasets.values()))
@@ -3094,6 +3084,10 @@ class HistogramWidget(QWidget):
             self._group_assignments[new_name] = self._group_assignments.pop(
                 old_name
             )
+        if old_name in self._frame_source_datasets:
+            self._frame_source_datasets[new_name] = (
+                self._frame_source_datasets.pop(old_name)
+            )
 
         if self._datasets:
             self._render()
@@ -3121,6 +3115,7 @@ class HistogramWidget(QWidget):
         """
         new_group_assignments = dict(self._group_assignments)
         new_layer_colors = dict(self._layer_colors)
+        new_frame_source_datasets = dict(self._frame_source_datasets)
         for old_label, new_label in old_to_new.items():
             if old_label == new_label:
                 continue
@@ -3130,8 +3125,13 @@ class HistogramWidget(QWidget):
                 ]
             if old_label in self._layer_colors:
                 new_layer_colors[new_label] = self._layer_colors[old_label]
+            if old_label in new_frame_source_datasets:
+                new_frame_source_datasets[new_label] = (
+                    new_frame_source_datasets.pop(old_label)
+                )
         self._group_assignments = new_group_assignments
         self._layer_colors = new_layer_colors
+        self._frame_source_datasets = new_frame_source_datasets
 
     def update_colormap(
         self,
@@ -3158,8 +3158,8 @@ class HistogramWidget(QWidget):
         if self.counts is not None:
             self._render()
 
-    def clear(self) -> None:
-        """Clear the histogram data and show empty axes with disabled buttons."""
+    def _clear_histogram_data(self, *, clear_frame_source):
+        """Reset histogram state, optionally discarding time-lapse sources."""
         self.counts = None
         self.bin_edges = None
         self.bin_centers = None
@@ -3167,12 +3167,19 @@ class HistogramWidget(QWidget):
         self._counts_per_dataset = {}
         self._raw_valid_data = None
         self._previous_dataset_count = 0
+        if clear_frame_source:
+            self._frame_context = None
+            self._frame_source_datasets = {}
         self.ax.clear()
         self._style_axes()
         self.fig.canvas.draw_idle()
         self._settings_button.setEnabled(False)
         self.save_button.setEnabled(False)
         self.dataChanged.emit()
+
+    def clear(self) -> None:
+        """Clear histogram data, including any time-lapse source."""
+        self._clear_histogram_data(clear_frame_source=True)
 
     @property
     def display_mode(self) -> str:
@@ -4417,6 +4424,8 @@ class StatisticsDockWidget(QWidget):
             self.layer_stats_section.setVisible(True)
             self.group_stats_section.setVisible(False)
         else:
+            self.layer_stats_table.setRowCount(0)
+            self.group_stats_table.setRowCount(0)
             self.layer_stats_section.setVisible(False)
             self.group_stats_section.setVisible(False)
 

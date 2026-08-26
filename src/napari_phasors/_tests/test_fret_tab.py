@@ -5,6 +5,7 @@ import pytest
 from numpy.testing import assert_array_equal
 from phasorpy.lifetime import phasor_from_fret_donor
 from phasorpy.phasor import phasor_nearest_neighbor
+from qtpy.QtCore import Qt
 from superqt import QToggleSwitch
 
 from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
@@ -2286,6 +2287,9 @@ def test_reconnect_existing_fret_layer_direct(make_viewer_model, qtbot):
     widget = parent.fret_tab
 
     layer_name = "test_layer"
+    source_layer = create_image_layer_with_phasors()
+    source_layer.name = layer_name
+    viewer.add_layer(source_layer)
     fret_layer_name = f"FRET efficiency: {layer_name}"
     layer = Image(np.random.random((10, 10)), name=fret_layer_name)
     viewer.add_layer(layer)
@@ -2379,3 +2383,275 @@ def test_single_layer_histogram_named_after_fret_layer(
     # The range-changed path re-labels the same way.
     widget._on_fret_range_changed(0.1, 0.9)
     assert list(widget.histogram_widget._datasets.keys()) == [fret_layer_name]
+
+
+def _setup_fret_selection_workflow(make_napari_viewer, qtbot):
+    """Create two selected source layers and calculate FRET efficiency."""
+    viewer = make_napari_viewer()
+    layers = []
+    for name in ("fret_a", "fret_b"):
+        layer = create_image_layer_with_phasors()
+        layer.name = name
+        viewer.add_layer(layer)
+        layers.append(layer)
+
+    parent = PlotterWidget(viewer)
+    qtbot.addWidget(parent)
+    parent.show()
+    parent.image_layers_checkable_combobox.setCheckedItems(
+        [layer.name for layer in layers]
+    )
+    fret = parent.fret_tab
+    parent.tab_widget.setCurrentWidget(fret)
+    fret.donor_line_edit.setText("2.0")
+    fret.frequency_input.setText("80")
+    fret.background_real_edit.setText("0.1")
+    fret.background_imag_edit.setText("0.1")
+    fret.calculate_fret_efficiency_button.click()
+    fret.histogram_widget.display_mode = "Individual layers"
+    return viewer, parent, fret, layers
+
+
+def _click_fret_source(qtbot, parent, source_name):
+    """Toggle a Phasor Layers row through the visible popup."""
+    combo = parent.image_layers_checkable_combobox
+    row = next(
+        row
+        for row in range(combo._header_count, combo.model().rowCount())
+        if combo.model().item(row).text() == source_name
+    )
+    combo.showPopup()
+    view = combo.view()
+    rect = view.visualRect(combo.model().index(row, 0))
+    point = rect.center()
+    point.setX(rect.left() + 5)
+    qtbot.mouseClick(view.viewport(), Qt.LeftButton, pos=point)
+
+
+def test_fret_histogram_follows_real_source_selection(
+    make_napari_viewer, qtbot
+):
+    """FRET curves, statistics, and outputs follow real popup clicks."""
+    viewer, parent, fret, _ = _setup_fret_selection_workflow(
+        make_napari_viewer, qtbot
+    )
+    output_a = "FRET efficiency: fret_a"
+    output_b = "FRET efficiency: fret_b"
+    stats = parent.fret_statistics_dock_widget.layer_stats_table
+
+    assert list(fret.histogram_widget._datasets) == [output_a, output_b]
+    assert len(fret.histogram_widget.ax.lines) == 2
+    assert stats.rowCount() == 2
+    assert viewer.layers[output_a].metadata['phasor_fret_output'] == {
+        'source_layer': 'fret_a'
+    }
+
+    _click_fret_source(qtbot, parent, "fret_b")
+    qtbot.waitUntil(
+        lambda: parent.get_selected_layer_names() == ["fret_a"]
+        and list(fret.histogram_widget._datasets) == [output_a],
+        timeout=5000,
+    )
+
+    assert len(fret.histogram_widget.ax.lines) == 1
+    assert stats.rowCount() == 1
+    assert viewer.layers[output_a].visible is True
+    assert viewer.layers[output_b].visible is False
+
+    _click_fret_source(qtbot, parent, "fret_b")
+    qtbot.waitUntil(
+        lambda: parent.get_selected_layer_names() == ["fret_a", "fret_b"]
+        and len(fret.histogram_widget._datasets) == 2,
+        timeout=5000,
+    )
+
+    assert viewer.layers[output_b].visible is True
+    assert len(fret.histogram_widget.ax.lines) == 2
+    assert stats.rowCount() == 2
+
+
+def test_fret_range_only_changes_selected_outputs(make_napari_viewer, qtbot):
+    """FRET range clipping leaves deselected output data untouched."""
+    viewer, parent, fret, _ = _setup_fret_selection_workflow(
+        make_napari_viewer, qtbot
+    )
+    output_a = viewer.layers["FRET efficiency: fret_a"]
+    output_b = viewer.layers["FRET efficiency: fret_b"]
+    output_a_original = output_a.metadata['fret_data_original'].copy()
+    output_b_before = output_b.data.copy()
+    slider_max_before = fret.histogram_widget.range_slider.maximum()
+
+    parent.image_layers_checkable_combobox.setCheckedItems(["fret_a"])
+    parent._layer_selection_timer.stop()
+    parent._process_layer_selection_change()
+    fret.histogram_widget.set_range(0.2, 0.8)
+    fret._on_fret_range_changed(0.2, 0.8)
+
+    np.testing.assert_allclose(
+        output_a.data,
+        np.clip(output_a_original, 0.2, 0.8),
+        equal_nan=True,
+    )
+    np.testing.assert_array_equal(output_b.data, output_b_before)
+    assert fret.histogram_widget.range_slider.maximum() == slider_max_before
+
+    parent.image_layers_checkable_combobox.setCheckedItems(
+        ["fret_a", "fret_b"]
+    )
+    parent._layer_selection_timer.stop()
+    parent._process_layer_selection_change()
+
+    np.testing.assert_allclose(
+        output_b.data,
+        np.clip(output_b.metadata['fret_data_original'], 0.2, 0.8),
+        equal_nan=True,
+    )
+    assert fret.histogram_widget.get_range() == (0.2, 0.8)
+
+
+def test_fret_empty_source_selection_clears_histogram(
+    make_napari_viewer, qtbot
+):
+    """Clearing Phasor Layers removes stale FRET statistics and curves."""
+    viewer, parent, fret, _ = _setup_fret_selection_workflow(
+        make_napari_viewer, qtbot
+    )
+    parent.image_layers_checkable_combobox.setCheckedItems([])
+    parent._layer_selection_timer.stop()
+    parent._process_layer_selection_change()
+
+    assert fret.histogram_widget.counts is None
+    assert fret.histogram_widget._datasets == {}
+    assert parent.fret_statistics_dock_widget.layer_stats_table.rowCount() == 0
+    assert viewer.layers["FRET efficiency: fret_a"].visible is False
+    assert viewer.layers["FRET efficiency: fret_b"].visible is False
+
+
+def test_fret_selection_clamps_disjoint_shared_range_to_new_output(
+    make_napari_viewer, qtbot
+):
+    """A disjoint prior range resets to the newly selected output bounds."""
+    viewer, parent, fret, _ = _setup_fret_selection_workflow(
+        make_napari_viewer, qtbot
+    )
+    output_b = viewer.layers["FRET efficiency: fret_b"]
+    replacement = np.linspace(0.6, 1.0, output_b.data.size).reshape(
+        output_b.data.shape
+    )
+    output_b.metadata['fret_data_original'] = replacement.copy()
+    output_b.data = replacement.copy()
+    fret.histogram_widget.set_range(0.2, 0.4)
+
+    parent.image_layers_checkable_combobox.setCheckedItems(["fret_b"])
+    parent._layer_selection_timer.stop()
+    parent._process_layer_selection_change()
+
+    assert fret.histogram_widget.get_range() == (0.6, 1.0)
+    np.testing.assert_allclose(output_b.data, replacement)
+
+
+def test_fret_custom_output_name_survives_rerun_and_source_rename(
+    make_napari_viewer, qtbot
+):
+    """Tagged FRET outputs remain authoritative after manual renaming."""
+    viewer, _, fret, _ = _setup_fret_selection_workflow(
+        make_napari_viewer, qtbot
+    )
+    output = viewer.layers["FRET efficiency: fret_a"]
+    output.name = "Custom FRET result"
+    output_id = id(output)
+
+    fret.calculate_fret_efficiency()
+
+    assert id(viewer.layers["Custom FRET result"]) == output_id
+    assert "FRET efficiency: fret_a" not in viewer.layers
+    assert fret._fret_output_layers()['fret_a'] is output
+
+    fret.rename_layer("fret_a", "fret_a_renamed")
+
+    assert output.name == "Custom FRET result"
+    assert output.metadata['phasor_fret_output'] == {
+        'source_layer': 'fret_a_renamed'
+    }
+
+
+def test_existing_fret_output_initializes_full_range_before_clipping(
+    make_viewer_model, qtbot
+):
+    """Restored tagged output is not clipped by the slider's default range."""
+    viewer = make_viewer_model()
+    source = create_image_layer_with_phasors()
+    source.name = "restored_source"
+    viewer.add_layer(source)
+    original = np.linspace(0.0, 1.0, 10).reshape(2, 5)
+    output = viewer.add_image(
+        original.copy(),
+        name="Custom restored FRET",
+        metadata={
+            'fret_data_original': original.copy(),
+            'phasor_fret_output': {'source_layer': source.name},
+        },
+    )
+
+    parent = PlotterWidget(viewer)
+
+    np.testing.assert_array_equal(output.data, original)
+    assert parent.fret_tab._fret_range_initialized is True
+    assert parent.fret_tab.histogram_widget.get_range() == (0.0, 1.0)
+
+
+def test_reconnect_existing_fret_layer_registers_output_once(
+    make_viewer_model, qtbot
+):
+    """Direct reconnect uses the lifecycle-managed FRET registry."""
+    viewer = make_viewer_model()
+    source = create_image_layer_with_phasors()
+    source.name = "registered_source"
+    viewer.add_layer(source)
+    output = viewer.add_image(
+        np.linspace(0.0, 1.0, 10).reshape(2, 5),
+        name="FRET efficiency: registered_source",
+    )
+    parent = PlotterWidget(viewer)
+    fret = parent.fret_tab
+
+    fret._reconnect_existing_fret_layer(source.name)
+    fret._reconnect_existing_fret_layer(source.name)
+
+    assert fret.fret_layer is output
+    assert fret.fret_layers == [output]
+
+
+def test_fret_defensive_selection_saved_reconnect_and_canonical_rename(
+    make_viewer_model, qtbot
+):
+    """Cover defensive selection, saved restore, and canonical rename paths."""
+    viewer = make_viewer_model()
+    source = create_image_layer_with_phasors()
+    source.name = "legacy_fret_source"
+    viewer.add_layer(source)
+    output = viewer.add_image(
+        np.linspace(0.0, 1.0, 10).reshape(2, 5),
+        name="FRET efficiency: legacy_fret_source",
+    )
+    parent = PlotterWidget(viewer)
+    fret = parent.fret_tab
+
+    with patch.object(fret, "parent_widget", None):
+        assert fret._get_selected_source_names() == set()
+    with patch.object(
+        parent, "get_selected_layers", side_effect=AttributeError
+    ):
+        assert fret._get_selected_source_names() == set()
+
+    fret._saved_colormap_name = "viridis"
+    with patch.object(fret, "_apply_saved_fret_colormap_settings") as apply:
+        fret._reconnect_existing_fret_layer(source.name)
+    apply.assert_called_once()
+
+    fret.rename_layer("legacy_fret_source", "renamed_fret_source")
+
+    assert output.name == "FRET efficiency: renamed_fret_source"
+    assert output.metadata['phasor_fret_output'] == {
+        'source_layer': 'renamed_fret_source'
+    }
