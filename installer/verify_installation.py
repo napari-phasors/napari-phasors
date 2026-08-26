@@ -78,6 +78,30 @@ def check_app() -> None:
         )
 
 
+def check_qt() -> None:
+    """Qt must find its platform plugin inside the bundle.
+
+    A wrong QT_PLUGIN_PATH is the classic "installer builds fine but the app
+    never opens" failure, and it is silent: Qt aborts the process before
+    anything can report it. Creating a QApplication is the assertion - if the
+    plugin cannot be loaded, this call kills the interpreter and the check
+    never prints, failing the job.
+
+    Deliberately no OpenGL here. `napari --info` probes GL through vispy,
+    which segfaults under the offscreen platform on headless runners.
+    """
+    from qtpy.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    check(
+        'Qt platform plugin loads',
+        bool(app.platformName()),
+        f'platform={app.platformName()!r} '
+        f'QT_QPA_PLATFORM={os.environ.get("QT_QPA_PLATFORM", "<unset>")} '
+        f'QT_PLUGIN_PATH={os.environ.get("QT_PLUGIN_PATH", "<unset>")}',
+    )
+
+
 def check_plugin_manager(prefix: Path, root: Path) -> None:
     check(
         'napari_plugin_manager importable (Plugins menu entry)',
@@ -173,6 +197,7 @@ def main() -> int:
 
     check_layout(prefix, root)
     check_app()
+    check_qt()
     check_plugin_manager(prefix, root)
 
     print()

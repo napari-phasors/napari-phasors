@@ -107,10 +107,10 @@ jobs:
         run: ls -la installer/napari-phasors-*
 
       # Install the built .sh offline and check the resulting bundle the way a
-      # user would meet it: the real launcher, under Xvfb, with the real xcb
-      # platform plugin and no terminal attached. This catches both "installer
-      # builds fine but the app never opens" and "app opens but cannot install
-      # plugins", which are otherwise invisible until someone tests by hand.
+      # user would meet it: under Xvfb, with the real xcb platform plugin and no
+      # terminal attached. This catches both "installer builds fine but the app
+      # never opens" and "app opens but cannot install plugins", which are
+      # otherwise invisible until someone tests by hand.
       - name: Smoke test Linux installer
         if: matrix.platform == 'linux'
         shell: bash -el {0}
@@ -129,19 +129,22 @@ jobs:
               HTTP_PROXY="${OFFLINE_PROXY}" HTTPS_PROXY="${OFFLINE_PROXY}" \
               bash "${SH_INSTALLER[0]}" -b -p "${INSTALL_DIR}"
 
-          echo "=== Verifying bundle ==="
+          echo "=== Verifying bundle (real xcb platform plugin under Xvfb) ==="
           # Source the same file the launcher does, so the checks see exactly
           # the environment napari runs in - including this runner's own conda
-          # being shadowed by the bundled one.
+          # being shadowed by the bundled one, and QT_QPA_PLATFORM=xcb.
           export NAPARI_PHASORS_ROOT="${INSTALL_DIR}"
           # shellcheck source=installer/launcher-env.sh
           . "${INSTALL_DIR}/launcher-env.sh"
-          QT_QPA_PLATFORM=offscreen "${NAPARI_PHASORS_ENV}/bin/python" \
+          xvfb-run -a "${NAPARI_PHASORS_ENV}/bin/python" \
             installer/verify_installation.py
 
-          echo "=== Launcher test (xcb under Xvfb) ==="
+          # `--version` rather than `--info`: --info probes OpenGL through
+          # vispy, which segfaults on headless runners. Qt initialisation is
+          # asserted by verify_installation.py instead.
+          echo "=== Launcher test ==="
           STATUS=0
-          xvfb-run -a "${INSTALL_DIR}/napari-phasors" --info || STATUS=$?
+          xvfb-run -a "${INSTALL_DIR}/napari-phasors" --version || STATUS=$?
           echo "=== Launch log ==="
           cat "${INSTALL_DIR}/last-launch.log" 2>/dev/null || echo "(no log written)"
           if [ "${STATUS}" -ne 0 ]; then
@@ -232,10 +235,13 @@ jobs:
           QT_QPA_PLATFORM=offscreen "${NAPARI_PHASORS_ENV}/bin/python" \
             installer/verify_installation.py
 
+          # `--version` rather than `--info`: --info probes OpenGL through
+          # vispy, which segfaults under the offscreen platform. Qt
+          # initialisation is asserted by verify_installation.py instead.
           echo "=== Launcher test (through the .app shim) ==="
           STATUS=0
           QT_QPA_PLATFORM=offscreen \
-            "${APP_DIR}/Contents/MacOS/napari-phasors" --info || STATUS=$?
+            "${APP_DIR}/Contents/MacOS/napari-phasors" --version || STATUS=$?
           echo "=== Launch log ==="
           cat "${TMPDIR:-/tmp}/napari-phasors-launch.log" 2>/dev/null \
             || echo "(no log written)"
@@ -305,8 +311,11 @@ jobs:
           REM Exercise the same entry point the shortcut launches. napari is a
           REM noarch package, so Scripts\napari.exe is generated at install
           REM time rather than shipped; this catches it not being generated.
-          echo === napari --info ===
-          "%APP_ENV%\Scripts\napari.exe" --info
+          REM --version rather than --info: --info probes OpenGL through vispy,
+          REM which segfaults under the offscreen platform. Qt initialisation is
+          REM asserted by verify_installation.py instead.
+          echo === napari --version ===
+          "%APP_ENV%\Scripts\napari.exe" --version
           if errorlevel 1 exit /b 1
 
       - name: Upload installer as artifact
