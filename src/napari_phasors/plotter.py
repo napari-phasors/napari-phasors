@@ -6574,6 +6574,8 @@ class PlotterWidget(QWidget):
             self._last_scatter_color_indices = None
             self._remove_colorbar()
             self._clear_all_tab_artists()
+            if hasattr(self, 'components_tab'):
+                self.components_tab.on_layer_selection_changed()
             self.set_axes_labels()
             self._update_plot_bg_color()
             if self.toggle_semi_circle:
@@ -6650,6 +6652,7 @@ class PlotterWidget(QWidget):
                 self.components_tab._restore_on_layer_change()
             else:
                 self.components_tab._needs_update = True
+            self.components_tab.on_layer_selection_changed()
 
         if hasattr(self, 'fret_tab'):
             self.fret_tab._teardown_on_layer_change()
@@ -6692,6 +6695,9 @@ class PlotterWidget(QWidget):
             self._update_grid_view(selected_layers)
             self._update_contour_controls_visibility()
             self._refresh_timelapse_controls()
+
+            if hasattr(self, 'components_tab'):
+                self.components_tab.on_layer_selection_changed()
 
             layer_name = self.get_primary_layer_name()
             if not layer_name:
