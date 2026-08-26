@@ -592,3 +592,95 @@ class TestRefineReentrancy:
         manager._on_timeout()
 
         assert manager.lod_for(layer).factor < coarse
+
+
+class TestNapariApiCompatibility:
+    """The camera and canvas moved in napari 0.9; both shapes must work."""
+
+    class _ModernViewer:
+        """Viewer shaped like napari 0.9: ``scene.camera`` and ``canvas.size``."""
+
+        def __init__(self, zoom=1.0, center=(0.0, 0.0, 0.0), size=(600, 800)):
+            self.scene = type(
+                "Scene", (), {"camera": _StubCamera(zoom, center)}
+            )()
+            self.canvas = type("Canvas", (), {"size": size})()
+
+    class _LegacyViewer:
+        """Viewer shaped like napari 0.8: ``camera`` and ``_canvas_size``."""
+
+        def __init__(self, zoom=1.0, center=(0.0, 0.0, 0.0), size=(600, 800)):
+            self.camera = _StubCamera(zoom, center)
+            self._canvas_size = size
+
+    def test_camera_is_found_on_both_shapes(self):
+        from napari_phasors._lod import viewer_camera
+
+        modern = self._ModernViewer()
+        assert viewer_camera(modern) is modern.scene.camera
+
+        legacy = self._LegacyViewer()
+        assert viewer_camera(legacy) is legacy.camera
+
+        assert viewer_camera(object()) is None
+
+    def test_canvas_size_is_found_on_both_shapes(self):
+        from napari_phasors._lod import viewer_canvas_size
+
+        assert viewer_canvas_size(self._ModernViewer()) == (600.0, 800.0)
+        assert viewer_canvas_size(self._LegacyViewer()) == (600.0, 800.0)
+
+        assert viewer_canvas_size(object()) is None
+        assert viewer_canvas_size(self._LegacyViewer(size=())) is None
+        assert viewer_canvas_size(self._LegacyViewer(size=(5,))) is None
+
+    def test_visible_region_works_through_the_modern_api(
+        self, make_viewer_model
+    ):
+        """The regression: a 0.9-shaped viewer must still yield a rectangle."""
+        viewer = make_viewer_model()
+        layer = make_lod_layer(viewer, size=256)
+        manager = LodManager(viewer)
+        lod = manager.attach(layer, auto=False)
+
+        manager.viewer = self._ModernViewer(zoom=0.01)
+        assert manager.visible_region(lod) == (0, 256, 0, 256)
+
+        manager.viewer = self._ModernViewer(
+            zoom=20.0, center=(0.0, 128.0, 128.0)
+        )
+        narrow = manager.visible_region(lod)
+        assert narrow is not None
+        assert (narrow[1] - narrow[0]) < 256
+
+    def test_refine_now_works_through_the_modern_api(self, make_viewer_model):
+        """Refinement follows a 0.9-shaped camera as well as a 0.8-shaped one."""
+        viewer = make_viewer_model()
+        layer = make_lod_layer(viewer, size=256)
+        manager = LodManager(viewer, budget=4096)
+        manager.attach(layer, auto=True)
+        coarse = manager.lod_for(layer).factor
+
+        manager.viewer = self._ModernViewer(
+            zoom=40.0, center=(0.0, 128.0, 128.0)
+        )
+        changed = manager.refine_now()
+
+        assert changed == [layer]
+        assert manager.lod_for(layer).factor < coarse
+
+    def test_camera_connection_uses_the_modern_api(self, make_viewer_model):
+        """Connecting must reach the same Camera the modern viewer exposes."""
+        viewer = make_viewer_model()
+        manager = LodManager(viewer)
+        camera = viewer.camera
+
+        # A 0.9-shaped wrapper around the real camera object.
+        manager.viewer = type(
+            "V", (), {"scene": type("S", (), {"camera": camera})()}
+        )()
+
+        manager.set_enabled(True)
+        assert manager.enabled
+        manager.disconnect()
+        assert not manager.enabled

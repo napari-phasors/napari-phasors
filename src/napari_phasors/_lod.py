@@ -48,7 +48,13 @@ from ._utils import (
     compute_filter_and_threshold,
 )
 
-__all__ = ["PhasorLod", "LodManager", "layer_supports_lod"]
+__all__ = [
+    "PhasorLod",
+    "LodManager",
+    "layer_supports_lod",
+    "viewer_camera",
+    "viewer_canvas_size",
+]
 
 #: Metadata key holding a layer's :class:`PhasorLod`.
 METADATA_KEY = "lod"
@@ -68,6 +74,46 @@ def layer_supports_lod(layer):
         key in metadata
         for key in ("original_mean", "G_original", "S_original")
     )
+
+
+def viewer_camera(viewer):
+    """Return *viewer*'s camera, across napari versions.
+
+    napari 0.9 moved the camera to ``viewer.scene.camera``. ``viewer.camera``
+    still resolves there, but only by way of a deprecation warning, so the
+    new location is tried first.
+
+    Returns
+    -------
+    object or None
+        ``None`` for a viewer that exposes no camera at all.
+    """
+    camera = getattr(getattr(viewer, "scene", None), "camera", None)
+    if camera is not None:
+        return camera
+    return getattr(viewer, "camera", None)
+
+
+def viewer_canvas_size(viewer):
+    """Return the canvas ``(height, width)`` in pixels, or ``None``.
+
+    napari 0.9 replaced the private ``viewer._canvas_size`` with
+    ``viewer.canvas.size``. Both follow the NumPy height-by-width order.
+    Viewers older than 0.9 have no ``canvas`` attribute at all, so there is
+    nothing to confuse the modern lookup with.
+
+    Returns
+    -------
+    tuple of float or None
+        ``None`` when the size cannot be determined, which is the caller's
+        signal to skip refinement rather than guess a viewport.
+    """
+    size = getattr(getattr(viewer, "canvas", None), "size", None)
+    if size is None:
+        size = getattr(viewer, "_canvas_size", None)
+    if not size or len(size) < 2:
+        return None
+    return float(size[0]), float(size[1])
 
 
 def _bin_mask(mask, factor):
@@ -401,14 +447,14 @@ class LodManager(QObject):
             self._disconnect_camera()
 
     def _connect_camera(self):
-        camera = getattr(self.viewer, "camera", None)
+        camera = viewer_camera(self.viewer)
         if camera is None:
             return
         camera.events.zoom.connect(self._on_camera_moved)
         camera.events.center.connect(self._on_camera_moved)
 
     def _disconnect_camera(self):
-        camera = getattr(self.viewer, "camera", None)
+        camera = viewer_camera(self.viewer)
         if camera is None:
             return
         for event in (camera.events.zoom, camera.events.center):
@@ -475,7 +521,7 @@ class LodManager(QObject):
             ``(row_start, row_stop, col_start, col_stop)``, clipped to the
             image, or ``None`` if the camera cannot be interpreted.
         """
-        camera = getattr(self.viewer, "camera", None)
+        camera = viewer_camera(self.viewer)
         if camera is None:
             return None
 
@@ -483,10 +529,10 @@ class LodManager(QObject):
         if zoom <= 0:
             return None
 
-        canvas = getattr(self.viewer, "_canvas_size", None)
-        if not canvas or len(canvas) < 2:
+        canvas = viewer_canvas_size(self.viewer)
+        if canvas is None:
             return None
-        canvas_height, canvas_width = float(canvas[0]), float(canvas[1])
+        canvas_height, canvas_width = canvas
 
         center = np.asarray(camera.center, dtype=float)
         if center.size < 2:
