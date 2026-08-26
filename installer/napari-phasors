@@ -1,0 +1,30 @@
+#!/bin/bash
+# Launcher for the bundled napari-phasors application (Linux and macOS).
+#
+# Installed at the root of the constructor prefix; the macOS .app bundle
+# execs this same script so both platforms share one code path.
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export NAPARI_PHASORS_ROOT="${DIR}"
+# shellcheck source=./launcher-env.sh
+. "${DIR}/launcher-env.sh"
+
+# The Linux .desktop entry uses Terminal=false and macOS Finder launches have
+# no terminal either, so any startup error would otherwise be invisible. When
+# not attached to a terminal, keep a log of the last launch attempt.
+if [ ! -t 1 ]; then
+    if [ "$(uname)" = "Darwin" ]; then
+        # Do not write inside the .app bundle on every launch.
+        LOG_FILE="${TMPDIR:-/tmp}/napari-phasors-launch.log"
+    else
+        LOG_FILE="${DIR}/last-launch.log"
+    fi
+    if ! : > "${LOG_FILE}" 2>/dev/null; then
+        LOG_FILE="${TMPDIR:-/tmp}/napari-phasors-launch.log"
+        : > "${LOG_FILE}" 2>/dev/null || LOG_FILE=/dev/null
+    fi
+    exec >> "${LOG_FILE}" 2>&1
+    echo "napari-phasors launch: $(date)"
+fi
+
+exec "${NAPARI_PHASORS_ENV}/bin/python" -m napari "$@"
