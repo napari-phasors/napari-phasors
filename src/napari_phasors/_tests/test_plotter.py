@@ -1446,3 +1446,85 @@ def test_on_image_layer_changed_multiple_calls(
         # Each call should result in plot being called once
         assert mock_plot.call_count == 3
         plotter.deleteLater()
+
+
+def test_reset_layer_choices_preserves_primary_and_explicit_empty_selection(
+    make_viewer_model, qtbot
+):
+    """Unrelated layer events cannot replace the primary or empty selection."""
+    viewer = make_viewer_model()
+    layer_a = create_image_layer_with_phasors()
+    layer_a.name = "source_a"
+    layer_b = create_image_layer_with_phasors()
+    layer_b.name = "source_b"
+    viewer.add_layer(layer_a)
+    viewer.add_layer(layer_b)
+    plotter = PlotterWidget(viewer)
+    combo = plotter.image_layers_checkable_combobox
+    combo.setCheckedItems(["source_a", "source_b"])
+    combo.setPrimaryLayer("source_b")
+
+    derived = viewer.add_image(np.zeros((2, 2)), name="derived")
+
+    assert combo.checkedItems() == ["source_a", "source_b"]
+    assert combo.getPrimaryLayer() == "source_b"
+
+    combo.setCheckedItems([])
+    viewer.layers.remove(derived)
+
+    assert combo.checkedItems() == []
+    assert combo.getPrimaryLayer() == ""
+
+
+def test_first_source_added_to_empty_viewer_is_selected(
+    make_viewer_model, qtbot
+):
+    """Initial empty state differs from a user-cleared selection."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    layer = create_image_layer_with_phasors()
+    layer.name = "first_source"
+
+    viewer.add_layer(layer)
+
+    assert plotter.get_selected_layer_names() == ["first_source"]
+    assert plotter.get_primary_layer_name() == "first_source"
+
+
+def test_single_layer_selection_restores_its_full_harmonic_range(
+    make_viewer_model, qtbot
+):
+    """Removing a restrictive peer restores the remaining layer's harmonics."""
+    viewer = make_viewer_model()
+    layer_a = create_image_layer_with_phasors(harmonic=[1, 2, 3])
+    layer_a.name = "multi_harmonic"
+    layer_b = create_image_layer_with_phasors(harmonic=[1])
+    layer_b.name = "single_harmonic"
+    viewer.add_layer(layer_a)
+    viewer.add_layer(layer_b)
+    plotter = PlotterWidget(viewer)
+    combo = plotter.image_layers_checkable_combobox
+
+    combo.setCheckedItems(["multi_harmonic", "single_harmonic"])
+    plotter._layer_selection_timer.stop()
+    plotter._process_layer_selection_change()
+    assert plotter.harmonic_spinbox.maximum() == 1
+
+    combo.setCheckedItems(["multi_harmonic"])
+    plotter._layer_selection_timer.stop()
+    plotter._process_layer_selection_change()
+    assert plotter.harmonic_spinbox.minimum() == 1
+    assert plotter.harmonic_spinbox.maximum() == 3
+
+
+def test_harmonic_bounds_ignore_empty_or_missing_harmonics(
+    make_viewer_model, qtbot
+):
+    """Harmonic-bound refresh safely ignores unavailable selections."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    layer = create_image_layer_with_phasors()
+    layer.metadata.pop("harmonics", None)
+
+    plotter._update_harmonic_bounds([])
+    plotter._update_harmonic_bounds([layer])

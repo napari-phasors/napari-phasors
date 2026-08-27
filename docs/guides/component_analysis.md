@@ -110,4 +110,9 @@ analyzed quantitatively in the **Histogram and Statistics Table** widget.
 - Compare layers as merged, individual, or grouped data
 - Export summary statistics to CSV
 
+The histogram and statistics table always reflect the layers currently checked
+in **Phasor Layers**. Checking or unchecking a layer updates them immediately,
+and the fraction image layers of unchecked layers are hidden rather than
+deleted, so re-checking a layer restores its results straight away.
+
 For full histogram/table options, see {doc}`histogram_statistics`.

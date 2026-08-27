@@ -5950,23 +5950,28 @@ class PlotterWidget(QWidget):
         """
         Broadcast the frequency value to all relevant input fields and update semicircle.
         """
+        frequency = None
+        if value and value.strip():
+            try:
+                frequency = float(value)
+            except (TypeError, ValueError):
+                return
+            if not np.isfinite(frequency) or frequency <= 0:
+                return
+
         self.calibration_tab.calibration_widget.frequency_input.blockSignals(
             True
         )
         self.phasor_mapping_tab.frequency_input.blockSignals(True)
         self.fret_tab.frequency_input.blockSignals(True)
 
-        try:
-            if value and value.strip():
-                freq_val = float(value)
-                layer_name = (
-                    self.image_layer_with_phasor_features_combobox.currentText()
-                )
-                if layer_name and layer_name in self.viewer.layers:
-                    layer = self.viewer.layers[layer_name]
-                    update_frequency_in_metadata(layer, freq_val)
-        except (ValueError, TypeError):
-            pass
+        if frequency is not None:
+            layer_name = (
+                self.image_layer_with_phasor_features_combobox.currentText()
+            )
+            if layer_name and layer_name in self.viewer.layers:
+                layer = self.viewer.layers[layer_name]
+                update_frequency_in_metadata(layer, frequency)
 
         self.calibration_tab.calibration_widget.frequency_input.setText(value)
         self.phasor_mapping_tab.frequency_input.setText(value)
@@ -6296,6 +6301,10 @@ class PlotterWidget(QWidget):
         try:
             # Store current selection
             previously_selected = self.get_selected_layer_names()
+            previous_primary = self.get_primary_layer_name()
+            previous_output_inventory = getattr(
+                self, '_analysis_output_inventory', ()
+            )
             mask_layer_combobox_current_text = (
                 self.mask_layer_combobox.currentText()
             )
@@ -6344,6 +6353,9 @@ class PlotterWidget(QWidget):
                     renamed_images.get(name, name)
                     for name in previously_selected
                 ]
+                previous_primary = renamed_images.get(
+                    previous_primary, previous_primary
+                )
                 self._mask_assignments = {
                     renamed_images.get(
                         image_layer_name, image_layer_name
@@ -6358,6 +6370,12 @@ class PlotterWidget(QWidget):
                 }
                 self._notify_tabs_of_renamed_layers(renamed_images)
             self._image_layers_by_id = image_layers_by_id
+            current_output_inventory = tuple(
+                (id(layer), layer.name)
+                for layer in self.viewer.layers
+                if self._is_analysis_output_layer(layer)
+            )
+            self._analysis_output_inventory = current_output_inventory
 
             # If mask layers were renamed, keep combobox and assignments synced
             # by matching layer object identity across updates.
@@ -6387,10 +6405,20 @@ class PlotterWidget(QWidget):
                 checked = name in previously_selected
                 self.image_layers_checkable_combobox.addItem(name, checked)
 
-            # If no layers were previously selected and we have layers, select the first one
-            if not previously_selected and layer_names:
+            explicitly_empty = getattr(
+                self, '_explicit_empty_layer_selection', False
+            )
+            if (
+                not previously_selected
+                and layer_names
+                and not explicitly_empty
+            ):
                 self.image_layers_checkable_combobox.setCheckedItems(
                     [layer_names[0]]
+                )
+            elif previous_primary in previously_selected:
+                self.image_layers_checkable_combobox.setPrimaryLayer(
+                    previous_primary
                 )
 
             self.mask_layer_combobox.addItems(["None"] + mask_layer_names)
@@ -6478,14 +6506,49 @@ class PlotterWidget(QWidget):
             self._mask_layers_by_id = mask_layers_by_id
 
             new_selected = self.get_selected_layer_names()
-            if new_selected != previously_selected or (
-                not previously_selected and new_selected
+            new_primary = self.get_primary_layer_name()
+            if (
+                new_selected != previously_selected
+                or new_primary != previous_primary
+                or (not previously_selected and new_selected)
             ):
                 self.on_image_layer_changed()
                 self._sync_frequency_inputs_from_metadata()
+            elif current_output_inventory != previous_output_inventory:
+                self._notify_analysis_tabs_layer_selection_changed()
 
         finally:
             self._resetting_layer_choices = False
+
+    @staticmethod
+    def _is_analysis_output_layer(layer):
+        """Return whether an image layer is an analysis-derived output."""
+        if not isinstance(layer, Image):
+            return False
+        if any(
+            key in layer.metadata
+            for key in (
+                'phasor_component_fraction',
+                'phasor_mapping_output',
+                'phasor_fret_output',
+            )
+        ):
+            return True
+        name = layer.name
+        if " fractions: " in name or " fraction: " in name:
+            return True
+        if name.startswith("FRET efficiency: "):
+            return True
+        return any(
+            name.startswith(f"{output_type}: ")
+            for output_type in (
+                "Phase",
+                "Modulation",
+                "Apparent Phase Lifetime",
+                "Apparent Modulation Lifetime",
+                "Normal Lifetime",
+            )
+        )
 
     def on_image_layer_changed(self):
         """Handle changes to the image layer with phasor features.
@@ -6574,6 +6637,16 @@ class PlotterWidget(QWidget):
             self._last_scatter_color_indices = None
             self._remove_colorbar()
             self._clear_all_tab_artists()
+            for tab_name in (
+                'phasor_mapping_tab',
+                'components_tab',
+                'fret_tab',
+            ):
+                tab = getattr(self, tab_name, None)
+                if tab is not None:
+                    tab._teardown_on_layer_change()
+                    tab._restore_on_layer_change()
+            self._notify_analysis_tabs_layer_selection_changed()
             self.set_axes_labels()
             self._update_plot_bg_color()
             if self.toggle_semi_circle:
@@ -6596,17 +6669,7 @@ class PlotterWidget(QWidget):
         self._s_original_array = layer_metadata.get("S_original")
         self._harmonics_array = layer_metadata.get("harmonics")
 
-        if len(selected_layers) > 1:
-            common_harmonics = self._get_common_harmonics(selected_layers)
-            if common_harmonics is not None and len(common_harmonics) > 0:
-                min_harmonic = int(np.min(common_harmonics))
-                max_harmonic = int(np.max(common_harmonics))
-                self.harmonic_spinbox.setRange(min_harmonic, max_harmonic)
-        elif self._harmonics_array is not None:
-            self._harmonics_array = np.atleast_1d(self._harmonics_array)
-            min_harmonic = int(np.min(self._harmonics_array))
-            max_harmonic = int(np.max(self._harmonics_array))
-            self.harmonic_spinbox.setRange(min_harmonic, max_harmonic)
+        self._update_harmonic_bounds(selected_layers)
 
         # Reset masks
         self._mask_assignments.clear()
@@ -6658,10 +6721,23 @@ class PlotterWidget(QWidget):
             else:
                 self.fret_tab._needs_update = True
 
+        self._notify_analysis_tabs_layer_selection_changed()
         self.plot()
 
         current_tab_index = self.tab_widget.currentIndex()
         self._on_tab_changed(current_tab_index)
+
+    def _notify_analysis_tabs_layer_selection_changed(self):
+        """Refresh analysis tabs after the source-layer selection changes."""
+        for tab_name in (
+            'components_tab',
+            'phasor_mapping_tab',
+            'fret_tab',
+        ):
+            tab = getattr(self, tab_name, None)
+            callback = getattr(tab, 'on_layer_selection_changed', None)
+            if callback is not None:
+                callback()
 
     def _on_selection_changed(self):
         """Handle changes to layer selection (adding/removing layers).
@@ -6671,6 +6747,9 @@ class PlotterWidget(QWidget):
         """
         if self._is_closing or not self._has_plot_type_controls():
             return
+        self._explicit_empty_layer_selection = bool(
+            self.image_layers_checkable_combobox.allItems()
+        ) and not bool(self.image_layers_checkable_combobox.checkedItems())
         self._preserve_plot_type_on_restore = self.plot_type == 'CONTOUR'
         self._update_contour_controls_visibility()
         self._layer_selection_timer.stop()
@@ -6693,6 +6772,8 @@ class PlotterWidget(QWidget):
             self._update_contour_controls_visibility()
             self._refresh_timelapse_controls()
 
+            self._notify_analysis_tabs_layer_selection_changed()
+
             layer_name = self.get_primary_layer_name()
             if not layer_name:
                 if self.plot_type == 'CONTOUR':
@@ -6700,12 +6781,7 @@ class PlotterWidget(QWidget):
                     self.canvas_widget.figure.canvas.draw_idle()
                 return
 
-            if len(selected_layers) > 1:
-                common_harmonics = self._get_common_harmonics(selected_layers)
-                if common_harmonics is not None and len(common_harmonics) > 0:
-                    min_harmonic = int(np.min(common_harmonics))
-                    max_harmonic = int(np.max(common_harmonics))
-                    self.harmonic_spinbox.setRange(min_harmonic, max_harmonic)
+            self._update_harmonic_bounds(selected_layers)
 
             if self._user_axes_limits is None and self.has_phasor_data():
                 ax = self.canvas_widget.axes
@@ -6834,6 +6910,23 @@ class PlotterWidget(QWidget):
         if common is None or len(common) == 0:
             return None
         return np.array(sorted(common))
+
+    def _update_harmonic_bounds(self, selected_layers):
+        """Set harmonic bounds for the current single or multi-layer selection."""
+        if not selected_layers:
+            return
+        if len(selected_layers) > 1:
+            harmonics = self._get_common_harmonics(selected_layers)
+        else:
+            harmonics = selected_layers[0].metadata.get("harmonics")
+        if harmonics is None:
+            return
+        harmonics = np.atleast_1d(harmonics)
+        if harmonics.size == 0:
+            return
+        self.harmonic_spinbox.setRange(
+            int(np.min(harmonics)), int(np.max(harmonics))
+        )
 
     def _restore_original_phasor_data(self, image_layer):
         """Restore original G, S, and image data from backups.

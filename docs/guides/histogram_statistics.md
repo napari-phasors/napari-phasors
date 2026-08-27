@@ -14,6 +14,10 @@ The statistics table can also display phasor center data for each layer or group
 
 After running an analysis (component, mapping, or FRET), a **Histogram** dock panel opens automatically below the Phasor Plot widget. It shows the distribution of the computed metric values (e.g., lifetime, phase, modulation, or component fraction) across all valid pixels of all selected layers.
 
+The Component, Phasor Mapping, and FRET histograms update when the **Phasor
+Layers** selection changes. Outputs from unchecked source layers are removed
+from the histogram and statistics table until their source is selected again.
+
 ### Histogram display modes
 
 The histogram can be shown in three modes, switched in the **Histogram

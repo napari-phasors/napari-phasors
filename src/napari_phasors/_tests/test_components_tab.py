@@ -6,6 +6,7 @@ from matplotlib.collections import LineCollection
 from napari.layers import Image
 from phasorpy.component import phasor_component_fraction
 from phasorpy.lifetime import phasor_from_lifetime
+from qtpy.QtCore import Qt
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import QColorDialog
 
@@ -1132,6 +1133,9 @@ def test_components_histogram_multi_layer_linear_projection(
     viewer.add_layer(layer_b)
 
     parent = PlotterWidget(viewer)
+    parent.image_layers_checkable_combobox.setCheckedItems(
+        [layer_a.name, layer_b.name]
+    )
     comp_widget = parent.components_tab
     parent.tab_widget.setCurrentWidget(parent.components_tab)
 
@@ -1198,6 +1202,9 @@ def test_components_gamma_links_layers_and_histogram(
     viewer.add_layer(layer_b)
 
     parent = PlotterWidget(viewer)
+    parent.image_layers_checkable_combobox.setCheckedItems(
+        [layer_a.name, layer_b.name]
+    )
     comp_widget = parent.components_tab
     parent.tab_widget.setCurrentWidget(parent.components_tab)
 
@@ -2606,10 +2613,18 @@ def test_get_first_component_fraction_values_pools_multiple_layers(
     make_viewer_model, qtbot
 ):
     """Fraction values are pooled (and non-finite values dropped) across
-    every fraction layer matching the first component's name."""
+    every selected layer's fraction layer for the first component."""
     viewer, layer, parent, comp = _setup_components(make_viewer_model)
     _setup_linear_projection(comp)
     assert comp.comp1_fractions_layer is not None
+
+    # A second analysed image must be selected for its fractions to be pooled.
+    other_image = create_image_layer_with_phasors()
+    other_image.name = "other_image"
+    viewer.add_layer(other_image)
+    parent.image_layers_checkable_combobox.setCheckedItems(
+        [layer.name, other_image.name]
+    )
 
     comp1_name = comp.components[0].name_edit.text().strip() or "Component 1"
     extra_layer = Image(
@@ -2625,6 +2640,30 @@ def test_get_first_component_fraction_values_pools_multiple_layers(
         comp.comp1_fractions_layer.data, dtype=float
     ).size
     assert values.size == original_size + 3
+
+
+def test_get_first_component_fraction_values_skips_deselected_layers(
+    make_viewer_model, qtbot
+):
+    """Fraction layers of deselected images are excluded from the pool."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    _setup_linear_projection(comp)
+    assert comp.comp1_fractions_layer is not None
+
+    comp1_name = comp.components[0].name_edit.text().strip() or "Component 1"
+    viewer.add_layer(
+        Image(
+            np.array([[0.25, 0.75], [np.nan, 0.5]]),
+            name=f"{comp1_name} fractions: never_selected",
+        )
+    )
+
+    values = comp._get_first_component_fraction_values()
+
+    original_size = np.asarray(
+        comp.comp1_fractions_layer.data, dtype=float
+    ).size
+    assert values.size == original_size
 
 
 def test_get_first_component_fraction_values_fallback_to_comp1_layer(
@@ -3026,6 +3065,10 @@ def _setup_two_image_layers(make_viewer_model):
     viewer.add_layer(layer_a)
     viewer.add_layer(layer_b)
     parent = PlotterWidget(viewer)
+    # Both layers checked in "phasor layers", as when analysing them together.
+    parent.image_layers_checkable_combobox.setCheckedItems(
+        [layer_a.name, layer_b.name]
+    )
     comp = parent.components_tab
     parent.tab_widget.setCurrentWidget(comp)
     return viewer, layer_a, layer_b, parent, comp
@@ -3302,3 +3345,362 @@ def test_switch_to_linear_projection_hides_stale_component_fit(
     only_layer = next(iter(fmap.values()))
     assert only_layer.metadata.get('phasor_component_fraction') is None
     assert only_layer.name.startswith("Component 1 fractions: ")
+
+
+def _setup_analysed_layers(viewer, count=3):
+    """Add `count` phasor layers, select them all and run a 2-component fit.
+
+    Returns
+    -------
+    tuple of (PlotterWidget, ComponentsWidget, str)
+        The plotter, its components tab and the analysed component name.
+    """
+    for i in range(count):
+        layer = create_image_layer_with_phasors()
+        layer.name = f"img{i}"
+        viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    parent.image_layers_checkable_combobox.setCheckedItems(
+        [f"img{i}" for i in range(count)]
+    )
+
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+    comp_widget.analysis_type_combo.setCurrentText("Linear Projection")
+
+    comp_widget.components[0].g_edit.setText("0.2")
+    comp_widget.components[0].s_edit.setText("0.1")
+    comp_widget._on_component_coords_changed(0)
+    comp_widget.components[1].g_edit.setText("0.8")
+    comp_widget.components[1].s_edit.setText("0.5")
+    comp_widget._on_component_coords_changed(1)
+    comp_widget._run_analysis()
+
+    return (
+        parent,
+        comp_widget,
+        comp_widget.histogram_component_combobox.currentText(),
+    )
+
+
+def _select_layers(parent, names):
+    """Check `names` and run the plotter's debounced selection handler now."""
+    parent.image_layers_checkable_combobox.setCheckedItems(names)
+    parent._layer_selection_timer.stop()
+    parent._process_layer_selection_change()
+
+
+def _click_phasor_layer(qtbot, parent, layer_name):
+    """Toggle a layer through the real checkable-combobox popup."""
+    combo = parent.image_layers_checkable_combobox
+    row = next(
+        row
+        for row in range(combo._header_count, combo.model().rowCount())
+        if combo.model().item(row).text() == layer_name
+    )
+    combo.showPopup()
+    view = combo.view()
+    rect = view.visualRect(combo.model().index(row, 0))
+    position = rect.center()
+    position.setX(rect.left() + 5)
+    qtbot.mouseClick(view.viewport(), Qt.LeftButton, pos=position)
+
+
+def _histogram_legend_labels(histogram):
+    """Return the labels currently rendered in the histogram legend."""
+    legend = histogram.ax.get_legend()
+    return [] if legend is None else [text.get_text() for text in legend.texts]
+
+
+def _assert_individual_histogram(histogram, expected_labels):
+    """Assert internal and rendered state for Individual layers mode."""
+    assert list(histogram._datasets) == expected_labels
+    assert list(histogram._counts_per_dataset) == expected_labels
+    assert len(histogram.ax.lines) == len(expected_labels)
+    assert _histogram_legend_labels(histogram) == expected_labels
+
+
+def test_components_histogram_follows_layer_selection(make_napari_viewer):
+    """Histogram must track layers being unchecked and re-checked (issue #358)."""
+    viewer = make_napari_viewer()
+    parent, comp_widget, comp_name = _setup_analysed_layers(viewer)
+
+    assert sorted(
+        comp_widget._get_fraction_layers_for_component(comp_name)
+    ) == ["img0", "img1", "img2"]
+    assert len(comp_widget.histogram_widget._datasets) == 3
+
+    _select_layers(parent, ["img0"])
+
+    assert sorted(
+        comp_widget._get_fraction_layers_for_component(comp_name)
+    ) == ["img0"]
+    assert len(comp_widget.histogram_widget._datasets) == 1
+
+    _select_layers(parent, ["img0", "img1", "img2"])
+
+    assert sorted(
+        comp_widget._get_fraction_layers_for_component(comp_name)
+    ) == ["img0", "img1", "img2"]
+    assert len(comp_widget.histogram_widget._datasets) == 3
+
+
+def test_components_histogram_ignores_stale_fraction_layers_on_rerun(
+    make_napari_viewer,
+):
+    """Re-running the analysis must not resurrect deselected layers (issue #358)."""
+    viewer = make_napari_viewer()
+    parent, comp_widget, comp_name = _setup_analysed_layers(viewer)
+
+    _select_layers(parent, ["img0"])
+    comp_widget._run_analysis()
+
+    # Fraction layers of the deselected layers still exist in the viewer ...
+    assert f"{comp_name} fractions: img1" in viewer.layers
+    # ... but must not contribute to the histogram.
+    assert sorted(
+        comp_widget._get_fraction_layers_for_component(comp_name)
+    ) == ["img0"]
+    assert len(comp_widget.histogram_widget._datasets) == 1
+
+
+def test_components_fraction_layers_hidden_when_deselected(make_napari_viewer):
+    """Fraction layers are hidden, not deleted, when their source is unchecked."""
+    viewer = make_napari_viewer()
+    parent, comp_widget, comp_name = _setup_analysed_layers(viewer)
+
+    _select_layers(parent, ["img0"])
+
+    assert viewer.layers[f"{comp_name} fractions: img0"].visible is True
+    assert viewer.layers[f"{comp_name} fractions: img1"].visible is False
+    assert viewer.layers[f"{comp_name} fractions: img2"].visible is False
+
+    _select_layers(parent, ["img0", "img1", "img2"])
+
+    assert viewer.layers[f"{comp_name} fractions: img1"].visible is True
+    assert viewer.layers[f"{comp_name} fractions: img2"].visible is True
+
+
+def test_components_fraction_range_only_clips_selected_layers(
+    make_napari_viewer,
+):
+    """The fraction range slider must leave deselected layers untouched."""
+    viewer = make_napari_viewer()
+    parent, comp_widget, comp_name = _setup_analysed_layers(viewer)
+
+    deselected = viewer.layers[f"{comp_name} fractions: img1"]
+    untouched_data = deselected.data.copy()
+
+    _select_layers(parent, ["img0"])
+
+    selected = viewer.layers[f"{comp_name} fractions: img0"]
+    selected_original = selected.data.copy()
+
+    comp_widget._on_fraction_range_changed(0.2, 0.8)
+
+    np.testing.assert_allclose(
+        selected.data,
+        np.clip(selected_original, 0.2, 0.8),
+        rtol=1e-6,
+        atol=1e-9,
+        equal_nan=True,
+    )
+    np.testing.assert_array_equal(deselected.data, untouched_data)
+
+
+def test_components_histogram_cleared_when_no_layers_selected(
+    make_napari_viewer,
+):
+    """Unchecking every layer clears and hides the fraction histogram."""
+    viewer = make_napari_viewer()
+    parent, comp_widget, _ = _setup_analysed_layers(viewer)
+
+    _select_layers(parent, [])
+
+    assert comp_widget.histogram_component_combobox.count() == 0
+    assert comp_widget.histogram_widget.counts is None
+    assert comp_widget.histogram_widget._datasets == {}
+    assert comp_widget.histogram_widget.isHidden()
+
+
+def test_components_histogram_clears_unresolved_component(
+    make_viewer_model, qtbot
+):
+    """A selected component without fraction layers cannot retain old data."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    comp = parent.components_tab
+    comp.histogram_widget.update_data(np.array([0.1, 0.2]))
+    comp.histogram_component_combobox.addItem("Missing component")
+
+    comp.update_component_histogram()
+
+    assert comp.histogram_widget.counts is None
+    assert comp.histogram_widget._datasets == {}
+    assert comp.histogram_widget.isHidden()
+
+
+def test_components_histogram_updates_from_debounced_selection_signal(
+    make_napari_viewer, qtbot
+):
+    """The real selectionChanged -> debounce -> components tab wiring works."""
+    viewer = make_napari_viewer()
+    parent, comp_widget, comp_name = _setup_analysed_layers(viewer)
+
+    # Emit the real signal and let the 300 ms debounce timer expire.
+    parent.image_layers_checkable_combobox.setCheckedItems(["img0", "img1"])
+
+    qtbot.waitUntil(
+        lambda: len(comp_widget.histogram_widget._datasets) == 2,
+        timeout=5000,
+    )
+
+    assert sorted(
+        comp_widget._get_fraction_layers_for_component(comp_name)
+    ) == ["img0", "img1"]
+    assert viewer.layers[f"{comp_name} fractions: img2"].visible is False
+
+
+def test_components_individual_histogram_follows_real_popup_click(
+    make_napari_viewer, qtbot
+):
+    """A real non-primary uncheck removes its Linear Projection curve."""
+    viewer = make_napari_viewer()
+    parent, comp, comp_name = _setup_analysed_layers(viewer, count=2)
+    qtbot.addWidget(parent)
+    parent.show()
+    qtbot.wait(50)
+    histogram = comp.histogram_widget
+    histogram.display_mode = "Individual layers"
+    labels = [
+        f"{comp_name} fractions: img0",
+        f"{comp_name} fractions: img1",
+    ]
+    _assert_individual_histogram(histogram, labels)
+
+    selection_events = []
+    parent.image_layers_checkable_combobox.selectionChanged.connect(
+        lambda: selection_events.append(True)
+    )
+
+    _click_phasor_layer(qtbot, parent, "img1")
+
+    qtbot.waitUntil(
+        lambda: parent.get_selected_layer_names() == ["img0"]
+        and len(histogram._datasets) == 1,
+        timeout=5000,
+    )
+
+    assert selection_events
+    assert sorted(comp._get_fraction_layers_for_component(comp_name)) == [
+        "img0"
+    ]
+    _assert_individual_histogram(histogram, labels[:1])
+    assert viewer.layers[labels[1]].visible is False
+
+    comp._run_analysis()
+
+    _assert_individual_histogram(histogram, labels[:1])
+
+
+def test_component_fit_individual_histogram_follows_primary_popup_click(
+    make_napari_viewer, qtbot
+):
+    """A real primary uncheck removes its tagged Component Fit curve."""
+    viewer, _, _, parent, comp = _setup_two_image_layers(make_napari_viewer)
+    qtbot.addWidget(parent)
+    parent.show()
+    qtbot.wait(50)
+    _setup_component_fit(comp)
+    comp_name = comp.histogram_component_combobox.currentText()
+    histogram = comp.histogram_widget
+    histogram.display_mode = "Individual layers"
+    labels = [
+        f"{comp_name} fraction: img_a",
+        f"{comp_name} fraction: img_b",
+    ]
+    _assert_individual_histogram(histogram, labels)
+
+    selection_events = []
+    primary_events = []
+    combo = parent.image_layers_checkable_combobox
+    combo.selectionChanged.connect(lambda: selection_events.append(True))
+    combo.primaryLayerChanged.connect(primary_events.append)
+
+    _click_phasor_layer(qtbot, parent, "img_a")
+
+    qtbot.waitUntil(
+        lambda: parent.get_selected_layer_names() == ["img_b"]
+        and len(histogram._datasets) == 1,
+        timeout=5000,
+    )
+
+    assert selection_events
+    assert primary_events[-1] == "img_b"
+    assert sorted(comp._get_fraction_layers_for_component(comp_name)) == [
+        "img_b"
+    ]
+    _assert_individual_histogram(histogram, labels[1:])
+    assert viewer.layers[labels[0]].visible is False
+
+    comp._run_analysis()
+
+    _assert_individual_histogram(histogram, labels[1:])
+
+
+def test_get_selected_image_layer_names_without_parent_widget(
+    make_viewer_model, qtbot
+):
+    """Without a parent widget there is no selection to honour."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    with patch.object(comp, "parent_widget", None):
+        assert comp._get_selected_image_layer_names() == set()
+
+
+def test_get_selected_image_layer_names_survives_torn_down_widgets(
+    make_viewer_model, qtbot
+):
+    """A deleted Qt combobox is treated as an empty selection, not an error."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    with patch.object(
+        parent,
+        "get_selected_layers",
+        side_effect=RuntimeError("wrapped C/C++ object has been deleted"),
+    ):
+        assert comp._get_selected_image_layer_names() == set()
+
+    with patch.object(
+        parent, "get_selected_layers", side_effect=AttributeError
+    ):
+        assert comp._get_selected_image_layer_names() == set()
+
+
+def test_sync_fraction_layer_visibility_only_touches_fraction_layers(
+    make_viewer_model, qtbot
+):
+    """Fraction layers follow the selection; other layers are left alone."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+    _setup_linear_projection(comp)
+    fraction_layer = comp.comp1_fractions_layer
+    assert fraction_layer is not None
+    assert fraction_layer.visible is True
+
+    unrelated = Image(np.zeros((2, 2)), name="unrelated")
+    viewer.add_layer(unrelated)
+
+    with patch.object(parent, "get_selected_layers", return_value=[]):
+        comp._sync_fraction_layer_visibility()
+
+    assert fraction_layer.visible is False
+    # Neither the source image nor an unrelated layer is touched.
+    assert unrelated.visible is True
+    assert layer.visible is True
+    # The guard flag is always released.
+    assert comp._updating_linked_layers is False
+
+    comp._sync_fraction_layer_visibility()
+
+    assert fraction_layer.visible is True
