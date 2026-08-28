@@ -362,7 +362,7 @@ def test_raw_reader_tiff_does_not_forward_widget_axis_option_to_imread(
     def fake_imread(path):
         return np.arange(24, dtype=np.float32).reshape(2, 3, 4)
 
-    def fake_phasor_from_signal(signal, axis, harmonic):
+    def fake_phasor_from_signal(signal, *, axis, harmonic):
         mean_image = np.zeros((2, 4), dtype=np.float32)
         g_image = np.zeros((2, 2, 4), dtype=np.float32)
         s_image = np.zeros((2, 2, 4), dtype=np.float32)
@@ -371,7 +371,7 @@ def test_raw_reader_tiff_does_not_forward_widget_axis_option_to_imread(
     monkeypatch.setattr(reader_module.tifffile, "imread", fake_imread)
     monkeypatch.setattr(
         reader_module,
-        "phasor_from_signal",
+        "parallel_phasor_from_signal",
         fake_phasor_from_signal,
     )
 

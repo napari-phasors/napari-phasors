@@ -3704,3 +3704,209 @@ def test_sync_fraction_layer_visibility_only_touches_fraction_layers(
     comp._sync_fraction_layer_visibility()
 
     assert fraction_layer.visible is True
+
+
+def _projection_widget(viewer, name="proj_layer"):
+    """Return a components tab configured for a Linear Projection run."""
+    layer = create_image_layer_with_phasors()
+    layer.name = name
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+    comp_widget.analysis_type_combo.setCurrentText("Linear Projection")
+    comp_widget.components[0].g_edit.setText("0.2")
+    comp_widget.components[0].s_edit.setText("0.1")
+    comp_widget._on_component_coords_changed(0)
+    comp_widget.components[1].g_edit.setText("0.8")
+    comp_widget.components[1].s_edit.setText("0.5")
+    comp_widget._on_component_coords_changed(1)
+    return parent, comp_widget, layer
+
+
+def test_linear_projection_skips_a_layer_without_phasor_arrays(
+    make_viewer_model, qtbot
+):
+    """A layer whose G/S went missing yields no fraction layer."""
+    viewer = make_viewer_model()
+    _, comp_widget, layer = _projection_widget(viewer)
+    layer.metadata["G"] = None
+
+    comp_widget._run_analysis()
+
+    assert comp_widget.comp1_fractions_layer is None
+
+
+def test_linear_projection_skips_a_layer_missing_the_harmonic(
+    make_viewer_model, qtbot
+):
+    """A layer that never computed the selected harmonic is skipped."""
+    viewer = make_viewer_model()
+    _, comp_widget, layer = _projection_widget(viewer)
+    layer.metadata["harmonics"] = np.array([97])
+
+    comp_widget._run_analysis()
+
+    assert comp_widget.comp1_fractions_layer is None
+
+
+def test_linear_projection_reports_a_failing_layer(
+    make_viewer_model, qtbot, monkeypatch
+):
+    """A projection that raises names the layer instead of failing silently."""
+    viewer = make_viewer_model()
+    _, comp_widget, layer = _projection_widget(viewer)
+
+    errors = []
+    monkeypatch.setattr(
+        "napari_phasors.components_tab.show_error", errors.append
+    )
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("projection boom")
+
+    monkeypatch.setattr(
+        "napari_phasors.components_tab.phasor_component_fraction", explode
+    )
+
+    comp_widget._run_analysis()
+
+    assert any("projection boom" in message for message in errors)
+    assert any("proj_layer" in message for message in errors)
+
+
+def test_linear_projection_for_layer_computes_its_own_fraction(
+    make_viewer_model, qtbot
+):
+    """The per-layer entry point still works without a precomputed map."""
+    viewer = make_viewer_model()
+    _, comp_widget, layer = _projection_widget(viewer)
+    comp_widget._run_analysis()
+    comp_widget.comp1_fractions_layer = None
+
+    c1, c2 = comp_widget.components[0], comp_widget.components[1]
+    comp_widget._run_linear_projection_for_layer(
+        layer,
+        np.array([0.2, 0.8]),
+        np.array([0.1, 0.5]),
+        c1,
+        c2,
+    )
+
+    assert comp_widget.comp1_fractions_layer is not None
+
+
+def test_linear_projection_for_layer_bails_out_when_it_cannot_compute(
+    make_viewer_model, qtbot
+):
+    """No phasor arrays means no layer, not a crash."""
+    viewer = make_viewer_model()
+    _, comp_widget, layer = _projection_widget(viewer)
+    layer.metadata["G"] = None
+
+    c1, c2 = comp_widget.components[0], comp_widget.components[1]
+    comp_widget._run_linear_projection_for_layer(
+        layer,
+        np.array([0.2, 0.8]),
+        np.array([0.1, 0.5]),
+        c1,
+        c2,
+    )
+
+    assert comp_widget.comp1_fractions_layer is None
+
+
+def _fit_widget(make_viewer_model, name="fit_layer"):
+    """Return a components tab configured for a three-component fit."""
+    viewer, layer, parent, comp_widget = _setup_components(make_viewer_model)
+    layer.name = name
+    comp_widget._add_component()
+    comp_widget.analysis_type_combo.setCurrentText("Component Fit")
+    for index, (g_value, s_value) in enumerate(
+        [("0.2", "0.1"), ("0.5", "0.3"), ("0.8", "0.5")]
+    ):
+        comp_widget.components[index].g_edit.setText(g_value)
+        comp_widget.components[index].s_edit.setText(s_value)
+        comp_widget._on_component_coords_changed(index)
+    return parent, comp_widget, layer
+
+
+def test_component_fit_reports_a_failing_layer(
+    make_viewer_model, qtbot, monkeypatch
+):
+    """A fit that raises is reported rather than swallowed."""
+    _, comp_widget, layer = _fit_widget(make_viewer_model)
+
+    errors = []
+    monkeypatch.setattr(
+        "napari_phasors.components_tab.show_error", errors.append
+    )
+    monkeypatch.setattr(
+        "napari_phasors.components_tab.phasor_component_fit",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("fit boom")),
+    )
+
+    comp_widget._run_analysis()
+
+    assert any("fit boom" in message for message in errors)
+
+
+def test_component_fit_for_layer_prepares_and_fits_on_its_own(
+    make_viewer_model, qtbot
+):
+    """Called without a precomputed fit, the per-layer path does the work."""
+    parent, comp_widget, layer = _fit_widget(make_viewer_model)
+    comp_widget._run_analysis()
+
+    active = [c for c in comp_widget.components if c is not None and c.dot]
+    harmonic = getattr(parent, "harmonic", 1)
+    required = comp_widget._get_required_harmonics(len(active))
+
+    comp_widget._run_component_fit_for_layer(
+        layer, active, len(active), harmonic, required
+    )
+
+    assert layer.metadata["settings"]["component_analysis"]
+
+
+def test_component_fit_for_layer_reports_its_own_failure(
+    make_viewer_model, qtbot, monkeypatch
+):
+    """The standalone path reports a failing fit the same way."""
+    parent, comp_widget, layer = _fit_widget(make_viewer_model)
+    comp_widget._run_analysis()
+
+    active = [c for c in comp_widget.components if c is not None and c.dot]
+    harmonic = getattr(parent, "harmonic", 1)
+    required = comp_widget._get_required_harmonics(len(active))
+
+    errors = []
+    monkeypatch.setattr(
+        "napari_phasors.components_tab.show_error", errors.append
+    )
+    monkeypatch.setattr(
+        "napari_phasors.components_tab.phasor_component_fit",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("solo boom")),
+    )
+
+    comp_widget._run_component_fit_for_layer(
+        layer, active, len(active), harmonic, required
+    )
+
+    assert any("solo boom" in message for message in errors)
+
+
+def test_component_fit_for_layer_bails_out_when_preparation_fails(
+    make_viewer_model, qtbot
+):
+    """A harmonic with no component positions is skipped without raising."""
+    parent, comp_widget, layer = _fit_widget(make_viewer_model)
+    comp_widget._run_analysis()
+
+    active = [c for c in comp_widget.components if c is not None and c.dot][:2]
+    before = dict(layer.metadata["settings"]["component_analysis"])
+
+    # Nothing was ever placed on harmonic 7, so there is nothing to fit.
+    comp_widget._run_component_fit_for_layer(layer, active, 2, 7, 1)
+
+    assert layer.metadata["settings"]["component_analysis"] == before

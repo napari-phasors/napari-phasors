@@ -2385,6 +2385,75 @@ def test_single_layer_histogram_named_after_fret_layer(
     assert list(widget.histogram_widget._datasets.keys()) == [fret_layer_name]
 
 
+def _ready_fret_widget(viewer, layer_names=("layer_a",)):
+    """Return a FRET tab with valid inputs and *layer_names* selected."""
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+    for name in layer_names:
+        layer = create_image_layer_with_phasors()
+        layer.name = name
+        viewer.add_layer(layer)
+    widget.donor_line_edit.setText("2.0")
+    widget.frequency_input.setText("80")
+    return parent, widget
+
+
+def test_fret_efficiency_skips_a_layer_without_phasor_arrays(
+    make_viewer_model, qtbot
+):
+    """A layer whose G/S went missing is skipped, not treated as an error."""
+    viewer = make_viewer_model()
+    parent, widget = _ready_fret_widget(viewer)
+    viewer.layers[0].metadata["G"] = None
+
+    widget.calculate_fret_efficiency()
+
+    assert not any(
+        layer.name.startswith("FRET efficiency") for layer in viewer.layers
+    )
+
+
+def test_fret_efficiency_skips_a_layer_missing_the_harmonic(
+    make_viewer_model, qtbot
+):
+    """A layer that never computed the selected harmonic is skipped."""
+    viewer = make_viewer_model()
+    parent, widget = _ready_fret_widget(viewer)
+    viewer.layers[0].metadata["harmonics"] = np.array([97])
+
+    widget.calculate_fret_efficiency()
+
+    assert not any(
+        layer.name.startswith("FRET efficiency") for layer in viewer.layers
+    )
+
+
+def test_fret_efficiency_reports_a_failing_layer(
+    make_viewer_model, qtbot, monkeypatch
+):
+    """A layer whose computation raises is reported by name, not swallowed."""
+    viewer = make_viewer_model()
+    parent, widget = _ready_fret_widget(viewer)
+
+    errors = []
+    monkeypatch.setattr("napari_phasors.fret_tab.show_error", errors.append)
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        "napari_phasors.fret_tab.phasor_nearest_neighbor", explode
+    )
+
+    widget.calculate_fret_efficiency()
+
+    assert any("boom" in message for message in errors)
+    assert any("layer_a" in message for message in errors)
+    assert not any(
+        layer.name.startswith("FRET efficiency") for layer in viewer.layers
+    )
+
+
 def _setup_fret_selection_workflow(make_napari_viewer, qtbot):
     """Create two selected source layers and calculate FRET efficiency."""
     viewer = make_napari_viewer()
