@@ -1,6 +1,8 @@
 import csv
+from dataclasses import replace
 
 import numpy as np
+import pytest
 
 from napari_phasors._utils import (
     CurrentPageStackedWidget,
@@ -2086,3 +2088,304 @@ def test_update_data_label_parameter(qtbot):
     widget.update_data(data, label="Lifetime: my image")
     assert list(widget._datasets.keys()) == ["Lifetime: my image"]
     assert list(widget._counts_per_dataset.keys()) == ["Lifetime: my image"]
+
+
+# --- TileLayoutDialog -------------------------------------------------------
+
+
+def _positions_dialog(qtbot, n_rows=3, n_cols=3, tile=(64, 64), step=None):
+    """Build a TileLayoutDialog that was handed recorded tile positions."""
+    from napari_phasors._utils import TileLayoutDialog
+
+    step_y, step_x = step or tile
+    paths = [f"tile_{index:02d}.czi" for index in range(n_rows * n_cols)]
+    positions = [
+        (row * step_y, col * step_x)
+        for row in range(n_rows)
+        for col in range(n_cols)
+    ]
+    dialog = TileLayoutDialog(paths, tile_shape=tile, tile_positions=positions)
+    qtbot.addWidget(dialog)
+    return dialog, positions
+
+
+def test_tile_layout_dialog_uses_recorded_positions(qtbot):
+    """Recorded positions are offered first and drive the built geometry."""
+    dialog, positions = _positions_dialog(qtbot)
+
+    assert dialog.source_combo.itemData(0) == "positions"
+    assert dialog.source_combo.currentData() == "positions"
+
+    geometry = dialog.get_geometry()
+    assert geometry is not None
+    assert len(geometry.placements) == len(positions)
+
+    # Measured positions define the overlap, so the typed fields mirror them
+    # and are locked while this source is selected.
+    assert not dialog.overlap_y_edit.isEnabled()
+    assert not dialog.overlap_x_edit.isEnabled()
+    assert float(dialog.overlap_y_edit.text()) == pytest.approx(
+        geometry.overlap_y * 100, abs=0.01
+    )
+
+    assert dialog.get_ordered_paths() == geometry.paths
+    assert dialog.get_sources() == geometry.sources
+
+
+def test_tile_layout_dialog_binning_rescales_the_canvas(qtbot):
+    """Choosing a binning factor shrinks the tiles, positions and canvas."""
+    dialog, _ = _positions_dialog(qtbot, tile=(64, 64))
+
+    assert dialog.binning_combo is not None
+    assert dialog.get_binning() == 1
+    unbinned = dialog.get_geometry().canvas_shape()
+
+    dialog.binning_combo.setCurrentIndex(dialog.binning_combo.findData(4))
+
+    assert dialog.get_binning() == 4
+    assert dialog._tile_shape == (16, 16)
+    binned = dialog.get_geometry().canvas_shape()
+    assert binned[0] == unbinned[0] // 4
+    assert binned[1] == unbinned[1] // 4
+    # The label reports the binned canvas, not the original one.
+    assert f"{binned[0]} x {binned[1]} px" in dialog.memory_label.text()
+    assert "GB per plane" in dialog.memory_label.text()
+
+
+def test_tile_layout_dialog_suggests_binning_that_fits_the_budget(qtbot):
+    """The initial binning is the smallest factor fitting the memory budget."""
+    dialog, _ = _positions_dialog(qtbot, tile=(64, 64))
+
+    # A generous budget needs no binning at all.
+    assert dialog._suggested_binning(budget_bytes=1 << 30) == 1
+
+    # A budget smaller than any offered factor falls back to the largest.
+    assert dialog._suggested_binning(budget_bytes=1) == 16
+
+    # In between, the chosen factor is the first one that fits.
+    height, width = dialog._canvas_for_binning(2)
+    assert dialog._suggested_binning(budget_bytes=height * width * 4) == 2
+
+
+def test_tile_layout_dialog_without_positions_has_no_binning(qtbot):
+    """Binning needs recorded positions, so it is absent otherwise."""
+    from napari_phasors._utils import TileLayoutDialog
+
+    dialog = TileLayoutDialog(["a.tif", "b.tif"], tile_shape=(32, 32))
+    qtbot.addWidget(dialog)
+
+    assert dialog.binning_combo is None
+    assert dialog.get_binning() == 1
+    # _apply_binning is a no-op rather than an error when there is nothing
+    # to rescale.
+    dialog._apply_binning()
+    assert dialog._tile_shape == (32, 32)
+
+
+def test_tile_layout_dialog_position_count_mismatch_is_reported(qtbot):
+    """Selecting a tile axis that contradicts the positions shows an error."""
+    from napari_phasors._utils import TileLayoutDialog
+
+    dialog = TileLayoutDialog(
+        ["mosaic.czi"],
+        tile_shape=(32, 32),
+        tile_axes={0: 4},
+        tile_positions=[(0, 0), (0, 32), (32, 0), (32, 32)],
+    )
+    qtbot.addWidget(dialog)
+    assert dialog.get_geometry() is not None
+
+    # One tile per file leaves a single tile against four positions.
+    dialog.tile_axis_combo.setCurrentIndex(0)
+
+    assert dialog.get_geometry() is None
+    assert "1 tile(s) are selected" in dialog.status_label.text()
+    assert not dialog.ok_btn.isEnabled()
+    # With no geometry the accessors fall back to the raw selection.
+    assert dialog.get_ordered_paths() == ["mosaic.czi"]
+    assert len(dialog.get_sources()) == 1
+
+
+def test_tile_layout_dialog_switching_source_shows_matching_controls(qtbot):
+    """Each layout source reveals only its own controls."""
+    from napari_phasors._utils import TileLayoutDialog
+
+    dialog = TileLayoutDialog(
+        [f"tile_r{r}_c{c}.tif" for r in range(2) for c in range(2)],
+        tile_shape=(16, 16),
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    def select(key):
+        dialog.source_combo.setCurrentIndex(dialog.source_combo.findData(key))
+
+    select("rows")
+    assert dialog.rows_widget.isVisible()
+    assert not dialog.pattern_widget.isVisible()
+
+    select("names")
+    assert not dialog.rows_widget.isVisible()
+    assert dialog.pattern_widget.isVisible()
+
+    # Plain TIFFs record no stage positions, so that source reports why.
+    select("stage")
+    assert dialog.get_geometry() is None
+    assert "Stage positions could not be read" in dialog.status_label.text()
+
+
+def test_tile_layout_dialog_overlap_parsing_and_blend_mode(qtbot):
+    """Overlap text is clamped to a fraction and blend modes map in order."""
+    from napari_phasors._utils import TileLayoutDialog
+
+    dialog = TileLayoutDialog(["a.tif", "b.tif"], tile_shape=(16, 16))
+    qtbot.addWidget(dialog)
+
+    dialog.overlap_y_edit.setText("25")
+    dialog.overlap_x_edit.setText("not a number")
+    assert dialog._overlaps() == (0.25, 0.0)
+
+    # Above 90% and below zero are clamped rather than rejected.
+    dialog.overlap_y_edit.setText("400")
+    dialog.overlap_x_edit.setText("-10")
+    assert dialog._overlaps() == (0.9, 0.0)
+
+    for index, mode in enumerate(("feather", "average", "sum")):
+        dialog.blend_combo.setCurrentIndex(index)
+        assert dialog._blend_mode() == mode
+
+
+def test_tile_layout_dialog_default_rows_spec_prefers_square(qtbot):
+    """The pre-filled row specification is the squarest factorization."""
+    from napari_phasors._utils import TileLayoutDialog
+
+    def spec(n_tiles):
+        dialog = TileLayoutDialog(
+            [f"t{i}.tif" for i in range(n_tiles)], tile_shape=(8, 8)
+        )
+        qtbot.addWidget(dialog)
+        return dialog._default_rows_spec()
+
+    assert spec(9) == "3x3"
+    assert spec(6) == "2x3"
+    # A prime count has no square-ish split, so it becomes a single row.
+    assert spec(7) == "1x7"
+    assert spec(0) == ""
+
+
+def test_tile_layout_preview_draws_and_clears(qtbot):
+    """The preview paints a rectangle per tile and a message when empty."""
+    from napari_phasors._stitching import TileGeometry, TilePlacement
+    from napari_phasors._utils import TileLayoutPreview
+
+    preview = TileLayoutPreview()
+    qtbot.addWidget(preview)
+    preview.resize(240, 200)
+
+    # ``grab()`` forces a real paint even though the widget is never shown;
+    # ``repaint()`` on a hidden widget does nothing.
+    def painted():
+        return preview.grab()
+
+    # Empty preview: paints the placeholder text without raising.
+    preview.set_geometry(None)
+    assert not painted().isNull()
+    assert preview._geometry is None
+
+    geometry = TileGeometry(
+        placements=[
+            TilePlacement(row=r, col=c, path=f"t{r}{c}.tif")
+            for r in range(2)
+            for c in range(3)
+        ],
+        tile_shape=(32, 48),
+        overlap_y=0.1,
+        overlap_x=0.1,
+    )
+    preview.set_geometry(geometry)
+    assert not painted().isNull()
+    assert preview._geometry is geometry
+
+    # A geometry whose tile size is not known yet falls back to a nominal
+    # tile rather than dividing by zero.
+    preview.set_geometry(replace(geometry, tile_shape=(0, 0)))
+    assert not painted().isNull()
+
+    # A geometry with placements but an empty canvas bails out mid-paint.
+    preview.set_geometry(TileGeometry(placements=[], tile_shape=(32, 48)))
+    assert not painted().isNull()
+
+
+def test_tile_layout_preview_handles_a_zero_sized_canvas(qtbot):
+    """Placements that collapse to no canvas stop the paint cleanly."""
+    from napari_phasors._stitching import TileGeometry, TilePlacement
+    from napari_phasors._utils import TileLayoutPreview
+
+    preview = TileLayoutPreview()
+    qtbot.addWidget(preview)
+    preview.resize(120, 100)
+
+    # A tile of nominal size zero in one axis leaves the canvas degenerate
+    # even though there is a placement to draw.
+    geometry = TileGeometry(
+        placements=[TilePlacement(row=0, col=0, path="only.tif")],
+        tile_shape=(0, 40),
+    )
+    preview.set_geometry(geometry)
+    assert not preview.grab().isNull()
+
+
+def test_tile_layout_preview_stops_on_an_empty_canvas(qtbot):
+    """Placements that describe no canvas end the paint without drawing."""
+    from napari_phasors._utils import TileLayoutPreview
+
+    class _EmptyCanvasGeometry:
+        placements = ["one"]
+        tile_shape = (32, 32)
+
+        def origins(self):
+            return [(0, 0)]
+
+        def canvas_shape(self):
+            return (0, 0)
+
+    preview = TileLayoutPreview()
+    qtbot.addWidget(preview)
+    preview.resize(120, 100)
+    preview.set_geometry(_EmptyCanvasGeometry())
+
+    assert not preview.grab().isNull()
+
+
+def test_suggested_binning_is_one_without_positions(qtbot):
+    """With nothing to rescale, the suggestion is 'no binning'."""
+    from napari_phasors._utils import TileLayoutDialog
+
+    dialog = TileLayoutDialog(["a.tif", "b.tif"], tile_shape=(32, 32))
+    qtbot.addWidget(dialog)
+
+    assert dialog._suggested_binning() == 1
+    assert dialog._canvas_for_binning is not None
+
+
+def test_tile_layout_dialog_builds_a_stage_position_layout(qtbot, monkeypatch):
+    """A successful stage-position read becomes the geometry directly."""
+    import napari_phasors._stitching as stitching
+    from napari_phasors._utils import TileLayoutDialog
+
+    paths = ["tile_a.ome.tif", "tile_b.ome.tif"]
+
+    def fake_stage_position(path):
+        # Two tiles side by side, 16 um apart, at 1 um per pixel.
+        return (0.0, 16.0 if path.endswith("b.ome.tif") else 0.0, 1.0, 1.0)
+
+    monkeypatch.setattr(stitching, "_read_stage_position", fake_stage_position)
+
+    dialog = TileLayoutDialog(paths, tile_shape=(16, 16))
+    qtbot.addWidget(dialog)
+    dialog.source_combo.setCurrentIndex(dialog.source_combo.findData("stage"))
+
+    geometry = dialog.get_geometry()
+    assert geometry is not None
+    assert len(geometry.placements) == 2
+    assert "2 tile(s)" in dialog.status_label.text()
