@@ -589,6 +589,87 @@ def test_reader_r64():
         assert "G" in layer_data[1]["metadata"]
 
 
+def test_reader_r64_harmonics_metadata():
+    """R64 files carry two harmonics but report none, so they are inferred.
+
+    ``phasor_from_simfcs_referenced`` returns no ``'harmonic'`` metadata.
+    Without inference the layer's ``harmonics`` would be None and downstream
+    analyses would mistake the harmonic axis of G/S for image data.
+    """
+    r64_file = fetch("simfcs.r64")
+    metadata = napari_get_reader(r64_file)(r64_file)[0][1]["metadata"]
+    assert metadata["harmonics"] == [1, 2]
+    assert metadata["G"].shape[0] == 2
+
+    metadata = napari_get_reader(r64_file, harmonics=1)(r64_file)[0][1][
+        "metadata"
+    ]
+    assert metadata["harmonics"] == 1
+    assert metadata["G"].ndim == 2
+
+    metadata = napari_get_reader(r64_file, harmonics=[2])(r64_file)[0][1][
+        "metadata"
+    ]
+    assert metadata["harmonics"] == [2]
+
+
+def test_processed_reader_defaults_to_first_two_harmonics(tmp_path):
+    """Processed files default to the first two harmonics, like raw files."""
+    from phasorpy.io import phasor_to_ometiff
+
+    mean = np.random.rand(8, 8).astype(np.float32)
+    real = np.random.rand(5, 8, 8).astype(np.float32)
+    imag = np.random.rand(5, 8, 8).astype(np.float32)
+    path = str(tmp_path / "five.ome.tif")
+    phasor_to_ometiff(path, mean, real, imag, harmonic=[1, 2, 3, 4, 5])
+
+    metadata = napari_get_reader(path)(path)[0][1]["metadata"]
+    assert metadata["harmonics"] == [1, 2]
+    assert metadata["G"].shape == (2, 8, 8)
+
+    # An explicit request is never trimmed.
+    metadata = napari_get_reader(path, harmonics="all")(path)[0][1]["metadata"]
+    assert metadata["harmonics"] == [1, 2, 3, 4, 5]
+    metadata = napari_get_reader(path, harmonics=[1, 3, 5])(path)[0][1][
+        "metadata"
+    ]
+    assert metadata["harmonics"] == [1, 3, 5]
+
+    # A file with a single harmonic is left alone.
+    path = str(tmp_path / "one.ome.tif")
+    phasor_to_ometiff(path, mean, real[0], imag[0], harmonic=1)
+    metadata = napari_get_reader(path)(path)[0][1]["metadata"]
+    assert metadata["harmonics"] == 1
+    assert metadata["G"].shape == (8, 8)
+
+
+def test_infer_harmonics_without_a_harmonic_axis():
+    """A single-harmonic read reports the number it was asked for."""
+    mean = np.zeros((4, 4))
+    real = np.zeros((4, 4))
+
+    assert reader_module._infer_harmonics(3, real, mean) == 3
+    # A non-integer request with no harmonic axis falls back to the first.
+    assert reader_module._infer_harmonics("all", real, mean) == 1
+    assert reader_module._infer_harmonics(True, real, mean) == 1
+
+
+def test_keep_first_harmonics_normalizes_a_scalar_harmonic():
+    """A scalar harmonic is widened to a list before the stack is trimmed."""
+    real = np.zeros((4, 8, 8))
+    imag = np.zeros((4, 8, 8))
+
+    trimmed_real, trimmed_imag, harmonics = (
+        reader_module._keep_first_harmonics(
+            real, imag, 1, mean_ndim=2, limit=2
+        )
+    )
+
+    assert trimmed_real.shape[0] == 2
+    assert trimmed_imag.shape[0] == 2
+    assert harmonics == [1]
+
+
 def test_reader_json_imaging():
     """Test reading a JSON imaging file."""
     json_file = fetch("Fluorescein_Calibration_m2_1740751189_imaging.json")
