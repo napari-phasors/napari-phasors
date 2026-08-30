@@ -1265,3 +1265,71 @@ def test_processed_reader_invalid_z_spacing_is_ignored(monkeypatch):
 
 
 # TODO: Add tests for .tif files
+
+
+def test_stack_reader_reads_the_files_concurrently(monkeypatch):
+    """Every file in a stack is decoded on its own worker thread."""
+    import threading
+
+    from napari_phasors import _parallel
+
+    n_files = 4
+    # Each fake read blocks until all of them have arrived, so the test can
+    # only finish if the reads really do overlap.
+    barrier = threading.Barrier(n_files, timeout=30)
+    threads = set()
+
+    def fake(path, reader_options=None, harmonics=None):
+        barrier.wait()
+        threads.add(threading.current_thread().name)
+        mean = np.ones((2, 2))
+        g = np.zeros((2, 2))
+        return [_make_stack_layer(mean, g, g)]
+
+    monkeypatch.setattr(reader_module, "raw_file_reader", fake)
+    monkeypatch.setattr(
+        reader_module, "workers_for_memory", lambda *a, **k: n_files
+    )
+
+    previous = _parallel.parallel_enabled()
+    _parallel.set_parallel_enabled(True)
+    try:
+        layers = reader_module.raw_file_stack_reader(
+            [f"d/{i}.lsm" for i in range(n_files)]
+        )
+    finally:
+        _parallel.set_parallel_enabled(previous)
+
+    assert layers[0][0].shape == (n_files, 2, 2)
+    assert len(threads) == n_files
+
+
+def test_stack_reader_falls_back_to_one_thread_when_parallelism_is_off(
+    monkeypatch,
+):
+    """The Plot Settings switch also governs how a stack is read."""
+    import threading
+
+    from napari_phasors import _parallel
+
+    threads = set()
+
+    def fake(path, reader_options=None, harmonics=None):
+        threads.add(threading.current_thread())
+        mean = np.ones((2, 2))
+        g = np.zeros((2, 2))
+        return [_make_stack_layer(mean, g, g)]
+
+    monkeypatch.setattr(reader_module, "raw_file_reader", fake)
+
+    previous = _parallel.parallel_enabled()
+    _parallel.set_parallel_enabled(False)
+    try:
+        layers = reader_module.raw_file_stack_reader(
+            [f"d/{i}.lsm" for i in range(4)]
+        )
+    finally:
+        _parallel.set_parallel_enabled(previous)
+
+    assert layers[0][0].shape == (4, 2, 2)
+    assert threads == {threading.current_thread()}

@@ -1528,3 +1528,121 @@ def test_harmonic_bounds_ignore_empty_or_missing_harmonics(
 
     plotter._update_harmonic_bounds([])
     plotter._update_harmonic_bounds([layer])
+
+
+def test_parallel_processing_toggle_switches_the_thread_pools(
+    make_viewer_model, qtbot
+):
+    """The Plot Settings switch drives the plugin-wide worker count."""
+    from napari_phasors import _parallel
+
+    previous = _parallel.parallel_enabled()
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    try:
+        assert plotter.parallel_processing_checkbox.isChecked() is True
+
+        plotter.parallel_processing_checkbox.setChecked(False)
+        assert _parallel.parallel_enabled() is False
+        assert _parallel.default_workers(n_items=8, workers=8) == 1
+        assert "sequentially" in plotter.parallel_processing_hint.text()
+
+        plotter.parallel_processing_checkbox.setChecked(True)
+        assert _parallel.parallel_enabled() is True
+        assert "threads" in plotter.parallel_processing_hint.text()
+    finally:
+        _parallel.set_parallel_enabled(previous)
+
+
+def test_memory_budget_spinbox_sizes_the_pools(make_viewer_model, qtbot):
+    """The budget spinbox is what every memory-sized pool is measured against."""
+    from napari_phasors import _parallel
+
+    previous = _parallel.memory_fraction()
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    try:
+        assert plotter.memory_budget_spinbox.value() == round(
+            _parallel.DEFAULT_MEMORY_FRACTION * 100
+        )
+
+        plotter.memory_budget_spinbox.setValue(10)
+        assert _parallel.memory_fraction() == pytest.approx(0.10)
+        tight = _parallel.items_for_memory(1 << 20)
+
+        plotter.memory_budget_spinbox.setValue(80)
+        assert _parallel.memory_fraction() == pytest.approx(0.80)
+        roomy = _parallel.items_for_memory(1 << 20)
+
+        # Only meaningful where free memory could be read at all.
+        if tight is not None and roomy is not None:
+            assert roomy > tight
+    finally:
+        _parallel.set_memory_fraction(previous)
+
+
+def test_phasor_precision_combobox_sets_the_storage_dtype(
+    make_viewer_model, qtbot
+):
+    """The precision control drives what new layers store their arrays as."""
+    from napari_phasors import _utils
+
+    previous = _utils.phasor_storage_dtype()
+    # "native" -- keep whatever was read -- is the shipped default, and the
+    # combobox takes its initial value from the setting, so pin it before
+    # building the widget rather than assuming the ambient state.
+    assert _utils.PHASOR_STORAGE_DTYPES[0] == "native"
+    _utils.set_phasor_storage_dtype("native")
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    try:
+        assert plotter.phasor_precision_combobox.currentData() == "native"
+        assert _utils.cast_phasor_storage(np.ones((2, 2)))[0].dtype == (
+            np.float64
+        )
+
+        plotter.phasor_precision_combobox.setCurrentText(
+            "float32 (half memory)"
+        )
+        assert _utils.phasor_storage_dtype() == "float32"
+        assert _utils.cast_phasor_storage(np.ones((2, 2)))[0].dtype == (
+            np.float32
+        )
+        assert "float32" in plotter.parallel_processing_hint.text()
+
+        plotter.phasor_precision_combobox.setCurrentText("As read")
+        assert _utils.phasor_storage_dtype() == "native"
+    finally:
+        _utils.set_phasor_storage_dtype(previous)
+
+
+def test_phasor_precision_rejects_an_unknown_name():
+    """A typo names a precision that does not exist, and says so."""
+    from napari_phasors import _utils
+
+    previous = _utils.phasor_storage_dtype()
+    try:
+        with pytest.raises(ValueError, match="unknown phasor storage"):
+            _utils.set_phasor_storage_dtype("float8")
+        assert _utils.phasor_storage_dtype() == previous
+    finally:
+        _utils.set_phasor_storage_dtype(previous)
+
+
+def test_phasor_precision_leaves_integers_and_smaller_floats_alone():
+    """Downcasting never touches labels, and never upcasts what is smaller."""
+    from napari_phasors import _utils
+
+    previous = _utils.phasor_storage_dtype()
+    try:
+        _utils.set_phasor_storage_dtype("float32")
+        counts = np.ones((2, 2), dtype=np.uint16)
+        already = np.ones((2, 2), dtype=np.float32)
+        cast_counts, cast_already, nothing = _utils.cast_phasor_storage(
+            counts, already, None
+        )
+        assert cast_counts is counts
+        assert cast_already is already
+        assert nothing is None
+    finally:
+        _utils.set_phasor_storage_dtype(previous)

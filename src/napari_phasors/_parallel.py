@@ -40,16 +40,23 @@ assert directly rather than with a tolerance.
 
 import os
 import threading
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
 __all__ = [
     "default_workers",
+    "parallel_enabled",
+    "set_parallel_enabled",
+    "memory_fraction",
+    "set_memory_fraction",
     "parallel_map",
+    "parallel_stream",
     "parallel_compute_apply",
     "worker_limit_from_env",
     "workers_for_memory",
+    "items_for_memory",
     "available_memory",
     "band_bounds",
     "parallel_bands",
@@ -80,6 +87,64 @@ BAND_HALO_RATIO = 8
 # Marks a thread that is already running inside one of our pools, so nested
 # fan-outs degrade to sequential instead of multiplying thread counts.
 _local = threading.local()
+
+# Master switch, driven by the "Parallel processing" toggle in Plot Settings.
+# Turning it off collapses every helper here to the plain sequential call,
+# which is what a user wants when they are comparing against a single-threaded
+# reference, running on a shared machine, or short on memory.
+_parallel_enabled = True
+
+#: Default share of *free* memory that concurrent work may occupy. Every pool
+#: whose items are large enough to matter is sized against this, so lowering
+#: it is the one knob that makes the whole plugin less memory-hungry. The
+#: default leaves half the headroom for whatever the caller accumulates
+#: alongside the workers -- for a stack read, the stacked canvas being built.
+DEFAULT_MEMORY_FRACTION = 0.5
+
+_memory_fraction = DEFAULT_MEMORY_FRACTION
+
+
+def memory_fraction():
+    """Return the share of free memory concurrent work may occupy."""
+    return _memory_fraction
+
+
+def set_memory_fraction(fraction):
+    """Set the share of free memory concurrent work may occupy.
+
+    Parameters
+    ----------
+    fraction : float
+        Between 0 and 1. Clamped into ``[0.05, 0.95]``: below the floor no
+        pool could ever be sized above one worker even on an idle machine,
+        and above the ceiling there is no headroom left for the result the
+        workers are feeding.
+    """
+    global _memory_fraction
+    _memory_fraction = min(0.95, max(0.05, float(fraction)))
+
+
+def parallel_enabled():
+    """Return whether the helpers in this module may use a thread pool."""
+    return _parallel_enabled
+
+
+def set_parallel_enabled(enabled):
+    """Enable or disable every thread pool in the plugin.
+
+    The switch is read through :func:`default_workers`, which every helper
+    here funnels through, so turning it off makes ``parallel_map`` run inline
+    and stops :func:`parallel_filter_median` and friends from band-splitting.
+    Work already in flight is unaffected; the next call picks up the change.
+
+    Parameters
+    ----------
+    enabled : bool
+        ``True`` to fan out over threads, ``False`` to run everything
+        sequentially on the calling thread.
+    """
+    global _parallel_enabled
+    _parallel_enabled = bool(enabled)
 
 
 def worker_limit_from_env():
@@ -112,13 +177,18 @@ def default_workers(n_items=None, workers=None):
         idle threads only cost memory.
     workers : int, optional
         Explicit request. Still clamped to :data:`MAX_WORKERS` and to
-        *n_items*. The environment override wins over this.
+        *n_items*. The environment override wins over this, and
+        :func:`set_parallel_enabled` wins over both.
 
     Returns
     -------
     int
-        At least ``1``.
+        At least ``1``, and exactly ``1`` while parallelism is switched off.
     """
+    if not _parallel_enabled:
+        # The UI toggle is the most explicit statement of intent there is, so
+        # it wins over both the environment override and any explicit request.
+        return 1
     override = worker_limit_from_env()
     if override is not None:
         workers = override
@@ -135,6 +205,118 @@ def in_worker_thread():
     return getattr(_local, "in_pool", False)
 
 
+def parallel_stream(
+    func,
+    items,
+    workers=None,
+    max_in_flight=None,
+    on_error="raise",
+):
+    """Yield ``(index, item, result)`` in input order, a few items at a time.
+
+    The streaming counterpart to :func:`parallel_map`. Where ``parallel_map``
+    submits every item at once and returns one list holding every result,
+    this keeps at most *max_in_flight* items submitted and hands each result
+    to the caller as soon as its turn comes, so a consumer that writes each
+    result out and drops it never accumulates more than that many.
+
+    That distinction is the whole point for batch work: mapping over five
+    hundred files with a consumer slower than the workers lets every decoded
+    file pile up in memory, because nothing throttles the pool. Streaming
+    bounds it.
+
+    Results are yielded strictly in input order, and each one is released as
+    soon as the caller's loop moves on, so a caller that keeps no reference
+    holds at most ``max_in_flight + 1`` results at a time.
+
+    Parameters
+    ----------
+    func : callable
+        Called with one item, in a worker thread. Must not touch Qt or
+        napari objects.
+    items : sequence
+        Work items. Materialized into a list so the length is known up front.
+    workers : int, optional
+        Thread count, resolved through :func:`default_workers`.
+    max_in_flight : int, optional
+        How many items may be submitted but not yet consumed. Defaults to
+        twice the worker count, which keeps every worker fed while the
+        caller processes the previous result. Never below the worker count
+        -- a smaller value would idle workers -- and never above the item
+        count.
+    on_error : {'raise', 'collect'}, optional
+        ``'raise'`` propagates the first failure immediately, cancelling
+        whatever has not started. ``'collect'`` yields the exception in that
+        item's slot and carries on.
+
+    Yields
+    ------
+    tuple
+        ``(index, item, result)`` for each item, in input order. With
+        ``on_error='collect'``, *result* may be the exception that item
+        raised.
+    """
+    items = list(items)
+    if not items:
+        return
+
+    n_workers = default_workers(len(items), workers)
+
+    # A single worker, a single item, or an already-parallel caller all run
+    # inline: no pool, no thread hand-off, and nothing is ever in flight.
+    if n_workers == 1 or len(items) == 1 or in_worker_thread():
+        for index, item in enumerate(items):
+            try:
+                yield index, item, func(item)
+            except Exception as exc:  # noqa: BLE001
+                if on_error == "raise":
+                    raise
+                yield index, item, exc
+        return
+
+    limit = 2 * n_workers if max_in_flight is None else int(max_in_flight)
+    limit = max(n_workers, min(limit, len(items)))
+
+    def run(item):
+        _local.in_pool = True
+        try:
+            return func(item)
+        finally:
+            _local.in_pool = False
+
+    with ThreadPoolExecutor(max_workers=n_workers) as executor:
+        pending = deque()
+        cursor = 0
+        while cursor < limit:
+            pending.append(executor.submit(run, items[cursor]))
+            cursor += 1
+
+        index = 0
+        while pending:
+            future = pending.popleft()
+            try:
+                result = future.result()
+            except Exception as exc:  # noqa: BLE001
+                if on_error == "raise":
+                    for queued in pending:
+                        queued.cancel()
+                    raise
+                result = exc
+
+            # Refill before yielding, so a worker is never idle while the
+            # caller is busy with the result just handed to it.
+            if cursor < len(items):
+                pending.append(executor.submit(run, items[cursor]))
+                cursor += 1
+
+            yield index, items[index], result
+            # Drop the reference before waiting on the next future, so the
+            # array the caller has finished with can be collected now rather
+            # than at the end of the loop body.
+            del result
+            index += 1
+
+
 def parallel_map(
     func,
     items,
@@ -143,6 +325,11 @@ def parallel_map(
     on_error="raise",
 ):
     """Apply *func* to every item, concurrently, preserving input order.
+
+    Every result is held until the last one arrives. When the results are
+    large and the caller consumes them one at a time -- exporting a file,
+    writing into a layer -- use :func:`parallel_stream` instead, which bounds
+    how many exist at once.
 
     Parameters
     ----------
@@ -176,44 +363,23 @@ def parallel_map(
     if not items:
         return []
 
-    n_workers = default_workers(len(items), workers)
-
-    # A single worker, a single item, or an already-parallel caller all run
-    # inline: no pool, no thread hand-off, and exceptions keep their original
-    # traceback.
-    if n_workers == 1 or len(items) == 1 or in_worker_thread():
-        results = []
-        for index, item in enumerate(items):
-            try:
-                results.append(func(item))
-            except Exception as exc:  # noqa: BLE001
-                if on_error == "raise":
-                    raise
-                results.append(exc)
-            if progress is not None:
-                progress(index)
-        return results
-
-    def run(item):
-        _local.in_pool = True
-        try:
-            return func(item)
-        finally:
-            _local.in_pool = False
-
     results = [None] * len(items)
     first_error = None
-    with ThreadPoolExecutor(max_workers=n_workers) as executor:
-        futures = [executor.submit(run, item) for item in items]
-        for index, future in enumerate(futures):
-            try:
-                results[index] = future.result()
-            except Exception as exc:  # noqa: BLE001
-                results[index] = exc
-                if first_error is None:
-                    first_error = exc
-            if progress is not None:
-                progress(index)
+    # Every item is submitted up front, matching this function's contract
+    # that the whole list comes back; the error is re-raised only once every
+    # item has had its turn.
+    for index, _item, result in parallel_stream(
+        func,
+        items,
+        workers=workers,
+        max_in_flight=len(items),
+        on_error="collect",
+    ):
+        results[index] = result
+        if first_error is None and isinstance(result, BaseException):
+            first_error = result
+        if progress is not None:
+            progress(index)
 
     if first_error is not None and on_error == "raise":
         raise first_error
@@ -296,7 +462,7 @@ def available_memory():
         return None
 
 
-def workers_for_memory(item_bytes, n_items=None, workers=None, fraction=0.5):
+def workers_for_memory(item_bytes, n_items=None, workers=None, fraction=None):
     """Return a worker count whose peak memory stays within budget.
 
     Reading files concurrently trades memory for speed: *N* workers hold *N*
@@ -314,9 +480,10 @@ def workers_for_memory(item_bytes, n_items=None, workers=None, fraction=0.5):
     workers : int, optional
         Requested worker count, before the memory cap.
     fraction : float, optional
-        Share of free memory the pool may occupy. The default leaves half
-        the headroom for the caller's own accumulation, which for a mosaic
-        is the stitched canvas being built alongside the tiles.
+        Share of free memory the pool may occupy. Defaults to
+        :func:`memory_fraction`, the plugin-wide budget, which leaves the
+        rest of the headroom for the caller's own accumulation -- for a
+        mosaic, the stitched canvas being built alongside the tiles.
 
     Returns
     -------
@@ -331,15 +498,43 @@ def workers_for_memory(item_bytes, n_items=None, workers=None, fraction=0.5):
     if worker_limit_from_env() is not None:
         return limit
 
-    if not item_bytes:
+    affordable = items_for_memory(item_bytes, fraction=fraction)
+    if affordable is None:
         return limit
+    return max(1, min(limit, affordable))
 
+
+def items_for_memory(item_bytes, fraction=None):
+    """Return how many *item_bytes*-sized items fit in the memory budget.
+
+    The sizing rule behind both :func:`workers_for_memory` (how many workers
+    may run) and the in-flight limits (how many finished results may wait to
+    be consumed). Kept separate because those two are different questions
+    about the same budget: a pool of four workers streaming into a slow
+    consumer can hold far more than four items' worth of memory.
+
+    Parameters
+    ----------
+    item_bytes : int
+        Estimated peak bytes one item holds. ``0`` or ``None`` means the
+        size is unknown.
+    fraction : float, optional
+        Share of free memory to allow. Defaults to :func:`memory_fraction`.
+
+    Returns
+    -------
+    int or None
+        How many items fit, at least ``1``; or ``None`` when the size or the
+        free memory could not be determined, meaning "no cap".
+    """
+    if not item_bytes:
+        return None
     free = available_memory()
     if not free:
-        return limit
-
-    affordable = int((free * fraction) // int(item_bytes))
-    return max(1, min(limit, affordable))
+        return None
+    if fraction is None:
+        fraction = memory_fraction()
+    return max(1, int((free * fraction) // int(item_bytes)))
 
 
 def band_bounds(size, workers=None, halo=0, min_band=1, max_band=None):
@@ -514,17 +709,24 @@ def parallel_filter_median(
     if len(bounds) <= 1:
         return run(mean, real, imag)
 
-    # phasorpy picks the output dtype from the inputs. Probing it on a
+    # phasorpy picks each output's dtype from its own input -- ``mean`` comes
+    # back untouched while ``real``/``imag`` are promoted to float32 or
+    # float64 -- so the three have to be probed separately. Probing on a
     # throwaway array the size of one filter footprint is far cheaper than
     # concatenating the band results afterwards, and lets every worker write
     # straight into its slice of the final arrays.
-    probe = np.zeros((2 * size + 1, 2 * size + 1), dtype=mean.dtype)
-    probe_out = phasor_filter_median(probe, probe, probe, repeat=1, size=size)
-    out_dtype = np.asarray(probe_out[0]).dtype
+    probe_shape = (2 * size + 1, 2 * size + 1)
+    probe_out = phasor_filter_median(
+        np.zeros(probe_shape, dtype=mean.dtype),
+        np.zeros(probe_shape, dtype=real.dtype),
+        np.zeros(probe_shape, dtype=imag.dtype),
+        repeat=1,
+        size=size,
+    )
 
-    out_mean = np.empty(mean.shape, dtype=out_dtype)
-    out_real = np.empty(real.shape, dtype=out_dtype)
-    out_imag = np.empty(imag.shape, dtype=out_dtype)
+    out_mean = np.empty(mean.shape, dtype=np.asarray(probe_out[0]).dtype)
+    out_real = np.empty(real.shape, dtype=np.asarray(probe_out[1]).dtype)
+    out_imag = np.empty(imag.shape, dtype=np.asarray(probe_out[2]).dtype)
 
     def filter_band(start, stop):
         low = max(0, start - halo)

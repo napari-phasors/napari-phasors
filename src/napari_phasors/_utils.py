@@ -66,6 +66,88 @@ from superqt import QRangeSlider
 
 from ._parallel import parallel_filter_median
 
+#: Precisions the phasor arrays may be stored at. ``"native"`` keeps whatever
+#: phasorpy produced, which is float64 for the integer signals most raw
+#: formats decode to. ``"float32"`` halves the memory every layer occupies.
+PHASOR_STORAGE_DTYPES = ("native", "float32")
+
+_phasor_storage_dtype = "native"
+
+
+def phasor_storage_dtype():
+    """Return the precision new phasor layers are stored at."""
+    return _phasor_storage_dtype
+
+
+def set_phasor_storage_dtype(name):
+    """Set the precision new phasor layers are stored at.
+
+    A layer holds six full-size arrays -- the intensity twice, and ``G``,
+    ``S`` and their unfiltered originals -- so the storage precision is the
+    single largest lever on how much memory an open image costs. Halving it
+    halves both the resident layer and every transient copy a filter makes.
+
+    Unlike the parallel-processing switch, this one *does* change the
+    numbers: phasor coordinates lie in [-1, 1], where float32 carries about
+    seven significant digits against float64's sixteen. That is far below
+    photon noise in any real acquisition, but it is not bit-identical, so it
+    is off by default and applies only to layers read after it is set.
+
+    Parameters
+    ----------
+    name : str
+        One of :data:`PHASOR_STORAGE_DTYPES`.
+
+    Raises
+    ------
+    ValueError
+        If *name* is not one of the supported precisions.
+    """
+    global _phasor_storage_dtype
+    if name not in PHASOR_STORAGE_DTYPES:
+        msg = (
+            f"unknown phasor storage precision {name!r}; "
+            f"expected one of {PHASOR_STORAGE_DTYPES}"
+        )
+        raise ValueError(msg)
+    _phasor_storage_dtype = name
+
+
+def cast_phasor_storage(*arrays):
+    """Return *arrays* at the configured storage precision.
+
+    Integer arrays are left alone -- only the floating-point phasor
+    coordinates and intensities are downcast -- and an array already at the
+    target precision is returned unchanged rather than copied.
+
+    Parameters
+    ----------
+    *arrays : array-like or None
+        Arrays to cast. ``None`` entries pass straight through, so callers
+        can hand over optional metadata without checking first.
+
+    Returns
+    -------
+    tuple
+        One entry per input, in order.
+    """
+    if _phasor_storage_dtype == "native":
+        return arrays
+
+    target = np.dtype(_phasor_storage_dtype)
+
+    def cast(array):
+        if array is None:
+            return None
+        array = np.asarray(array)
+        if not np.issubdtype(array.dtype, np.floating):
+            return array
+        if array.dtype == target or array.dtype.itemsize <= target.itemsize:
+            return array
+        return array.astype(target)
+
+    return tuple(cast(array) for array in arrays)
+
 
 def analysis_section_stylesheet():
     """Return the shared stylesheet for titled analysis-tab section boxes.

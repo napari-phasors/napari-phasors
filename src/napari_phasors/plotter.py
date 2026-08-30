@@ -46,6 +46,14 @@ from qtpy.QtWidgets import (
 )
 from superqt import QToggleSwitch
 
+from ._parallel import (
+    available_memory,
+    default_workers,
+    memory_fraction,
+    parallel_enabled,
+    set_memory_fraction,
+    set_parallel_enabled,
+)
 from ._timelapse import CURRENT as FRAME_MODE_CURRENT
 from ._timelapse import POOLED as FRAME_MODE_POOLED
 from ._timelapse import (
@@ -76,10 +84,12 @@ from ._utils import (
     normalize_rgb,
     patch_biaplotter_capture_selection_geometry,
     patch_biaplotter_fixed_histogram_range,
+    phasor_storage_dtype,
     populate_colormap_combobox,
     read_ome_tiff_settings,
     resolve_colormap_by_name,
     save_groups_to_layer_metadata,
+    set_phasor_storage_dtype,
     update_frequency_in_metadata,
     write_rows_to_csv,
 )
@@ -5221,6 +5231,8 @@ class PlotterWidget(QWidget):
         pc_grid.addWidget(piw.label_phasor_center, 0, 0)
         pc_grid.addWidget(self._pc_controls_container, 0, 1)
 
+        performance_box = self._build_performance_section()
+
         # Replace the now-empty original grid with a vertical stack of boxes.
         QWidget().setLayout(old_grid)
         sections_layout = QVBoxLayout(contents)
@@ -5229,7 +5241,155 @@ class PlotterWidget(QWidget):
         sections_layout.addWidget(type_box)
         sections_layout.addWidget(appearance_box)
         sections_layout.addWidget(pc_box)
+        sections_layout.addWidget(performance_box)
         sections_layout.addStretch(1)
+
+    def _build_performance_section(self):
+        """Return the "Performance" section box for the Plot Settings tab.
+
+        Two controls, both plugin-wide and both applying from the next
+        operation onwards.
+
+        *Parallel processing* turns the thread pools on and off. With it on,
+        filtering, the phasor transform, component fits and the per-layer
+        analyses are spread over the machine's cores; with it off every one
+        of them runs sequentially on the calling thread. The results are the
+        same either way -- the split points were chosen so that each piece of
+        work is independent of the others -- so this is a
+        speed-versus-resources choice, not an accuracy one. Turn it off when
+        the machine is shared with another heavy job, or to reproduce a
+        timing.
+
+        *Memory budget* is the share of currently free RAM that concurrent
+        work is allowed to occupy. It is what sizes the pools that hold whole
+        images: how many files a stack read decodes at once, how many layers
+        an export writes at once, how many batch files are decoded ahead of
+        being written out. Lower it when a large stack runs the machine out
+        of memory; raise it on a machine with headroom to spare and nothing
+        else running.
+
+        *Phasor precision* is the one control here that changes the numbers
+        rather than just the schedule, which is why it is a separate choice
+        and not folded into the memory budget. Storing ``G`` and ``S`` as
+        float32 halves what every open image costs, resident and transient
+        alike, at about seven significant digits instead of sixteen -- far
+        below photon noise, but not bit-identical.
+        """
+        box, layout = make_section("Performance")
+
+        grid = QGridLayout()
+        layout.addLayout(grid)
+
+        self.parallel_processing_label = QLabel("Parallel processing:")
+        self.parallel_processing_checkbox = QToggleSwitch()
+        self.parallel_processing_checkbox.setChecked(parallel_enabled())
+        self.parallel_processing_checkbox.toggled.connect(
+            self._on_parallel_processing_toggled
+        )
+        grid.addWidget(self.parallel_processing_label, 0, 0)
+        grid.addWidget(self.parallel_processing_checkbox, 0, 1)
+
+        self.memory_budget_label = QLabel("Memory budget:")
+        self.memory_budget_spinbox = QSpinBox()
+        self.memory_budget_spinbox.setRange(5, 95)
+        self.memory_budget_spinbox.setSuffix("% of free RAM")
+        self.memory_budget_spinbox.setValue(round(memory_fraction() * 100))
+        self.memory_budget_spinbox.setToolTip(
+            "Share of free memory that concurrent work may occupy. Lower "
+            "this if reading a large stack runs out of memory."
+        )
+        self.memory_budget_spinbox.valueChanged.connect(
+            self._on_memory_budget_changed
+        )
+        grid.addWidget(self.memory_budget_label, 1, 0)
+        grid.addWidget(self.memory_budget_spinbox, 1, 1)
+
+        self.phasor_precision_label = QLabel("Phasor precision:")
+        self.phasor_precision_combobox = QComboBox()
+        self.phasor_precision_combobox.addItem("As read", "native")
+        self.phasor_precision_combobox.addItem(
+            "float32 (half memory)", "float32"
+        )
+        self.phasor_precision_combobox.setCurrentIndex(
+            self.phasor_precision_combobox.findData(phasor_storage_dtype())
+        )
+        self.phasor_precision_combobox.setToolTip(
+            "Precision new layers store their phasor arrays at. float32 "
+            "halves the memory an open image costs, at about seven "
+            "significant digits instead of sixteen. Applies to images "
+            "opened from now on."
+        )
+        self.phasor_precision_combobox.currentIndexChanged.connect(
+            self._on_phasor_precision_changed
+        )
+        grid.addWidget(self.phasor_precision_label, 2, 0)
+        grid.addWidget(self.phasor_precision_combobox, 2, 1)
+
+        self.parallel_processing_hint = QLabel()
+        self.parallel_processing_hint.setWordWrap(True)
+        self.parallel_processing_hint.setStyleSheet("color: gray;")
+        layout.addWidget(self.parallel_processing_hint)
+
+        self._update_parallel_processing_hint()
+        return box
+
+    def _on_parallel_processing_toggled(self, checked):
+        """Switch the plugin's thread pools on or off.
+
+        Applies from the next operation onwards; anything already running
+        finishes with the setting it started under.
+        """
+        set_parallel_enabled(checked)
+        self._update_parallel_processing_hint()
+
+    def _on_memory_budget_changed(self, percent):
+        """Set the share of free memory concurrent work may occupy."""
+        set_memory_fraction(percent / 100.0)
+        self._update_parallel_processing_hint()
+
+    def _on_phasor_precision_changed(self, _index):
+        """Set the precision newly opened layers store phasor arrays at.
+
+        Images already open keep the precision they were read with; nothing
+        is converted behind the user's back.
+        """
+        set_phasor_storage_dtype(
+            self.phasor_precision_combobox.currentData() or "native"
+        )
+        self._update_parallel_processing_hint()
+
+    def _update_parallel_processing_hint(self):
+        """Describe what the performance controls are currently doing."""
+        hint = getattr(self, 'parallel_processing_hint', None)
+        if hint is None:
+            return
+        if not parallel_enabled():
+            hint.setText(
+                "Everything runs sequentially on one thread. Slower on large "
+                "images, but uses the least memory and leaves the rest of "
+                "the machine free."
+            )
+            return
+
+        workers = default_workers()
+        free = available_memory()
+        budget = (
+            f"{free * memory_fraction() / 2 ** 30:.1f} GB of the "
+            f"{free / 2 ** 30:.1f} GB free right now"
+            if free
+            else f"{round(memory_fraction() * 100)}% of free memory"
+        )
+        precision = (
+            " New images are stored as float32, halving what each one costs."
+            if phasor_storage_dtype() == "float32"
+            else ""
+        )
+        hint.setText(
+            f"Filtering, the phasor transform and the per-layer analyses run "
+            f"on up to {workers} threads, and work that holds whole images "
+            f"is sized to fit {budget}. Results are identical to running "
+            f"sequentially.{precision}"
+        )
 
     def _reflow_plot_settings_rows(self, show_multi_layer_contour_controls):
         """Reposition rows to avoid empty spacing when contour row is hidden."""

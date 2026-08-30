@@ -71,6 +71,7 @@ from qtpy.QtWidgets import (
 )
 from superqt import QToggleSwitch
 
+from ._parallel import default_workers, items_for_memory, parallel_stream
 from ._reader import extension_mapping, napari_get_reader
 from ._utils import (
     LIFETIME_OUTPUT_TYPES,
@@ -1713,7 +1714,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self.threads_spin.setValue(1)
         self.threads_spin.setToolTip(
             "Read and compute files concurrently (1 = single-threaded). "
-            "File writing and plot rendering stay on the main thread."
+            "File writing and plot rendering stay on the main thread. "
+            "Ignored while 'Parallel processing' is off in Plot Settings."
         )
         workers_row.addWidget(self.threads_spin)
         workers_row.addStretch()
@@ -5192,7 +5194,10 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         suffix = self.suffix_edit.text()
         preserve = self.preserve_paths_checkbox.isChecked()
         load_into_viewer = self.load_into_viewer_checkbox.isChecked()
-        workers = self.threads_spin.value()
+        # The batch tab has its own worker spinbox, but the plugin-wide
+        # "Parallel processing" switch outranks it: turning parallelism off
+        # has to mean off everywhere, not everywhere except here.
+        workers = default_workers(len(files), self.threads_spin.value())
         masks_enabled = self.masks_group.isChecked()
         self._auto_tabs = self._auto_contrast_tabs()
         self._global_contrast = {}
@@ -5262,29 +5267,31 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             )
             QApplication.processEvents()
 
-        if workers > 1 and len(files) > 1:
-            from concurrent.futures import ThreadPoolExecutor
-
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                futures = [
-                    (path, executor.submit(read_compute, path))
-                    for path in files
-                ]
-                for index, (path, future) in enumerate(futures):
-                    try:
-                        emit(path, future.result())
-                        processed += 1
-                    except Exception as exc:  # noqa: BLE001
-                        failed.append((os.path.basename(path), str(exc)))
-                    update_progress(index)
-        else:
-            for index, path in enumerate(files):
+        # Files are read and computed in a pool while ``emit`` runs here, in
+        # file order, as each result arrives. ``parallel_stream`` -- rather
+        # than ``parallel_map`` -- because a batch is exactly the case where
+        # holding every result is fatal: submitting all of a 500-file run at
+        # once lets every decoded file pile up whenever the workers outrun
+        # ``emit``, which they do as soon as anything is written to disk.
+        for index, path, result in parallel_stream(
+            read_compute,
+            files,
+            workers=workers,
+            max_in_flight=_batch_files_in_flight(files, workers),
+            on_error="collect",
+        ):
+            if isinstance(result, BaseException):
+                failed.append((os.path.basename(path), str(result)))
+            else:
                 try:
-                    emit(path, read_compute(path))
+                    emit(path, result)
                     processed += 1
                 except Exception as exc:  # noqa: BLE001
                     failed.append((os.path.basename(path), str(exc)))
-                update_progress(index)
+                # Release the arrays before waiting on the next file, so the
+                # in-flight bound above actually bounds resident memory.
+                del result
+            update_progress(index)
 
         try:
             self._flush_deferred_exports()
@@ -7993,6 +8000,44 @@ def _save_export_histogram(hw, path, dpi=300):
         transparent=use_transparent,
         facecolor='white' if hw._white_background else 'none',
     )
+
+
+def _batch_files_in_flight(files, workers):
+    """Return how many batch files may be decoded but not yet written out.
+
+    Two bounds, whichever is tighter. The first is structural: twice the
+    worker count keeps every worker fed while ``emit`` writes the previous
+    file, and nothing is gained by queueing more. The second is the memory
+    budget -- on a machine whose free RAM cannot hold even that many decoded
+    files, in-flight work has to come down further.
+
+    The on-disk size of the largest input stands in for a decoded file. It
+    is a floor rather than an estimate: a compressed FLIM file expands
+    several-fold once it is a float phasor set. It is used only to notice
+    that free memory is small relative to the inputs, which is the case that
+    matters.
+
+    Parameters
+    ----------
+    files : sequence of str
+        The batch's input paths.
+    workers : int
+        Resolved worker count for this run.
+
+    Returns
+    -------
+    int
+        At least ``1``.
+    """
+    structural = max(1, 2 * int(workers))
+    largest = 0
+    for path in files:
+        with contextlib.suppress(OSError):
+            largest = max(largest, os.path.getsize(path))
+    affordable = items_for_memory(largest)
+    if affordable is None:
+        return structural
+    return max(1, min(structural, affordable))
 
 
 class _SpillStore:

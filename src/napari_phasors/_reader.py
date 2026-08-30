@@ -22,11 +22,11 @@ from napari.utils.colormaps.colormap_utils import CYMRGB, MAGENTA_GREEN
 from napari.utils.notifications import show_error
 
 from ._parallel import (
-    parallel_map,
     parallel_phasor_from_signal,
+    parallel_stream,
     workers_for_memory,
 )
-from ._utils import show_activity_progress
+from ._utils import cast_phasor_storage, show_activity_progress
 
 extension_mapping = {
     "raw": {
@@ -470,6 +470,12 @@ def raw_file_reader(
                     raw_data, axis=axis, harmonic=harmonics_to_use
                 )
             )
+            # Downcast once, here, so every array the layer goes on to hold
+            # -- and every copy a filter makes of them -- is at the chosen
+            # storage precision.
+            mean_intensity_image, G_image, S_image = cast_phasor_storage(
+                mean_intensity_image, G_image, S_image
+            )
             pbr.update(n_steps)
             channel_suffix = " Intensity Image"
             add_kwargs = {
@@ -565,6 +571,9 @@ def raw_file_reader(
                         harmonic=harmonics_to_use,
                     )
                 )
+                mean_intensity_image, G_image, S_image = cast_phasor_storage(
+                    mean_intensity_image, G_image, S_image
+                )
                 add_kwargs = {
                     "name": f"{filename} Intensity Image: Channel {channel_label}",
                     "metadata": {
@@ -604,6 +613,107 @@ def raw_file_reader(
             layer[1]['blending'] = 'additive'
 
     return layers
+
+
+def _new_stack_channel(layer_data, n_files):
+    """Allocate the stacked arrays for one channel of a file stack.
+
+    Shapes and dtypes come from the first file read; every later file is
+    written into a slice of these arrays rather than being kept until the
+    end. ``G``/``S`` may be ``(harmonics, Y, X)`` or ``(Y, X)``, and the
+    files axis is inserted so the harmonic axis stays leading either way.
+
+    Parameters
+    ----------
+    layer_data : tuple
+        ``(mean, kwargs)`` for this channel of the first file.
+    n_files : int
+        Number of files in the stack, the length of the new axis.
+
+    Returns
+    -------
+    dict
+        The preallocated arrays plus the first file's kwargs, which supply
+        the stack layer's name, settings and colormap.
+    """
+    mean, kwargs = layer_data
+    meta = kwargs["metadata"]
+    mean = np.asarray(mean)
+
+    def stacked(array):
+        array = np.asarray(array)
+        if array.ndim >= 3:
+            # (harmonics, Y, X) -> (harmonics, files, Y, X)
+            shape = (array.shape[0], n_files) + array.shape[1:]
+        else:
+            shape = (n_files,) + array.shape
+        return np.empty(shape, dtype=array.dtype)
+
+    return {
+        "kwargs": kwargs,
+        "mean": np.empty((n_files,) + mean.shape, dtype=mean.dtype),
+        # ``original_mean`` is filled alongside ``mean`` rather than copied
+        # from it afterwards, which keeps one fewer full-size array alive.
+        "original_mean": np.empty((n_files,) + mean.shape, dtype=mean.dtype),
+        "G": stacked(meta["G"]),
+        "S": stacked(meta["S"]),
+        "G_original": stacked(meta["G_original"]),
+        "S_original": stacked(meta["S_original"]),
+        "summed_signals": [],
+    }
+
+
+def _fill_stack_channel(channel, index, layer_data, path):
+    """Write one file's channel into its slice of the stacked arrays.
+
+    Returns
+    -------
+    str or None
+        An error message when this file does not match the first one, or
+        ``None`` on success. Mismatched dtypes are reported rather than
+        silently cast, since a downcast would quietly lose precision on
+        every file after the first.
+    """
+    mean, kwargs = layer_data
+    mean = np.asarray(mean)
+    meta = kwargs["metadata"]
+
+    if mean.shape != channel["mean"].shape[1:]:
+        return (
+            f"Spatial shape mismatch: file {path} has shape {mean.shape} "
+            f"but expected {channel['mean'].shape[1:]}."
+        )
+
+    for key in ("G", "S", "G_original", "S_original"):
+        array = np.asarray(meta[key])
+        out = channel[key]
+        expected = (
+            out.shape[:1] + out.shape[2:] if out.ndim >= 4 else out.shape[1:]
+        )
+        if array.shape != expected:
+            return (
+                f"Phasor shape mismatch: file {path} has {key} of shape "
+                f"{array.shape} but expected {expected}."
+            )
+        if array.dtype != out.dtype:
+            return (
+                f"Data type mismatch: file {path} has {key} of type "
+                f"{array.dtype} but the first file has {out.dtype}."
+            )
+        if out.ndim >= 4:
+            out[:, index] = array
+        else:
+            out[index] = array
+
+    channel["mean"][index] = mean
+    channel["original_mean"][index] = mean
+
+    sig = meta.get("summed_signal")
+    if sig is not None:
+        channel["summed_signals"].append(
+            sig if isinstance(sig, np.ndarray) else np.asarray(sig)
+        )
+    return None
 
 
 def raw_file_stack_reader(
@@ -651,108 +761,89 @@ def raw_file_stack_reader(
         )
         return []
 
-    # Read the files concurrently. Each read decodes one file's signal, so
-    # the pool is sized against free memory as well as core count.
+    # Read the files concurrently and write each one straight into its slice
+    # of the stack. Collecting every file first and calling ``np.stack``
+    # afterwards needs the whole stack twice over -- once as N separate
+    # per-file arrays, once as the stacked copy -- which is what makes a
+    # large stack run out of memory. Filling preallocated arrays holds the
+    # stack once, plus however many files are in flight.
     largest = 0
     for p in paths:
         with suppress(OSError):
             largest = max(largest, os.path.getsize(p))
     stack_workers = workers_for_memory(largest, n_items=len(paths))
 
+    channels = None
+    n_channels = 0
+    failure = None
+
     pbr = show_activity_progress(
         desc=f"Reading {len(paths)} file(s)...", total=len(paths)
     )
     try:
-        per_file_layers: list[list[tuple]] = parallel_map(
+        for index, path, file_layers in parallel_stream(
             lambda p: raw_file_reader(
                 p, reader_options=reader_options, harmonics=harmonics
             ),
             paths,
             workers=stack_workers,
-            progress=lambda index: pbr.update(1),
-        )
+            # Writing a file into its slice is a memcpy, far faster than
+            # decoding the next one, so there is nothing to gain from
+            # queueing results ahead: one per worker keeps the pool busy and
+            # is the smallest number of decoded files held at once.
+            max_in_flight=stack_workers,
+        ):
+            pbr.update(1)
+
+            if channels is None:
+                n_channels = len(file_layers)
+                channels = [
+                    _new_stack_channel(file_layers[ch], len(paths))
+                    for ch in range(n_channels)
+                ]
+            elif len(file_layers) != n_channels:
+                failure = (
+                    f"File {path} produced {len(file_layers)} channel(s) "
+                    f"but the first file produced {n_channels}. "
+                    "All files must have the same number of channels."
+                )
+                break
+
+            for ch in range(n_channels):
+                failure = _fill_stack_channel(
+                    channels[ch], index, file_layers[ch], path
+                )
+                if failure is not None:
+                    break
+            if failure is not None:
+                break
+
+            # Drop this file's arrays before waiting on the next result, so
+            # the stack plus a bounded number of files is all that is held.
+            del file_layers
     finally:
         pbr.close()
 
-    # Determine how many channels the first file produced
-    n_channels = len(per_file_layers[0])
+    if failure is not None:
+        show_error(failure)
+        return []
+    if not channels:
+        return []
 
-    # Verify every file produced the same number of channels
-    for idx, file_layers in enumerate(per_file_layers):
-        if len(file_layers) != n_channels:
-            show_error(
-                f"File {paths[idx]} produced {len(file_layers)} channel(s) "
-                f"but the first file produced {n_channels}. "
-                "All files must have the same number of channels."
-            )
-            return []
+    # Build the layers from the filled arrays
+    common_dir = os.path.dirname(paths[0])
+    dir_name = os.path.basename(common_dir) or "stack"
+    stack_files = [os.path.basename(p) for p in paths]
 
-    # Stack per-channel across files
     stacked_layers = []
-    for ch in range(n_channels):
-        # Collect arrays for this channel across all files
-        means = []
-        g_arrays = []
-        s_arrays = []
-        g_orig_arrays = []
-        s_orig_arrays = []
-        summed_signals = []
-
-        ref_shape = per_file_layers[0][ch][0].shape
-        for file_idx, file_layers in enumerate(per_file_layers):
-            data, kwargs = file_layers[ch]
-            if data.shape != ref_shape:
-                show_error(
-                    f"Spatial shape mismatch: file {paths[file_idx]} has "
-                    f"shape {data.shape} but expected {ref_shape}."
-                )
-                return []
-
-            means.append(data)
-
-            meta = kwargs["metadata"]
-            g_arrays.append(meta["G"])
-            s_arrays.append(meta["S"])
-            g_orig_arrays.append(meta["G_original"])
-            s_orig_arrays.append(meta["S_original"])
-
-            sig = meta.get("summed_signal")
-            if sig is not None:
-                if isinstance(sig, list):
-                    sig = np.array(sig)
-                summed_signals.append(sig)
-
-        # Stack along new axis 0 → (n_files, Y, X)
-        stacked_mean = np.stack(means, axis=0)
-
-        # G and S may have shape (n_harmonics, Y, X) or (Y, X)
-        # We stack along a new axis: if 3D → (n_harmonics, n_files, Y, X)
-        #                            if 2D → (n_files, Y, X)
-        g_sample = g_arrays[0]
-        if g_sample.ndim >= 3:
-            # (n_harmonics, Y, X) → stack each harmonic's slices
-            stacked_g = np.stack(g_arrays, axis=1)
-            stacked_s = np.stack(s_arrays, axis=1)
-            stacked_g_orig = np.stack(g_orig_arrays, axis=1)
-            stacked_s_orig = np.stack(s_orig_arrays, axis=1)
-        else:
-            stacked_g = np.stack(g_arrays, axis=0)
-            stacked_s = np.stack(s_arrays, axis=0)
-            stacked_g_orig = np.stack(g_orig_arrays, axis=0)
-            stacked_s_orig = np.stack(s_orig_arrays, axis=0)
-
-        # Build metadata from the first file's channel metadata
-        first_meta = per_file_layers[0][ch][1]["metadata"]
-        first_kwargs = per_file_layers[0][ch][1]
-
-        # Use a descriptive stack name
-        common_dir = os.path.dirname(paths[0])
-        dir_name = os.path.basename(common_dir) or "stack"
+    for channel in channels:
+        first_kwargs = channel["kwargs"]
+        first_meta = first_kwargs["metadata"]
         channel_suffix = first_kwargs["name"].split("Intensity Image")[-1]
-        stack_name = f"{dir_name} Stack Intensity Image{channel_suffix}"
 
+        summed_signals = channel["summed_signals"]
         stack_meta = {
-            "original_mean": stacked_mean.copy(),
+            "original_mean": channel["original_mean"],
             "settings": first_meta.get("settings", {}),
             "summed_signal": (
                 [
@@ -762,15 +853,18 @@ def raw_file_stack_reader(
                 if summed_signals
                 else None
             ),
-            "G": stacked_g,
-            "S": stacked_s,
-            "G_original": stacked_g_orig,
-            "S_original": stacked_s_orig,
+            "G": channel["G"],
+            "S": channel["S"],
+            "G_original": channel["G_original"],
+            "S_original": channel["S_original"],
             "harmonics": first_meta.get("harmonics"),
-            "stack_files": [os.path.basename(p) for p in paths],
+            "stack_files": stack_files,
         }
 
-        add_kwargs = {"name": stack_name, "metadata": stack_meta}
+        add_kwargs = {
+            "name": f"{dir_name} Stack Intensity Image{channel_suffix}",
+            "metadata": stack_meta,
+        }
 
         # Preserve colormap / blending if set
         if "colormap" in first_kwargs:
@@ -778,7 +872,7 @@ def raw_file_stack_reader(
         if "blending" in first_kwargs:
             add_kwargs["blending"] = first_kwargs["blending"]
 
-        stacked_layers.append((stacked_mean, add_kwargs))
+        stacked_layers.append((channel["mean"], add_kwargs))
 
     return stacked_layers
 
@@ -988,6 +1082,22 @@ def processed_file_reader(
                 settings["threshold_upper"] = threshold_upper_value
 
         layers = []
+
+        (
+            mean_intensity_image,
+            original_mean_intensity_image,
+            real,
+            imag,
+            g_original,
+            s_original,
+        ) = cast_phasor_storage(
+            mean_intensity_image,
+            original_mean_intensity_image,
+            real,
+            imag,
+            g_original,
+            s_original,
+        )
 
         add_kwargs = {
             "name": filename + " Intensity Image",
