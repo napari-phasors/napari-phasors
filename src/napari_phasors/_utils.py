@@ -18,11 +18,7 @@ from matplotlib.legend_handler import HandlerBase
 from matplotlib.patches import Polygon as MplPolygon
 from napari.layers import Image
 from napari.utils import progress as _napari_progress
-from phasorpy.filter import (
-    phasor_filter_median,
-    phasor_filter_pawflim,
-    phasor_threshold,
-)
+from phasorpy.filter import phasor_filter_pawflim, phasor_threshold
 from qtpy.QtCore import QEvent, QRect, QSize, Qt, QThread, QTimer, Signal
 from qtpy.QtGui import (
     QColor,
@@ -67,6 +63,90 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 from superqt import QRangeSlider
+
+from ._parallel import parallel_filter_median
+
+#: Precisions the phasor arrays may be stored at. ``"native"`` keeps whatever
+#: phasorpy produced, which is float64 for the integer signals most raw
+#: formats decode to. ``"float32"`` halves the memory every layer occupies.
+PHASOR_STORAGE_DTYPES = ("native", "float32")
+
+_phasor_storage_dtype = "native"
+
+
+def phasor_storage_dtype():
+    """Return the precision new phasor layers are stored at."""
+    return _phasor_storage_dtype
+
+
+def set_phasor_storage_dtype(name):
+    """Set the precision new phasor layers are stored at.
+
+    A layer holds six full-size arrays -- the intensity twice, and ``G``,
+    ``S`` and their unfiltered originals -- so the storage precision is the
+    single largest lever on how much memory an open image costs. Halving it
+    halves both the resident layer and every transient copy a filter makes.
+
+    Unlike the parallel-processing switch, this one *does* change the
+    numbers: phasor coordinates lie in [-1, 1], where float32 carries about
+    seven significant digits against float64's sixteen. That is far below
+    photon noise in any real acquisition, but it is not bit-identical, so it
+    is off by default and applies only to layers read after it is set.
+
+    Parameters
+    ----------
+    name : str
+        One of :data:`PHASOR_STORAGE_DTYPES`.
+
+    Raises
+    ------
+    ValueError
+        If *name* is not one of the supported precisions.
+    """
+    global _phasor_storage_dtype
+    if name not in PHASOR_STORAGE_DTYPES:
+        msg = (
+            f"unknown phasor storage precision {name!r}; "
+            f"expected one of {PHASOR_STORAGE_DTYPES}"
+        )
+        raise ValueError(msg)
+    _phasor_storage_dtype = name
+
+
+def cast_phasor_storage(*arrays):
+    """Return *arrays* at the configured storage precision.
+
+    Integer arrays are left alone -- only the floating-point phasor
+    coordinates and intensities are downcast -- and an array already at the
+    target precision is returned unchanged rather than copied.
+
+    Parameters
+    ----------
+    *arrays : array-like or None
+        Arrays to cast. ``None`` entries pass straight through, so callers
+        can hand over optional metadata without checking first.
+
+    Returns
+    -------
+    tuple
+        One entry per input, in order.
+    """
+    if _phasor_storage_dtype == "native":
+        return arrays
+
+    target = np.dtype(_phasor_storage_dtype)
+
+    def cast(array):
+        if array is None:
+            return None
+        array = np.asarray(array)
+        if not np.issubdtype(array.dtype, np.floating):
+            return array
+        if array.dtype == target or array.dtype.itemsize <= target.itemsize:
+            return array
+        return array.astype(target)
+
+    return tuple(cast(array) for array in arrays)
 
 
 def analysis_section_stylesheet():
@@ -1040,7 +1120,11 @@ def _apply_filter_and_threshold_to_phasor_arrays(
         # Filter each XY slice independently. For ndim>2, all leading axes are
         # treated as slice/index axes and therefore skipped by the median filter.
         skip_axis = tuple(range(mean.ndim - 2)) if mean.ndim > 2 else None
-        mean, real, imag = phasor_filter_median(
+        # Median filtering is by far the most expensive thing the filter tab
+        # does, and it re-runs on every slider move. ``parallel_filter_median``
+        # splits large images into row bands with enough halo to stay
+        # bit-identical to the unsplit call; small ones go straight through.
+        mean, real, imag = parallel_filter_median(
             mean,
             real,
             imag,
@@ -1112,11 +1196,71 @@ def apply_filter_and_threshold(
         Harmonic values for wavelet filter. If None, will be extracted from layer.
 
     """
+    arrays = compute_filter_and_threshold(
+        layer,
+        threshold=threshold,
+        threshold_upper=threshold_upper,
+        filter_method=filter_method,
+        size=size,
+        repeat=repeat,
+        sigma=sigma,
+        levels=levels,
+        harmonics=harmonics,
+    )
+    assign_filter_and_threshold(
+        layer,
+        arrays,
+        threshold=threshold,
+        threshold_upper=threshold_upper,
+        threshold_method=threshold_method,
+        filter_method=filter_method,
+        size=size,
+        repeat=repeat,
+        sigma=sigma,
+        levels=levels,
+    )
+    return
+
+
+def compute_filter_and_threshold(
+    layer: Image,
+    /,
+    *,
+    threshold: float = None,
+    threshold_upper: float = None,
+    filter_method: str = None,
+    size: int = None,
+    repeat: int = None,
+    sigma: float = None,
+    levels: int = None,
+    harmonics: np.ndarray = None,
+):
+    """Compute a layer's filtered and thresholded phasor arrays.
+
+    The array half of :func:`apply_filter_and_threshold`. It only reads the
+    layer's metadata dict and returns fresh arrays, touching no Qt or napari
+    state, so it is safe to run in a worker thread. Pair it with
+    :func:`assign_filter_and_threshold` on the main thread.
+
+    Parameters
+    ----------
+    layer : napari.layers.Image
+        Napari image layer with phasor features.
+    threshold, threshold_upper, filter_method, size, repeat, sigma, levels : optional
+        As in :func:`apply_filter_and_threshold`.
+    harmonics : np.ndarray, optional
+        Harmonic values. Read from the layer when None.
+
+    Returns
+    -------
+    tuple
+        ``(mean, real, imag)`` arrays.
+    """
     mean, real, imag, harmonics = _extract_phasor_arrays_from_layer(
         layer, harmonics
     )
 
-    mean, real, imag = _apply_filter_and_threshold_to_phasor_arrays(
+    return _apply_filter_and_threshold_to_phasor_arrays(
         mean,
         real,
         imag,
@@ -1129,6 +1273,38 @@ def apply_filter_and_threshold(
         sigma=sigma,
         levels=levels,
     )
+
+
+def assign_filter_and_threshold(
+    layer: Image,
+    arrays,
+    /,
+    *,
+    threshold: float = None,
+    threshold_upper: float = None,
+    threshold_method: str = None,
+    filter_method: str = None,
+    size: int = None,
+    repeat: int = None,
+    sigma: float = None,
+    levels: int = None,
+):
+    """Write computed phasor arrays and their settings back into a layer.
+
+    The napari half of :func:`apply_filter_and_threshold`: it mutates the
+    layer and refreshes it, so it must run on the main thread.
+
+    Parameters
+    ----------
+    layer : napari.layers.Image
+        Layer to update.
+    arrays : tuple
+        ``(mean, real, imag)`` as returned by
+        :func:`compute_filter_and_threshold`.
+    threshold, threshold_upper, threshold_method, filter_method, size, repeat, sigma, levels : optional
+        Settings to record in the layer metadata.
+    """
+    mean, real, imag = arrays
 
     layer.metadata['G'] = real
     layer.metadata['S'] = imag
@@ -1158,7 +1334,79 @@ def apply_filter_and_threshold(
     layer.metadata["settings"]["threshold_method"] = threshold_method
     layer.refresh()
 
-    return
+
+def apply_filter_and_threshold_to_layers(
+    layer_params, workers=None, progress=None
+):
+    """Filter and threshold several layers, computing them concurrently.
+
+    Each layer's filtering is independent and spends its time inside
+    phasorpy's Cython kernels, which release the GIL, so the computations run
+    in a thread pool while the layer updates happen in order on the calling
+    thread.
+
+    Parameters
+    ----------
+    layer_params : sequence of tuple
+        ``(layer, params)`` pairs, where *params* is the keyword dict for
+        :func:`compute_filter_and_threshold`. Per-layer parameters are
+        supported because settings such as the wavelet harmonics differ from
+        one layer to the next.
+    workers : int, optional
+        Thread count. Defaults to one per core, capped.
+    progress : callable, optional
+        Called with each index as its computation finishes.
+
+    Returns
+    -------
+    list
+        One entry per layer: ``None`` on success, or the exception raised
+        while computing that layer.
+    """
+    from ._parallel import parallel_compute_apply
+
+    pairs = list(layer_params)
+    if not pairs:
+        return []
+
+    def compute(pair):
+        layer, params = pair
+        return compute_filter_and_threshold(
+            layer,
+            threshold=params.get("threshold"),
+            threshold_upper=params.get("threshold_upper"),
+            filter_method=params.get("filter_method"),
+            size=params.get("size"),
+            repeat=params.get("repeat"),
+            sigma=params.get("sigma"),
+            levels=params.get("levels"),
+            harmonics=params.get("harmonics"),
+        )
+
+    def apply(pair, arrays):
+        layer, params = pair
+        assign_filter_and_threshold(
+            layer,
+            arrays,
+            threshold=params.get("threshold"),
+            threshold_upper=params.get("threshold_upper"),
+            threshold_method=params.get("threshold_method"),
+            filter_method=params.get("filter_method"),
+            size=params.get("size"),
+            repeat=params.get("repeat"),
+            sigma=params.get("sigma"),
+            levels=params.get("levels"),
+        )
+        return None
+
+    return parallel_compute_apply(
+        pairs,
+        compute,
+        apply,
+        workers=workers,
+        progress=progress,
+        on_error="collect",
+    )
 
 
 def colormap_to_dict(colormap, num_colors=10, exclude_first=True):

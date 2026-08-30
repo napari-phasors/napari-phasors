@@ -4392,3 +4392,52 @@ def test_color_plot_by_metric_falls_back_to_jet_when_resolution_fails(
 
     assert calls["n"] == 2
     assert plot.ax.kwargs["cmap"] is not None
+
+
+def test_batch_files_in_flight_is_bounded_by_the_workers(tmp_path):
+    """Twice the worker count keeps the pool fed without queueing the batch."""
+    from napari_phasors._batch_analysis import _batch_files_in_flight
+
+    files = []
+    for index in range(20):
+        path = tmp_path / f"{index}.bin"
+        path.write_bytes(b"x" * 1024)
+        files.append(str(path))
+
+    assert _batch_files_in_flight(files, 1) == 2
+    assert _batch_files_in_flight(files, 4) == 8
+    # Never zero, whatever is passed in.
+    assert _batch_files_in_flight(files, 0) == 1
+
+
+def test_batch_files_in_flight_drops_when_memory_is_tight(
+    tmp_path, monkeypatch
+):
+    """A machine that cannot hold 2N decoded files decodes fewer at once."""
+    from napari_phasors import _batch_analysis, _parallel
+    from napari_phasors._batch_analysis import _batch_files_in_flight
+
+    path = tmp_path / "big.bin"
+    path.write_bytes(b"x" * 4096)
+    files = [str(path)] * 8
+
+    monkeypatch.setattr(_batch_analysis, "items_for_memory", lambda *a, **k: 3)
+    assert _batch_files_in_flight(files, 8) == 3
+    # A cap looser than the structural bound leaves it alone.
+    monkeypatch.setattr(
+        _batch_analysis, "items_for_memory", lambda *a, **k: 999
+    )
+    assert _batch_files_in_flight(files, 2) == 4
+    # No reading at all means no cap.
+    monkeypatch.setattr(
+        _batch_analysis, "items_for_memory", lambda *a, **k: None
+    )
+    assert _batch_files_in_flight(files, 2) == 4
+    assert _parallel.memory_fraction() > 0
+
+
+def test_batch_files_in_flight_ignores_unreadable_paths(tmp_path):
+    """A path that cannot be stat'ed contributes nothing rather than raising."""
+    from napari_phasors._batch_analysis import _batch_files_in_flight
+
+    assert _batch_files_in_flight([str(tmp_path / "missing.bin")], 2) == 4
