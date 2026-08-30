@@ -14,7 +14,7 @@ These methods open files with default reader parameters for the detected file fo
 When you open a file this way, the phasor coordinates and mean intensity image are automatically calculated and stored in the image layer metadata.
 By default, standard opening reads the first 1<sup>st</sup> and second 2<sup>nd</sup> harmonics, when available.
 
-Use the **Phasor Custom Import** widget when you need to override those defaults (for example, choose a specific channel/frame, set LIF image/dimension, select the phasor axis, or build a custom 3D stack with z spacing and axis order).
+Use the **Phasor Custom Import** widget when you need to override those defaults (for example, choose a specific channel/frame, set LIF image/dimension, select the phasor axis, build a custom 3D stack with z spacing and axis order, or stitch a tiled mosaic).
 
 The **Phasor Custom Import** widget provides format-aware import options for FLIM and hyperspectral files.
 
@@ -98,6 +98,21 @@ The widget stacks files along a new first axis and creates 3D output layers.
 <video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/3d%20stack.gif">
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/3d%20stack.mp4" type="video/mp4">
 </video>
+
+## Example 3: Stitch a tiled mosaic
+
+Use this when the files are overlapping tiles of one larger image, or when a
+single file holds a mosaic along a dedicated dimension.
+
+1. Click **Open tiled mosaic**.
+2. Choose whether to pick the tile files individually or a whole folder.
+3. Describe the arrangement in the **Tile Layout** dialog and click **OK**.
+4. Set the import options as usual and click **Stitch Mosaic (N tiles)**.
+
+The tiles are phasor-transformed individually and blended, with photon
+weighting, into a single intensity layer with one set of phasor coordinates.
+See {doc}`tiled_mosaics` for the layout sources, blend modes, overlap
+estimation and binning.
 
 ## Notes
 
