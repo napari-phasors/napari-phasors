@@ -78,3 +78,14 @@ When multiple layers are selected, you can choose between **Merged**, **Individu
 <video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/phasor%20center.gif">
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/phasor%20center.mp4" type="video/mp4">
 </video>
+
+## Performance
+
+Below the phasor centers, the **Performance** section holds three plugin-wide
+settings: a master switch for parallel processing, the share of free memory
+concurrent work may occupy, and the precision newly opened layers store their
+phasor arrays at.
+
+Parallel processing is on by default and produces results identical to running
+sequentially. See {doc}`performance` for what each setting does and when to
+change it, and {doc}`benchmarks` for measured numbers.
