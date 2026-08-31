@@ -9,9 +9,11 @@ import inspect
 import itertools
 import json
 import os
+import threading
 import warnings
 from collections.abc import Callable, Sequence
 from contextlib import suppress
+from dataclasses import replace
 from typing import Any, Union
 
 import numpy as np
@@ -20,8 +22,13 @@ import tifffile
 import xarray as xr
 from napari.utils.colormaps.colormap_utils import CYMRGB, MAGENTA_GREEN
 from napari.utils.notifications import show_error
-from phasorpy.phasor import phasor_from_signal
 
+from ._parallel import (
+    parallel_map,
+    parallel_phasor_from_signal,
+    workers_for_memory,
+)
+from ._stitching import as_tile_sources, blend_phasor_tiles
 from ._utils import show_activity_progress
 
 extension_mapping = {
@@ -347,6 +354,27 @@ def raw_file_reader(
     if harmonics is None:
         harmonics = [1, 2]
 
+    axis_override, keep_signal, filtered_reader_options = (
+        _split_widget_reader_options(reader_options)
+    )
+    filename, file_extension = _get_filename_extension(path)
+    raw_data = load_raw_signal(path, filtered_reader_options)
+
+    return _phasor_layers_from_signal(
+        raw_data,
+        filename=filename,
+        file_extension=file_extension,
+        harmonics=harmonics,
+        axis_override=axis_override,
+        keep_signal=keep_signal,
+    )
+
+
+def _split_widget_reader_options(reader_options):
+    """Separate widget-only options from those meant for the IO functions.
+
+    Returns ``(axis_override, keep_signal, io_options)``.
+    """
     # Extract phasor_axis from reader_options (widget-level parameter)
     # This should not be passed to IO functions
     axis_override = None
@@ -363,7 +391,43 @@ def raw_file_reader(
     # over a masked region. This is memory-heavy, so it is off by default.
     keep_signal = bool(filtered_reader_options.pop('_keep_signal', False))
 
-    filename, file_extension = _get_filename_extension(path)
+    # Spatial binning is applied by the mosaic reader, never by the IO
+    # functions, so drop it here whichever path the file takes.
+    filtered_reader_options.pop('binning', None)
+    return axis_override, keep_signal, filtered_reader_options
+
+
+def load_raw_signal(path, io_options=None):
+    """Read the raw signal of a file without computing phasor coordinates.
+
+    Parameters
+    ----------
+    path : str
+        Path to a file in one of the supported raw formats.
+    io_options : dict, optional
+        Arguments forwarded to the format's ``phasorpy.io`` function. Must
+        contain only IO arguments; see :func:`_split_widget_reader_options`.
+
+    Returns
+    -------
+    xarray.DataArray or numpy.ndarray
+        The signal as returned by the format's reader.
+    """
+    _, file_extension = _get_filename_extension(path)
+    io_options = io_options or {}
+
+    # A CZI mosaic's nominal extent covers the whole scanned area, so reading
+    # it as one image means allocating an array far larger than the file --
+    # terabytes for a slide scan. Refuse it here so every caller gets a clear
+    # error instead of exhausting memory.
+    mosaic = czi_mosaic_info(path)
+    if mosaic is not None:
+        height, width = mosaic["canvas_shape"]
+        raise ValueError(
+            f"{os.path.basename(path)} is a mosaic of {mosaic['n_tiles']} "
+            f"tiles spanning {height} x {width} pixels, which cannot be read "
+            "as a single image. Import it with 'Open tiled mosaic'."
+        )
 
     # Read SDT multi-file special case
     if file_extension == ".sdt":
@@ -380,12 +444,48 @@ def raw_file_reader(
             assert (
                 _d.shape == raw_list[0].shape
             ), "Shapes from files in .sdt do not match!"
-        raw_data = xr.concat(raw_list, dim="C")
-    else:
-        raw_data = extension_mapping["raw"][file_extension](
-            path, filtered_reader_options
-        )
+        return xr.concat(raw_list, dim="C")
 
+    return extension_mapping["raw"][file_extension](path, io_options)
+
+
+def _phasor_layers_from_signal(
+    raw_data,
+    *,
+    filename,
+    file_extension,
+    harmonics,
+    axis_override=None,
+    keep_signal=False,
+    progress_description=None,
+):
+    """Compute phasor coordinates for an already-loaded signal.
+
+    Split out of :func:`raw_file_reader` so that a file holding several tiles
+    can be read once and then transformed one tile at a time.
+
+    Parameters
+    ----------
+    raw_data : xarray.DataArray or numpy.ndarray
+        Signal returned by :func:`load_raw_signal`, or one slice of it.
+    filename : str
+        Name used for the resulting layers.
+    file_extension : str
+        Extension the signal was read from, which selects the channel axis.
+    harmonics : int or sequence of int
+        Harmonics to compute.
+    axis_override : int, optional
+        Index of the histogram or spectral axis. Detected when ``None``.
+    keep_signal : bool, optional
+        Keep the full signal in the layer metadata.
+    progress_description : str, optional
+        Text shown on the progress bar. Defaults to the file name.
+
+    Returns
+    -------
+    list of tuple
+        Napari layer-data tuples, one per channel.
+    """
     settings = {}
     if (
         file_extension != '.fbd'
@@ -410,7 +510,8 @@ def raw_file_reader(
         n_steps = len(harmonics) if isinstance(harmonics, (list, tuple)) else 1
 
     pbr = show_activity_progress(
-        desc=f"Reading {filename}...", total=n_steps + 1
+        desc=progress_description or f"Reading {filename}...",
+        total=n_steps + 1,
     )
 
     try:
@@ -461,8 +562,10 @@ def raw_file_reader(
                 return []
 
             pbr.set_description("Computing phasor transform...")
-            mean_intensity_image, G_image, S_image = phasor_from_signal(
-                raw_data, axis=axis, harmonic=harmonics_to_use
+            mean_intensity_image, G_image, S_image = (
+                parallel_phasor_from_signal(
+                    raw_data, axis=axis, harmonic=harmonics_to_use
+                )
             )
             pbr.update(n_steps)
             channel_suffix = " Intensity Image"
@@ -552,10 +655,12 @@ def raw_file_reader(
                     show_error(str(e))
                     return []
 
-                mean_intensity_image, G_image, S_image = phasor_from_signal(
-                    channel_data,
-                    axis=histogram_axis,
-                    harmonic=harmonics_to_use,
+                mean_intensity_image, G_image, S_image = (
+                    parallel_phasor_from_signal(
+                        channel_data,
+                        axis=histogram_axis,
+                        harmonic=harmonics_to_use,
+                    )
                 )
                 add_kwargs = {
                     "name": f"{filename} Intensity Image: Channel {channel_label}",
@@ -643,13 +748,28 @@ def raw_file_stack_reader(
         )
         return []
 
-    # Read each file individually
-    per_file_layers: list[list[tuple]] = []
+    # Read the files concurrently. Each read decodes one file's signal, so
+    # the pool is sized against free memory as well as core count.
+    largest = 0
     for p in paths:
-        layers = raw_file_reader(
-            p, reader_options=reader_options, harmonics=harmonics
+        with suppress(OSError):
+            largest = max(largest, os.path.getsize(p))
+    stack_workers = workers_for_memory(largest, n_items=len(paths))
+
+    pbr = show_activity_progress(
+        desc=f"Reading {len(paths)} file(s)...", total=len(paths)
+    )
+    try:
+        per_file_layers: list[list[tuple]] = parallel_map(
+            lambda p: raw_file_reader(
+                p, reader_options=reader_options, harmonics=harmonics
+            ),
+            paths,
+            workers=stack_workers,
+            progress=lambda index: pbr.update(1),
         )
-        per_file_layers.append(layers)
+    finally:
+        pbr.close()
 
     # Determine how many channels the first file produced
     n_channels = len(per_file_layers[0])
@@ -845,6 +965,1003 @@ def _parse_description_settings(description: Any) -> dict:
     if "calibrated" in settings:
         settings["calibrated"] = bool(settings["calibrated"])
     return settings
+
+
+#: Dimensions that hold mosaic tiles, in the order they are preferred when
+#: detecting a file's tile axis. ``M`` is the CZI mosaic axis, ``V`` a view,
+#: ``B`` an acquisition block and ``S`` a scene.
+TILE_AXIS_CANDIDATES = ("M", "V", "B", "S")
+
+#: Dimensions that never hold tiles: the two spatial axes, plus ``C``/``H``/
+#: ``Q``, which carry the channel or the histogram the phasor is computed
+#: from.
+NON_TILE_AXES = frozenset({"Y", "X", "C", "H", "Q"})
+
+
+def probe_tile_axes(path, reader_options=None):
+    """Report which dimensions of a file could hold mosaic tiles.
+
+    A mosaic is often stored as a single file with its tiles along one
+    dimension, such as the ``M`` axis of a Zeiss CZI. This inspects a file
+    and reports the candidates, so the caller can offer a choice rather than
+    guessing.
+
+    For CZI the dimension sizes are taken from the file's sub-block
+    directory, which is what the pixel reader builds its axes from, so no
+    pixel data has to be read. Other formats fall back to reading the signal.
+
+    Parameters
+    ----------
+    path : str
+        Path to the file to inspect.
+    reader_options : dict, optional
+        Reader options, used only by the fallback path.
+
+    Returns
+    -------
+    dict
+        Maps axis to size, for every axis larger than one that could hold
+        tiles. Keys are dimension names, or integer positions for formats
+        such as TIFF whose axes are unnamed. Empty if the file holds a single
+        tile or could not be inspected. Ordered with the recognized mosaic
+        dimensions first.
+    """
+    # A CZI mosaic keeps its tiles in positioned sub-blocks rather than along
+    # a dimension, so it has to be recognized before looking at the axes.
+    mosaic = czi_mosaic_info(path)
+    if mosaic is not None:
+        return {CZI_MOSAIC_AXIS: mosaic["n_tiles"]}
+
+    sizes = file_axis_sizes(path, reader_options)
+    if not sizes:
+        return {}
+
+    # An unnamed format's last three axes are the histogram and the two
+    # spatial axes, so only the ones before them can hold tiles.
+    positional = [name for name in sizes if isinstance(name, int)]
+    leading = set(positional[:-3]) if positional else set()
+
+    candidates = {
+        name: size
+        for name, size in sizes.items()
+        if size > 1
+        and (
+            name in leading
+            if isinstance(name, int)
+            else name not in NON_TILE_AXES
+        )
+    }
+    ordered = {
+        name: candidates.pop(name)
+        for name in TILE_AXIS_CANDIDATES
+        if name in candidates
+    }
+    ordered.update(candidates)
+    return ordered
+
+
+def file_axis_sizes(path, reader_options=None):
+    """Return every axis of a file and its size, or an empty dict.
+
+    Used both to find a file's tile axis and to explain, when none is found,
+    what the file actually contains.
+    """
+    _, extension = _get_filename_extension(path)
+
+    sizes = None
+    if extension == ".czi":
+        sizes = _czi_dimension_sizes(path)
+    if sizes is None:
+        sizes = _signal_dimension_sizes(path, reader_options)
+    return sizes or {}
+
+
+def describe_file_axes(path, reader_options=None):
+    """Return a readable summary of a file's axes, for error messages."""
+    sizes = file_axis_sizes(path, reader_options)
+    if not sizes:
+        return "unknown"
+    return ", ".join(
+        f"{describe_tile_axis(axis)}={size}" for axis, size in sizes.items()
+    )
+
+
+def describe_tile_axis(axis):
+    """Return a human-readable name for a tile axis key."""
+    labels = {
+        CZI_MOSAIC_AXIS: "Mosaic tiles",
+        "M": "M (mosaic)",
+        "V": "V (view)",
+        "B": "B (block)",
+        "S": "S (scene)",
+        "T": "T (time)",
+        "Z": "Z (depth)",
+    }
+    if isinstance(axis, (int, np.integer)):
+        return f"Axis {int(axis)}"
+    return labels.get(axis, str(axis))
+
+
+#: Key used to denote a CZI mosaic, whose tiles are stored as positioned
+#: sub-blocks rather than along a named dimension.
+CZI_MOSAIC_AXIS = "mosaic"
+
+
+class CziMosaic:
+    """Access the tiles of a Zeiss CZI mosaic one at a time.
+
+    A CZI mosaic does not store its tiles along a dimension. Each tile is a
+    group of sub-blocks carrying their own position in the mosaic, and the
+    file's nominal ``Y``/``X`` extent spans the whole scanned area. Reading
+    such a file whole is usually impossible: a slide scan of a few hundred
+    tiles easily implies an array of many terabytes, nearly all of it empty.
+
+    This reads the sub-block directory, which only touches the file's index,
+    and then decodes one tile at a time.
+
+    Parameters
+    ----------
+    path : str
+        Path to the CZI file.
+
+    Attributes
+    ----------
+    positions : list of tuple
+        ``(y, x)`` pixel position of each tile, relative to the top-left of
+        the mosaic.
+    tile_shape : tuple of int
+        ``(height, width)`` of one tile, in pixels.
+    """
+
+    def __init__(self, path):
+        import czifile
+
+        self.path = path
+        self._czi = czifile.CziFile(path)
+        entries = self._czi.filtered_subblock_directory
+        if not entries:
+            raise ValueError(f"{os.path.basename(path)} has no image data.")
+
+        dims = entries[0].dims
+        self._y = dims.index("Y")
+        self._x = dims.index("X")
+        self._channel = dims.index("C") if "C" in dims else None
+
+        grouped: dict[int, list] = {}
+        for entry in entries:
+            grouped.setdefault(int(entry.mosaic_index), []).append(entry)
+        self._tiles = [grouped[key] for key in sorted(grouped)]
+
+        first = entries[0]
+        self.tile_shape = (
+            int(first.shape[self._y]),
+            int(first.shape[self._x]),
+        )
+
+        raw = [
+            (int(tile[0].start[self._y]), int(tile[0].start[self._x]))
+            for tile in self._tiles
+        ]
+        min_y = min(position[0] for position in raw)
+        min_x = min(position[1] for position in raw)
+        self.positions = [(y - min_y, x - min_x) for y, x in raw]
+
+    @property
+    def n_tiles(self):
+        """Number of tiles in the mosaic."""
+        return len(self._tiles)
+
+    @property
+    def n_channels(self):
+        """Number of channel planes each tile holds."""
+        return len(self._tiles[0]) if self._tiles else 0
+
+    def read_tile(self, index, binning=1):
+        """Return one tile as a ``(C, Y, X)`` array.
+
+        Parameters
+        ----------
+        index : int
+            Tile position in the mosaic.
+        binning : int, optional
+            Bin the tile spatially by this factor. Binning sums the photons
+            of each block, so the phasor coordinates of a binned tile are the
+            photon-weighted average of the pixels that went into it, exactly
+            as if the detector had had larger pixels.
+
+        Returns
+        -------
+        xarray.DataArray
+            Dimensions ``('C', 'Y', 'X')``.
+        """
+        if not 0 <= index < self.n_tiles:
+            raise ValueError(
+                f"{os.path.basename(self.path)} has {self.n_tiles} tile(s); "
+                f"cannot read tile {index}."
+            )
+
+        entries = self._tiles[index]
+        if self._channel is not None:
+            entries = sorted(entries, key=lambda e: e.start[self._channel])
+
+        planes = [
+            np.asarray(entry.read_segment_data(self._czi).data()).reshape(
+                self.tile_shape
+            )
+            for entry in entries
+        ]
+        cube = np.stack(planes)
+        cube = _bin_spatial(cube, binning)
+        return xr.DataArray(cube, dims=("C", "Y", "X"))
+
+    def binned_positions(self, binning=1):
+        """Return the tile positions in the binned pixel grid."""
+        binning = max(1, int(binning))
+        if binning == 1:
+            return list(self.positions)
+        return [(y // binning, x // binning) for y, x in self.positions]
+
+    def binned_tile_shape(self, binning=1):
+        """Return the tile size after binning."""
+        binning = max(1, int(binning))
+        return (
+            self.tile_shape[0] // binning,
+            self.tile_shape[1] // binning,
+        )
+
+    def canvas_shape(self, binning=1):
+        """Return the stitched canvas size for a binning factor."""
+        height, width = self.binned_tile_shape(binning)
+        positions = self.binned_positions(binning)
+        return (
+            max(y for y, _ in positions) + height,
+            max(x for _, x in positions) + width,
+        )
+
+    def close(self):
+        """Close the underlying file."""
+        with suppress(Exception):
+            self._czi.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.close()
+
+
+def _bin_spatial(cube, factor):
+    """Sum ``(C, Y, X)`` *cube* over ``factor`` x ``factor`` spatial blocks."""
+    factor = max(1, int(factor))
+    if factor == 1:
+        return cube
+
+    channels, height, width = cube.shape
+    height -= height % factor
+    width -= width % factor
+    if height <= 0 or width <= 0:
+        raise ValueError(
+            f"Binning by {factor} leaves nothing of a "
+            f"{cube.shape[1]}x{cube.shape[2]} tile."
+        )
+    trimmed = cube[:, :height, :width]
+    # Photon counts are summed rather than averaged, so the phasor of the
+    # binned tile stays the photon-weighted phasor of its pixels.
+    return trimmed.reshape(
+        channels, height // factor, factor, width // factor, factor
+    ).sum(axis=(2, 4), dtype=np.uint32)
+
+
+def czi_mosaic_info(path):
+    """Describe a CZI mosaic without reading any pixels, or return ``None``.
+
+    Returns
+    -------
+    dict or None
+        ``{'n_tiles', 'tile_shape', 'canvas_shape', 'n_channels'}``, or
+        ``None`` when the file is not a CZI mosaic of several tiles.
+    """
+    _, extension = _get_filename_extension(path)
+    if extension != ".czi":
+        return None
+    try:
+        with CziMosaic(path) as mosaic:
+            if mosaic.n_tiles < 2:
+                return None
+            return {
+                "n_tiles": mosaic.n_tiles,
+                "tile_shape": mosaic.tile_shape,
+                "canvas_shape": mosaic.canvas_shape(),
+                "n_channels": mosaic.n_channels,
+            }
+    except Exception:  # noqa: BLE001 - probing is best effort
+        return None
+
+
+def _czi_dimension_sizes(path):
+    """Return CZI dimension sizes from the sub-block directory, or ``None``.
+
+    Reading the directory only touches the file's index, not its pixels.
+    """
+    try:
+        import czifile
+
+        sizes: dict[str, int] = {}
+        with czifile.CziFile(path) as czi:
+            for block in czi.filtered_subblock_directory:
+                for name, start, size in zip(
+                    block.dims, block.start, block.shape, strict=False
+                ):
+                    sizes[name] = max(
+                        sizes.get(name, 0), int(start) + int(size)
+                    )
+        # phasorpy renames the CZI phase axis to avoid clashing with the
+        # lifetime histogram axis; mirror that so names match the signal.
+        if "H" in sizes:
+            sizes["Q"] = sizes.pop("H")
+        return sizes
+    except Exception:  # noqa: BLE001 - probing is best effort
+        return None
+
+
+def _signal_dimension_sizes(path, reader_options=None):
+    """Return every axis of a raw signal and its size, or ``None``.
+
+    Named dimensions are keyed by name; formats that return a plain array are
+    keyed by integer position instead.
+    """
+    try:
+        _, _, io_options = _split_widget_reader_options(reader_options)
+        signal = load_raw_signal(path, io_options)
+        shape = np.shape(signal)
+        if hasattr(signal, "dims"):
+            return {
+                str(name): int(size)
+                for name, size in zip(signal.dims, shape, strict=True)
+            }
+        return {index: int(size) for index, size in enumerate(shape)}
+    except Exception:  # noqa: BLE001 - probing is best effort
+        return None
+
+
+def _read_file_tiles(
+    path,
+    indices,
+    reader_options=None,
+    harmonics=None,
+    tile_axis=None,
+    progress=None,
+):
+    """Read the requested tiles out of one file.
+
+    Files contributing a single tile go through the normal reader, so mosaics
+    of already-transformed files keep working. Files contributing several
+    tiles are read once and sliced along their tile axis.
+
+    Parameters
+    ----------
+    path : str
+        File to read.
+    indices : sequence of int
+        Tile positions wanted from this file, possibly with repeats.
+    reader_options : dict, optional
+        Reader options.
+    harmonics : int or sequence of int, optional
+        Harmonics to compute.
+    tile_axis : str, optional
+        Dimension holding the tiles. Detected when ``None``.
+    progress : optional
+        Progress bar updated once per tile.
+
+    Returns
+    -------
+    dict
+        Maps tile index to that tile's list of per-channel layer tuples.
+
+    Raises
+    ------
+    ValueError
+        If no reader is available, if a multi-tile read finds no usable tile
+        axis, or if an index is out of range.
+    """
+    name = os.path.basename(path)
+    wanted = sorted({int(index) for index in indices})
+
+    # Read the file whole only when nothing asks for it to be split: no tile
+    # axis was chosen and only tile 0 is wanted. This keeps mosaics of
+    # already-transformed files working, while an explicit tile axis always
+    # slices, even when just one tile is read from the file.
+    if tile_axis is None and wanted == [0]:
+        if progress is not None:
+            progress.set_description(f"Reading {name}")
+        # Dispatch through napari_get_reader so mosaics of already-transformed
+        # files (OME-TIFF, SimFCS, ISS) stitch as well as raw acquisitions.
+        reader = napari_get_reader(
+            path, reader_options=reader_options, harmonics=harmonics
+        )
+        if reader is None:
+            raise ValueError(f"No reader available for {path}.")
+        result = {0: reader(path)}
+        if progress is not None:
+            progress.update(1)
+        return result
+
+    binning = int((reader_options or {}).get("binning", 1) or 1)
+    axis_override, keep_signal, io_options = _split_widget_reader_options(
+        reader_options
+    )
+    _, extension = _get_filename_extension(path)
+
+    if tile_axis == CZI_MOSAIC_AXIS or (
+        tile_axis is None and czi_mosaic_info(path) is not None
+    ):
+        return _read_czi_mosaic_tiles(
+            path,
+            wanted,
+            harmonics=harmonics,
+            binning=binning,
+            keep_signal=keep_signal,
+            progress=progress,
+        )
+
+    if extension not in extension_mapping["raw"]:
+        raise ValueError(
+            f"{name} holds processed data, which cannot be split into tiles. "
+            "Select one file per tile instead."
+        )
+
+    if progress is not None:
+        progress.set_description(f"Reading {name}")
+    signal = load_raw_signal(path, io_options)
+
+    axis_position = _resolve_tile_axis(signal, tile_axis, name)
+    n_available = int(np.shape(signal)[axis_position])
+    out_of_range = [index for index in wanted if not 0 <= index < n_available]
+    if out_of_range:
+        raise ValueError(
+            f"{name} has {n_available} tile(s) along the tile axis; "
+            f"cannot read tile(s) {out_of_range}."
+        )
+
+    # Slicing removes the tile axis, so a phasor axis given by position and
+    # sitting after it shifts down by one.
+    if axis_override is not None and axis_override > axis_position:
+        axis_override -= 1
+
+    filename = _get_filename_extension(path)[0]
+    layers_by_index = {}
+    try:
+        # The signal is already in memory, so slicing a tile out of it and
+        # transforming it is independent per tile and parallelizes cleanly.
+        # Each tile only allocates its own (small) phasor output.
+        def transform(item):
+            position, index = item
+            return _phasor_layers_from_signal(
+                _take_tile(signal, axis_position, index),
+                filename=f"{filename} [{index}]",
+                file_extension=extension,
+                harmonics=harmonics if harmonics is not None else [1, 2],
+                axis_override=axis_override,
+                keep_signal=keep_signal,
+                progress_description=f"{name}: tile {position + 1}",
+            )
+
+        def report(position):
+            if progress is not None:
+                progress.set_description(
+                    f"{name}: tile {position + 1}/{len(wanted)}"
+                )
+                progress.update(1)
+
+        results = parallel_map(
+            transform, list(enumerate(wanted)), progress=report
+        )
+        layers_by_index = dict(zip(wanted, results, strict=True))
+    finally:
+        # Release the file's signal as soon as its tiles are transformed while
+        # keeping the name in scope for the nested tile-transform closure.
+        signal = None
+
+    return layers_by_index
+
+
+def _read_czi_mosaic_tiles(
+    path,
+    wanted,
+    harmonics=None,
+    binning=1,
+    keep_signal=False,
+    progress=None,
+):
+    """Phasor-transform the requested tiles of a CZI mosaic.
+
+    Tiles are decoded one at a time straight from their sub-blocks, so only
+    one tile's spectral stack is ever held in memory.
+    """
+    name = os.path.basename(path)
+    filename = _get_filename_extension(path)[0]
+    layers_by_index = {}
+
+    with CziMosaic(path) as mosaic:
+        out_of_range = [
+            index for index in wanted if not 0 <= index < mosaic.n_tiles
+        ]
+        if out_of_range:
+            raise ValueError(
+                f"{name} has {mosaic.n_tiles} tile(s); cannot read tile(s) "
+                f"{out_of_range}."
+            )
+
+        # Decoding pulls sub-blocks through one shared file handle, which is
+        # not thread-safe, so decodes are serialized behind a lock while the
+        # phasor transforms -- the expensive half -- overlap freely.
+        decode_lock = threading.Lock()
+
+        def transform(item):
+            position, index = item
+            with decode_lock:
+                tile = mosaic.read_tile(index, binning=binning)
+            return _phasor_layers_from_signal(
+                tile,
+                filename=f"{filename} [{index}]",
+                file_extension=".czi",
+                harmonics=harmonics if harmonics is not None else [1, 2],
+                keep_signal=keep_signal,
+                progress_description=f"{name}: tile {position + 1}",
+            )
+
+        def report(position):
+            if progress is not None:
+                progress.set_description(
+                    f"{name}: tile {position + 1}/{len(wanted)}"
+                )
+                progress.update(1)
+
+        results = parallel_map(
+            transform, list(enumerate(wanted)), progress=report
+        )
+        layers_by_index = dict(zip(wanted, results, strict=True))
+
+    return layers_by_index
+
+
+def _resolve_tile_axis(signal, tile_axis, name):
+    """Return the positional index of a signal's tile axis.
+
+    *tile_axis* may be a dimension name, a positional index, or ``None`` to
+    detect one. Formats such as TIFF return plain arrays with no dimension
+    names, so a positional index is the only way to address their axes.
+
+    Raises
+    ------
+    ValueError
+        If the axis cannot be found or does not exist in the signal.
+    """
+    dims = tuple(str(dim) for dim in getattr(signal, "dims", ()))
+    shape = np.shape(signal)
+
+    if isinstance(tile_axis, (int, np.integer)) and not isinstance(
+        tile_axis, bool
+    ):
+        axis = int(tile_axis)
+        if not -len(shape) <= axis < len(shape):
+            raise ValueError(
+                f"{name} has {len(shape)} dimension(s); axis {tile_axis} is "
+                "out of range."
+            )
+        return axis % len(shape)
+
+    if tile_axis is not None:
+        if tile_axis not in dims:
+            raise ValueError(
+                f"{name} has no dimension named {tile_axis!r}. Available "
+                f"dimensions: {', '.join(dims) or 'none (unnamed axes)'}."
+            )
+        return dims.index(tile_axis)
+
+    candidates = {
+        dim: index
+        for index, dim in enumerate(dims)
+        if shape[index] > 1 and dim not in NON_TILE_AXES
+    }
+    for candidate in TILE_AXIS_CANDIDATES + tuple(candidates):
+        if candidate in candidates:
+            return candidates[candidate]
+
+    raise ValueError(
+        f"{name} has no dimension holding tiles. Available dimensions: "
+        f"{', '.join(dims) or 'none (unnamed axes)'}. Choose the tile axis "
+        "explicitly, or select one file per tile."
+    )
+
+
+def _take_tile(signal, axis_position, index):
+    """Return one tile of *signal*, dropping the tile axis."""
+    if hasattr(signal, "isel"):
+        return signal.isel({str(signal.dims[axis_position]): index})
+    return np.take(signal, index, axis=axis_position)
+
+
+class TileSet:
+    """Per-tile phasor coordinates of a mosaic, cached for re-stitching.
+
+    Reading and phasor-transforming the tiles is the expensive part of
+    importing a mosaic; placing and blending them is comparatively cheap.
+    Holding the transformed tiles in a :class:`TileSet` lets the overlap be
+    re-tuned interactively, since :meth:`stitch` can be called any number of
+    times without touching the files again.
+
+    Memory is ``n_tiles * (1 + 2 * n_harmonics)`` single precision planes,
+    which for FLIM data is typically one to two orders of magnitude less than
+    the raw signal the tiles were computed from.
+
+    Parameters
+    ----------
+    sources : list of TileSource
+        Where each tile came from, in placement order.
+    tile_shape : tuple of int
+        ``(height, width)`` shared by every tile.
+    tiles : list of list of tuple
+        ``tiles[channel][index]`` is the ``(mean, G, S)`` triple of one tile.
+    templates : list of dict
+        Per-channel ``add_kwargs`` taken from the first tile, used as the
+        basis for the stitched layer's metadata.
+    """
+
+    def __init__(
+        self, sources, tile_shape, tiles, templates, summed_signals=None
+    ):
+        self.sources = as_tile_sources(sources)
+        self.tile_shape = tuple(tile_shape)
+        self.tiles = tiles
+        self.templates = templates
+        self.summed_signals = summed_signals or [None] * len(tiles)
+
+    @property
+    def paths(self):
+        """Paths the tiles came from, in placement order, with repeats."""
+        return [source.path for source in self.sources]
+
+    @property
+    def n_channels(self):
+        """Number of channels each tile produced."""
+        return len(self.tiles)
+
+    @property
+    def n_tiles(self):
+        """Number of tiles in the mosaic."""
+        return len(self.sources)
+
+    @property
+    def n_files(self):
+        """Number of distinct files the tiles came from."""
+        return len(set(self.paths))
+
+    def means(self, channel=0):
+        """Return the mean intensity image of every tile for *channel*."""
+        return [tile[0] for tile in self.tiles[channel]]
+
+    def nbytes(self):
+        """Return the total size of the cached arrays, in bytes."""
+        return sum(
+            array.nbytes
+            for channel in self.tiles
+            for tile in channel
+            for array in tile
+        )
+
+    def stitch(self, geometry, progress=None):
+        """Blend the cached tiles into napari layer-data tuples.
+
+        Parameters
+        ----------
+        geometry : TileGeometry
+            Mosaic layout. Its ``tile_shape`` is taken from this tile set, so
+            only the placements, overlap and blend mode need to be set.
+        progress : callable, optional
+            Called with ``(channel, tile_index)`` as blending proceeds.
+
+        Returns
+        -------
+        list of tuple
+            One ``(data, add_kwargs)`` tuple per channel.
+        """
+        geometry = replace(geometry, tile_shape=self.tile_shape)
+
+        layers = []
+        for channel in range(self.n_channels):
+            mean, real, imag, coverage = blend_phasor_tiles(
+                self.tiles[channel],
+                geometry,
+                progress=(
+                    None
+                    if progress is None
+                    else lambda index, ch=channel: progress(ch, index)
+                ),
+            )
+
+            template = self.templates[channel]
+            template_meta = template.get("metadata", {})
+
+            summed_signal = self.summed_signals[channel]
+            metadata = {
+                "original_mean": mean.copy(),
+                "settings": template_meta.get("settings", {}),
+                "summed_signal": (
+                    summed_signal.tolist()
+                    if summed_signal is not None
+                    else template_meta.get("summed_signal")
+                ),
+                "G": real,
+                "S": imag,
+                "G_original": real.copy(),
+                "S_original": imag.copy(),
+                "harmonics": template_meta.get("harmonics"),
+                "tile_files": [source.label for source in self.sources],
+                "tile_geometry": geometry.to_dict(),
+                "tile_coverage": coverage,
+            }
+
+            # A mosaic spread over many files is named after their folder; one
+            # held inside a single file is named after that file.
+            if self.n_files == 1:
+                stem = _get_filename_extension(self.paths[0])[0]
+            else:
+                stem = os.path.basename(os.path.dirname(self.paths[0]))
+            channel_suffix = template["name"].split("Intensity Image")[-1]
+            name = f"{stem or 'mosaic'} Mosaic Intensity Image{channel_suffix}"
+
+            add_kwargs = {"name": name, "metadata": metadata}
+            for key in ("colormap", "blending"):
+                if key in template:
+                    add_kwargs[key] = template[key]
+            layers.append((mean, add_kwargs))
+
+        return layers
+
+
+def read_tile_phasors(
+    tiles: list,
+    reader_options: dict | None = None,
+    harmonics: Union[int, Sequence[int], None] = None,
+    tile_axis: str | None = None,
+) -> "TileSet":
+    """Read every tile of a mosaic and phasor-transform it.
+
+    Handles both ways a mosaic is stored: one file per tile, and a single
+    file holding all its tiles along a dedicated dimension (see
+    :func:`probe_tile_axes`). Mixtures of the two work as well.
+
+    Each file is read exactly once and its raw signal released as soon as
+    every tile in it has been transformed, so peak memory stays at one file's
+    signal rather than the whole mosaic.
+
+    Parameters
+    ----------
+    tiles : list
+        Tiles in placement order, as paths, ``(path, index)`` pairs, or
+        :class:`~napari_phasors._stitching.TileSource` objects.
+    reader_options : dict, optional
+        Reader options forwarded to each file reader call.
+    harmonics : int or sequence of int, optional
+        Harmonics to compute.
+    tile_axis : str, optional
+        Name of the dimension holding the tiles inside a multi-tile file, for
+        example ``'M'`` for a CZI mosaic. Detected automatically when
+        ``None``. Ignored for files contributing a single tile.
+
+    Returns
+    -------
+    TileSet
+        Cached phasor coordinates, ready to be stitched.
+
+    Raises
+    ------
+    ValueError
+        If no tiles are given, if the files do not share one extension, if a
+        tile fails to produce layers, or if the tiles disagree on shape or
+        channel count.
+    """
+    sources = as_tile_sources(tiles)
+    if not sources:
+        raise ValueError("No files provided for stitching.")
+
+    extensions = {_get_filename_extension(s.path)[1] for s in sources}
+    if len(extensions) > 1:
+        raise ValueError(
+            f"All tiles must share the same extension, got: {extensions}"
+        )
+
+    # Group by file, keeping first-appearance order, so each file is opened
+    # once no matter how its tiles are ordered in the layout.
+    per_file: dict[str, list[int]] = {}
+    for source in sources:
+        per_file.setdefault(source.path, []).append(source.index)
+
+    tile_arrays: list[list[tuple]] = []
+    templates: list[dict] = []
+    summed_signals: list = []
+    tile_shape = None
+    n_channels = None
+    frequencies = set()
+    by_source: dict = {}
+
+    items = list(per_file.items())
+
+    # Files are read and transformed concurrently. The pool is sized against
+    # free memory as well as core count, because N workers hold N files'
+    # decoded signals at once where a sequential read held exactly one; the
+    # on-disk size is a usable lower bound for that footprint.
+    largest = 0
+    for path, _ in items:
+        with suppress(OSError):
+            largest = max(largest, os.path.getsize(path))
+    workers = workers_for_memory(largest, n_items=len(items))
+
+    pbr = show_activity_progress(
+        desc=f"Reading {len(sources)} tile(s)...", total=len(sources)
+    )
+    try:
+
+        def read_file(item):
+            path, indices = item
+            # The napari progress bar is a Qt object belonging to this
+            # thread, so workers never touch it; progress is reported below
+            # as each file's results are collected.
+            return _read_file_tiles(
+                path,
+                indices,
+                reader_options=reader_options,
+                harmonics=harmonics,
+                tile_axis=tile_axis,
+                progress=None,
+            )
+
+        def report(position):
+            path, indices = items[position]
+            pbr.set_description(f"Read {os.path.basename(path)}")
+            pbr.update(len(indices))
+
+        results = parallel_map(
+            read_file, items, workers=workers, progress=report
+        )
+
+        for (path, _indices), layers_by_index in zip(
+            items, results, strict=True
+        ):
+            name = os.path.basename(path)
+
+            for index, layers in layers_by_index.items():
+                if not layers:
+                    raise ValueError(f"No data could be read from {path}.")
+
+                if n_channels is None:
+                    n_channels = len(layers)
+                    tile_arrays = [[] for _ in range(n_channels)]
+                    templates = [dict(layer[1]) for layer in layers]
+                    summed_signals = [None] * n_channels
+                elif len(layers) != n_channels:
+                    raise ValueError(
+                        f"{name} produced {len(layers)} channel(s) but the "
+                        f"first tile produced {n_channels}. All tiles must "
+                        "have the same number of channels."
+                    )
+
+                per_channel = []
+                for channel, (mean, add_kwargs) in enumerate(layers):
+                    mean = np.asarray(mean, dtype=np.float32)
+                    if mean.ndim != 2:
+                        raise ValueError(
+                            f"Tile {name} is {mean.ndim}D; stitching expects "
+                            "2D tiles. Pick the axis holding the tiles, or "
+                            "select a single channel or slice."
+                        )
+                    if tile_shape is None:
+                        tile_shape = mean.shape
+                    elif mean.shape != tile_shape:
+                        raise ValueError(
+                            f"Shape mismatch: {name} has shape {mean.shape} "
+                            f"but expected {tile_shape}."
+                        )
+
+                    metadata = add_kwargs["metadata"]
+                    real = np.asarray(metadata["G"], dtype=np.float32)
+                    imag = np.asarray(metadata["S"], dtype=np.float32)
+                    if real.ndim == 2:
+                        real = real[np.newaxis]
+                        imag = imag[np.newaxis]
+                    per_channel.append((mean, real, imag))
+
+                    frequency = metadata.get("settings", {}).get("frequency")
+                    if frequency is not None:
+                        frequencies.add(round(float(frequency), 6))
+
+                    # The mosaic's signal profile is the sum of its tiles',
+                    # which keeps the signal preview and the harmonic limits
+                    # meaningful.
+                    signal = metadata.get("summed_signal")
+                    if signal is not None:
+                        signal = np.asarray(signal, dtype=np.float64)
+                        accumulated = summed_signals[channel]
+                        if accumulated is None:
+                            summed_signals[channel] = signal
+                        elif accumulated.shape == signal.shape:
+                            summed_signals[channel] = accumulated + signal
+
+                by_source[(path, index)] = per_channel
+    finally:
+        pbr.close()
+
+    # Emit in placement order, which may differ from the order the files were
+    # read in, and may repeat a tile.
+    for source in sources:
+        for channel, arrays in enumerate(
+            by_source[(source.path, source.index)]
+        ):
+            tile_arrays[channel].append(arrays)
+
+    if len(frequencies) > 1:
+        show_error(
+            "Tiles were acquired at different laser frequencies "
+            f"({sorted(frequencies)}); the stitched phasor is not "
+            "meaningful. Import them separately."
+        )
+
+    return TileSet(sources, tile_shape, tile_arrays, templates, summed_signals)
+
+
+def raw_file_tile_reader(
+    tiles: list,
+    geometry,
+    reader_options: dict | None = None,
+    harmonics: Union[int, Sequence[int], None] = None,
+    tile_axis: str | None = None,
+) -> list[tuple]:
+    """Read a set of tiles and stitch them into a single phasor image.
+
+    Stitching happens in phasor space: the mean intensity and the G and S
+    coordinates of each tile are blended with photon weighting, which gives
+    exactly the result that summing the raw signals before the phasor
+    transform would have produced, at a fraction of the memory.
+
+    Parameters
+    ----------
+    tiles : list
+        Tiles in the order matching ``geometry.placements``, as paths,
+        ``(path, index)`` pairs, or
+        :class:`~napari_phasors._stitching.TileSource` objects.
+    geometry : TileGeometry
+        Mosaic layout. ``tile_shape`` is filled in from the data.
+    reader_options : dict, optional
+        Reader options forwarded to each file reader call.
+    harmonics : int or sequence of int, optional
+        Harmonics to compute.
+    tile_axis : str, optional
+        Dimension holding the tiles inside a multi-tile file. Detected
+        automatically when ``None``.
+
+    Returns
+    -------
+    layer_data : list of tuple
+        Napari layer-data tuples, one per channel. Returns an empty list and
+        shows an error notification if the tiles could not be read.
+    """
+    try:
+        tile_set = read_tile_phasors(
+            tiles,
+            reader_options=reader_options,
+            harmonics=harmonics,
+            tile_axis=tile_axis,
+        )
+    except ValueError as error:
+        show_error(str(error))
+        return []
+
+    try:
+        return tile_set.stitch(geometry)
+    except ValueError as error:
+        show_error(str(error))
+        return []
 
 
 def _infer_harmonics(

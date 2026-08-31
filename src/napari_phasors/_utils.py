@@ -5,6 +5,7 @@ This module contains utility functions used by other modules.
 
 import os
 import warnings
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
@@ -18,11 +19,7 @@ from matplotlib.legend_handler import HandlerBase
 from matplotlib.patches import Polygon as MplPolygon
 from napari.layers import Image
 from napari.utils import progress as _napari_progress
-from phasorpy.filter import (
-    phasor_filter_median,
-    phasor_filter_pawflim,
-    phasor_threshold,
-)
+from phasorpy.filter import phasor_filter_pawflim, phasor_threshold
 from qtpy.QtCore import QEvent, QRect, QSize, Qt, QThread, QTimer, Signal
 from qtpy.QtGui import (
     QColor,
@@ -67,6 +64,8 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 from superqt import QRangeSlider
+
+from ._parallel import parallel_filter_median
 
 
 def analysis_section_stylesheet():
@@ -1040,7 +1039,11 @@ def _apply_filter_and_threshold_to_phasor_arrays(
         # Filter each XY slice independently. For ndim>2, all leading axes are
         # treated as slice/index axes and therefore skipped by the median filter.
         skip_axis = tuple(range(mean.ndim - 2)) if mean.ndim > 2 else None
-        mean, real, imag = phasor_filter_median(
+        # Median filtering is by far the most expensive thing the filter tab
+        # does, and it re-runs on every slider move. ``parallel_filter_median``
+        # splits large images into row bands with enough halo to stay
+        # bit-identical to the unsplit call; small ones go straight through.
+        mean, real, imag = parallel_filter_median(
             mean,
             real,
             imag,
@@ -1112,11 +1115,71 @@ def apply_filter_and_threshold(
         Harmonic values for wavelet filter. If None, will be extracted from layer.
 
     """
+    arrays = compute_filter_and_threshold(
+        layer,
+        threshold=threshold,
+        threshold_upper=threshold_upper,
+        filter_method=filter_method,
+        size=size,
+        repeat=repeat,
+        sigma=sigma,
+        levels=levels,
+        harmonics=harmonics,
+    )
+    assign_filter_and_threshold(
+        layer,
+        arrays,
+        threshold=threshold,
+        threshold_upper=threshold_upper,
+        threshold_method=threshold_method,
+        filter_method=filter_method,
+        size=size,
+        repeat=repeat,
+        sigma=sigma,
+        levels=levels,
+    )
+    return
+
+
+def compute_filter_and_threshold(
+    layer: Image,
+    /,
+    *,
+    threshold: float = None,
+    threshold_upper: float = None,
+    filter_method: str = None,
+    size: int = None,
+    repeat: int = None,
+    sigma: float = None,
+    levels: int = None,
+    harmonics: np.ndarray = None,
+):
+    """Compute a layer's filtered and thresholded phasor arrays.
+
+    The array half of :func:`apply_filter_and_threshold`. It only reads the
+    layer's metadata dict and returns fresh arrays, touching no Qt or napari
+    state, so it is safe to run in a worker thread. Pair it with
+    :func:`assign_filter_and_threshold` on the main thread.
+
+    Parameters
+    ----------
+    layer : napari.layers.Image
+        Napari image layer with phasor features.
+    threshold, threshold_upper, filter_method, size, repeat, sigma, levels : optional
+        As in :func:`apply_filter_and_threshold`.
+    harmonics : np.ndarray, optional
+        Harmonic values. Read from the layer when None.
+
+    Returns
+    -------
+    tuple
+        ``(mean, real, imag)`` arrays.
+    """
     mean, real, imag, harmonics = _extract_phasor_arrays_from_layer(
         layer, harmonics
     )
 
-    mean, real, imag = _apply_filter_and_threshold_to_phasor_arrays(
+    return _apply_filter_and_threshold_to_phasor_arrays(
         mean,
         real,
         imag,
@@ -1129,6 +1192,38 @@ def apply_filter_and_threshold(
         sigma=sigma,
         levels=levels,
     )
+
+
+def assign_filter_and_threshold(
+    layer: Image,
+    arrays,
+    /,
+    *,
+    threshold: float = None,
+    threshold_upper: float = None,
+    threshold_method: str = None,
+    filter_method: str = None,
+    size: int = None,
+    repeat: int = None,
+    sigma: float = None,
+    levels: int = None,
+):
+    """Write computed phasor arrays and their settings back into a layer.
+
+    The napari half of :func:`apply_filter_and_threshold`: it mutates the
+    layer and refreshes it, so it must run on the main thread.
+
+    Parameters
+    ----------
+    layer : napari.layers.Image
+        Layer to update.
+    arrays : tuple
+        ``(mean, real, imag)`` as returned by
+        :func:`compute_filter_and_threshold`.
+    threshold, threshold_upper, threshold_method, filter_method, size, repeat, sigma, levels : optional
+        Settings to record in the layer metadata.
+    """
+    mean, real, imag = arrays
 
     layer.metadata['G'] = real
     layer.metadata['S'] = imag
@@ -1158,7 +1253,79 @@ def apply_filter_and_threshold(
     layer.metadata["settings"]["threshold_method"] = threshold_method
     layer.refresh()
 
-    return
+
+def apply_filter_and_threshold_to_layers(
+    layer_params, workers=None, progress=None
+):
+    """Filter and threshold several layers, computing them concurrently.
+
+    Each layer's filtering is independent and spends its time inside
+    phasorpy's Cython kernels, which release the GIL, so the computations run
+    in a thread pool while the layer updates happen in order on the calling
+    thread.
+
+    Parameters
+    ----------
+    layer_params : sequence of tuple
+        ``(layer, params)`` pairs, where *params* is the keyword dict for
+        :func:`compute_filter_and_threshold`. Per-layer parameters are
+        supported because settings such as the wavelet harmonics differ from
+        one layer to the next.
+    workers : int, optional
+        Thread count. Defaults to one per core, capped.
+    progress : callable, optional
+        Called with each index as its computation finishes.
+
+    Returns
+    -------
+    list
+        One entry per layer: ``None`` on success, or the exception raised
+        while computing that layer.
+    """
+    from ._parallel import parallel_compute_apply
+
+    pairs = list(layer_params)
+    if not pairs:
+        return []
+
+    def compute(pair):
+        layer, params = pair
+        return compute_filter_and_threshold(
+            layer,
+            threshold=params.get("threshold"),
+            threshold_upper=params.get("threshold_upper"),
+            filter_method=params.get("filter_method"),
+            size=params.get("size"),
+            repeat=params.get("repeat"),
+            sigma=params.get("sigma"),
+            levels=params.get("levels"),
+            harmonics=params.get("harmonics"),
+        )
+
+    def apply(pair, arrays):
+        layer, params = pair
+        assign_filter_and_threshold(
+            layer,
+            arrays,
+            threshold=params.get("threshold"),
+            threshold_upper=params.get("threshold_upper"),
+            threshold_method=params.get("threshold_method"),
+            filter_method=params.get("filter_method"),
+            size=params.get("size"),
+            repeat=params.get("repeat"),
+            sigma=params.get("sigma"),
+            levels=params.get("levels"),
+        )
+        return None
+
+    return parallel_compute_apply(
+        pairs,
+        compute,
+        apply,
+        workers=workers,
+        progress=progress,
+        on_error="collect",
+    )
 
 
 def colormap_to_dict(colormap, num_colors=10, exclude_first=True):
@@ -4769,6 +4936,628 @@ class FileOrderDialog(QDialog):
         except ValueError:
             return 1.0
         return value if value > 0 else 1.0
+
+
+class TileLayoutDialog(QDialog):
+    """Dialog to describe how a set of files tiles a larger image.
+
+    The layout can come from three sources, offered in order of reliability:
+    stage positions recorded in the files, indices encoded in the file names,
+    or a manual specification. The manual mode is the one that covers
+    partially filled mosaics, where each row holds a different number of
+    tiles (``5, 7, 9, 9, 7, 5`` for a roughly circular sample, say); short
+    rows are positioned according to the chosen alignment.
+
+    A live map of the resulting arrangement is drawn so an incorrect
+    traversal order or start corner is caught before the tiles are read.
+
+    A mosaic may also be held entirely in one file, with its tiles stored
+    along a dedicated dimension such as the mosaic axis of a Zeiss CZI. Pass
+    the candidate axes as *tile_axes* and the dialog offers a choice of which
+    one holds the tiles.
+
+    Parameters
+    ----------
+    file_paths : list of str
+        Tile paths, in acquisition order.
+    parent : QWidget, optional
+        Parent widget.
+    tile_shape : tuple of int, optional
+        ``(height, width)`` of a single tile, if already known.
+    tile_axes : dict, optional
+        Maps each axis that could hold tiles inside a file to its size, as
+        returned by :func:`~napari_phasors._reader.probe_tile_axes`.
+    tile_positions : sequence of tuple, optional
+        Exact ``(y, x)`` pixel position of each tile, when the file records
+        them. Offered as a layout source and selected by default, since
+        measured positions beat any description of the arrangement.
+    """
+
+    def __init__(
+        self,
+        file_paths,
+        parent=None,
+        tile_shape=None,
+        tile_axes=None,
+        tile_positions=None,
+    ):
+        """Build the layout controls and the arrangement preview."""
+        super().__init__(parent)
+        self.setWindowTitle("Tile Layout")
+        self.setMinimumWidth(620)
+
+        self._paths = list(file_paths)
+        self._base_tile_shape = tuple(tile_shape) if tile_shape else (0, 0)
+        self._tile_shape = self._base_tile_shape
+        self._tile_axes = dict(tile_axes or {})
+        self._base_positions = (
+            [tuple(position) for position in tile_positions]
+            if tile_positions is not None
+            else None
+        )
+        self._positions = list(self._base_positions or [])
+        self._geometry = None
+
+        layout = QVBoxLayout(self)
+
+        info = QLabel(
+            f"{len(self._paths)} file(s) selected. Describe how they tile "
+            "the image. Rows may hold different numbers of tiles."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        self._add_tile_axis_row(layout)
+        self._add_binning_row(layout)
+
+        source_layout = QHBoxLayout()
+        source_layout.addWidget(QLabel("Layout from: "))
+        self.source_combo = QComboBox()
+        if self._base_positions is not None:
+            self.source_combo.addItem(
+                "Tile positions recorded in the file", "positions"
+            )
+        self.source_combo.addItem("Rows (manual)", "rows")
+        self.source_combo.addItem("File names", "names")
+        self.source_combo.addItem("Stage positions in files", "stage")
+        self.source_combo.currentIndexChanged.connect(self._on_source_changed)
+        source_layout.addWidget(self.source_combo)
+        source_layout.addStretch()
+        layout.addLayout(source_layout)
+
+        # --- Manual rows -------------------------------------------------
+        self.rows_widget = QWidget()
+        rows_layout = QVBoxLayout(self.rows_widget)
+        rows_layout.setContentsMargins(0, 0, 0, 0)
+
+        spec_layout = QHBoxLayout()
+        spec_layout.addWidget(QLabel("Tiles per row: "))
+        self.rows_edit = QLineEdit()
+        self.rows_edit.setPlaceholderText("e.g. 5, 7, 9, 9, 7, 5  or  3x9")
+        self.rows_edit.setText(self._default_rows_spec())
+        self.rows_edit.setToolTip(
+            "Number of tiles in each row, separated by commas. "
+            "'3x9' is shorthand for three rows of nine."
+        )
+        self.rows_edit.editingFinished.connect(self._refresh)
+        spec_layout.addWidget(self.rows_edit)
+        rows_layout.addLayout(spec_layout)
+
+        options_layout = QHBoxLayout()
+        options_layout.addWidget(QLabel("Order: "))
+        self.traversal_combo = QComboBox()
+        self.traversal_combo.addItems(["Raster", "Snake"])
+        self.traversal_combo.setToolTip(
+            "Raster restarts each row on the same side. Snake alternates "
+            "direction, as most stage controllers do."
+        )
+        self.traversal_combo.currentIndexChanged.connect(self._refresh)
+        options_layout.addWidget(self.traversal_combo)
+
+        options_layout.addWidget(QLabel("Start: "))
+        self.corner_combo = QComboBox()
+        self.corner_combo.addItems(
+            ["Top-left", "Top-right", "Bottom-left", "Bottom-right"]
+        )
+        self.corner_combo.currentIndexChanged.connect(self._refresh)
+        options_layout.addWidget(self.corner_combo)
+
+        options_layout.addWidget(QLabel("Short rows: "))
+        self.alignment_combo = QComboBox()
+        self.alignment_combo.addItems(["Center", "Left", "Right"])
+        self.alignment_combo.setToolTip(
+            "Where rows with fewer tiles sit relative to the longest row."
+        )
+        self.alignment_combo.currentIndexChanged.connect(self._refresh)
+        options_layout.addWidget(self.alignment_combo)
+        options_layout.addStretch()
+        rows_layout.addLayout(options_layout)
+        layout.addWidget(self.rows_widget)
+
+        # --- File name pattern -------------------------------------------
+        self.pattern_widget = QWidget()
+        pattern_layout = QHBoxLayout(self.pattern_widget)
+        pattern_layout.setContentsMargins(0, 0, 0, 0)
+        pattern_layout.addWidget(QLabel("Pattern: "))
+        self.pattern_edit = QLineEdit()
+        self.pattern_edit.setText(r"(?P<row>\d+)\D+(?P<col>\d+)")
+        self.pattern_edit.setToolTip(
+            "Regular expression matched against each file name. Must define "
+            "'row' and 'col' groups, or a single 'index' group."
+        )
+        self.pattern_edit.editingFinished.connect(self._refresh)
+        pattern_layout.addWidget(self.pattern_edit)
+        layout.addWidget(self.pattern_widget)
+        self.pattern_widget.hide()
+
+        # --- Overlap ------------------------------------------------------
+        overlap_layout = QHBoxLayout()
+        overlap_layout.addWidget(QLabel("Overlap Y (%): "))
+        self.overlap_y_edit = QLineEdit("10")
+        self.overlap_y_edit.setFixedWidth(60)
+        self.overlap_y_edit.setValidator(QDoubleValidator(0.0, 90.0, 3))
+        self.overlap_y_edit.editingFinished.connect(self._refresh)
+        overlap_layout.addWidget(self.overlap_y_edit)
+
+        overlap_layout.addWidget(QLabel("Overlap X (%): "))
+        self.overlap_x_edit = QLineEdit("10")
+        self.overlap_x_edit.setFixedWidth(60)
+        self.overlap_x_edit.setValidator(QDoubleValidator(0.0, 90.0, 3))
+        self.overlap_x_edit.editingFinished.connect(self._refresh)
+        overlap_layout.addWidget(self.overlap_x_edit)
+
+        overlap_layout.addWidget(QLabel("Blending: "))
+        self.blend_combo = QComboBox()
+        self.blend_combo.addItems(["Feather", "Average", "Sum counts"])
+        self.blend_combo.setToolTip(
+            "How intensity is combined where tiles overlap. Feather "
+            "cross-fades for a seamless image; sum keeps the total photon "
+            "counts. Phasor coordinates are the same either way."
+        )
+        overlap_layout.addWidget(self.blend_combo)
+        overlap_layout.addStretch()
+        layout.addLayout(overlap_layout)
+
+        note = QLabel(
+            "The overlap can be re-tuned, or estimated from the data, after "
+            "the tiles have been read."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color: grey;")
+        layout.addWidget(note)
+
+        # --- Preview ------------------------------------------------------
+        self.preview = TileLayoutPreview()
+        layout.addWidget(self.preview)
+
+        self.status_label = QLabel("")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        self.ok_btn = QPushButton("OK")
+        self.ok_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(self.ok_btn)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(self.cancel_btn)
+        layout.addLayout(btn_layout)
+
+        self._refresh()
+
+    def _add_tile_axis_row(self, layout):
+        """Add the selector for the axis holding the tiles inside each file."""
+        self.tile_axis_combo = None
+        if not self._tile_axes:
+            return
+
+        from ._reader import describe_tile_axis
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Tiles inside each file: "))
+
+        self.tile_axis_combo = QComboBox()
+        self.tile_axis_combo.addItem("One tile per file", None)
+        for axis, size in self._tile_axes.items():
+            self.tile_axis_combo.addItem(
+                f"{describe_tile_axis(axis)} - {size} tiles", axis
+            )
+        # A file that carries a tile dimension almost always means the mosaic
+        # lives inside it, so start on the most likely axis rather than
+        # ignoring it.
+        self.tile_axis_combo.setCurrentIndex(1)
+        self.tile_axis_combo.setToolTip(
+            "Dimension along which a single file stores its tiles, for "
+            "example the mosaic axis of a CZI. Choose 'One tile per file' "
+            "when each selected file holds one tile."
+        )
+        self.tile_axis_combo.currentIndexChanged.connect(
+            self._on_tile_axis_changed
+        )
+        row.addWidget(self.tile_axis_combo)
+        row.addStretch()
+        layout.addLayout(row)
+
+    def _add_binning_row(self, layout):
+        """Add the spatial binning selector for large mosaics."""
+        self.binning_combo = None
+        if not self._base_tile_shape[0] or self._base_positions is None:
+            return
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Binning: "))
+        self.binning_combo = QComboBox()
+        for factor in (1, 2, 4, 8, 16):
+            self.binning_combo.addItem(
+                "None" if factor == 1 else f"{factor} x {factor}", factor
+            )
+        self.binning_combo.setToolTip(
+            "Sum square blocks of pixels while reading. Binning adds photons "
+            "together, so the phasor of a binned pixel is the "
+            "photon-weighted phasor of the pixels it covers, and it cuts the "
+            "memory a mosaic needs by the square of the factor."
+        )
+        row.addWidget(self.binning_combo)
+
+        self.memory_label = QLabel("")
+        self.memory_label.setStyleSheet("color: grey;")
+        row.addWidget(self.memory_label)
+        row.addStretch()
+        layout.addLayout(row)
+
+        # Start at a factor that keeps the stitched image manageable, rather
+        # than at a setting that would try to allocate tens of gigabytes.
+        # Set the value before connecting, since the rest of the dialog the
+        # refresh needs does not exist yet.
+        self.binning_combo.setCurrentIndex(
+            self.binning_combo.findData(self._suggested_binning())
+        )
+        self._apply_binning()
+        self.binning_combo.currentIndexChanged.connect(
+            self._on_binning_changed
+        )
+
+    def _suggested_binning(self, budget_bytes=512 * 1024 * 1024):
+        """Return the smallest binning whose canvas fits in *budget_bytes*.
+
+        Sized against one float32 plane of the stitched canvas; blending
+        needs several of those at once, so this stays conservative.
+        """
+        if self._base_positions is None or not self._base_tile_shape[0]:
+            return 1
+        for factor in (1, 2, 4, 8, 16):
+            height, width = self._canvas_for_binning(factor)
+            if height * width * 4 <= budget_bytes:
+                return factor
+        return 16
+
+    def _canvas_for_binning(self, factor):
+        """Return the stitched canvas size for a binning factor."""
+        height = self._base_tile_shape[0] // factor
+        width = self._base_tile_shape[1] // factor
+        return (
+            max(y // factor for y, _ in self._base_positions) + height,
+            max(x // factor for _, x in self._base_positions) + width,
+        )
+
+    def get_binning(self):
+        """Return the selected binning factor."""
+        if self.binning_combo is None:
+            return 1
+        return int(self.binning_combo.currentData() or 1)
+
+    def _apply_binning(self):
+        """Rescale the tile size and positions to the current binning."""
+        factor = self.get_binning()
+        if self._base_positions is None:
+            return
+        self._tile_shape = (
+            self._base_tile_shape[0] // factor,
+            self._base_tile_shape[1] // factor,
+        )
+        self._positions = [
+            (y // factor, x // factor) for y, x in self._base_positions
+        ]
+        if getattr(self, "memory_label", None) is not None:
+            height, width = self._canvas_for_binning(factor)
+            self.memory_label.setText(
+                f"{height} x {width} px, "
+                f"{height * width * 4 / (1024 ** 3):.2f} GB per plane"
+            )
+
+    def _on_binning_changed(self):
+        """Rescale the layout after the binning factor changed."""
+        self._apply_binning()
+        self._refresh()
+
+    def _on_tile_axis_changed(self):
+        """Re-derive the tile count and refresh the layout."""
+        self.rows_edit.setText(self._default_rows_spec())
+        self._refresh()
+
+    def get_tile_axis(self):
+        """Return the selected tile axis, or ``None`` for one tile per file."""
+        if self.tile_axis_combo is None:
+            return None
+        return self.tile_axis_combo.currentData()
+
+    def _sources(self):
+        """Return the tiles the current settings describe."""
+        from ._stitching import TileSource
+
+        axis = self.get_tile_axis()
+        if axis is None:
+            return [TileSource(path) for path in self._paths]
+
+        count = int(self._tile_axes.get(axis, 1))
+        return [
+            TileSource(path, index)
+            for path in self._paths
+            for index in range(count)
+        ]
+
+    def _default_rows_spec(self):
+        """Guess a square-ish arrangement to pre-fill the row specification."""
+        count = len(self._sources())
+        if count < 1:
+            return ""
+        side = int(round(count**0.5))
+        # ``candidate`` walks down to 1, which divides every count, so the
+        # loop always returns: a prime count simply becomes a single row.
+        for candidate in range(side, 0, -1):
+            if count % candidate == 0:
+                rows, columns = candidate, count // candidate
+                return f"{rows}x{columns}"
+
+    def _on_source_changed(self, index):
+        """Show the controls belonging to the selected layout source."""
+        source = self.source_combo.currentData()
+        self.rows_widget.setVisible(source == "rows")
+        self.pattern_widget.setVisible(source == "names")
+        self._refresh()
+
+    def _overlaps(self):
+        """Return the overlap fractions currently entered."""
+
+        def _fraction(edit):
+            try:
+                return min(max(float(edit.text()) / 100.0, 0.0), 0.9)
+            except ValueError:
+                return 0.0
+
+        return _fraction(self.overlap_y_edit), _fraction(self.overlap_x_edit)
+
+    def _blend_mode(self):
+        """Return the blend mode key for the current combobox selection."""
+        return ("feather", "average", "sum")[self.blend_combo.currentIndex()]
+
+    def _build_geometry(self):
+        """Build the geometry for the current settings, or raise ValueError."""
+        from ._stitching import (
+            layout_from_filenames,
+            layout_from_positions,
+            layout_from_rows,
+            layout_from_stage_positions,
+        )
+
+        overlap_y, overlap_x = self._overlaps()
+        blend_mode = self._blend_mode()
+        source = self.source_combo.currentData()
+        tiles = self._sources()
+
+        if source == "positions":
+            if len(self._positions) != len(tiles):
+                raise ValueError(
+                    f"The file records {len(self._positions)} position(s) "
+                    f"but {len(tiles)} tile(s) are selected. Choose the "
+                    "matching tile axis, or another layout source."
+                )
+            return layout_from_positions(
+                tiles,
+                self._positions,
+                tile_shape=self._tile_shape,
+                blend_mode=blend_mode,
+            )
+
+        if source == "stage":
+            geometry = layout_from_stage_positions(
+                tiles,
+                tile_shape=self._tile_shape,
+                blend_mode=blend_mode,
+            )
+            if geometry is None:
+                raise ValueError(
+                    "Stage positions could not be read. Only OME-TIFF files "
+                    "record them, one position per file; use another source."
+                )
+            return geometry
+
+        row_kwargs = {
+            "tiles_per_row": self.rows_edit.text(),
+            "traversal": ("raster", "snake")[
+                self.traversal_combo.currentIndex()
+            ],
+            "start_corner": (
+                "top-left",
+                "top-right",
+                "bottom-left",
+                "bottom-right",
+            )[self.corner_combo.currentIndex()],
+            "alignment": ("center", "left", "right")[
+                self.alignment_combo.currentIndex()
+            ],
+        }
+
+        if source == "names":
+            return layout_from_filenames(
+                tiles,
+                pattern=self.pattern_edit.text(),
+                tile_shape=self._tile_shape,
+                overlap_y=overlap_y,
+                overlap_x=overlap_x,
+                blend_mode=blend_mode,
+                **row_kwargs,
+            )
+
+        return layout_from_rows(
+            tiles,
+            tile_shape=self._tile_shape,
+            overlap_y=overlap_y,
+            overlap_x=overlap_x,
+            blend_mode=blend_mode,
+            **row_kwargs,
+        )
+
+    def _refresh(self):
+        """Rebuild the geometry and redraw the preview."""
+        try:
+            self._geometry = self._build_geometry()
+        except ValueError as error:
+            self._geometry = None
+            self.preview.set_geometry(None)
+            self.status_label.setText(str(error))
+            self.status_label.setStyleSheet("color: #d97b7b;")
+            self.ok_btn.setEnabled(False)
+            return
+
+        # A layout built from recorded positions determines the overlap, so
+        # show what was measured instead of leaving a stale typed value.
+        if self.source_combo.currentData() == "positions":
+            self.overlap_y_edit.setText(
+                f"{self._geometry.overlap_y * 100:.2f}"
+            )
+            self.overlap_x_edit.setText(
+                f"{self._geometry.overlap_x * 100:.2f}"
+            )
+        self.overlap_y_edit.setEnabled(
+            self.source_combo.currentData() != "positions"
+        )
+        self.overlap_x_edit.setEnabled(
+            self.source_combo.currentData() != "positions"
+        )
+
+        self.preview.set_geometry(self._geometry)
+        placements = self._geometry.placements
+        rows = len({placement.row for placement in placements})
+        columns = len({placement.col for placement in placements})
+        n_files = len({placement.path for placement in placements})
+        source = (
+            f"{len(placements)} tile(s)"
+            if n_files == len(placements)
+            else f"{len(placements)} tile(s) from {n_files} file(s)"
+        )
+        message = f"{source} in {rows} row(s), {columns} column position(s)."
+        if self._tile_shape[0] and self._tile_shape[1]:
+            canvas = self._geometry.canvas_shape()
+            message += f" Stitched size: {canvas[0]} x {canvas[1]} px."
+        self.status_label.setText(message)
+        self.status_label.setStyleSheet("color: grey;")
+        self.ok_btn.setEnabled(True)
+
+    def get_geometry(self):
+        """Return the :class:`~napari_phasors._stitching.TileGeometry` built.
+
+        Returns
+        -------
+        TileGeometry or None
+            ``None`` if the current settings are invalid.
+        """
+        return self._geometry
+
+    def get_ordered_paths(self):
+        """Return the tile paths in placement order, with repeats."""
+        if self._geometry is None:
+            return list(self._paths)
+        return self._geometry.paths
+
+    def get_sources(self):
+        """Return the tiles in placement order.
+
+        Returns
+        -------
+        list of TileSource
+            One entry per tile. A single multi-tile file yields several
+            entries that share a path and differ by index.
+        """
+        if self._geometry is None:
+            return self._sources()
+        return self._geometry.sources
+
+
+class TileLayoutPreview(QWidget):
+    """Small map of a mosaic layout, drawn from a ``TileGeometry``.
+
+    Each tile is drawn as a rectangle at its computed position and labelled
+    with its position in the acquisition order, so an incorrect traversal or
+    start corner is obvious at a glance.
+    """
+
+    def __init__(self, parent=None):
+        """Create an empty preview."""
+        super().__init__(parent)
+        self._geometry = None
+        self.setMinimumHeight(200)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+    def set_geometry(self, geometry):
+        """Set the geometry to draw, or ``None`` to clear the preview."""
+        self._geometry = geometry
+        self.update()
+
+    def paintEvent(self, event):
+        """Draw the tile rectangles scaled to fit the widget."""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        if self._geometry is None or not self._geometry.placements:
+            painter.setPen(QPen(QColor("#8a8a8a")))
+            painter.drawText(
+                self.rect(), Qt.AlignCenter, "No layout to preview"
+            )
+            painter.end()
+            return
+
+        geometry = self._geometry
+        # The tile size is unknown until the files are read, so preview with
+        # a nominal tile and let the overlap set the spacing.
+        height, width = geometry.tile_shape
+        if not height or not width:
+            height = width = 100
+            geometry = replace(geometry, tile_shape=(height, width))
+
+        origins = geometry.origins()
+        canvas_height, canvas_width = geometry.canvas_shape()
+        if not canvas_height or not canvas_width:
+            painter.end()
+            return
+
+        margin = 10
+        scale = min(
+            (self.width() - 2 * margin) / canvas_width,
+            (self.height() - 2 * margin) / canvas_height,
+        )
+        offset_x = (self.width() - canvas_width * scale) / 2
+        offset_y = (self.height() - canvas_height * scale) / 2
+
+        font = painter.font()
+        font.setPointSizeF(max(6.0, min(11.0, height * scale / 3.5)))
+        painter.setFont(font)
+
+        for index, (origin_y, origin_x) in enumerate(origins):
+            rect = QRect(
+                int(offset_x + origin_x * scale),
+                int(offset_y + origin_y * scale),
+                max(1, int(width * scale)),
+                max(1, int(height * scale)),
+            )
+            painter.setBrush(QColor(90, 140, 200, 60))
+            painter.setPen(QPen(QColor("#5a8cc8"), 1))
+            painter.drawRect(rect)
+            painter.setPen(QPen(QColor("#c7c7c7")))
+            painter.drawText(rect, Qt.AlignCenter, str(index + 1))
+
+        painter.end()
 
 
 def read_ome_tiff_settings(file_path):
