@@ -1,11 +1,6 @@
 # Tiled Mosaics
 
-Large samples are often acquired as a mosaic: the stage steps across the
-specimen and records a grid of overlapping tiles. napari-phasors can read such
-an acquisition and give you back **one** intensity layer with **one** set of
-phasor coordinates behind it, so every other part of the plugin — the phasor
-plot, filtering, selections, component analysis, FRET, mapping, export — treats
-the mosaic exactly like any single image.
+Stage-scanned mosaic acquisitions (grids of overlapping tiles) are automatically assembled by napari-phasors into a unified intensity layer with synchronized phasor coordinates. All interactive features, such as ROI gating, FRET trajectories, and component analysis, work directly across the entire mosaic as if it were a single image.
 
 The stitching happens **in phasor space**, not on the raw data. Each tile is
 phasor-transformed on its own and only the resulting mean intensity, G and S
