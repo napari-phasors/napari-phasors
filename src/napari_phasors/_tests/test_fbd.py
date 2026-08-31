@@ -49,6 +49,19 @@ def fbd_file():
 
 
 @pytest.fixture(scope="module")
+def expected_iotech_factor(fbd_file):
+    """The derived factor for this file and the installed fbdfile release.
+
+    Not a literal: it scales with ``fbd.pixel_dwell_time``, which fbdfile's
+    dwell-time table has changed between releases.
+    """
+    from fbdfile import FbdFile
+
+    with quiet(), FbdFile(fbd_file) as fbd:
+        return iotech_laser_factor(fbd)
+
+
+@pytest.fixture(scope="module")
 def reference_image(fbd_file):
     """Intensity image of a reconstruction with known settings.
 
@@ -172,18 +185,42 @@ def test_matches_phasorpy_by_default(fbd_file, kwargs):
 
 def test_explicit_laser_factor_is_honored(fbd_file):
     """An explicit laser_factor disables refining instead of being lost."""
-    factor = 0.995968862745098
+    # Derive the factor from the file rather than hard-coding one. A literal
+    # can turn out to be a fixed point of refine_settings on some fbdfile
+    # release, leaving nothing to tell the two paths apart -- which is how
+    # the literal this test used to carry started passing vacuously on CI.
+    # The 5% offset is well inside frames()'s (0.8, 1.2) aspect window, so
+    # frames are still detected: a wildly wrong factor detects none and
+    # trips a cluster-based correction that ignores ``refine`` entirely.
     with quiet():
+        factor = (
+            float(
+                signal_from_fbd(fbd_file, frame=-1, channel=0).attrs[
+                    "laser_factor"
+                ]
+            )
+            * 0.95
+        )
         signal = signal_from_fbd(
             fbd_file, frame=-1, channel=0, laser_factor=factor
         )
         refined = signal_from_fbd(
             fbd_file, frame=-1, channel=0, laser_factor=factor, refine=True
         )
+        theirs = phasorpy_signal_from_fbd(
+            fbd_file, frame=-1, channel=0, laser_factor=factor
+        )
+    assert refined.attrs["laser_factor"] != factor, (
+        "refining left the factor untouched, so this file cannot show that "
+        "an explicit factor is honored"
+    )
+    # the explicit value survives, and reconstructs a different image
     assert signal.attrs["laser_factor"] == factor
-    # phasorpy's reader always refines, so it cannot honor the value
-    assert refined.attrs["laser_factor"] != factor
     assert not np.array_equal(signal.values, refined.values)
+    # phasorpy's reader always refines, so it cannot honor the value: its
+    # output matches refine=True rather than the factor it was given
+    assert np.array_equal(theirs.values, refined.values)
+    assert "laser_factor" not in theirs.attrs
 
 
 def test_scanner_line_start_shifts_image(fbd_file):
@@ -445,7 +482,7 @@ def test_image_correlation():
 
 
 def test_match_reference_settings_recovers_line_start(
-    fbd_file, reference_image
+    fbd_file, reference_image, expected_iotech_factor
 ):
     """The scan recovers the settings the reference was built with."""
     with quiet():
@@ -455,7 +492,7 @@ def test_match_reference_settings_recovers_line_start(
     assert settings.laser_factor == IOTECH
     assert settings.refine is False
     assert settings.correlation == pytest.approx(1.0)
-    assert settings.laser_factor_value == pytest.approx(0.996, abs=0.01)
+    assert settings.laser_factor_value == pytest.approx(expected_iotech_factor)
 
 
 def test_match_reference_settings_round_trip(fbd_file, reference_image):
@@ -618,7 +655,9 @@ def test_reconstruction_settings_as_reader_options():
 # -- reader wiring ---------------------------------------------------------
 
 
-def test_reader_forwards_reconstruction_settings(fbd_file):
+def test_reader_forwards_reconstruction_settings(
+    fbd_file, expected_iotech_factor
+):
     """The .fbd entry accepts the settings phasorpy's reader cannot."""
     with quiet():
         signal = extension_mapping["raw"][".fbd"](
@@ -632,7 +671,9 @@ def test_reader_forwards_reconstruction_settings(fbd_file):
             },
         )
     assert signal.attrs["scanner_line_start"] == MATCHED_LINE_START
-    assert signal.attrs["laser_factor"] == pytest.approx(0.996, abs=0.01)
+    assert signal.attrs["laser_factor"] == pytest.approx(
+        expected_iotech_factor
+    )
 
 
 # -- FbdWidget -------------------------------------------------------------
