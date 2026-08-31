@@ -1964,6 +1964,93 @@ def raw_file_tile_reader(
         return []
 
 
+def _infer_harmonics(
+    requested: Union[int, Sequence[int], str, None],
+    real: np.ndarray,
+    mean: np.ndarray,
+) -> Union[int, list[int]]:
+    """Infer the harmonic numbers of already-computed phasor coordinates.
+
+    Not every ``phasorpy.io`` reader for processed files reports which
+    harmonics it returned: ``phasor_from_simfcs_referenced`` (R64/REF) and
+    ``phasor_from_lif`` return no ``'harmonic'`` metadata. Leaving
+    ``harmonics`` as None in the layer metadata makes downstream analyses
+    treat the leading harmonic axis of G/S as image data -- e.g. component
+    analysis then returns one fraction image per harmonic instead of one for
+    the selected harmonic.
+
+    Parameters
+    ----------
+    requested : int, sequence of int, 'all', or None
+        The ``harmonic`` argument that was passed to the IO function.
+    real : np.ndarray
+        Real component of the phasor coordinates as returned by the reader.
+    mean : np.ndarray
+        Mean intensity image as returned by the reader.
+
+    Returns
+    -------
+    int or list of int
+        A single harmonic number when ``real`` has no harmonic axis,
+        otherwise one number per plane of that axis.
+    """
+    if real.ndim == mean.ndim:
+        # No harmonic axis: the reader was asked for a single harmonic.
+        if isinstance(requested, (int, np.integer)) and not isinstance(
+            requested, bool
+        ):
+            return int(requested)
+        return 1
+
+    n_harmonics = real.shape[0]
+    if isinstance(requested, Sequence) and not isinstance(requested, str):
+        with suppress(TypeError, ValueError):
+            harmonics = [int(h) for h in requested]
+            if len(harmonics) == n_harmonics:
+                return harmonics
+    # 'all', None, or a request that does not match what was read: the
+    # readers return the file's harmonics in order, starting at the first.
+    return list(range(1, n_harmonics + 1))
+
+
+def _keep_first_harmonics(
+    real: np.ndarray,
+    imag: np.ndarray,
+    harmonics: Union[int, Sequence[int]],
+    mean_ndim: int,
+    limit: int = 2,
+) -> tuple[np.ndarray, np.ndarray, Union[int, list[int]]]:
+    """Trim phasor coordinates to the first ``limit`` harmonics they hold.
+
+    Used only when the caller requested no particular harmonic, so that
+    processed files default to the same first-two-harmonics behaviour as raw
+    files without a second read of the file.
+
+    Parameters
+    ----------
+    real, imag : np.ndarray
+        Phasor coordinates as returned by the reader. A leading axis of
+        length > 1 is the harmonic axis.
+    harmonics : int or sequence of int
+        Harmonic number(s) the arrays hold, in the same order.
+    mean_ndim : int
+        Number of dimensions of the mean intensity image, used to tell a
+        harmonic axis apart from an image axis.
+    limit : int, optional
+        Maximum number of harmonics to keep. Default is 2.
+
+    Returns
+    -------
+    tuple
+        ``(real, imag, harmonics)``, trimmed if there was anything to trim.
+    """
+    if real.ndim != mean_ndim + 1 or real.shape[0] <= limit:
+        return real, imag, harmonics
+    if not isinstance(harmonics, Sequence) or isinstance(harmonics, str):
+        harmonics = np.atleast_1d(harmonics).tolist()
+    return real[:limit], imag[:limit], list(harmonics)[:limit]
+
+
 def processed_file_reader(
     path: str,
     reader_options: dict[str, str] | None = None,
@@ -1980,8 +2067,9 @@ def processed_file_reader(
         Dictionary containing the arguments to pass to the function.
     harmonics : Union[int, Sequence[int], None], optional
         Harmonic(s) to be processed. Can be a single integer, a sequence of
-        integers, or None. Default is None, which sets all harmonics present
-        in the file to be processed.
+        integers, or None. Default is None, which reads the first two
+        harmonics present in the file, or the first one if that is all it
+        holds. Pass ``'all'`` to read every harmonic in the file.
 
     Returns
     -------
@@ -1995,6 +2083,12 @@ def processed_file_reader(
         in 'metadata' contain phasor coordinates as columns 'G' and 'S'.
 
     """
+    # No explicit request: read everything the file holds, then keep only the
+    # first two harmonics below. This matches the raw reader, whose default is
+    # also the first two harmonics (see ``_clamp_harmonics``), and keeps files
+    # that store many harmonics (IFLI, RE<n>, FLIM LABS JSON) from loading a
+    # stack of them by default.
+    default_harmonics = harmonics is None
     if harmonics is None:
         harmonics = 'all'
     filename, file_extension = _get_filename_extension(path)
@@ -2018,6 +2112,17 @@ def processed_file_reader(
         if "frequency" in attrs:
             settings["frequency"] = attrs["frequency"]
         harmonics_read = attrs.get("harmonic", None)
+        if harmonics_read is None:
+            harmonics_read = _infer_harmonics(
+                filtered_reader_options.get("harmonic"),
+                real,
+                mean_intensity_image,
+            )
+
+        if default_harmonics:
+            real, imag, harmonics_read = _keep_first_harmonics(
+                real, imag, harmonics_read, mean_intensity_image.ndim
+            )
 
         original_mean_intensity_image = mean_intensity_image.copy()
         g_original = real.copy()

@@ -2625,28 +2625,43 @@ class ComponentsWidget(QWidget):
         if freq is None:
             return
 
+        current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
         available_harmonics = self._get_available_harmonics()
         if not available_harmonics:
-            return
+            # The layer does not report its harmonics, either because none is
+            # selected or because its format carries no harmonic metadata.
+            # The lifetime still defines a position on the universal circle
+            # for the harmonic on display, so place the component there
+            # instead of dropping the input.
+            available_harmonics = [current_harmonic]
 
         self._updating_from_lifetime = True
+        try:
+            for harmonic in available_harmonics:
+                re, im = phasor_from_lifetime(freq * harmonic, lifetime)
+                # Always plain floats: they are stored in the layer settings,
+                # which are serialised to JSON on export.
+                re = float(np.asarray(re).ravel()[0])
+                im = float(np.asarray(im).ravel()[0])
 
-        for harmonic in available_harmonics:
-            re, im = phasor_from_lifetime(freq * harmonic, lifetime)
-            if np.ndim(re) > 0:
-                re = float(np.array(re).ravel()[0])
-            if np.ndim(im) > 0:
-                im = float(np.array(im).ravel()[0])
+                self._update_component_gs_coords(idx, harmonic, re, im)
+                self._update_component_lifetime(idx, harmonic, lifetime)
 
-            self._update_component_gs_coords(idx, harmonic, re, im)
-            self._update_component_lifetime(idx, harmonic, lifetime)
+                if harmonic == current_harmonic:
+                    # The text boxes show three decimals, but the component is
+                    # placed from the exact coordinates so it lands on the
+                    # universal circle instead of up to ~5e-4 off it.
+                    comp.g_edit.setText(f"{re:.3f}")
+                    comp.s_edit.setText(f"{im:.3f}")
+                    self._apply_component_coords(idx, re, im)
+        finally:
+            self._updating_from_lifetime = False
 
-            if harmonic == getattr(self.parent_widget, 'harmonic', 1):
-                comp.g_edit.setText(f"{re:.3f}")
-                comp.s_edit.setText(f"{im:.3f}")
-                self._on_component_coords_changed(idx)
-
-        self._updating_from_lifetime = False
+        # ``_apply_component_coords`` only moves the artist; a plain
+        # ``draw_idle`` can restore a blit background that still holds the dot
+        # at its old position. Force a full draw, as every other path that
+        # moves a component does.
+        self._redraw(force=True)
 
     def _get_lifetime_from_coords(self, x, y, harmonic):
         """Calculate normal lifetime from coordinates x, y at a given harmonic."""
@@ -2817,6 +2832,19 @@ class ComponentsWidget(QWidget):
         except ValueError:
             return
 
+        self._apply_component_coords(idx, x, y)
+
+    def _apply_component_coords(self, idx: int, x: float, y: float):
+        """Move a component to ``(x, y)`` and store it for the current harmonic.
+
+        Kept separate from :meth:`_on_component_coords_changed` so callers that
+        already hold exact coordinates -- such as the lifetime input, whose
+        position is analytically on the universal circle -- can place the
+        component without going through the G/S text boxes, which are rounded
+        to three decimals for display and would nudge the component off the
+        circle.
+        """
+        comp = self.components[idx]
         current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
         self._update_component_gs_coords(idx, current_harmonic, x, y)
 
