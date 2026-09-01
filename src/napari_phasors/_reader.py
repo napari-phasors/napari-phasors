@@ -22,6 +22,7 @@ from napari.utils.colormaps.colormap_utils import CYMRGB, MAGENTA_GREEN
 from napari.utils.notifications import show_error
 from phasorpy.phasor import phasor_from_signal
 
+from ._fbd import signal_from_fbd
 from ._utils import show_activity_progress
 
 extension_mapping = {
@@ -34,7 +35,7 @@ extension_mapping = {
         ),
         ".fbd": lambda path, reader_options: _parse_and_call_io_function(
             path,
-            io.signal_from_fbd,
+            signal_from_fbd,
             {
                 "frame": (-1, False),
                 "keepdims": (False, False),

@@ -99,6 +99,48 @@ The widget stacks files along a new first axis and creates 3D output layers.
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/3d%20stack.mp4" type="video/mp4">
 </video>
 
+## FLIMbox (`.fbd`) reconstruction settings
+
+Reconstructing an FBD image needs two settings that are not always described
+correctly by the file header, and getting either wrong shifts or shears the
+image:
+
+- **Laser Factor** — corrects `pixel_dwell_time / laser_frequency`. Leave it
+  at `-1` to use the value stored in the file.
+- **Line Start** — first valid pixel of the scan line. Leave it empty to use
+  the header's `x_starting_pixel`.
+
+Two extra controls cover the cases the header cannot describe:
+
+- **Derive laser factor for SimFCS (IOTech)** computes the laser factor that
+  reproduces SimFCS from the file header. Files recorded with an IOTech
+  scanner card need this: SimFCS applies its dwell-time correction at the
+  full phase resolution of the FLIMbox, and the difference is enough to shear
+  the image along the slow scan axis. Prefer this over typing a number, which
+  is only valid for one `fbdfile` release.
+- **Refine settings** recomputes the pixel dwell time and laser factor from
+  the detected frame durations. Refining *overwrites* the laser factor, so
+  the default, **Auto**, refines only when no laser factor was given. Choose
+  **Always**, **If needed**, or **Never** to decide explicitly.
+
+### Matching a SimFCS reference image
+
+If SimFCS exported an `.R64`/`.REF` file for the same acquisition, click
+**Match SimFCS reference...** and select it. The widget reconstructs the file
+with each candidate laser factor, scores every possible line start against
+the reference image, and fills in the combination whose Pearson correlation is
+highest. The label next to the button reports what it found, for example
+`line start 51, laser factor 0.996088 (r = 0.9987)`.
+
+The dialog opens on the companion reference file when one sits next to the
+FBD file. SimFCS writes one file per detector channel, and the `_ch2_`
+companions hold median filtered data, so a first-channel file is preferred.
+
+All of these settings are plain reader arguments, so they can also be typed
+into the **Additional kwargs** section here and in the batch analysis widget
+(`laser_factor`, `scanner_line_start`, `refine`; use `iotech` as the laser
+factor to derive it).
+
 ## Notes
 
 - Multi-file stacking requires all selected files to have the same extension.
