@@ -184,41 +184,44 @@ def test_matches_phasorpy_by_default(fbd_file, kwargs):
 
 
 def test_explicit_laser_factor_is_honored(fbd_file):
-    """An explicit laser_factor disables refining instead of being lost."""
-    # Derive the factor from the file rather than hard-coding one. A literal
-    # can turn out to be a fixed point of refine_settings on some fbdfile
-    # release, leaving nothing to tell the two paths apart -- which is how
-    # the literal this test used to carry started passing vacuously on CI.
-    # The 5% offset is well inside frames()'s (0.8, 1.2) aspect window, so
-    # frames are still detected: a wildly wrong factor detects none and
-    # trips a cluster-based correction that ignores ``refine`` entirely.
+    """An explicit laser_factor is used verbatim, refining or not.
+
+    fbdfile 2026.8.30 added ``not self._laser_factor_provided`` to
+    ``refine_settings``, so a caller-supplied factor now survives refining
+    upstream too. Earlier releases discarded it; this pins the behavior the
+    pinned release has.
+    """
+    # plausible enough that frames are detected: a wildly wrong factor
+    # detects none and trips a cluster-based correction inside fbdfile that
+    # rewrites laser_factor regardless of ``refine``
+    factor = 0.99
     with quiet():
-        factor = (
-            float(
-                signal_from_fbd(fbd_file, frame=-1, channel=0).attrs[
-                    "laser_factor"
-                ]
-            )
-            * 0.95
-        )
         signal = signal_from_fbd(
             fbd_file, frame=-1, channel=0, laser_factor=factor
         )
         refined = signal_from_fbd(
             fbd_file, frame=-1, channel=0, laser_factor=factor, refine=True
         )
-        theirs = phasorpy_signal_from_fbd(
-            fbd_file, frame=-1, channel=0, laser_factor=factor
-        )
-    assert refined.attrs["laser_factor"] != factor, (
-        "refining left the factor untouched, so this file cannot show that "
-        "an explicit factor is honored"
-    )
-    # the explicit value survives, and reconstructs a different image
     assert signal.attrs["laser_factor"] == factor
-    assert not np.array_equal(signal.values, refined.values)
-    # phasorpy's reader always refines, so it cannot honor the value: its
-    # output matches refine=True rather than the factor it was given
+    assert refined.attrs["laser_factor"] == factor
+
+
+def test_refine_false_keeps_the_header_factor(fbd_file):
+    """``refine=False`` is the setting phasorpy's reader cannot reach.
+
+    Without an explicit factor, refining replaces the header's value with
+    one solved from the frame durations. phasorpy always refines, so the
+    header's own factor is unreachable through it -- which is what the
+    ``(-1.0, refine=False)`` candidate of :func:`match_reference_settings`
+    needs to be able to try.
+    """
+    with quiet():
+        header = signal_from_fbd(fbd_file, frame=-1, channel=0, refine=False)
+        refined = signal_from_fbd(fbd_file, frame=-1, channel=0, refine=True)
+        theirs = phasorpy_signal_from_fbd(fbd_file, frame=-1, channel=0)
+    assert header.attrs["laser_factor"] != refined.attrs["laser_factor"]
+    assert not np.array_equal(header.values, refined.values)
+    # phasorpy's reader is the refining one, and reports no factor at all
     assert np.array_equal(theirs.values, refined.values)
     assert "laser_factor" not in theirs.attrs
 

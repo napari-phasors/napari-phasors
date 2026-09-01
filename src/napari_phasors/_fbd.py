@@ -1,10 +1,16 @@
 """Read FLIMbox FBD files with full control over reconstruction settings.
 
 :py:func:`phasorpy.io.signal_from_fbd` calls :py:meth:`fbdfile.FbdFile.asimage`
-without forwarding ``refine``. Because ``refine`` defaults to ``True``,
-:py:meth:`fbdfile.FbdFile.refine_settings` recomputes ``pixel_dwell_time`` and
-``laser_factor`` from the detected frame durations and silently discards any
-value passed by the caller.
+without forwarding ``refine``, which defaults to ``True``, so
+:py:meth:`fbdfile.FbdFile.refine_settings` always recomputes
+``pixel_dwell_time`` and ``laser_factor`` from the detected frame durations.
+The header's own ``laser_factor`` is therefore unreachable through it: there is
+no way to ask for the file to be reconstructed exactly as recorded.
+
+(Up to :py:mod:`fbdfile` 2026.8.8 refining also discarded a ``laser_factor``
+the caller had passed. 2026.8.30 added ``not self._laser_factor_provided`` to
+that branch, so an explicit factor now survives refining upstream as well.
+This module is pinned to 2026.8.30 and does not rely on the older behavior.)
 
 This module provides a drop-in replacement that forwards ``refine`` and any
 other :py:class:`fbdfile.FbdFile` setting (``scanner_line_start``,
@@ -96,9 +102,8 @@ class FbdReconstructionSettings(NamedTuple):
         Pearson correlation between the reconstruction and the reference.
     laser_factor_value : float
         Numeric factor the winning reconstruction actually used. Reported
-        for display only; passing it back with ``refine=True`` does not
-        reproduce the reconstruction, because refining also replaces
-        ``pixel_dwell_time``.
+        for display only; pass :py:attr:`laser_factor` and
+        :py:attr:`refine` back instead, which reproduce it exactly.
 
     """
 
@@ -254,8 +259,9 @@ def signal_from_fbd(
     refine : bool or None, optional
         Refine ``pixel_dwell_time`` and ``laser_factor`` from the detected
         frame durations: True=always, None=if needed, False=never.
-        By default, refine unless an explicit `laser_factor` was passed,
-        because refining overwrites it.
+        By default, refine unless an explicit `laser_factor` was passed:
+        that factor is what refining would otherwise solve for, so there is
+        nothing left to detect.
     **kwargs
         Optional arguments passed to :py:class:`fbdfile.FbdFile`, such as
         ``scanner_line_start``, ``scanner_frame_start``, ``frame_size``,
