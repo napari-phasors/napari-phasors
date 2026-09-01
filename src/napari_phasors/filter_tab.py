@@ -24,7 +24,7 @@ from superqt import QRangeSlider, QToggleSwitch
 
 from ._utils import (
     analysis_section_stylesheet,
-    apply_filter_and_threshold,
+    apply_filter_and_threshold_to_layers,
     make_section,
     setup_primary_button,
     threshold_li,
@@ -1005,7 +1005,10 @@ class FilterWidget(QWidget):
         else:
             current_filter_method = current_filter_method_text.lower()
 
-        # Apply filter and threshold to each selected layer
+        # Collect each layer's parameters first. Every widget read has to
+        # happen here on the main thread, because the filtering itself is
+        # handed to a worker pool below.
+        layer_params = []
         for layer in selected_layers:
             filter_method = None
             size = None
@@ -1033,18 +1036,36 @@ class FilterWidget(QWidget):
                         sigma = self.wavelet_sigma_spinbox.value()
                         levels = self.wavelet_levels_spinbox.value()
 
-            apply_filter_and_threshold(
-                layer,
-                threshold=threshold_lower,
-                threshold_upper=threshold_upper,
-                threshold_method=threshold_method,
-                filter_method=filter_method,
-                size=size,
-                repeat=repeat,
-                sigma=sigma,
-                levels=levels,
-                harmonics=harmonics,
+            layer_params.append(
+                (
+                    layer,
+                    {
+                        "threshold": threshold_lower,
+                        "threshold_upper": threshold_upper,
+                        "threshold_method": threshold_method,
+                        "filter_method": filter_method,
+                        "size": size,
+                        "repeat": repeat,
+                        "sigma": sigma,
+                        "levels": levels,
+                        "harmonics": harmonics,
+                    },
+                )
             )
+
+        # Filtering is the expensive part and is independent per layer, so the
+        # layers are computed in parallel and written back in order.
+        errors = apply_filter_and_threshold_to_layers(layer_params)
+        failed = [
+            (layer.name, error)
+            for (layer, _), error in zip(layer_params, errors, strict=True)
+            if isinstance(error, BaseException)
+        ]
+        if failed:
+            details = "\n".join(
+                f"  \u2022 {name}: {error}" for name, error in failed
+            )
+            show_error(f"Could not filter {len(failed)} layer(s):\n{details}")
 
         if self.parent_widget is not None:
             self.parent_widget.refresh_phasor_data()

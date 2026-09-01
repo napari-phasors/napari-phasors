@@ -49,6 +49,7 @@ from qtpy.QtWidgets import (
     QWidgetAction,
 )
 
+from ._parallel import parallel_map, parallel_rowwise
 from ._timelapse import slice_datasets
 from ._utils import (
     CheckableComboBox,
@@ -61,6 +62,23 @@ from ._utils import (
 
 if TYPE_CHECKING:
     import napari
+
+
+def _fit_components(mean, real, imag, component_g, component_s):
+    """Fit component fractions, splitting a large image across threads.
+
+    ``phasor_component_fit`` solves each pixel independently, so running it
+    on row bands concurrently gives the same answer as one call over the
+    whole image. Images too small to be worth splitting go straight through.
+    """
+    return parallel_rowwise(
+        lambda m, r, i: phasor_component_fit(
+            m, r, i, component_g, component_s
+        ),
+        mean,
+        real,
+        imag,
+    )
 
 
 @dataclass
@@ -4709,28 +4727,52 @@ class ComponentsWidget(QWidget):
         component_real = (c1.dot.get_data()[0][0], c2.dot.get_data()[0][0])
         component_imag = (c1.dot.get_data()[1][0], c2.dot.get_data()[1][0])
 
-        for layer in selected_layers:
+        # The fraction maps are independent per layer and are the expensive
+        # part, so they are all computed up front in a thread pool. Creating
+        # the napari layers that display them stays on this thread.
+        harmonic = getattr(self.parent_widget, 'harmonic', 1)
+        fractions = parallel_map(
+            lambda layer: self._compute_linear_projection_fraction(
+                layer, component_real, component_imag, harmonic
+            ),
+            selected_layers,
+            on_error="collect",
+        )
+
+        for layer, fraction in zip(selected_layers, fractions, strict=True):
+            if isinstance(fraction, BaseException):
+                show_error(
+                    f"Linear projection failed for {layer.name}: {fraction}"
+                )
+                continue
+            if fraction is None:
+                continue
             self._run_linear_projection_for_layer(
-                layer, component_real, component_imag, c1, c2
+                layer, component_real, component_imag, c1, c2, fraction
             )
 
-    def _run_linear_projection_for_layer(
-        self, layer, component_real, component_imag, c1, c2
+    def _compute_linear_projection_fraction(
+        self, layer, component_real, component_imag, harmonic
     ):
-        """Run linear projection for a single layer."""
+        """Return a layer's component-1 fraction map, or ``None``.
+
+        Pure array work: it reads the layer's metadata and returns a fresh
+        array without touching Qt or napari state, so it is safe to run in a
+        worker thread. *harmonic* is passed in rather than read from the
+        parent widget because that read hits a Qt spinbox, which must happen
+        on the main thread.
+        """
         g_array = layer.metadata.get('G')
         s_array = layer.metadata.get('S')
         harmonics = layer.metadata.get('harmonics')
 
         if g_array is None or s_array is None:
-            return
+            return None
 
         if harmonics is not None:
             try:
                 harmonics_array = np.atleast_1d(harmonics)
-                harmonic_idx = np.where(
-                    harmonics_array == self.parent_widget.harmonic
-                )[0][0]
+                harmonic_idx = np.where(harmonics_array == harmonic)[0][0]
                 if g_array.ndim == layer.data.ndim + 1:
                     real = g_array[harmonic_idx]
                     imag = s_array[harmonic_idx]
@@ -4738,14 +4780,36 @@ class ComponentsWidget(QWidget):
                     real = g_array
                     imag = s_array
             except IndexError:
-                return
+                return None
         else:
             real = g_array
             imag = s_array
 
-        fraction_comp1 = phasor_component_fraction(
+        return phasor_component_fraction(
             real, imag, component_real, component_imag
         )
+
+    def _run_linear_projection_for_layer(
+        self, layer, component_real, component_imag, c1, c2, fraction=None
+    ):
+        """Run linear projection for a single layer.
+
+        *fraction* is the precomputed fraction map from
+        :meth:`_compute_linear_projection_fraction`. When it is ``None`` the
+        map is computed here, so this stays usable as a standalone
+        single-layer entry point.
+        """
+        if fraction is None:
+            fraction = self._compute_linear_projection_fraction(
+                layer,
+                component_real,
+                component_imag,
+                getattr(self.parent_widget, 'harmonic', 1),
+            )
+            if fraction is None:
+                return
+
+        fraction_comp1 = fraction
 
         comp1_name = c1.name_edit.text().strip() or "Component 1"
         comp1_fractions_layer_name = f"{comp1_name} fractions: {layer.name}"
@@ -4972,24 +5036,58 @@ class ComponentsWidget(QWidget):
                 )
                 return
 
-        for layer in selected_layers:
+        # Preparing the inputs reads component positions out of the UI, so it
+        # stays on this thread. Only the fits, which are the expensive part
+        # and release the GIL, are farmed out to the pool.
+        prepared = [
+            self._prepare_component_fit(
+                layer, num_components, current_harmonic, required_harmonics
+            )
+            for layer in selected_layers
+        ]
+
+        fittable = [
+            (layer, inputs)
+            for layer, inputs in zip(selected_layers, prepared, strict=True)
+            if inputs is not None
+        ]
+        if not fittable:
+            return
+
+        fits = parallel_map(
+            lambda item: _fit_components(*item[1][:5]),
+            fittable,
+            on_error="collect",
+        )
+
+        for (layer, inputs), fractions in zip(fittable, fits, strict=True):
+            if isinstance(fractions, BaseException):
+                show_error(f"Analysis failed: {str(fractions)}")
+                continue
             self._run_component_fit_for_layer(
                 layer,
                 active_components,
                 num_components,
                 current_harmonic,
                 required_harmonics,
+                precomputed=(fractions, inputs[5]),
             )
 
-    def _run_component_fit_for_layer(
-        self,
-        layer,
-        active_components,
-        num_components,
-        current_harmonic,
-        required_harmonics,
+    def _prepare_component_fit(
+        self, layer, num_components, current_harmonic, required_harmonics
     ):
-        """Run component fit analysis for a single layer."""
+        """Resolve one layer's inputs for ``phasor_component_fit``.
+
+        Reads the component positions from the UI and slices the layer's
+        phasor arrays down to the harmonics the fit needs. Returns
+        ``None`` when the fit cannot run, having already reported why.
+
+        Returns
+        -------
+        tuple or None
+            ``(mean, real, imag, component_g, component_s,
+            component_names)``.
+        """
         if required_harmonics > 1:
             available_harmonics = self._get_available_harmonics()
             harmonics_with_components = self._get_harmonics_with_components()
@@ -5118,11 +5216,44 @@ class ComponentsWidget(QWidget):
             real = np.stack(real_list, axis=0)
             imag = np.stack(imag_list, axis=0)
 
-        try:
-            fractions = phasor_component_fit(
-                mean, real, imag, component_g, component_s
-            )
+        return mean, real, imag, component_g, component_s, component_names
 
+    def _run_component_fit_for_layer(
+        self,
+        layer,
+        active_components,
+        num_components,
+        current_harmonic,
+        required_harmonics,
+        precomputed=None,
+    ):
+        """Run component fit analysis for a single layer.
+
+        *precomputed* is the ``(fractions, component_names)`` pair from
+        :meth:`_run_component_fit`, which fits every selected layer in
+        parallel. When it is ``None`` this layer is prepared and fitted
+        here, so the method still works on its own.
+        """
+        if precomputed is not None:
+            fractions, component_names = precomputed
+        else:
+            prepared = self._prepare_component_fit(
+                layer, num_components, current_harmonic, required_harmonics
+            )
+            if prepared is None:
+                return
+            mean, real, imag, component_g, component_s, component_names = (
+                prepared
+            )
+            try:
+                fractions = _fit_components(
+                    mean, real, imag, component_g, component_s
+                )
+            except Exception as e:  # noqa: BLE001
+                show_error(f"Analysis failed: {str(e)}")
+                return
+
+        try:
             settings = layer.metadata['settings']['component_analysis']
             harmonic_key = str(current_harmonic)
 

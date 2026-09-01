@@ -46,6 +46,7 @@ from qtpy.QtWidgets import (
 )
 from superqt import QToggleSwitch
 
+from ._lod import LodSettingsWidget
 from ._timelapse import CURRENT as FRAME_MODE_CURRENT
 from ._timelapse import POOLED as FRAME_MODE_POOLED
 from ._timelapse import (
@@ -5221,6 +5222,11 @@ class PlotterWidget(QWidget):
         pc_grid.addWidget(piw.label_phasor_center, 0, 0)
         pc_grid.addWidget(self._pc_controls_container, 0, 1)
 
+        # Binning is plot-wide, not a filter option: it swaps the arrays every
+        # tab reads, so it belongs with the other settings rather than inside
+        # one analysis tab.
+        self.lod_settings = LodSettingsWidget(self.viewer, parent=self)
+
         # Replace the now-empty original grid with a vertical stack of boxes.
         QWidget().setLayout(old_grid)
         sections_layout = QVBoxLayout(contents)
@@ -5229,6 +5235,7 @@ class PlotterWidget(QWidget):
         sections_layout.addWidget(type_box)
         sections_layout.addWidget(appearance_box)
         sections_layout.addWidget(pc_box)
+        sections_layout.addWidget(self.lod_settings)
         sections_layout.addStretch(1)
 
     def _reflow_plot_settings_rows(self, show_multi_layer_contour_controls):
@@ -9283,7 +9290,9 @@ class PlotterWidget(QWidget):
                     self._sync_frequency_inputs_from_metadata
                 )
 
-        # Ensure child tabs run their own cleanup.
+        # Ensure child tabs and sections run their own cleanup. The level-of-
+        # detail section must be closed here too: it owns camera connections
+        # that crash PySide6 teardown if left on a closed widget.
         for tab_name in (
             'calibration_tab',
             'filter_tab',
@@ -9291,6 +9300,7 @@ class PlotterWidget(QWidget):
             'components_tab',
             'phasor_mapping_tab',
             'fret_tab',
+            'lod_settings',
         ):
             tab = getattr(self, tab_name, None)
             if tab is not None:

@@ -20,8 +20,12 @@ import tifffile
 import xarray as xr
 from napari.utils.colormaps.colormap_utils import CYMRGB, MAGENTA_GREEN
 from napari.utils.notifications import show_error
-from phasorpy.phasor import phasor_from_signal
 
+from ._parallel import (
+    parallel_map,
+    parallel_phasor_from_signal,
+    workers_for_memory,
+)
 from ._utils import show_activity_progress
 
 extension_mapping = {
@@ -461,8 +465,10 @@ def raw_file_reader(
                 return []
 
             pbr.set_description("Computing phasor transform...")
-            mean_intensity_image, G_image, S_image = phasor_from_signal(
-                raw_data, axis=axis, harmonic=harmonics_to_use
+            mean_intensity_image, G_image, S_image = (
+                parallel_phasor_from_signal(
+                    raw_data, axis=axis, harmonic=harmonics_to_use
+                )
             )
             pbr.update(n_steps)
             channel_suffix = " Intensity Image"
@@ -552,10 +558,12 @@ def raw_file_reader(
                     show_error(str(e))
                     return []
 
-                mean_intensity_image, G_image, S_image = phasor_from_signal(
-                    channel_data,
-                    axis=histogram_axis,
-                    harmonic=harmonics_to_use,
+                mean_intensity_image, G_image, S_image = (
+                    parallel_phasor_from_signal(
+                        channel_data,
+                        axis=histogram_axis,
+                        harmonic=harmonics_to_use,
+                    )
                 )
                 add_kwargs = {
                     "name": f"{filename} Intensity Image: Channel {channel_label}",
@@ -643,13 +651,28 @@ def raw_file_stack_reader(
         )
         return []
 
-    # Read each file individually
-    per_file_layers: list[list[tuple]] = []
+    # Read the files concurrently. Each read decodes one file's signal, so
+    # the pool is sized against free memory as well as core count.
+    largest = 0
     for p in paths:
-        layers = raw_file_reader(
-            p, reader_options=reader_options, harmonics=harmonics
+        with suppress(OSError):
+            largest = max(largest, os.path.getsize(p))
+    stack_workers = workers_for_memory(largest, n_items=len(paths))
+
+    pbr = show_activity_progress(
+        desc=f"Reading {len(paths)} file(s)...", total=len(paths)
+    )
+    try:
+        per_file_layers: list[list[tuple]] = parallel_map(
+            lambda p: raw_file_reader(
+                p, reader_options=reader_options, harmonics=harmonics
+            ),
+            paths,
+            workers=stack_workers,
+            progress=lambda index: pbr.update(1),
         )
-        per_file_layers.append(layers)
+    finally:
+        pbr.close()
 
     # Determine how many channels the first file produced
     n_channels = len(per_file_layers[0])
