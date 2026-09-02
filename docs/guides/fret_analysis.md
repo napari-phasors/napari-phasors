@@ -6,6 +6,21 @@ The **FRET** tab enables Förster Resonance Energy Transfer analysis using the p
 
 FRET analysis in phasor space uses the donor fluorophore's position on the phasor plot and the trajectory it follows as energy transfer efficiency increases. By measuring where a sample falls along this trajectory, the FRET efficiency can be determined.
 
+```{note}
+A FLIM-FRET training dataset is available for practicing this workflow. Load it
+from File → Open Sample → napari-phasors → FLIM-FRET Training Dataset. It
+adds four calibrated layers of live HeLa cells — `Donor_Only` (unquenched
+donor, τ ≈ 4.0 ns, ~0 % FRET), `Background_Autofluorescence` (non-transfected
+cells for background correction) and the FRET constructs `FRET_Construct_1`
+(~60 % expected efficiency) and `FRET_Construct_2` (~30 %). Use `Donor_Only`
+as the Donor Source, `Background_Autofluorescence` as the Background
+Source, and then read the efficiency off either FRET construct. The layers
+carry their 50 MHz laser frequency in the metadata, so the Frequency field is
+filled in for you. See
+{doc}`../sample_data` for details; the dataset is archived on Zenodo at
+[10.5281/zenodo.22261325](https://doi.org/10.5281/zenodo.22261325).
+```
+
 ## Workflow
 
 1. **Set the donor lifetime**: Enter it manually, or select one or more donor

@@ -3,6 +3,7 @@ import numpy as np
 from napari_phasors._sample_data import (
     convallaria_FLIM_sample_data,
     embryo_FLIM_sample_data,
+    fret_FLIM_sample_data,
     paramecium_HSI_sample_data,
 )
 
@@ -140,3 +141,46 @@ def test_paramecium_HSI_sample_data(make_viewer_model, qtbot):
     assert metadata["G"].shape == (2, 512, 512)
     assert metadata["S"].shape == (2, 512, 512)
     assert list(metadata["harmonics"]) == [1, 2]
+
+
+def test_fret_FLIM_sample_data(make_viewer_model, qtbot):
+    """Test the FLIM-FRET training sample data"""
+    layer_data_list = fret_FLIM_sample_data()
+    assert isinstance(layer_data_list, list) and len(layer_data_list) == 4
+    expected_names = [
+        "Donor_Only Intensity Image",
+        "Background_Autofluorescence Intensity Image",
+        "FRET_Construct_1 Intensity Image",
+        "FRET_Construct_2 Intensity Image",
+    ]
+    for layer_data_tuple, expected_name in zip(
+        layer_data_list, expected_names, strict=True
+    ):
+        assert (
+            isinstance(layer_data_tuple, tuple) and len(layer_data_tuple) == 2
+        )
+        assert isinstance(layer_data_tuple[0], np.ndarray) and isinstance(
+            layer_data_tuple[1], dict
+        )
+        assert layer_data_tuple[0].shape == (256, 256)
+        assert (
+            "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
+        )
+        assert layer_data_tuple[1]["name"] == expected_name
+        metadata = layer_data_tuple[1]["metadata"]
+        assert "G" in metadata
+        assert "S" in metadata
+        assert "G_original" in metadata
+        assert "S_original" in metadata
+        assert "harmonics" in metadata
+        assert "original_mean" in metadata
+        assert "settings" in metadata
+        # Check G and S are NumPy arrays with correct shape
+        # (n_harmonics, height, width)
+        assert isinstance(metadata["G"], np.ndarray)
+        assert isinstance(metadata["S"], np.ndarray)
+        assert metadata["G"].shape == (2, 256, 256)
+        assert metadata["S"].shape == (2, 256, 256)
+        assert list(metadata["harmonics"]) == [1, 2]
+        # Files are exported already calibrated
+        assert metadata["settings"]["calibrated"] is True
