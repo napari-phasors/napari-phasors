@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from napari.layers import Image, Labels
-from napari.utils.notifications import show_error, show_info
+from napari.utils.notifications import show_error, show_info, show_warning
 from phasorpy.cluster import phasor_cluster_gmm
 from phasorpy.component import phasor_component_fit, phasor_component_fraction
 from phasorpy.cursor import (
@@ -2745,8 +2745,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
 
     def _auto_mapping_ranges(self):
         """Set the mesh phase/modulation ranges from *all* scanned files."""
-        from napari.utils.notifications import show_warning
-
         harmonic = self.mapping_harmonic_spin.value()
         coords = self._gather_all_phasor_coords(harmonic)
         if coords is None:
@@ -3730,8 +3728,36 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 }
             )
 
+    def _warn_unassigned_files(self, files):
+        """Warn about files left out of every group before a grouped run.
+
+        In *Grouped* mode a file with no assignment (typically one added to
+        the folder after the groups were configured) takes part in no
+        combined output, so name it instead of dropping it quietly.
+        """
+        if self._group_config.get("mode") != "Grouped":
+            return
+        # An empty ``assignments`` in Grouped mode means nothing is grouped
+        # at all, which is exactly the case worth warning about.
+        assignments = self._group_config.get("assignments", {})
+        missing = [
+            os.path.basename(f)
+            for f in files
+            if os.path.basename(f) not in assignments
+        ]
+        if missing:
+            show_warning(
+                "Not assigned to any group, excluded from the combined "
+                "outputs: " + ", ".join(missing)
+            )
+
     def _group_for(self, filename):
-        """Return ``(group_id, group_name, color)`` for ``filename``."""
+        """Return ``(group_id, group_name, color)`` for ``filename``.
+
+        In *Grouped* mode a file the user did not assign to any group has no
+        group at all: ``(None, None, None)`` is returned so callers leave it
+        out of the combined outputs instead of folding it into group 1.
+        """
         config = self._group_config
         mode = config.get("mode", "Merged")
         if mode == "Merged":
@@ -3739,7 +3765,9 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         if mode == "Individual layers":
             color = config.get("layer_colors", {}).get(filename, None)
             return (filename, filename, color)
-        gid = config.get("assignments", {}).get(filename, 1)
+        gid = config.get("assignments", {}).get(filename)
+        if gid is None:
+            return (None, None, None)
         name = config.get("group_names", {}).get(gid, f"Group {gid}")
         color = config.get("group_colors", {}).get(
             gid, DEFAULT_CURSOR_COLORS[(gid - 1) % len(DEFAULT_CURSOR_COLORS)]
@@ -5058,6 +5086,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         if not self._export_folder:
             show_error("Select an export folder.")
             return
+        self._warn_unassigned_files(files)
 
         output_types = []
         if self.export_ometiff_checkbox.isChecked():
@@ -5786,6 +5815,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             and (job["stats"] or job["histogram"])
             and aggregate is not None
             and group is not None
+            # A file assigned to no group joins no combined output.
+            and group[0] is not None
         ):
             key, gname, gcolor = group
             aggregate["group_meta"][key] = (gname, gcolor)
@@ -6099,10 +6130,16 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 )
 
     def _accumulate_phasor_aggregate(self, layer, aggregate, group):
-        """Accumulate per-group phasor data for combined plots."""
+        """Accumulate per-group phasor data for combined plots.
+
+        A file assigned to no group is skipped rather than pooled into the
+        first group.
+        """
         if not (aggregate["contour"] or aggregate["centers"]):
             return
         key, group_name, group_color = group
+        if key is None:
+            return  # not assigned to any group
         aggregate["group_meta"][key] = (group_name, group_color)
         harmonics = np.atleast_1d(layer.metadata.get("harmonics"))
         mean = layer.metadata.get("original_mean")
@@ -6167,6 +6204,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         aggregate["tab_phasor_overlay"].setdefault(suffix, job["overlay"])
         aggregate["tab_phasor_subfolder"].setdefault(suffix, subfolder)
         key, group_name, group_color = group
+        if key is None:
+            return  # not assigned to any group
         aggregate["group_meta"][key] = (group_name, group_color)
         harmonics = np.atleast_1d(layer.metadata.get("harmonics"))
         for harmonic in harmonics:
@@ -6793,6 +6832,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             group_key, group_name, group_color = self._group_for(
                 os.path.basename(path)
             )
+            if group_key is None:
+                return  # not assigned to any group
             entry = self._signal_combined.setdefault(
                 group_key,
                 {"name": group_name, "color": group_color, "channels": {}},

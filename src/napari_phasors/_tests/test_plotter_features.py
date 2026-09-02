@@ -1953,3 +1953,208 @@ def test_resize_canvas_to_available_space_sets_fixed_size(
 
     assert 0 < plotter.canvas_widget.width() <= 500
     assert 0 < plotter.canvas_widget.height() <= 400
+
+
+def test_phasor_center_grouped_skips_unassigned_layer(
+    make_viewer_model, monkeypatch
+):
+    """An unassigned layer must not be pooled into the first group's center."""
+    from napari.utils import notifications
+
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+
+    layer1 = create_image_layer_with_phasors(harmonic=[1])
+    layer2 = create_image_layer_with_phasors(harmonic=[1])
+    viewer.add_layer(layer1)
+    viewer.add_layer(layer2)
+
+    shape = layer1.data.shape
+    _set_layer_harmonic0_samples(
+        layer1,
+        np.zeros(shape, dtype=float),
+        np.zeros(shape, dtype=float),
+        np.ones(shape, dtype=float),
+    )
+    _set_layer_harmonic0_samples(
+        layer2,
+        np.full(shape, 0.9, dtype=float),
+        np.full(shape, 0.3, dtype=float),
+        np.ones(shape, dtype=float),
+    )
+
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [layer1.name, layer2.name]
+    )
+    plotter._process_layer_selection_change()
+
+    warnings = []
+    monkeypatch.setattr(
+        notifications, "show_warning", lambda msg: warnings.append(msg)
+    )
+
+    plotter._phasor_center_display_mode = "Grouped"
+    # layer2 belongs to no group.
+    plotter._phasor_center_group_assignments = {layer1.name: 1}
+    plotter._phasor_center_group_names = {1: "Only group"}
+
+    plotter.plotter_inputs_widget.phasor_center_checkbox.setChecked(True)
+    plotter._update_phasor_centers()
+
+    group_rows = _table_rows_by_name(
+        plotter._phasor_center_stats_widget._group_table
+    )
+    assert set(group_rows) == {"Only group"}
+    assert len(plotter._phasor_center_artists) == 1
+
+    # The group centre is layer1's own centre, untouched by layer2.
+    c1 = plotter._compute_single_center(layer1)
+    assert c1 is not None
+    np.testing.assert_allclose(group_rows["Only group"][:2], c1, atol=1e-6)
+
+    assert len(warnings) == 1
+    assert layer2.name in warnings[0]
+
+    plotter.deleteLater()
+
+
+def _grouped_dialog_rows(dialog):
+    """Return ``{group_name: [checked layer, ...]}`` from a settings dialog."""
+    return {
+        row["name_edit"].text(): list(row["layer_combo"].checkedItems())
+        for row in dialog._group_row_data
+    }
+
+
+def test_phasor_center_dialog_does_not_autocheck_unassigned(qtbot):
+    """Opening the dialog must not tick an unassigned layer into group 1."""
+    dialog = PhasorCenterLayerSettingsDialog(
+        display_mode="Grouped",
+        layer_labels=["A", "B"],
+        group_assignments={"A": 1},
+        group_names={1: "G1"},
+    )
+    qtbot.addWidget(dialog)
+
+    assert _grouped_dialog_rows(dialog) == {"G1": ["A"]}
+    assert dialog.get_group_assignments() == {"A": 1}
+    assert dialog.get_unassigned_layers() == ["B"]
+
+
+def test_contour_dialog_does_not_autocheck_unassigned(qtbot):
+    """The contour dialog leaves unassigned layers unchecked as well."""
+    from napari_phasors.plotter import ContourLayerSettingsDialog
+
+    dialog = ContourLayerSettingsDialog(
+        display_mode="Grouped",
+        layer_labels=["A", "B", "C"],
+        group_assignments={"A": 1, "C": 2},
+        group_names={1: "G1", 2: "G2"},
+    )
+    qtbot.addWidget(dialog)
+
+    assert _grouped_dialog_rows(dialog) == {"G1": ["A"], "G2": ["C"]}
+    assert dialog.get_unassigned_layers() == ["B"]
+
+
+def test_grouping_dialogs_warn_about_unassigned_layers(qtbot, monkeypatch):
+    """Both grouping dialogs prompt before excluding unticked layers."""
+    from qtpy.QtWidgets import QDialog, QMessageBox
+
+    from napari_phasors.plotter import ContourLayerSettingsDialog
+
+    def make_exec(role):
+        def fake_exec(self):
+            self._clicked = next(
+                btn for btn in self.buttons() if self.buttonRole(btn) == role
+            )
+
+        return fake_exec
+
+    monkeypatch.setattr(
+        QMessageBox, "clickedButton", lambda self: self._clicked
+    )
+
+    for factory in (
+        PhasorCenterLayerSettingsDialog,
+        ContourLayerSettingsDialog,
+    ):
+        dialog = factory(
+            display_mode="Grouped",
+            layer_labels=["A", "B"],
+            group_assignments={"A": 1},
+            group_names={1: "G1"},
+        )
+        qtbot.addWidget(dialog)
+
+        # "Go back" keeps the dialog open.
+        monkeypatch.setattr(
+            QMessageBox, "exec", make_exec(QMessageBox.RejectRole)
+        )
+        dialog.accept()
+        assert dialog.result() != QDialog.Accepted
+
+        # "Exclude them" confirms.
+        monkeypatch.setattr(
+            QMessageBox, "exec", make_exec(QMessageBox.AcceptRole)
+        )
+        dialog.accept()
+        assert dialog.result() == QDialog.Accepted
+
+
+def test_grouping_dialogs_no_warning_when_all_assigned(qtbot, monkeypatch):
+    """No prompt when every layer belongs to a group."""
+    from qtpy.QtWidgets import QDialog, QMessageBox
+
+    from napari_phasors.plotter import ContourLayerSettingsDialog
+
+    def fail_exec(self):
+        raise AssertionError("no warning expected")
+
+    monkeypatch.setattr(QMessageBox, "exec", fail_exec)
+
+    for factory in (
+        PhasorCenterLayerSettingsDialog,
+        ContourLayerSettingsDialog,
+    ):
+        dialog = factory(
+            display_mode="Grouped",
+            layer_labels=["A", "B"],
+            group_assignments={"A": 1, "B": 2},
+            group_names={1: "G1", 2: "G2"},
+        )
+        qtbot.addWidget(dialog)
+        dialog.accept()
+        assert dialog.result() == QDialog.Accepted
+
+
+def test_grouping_dialogs_enforce_one_group_per_layer(qtbot):
+    """Contour and phasor-center rows offer each layer to one group only."""
+    from napari_phasors.plotter import ContourLayerSettingsDialog
+
+    for factory in (
+        PhasorCenterLayerSettingsDialog,
+        ContourLayerSettingsDialog,
+    ):
+        dialog = factory(
+            display_mode="Grouped",
+            layer_labels=["A", "B", "C"],
+            group_assignments={"A": 1, "B": 2},
+            group_names={1: "G1", 2: "G2"},
+        )
+        qtbot.addWidget(dialog)
+
+        row1, row2 = dialog._group_row_data
+        assert row1["layer_combo"].visibleItems() == ["A", "C"]
+        assert row2["layer_combo"].visibleItems() == ["B", "C"]
+
+        # Claiming the free layer removes it from the other row.
+        row1["layer_combo"].setCheckedItems(["A", "C"])
+        assert row2["layer_combo"].visibleItems() == ["B"]
+        assert dialog.get_group_assignments() == {"A": 1, "C": 1, "B": 2}
+        assert dialog.get_unassigned_layers() == []
+
+        # Removing a group frees its layers for the remaining one.
+        dialog._on_remove_group(row2["container"])
+        assert row1["layer_combo"].visibleItems() == ["A", "B", "C"]
+        assert dialog.get_group_assignments() == {"A": 1, "C": 1}

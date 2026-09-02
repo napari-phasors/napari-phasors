@@ -1528,3 +1528,51 @@ def test_harmonic_bounds_ignore_empty_or_missing_harmonics(
 
     plotter._update_harmonic_bounds([])
     plotter._update_harmonic_bounds([layer])
+
+
+def test_contour_grouped_mode_skips_unassigned_layer(
+    make_viewer_model, monkeypatch
+):
+    """A layer in no group draws no contour instead of joining group 1."""
+    from napari.utils import notifications
+
+    viewer = make_viewer_model()
+    layer1 = create_image_layer_with_phasors()
+    layer2 = create_image_layer_with_phasors()
+    viewer.add_layer(layer1)
+    viewer.add_layer(layer2)
+    plotter = PlotterWidget(viewer)
+
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [layer1.name, layer2.name]
+    )
+    plotter._process_layer_selection_change()
+
+    warnings = []
+    monkeypatch.setattr(
+        notifications, "show_warning", lambda msg: warnings.append(msg)
+    )
+
+    plotter.plot_type = 'CONTOUR'
+    plotter._contour_display_mode = "Grouped"
+    # layer2 is deliberately left out of every group.
+    plotter._contour_group_assignments = {layer1.name: 1}
+    plotter._contour_group_names = {1: "Group 1"}
+
+    plotter.plot()
+
+    assert len(plotter._contour_collections) == 1
+    assert len(warnings) == 1
+    assert layer2.name in warnings[0]
+
+    # Redrawing the same selection does not repeat the warning.
+    plotter.plot()
+    assert len(warnings) == 1
+
+    # Assigning the missing layer clears the warned state.
+    plotter._contour_group_assignments[layer2.name] = 1
+    plotter.plot()
+    assert len(warnings) == 1
+    assert plotter._warned_unassigned.get("contour plot") is None
+
+    plotter.deleteLater()

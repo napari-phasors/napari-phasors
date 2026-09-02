@@ -53,6 +53,7 @@ from qtpy.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMenu,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QStackedWidget,
@@ -1371,6 +1372,82 @@ def save_groups_to_layer_metadata(
         layer.metadata['settings']['group'] = group_data
 
 
+def split_items_by_group(items, group_assignments):
+    """Split ``{label: value}`` into per-group members and unassigned labels.
+
+    Layers with no entry in *group_assignments* are returned separately
+    rather than being folded into the first group: an unassigned layer must
+    never contribute silently to another group's mean, SD or statistics.
+
+    Parameters
+    ----------
+    items : dict
+        ``{label: value}`` where *value* is any per-layer payload.
+    group_assignments : dict
+        ``{label: gid}``; labels missing from it are treated as unassigned.
+
+    Returns
+    -------
+    groups : dict {gid: list of (label, value)}
+    unassigned : list of str
+        Labels with no group, in the order they appear in *items*.
+    """
+    groups = {}
+    unassigned = []
+    for label, value in items.items():
+        gid = group_assignments.get(label)
+        if gid is None:
+            unassigned.append(label)
+            continue
+        groups.setdefault(gid, []).append((label, value))
+    return groups, unassigned
+
+
+def confirm_unassigned_layers(parent, unassigned, what="plot and statistics"):
+    """Ask the user what to do with layers that belong to no group.
+
+    Grouped-mode dialogs only assign the layers the user actually ticked.
+    A layer left out takes part in no group and is dropped from the output,
+    so it must never disappear without the user being told.
+
+    Parameters
+    ----------
+    parent : QWidget
+        Dialog the message box belongs to.
+    unassigned : list of str
+        Layer names with no group. An empty list confirms immediately.
+    what : str, optional
+        Name of the output the layers are excluded from, used in the message.
+
+    Returns
+    -------
+    bool
+        ``True`` to go ahead and exclude them, ``False`` to keep the
+        settings dialog open so the user can fix the assignment.
+    """
+    if not unassigned:
+        return True
+    listed = "\n".join(f"  \u2022 {name}" for name in unassigned)
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Warning)
+    box.setWindowTitle("Layers without a group")
+    box.setText(
+        f"{len(unassigned)} layer(s) are not assigned to any group and "
+        f"will be excluded from the grouped {what}:"
+    )
+    box.setInformativeText(listed)
+    back_btn = box.addButton("Go back", QMessageBox.RejectRole)
+    box.addButton("Exclude them", QMessageBox.AcceptRole)
+    box.setDefaultButton(back_btn)
+    box.exec()
+    return box.clickedButton() is not back_btn
+
+
+def unassigned_layer_labels(layer_labels, group_assignments):
+    """Return the *layer_labels* missing from *group_assignments*, in order."""
+    return [label for label in layer_labels if label not in group_assignments]
+
+
 class _ColormapDelegate(QStyledItemDelegate):
     """Custom delegate to ensure colormap icons have vertical spacing in dropdowns."""
 
@@ -1635,6 +1712,8 @@ class CheckableComboBox(QComboBox):
         # small fixed option sets where every state should read literally.
         self._show_checked_list = show_checked_list
         self._header_count = 0  # number of non-checkable header rows at top
+        # Items kept in the model but not offered in the dropdown.
+        self._hidden_items = set()
         self.lineEdit().setPlaceholderText(self._placeholder_text)
 
         self._enable_primary_layer = enable_primary_layer
@@ -1818,8 +1897,14 @@ class CheckableComboBox(QComboBox):
 
     def clear(self):
         """Clear all items."""
+        # Row visibility lives on the view, keyed by row index, so drop it
+        # before the model shrinks or a stale flag would hide a new item.
+        view = self.view()
+        for i in range(self.model().rowCount()):
+            view.setRowHidden(i, False)
         self.model().clear()
         self._header_count = 0
+        self._hidden_items = set()
         self._primary_layer_name = ""
         self._last_emitted_primary = ""
         self._update_display_text()
@@ -1839,6 +1924,37 @@ class CheckableComboBox(QComboBox):
             self.model().item(i).text()
             for i in range(self._header_count, self.model().rowCount())
             if self.model().item(i)
+        ]
+
+    def setHiddenItems(self, texts):
+        """Hide the named items from the dropdown, showing all the others.
+
+        The items stay in the model (so check states and row order survive);
+        they are simply not offered in the list. Used to keep an option that
+        already belongs elsewhere — a layer assigned to another group, say —
+        out of this dropdown.
+
+        Parameters
+        ----------
+        texts : iterable of str
+            Item texts to hide. Pass an empty iterable to show everything.
+        """
+        hidden = set(texts)
+        self._hidden_items = hidden
+        view = self.view()
+        for i in range(self._header_count, self.model().rowCount()):
+            item = self.model().item(i)
+            if item is not None:
+                view.setRowHidden(i, item.text() in hidden)
+
+    def hiddenItems(self):
+        """Return the set of item texts currently hidden from the dropdown."""
+        return set(self._hidden_items)
+
+    def visibleItems(self):
+        """Return the item texts offered in the dropdown, in list order."""
+        return [
+            text for text in self.allItems() if text not in self._hidden_items
         ]
 
     def getPrimaryLayer(self):
@@ -2022,7 +2138,61 @@ class CheckableComboBox(QComboBox):
             item.setCheckState(state)
 
 
-class HistogramSettingsDialog(QDialog):
+class ExclusiveGroupRowsMixin:
+    """Keeps every layer in at most one group row of a settings dialog.
+
+    Grouped-mode dialogs list the same layers in one checkable combobox per
+    group. Without this, a layer could be ticked in several groups at once
+    and would end up counted twice — or silently resolved to a single group
+    the user never picked. The mixin removes a layer from every *other*
+    group's dropdown as soon as one group claims it, so the exclusivity is
+    visible rather than enforced after the fact.
+
+    Hosts must provide ``self._group_row_data``: a list of dicts with a
+    ``"layer_combo"`` :class:`CheckableComboBox`. Call
+    :meth:`_sync_group_exclusivity` after building, adding or removing a
+    row, and connect each combobox's ``selectionChanged`` to it.
+    """
+
+    def _sync_group_exclusivity(self) -> None:
+        """Offer each layer only in the group row that currently claims it."""
+        if getattr(self, "_syncing_group_rows", False):
+            return
+        self._syncing_group_rows = True
+        try:
+            # First row to claim a layer keeps it; interactively this never
+            # ties, since a claimed layer is hidden from the other rows.
+            owner = {}
+            for index, row in enumerate(self._group_row_data):
+                for label in row["layer_combo"].checkedItems():
+                    owner.setdefault(label, index)
+
+            for index, row in enumerate(self._group_row_data):
+                combo = row["layer_combo"]
+                taken = [
+                    label
+                    for label, owner_index in owner.items()
+                    if owner_index != index
+                ]
+                # Drop a stale duplicate claim before hiding the layer here,
+                # so what the dropdown shows matches what the row reports.
+                duplicates = [
+                    label for label in combo.checkedItems() if label in taken
+                ]
+                if duplicates:
+                    combo.setCheckedItems(
+                        [
+                            label
+                            for label in combo.checkedItems()
+                            if label not in duplicates
+                        ]
+                    )
+                combo.setHiddenItems(taken)
+        finally:
+            self._syncing_group_rows = False
+
+
+class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
     """Dialog for histogram visualization settings.
 
     Provides controls for:
@@ -2224,6 +2394,10 @@ class HistogramSettingsDialog(QDialog):
                 checked_layers=[],
             )
 
+        # A layer belongs to at most one group, so hide the ones already
+        # claimed from every other row's dropdown.
+        self._sync_group_exclusivity()
+
         # Add group button
         add_group_btn = QPushButton("+ Add Group")
         add_group_btn.setMaximumWidth(120)
@@ -2334,6 +2508,7 @@ class HistogramSettingsDialog(QDialog):
         layer_combo.addItems(self._layer_labels)
         if checked_layers:
             layer_combo.setCheckedItems(checked_layers)
+        layer_combo.selectionChanged.connect(self._sync_group_exclusivity)
         row_layout.addWidget(layer_combo, 1)
 
         # Remove button
@@ -2357,6 +2532,7 @@ class HistogramSettingsDialog(QDialog):
         """Slot for the *Add Group* button."""
         idx = len(self._group_row_data) + 1
         self._add_group_row(name=f"Group {idx}")
+        self._sync_group_exclusivity()
 
     def _on_remove_group(self, row_widget: QWidget) -> None:
         """Remove a group row by its container widget."""
@@ -2367,18 +2543,49 @@ class HistogramSettingsDialog(QDialog):
                 self._group_rows_layout.removeWidget(row_widget)
                 row_widget.deleteLater()
                 self._group_row_data.pop(i)
+                # Its layers are free again for the remaining groups.
+                self._sync_group_exclusivity()
                 break
 
     # ------------------------------------------------------------------
     # Accessors
     # ------------------------------------------------------------------
 
+    def get_unassigned_layers(self) -> list:
+        """Return the layers not checked in any group row.
+
+        These layers take part in no group: they are excluded from the
+        grouped curves and statistics rather than being folded into the
+        first group.
+        """
+        return unassigned_layer_labels(
+            self._layer_labels, self.get_group_assignments()
+        )
+
+    def accept(self) -> None:
+        """Confirm the dialog, warning about layers left out of every group.
+
+        In *Grouped* mode a layer that the user forgot to tick belongs to no
+        group and is dropped from the plot and the statistics. Ask before
+        closing instead of letting it disappear unnoticed.
+        """
+        if self.mode_combo.currentText() == "Grouped" and (
+            not confirm_unassigned_layers(
+                self, self.get_unassigned_layers(), "histogram and statistics"
+            )
+        ):
+            return
+        super().accept()
+
     def get_group_assignments(self) -> dict:
         """Return ``{label: group_int}`` from the dialog.
 
         Groups are numbered starting from 1 in the order they appear.
-        A layer that is checked in multiple groups is assigned to the
-        last group that contains it (later rows take precedence).
+        Only layers actually checked in a group row appear in the result;
+        an unchecked layer is left out entirely (see
+        :meth:`get_unassigned_layers`) instead of falling back to group 1.
+        A layer belongs to at most one group: once claimed it is hidden
+        from every other row (see :class:`ExclusiveGroupRowsMixin`).
         """
         assignments = {}
         for gid_zero, row in enumerate(self._group_row_data):
@@ -2832,11 +3039,12 @@ class HistogramWidget(QWidget):
                         writer.writerow(row)
 
                 elif self._display_mode == "Grouped":
-                    # Export grouped means and stdevs
-                    groups = {}
-                    for label, counts in self._counts_per_dataset.items():
-                        g = self._group_assignments.get(label, 1)
-                        groups.setdefault(g, []).append((label, counts))
+                    # Export grouped means and stdevs. Layers left out of
+                    # every group are excluded rather than folded into the
+                    # first group.
+                    groups, _unassigned = split_items_by_group(
+                        self._counts_per_dataset, self._group_assignments
+                    )
 
                     header = ['Bin Center']
                     group_stats = {}
@@ -3105,7 +3313,7 @@ class HistogramWidget(QWidget):
         the caller re-feeds the *same* underlying datasets under different
         labels (e.g. the components tab relabelling fraction data when the
         selected component changes), those persisted mappings would otherwise
-        no longer match and the datasets would collapse into the default group.
+        no longer match and the datasets would drop out of every group.
 
         This copies the existing ``_group_assignments`` and ``_layer_colors``
         entries from each old label to its new label. It does not re-render;
@@ -3393,14 +3601,13 @@ class HistogramWidget(QWidget):
                         val, color=color, ls="--", lw=2, alpha=0.85
                     )
         elif n_datasets > 1 and self._display_mode == "Grouped":
-            groups: dict[int, list] = {}
-            for label, valid in self._datasets.items():
-                g = self._group_assignments.get(label, 1)
-                groups.setdefault(g, []).append(valid)
-            for _gidx, (gid, data_list) in enumerate(sorted(groups.items())):
+            groups, _unassigned = split_items_by_group(
+                self._datasets, self._group_assignments
+            )
+            for _gidx, (gid, members) in enumerate(sorted(groups.items())):
                 default_c = default_colors[(gid - 1) % len(default_colors)][:3]
                 color = self._group_colors.get(gid, default_c)
-                pooled = np.concatenate(data_list)
+                pooled = np.concatenate([v for _, v in members])
                 val = self._compute_central_tendency(
                     pooled, choice, self.bin_centers, self.bin_edges
                 )
@@ -3616,10 +3823,9 @@ class HistogramWidget(QWidget):
         """Render grouped histograms with smooth curves and optional SD."""
         default_colors = plt.cm.tab10.colors
 
-        groups: dict[int, list[tuple[str, np.ndarray]]] = {}
-        for label, counts in self._counts_per_dataset.items():
-            g = self._group_assignments.get(label, 1)
-            groups.setdefault(g, []).append((label, counts))
+        groups, _unassigned = split_items_by_group(
+            self._counts_per_dataset, self._group_assignments
+        )
 
         for _gidx, (group_id, members) in enumerate(sorted(groups.items())):
             default_c = default_colors[(group_id - 1) % len(default_colors)][
@@ -4229,14 +4435,13 @@ class StatisticsTableWidget(QTableWidget):
         """
         if group_names is None:
             group_names = {}
-        groups = {}
-        for label, data in datasets.items():
-            gid = group_assignments.get(label, 1)
-            groups.setdefault(gid, []).append(data)
+        # Layers with no group assignment are left out entirely; pooling them
+        # into the first group would silently corrupt its statistics.
+        groups, _unassigned = split_items_by_group(datasets, group_assignments)
 
         pooled_datasets = {}
         for gid in sorted(groups):
-            pooled = np.concatenate(groups[gid])
+            pooled = np.concatenate([data for _, data in groups[gid]])
             name = group_names.get(gid, f"Group {gid}")
             pooled_datasets[name] = pooled
 
