@@ -1721,6 +1721,22 @@ class PlotterWidget(QWidget):
     _CANVAS_H_OVERHEAD = 150
     _CANVAS_V_OVERHEAD = 55
 
+    #: Stand-in for "unlimited" height when asking for the canvas size a
+    #: given width allows, ignoring the height currently available.
+    _UNBOUNDED_HEIGHT = 1_000_000
+
+    #: Qt's ``QWIDGETSIZE_MAX``, i.e. "no maximum height set".
+    _NO_HEIGHT_LIMIT = 16_777_215
+
+    #: Uniform margin (px) around the content of every analysis tab page.
+    _TAB_PAGE_MARGIN = 6
+
+    #: Strip (px) kept above the analysis tab bar. napari's stylesheet draws
+    #: tabs with a 1 px border and rounded top corners that ``QTabBar`` does
+    #: not reserve room for in its height hint, so a bar sitting flush under
+    #: the dock title bar renders visibly clipped along its top edge.
+    _TAB_BAR_TOP_MARGIN = 4
+
     def __init__(self, napari_viewer):
         """Initialize the PlotterWidget."""
         super().__init__()
@@ -2061,9 +2077,15 @@ class PlotterWidget(QWidget):
         # Create tab widget
         self.tab_widget = QTabWidget()
 
-        # Create a separate widget for the tabs to allow independent docking
+        # Create a separate widget for the tabs to allow independent docking.
+        # No side or bottom margin, so every pixel of the dock goes to the
+        # tabs (see ``_compact_analysis_tab_margins``); only a thin strip on
+        # top for the tab bar (see ``_TAB_BAR_TOP_MARGIN``).
         self.analysis_widget = QWidget()
         self.analysis_widget.setLayout(QVBoxLayout())
+        self.analysis_widget.layout().setContentsMargins(
+            0, self._TAB_BAR_TOP_MARGIN, 0, 0
+        )
         self.analysis_widget.layout().addWidget(self.tab_widget)
 
         # Create a shared histogram container using a QStackedWidget.
@@ -2163,6 +2185,14 @@ class PlotterWidget(QWidget):
             self._resize_canvas_to_available_space
         )
 
+        # Last height limit handed to Qt, and a deferred re-split so the dock
+        # heights follow a change to it (see _claim_useful_height).
+        self._last_height_limit_state = None
+        self._claim_height_timer = QTimer(self)
+        self._claim_height_timer.setSingleShot(True)
+        self._claim_height_timer.setInterval(0)
+        self._claim_height_timer.timeout.connect(self._claim_useful_height)
+
         # Create Settings tab
         self.settings_tab = QWidget()
         self.settings_tab.setLayout(QVBoxLayout())
@@ -2211,6 +2241,7 @@ class PlotterWidget(QWidget):
         self._create_components_tab()
         self._create_phasor_mapping_tab()
         self._create_fret_tab()
+        self._compact_analysis_tab_margins()
 
         # Connect napari signals when new layer is inseted or removed
         self.viewer.layers.events.inserted.connect(self.reset_layer_choices)
@@ -2519,6 +2550,50 @@ class PlotterWidget(QWidget):
         # Initialize phasor center UI visibility
         self._update_phasor_center_controls_visibility()
 
+    def _compact_analysis_tab_margins(self):
+        """Trim the stacked layout margins around the analysis tab pages.
+
+        Each tab page gets its top-level layout margins from the platform
+        style (20 px left/right and bottom on macOS), and those stack with the
+        margins of the dock's own wrapper widget and of any container the tab
+        puts around its scroll area. Together they ate well over 100 px of the
+        dock's height and width, so tabs scrolled while the dock still had
+        room to show everything. Replace them with one small uniform margin so
+        the tab content uses the full height available.
+        """
+        margin = self._TAB_PAGE_MARGIN
+        for index in range(self.tab_widget.count()):
+            page = self.tab_widget.widget(index)
+            layout = page.layout() if page is not None else None
+            if layout is not None:
+                layout.setContentsMargins(margin, margin, margin, margin)
+
+    def _restore_expanding_dock_policies(self):
+        """Re-assert vertical growth on the widgets napari puts in docks.
+
+        ``QtViewerDockWidget`` (napari >= 0.9) overwrites the vertical size
+        policy of every widget handed to ``add_dock_widget`` with
+        ``QSizePolicy.Maximum``. That policy has no *grow* flag, so Qt caps
+        the dock at the widget's size hint: the plotter and the analysis
+        tabs froze at their initial height and neither the window nor the
+        dock separators could make them any taller. Setting the policy back
+        to ``Expanding`` lets them use the height the viewer gives them.
+        Cheap and idempotent - ``setSizePolicy`` is a no-op when unchanged -
+        so it is safe to call again whenever a dock is re-added.
+        """
+        for widget in (
+            self,
+            getattr(self, 'analysis_widget', None),
+            getattr(self, 'histogram_container', None),
+            getattr(self, 'statistics_container', None),
+        ):
+            if widget is None:
+                continue
+            with contextlib.suppress(RuntimeError):
+                widget.setSizePolicy(
+                    QSizePolicy.Preferred, QSizePolicy.Expanding
+                )
+
     def _add_analysis_dock_widget(self):
         """Add the analysis widget and histogram container to the viewer.
 
@@ -2555,6 +2630,7 @@ class PlotterWidget(QWidget):
             )
             self._docks_initialized = True
 
+            self._restore_expanding_dock_policies()
             self._enforce_bottom_dock_layout()
 
             # Defer resizeDocks so it runs after Qt has applied the splits.
@@ -2737,6 +2813,104 @@ class PlotterWidget(QWidget):
             self.canvas_widget.setFixedSize(target_w, target_h)
 
         self._update_text_sizes_for_canvas(min(target_w, target_h))
+        self._update_useful_height_limit(available_w)
+
+    def _spare_height_can_be_reused(self):
+        """Return whether another dock can take the height we cannot use.
+
+        Only the analysis tabs stacked under a docked plotter can absorb it.
+        When the plotter floats, or the tabs are closed or moved elsewhere,
+        keep the widget free to grow so its window stays resizable.
+        """
+        analysis_dock = getattr(self, '_analysis_dock', None)
+        plotter_dock = self._find_plotter_dock()
+        if analysis_dock is None or plotter_dock is None:
+            return False
+        try:
+            if plotter_dock.isFloating() or analysis_dock.isFloating():
+                return False
+            # ``isHidden`` rather than ``isVisible``: it is true only when
+            # the dock itself was closed, not merely because the viewer
+            # window has not been shown yet (as in tests).
+            if analysis_dock.isHidden():
+                return False
+            qt_window = self.viewer.window._qt_window
+            area = qt_window.dockWidgetArea(plotter_dock)
+            return area == qt_window.dockWidgetArea(
+                analysis_dock
+            ) and area in (
+                Qt.LeftDockWidgetArea,
+                Qt.RightDockWidgetArea,
+            )
+        except (AttributeError, RuntimeError):
+            return False
+
+    def _update_useful_height_limit(self, available_w):
+        """Cap our height at the tallest the plot can actually use.
+
+        The canvas keeps the plot's aspect ratio, so once it is as wide as
+        the panel allows, extra height cannot make the plot any bigger - it
+        only adds a blank band. Reporting the useful height as our maximum
+        hands that space to the analysis tabs below instead. The limit
+        tracks the width, so widening the panel immediately allows a taller
+        plot again.
+        """
+        if not self._spare_height_can_be_reused():
+            self._last_height_limit_state = None
+            if self.maximumHeight() != self._NO_HEIGHT_LIMIT:
+                self.setMaximumHeight(self._NO_HEIGHT_LIMIT)
+            return
+
+        _natural_w, natural_h = self._canvas_size_for_ratio(
+            self._get_canvas_target_ratio(),
+            available_w,
+            self._UNBOUNDED_HEIGHT,
+        )
+        margins = self.layout().contentsMargins()
+        chrome = (
+            self.controls_container.sizeHint().height()
+            + max(self.layout().spacing(), 0)
+            + margins.top()
+            + margins.bottom()
+        )
+        limit = max(int(round(natural_h)) + chrome, self.minimumHeight())
+        if self.maximumHeight() != limit:
+            self.setMaximumHeight(limit)
+
+        # The limit depends only on the panel width and the plot's aspect
+        # ratio, never on the height we happen to have. So a change to it -
+        # a resized column, a semicircle/full-plot switch, a zoom - is the
+        # one moment the plot may be entitled to more height than it has.
+        # Claim it then, and only then, so a separator the user dragged
+        # themselves is never pushed back.
+        if limit != self._last_height_limit_state:
+            self._last_height_limit_state = limit
+            self._claim_height_timer.start()
+
+    def _claim_useful_height(self):
+        """Take the height the plot can use, leaving the rest to the tabs.
+
+        Called when the useful height changed - a resized column, a
+        semicircle/full-plot switch, a zoom. The plot may now be entitled to
+        more height than the current split gives it, and Qt will not grow a
+        dock on its own. The maximum set by
+        :meth:`_update_useful_height_limit` keeps it from taking more.
+        """
+        if not self._spare_height_can_be_reused():
+            return
+        plotter_dock = self._find_plotter_dock()
+        with contextlib.suppress(AttributeError, RuntimeError):
+            # Height the dock needs to give the widget its full limit.
+            dock_chrome = max(plotter_dock.height() - self.height(), 0)
+            wanted = self.maximumHeight() + dock_chrome
+            if wanted <= plotter_dock.height():
+                return  # Already as tall as the plot can use.
+            shared = plotter_dock.height() + self._analysis_dock.height()
+            self.viewer.window._qt_window.resizeDocks(
+                [plotter_dock, self._analysis_dock],
+                [wanted, max(shared - wanted, 1)],
+                Qt.Vertical,
+            )
 
     def _canvas_size_for_ratio(self, ratio, available_w, available_h):
         """Return the (width, height) for the canvas widget.
@@ -4042,6 +4216,10 @@ class PlotterWidget(QWidget):
             except (AttributeError, RuntimeError):
                 return True
 
+        # napari re-applies its Maximum vertical policy every time a widget
+        # is docked, so re-assert ours here (no-op when already correct).
+        self._restore_expanding_dock_policies()
+
         analysis_hidden = _is_hidden('_analysis_dock')
         histogram_hidden = _is_hidden('_histogram_dock')
         statistics_hidden = _is_hidden('_statistics_dock')
@@ -5197,6 +5375,9 @@ class PlotterWidget(QWidget):
         """
         widget = QWidget()
         outer = QGridLayout(widget)
+        # The tab page already provides the margin; a second one here would
+        # only shrink the scroll area (see ``_compact_analysis_tab_margins``).
+        outer.setContentsMargins(0, 0, 0, 0)
 
         scroll_area = QScrollArea()
         scroll_area.setMinimumHeight(120)
@@ -9342,6 +9523,8 @@ class PlotterWidget(QWidget):
             self._bins_timer.stop()
         with contextlib.suppress(AttributeError):
             self._resize_canvas_timer.stop()
+        with contextlib.suppress(AttributeError):
+            self._claim_height_timer.stop()
         with contextlib.suppress(AttributeError, RuntimeError):
             self.frame_context.disconnect_viewer()
 
@@ -9364,6 +9547,10 @@ class PlotterWidget(QWidget):
             )
         with contextlib.suppress(TypeError, ValueError, AttributeError):
             self._bins_timer.timeout.disconnect(self._process_bins_change)
+        with contextlib.suppress(TypeError, ValueError, AttributeError):
+            self._claim_height_timer.timeout.disconnect(
+                self._claim_useful_height
+            )
 
         # Disconnect viewer layer events owned by this widget.
         with contextlib.suppress(TypeError, ValueError, AttributeError):

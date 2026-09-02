@@ -2158,3 +2158,108 @@ def test_grouping_dialogs_enforce_one_group_per_layer(qtbot):
         dialog._on_remove_group(row2["container"])
         assert row1["layer_combo"].visibleItems() == ["A", "B", "C"]
         assert dialog.get_group_assignments() == {"A": 1, "C": 1}
+
+
+def test_analysis_tab_pages_use_compact_margins(make_viewer_model):
+    """Tab pages drop the platform's wide default margins.
+
+    Stacked default margins (the dock wrapper, the page's own style margins
+    and any container around a tab's scroll area) cost over 100 px of the
+    dock's height, which made tabs scroll while the dock still had room.
+    """
+    plotter = PlotterWidget(make_viewer_model())
+
+    margin = PlotterWidget._TAB_PAGE_MARGIN
+    for index in range(plotter.tab_widget.count()):
+        page = plotter.tab_widget.widget(index)
+        assert page.layout().contentsMargins().top() == margin
+        assert page.layout().contentsMargins().bottom() == margin
+        assert page.layout().contentsMargins().left() == margin
+
+    # The dock wrapper and the Plot Settings scroll-area container add none,
+    # bar the thin strip that keeps the tab bar from being clipped on top.
+    analysis_margins = plotter.analysis_widget.layout().contentsMargins()
+    assert analysis_margins.top() == PlotterWidget._TAB_BAR_TOP_MARGIN
+    assert analysis_margins.bottom() == 0
+    assert analysis_margins.left() == 0
+    assert plotter.plotter_inputs_widget.layout().contentsMargins().top() == 0
+
+
+def test_restore_expanding_dock_policies_undoes_napari_maximum(
+    make_viewer_model,
+):
+    """napari's forced ``Maximum`` vertical policy is set back to Expanding.
+
+    ``QtViewerDockWidget`` (napari >= 0.9) overwrites the vertical size policy
+    of every docked widget with ``QSizePolicy.Maximum``, which has no grow
+    flag, so Qt froze the plotter and the analysis tabs at their size hint.
+    """
+    from qtpy.QtWidgets import QSizePolicy
+
+    plotter = PlotterWidget(make_viewer_model())
+    widgets = (
+        plotter,
+        plotter.analysis_widget,
+        plotter.histogram_container,
+        plotter.statistics_container,
+    )
+    for widget in widgets:
+        widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+
+    plotter._restore_expanding_dock_policies()
+
+    for widget in widgets:
+        assert (
+            widget.sizePolicy().verticalPolicy() == QSizePolicy.Expanding
+        ), widget
+
+
+def test_useful_height_limit_is_released_without_an_analysis_dock(
+    make_viewer_model,
+):
+    """With nowhere to hand spare height, the widget stays free to grow."""
+    plotter = PlotterWidget(make_viewer_model())
+
+    assert plotter._spare_height_can_be_reused() is False
+
+    plotter.setMaximumHeight(500)
+    plotter._update_useful_height_limit(plotter.canvas_container.width())
+
+    assert plotter.maximumHeight() == PlotterWidget._NO_HEIGHT_LIMIT
+    # Nothing to re-split, so the deferred claim is a no-op.
+    plotter._claim_useful_height()
+
+
+def test_useful_height_limit_caps_plotter_and_tracks_width(
+    make_napari_viewer, qtbot
+):
+    """Docked, the plotter claims only the height its aspect-locked plot uses.
+
+    The canvas keeps the plot's ratio, so height beyond that is a blank band;
+    capping it hands the space to the analysis tabs below. The cap follows the
+    panel width, and is lifted again once the tabs can no longer take it.
+    """
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    qtbot.addWidget(plotter)
+    viewer.window.add_dock_widget(plotter, name="Phasor Plot", area="right")
+    plotter._analysis_dock_init_timer.stop()
+    plotter._add_analysis_dock_widget()
+
+    assert plotter._spare_height_can_be_reused() is True
+
+    plotter._resize_canvas_to_available_space()
+    narrow_limit = plotter.maximumHeight()
+    assert narrow_limit < PlotterWidget._NO_HEIGHT_LIMIT
+    assert narrow_limit >= plotter.minimumHeight()
+
+    # A wider panel fits a taller plot at the same aspect ratio.
+    plotter._update_useful_height_limit(plotter.canvas_container.width() * 2)
+    assert plotter.maximumHeight() > narrow_limit
+    # ...and the widened limit schedules the deferred re-split.
+    assert plotter._claim_height_timer.isActive()
+
+    # Closing the tabs leaves nobody to take the spare height.
+    plotter._analysis_dock.hide()
+    plotter._update_useful_height_limit(plotter.canvas_container.width())
+    assert plotter.maximumHeight() == PlotterWidget._NO_HEIGHT_LIMIT
