@@ -799,6 +799,35 @@ def test_fret_efficiency_calculation_with_harmonics(make_viewer_model, qtbot):
     assert not np.array_equal(fret_data_h1, fret_data_h2)
 
 
+def test_fret_efficiency_calculation_single_harmonic_layer(
+    make_viewer_model, qtbot
+):
+    """A layer with a single harmonic (no leading harmonic axis in G/S)
+    should produce a FRET efficiency map matching the image shape, not a
+    malformed slice of G/S."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    test_layer = create_image_layer_with_phasors(harmonic=1)
+    assert test_layer.metadata["G"].ndim == test_layer.data.ndim
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+
+    widget.donor_line_edit.setText("2.0")
+    widget.frequency_input.setText("80")
+    widget.background_real_edit.setText("0.1")
+    widget.background_imag_edit.setText("0.1")
+
+    parent.harmonic = 1
+    widget._on_harmonic_changed()
+    widget.calculate_fret_efficiency_button.click()
+
+    fret_layer_name = "FRET efficiency: test_layer"
+    assert fret_layer_name in [layer.name for layer in viewer.layers]
+    assert viewer.layers[fret_layer_name].data.shape == test_layer.data.shape
+
+
 def test_background_position_manual_changes_stored_by_harmonic(
     make_viewer_model,
     qtbot,

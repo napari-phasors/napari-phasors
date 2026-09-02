@@ -2077,7 +2077,7 @@ class FretWidget(QWidget):
             if g_array is None or s_array is None:
                 continue
 
-            if harmonics is not None:
+            if harmonics is not None and g_array.ndim > layer.data.ndim:
                 try:
                     harmonics = np.atleast_1d(harmonics)
                     harmonic_index = np.where(

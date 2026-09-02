@@ -1654,6 +1654,7 @@ class PlotterWidget(QWidget):
         self._g_original_array = None
         self._s_original_array = None
         self._harmonics_array = None
+        self._phasor_layer_ndim = None
 
         # Cache for histogram properties to avoid redundant updates
         self._last_histogram_bins = None
@@ -6623,6 +6624,7 @@ class PlotterWidget(QWidget):
             self._g_original_array = None
             self._s_original_array = None
             self._harmonics_array = None
+            self._phasor_layer_ndim = None
             self._refresh_timelapse_controls()
             for artist in self.canvas_widget.artists.values():
                 artist._remove_artists()
@@ -6668,6 +6670,7 @@ class PlotterWidget(QWidget):
         self._g_original_array = layer_metadata.get("G_original")
         self._s_original_array = layer_metadata.get("S_original")
         self._harmonics_array = layer_metadata.get("harmonics")
+        self._phasor_layer_ndim = layer.data.ndim
 
         self._update_harmonic_bounds(selected_layers)
 
@@ -7578,6 +7581,7 @@ class PlotterWidget(QWidget):
         self._g_original_array = layer_metadata.get("G_original")
         self._s_original_array = layer_metadata.get("S_original")
         self._harmonics_array = layer_metadata.get("harmonics")
+        self._phasor_layer_ndim = layer.data.ndim
 
         if self._harmonics_array is not None:
             self._harmonics_array = np.atleast_1d(self._harmonics_array)
@@ -7662,7 +7666,10 @@ class PlotterWidget(QWidget):
             return None
 
         shape = self._g_array.shape
-        if self._harmonics_array is not None:
+        if (
+            self._harmonics_array is not None
+            and self._g_array.ndim > self._phasor_layer_ndim
+        ):
             return shape[1:]
         return shape
 
@@ -7703,7 +7710,10 @@ class PlotterWidget(QWidget):
                 return None, None, None
             return None, None
 
-        if self._harmonics_array is not None:
+        if (
+            self._harmonics_array is not None
+            and self._g_array.ndim > self._phasor_layer_ndim
+        ):
             g = self._g_array[harmonic_idx]
             s = self._s_array[harmonic_idx]
         else:
