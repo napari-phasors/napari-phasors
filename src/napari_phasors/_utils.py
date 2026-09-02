@@ -980,9 +980,13 @@ def _extract_phasor_arrays_from_layer(
             # No label selection: all non-zero pixels are valid
             mask_invalid = mask <= 0 if not invert else mask > 0
         mean = np.where(mask_invalid, np.nan, mean)
-        for h in range(len(harmonics)):
-            real[h] = np.where(mask_invalid, np.nan, real[h])
-            imag[h] = np.where(mask_invalid, np.nan, imag[h])
+        if real.ndim > mean.ndim:
+            for h in range(len(harmonics)):
+                real[h] = np.where(mask_invalid, np.nan, real[h])
+                imag[h] = np.where(mask_invalid, np.nan, imag[h])
+        else:
+            real = np.where(mask_invalid, np.nan, real)
+            imag = np.where(mask_invalid, np.nan, imag)
 
     return mean, real, imag, harmonics
 

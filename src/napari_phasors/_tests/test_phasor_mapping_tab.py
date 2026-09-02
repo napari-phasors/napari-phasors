@@ -1556,6 +1556,35 @@ def test_phasor_mapping_widget_phase_modulation_calculation(
     assert "Modulation" in layer.metadata["derived_data"]
 
 
+def test_phasor_mapping_widget_single_harmonic_layer(
+    make_viewer_model,
+    qtbot,
+):
+    """A layer with a single harmonic (no leading harmonic axis in G/S)
+    should use G/S as-is rather than indexing into it as if it had one."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    layer = create_image_layer_with_phasors(harmonic=1)
+    assert layer.metadata["G"].ndim == layer.data.ndim
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+
+    expected_phase, _ = phasor_to_polar(
+        layer.metadata["G"], layer.metadata["S"]
+    )
+
+    mapping_widget.output_mode_combobox.setCurrentText("Phase")
+    mapping_widget.calculate_output_data()
+    np.testing.assert_allclose(
+        mapping_widget.current_metric_data_original,
+        expected_phase.flatten(),
+        rtol=1e-6,
+        atol=1e-6,
+    )
+
+
 def test_phasor_mapping_widget_phase_modulation_layer_display(
     make_viewer_model,
     qtbot,

@@ -1623,6 +1623,30 @@ def test_get_masked_gs(make_viewer_model):
     assert res == (None, None)
 
 
+def test_get_masked_gs_single_harmonic_layer(make_viewer_model):
+    """A layer with a single harmonic (no leading harmonic axis in G/S)
+    should return G/S as-is, and its spatial shape should match the image,
+    not be trimmed as if a harmonic axis existed."""
+    from napari_phasors.plotter import PlotterWidget
+
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+
+    layer = create_image_layer_with_phasors(harmonic=1)
+    assert layer.metadata["G"].ndim == layer.data.ndim
+    viewer.add_layer(layer)
+    plotter.image_layers_checkable_combobox.setCheckedItems([layer.name])
+    plotter._process_layer_selection_change()
+
+    assert plotter.get_phasor_spatial_shape() == layer.data.shape
+
+    g, s = plotter.get_masked_gs()
+    assert g.shape == layer.data.shape
+    assert s.shape == layer.data.shape
+    np.testing.assert_array_equal(g, layer.metadata["G"])
+    np.testing.assert_array_equal(s, layer.metadata["S"])
+
+
 def test_plot_colors_save_restore(make_viewer_model, qtbot, monkeypatch):
     """Saving, overriding and restoring plot colors round-trips."""
     viewer = make_viewer_model()

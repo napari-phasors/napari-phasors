@@ -1149,6 +1149,35 @@ def test_extract_phasor_arrays_with_mask_all_labels(make_viewer_model):
     np.testing.assert_array_equal(np.isnan(real[0]), expected_nan)
 
 
+def test_extract_phasor_arrays_with_mask_single_harmonic_layer(
+    make_viewer_model,
+):
+    """A layer with a single harmonic (no leading harmonic axis in G/S)
+    should have the mask applied directly, not per-row as if a harmonic
+    axis existed."""
+    from napari_phasors._utils import _extract_phasor_arrays_from_layer
+
+    image_layer = create_image_layer_with_phasors(harmonic=1)
+    viewer = make_viewer_model()
+    viewer.add_layer(image_layer)
+
+    G = image_layer.metadata["G"]
+    assert G.ndim == image_layer.data.ndim
+    mask_data = np.zeros(G.shape, dtype=int)
+    mask_data[:, : G.shape[1] // 2] = 1  # left half label 1
+    mask_data[:, G.shape[1] // 2 :] = 2  # right half label 2
+
+    image_layer.metadata["mask"] = mask_data
+    image_layer.metadata["mask_labels"] = None  # all labels valid
+    image_layer.metadata["mask_invert"] = False
+
+    mean, real, imag, _ = _extract_phasor_arrays_from_layer(image_layer)
+    assert real.shape == G.shape
+    assert imag.shape == G.shape
+    expected_nan = mask_data <= 0
+    np.testing.assert_array_equal(np.isnan(real), expected_nan)
+
+
 def test_extract_phasor_arrays_with_mask_no_labels(make_viewer_model):
     """mask_labels=[] treats all pixels as valid (no masking applied)."""
     from napari_phasors._utils import _extract_phasor_arrays_from_layer
