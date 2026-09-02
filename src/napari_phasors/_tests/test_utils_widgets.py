@@ -1,16 +1,19 @@
 import csv
 
 import numpy as np
+from qtpy.QtWidgets import QDialog
 
 from napari_phasors._utils import (
     CurrentPageStackedWidget,
     HistogramDockWidget,
+    HistogramSettingsDialog,
     HistogramWidget,
     StatisticsDockWidget,
     StatisticsTableWidget,
     build_group_styles_from_layer_metadata,
     build_groups_from_layer_metadata,
     save_groups_to_layer_metadata,
+    split_items_by_group,
 )
 
 
@@ -2086,3 +2089,286 @@ def test_update_data_label_parameter(qtbot):
     widget.update_data(data, label="Lifetime: my image")
     assert list(widget._datasets.keys()) == ["Lifetime: my image"]
     assert list(widget._counts_per_dataset.keys()) == ["Lifetime: my image"]
+
+
+def test_unassigned_layer_is_excluded_from_groups(qtbot):
+    """A layer left out of every group must not be folded into group 1."""
+    widget = HistogramWidget(bins=10)
+    qtbot.addWidget(widget)
+
+    rng = np.random.default_rng(1)
+    datasets = {
+        "G1::a": rng.normal(0.3, 0.05, 500),
+        "G1::b": rng.normal(0.32, 0.05, 500),
+        "orphan": rng.normal(5.0, 0.05, 500),
+    }
+    # "orphan" is deliberately missing from the assignments.
+    widget._group_assignments = {"G1::a": 1, "G1::b": 1}
+    widget._group_names = {1: "Group 1"}
+    widget.display_mode = "Grouped"
+    widget.update_multi_data(datasets)
+
+    groups, unassigned = split_items_by_group(
+        widget._counts_per_dataset, widget._group_assignments
+    )
+    assert unassigned == ["orphan"]
+    assert sorted(label for label, _ in groups[1]) == ["G1::a", "G1::b"]
+
+    # Only the single grouped curve is drawn.
+    assert len(widget.ax.lines) == 1
+
+
+def test_unassigned_layer_excluded_from_grouped_csv(
+    qtbot, tmp_path, monkeypatch
+):
+    """Grouped CSV export ignores layers with no group assignment."""
+    from qtpy.QtWidgets import QFileDialog
+
+    widget = HistogramWidget(bins=2)
+    qtbot.addWidget(widget)
+
+    csv_file = tmp_path / "grouped.csv"
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        lambda *args, **kwargs: (str(csv_file), ""),
+    )
+
+    widget.update_multi_data(
+        {
+            "Layer 1": np.array([1.0, 1.0, 2.0]),
+            "Layer 2": np.array([1.0, 2.0, 2.0]),
+            "orphan": np.array([1.0, 1.0, 1.0]),
+        }
+    )
+    widget._display_mode = "Grouped"
+    widget._group_assignments = {"Layer 1": 1, "Layer 2": 1}
+    widget._group_names = {1: "MyGroup"}
+    widget._save_histogram_csv()
+
+    with open(csv_file, newline='') as f:
+        rows = list(csv.reader(f))
+
+    assert rows[0] == ['Bin Center', 'MyGroup Mean', 'MyGroup Std']
+    # Mean of the two grouped layers only; the orphan would have skewed it.
+    assert [float(r[1]) for r in rows[1:]] == [1.5, 1.5]
+
+
+def test_group_statistics_skip_unassigned_layers(qtbot):
+    """Pooled group statistics exclude layers without a group."""
+    table = StatisticsTableWidget()
+    qtbot.addWidget(table)
+
+    datasets = {
+        "A": np.array([1.0, 1.0, 1.0]),
+        "orphan": np.array([100.0, 100.0, 100.0]),
+    }
+    bin_edges = np.linspace(0, 200, 5)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+
+    table.update_group_statistics(
+        datasets,
+        {"A": 1},
+        group_names={1: "Only"},
+        bin_centers=bin_centers,
+        bin_edges=bin_edges,
+    )
+
+    assert table.rowCount() == 1
+    assert table.item(0, 0).text() == "Only"
+    # The mean is 1.0, not 50.5: the orphan never joined the group.
+    means = [
+        float(table.item(0, c).text())
+        for c in range(table.columnCount())
+        if table.horizontalHeaderItem(c).text().lower().startswith("mean")
+    ]
+    assert means and abs(means[0] - 1.0) < 1e-6
+
+
+def test_settings_dialog_warns_about_unassigned_layers(qtbot, monkeypatch):
+    """Accepting Grouped mode with unticked layers prompts before closing."""
+    from qtpy.QtWidgets import QMessageBox
+
+    dlg = HistogramSettingsDialog(
+        display_mode="Grouped",
+        layer_labels=["A", "B"],
+        group_assignments={"A": 1},
+        group_names={1: "Group 1"},
+    )
+    qtbot.addWidget(dlg)
+
+    assert dlg.get_unassigned_layers() == ["B"]
+
+    calls = []
+
+    def fake_exec(self):
+        calls.append(self)
+        # Simulate clicking the default "Go back" button.
+        self._clicked = self.defaultButton()
+
+    monkeypatch.setattr(QMessageBox, "exec", fake_exec)
+    monkeypatch.setattr(
+        QMessageBox, "clickedButton", lambda self: self._clicked
+    )
+
+    dlg.accept()
+    assert len(calls) == 1
+    assert dlg.result() != QDialog.Accepted  # stayed open
+
+    # Choosing "Exclude them" (an AcceptRole button) closes the dialog.
+    def fake_exec_accept(self):
+        calls.append(self)
+        for btn in self.buttons():
+            if self.buttonRole(btn) == QMessageBox.AcceptRole:
+                self._clicked = btn
+
+    monkeypatch.setattr(QMessageBox, "exec", fake_exec_accept)
+    dlg.accept()
+    assert dlg.result() == QDialog.Accepted
+
+
+def test_settings_dialog_no_warning_when_all_assigned(qtbot, monkeypatch):
+    """No prompt appears when every layer belongs to a group."""
+    from qtpy.QtWidgets import QMessageBox
+
+    dlg = HistogramSettingsDialog(
+        display_mode="Grouped",
+        layer_labels=["A", "B"],
+        group_assignments={"A": 1, "B": 2},
+        group_names={1: "G1", 2: "G2"},
+    )
+    qtbot.addWidget(dlg)
+
+    def fail_exec(self):
+        raise AssertionError("no warning expected")
+
+    monkeypatch.setattr(QMessageBox, "exec", fail_exec)
+    dlg.accept()
+    assert dlg.result() == QDialog.Accepted
+
+
+def test_group_rows_are_mutually_exclusive(qtbot):
+    """Checking a layer in one group removes it from the other dropdowns."""
+    dlg = HistogramSettingsDialog(
+        display_mode="Grouped",
+        layer_labels=["A", "B", "C"],
+        group_assignments={"A": 1, "B": 2},
+        group_names={1: "G1", 2: "G2"},
+    )
+    qtbot.addWidget(dlg)
+
+    row1, row2 = dlg._group_row_data
+    combo1 = row1["layer_combo"]
+    combo2 = row2["layer_combo"]
+
+    # Each row offers only the free layers plus the ones it owns.
+    assert combo1.visibleItems() == ["A", "C"]
+    assert combo2.visibleItems() == ["B", "C"]
+    # Hiding never removes an item from the model.
+    assert combo1.allItems() == ["A", "B", "C"]
+
+    # Claiming the free layer for group 2 takes it out of group 1's list.
+    combo2.setCheckedItems(["B", "C"])
+    assert combo1.visibleItems() == ["A"]
+    assert combo2.visibleItems() == ["B", "C"]
+    assert dlg.get_group_assignments() == {"A": 1, "B": 2, "C": 2}
+
+    # Releasing it offers it to both rows again.
+    combo2.setCheckedItems(["B"])
+    assert combo1.visibleItems() == ["A", "C"]
+    assert combo2.visibleItems() == ["B", "C"]
+    assert dlg.get_unassigned_layers() == ["C"]
+
+
+def test_removing_a_group_frees_its_layers(qtbot):
+    """Layers of a removed group become selectable again."""
+    dlg = HistogramSettingsDialog(
+        display_mode="Grouped",
+        layer_labels=["A", "B"],
+        group_assignments={"A": 1, "B": 2},
+        group_names={1: "G1", 2: "G2"},
+    )
+    qtbot.addWidget(dlg)
+
+    row1, row2 = dlg._group_row_data
+    assert row1["layer_combo"].visibleItems() == ["A"]
+
+    dlg._on_remove_group(row2["container"])
+
+    assert len(dlg._group_row_data) == 1
+    assert row1["layer_combo"].visibleItems() == ["A", "B"]
+    assert dlg.get_group_assignments() == {"A": 1}
+
+
+def test_new_group_row_hides_claimed_layers(qtbot):
+    """A group added later only offers the layers nobody claimed."""
+    dlg = HistogramSettingsDialog(
+        display_mode="Grouped",
+        layer_labels=["A", "B", "C"],
+        group_assignments={"A": 1, "B": 1},
+        group_names={1: "G1"},
+    )
+    qtbot.addWidget(dlg)
+
+    dlg._on_add_group()
+
+    assert len(dlg._group_row_data) == 2
+    assert dlg._group_row_data[1]["layer_combo"].visibleItems() == ["C"]
+
+
+def test_duplicate_assignment_is_resolved_to_one_group(qtbot):
+    """A layer ticked in two rows ends up owned by the first one only."""
+    dlg = HistogramSettingsDialog(
+        display_mode="Grouped",
+        layer_labels=["A", "B"],
+        group_assignments={"A": 1},
+        group_names={1: "G1", 2: "G2"},
+    )
+    qtbot.addWidget(dlg)
+
+    row1, row2 = dlg._group_row_data
+    # Force the state the UI now prevents: "A" claimed by both rows.
+    row2["layer_combo"].setCheckedItems(["A"])
+
+    assert dlg.get_group_assignments() == {"A": 1}
+    assert row2["layer_combo"].checkedItems() == []
+    assert row2["layer_combo"].visibleItems() == ["B"]
+
+
+def test_checkable_combobox_hidden_items_roundtrip(qtbot):
+    """setHiddenItems hides rows without touching the model or check state."""
+    from napari_phasors._utils import CheckableComboBox
+
+    combo = CheckableComboBox(enable_primary_layer=False)
+    qtbot.addWidget(combo)
+    combo.addItems(["A", "B", "C"])
+    combo.setCheckedItems(["B"])
+
+    combo.setHiddenItems(["A", "C"])
+    assert combo.hiddenItems() == {"A", "C"}
+    assert combo.visibleItems() == ["B"]
+    assert combo.allItems() == ["A", "B", "C"]
+    assert combo.checkedItems() == ["B"]
+    assert combo.view().isRowHidden(0)
+    assert not combo.view().isRowHidden(1)
+
+    combo.setHiddenItems([])
+    assert combo.visibleItems() == ["A", "B", "C"]
+    assert not combo.view().isRowHidden(0)
+
+
+def test_checkable_combobox_clear_drops_hidden_rows(qtbot):
+    """Refilling a combobox after clear() must not inherit hidden rows."""
+    from napari_phasors._utils import CheckableComboBox
+
+    combo = CheckableComboBox(enable_primary_layer=False)
+    qtbot.addWidget(combo)
+    combo.addItems(["A", "B"])
+    combo.setHiddenItems(["A"])
+
+    combo.clear()
+    combo.addItems(["X", "Y"])
+
+    assert combo.hiddenItems() == set()
+    assert combo.visibleItems() == ["X", "Y"]
+    assert not combo.view().isRowHidden(0)

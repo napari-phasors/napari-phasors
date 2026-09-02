@@ -62,6 +62,7 @@ from ._utils import (
     CollapsibleSection,
     ColormapLegendHandler,
     ColormapLegendProxy,
+    ExclusiveGroupRowsMixin,
     HistogramDockWidget,
     HistogramWidget,
     StatisticsDockWidget,
@@ -71,6 +72,7 @@ from ._utils import (
     available_colormap_names,
     build_group_styles_from_layer_metadata,
     build_groups_from_layer_metadata,
+    confirm_unassigned_layers,
     make_section,
     make_solid_contour_cmap,
     normalize_rgb,
@@ -80,6 +82,8 @@ from ._utils import (
     read_ome_tiff_settings,
     resolve_colormap_by_name,
     save_groups_to_layer_metadata,
+    split_items_by_group,
+    unassigned_layer_labels,
     update_frequency_in_metadata,
     write_rows_to_csv,
 )
@@ -598,7 +602,7 @@ class _ListWidgetCompatWrapper:
         return self._plotter.image_layers_checkable_combobox.selectionChanged
 
 
-class ContourLayerSettingsDialog(QDialog):
+class ContourLayerSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
     """Dialog for contour multi-layer display and grouping settings."""
 
     DISPLAY_MODES = ("Merged", "Individual layers", "Grouped")
@@ -764,17 +768,28 @@ class ContourLayerSettingsDialog(QDialog):
         group_layout.addWidget(self._group_rows_widget)
 
         if group_assignments and self._layer_labels:
+            # Only layers with an explicit assignment are pre-checked; a
+            # layer missing from ``group_assignments`` belongs to no group
+            # and must not be silently ticked into the first one.
             grouped = {}
             for name in self._layer_labels:
-                gid = int(group_assignments.get(name, 1))
-                grouped.setdefault(gid, []).append(name)
-            for gid in sorted(grouped):
+                gid = group_assignments.get(name)
+                if gid is None:
+                    continue
+                grouped.setdefault(int(gid), []).append(name)
+            # Keep rows for groups configured by name/colour/style even when
+            # they currently hold no layer.
+            configured = set(grouped)
+            configured.update(int(g) for g in (group_names or {}))
+            configured.update(int(g) for g in (group_colors or {}))
+            configured.update(int(g) for g in (group_styles or {}))
+            for gid in sorted(configured):
                 self._add_group_row(
                     name=group_names.get(gid, f"Group {gid}"),
                     color=group_colors.get(
                         gid, default_tab10[(gid - 1) % len(default_tab10)]
                     ),
-                    checked_layers=grouped[gid],
+                    checked_layers=grouped.get(gid, []),
                     style=group_styles.get(gid, {}).get(
                         "mode",
                         (
@@ -798,6 +813,10 @@ class ContourLayerSettingsDialog(QDialog):
                 ),
                 colormap_name=merged_colormap,
             )
+
+        # A layer belongs to at most one group, so hide the ones already
+        # claimed from every other row's dropdown.
+        self._sync_group_exclusivity()
 
         add_group_btn = QPushButton("+ Add Group")
         add_group_btn.setMaximumWidth(120)
@@ -975,6 +994,7 @@ class ContourLayerSettingsDialog(QDialog):
         else:
             # Explicitly call _update_display_text to show placeholder
             layer_combo._update_display_text()
+        layer_combo.selectionChanged.connect(self._sync_group_exclusivity)
         row_layout.addWidget(layer_combo, 1)
 
         remove_btn = QPushButton("-")
@@ -1000,6 +1020,7 @@ class ContourLayerSettingsDialog(QDialog):
         if len(self._group_row_data) >= self.MAX_GROUPS:
             return
         self._add_group_row(name=f"Group {len(self._group_row_data) + 1}")
+        self._sync_group_exclusivity()
 
     def _on_remove_group(self, row_widget):
         """Remove *row_widget*'s group, keeping at least one group present."""
@@ -1014,6 +1035,8 @@ class ContourLayerSettingsDialog(QDialog):
             return
         row = self._group_row_data.pop(idx)
         row["container"].setParent(None)
+        # Its layers are free again for the remaining groups.
+        self._sync_group_exclusivity()
 
     def get_display_mode(self):
         """Return the selected display mode name."""
@@ -1079,12 +1102,37 @@ class ContourLayerSettingsDialog(QDialog):
         }
 
     def get_group_assignments(self):
-        """Return ``{layer_name: group_id}`` for every grouped layer."""
+        """Return ``{layer_name: group_id}`` for every grouped layer.
+
+        Only layers actually checked in a group row appear here; an
+        unchecked layer is left out entirely (see
+        :meth:`get_unassigned_layers`) instead of falling back to group 1.
+        """
         assignments = {}
         for gid, row in enumerate(self._group_row_data, start=1):
             for layer_name in row["layer_combo"].checkedItems():
                 assignments[layer_name] = gid
         return assignments
+
+    def get_unassigned_layers(self):
+        """Return the layers not checked in any group row."""
+        return unassigned_layer_labels(
+            self._layer_labels, self.get_group_assignments()
+        )
+
+    def accept(self):
+        """Confirm the dialog, warning about layers left out of every group.
+
+        A layer the user forgot to tick belongs to no group and draws no
+        contour, so ask before closing rather than dropping it unnoticed.
+        """
+        if self.mode_combo.currentText() == "Grouped" and (
+            not confirm_unassigned_layers(
+                self, self.get_unassigned_layers(), "contour plot"
+            )
+        ):
+            return
+        super().accept()
 
     def get_group_names(self):
         """Return ``{group_id: name}``, falling back to "Group N" if unnamed."""
@@ -1102,7 +1150,7 @@ class ContourLayerSettingsDialog(QDialog):
         }
 
 
-class PhasorCenterLayerSettingsDialog(QDialog):
+class PhasorCenterLayerSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
     """Dialog for phasor center multi-layer display and grouping settings.
 
     Similar to ContourLayerSettingsDialog but uses only solid color pickers
@@ -1275,23 +1323,37 @@ class PhasorCenterLayerSettingsDialog(QDialog):
         group_layout.addWidget(self._group_rows_widget)
 
         if group_assignments and self._layer_labels:
+            # Only layers with an explicit assignment are pre-checked; a
+            # layer missing from ``group_assignments`` belongs to no group
+            # and must not be silently ticked into the first one.
             grouped = {}
             for name in self._layer_labels:
-                gid = int(group_assignments.get(name, 1))
-                grouped.setdefault(gid, []).append(name)
-            for gid in sorted(grouped):
+                gid = group_assignments.get(name)
+                if gid is None:
+                    continue
+                grouped.setdefault(int(gid), []).append(name)
+            # Keep rows for groups configured by name/colour even when they
+            # currently hold no layer.
+            configured = set(grouped)
+            configured.update(int(g) for g in (group_names or {}))
+            configured.update(int(g) for g in (group_colors or {}))
+            for gid in sorted(configured):
                 self._add_group_row(
                     name=group_names.get(gid, f"Group {gid}"),
                     color=group_colors.get(
                         gid, default_tab10[(gid - 1) % len(default_tab10)]
                     ),
-                    checked_layers=grouped[gid],
+                    checked_layers=grouped.get(gid, []),
                 )
         elif self._layer_labels:
             self._add_group_row(
                 name="Group 1",
                 checked_layers=list(self._layer_labels),
             )
+
+        # A layer belongs to at most one group, so hide the ones already
+        # claimed from every other row's dropdown.
+        self._sync_group_exclusivity()
 
         add_group_btn = QPushButton("+ Add Group")
         add_group_btn.setMaximumWidth(120)
@@ -1373,6 +1435,7 @@ class PhasorCenterLayerSettingsDialog(QDialog):
             layer_combo.setCheckedItems(checked_layers)
         else:
             layer_combo._update_display_text()
+        layer_combo.selectionChanged.connect(self._sync_group_exclusivity)
         row_layout.addWidget(layer_combo, 1)
 
         remove_btn = QPushButton("-")
@@ -1396,6 +1459,7 @@ class PhasorCenterLayerSettingsDialog(QDialog):
         if len(self._group_row_data) >= self.MAX_GROUPS:
             return
         self._add_group_row(name=f"Group {len(self._group_row_data) + 1}")
+        self._sync_group_exclusivity()
 
     def _on_remove_group(self, row_widget):
         """Remove *row_widget*'s group, keeping at least one group present."""
@@ -1410,6 +1474,8 @@ class PhasorCenterLayerSettingsDialog(QDialog):
             return
         row = self._group_row_data.pop(idx)
         row["container"].setParent(None)
+        # Its layers are free again for the remaining groups.
+        self._sync_group_exclusivity()
 
     def get_display_mode(self):
         """Return the selected display mode name."""
@@ -1438,12 +1504,37 @@ class PhasorCenterLayerSettingsDialog(QDialog):
         }
 
     def get_group_assignments(self):
-        """Return ``{layer_name: group_id}`` for every grouped layer."""
+        """Return ``{layer_name: group_id}`` for every grouped layer.
+
+        Only layers actually checked in a group row appear here; an
+        unchecked layer is left out entirely (see
+        :meth:`get_unassigned_layers`) instead of falling back to group 1.
+        """
         assignments = {}
         for gid, row in enumerate(self._group_row_data, start=1):
             for layer_name in row["layer_combo"].checkedItems():
                 assignments[layer_name] = gid
         return assignments
+
+    def get_unassigned_layers(self):
+        """Return the layers not checked in any group row."""
+        return unassigned_layer_labels(
+            self._layer_labels, self.get_group_assignments()
+        )
+
+    def accept(self):
+        """Confirm the dialog, warning about layers left out of every group.
+
+        An unticked layer contributes to no pooled centre, so ask before
+        closing rather than dropping it from the plot unnoticed.
+        """
+        if self.mode_combo.currentText() == "Grouped" and (
+            not confirm_unassigned_layers(
+                self, self.get_unassigned_layers(), "phasor centers"
+            )
+        ):
+            return
+        super().accept()
 
     def get_group_names(self):
         """Return ``{group_id: name}``, falling back to "Group N" if unnamed."""
@@ -2370,6 +2461,10 @@ class PlotterWidget(QWidget):
         self._phasor_center_group_colors = {}
         self._phasor_center_group_names = {}
         self._phasor_center_artists = []
+
+        # Last set of layers each grouped plot warned about, so a redraw of
+        # the same selection does not repeat the notification.
+        self._warned_unassigned = {}
 
         self.toggle_semi_circle = (
             True  # default: semicircle shown (toggle OFF)
@@ -4742,6 +4837,33 @@ class PlotterWidget(QWidget):
         write_rows_to_csv(file_path, rows)
         notifications.show_info(f"Phasor centers saved to {file_path}")
 
+    def _warn_unassigned_layers(self, what, unassigned):
+        """Notify once about layers excluded from *what* for having no group.
+
+        Grouped plots skip layers with no group assignment instead of
+        silently folding them into the first group, so the user is told
+        which layers dropped out. The warning is repeated only when the set
+        of excluded layers changes, since plots redraw constantly.
+
+        Parameters
+        ----------
+        what : str
+            Name of the grouped output, e.g. ``"contour plot"``.
+        unassigned : list of str
+            Layer names left out of every group.
+        """
+        key = tuple(sorted(unassigned))
+        if not key:
+            self._warned_unassigned.pop(what, None)
+            return
+        if self._warned_unassigned.get(what) == key:
+            return
+        self._warned_unassigned[what] = key
+        notifications.show_warning(
+            f"Not assigned to any group, excluded from the {what}: "
+            + ", ".join(key)
+        )
+
     def _update_phasor_centers(self):
         """Calculate and plot phasor center dots on the axes."""
         self._clear_phasor_center_artists()
@@ -4856,10 +4978,16 @@ class PlotterWidget(QWidget):
                 )
 
         elif display_mode == "Grouped":
-            grouped = {}
-            for name in layer_centers:
-                gid = int(self._phasor_center_group_assignments.get(name, 1))
-                grouped.setdefault(gid, []).append(name)
+            # Layers with no assignment take part in no group: pooling them
+            # into group 1 would silently shift its centre.
+            grouped_items, unassigned = split_items_by_group(
+                layer_centers, self._phasor_center_group_assignments
+            )
+            grouped = {
+                int(gid): [name for name, _ in members]
+                for gid, members in grouped_items.items()
+            }
+            self._warn_unassigned_layers("phasor centers", unassigned)
 
             for gid in sorted(grouped):
                 group_label = self._phasor_center_group_names.get(
@@ -8753,11 +8881,16 @@ class PlotterWidget(QWidget):
                 )
             return
 
-        # Grouped mode
-        grouped_data = {}
-        for layer_name, (lx, ly) in layer_data.items():
-            gid = int(self._contour_group_assignments.get(layer_name, 1))
-            grouped_data.setdefault(gid, []).append((layer_name, lx, ly))
+        # Grouped mode. Layers with no assignment are drawn in no group
+        # rather than being folded into the first one.
+        grouped_items, unassigned = split_items_by_group(
+            layer_data, self._contour_group_assignments
+        )
+        grouped_data = {
+            int(gid): [(name, lx, ly) for name, (lx, ly) in members]
+            for gid, members in grouped_items.items()
+        }
+        self._warn_unassigned_layers("contour plot", unassigned)
 
         group_ids = sorted(grouped_data)
         default_colors = self._sample_colors_from_cmap(cmap, len(group_ids))
