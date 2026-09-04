@@ -1,7 +1,7 @@
 import csv
 
 import numpy as np
-from qtpy.QtWidgets import QDialog
+from qtpy.QtWidgets import QDialog, QHeaderView
 
 from napari_phasors._utils import (
     CurrentPageStackedWidget,
@@ -285,6 +285,40 @@ def test_statistics_table_widget_handles_empty_histogram_bins(qtbot):
 
     assert table.rowCount() == 1
     assert table.item(0, 1).text() == "nan"
+
+
+def test_statistics_table_widget_columns_resizable(qtbot):
+    """StatisticsTableWidget should allow changing the width of columns."""
+    table = StatisticsTableWidget()
+    qtbot.addWidget(table)
+
+    header = table.horizontalHeader()
+    assert not header.stretchLastSection()
+
+    for col in range(table.columnCount()):
+        assert header.sectionResizeMode(col) == QHeaderView.Interactive
+
+    # Can change column width programmatically and via header resizeSection
+    table.setColumnWidth(0, 150)
+    assert table.columnWidth(0) == 150
+
+    header.resizeSection(1, 130)
+    assert table.columnWidth(1) == 130
+
+    table.setColumnWidth(4, 180)
+    assert table.columnWidth(4) == 180
+
+    # Updating statistics preserves interactive resize mode and column widths can still change
+    datasets = {
+        "Layer A": np.array([1.0, 2.0, 3.0]),
+        "Layer B": np.array([2.0, 4.0, 6.0]),
+    }
+    table.update_statistics(datasets)
+    for col in range(table.columnCount()):
+        assert header.sectionResizeMode(col) == QHeaderView.Interactive
+
+    table.setColumnWidth(2, 140)
+    assert table.columnWidth(2) == 140
 
 
 def test_statistics_dock_widget_updates_for_single_and_grouped_data(qtbot):
