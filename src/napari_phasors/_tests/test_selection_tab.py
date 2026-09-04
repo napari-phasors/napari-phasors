@@ -497,6 +497,180 @@ def test_editor_title_updates_with_shape(make_viewer_model, qtbot):
     assert "Polar" in widget._editor_box.title()
 
 
+def test_multi_cursor_ctrl_selection(make_viewer_model, qtbot):
+    """Test selecting multiple cursors with Ctrl/Cmd modifier toggling."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor()
+    widget._add_cursor()
+    widget._add_cursor()
+    c0, c1, c2 = widget._cursors
+
+    # Normal click c0: single selection
+    qtbot.mouseClick(c0['row'], Qt.LeftButton)
+    assert widget._selected_cursors == [c0]
+    assert c0['row'].property("selected")
+    assert not c1['row'].property("selected")
+    assert not c2['row'].property("selected")
+
+    # Ctrl-click c1: toggles c1 into selection
+    qtbot.mouseClick(c1['row'], Qt.LeftButton, Qt.ControlModifier)
+    assert widget._selected_cursors == [c0, c1]
+    assert c0['row'].property("selected")
+    assert c1['row'].property("selected")
+    assert not c2['row'].property("selected")
+
+    # Ctrl-click c2: toggles c2 into selection
+    qtbot.mouseClick(c2['row'], Qt.LeftButton, Qt.ControlModifier)
+    assert widget._selected_cursors == [c0, c1, c2]
+    assert c0['row'].property("selected")
+    assert c1['row'].property("selected")
+    assert c2['row'].property("selected")
+
+    # Ctrl-click c1: toggles c1 out of selection
+    qtbot.mouseClick(c1['row'], Qt.LeftButton, Qt.ControlModifier)
+    assert widget._selected_cursors == [c0, c2]
+    assert c0['row'].property("selected")
+    assert not c1['row'].property("selected")
+    assert c2['row'].property("selected")
+
+
+def test_multi_cursor_shift_selection(make_viewer_model, qtbot):
+    """Test selecting a range of cursors with Shift modifier."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor()
+    widget._add_cursor()
+    widget._add_cursor()
+    c0, c1, c2 = widget._cursors
+
+    # Click c0 to set anchor
+    qtbot.mouseClick(c0['row'], Qt.LeftButton)
+    assert widget._selected_cursors == [c0]
+
+    # Shift-click c2 to select range [c0, c1, c2]
+    qtbot.mouseClick(c2['row'], Qt.LeftButton, Qt.ShiftModifier)
+    assert widget._selected_cursors == [c0, c1, c2]
+    assert all(c['row'].property("selected") for c in (c0, c1, c2))
+
+
+def test_batch_edit_same_cursor_type(make_viewer_model, qtbot):
+    """Batch editing two circular cursors updates shared parameters across all."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor(radius=0.05)
+    widget._add_cursor(radius=0.08)
+    c0, c1 = widget._cursors
+
+    # Select both cursors
+    widget._select_cursor(c0)
+    widget._select_cursor(c1, modifiers=Qt.ControlModifier)
+    assert widget._selected_cursors == [c0, c1]
+
+    # Shared parameters: {'g', 's', 'radius'}
+    shared = widget._shared_params(widget._selected_cursors)
+    assert shared == {'g', 's', 'radius'}
+
+    # Edit radius on c1: should propagate to c0
+    c1['radius_spin'].setValue(0.12)
+    assert abs(c1['radius'] - 0.12) < 1e-5
+    assert abs(c0['radius'] - 0.12) < 1e-5
+    assert abs(c0['radius_spin'].value() - 0.12) < 1e-5
+
+    # Edit Center G on c1: should propagate to c0
+    c1['g_spin'].setValue(0.65)
+    assert abs(c1['g'] - 0.65) < 1e-5
+    assert abs(c0['g'] - 0.65) < 1e-5
+    assert abs(c0['g_spin'].value() - 0.65) < 1e-5
+
+
+def test_batch_edit_circular_and_elliptic(make_viewer_model, qtbot):
+    """Batch editing circular + elliptic cursors only updates common parameters."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor("circular", radius=0.05)
+    widget._add_cursor("elliptic", radius=0.10, radius_minor=0.04, angle=30.0)
+    c_circ, c_ellip = widget._cursors
+
+    widget._select_cursor(c_circ)
+    widget._select_cursor(c_ellip, modifiers=Qt.ControlModifier)
+
+    shared = widget._shared_params(widget._selected_cursors)
+    assert shared == {'g', 's', 'radius'}
+
+    # Non-shared inputs (minor radius, angle) are disabled in editor
+    assert not c_ellip['radius_minor_spin'].isEnabled()
+    assert not c_ellip['angle_spin'].isEnabled()
+
+    # Shared input (radius) is enabled
+    assert c_ellip['radius_spin'].isEnabled()
+
+    # Changing radius updates both
+    c_ellip['radius_spin'].setValue(0.18)
+    assert abs(c_ellip['radius'] - 0.18) < 1e-5
+    assert abs(c_circ['radius'] - 0.18) < 1e-5
+
+    # Changing angle directly on elliptic cursor does not affect circular
+    c_ellip['angle_spin'].setValue(75.0)
+    assert abs(c_ellip['angle'] - 75.0) < 1e-5
+    assert 'angle' not in c_circ or c_circ.get('angle') == 0.0
+
+
+def test_batch_edit_circular_and_polar_disables_all(make_viewer_model, qtbot):
+    """Selecting circular and polar cursors results in no shared parameters."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor("circular")
+    widget._add_cursor("polar")
+    c_circ, c_polar = widget._cursors
+
+    widget._select_cursor(c_circ)
+    widget._select_cursor(c_polar, modifiers=Qt.ControlModifier)
+
+    shared = widget._shared_params(widget._selected_cursors)
+    assert shared == set()
+    assert "No shared parameters" in widget._editor_box.title()
+
+
+def test_remove_cursor_in_multi_selection(make_viewer_model, qtbot):
+    """Removing a cursor while multiple are selected updates selection cleanly."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor()
+    widget._add_cursor()
+    widget._add_cursor()
+    c0, c1, c2 = widget._cursors
+
+    widget._select_cursor(c0)
+    widget._select_cursor(c1, modifiers=Qt.ControlModifier)
+    widget._select_cursor(c2, modifiers=Qt.ControlModifier)
+    assert widget._selected_cursors == [c0, c1, c2]
+
+    # Remove c1
+    widget._remove_cursor(c1)
+    assert widget._selected_cursors == [c0, c2]
+    assert c0['row'].property("selected")
+    assert c2['row'].property("selected")
+
+
 def test_make_spinbox_default_width_ref(make_viewer_model, qtbot):
     """``_make_spinbox`` sizes itself from its own range when no ref given."""
     from napari_phasors.selection_tab import CursorSelectionWidget

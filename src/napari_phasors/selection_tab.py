@@ -1909,9 +1909,14 @@ class ClickableFrame(QFrame):
 
     clicked = Signal()
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._last_modifiers = Qt.NoModifier
+
     def mousePressEvent(self, event):
         """Emit ``clicked`` for left-button presses, then defer to the base."""
         if event.button() == Qt.LeftButton:
+            self._last_modifiers = event.modifiers()
             self.clicked.emit()
         super().mousePressEvent(event)
 
@@ -1941,6 +1946,42 @@ class CursorSelectionWidget(QWidget):
         for r, g, b, _ in [plt.get_cmap('Set1')(i) for i in range(9)]
     ]
 
+    CURSOR_PARAMS_BY_TYPE = {
+        'circular': {'g', 's', 'radius'},
+        'elliptic': {'g', 's', 'radius', 'radius_minor', 'angle'},
+        'polar': {
+            'phase_min',
+            'phase_max',
+            'modulation_min',
+            'modulation_max',
+        },
+    }
+
+    @classmethod
+    def _shared_params(cls, cursors):
+        """Return the set of parameter names shared by all ``cursors``."""
+        if not cursors:
+            return set()
+        param_sets = [
+            cls.CURSOR_PARAMS_BY_TYPE.get(c['type'], set()) for c in cursors
+        ]
+        return set.intersection(*param_sets)
+
+    @property
+    def _selected_cursor(self):
+        """Return the primary / last selected cursor, or None."""
+        return self._selected_cursors[-1] if self._selected_cursors else None
+
+    @_selected_cursor.setter
+    def _selected_cursor(self, cursor):
+        """Set the single selected cursor (for backward compatibility)."""
+        if cursor is None:
+            self._selected_cursors = []
+            self._last_clicked_cursor = None
+        else:
+            self._selected_cursors = [cursor]
+            self._last_clicked_cursor = cursor
+
     def __init__(self, viewer, parent_widget):
         """Initialize the CursorSelectionWidget."""
         super().__init__()
@@ -1949,7 +1990,8 @@ class CursorSelectionWidget(QWidget):
 
         # Each cursor is a dict carrying both its data and its row widgets.
         self._cursors = []
-        self._selected_cursor = None
+        self._selected_cursors = []
+        self._last_clicked_cursor = None
         self._phasors_selected_layer = None
 
         # Dragging state
@@ -2471,8 +2513,19 @@ class CursorSelectionWidget(QWidget):
         self._apply_type_visibility(cursor)
         self._update_visibility_button(cursor)
 
+        for lbl in (
+            number_label,
+            n_label,
+            count_label,
+            pct_label,
+            percentage_label,
+        ):
+            lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
         # Wire signals (lambdas capture the cursor dict directly).
-        frame.clicked.connect(lambda c=cursor: self._select_cursor(c))
+        frame.clicked.connect(
+            lambda c=cursor, f=frame: self._on_row_clicked(c, f)
+        )
         # Interacting with the row's shape combo also selects the cursor.
         type_combo.activated.connect(
             lambda _=0, c=cursor: self._select_cursor(c)
@@ -2480,19 +2533,21 @@ class CursorSelectionWidget(QWidget):
         type_combo.currentIndexChanged.connect(
             lambda _=0, c=cursor: self._on_cursor_type_changed(c)
         )
-        for spin in (
-            g_spin,
-            s_spin,
-            radius_spin,
-            radius_minor_spin,
-            angle_spin,
-            phase_min_spin,
-            phase_max_spin,
-            mod_min_spin,
-            mod_max_spin,
+        for param, spin in (
+            ('g', g_spin),
+            ('s', s_spin),
+            ('radius', radius_spin),
+            ('radius_minor', radius_minor_spin),
+            ('angle', angle_spin),
+            ('phase_min', phase_min_spin),
+            ('phase_max', phase_max_spin),
+            ('modulation_min', mod_min_spin),
+            ('modulation_max', mod_max_spin),
         ):
             spin.valueChanged.connect(
-                lambda _val, c=cursor: self._on_cursor_changed(c)
+                lambda val, c=cursor, p=param: self._on_param_changed(
+                    c, p, val
+                )
             )
         color_button.color_changed.connect(
             lambda _c, c=cursor: self._on_cursor_changed(c)
@@ -2566,36 +2621,169 @@ class CursorSelectionWidget(QWidget):
         cursor['elliptic_widget'].setVisible(show_elliptic)
         cursor['polar_widget'].setVisible(cursor_type == "polar")
 
-    def _select_cursor(self, cursor):
-        """Show ``cursor``'s editor page and highlight its list row.
+    def _on_row_clicked(self, cursor, frame=None):
+        """Handle clicking a cursor row with potential modifier keys."""
+        modifiers = QApplication.keyboardModifiers()
+        if (
+            frame is not None
+            and getattr(frame, '_last_modifiers', Qt.NoModifier)
+            != Qt.NoModifier
+        ):
+            modifiers = modifiers | frame._last_modifiers
+        self._select_cursor(cursor, modifiers=modifiers)
 
+    def _select_cursor(self, cursor, modifiers=None):
+        """Show editor and highlight row(s) for ``cursor`` (or multi-selection).
+
+        If ``modifiers`` contains ``Qt.ShiftModifier``, a range of cursors is selected.
+        If ``modifiers`` contains ``Qt.ControlModifier`` or ``Qt.MetaModifier``,
+        the cursor's selection state is toggled.
         Passing ``None`` hides the editor (no cursors on this harmonic).
         """
         if cursor is not None and cursor not in self._cursors:
             return
-        self._selected_cursor = cursor
+
+        if cursor is None:
+            self._selected_cursors = []
+            self._last_clicked_cursor = None
+            self._update_row_selection_highlights()
+            self._editor_box.setVisible(False)
+            return
+
+        current_visible = self._current_harmonic_cursors()
+
+        if (
+            modifiers
+            and bool(modifiers & Qt.ShiftModifier)
+            and self._last_clicked_cursor in current_visible
+            and cursor in current_visible
+        ):
+            idx_start = current_visible.index(self._last_clicked_cursor)
+            idx_end = current_visible.index(cursor)
+            step = 1 if idx_start <= idx_end else -1
+            self._selected_cursors = current_visible[
+                idx_start : idx_end + step : step
+            ]
+        elif modifiers and bool(
+            modifiers & (Qt.ControlModifier | Qt.MetaModifier)
+        ):
+            if cursor in self._selected_cursors:
+                self._selected_cursors.remove(cursor)
+            else:
+                self._selected_cursors.append(cursor)
+                self._last_clicked_cursor = cursor
+        else:
+            self._selected_cursors = [cursor]
+            self._last_clicked_cursor = cursor
+
+        self._update_row_selection_highlights()
+        self._update_editor_for_selection()
+
+    def _update_row_selection_highlights(self):
+        """Update the visual selected state on each cursor's row frame."""
         for c in self._cursors:
-            selected = c is cursor
+            selected = c in self._selected_cursors
             row = c['row']
             if row.property("selected") != selected:
                 row.setProperty("selected", selected)
                 row.style().unpolish(row)
                 row.style().polish(row)
-        if cursor is None:
+
+    def _update_editor_for_selection(self):
+        """Configure the details editor based on currently selected cursors."""
+        if not self._selected_cursors:
             self._editor_box.setVisible(False)
             return
-        self._details_stack.setCurrentWidget(cursor['detail'])
+
         self._editor_box.setVisible(True)
+
+        if len(self._selected_cursors) == 1:
+            cursor = self._selected_cursors[0]
+            self._details_stack.setCurrentWidget(cursor['detail'])
+            self._enable_cursor_controls(cursor, enable_all=True)
+            self._refresh_editor_title()
+            return
+
+        # Multi-cursor selection: prefer showing an elliptic cursor if selected
+        # so non-shared fields (minor radius, angle) are displayed disabled.
+        active = None
+        for c in reversed(self._selected_cursors):
+            if c['type'] == 'elliptic':
+                active = c
+                break
+        if active is None:
+            active = self._selected_cursors[-1]
+
+        self._details_stack.setCurrentWidget(active['detail'])
+        shared = self._shared_params(self._selected_cursors)
+        self._enable_cursor_controls(active, shared_params=shared)
         self._refresh_editor_title()
 
+    def _enable_cursor_controls(
+        self, cursor, enable_all=False, shared_params=None
+    ):
+        """Enable or disable editor parameter inputs based on shared parameters."""
+        if shared_params is None:
+            shared_params = set()
+
+        param_widgets = {
+            'g': [cursor['g_spin']],
+            's': [cursor['s_spin']],
+            'radius': [cursor['radius_label'], cursor['radius_spin']],
+            'radius_minor': [
+                cursor['radius_minor_label'],
+                cursor['radius_minor_spin'],
+            ],
+            'angle': [cursor['elliptic_widget'], cursor['angle_spin']],
+            'phase_min': [cursor['phase_min_spin']],
+            'phase_max': [cursor['phase_max_spin']],
+            'modulation_min': [cursor['mod_min_spin']],
+            'modulation_max': [cursor['mod_max_spin']],
+        }
+
+        for param, widgets in param_widgets.items():
+            is_enabled = enable_all or (param in shared_params)
+            for w in widgets:
+                w.setEnabled(is_enabled)
+                if not enable_all:
+                    if is_enabled:
+                        w.setToolTip(
+                            "Batch edit: modifies all selected cursors."
+                        )
+                    else:
+                        w.setToolTip(
+                            "Disabled: parameter not shared across all selected cursors."
+                        )
+
     def _refresh_editor_title(self):
-        """Sync the editor box title with the selected cursor's identity."""
-        cursor = self._selected_cursor
-        if cursor is None:
+        """Sync the editor box title with the selected cursor(s)."""
+        if not self._selected_cursors:
             return
-        number = cursor['number_label'].text().rstrip('.')
-        shape = cursor['type_combo'].currentText()
-        self._editor_box.setTitle(f"Cursor {number} — {shape}")
+        if len(self._selected_cursors) == 1:
+            cursor = self._selected_cursors[0]
+            number = cursor['number_label'].text().rstrip('.')
+            shape = cursor['type_combo'].currentText()
+            self._editor_box.setTitle(f"Cursor {number} — {shape}")
+        else:
+            numbers = ", ".join(
+                c['number_label'].text().rstrip('.')
+                for c in self._selected_cursors
+            )
+            types = {c['type'] for c in self._selected_cursors}
+            shared = self._shared_params(self._selected_cursors)
+            if not shared:
+                self._editor_box.setTitle(
+                    f"Cursors {numbers} — No shared parameters"
+                )
+            elif len(types) == 1:
+                shape = self._selected_cursors[0]['type_combo'].currentText()
+                self._editor_box.setTitle(
+                    f"Cursors {numbers} — {shape} (Batch)"
+                )
+            else:
+                self._editor_box.setTitle(
+                    f"Cursors {numbers} — Shared Parameters (Batch)"
+                )
 
     def _resolve_cursor(self, cursor_or_idx):
         """Accept either a cursor dict or its index in ``self._cursors``."""
@@ -2620,12 +2808,16 @@ class CursorSelectionWidget(QWidget):
         # Keep the selection on a visible row: after a harmonic switch the
         # selected cursor's row may have been hidden.
         harmonic_cursors = self._current_harmonic_cursors()
-        if self._selected_cursor not in harmonic_cursors:
+        self._selected_cursors = [
+            c for c in self._selected_cursors if c in harmonic_cursors
+        ]
+        if not self._selected_cursors:
             self._select_cursor(
                 harmonic_cursors[0] if harmonic_cursors else None
             )
         else:
-            self._refresh_editor_title()
+            self._update_row_selection_highlights()
+            self._update_editor_for_selection()
 
     def _current_harmonic_cursors(self):
         """Return the cursors belonging to the harmonic on display."""
@@ -2641,9 +2833,9 @@ class CursorSelectionWidget(QWidget):
     def _on_cursor_type_changed(self, cursor):
         """Handle the shape combobox changing for a cursor."""
         cursor['type'] = cursor['type_combo'].currentData()
-        if cursor is self._selected_cursor:
-            self._refresh_editor_title()
         self._apply_type_visibility(cursor)
+        if cursor in self._selected_cursors:
+            self._update_editor_for_selection()
         self._update_cursor_patch(cursor)
         if self._dragging_cursor is None:
             if self._autoupdate_enabled:
@@ -2663,6 +2855,46 @@ class CursorSelectionWidget(QWidget):
         cursor['modulation_min'] = cursor['mod_min_spin'].value()
         cursor['modulation_max'] = cursor['mod_max_spin'].value()
         cursor['color'] = cursor['color_button'].color()
+
+    def _on_param_changed(self, cursor, param, value):
+        """Handle any parameter field change for a cursor."""
+        if cursor not in self._cursors:
+            return
+        cursor[param] = value
+        self._update_cursor_patch(cursor)
+
+        if (
+            len(self._selected_cursors) > 1
+            and cursor in self._selected_cursors
+        ):
+            shared = self._shared_params(self._selected_cursors)
+            if param in shared:
+                spin_key = (
+                    "mod_min_spin"
+                    if param == "modulation_min"
+                    else (
+                        "mod_max_spin"
+                        if param == "modulation_max"
+                        else f"{param}_spin"
+                    )
+                )
+                for other in self._selected_cursors:
+                    if other is not cursor:
+                        spin = other.get(spin_key)
+                        if spin is not None:
+                            spin.blockSignals(True)
+                            spin.setValue(value)
+                            other[param] = spin.value()
+                            spin.blockSignals(False)
+                        else:
+                            other[param] = value
+                        self._update_cursor_patch(other)
+
+        if self._dragging_cursor is None:
+            if self._autoupdate_enabled:
+                self._apply_selection()
+            else:
+                self._update_cursor_statistics()
 
     def _on_cursor_changed(self, cursor):
         """Handle any field change for a cursor row."""
@@ -2691,17 +2923,27 @@ class CursorSelectionWidget(QWidget):
         cursor['row'].deleteLater()
         self._details_stack.removeWidget(cursor['detail'])
         cursor['detail'].deleteLater()
-        was_selected = cursor is self._selected_cursor
+        was_selected = cursor in self._selected_cursors
         self._cursors.remove(cursor)
         if was_selected:
-            self._selected_cursor = None
+            self._selected_cursors.remove(cursor)
+            if self._last_clicked_cursor is cursor:
+                self._last_clicked_cursor = (
+                    self._selected_cursors[-1]
+                    if self._selected_cursors
+                    else None
+                )
 
         self._update_row_visibility()
         if was_selected:
-            harmonic_cursors = self._current_harmonic_cursors()
-            self._select_cursor(
-                harmonic_cursors[-1] if harmonic_cursors else None
-            )
+            if not self._selected_cursors:
+                harmonic_cursors = self._current_harmonic_cursors()
+                self._select_cursor(
+                    harmonic_cursors[-1] if harmonic_cursors else None
+                )
+            else:
+                self._update_row_selection_highlights()
+                self._update_editor_for_selection()
         self._refresh_calculate_button_if_ready()
 
         if not self._cursors:
