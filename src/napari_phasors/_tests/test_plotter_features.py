@@ -1422,6 +1422,152 @@ def test_contour_layer_settings_clicked(make_viewer_model, monkeypatch):
     assert plotter._contour_layer_colors == {"Layer1": (1, 0, 0, 1)}
 
 
+def _plotter_with_grouped_centers(make_viewer_model, assignments):
+    """Return a plotter showing grouped phasor centers for three layers."""
+    from napari_phasors._tests.test_plotter import (
+        create_image_layer_with_phasors,
+    )
+    from napari_phasors.plotter import PlotterWidget
+
+    viewer = make_viewer_model()
+    for index in range(3):
+        layer = create_image_layer_with_phasors()
+        layer.name = f"img{index}"
+        viewer.add_layer(layer)
+
+    plotter = PlotterWidget(viewer)
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        ["img0", "img1", "img2"]
+    )
+    plotter.image_layers_checkable_combobox.setPrimaryLayer("img0")
+    plotter._layer_selection_timer.stop()
+    plotter._process_layer_selection_change()
+
+    plotter._phasor_center_display_mode = "Grouped"
+    plotter._phasor_center_group_assignments = dict(assignments)
+    plotter._phasor_center_group_names = {1: "A", 2: "B"}
+    for key in (
+        "phasor_center_display_mode",
+        "phasor_center_group_assignments",
+        "phasor_center_group_names",
+    ):
+        plotter._update_setting_in_metadata(key, getattr(plotter, f"_{key}"))
+    plotter._on_phasor_center_toggled(True)
+    return plotter
+
+
+def _reselect(plotter, names):
+    """Check *names* and run the debounced selection handler immediately."""
+    plotter.image_layers_checkable_combobox.setCheckedItems(names)
+    plotter._layer_selection_timer.stop()
+    plotter._process_layer_selection_change()
+
+
+def test_phasor_center_group_dot_drops_when_its_layers_are_unchecked(
+    make_viewer_model,
+):
+    """A group with no selected layer left loses its center dot."""
+    plotter = _plotter_with_grouped_centers(
+        make_viewer_model, {"img0": 2, "img1": 1, "img2": 1}
+    )
+    assert len(plotter._phasor_center_artists) == 2
+
+    # Uncheck both layers of group A; the primary (group B) stays selected.
+    _reselect(plotter, ["img0"])
+
+    assert plotter._phasor_center_enabled is True
+    assert len(plotter._phasor_center_artists) == 1
+
+    _reselect(plotter, ["img0", "img1", "img2"])
+    assert len(plotter._phasor_center_artists) == 2
+
+    plotter.deleteLater()
+
+
+def test_phasor_center_dots_cleared_when_selection_change_disables_them(
+    make_viewer_model,
+):
+    """Dots never outlive the selection that produced them.
+
+    Unchecking the primary layer restores the settings of the new primary,
+    which may have phasor centers switched off. The dots drawn for the old
+    selection have to go with them.
+    """
+    plotter = _plotter_with_grouped_centers(
+        make_viewer_model, {"img0": 1, "img1": 1, "img2": 2}
+    )
+    assert len(plotter._phasor_center_artists) == 2
+
+    # Group A holds the primary layer, so unchecking it swaps the primary.
+    _reselect(plotter, ["img2"])
+    assert plotter._phasor_center_artists == []
+
+    # And unchecking everything leaves nothing behind either.
+    _reselect(plotter, [])
+    assert plotter._phasor_center_artists == []
+
+    plotter.deleteLater()
+
+
+def test_contour_dialog_uses_shared_group_metadata(
+    make_viewer_model, monkeypatch
+):
+    """Grouping stored on the layers wins over the plotter's stale copy.
+
+    Groups are shared with the histogram tabs through each layer's
+    ``settings['group']`` entry, so a grouping made there must be what the
+    contour dialog opens with.
+    """
+    from qtpy.QtWidgets import QDialog
+
+    from napari_phasors._tests.test_plotter import (
+        create_image_layer_with_phasors,
+    )
+    from napari_phasors.plotter import PlotterWidget
+
+    viewer = make_viewer_model()
+    layer1 = create_image_layer_with_phasors()
+    layer2 = create_image_layer_with_phasors()
+    viewer.add_layer(layer1)
+    viewer.add_layer(layer2)
+    plotter = PlotterWidget(viewer)
+    plotter.get_selected_layer_names = lambda: [layer1.name, layer2.name]
+
+    for layer, group_name in ((layer1, "Ctrl"), (layer2, "Trt")):
+        layer.metadata.setdefault('settings', {})['group'] = {
+            'name': group_name,
+            'color': [1.0, 0.0, 0.0],
+        }
+
+    # A stale grouping from before the layers were tagged.
+    plotter._contour_group_assignments = {layer1.name: 1, layer2.name: 1}
+    plotter._contour_group_names = {1: "Everything"}
+
+    captured = {}
+
+    class MockDialog:
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+
+        def exec(self):
+            return QDialog.Rejected
+
+    import napari_phasors.plotter
+
+    monkeypatch.setattr(
+        napari_phasors.plotter, "ContourLayerSettingsDialog", MockDialog
+    )
+
+    plotter._on_contour_layer_settings_clicked()
+
+    assignments = captured["group_assignments"]
+    names = captured["group_names"]
+    assert names[assignments[layer1.name]] == "Ctrl"
+    assert names[assignments[layer2.name]] == "Trt"
+
+    plotter.deleteLater()
+
+
 def test_phasor_center_settings_clicked(make_viewer_model, monkeypatch):
     """Test _on_phasor_center_settings_clicked callback."""
     from qtpy.QtWidgets import QDialog
