@@ -2,6 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pytest
 from matplotlib.collections import LineCollection
 from napari.layers import Image
 from phasorpy.component import phasor_component_fraction
@@ -1337,6 +1338,378 @@ def test_components_gamma_links_layers_and_histogram(
     assert first_component_layers[1].gamma == 0.5
     assert comp_widget.fractions_gamma == 0.5
     assert comp_widget.histogram_widget.gamma == 0.5
+
+
+def test_components_histogram_shows_several_components_at_once(
+    make_viewer_model,
+    qtbot,
+):
+    """Checking two components plots both fraction distributions together."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+    _setup_linear_projection(comp_widget)
+
+    name1, name2 = comp_widget._linear_projection_component_names()
+    combo = comp_widget.histogram_component_combobox
+
+    combo.setCheckedItems([name1, name2])
+
+    datasets = comp_widget.histogram_widget._datasets
+    assert len(datasets) == 2
+
+    fraction_layer = comp_widget.comp1_fractions_layer
+    first = np.asarray(fraction_layer.data, dtype=float).ravel()
+    first = first[np.isfinite(first)]
+    second = 1.0 - first
+
+    plotted = sorted(datasets, key=lambda label: name2 in label)
+    np.testing.assert_allclose(
+        np.sort(datasets[plotted[0]]), np.sort(first), rtol=1e-6
+    )
+    np.testing.assert_allclose(
+        np.sort(datasets[plotted[1]]), np.sort(second), rtol=1e-6
+    )
+
+    # Both distributions trace back to the same analysed image, so grouping
+    # made in any tab applies to both of them.
+    sources = comp_widget.histogram_widget._dataset_sources
+    assert set(sources) == set(datasets)
+    assert set(sources.values()) == {layer.name}
+
+    # The statistics dock keeps one row per analysed layer and adds a column
+    # block per component instead of repeating the layer once per component.
+    stats_table = parent.components_statistics_dock_widget.layer_stats_table
+    assert stats_table.rowCount() == 1
+    assert stats_table.item(0, 0).text() == layer.name
+    headers = [
+        stats_table.horizontalHeaderItem(col).text()
+        for col in range(stats_table.columnCount())
+    ]
+    assert headers[1].startswith(name1)
+    assert headers[5].startswith(name2)
+
+    # Merged mode pools layers, not components: each component keeps its own
+    # curve instead of being averaged into a single meaningless one. This
+    # Linear Projection pair has mirrored colormaps, so the curves are solid.
+    assert comp_widget.histogram_widget.display_mode == "Merged"
+    curves = comp_widget.histogram_widget.ax.lines
+    assert len(curves) == 2
+    assert sorted(str(curve.get_label()) for curve in curves) == sorted(
+        [name1, name2]
+    )
+
+    # Unchecking one goes back to a single distribution.
+    combo.setCheckedItems([name1])
+    assert len(comp_widget.histogram_widget._datasets) == 1
+
+
+def test_components_curve_uses_layer_colormap_and_follows_changes(
+    make_viewer_model,
+    qtbot,
+):
+    """Each component curve is drawn in its layer's colormap, live."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+    _setup_linear_projection(comp_widget)
+
+    name1, name2 = comp_widget._linear_projection_component_names()
+    comp_widget.histogram_component_combobox.setCheckedItems([name1, name2])
+
+    histogram = comp_widget.histogram_widget
+    fraction_layer = comp_widget.comp1_fractions_layer
+
+    stored = histogram._series_colormaps[name1]
+    np.testing.assert_allclose(stored[0], fraction_layer.colormap.colors)
+    # The second component reads the same colormap reversed, matching its
+    # inverted fraction scale.
+    np.testing.assert_allclose(
+        histogram._series_colormaps[name2][0],
+        np.asarray(fraction_layer.colormap.colors)[::-1],
+    )
+
+    # A mirrored pair is drawn solid by default; asking for the colormap
+    # draws each curve as a gradient in its own colormap.
+    assert histogram._series_style == "solid"
+    histogram._series_style_explicit = True
+    histogram.set_default_series_style("colormap")
+    histogram._series_style = "colormap"
+    histogram._render()
+    curves = [
+        artist
+        for artist in histogram.ax.collections
+        if isinstance(artist, LineCollection)
+    ]
+    assert len(curves) == 2
+
+    # Changing the layer's colormap updates the curve without a re-analysis.
+    fraction_layer.colormap = "viridis"
+    np.testing.assert_allclose(
+        histogram._series_colormaps[name1][0],
+        fraction_layer.colormap.colors,
+    )
+    assert not np.allclose(histogram._series_colormaps[name1][0], stored[0])
+
+
+def test_components_rename_follows_into_histogram_and_statistics(
+    make_napari_viewer,
+):
+    """Renaming a component relabels its curve, columns and every image."""
+    viewer = make_napari_viewer()
+    for index in range(2):
+        layer = create_image_layer_with_phasors()
+        layer.name = f"img{index}"
+        viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    parent.image_layers_checkable_combobox.setCheckedItems(["img0", "img1"])
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+
+    comp_widget.analysis_type_combo.setCurrentText("Component Fit")
+    for index, (g, s_coord) in enumerate(((0.15, 0.1), (0.85, 0.3))):
+        comp_widget.components[index].g_edit.setText(str(g))
+        comp_widget.components[index].s_edit.setText(str(s_coord))
+        comp_widget._on_component_coords_changed(index)
+    comp_widget._run_analysis()
+
+    combo = comp_widget.histogram_component_combobox
+    names = [combo.itemText(i) for i in range(combo.count())]
+    combo.setCheckedItems(names)
+
+    table = parent.components_statistics_dock_widget.layer_stats_table
+
+    def headers():
+        return [
+            table.horizontalHeaderItem(col).text()
+            for col in range(table.columnCount())
+        ]
+
+    assert headers()[1] == "Component 1 Center of Mass"
+
+    comp_widget.components[0].name_edit.setText("Free NADH")
+
+    # The renamed component stays checked, and is offered only once: every
+    # analysed image reports the new name, not just the primary one.
+    assert [combo.itemText(i) for i in range(combo.count())] == [
+        "Free NADH",
+        "Component 2",
+    ]
+    assert combo.checkedItems() == ["Free NADH", "Component 2"]
+    assert comp_widget.histogram_widget._series_names() == [
+        "Free NADH",
+        "Component 2",
+    ]
+    assert headers()[1] == "Free NADH Center of Mass"
+
+
+def test_components_mirrored_pair_defaults_to_solid_curves(
+    make_viewer_model,
+    qtbot,
+):
+    """Two mirrored Linear Projection components are drawn in solid colours."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+    _setup_linear_projection(comp_widget)
+
+    name1, name2 = comp_widget._linear_projection_component_names()
+    histogram = comp_widget.histogram_widget
+
+    # One component: its colormap gradient carries the fraction scale.
+    comp_widget.histogram_component_combobox.setCheckedItems([name1])
+    assert histogram._series_style == "colormap"
+
+    # Both: their colormaps are mirror images, so gradients would only
+    # confuse — solid colours instead, one per component.
+    comp_widget.histogram_component_combobox.setCheckedItems([name1, name2])
+    assert histogram._series_style == "solid"
+    assert len(histogram.ax.lines) == 2
+    assert [line.get_label() for line in histogram.ax.lines] == [name1, name2]
+
+    # A choice made in the settings dialog is not overridden afterwards.
+    histogram._series_style = "colormap"
+    histogram._series_style_explicit = True
+    comp_widget.update_component_histogram()
+    assert histogram._series_style == "colormap"
+
+
+def test_components_range_slider_spans_every_checked_component(
+    make_viewer_model,
+    qtbot,
+):
+    """The slider covers all checked components, not just the first one."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+    _setup_linear_projection(comp_widget)
+
+    name1, name2 = comp_widget._linear_projection_component_names()
+    histogram = comp_widget.histogram_component_combobox
+
+    histogram.setCheckedItems([name1, name2])
+
+    fraction_layer = comp_widget.comp1_fractions_layer
+    original = np.asarray(
+        fraction_layer.metadata.get(
+            'fraction_data_original', fraction_layer.data
+        ),
+        dtype=float,
+    )
+    original = original[np.isfinite(original)]
+    # The second component is 1 - the first, so together they span both ends.
+    expected_min = min(float(original.min()), float(1.0 - original.max()))
+    expected_max = max(float(original.max()), float(1.0 - original.min()))
+
+    factor = comp_widget.histogram_widget.range_factor
+    slider = comp_widget.histogram_widget.range_slider
+    assert slider.minimum() / factor == pytest.approx(expected_min, abs=1e-3)
+    assert slider.maximum() / factor == pytest.approx(expected_max, abs=1e-3)
+
+    # The handles are not clipped to the first component's contrast limits
+    # either, so neither distribution is cut off.
+    range_min, range_max = comp_widget.histogram_widget.get_range()
+    assert range_min == pytest.approx(expected_min, abs=1e-2)
+    assert range_max == pytest.approx(expected_max, abs=1e-2)
+
+
+def test_components_layer_visibility_follows_checked_components(
+    make_napari_viewer,
+):
+    """Only the fraction layers of the checked components stay visible."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    layer.name = "img0"
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    parent.image_layers_checkable_combobox.setCheckedItems(["img0"])
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+
+    comp_widget.analysis_type_combo.setCurrentText("Component Fit")
+    for idx, (g, s_coord) in enumerate(((0.2, 0.1), (0.8, 0.5))):
+        comp_widget.components[idx].g_edit.setText(str(g))
+        comp_widget.components[idx].s_edit.setText(str(s_coord))
+        comp_widget._on_component_coords_changed(idx)
+    comp_widget._run_analysis()
+
+    names = [
+        comp_widget.histogram_component_combobox.itemText(i)
+        for i in range(comp_widget.histogram_component_combobox.count())
+    ]
+    assert len(names) >= 2
+
+    def visible(component_name):
+        layers_map = comp_widget._get_fraction_layers_for_component(
+            component_name
+        )
+        return [fl.visible for fl in layers_map.values()]
+
+    comp_widget.histogram_component_combobox.setCheckedItems([names[0]])
+    assert all(visible(names[0]))
+    assert not any(visible(names[1]))
+
+    comp_widget.histogram_component_combobox.setCheckedItems([names[1]])
+    assert not any(visible(names[0]))
+    assert all(visible(names[1]))
+
+    # Checking both shows both.
+    comp_widget.histogram_component_combobox.setCheckedItems(names[:2])
+    assert all(visible(names[0]))
+    assert all(visible(names[1]))
+
+
+def test_components_multi_component_range_clips_shared_layer_once(
+    make_viewer_model,
+    qtbot,
+):
+    """The shared fraction layer is clipped once when both components show."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+    _setup_linear_projection(comp_widget)
+
+    name1, name2 = comp_widget._linear_projection_component_names()
+    comp_widget.histogram_component_combobox.setCheckedItems([name1, name2])
+
+    fraction_layer = comp_widget.comp1_fractions_layer
+    original = fraction_layer.metadata.get(
+        'fraction_data_original', fraction_layer.data
+    ).copy()
+
+    comp_widget._on_fraction_range_changed(0.2, 0.8)
+
+    # The first component owns the layer: it is clipped to the slider range
+    # rather than to the second component's mirrored range.
+    np.testing.assert_allclose(
+        fraction_layer.data,
+        np.clip(original, 0.2, 0.8),
+        rtol=1e-6,
+        atol=1e-9,
+        equal_nan=True,
+    )
+    assert len(comp_widget.histogram_widget._datasets) == 2
+
+
+def test_components_histogram_groups_saved_on_image_layer(
+    make_viewer_model,
+    qtbot,
+    monkeypatch,
+):
+    """Grouping the fraction histogram tags the analysed image layer."""
+    from qtpy.QtWidgets import QDialog
+
+    from napari_phasors._utils import HistogramSettingsDialog
+
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+
+    parent = PlotterWidget(viewer)
+    comp_widget = parent.components_tab
+    parent.tab_widget.setCurrentWidget(comp_widget)
+    _setup_linear_projection(comp_widget)
+
+    name1, _name2 = comp_widget._linear_projection_component_names()
+    comp_widget.histogram_component_combobox.setCheckedItems([name1])
+
+    histogram = comp_widget.histogram_widget
+    # Groups are keyed by the analysed image layer, not by the fraction curve.
+    histogram._group_assignments = {layer.name: 1}
+    histogram._group_names = {1: 'Ctrl'}
+    histogram._group_colors = {1: (1.0, 0.0, 0.0)}
+
+    def fake_exec(self):
+        self.mode_combo.setCurrentText('Grouped')
+        return QDialog.Accepted
+
+    monkeypatch.setattr(HistogramSettingsDialog, 'exec', fake_exec)
+    histogram._open_settings_dialog()
+
+    group = viewer.layers[layer.name].metadata['settings']['group']
+    assert group['name'] == 'Ctrl'
 
 
 def test_components_stats_combobox_mirrors_histogram_combobox(

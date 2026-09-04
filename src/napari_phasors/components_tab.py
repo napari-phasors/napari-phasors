@@ -80,6 +80,50 @@ class ComponentState:
     phasor_center_layers: list[str] = field(default_factory=list)
 
 
+class ComponentSelectorComboBox(CheckableComboBox):
+    """Component selector allowing one or several components at once.
+
+    Several component distributions can be compared side by side in the
+    histogram, so the selector is checkable. It keeps the single-selection
+    ``QComboBox`` API (:meth:`currentText` / :meth:`setCurrentText`) working
+    on the first checked entry, which is the one whose colormap drives the
+    plot's gradient and the range slider.
+
+    Parameters
+    ----------
+    tooltip : str, optional
+        Tooltip shown on the closed combobox.
+    parent : QWidget, optional
+        Parent widget.
+    """
+
+    def __init__(self, tooltip: str = "", parent=None):
+        """Build a checkable selector labelled in components, not layers."""
+        super().__init__(
+            parent=parent,
+            enable_primary_layer=False,
+            placeholder="Select components...",
+            unit="components",
+            no_selection_text="No component",
+            show_checked_list=True,
+        )
+        if tooltip:
+            self.setToolTip(tooltip)
+
+    def currentText(self) -> str:
+        """Return the first checked component, or ``""`` when none is."""
+        checked = self.checkedItems()
+        return checked[0] if checked else ""
+
+    def setCurrentText(self, text: str) -> None:
+        """Check *text* alone, leaving the selection unchanged if absent."""
+        if self.findText(text) < 0:
+            return
+        # ``setCheckedItems`` emits ``selectionChanged`` itself unless the
+        # caller blocked signals, which is exactly the wanted behaviour.
+        self.setCheckedItems([text])
+
+
 class ColorActionWidget(QLabel):
     """A menu entry drawn in *color* that triggers *action* when clicked.
 
@@ -526,23 +570,24 @@ class ComponentsWidget(QWidget):
         display_box_layout.addLayout(buttons_row)
         layout.addWidget(display_box)
 
-        # Component selector combobox (will be inserted into the histogram dock widget)
-        self.histogram_component_combobox = QComboBox()
-        self.histogram_component_combobox.setToolTip(
-            "Select which component's fraction data to display in the histogram."
+        # Component selector combobox (will be inserted into the histogram dock
+        # widget). Several components can be checked at once so their fraction
+        # distributions are compared in the same plot.
+        self.histogram_component_combobox = ComponentSelectorComboBox(
+            tooltip="Select which components' fraction data to display in "
+            "the histogram. Check several to compare them in one plot."
         )
-        self.histogram_component_combobox.currentIndexChanged.connect(
+        self.histogram_component_combobox.selectionChanged.connect(
             self._on_histogram_component_changed
         )
 
         # Mirror of the selector shown in the statistics dock so the component
         # can be changed there too. Kept in sync with the histogram combobox.
-        self.stats_component_combobox = QComboBox()
-        self.stats_component_combobox.setToolTip(
-            "Select which component's fraction data to display in the "
-            "histogram and statistics."
+        self.stats_component_combobox = ComponentSelectorComboBox(
+            tooltip="Select which components' fraction data to display in "
+            "the histogram and statistics."
         )
-        self.stats_component_combobox.currentIndexChanged.connect(
+        self.stats_component_combobox.selectionChanged.connect(
             self._on_stats_component_changed
         )
 
@@ -2867,10 +2912,17 @@ class ComponentsWidget(QWidget):
                         'component_analysis'
                     ]['components'][idx_str].get('name')
 
-            if old_name != name:
+            renamed = old_name != name
+            if renamed:
                 self._update_fraction_layer_names(idx, old_name, name)
 
             self._update_component_name(idx, name)
+
+            if renamed:
+                self._propagate_component_name(idx, old_name, name)
+                # After the metadata carries the new name, so the selector is
+                # repopulated from the names the rest of the tab now reports.
+                self._refresh_histogram_after_rename(idx, old_name, name)
 
         if comp.dot is None:
             return
@@ -2902,6 +2954,77 @@ class ComponentsWidget(QWidget):
             )
 
         self.parent_widget.canvas_widget.canvas.draw_idle()
+
+    def _propagate_component_name(self, idx: int, old_name: str, name: str):
+        """Give every analysed image the same name for this component.
+
+        One analysis runs on all the selected images at once, so a component's
+        name belongs to the analysis rather than to the primary image. Linear
+        Projection fraction layers carry the name in their layer name, while
+        Component Fit layers read it from their own source image's settings —
+        both have to follow the rename, or the other images keep reporting the
+        old name and the histogram offers it as a separate component.
+        """
+        old_display = old_name or f"Component {idx + 1}"
+        new_display = name or f"Component {idx + 1}"
+        stored_name = name if name else None
+
+        for layer in list(self.viewer.layers):
+            if not isinstance(layer, Image):
+                continue
+
+            # Component Fit: the display name lives in the source's settings.
+            tag = layer.metadata.get('phasor_component_fraction')
+            if isinstance(tag, dict) and tag.get('component_index') == idx:
+                source = tag.get('source_layer')
+                if source and source in self.viewer.layers:
+                    components = (
+                        self.viewer.layers[source]
+                        .metadata.get('settings', {})
+                        .get('component_analysis', {})
+                        .get('components', {})
+                    )
+                    entry = components.get(str(idx))
+                    if isinstance(entry, dict):
+                        entry['name'] = stored_name
+                continue
+
+            # Linear Projection: the display name is part of the layer name.
+            # The primary image's layer is renamed by
+            # :meth:`_update_fraction_layer_names`, which also refreshes
+            # ``comp1_fractions_layer``.
+            for sep in (" fractions: ", " fraction: "):
+                prefix = f"{old_display}{sep}"
+                if not layer.name.startswith(prefix):
+                    continue
+                source = layer.name[len(prefix) :]
+                if source == self.current_image_layer_name:
+                    break
+                new_layer_name = f"{new_display}{sep}{source}"
+                if new_layer_name not in self.viewer.layers:
+                    layer.name = new_layer_name
+                break
+
+    def _refresh_histogram_after_rename(
+        self, idx: int, old_name: str, new_name: str
+    ):
+        """Follow a component rename in the selector, plot and statistics.
+
+        The component name is the histogram's series name and the statistics
+        table's column prefix, so renaming one has to repopulate the selector
+        (carrying the checked components across the new name), redraw the
+        curves and relabel the columns.
+        """
+        if not hasattr(self, 'histogram_component_combobox'):
+            return
+        old_display = old_name or f"Component {idx + 1}"
+        new_display = new_name or f"Component {idx + 1}"
+        if old_display == new_display:
+            return
+
+        self._update_histogram_combobox(renamed={old_display: new_display})
+        self._sync_fraction_layer_visibility()
+        self.update_component_histogram()
 
     def _update_fraction_layer_names(
         self, idx: int, old_name: str, new_name: str
@@ -3878,6 +4001,10 @@ class ComponentsWidget(QWidget):
                 comp_idx, selected_component, layer
             )
 
+        # Any checked component's curve is drawn in that component's colormap,
+        # so follow the change even when it is not the primary one.
+        self._refresh_histogram_series_colormaps()
+
     def _on_contrast_limits_changed(self, event):
         """Handle changes to contrast limits of any fraction layer."""
         layer = event.source
@@ -3970,6 +4097,10 @@ class ComponentsWidget(QWidget):
             self._refresh_second_component_colormap(
                 comp_idx, selected_component, layer
             )
+
+        # Any checked component's curve is drawn in that component's colormap,
+        # so follow the change even when it is not the primary one.
+        self._refresh_histogram_series_colormaps()
 
     def _refresh_second_component_colormap(
         self, comp_idx, selected_component, layer
@@ -5685,9 +5816,24 @@ class ComponentsWidget(QWidget):
         fl = fraction_layers_map.get(img_name)
         return fl.name if fl is not None else img_name
 
-    def _apply_histogram_group_remap(
-        self, fraction_layers_map, selected_text, invert
-    ):
+    def _resolve_selected_components(self):
+        """Return the checked components that actually have fraction data.
+
+        Returns
+        -------
+        list of tuple
+            ``[(component_name, {image_layer_name: Image}, invert)]`` in the
+            order the components are checked. The first entry is the one whose
+            colormap drives the plot gradient and the range slider.
+        """
+        resolved = []
+        for comp_name in self._selected_histogram_components():
+            layers_map, invert = self._resolve_histogram_component(comp_name)
+            if layers_map:
+                resolved.append((comp_name, layers_map, invert))
+        return resolved
+
+    def _apply_histogram_group_remap(self, resolved):
         """Carry histogram grouping/colors across a component change.
 
         The histogram widget keys its group assignments and per-layer colors by
@@ -5696,32 +5842,114 @@ class ComponentsWidget(QWidget):
         img"``), which would otherwise orphan those mappings and collapse every
         dataset into the default group in Grouped mode. Remap the persisted
         state from the previously displayed labels to the new ones, keyed by the
-        shared source image, before feeding the new data.
+        component and its source image, before feeding the new data.
+
+        Parameters
+        ----------
+        resolved : list of tuple
+            As returned by :meth:`_resolve_selected_components`.
         """
-        image_to_label = {
-            img_name: self._histogram_label_for_image(
-                img_name, fraction_layers_map, selected_text, invert
-            )
-            for img_name in fraction_layers_map
-        }
-        previous = getattr(self, '_histogram_label_by_image', None)
+        key_to_label = {}
+        for comp_name, layers_map, invert in resolved:
+            for img_name in layers_map:
+                key_to_label[(comp_name, img_name)] = (
+                    self._histogram_label_for_image(
+                        img_name, layers_map, comp_name, invert
+                    )
+                )
+
+        previous = getattr(self, '_histogram_label_by_key', None)
         if previous:
             old_to_new = {
-                previous[img_name]: label
-                for img_name, label in image_to_label.items()
-                if img_name in previous
+                previous[key]: label
+                for key, label in key_to_label.items()
+                if key in previous and previous[key] != label
             }
             if old_to_new:
                 self.histogram_widget.remap_dataset_keys(old_to_new)
-        self._histogram_label_by_image = image_to_label
+        self._histogram_label_by_key = key_to_label
 
-    def _update_histogram_combobox(self):
+    def _feed_histogram_datasets(self, resolved, data_by_component):
+        """Label, slice and hand the per-component fraction data to the plot.
+
+        Parameters
+        ----------
+        resolved : list of tuple
+            As returned by :meth:`_resolve_selected_components`.
+        data_by_component : dict
+            ``{component_name: {image_layer_name: np.ndarray}}`` fraction data,
+            already inverted where the component requires it.
+        """
+        per_layer = {}
+        sources = {}
+        series = {}
+        series_colors = {}
+        series_colormaps = {}
+        for comp_name, layers_map, invert in resolved:
+            labeled = self._label_fraction_datasets(
+                data_by_component.get(comp_name, {}),
+                layers_map,
+                comp_name,
+                invert,
+            )
+            per_layer.update(labeled)
+            for img_name in data_by_component.get(comp_name, {}):
+                label = self._histogram_label_for_image(
+                    img_name, layers_map, comp_name, invert
+                )
+                sources[label] = img_name
+                series[label] = comp_name
+            series_colors[comp_name] = self._component_curve_color(
+                layers_map, invert
+            )
+            series_colormaps[comp_name] = self._component_colormap(
+                comp_name, layers_map, invert
+            )
+
+        if not per_layer:
+            self.histogram_widget.clear()
+            return
+
+        # Groups belong to the analysed image, not to one component's fraction
+        # layer, so every component of an image lands in the same group and
+        # the grouping is shared with the other tabs.
+        self.histogram_widget.set_dataset_sources(sources)
+        # Merged mode pools the layers of a component, never two components:
+        # the average of two different fractions describes neither. Each
+        # component's curve is drawn in its own layer colormap.
+        self.histogram_widget.set_dataset_series(
+            series, colors=series_colors, colormaps=series_colormaps
+        )
+        self.histogram_widget.set_default_series_style(
+            self._default_series_style(resolved)
+        )
+        self._histogram_series = series
+
+        per_layer = self._slice_datasets_for_frame(per_layer)
+        if len(per_layer) > 1:
+            self.histogram_widget.update_multi_data(per_layer)
+        else:
+            label, data = next(iter(per_layer.items()))
+            self.histogram_widget.update_data(data, label=label)
+
+    def _update_histogram_combobox(self, renamed=None):
         """Populate the component selector comboboxes with fraction layers.
 
         The histogram and statistics docks each show a combobox; both are
-        populated with the same entries and kept in sync.
+        populated with the same entries and kept in sync. The components the
+        user had checked stay checked as long as they still exist; when none
+        of them do, the first entry is checked so the histogram is never
+        left blank.
+
+        Parameters
+        ----------
+        renamed : dict, optional
+            ``{old_name: new_name}`` applied to the checked components, so a
+            component renamed in the tab keeps its place in the selection.
         """
-        current_text = self.histogram_component_combobox.currentText()
+        checked = self.histogram_component_combobox.checkedItems()
+        if renamed:
+            checked = [renamed.get(name, name) for name in checked]
 
         comp_names = list(self._get_component_names_from_fraction_layers())
 
@@ -5735,6 +5963,10 @@ class ComponentsWidget(QWidget):
         ):
             comp_names.append(name2)
 
+        still_checked = [name for name in checked if name in comp_names]
+        if not still_checked and comp_names:
+            still_checked = comp_names[:1]
+
         for combobox in (
             self.histogram_component_combobox,
             self.stats_component_combobox,
@@ -5743,20 +5975,20 @@ class ComponentsWidget(QWidget):
             combobox.clear()
             for comp_name in comp_names:
                 combobox.addItem(comp_name)
-            idx = combobox.findText(current_text)
-            if idx >= 0:
-                combobox.setCurrentIndex(idx)
+            combobox.setCheckedItems(still_checked)
             combobox.blockSignals(False)
 
-    def _on_histogram_component_changed(self, index):
-        """Handle change of the selected component in the histogram combobox."""
+    def _on_histogram_component_changed(self):
+        """Handle a change of the checked components in the histogram combobox."""
         self._mirror_component_selection(
             self.histogram_component_combobox, self.stats_component_combobox
         )
+        # Show the fraction layers of the components now plotted, hide the rest.
+        self._sync_fraction_layer_visibility()
         self.update_component_histogram()
 
-    def _on_stats_component_changed(self, index):
-        """Handle change of the selected component in the statistics combobox.
+    def _on_stats_component_changed(self):
+        """Handle a change of the checked components in the statistics combobox.
 
         Mirrors the choice onto the histogram combobox, which is the canonical
         selector and refreshes the histogram/statistics via its own signal.
@@ -5766,29 +5998,44 @@ class ComponentsWidget(QWidget):
         )
 
     def _mirror_component_selection(self, source, target):
-        """Copy the current selection from ``source`` to ``target`` combobox."""
+        """Copy the checked components from ``source`` to ``target`` combobox."""
         if self._syncing_component_comboboxes:
             return
-        text = source.currentText()
-        if target.currentText() == text:
-            return
-        idx = target.findText(text)
-        if idx < 0:
+        checked = source.checkedItems()
+        if target.checkedItems() == checked:
             return
         self._syncing_component_comboboxes = True
         try:
-            target.setCurrentIndex(idx)
+            target.setCheckedItems(checked)
         finally:
             self._syncing_component_comboboxes = False
 
-    def _sync_fraction_layer_visibility(self):
-        """Match fraction layer visibility to the current layer selection.
+    def _selected_histogram_components(self):
+        """Return the component names checked in the histogram selector."""
+        return self.histogram_component_combobox.checkedItems()
 
-        Fraction layers of deselected image layers are hidden instead of
-        removed, so re-selecting the image layer restores them immediately.
-        No-op writes are skipped to avoid redundant napari redraw events.
+    def _sync_fraction_layer_visibility(self):
+        """Match fraction layer visibility to what the histogram is showing.
+
+        A fraction layer is visible when its source image is checked in
+        *Phasor Layers* and its component is checked in the histogram's
+        component selector, so the image on screen always shows the
+        distributions being plotted. Layers are hidden rather than removed, so
+        re-checking either restores them immediately. No-op writes are skipped
+        to avoid redundant napari redraw events.
+
+        While no component is checked (before an analysis has produced any)
+        the component filter is not applied, leaving the selection in *Phasor
+        Layers* in sole charge.
         """
         selected_names = self._get_selected_image_layer_names()
+        resolved = self._resolve_selected_components()
+        shown_layer_ids = {
+            id(fl)
+            for _name, layers_map, _inv in resolved
+            for fl in layers_map.values()
+        }
+        filter_by_component = bool(self._selected_histogram_components())
         self._updating_linked_layers = True
         try:
             for layer in self.viewer.layers:
@@ -5798,6 +6045,10 @@ class ComponentsWidget(QWidget):
                 if source is None:
                     continue
                 desired_visible = source in selected_names
+                if filter_by_component:
+                    desired_visible = (
+                        desired_visible and id(layer) in shown_layer_ids
+                    )
                 if layer.visible != desired_visible:
                     layer.visible = desired_visible
         finally:
@@ -5810,132 +6061,233 @@ class ComponentsWidget(QWidget):
         unchecked, so the histogram, statistics and fraction layer visibility
         always follow the current selection.
         """
-        self._sync_fraction_layer_visibility()
         self._update_histogram_combobox()
+        self._sync_fraction_layer_visibility()
         self.update_component_histogram()
+
+    def _component_colormap(self, comp_name, layers_map, invert):
+        """Return ``(colors, contrast_limits, gamma)`` for one component.
+
+        The second Linear Projection component has no layer of its own: its
+        fraction is ``1 - first``, so the first component's colormap and
+        contrast limits are reversed to keep the colors consistent with the
+        component line gradient in the phasor plot.
+        """
+        layer = next(iter(layers_map.values()))
+        colors = layer.colormap.colors
+        limits = list(layer.contrast_limits)
+        if invert:
+            colors = np.asarray(colors)[::-1]
+            limits = [1.0 - limits[1], 1.0 - limits[0]]
+        return colors, limits, layer.gamma
+
+    def _active_fraction_limits(self, resolved):
+        """Return the union of the contrast limits of every checked component.
+
+        The range slider acts on one shared fraction scale, so its handles
+        have to span what all the checked components and all their layers are
+        currently displaying — clipping to the first component's limits would
+        cut the others off.
+
+        Returns
+        -------
+        tuple of float or None
+            ``(min, max)``, or None when no layer has usable limits.
+        """
+        lows = []
+        highs = []
+        for _comp_name, layers_map, invert in resolved:
+            for fl in layers_map.values():
+                low, high = (float(v) for v in fl.contrast_limits)
+                if invert:
+                    low, high = 1.0 - high, 1.0 - low
+                lows.append(low)
+                highs.append(high)
+        if not lows:
+            return None
+        return min(lows), max(highs)
+
+    @staticmethod
+    def _default_series_style(resolved):
+        """Return how the component curves should be coloured by default.
+
+        Linear Projection's second component is the first one inverted, so
+        their colormaps are mirror images: drawn as gradients the two curves
+        run in opposite directions and read as noise. Propose solid colours
+        whenever such a mirrored pair is on screen, and the layer colormaps —
+        which are distinct per component — otherwise. The choice is only a
+        default: the Histogram Settings dialog overrides it.
+        """
+        if len(resolved) > 1 and any(
+            invert for _name, _layers, invert in resolved
+        ):
+            return "solid"
+        return "colormap"
+
+    def _refresh_histogram_series_colormaps(self):
+        """Re-send the component colormaps after a layer's colormap changed.
+
+        Keeps each curve drawn in the colormap its own fraction layer is
+        displayed with — including contrast limits and gamma — without
+        recomputing any histogram.
+        """
+        histogram = getattr(self, 'histogram_widget', None)
+        if histogram is None or not getattr(self, '_histogram_series', None):
+            return
+
+        colormaps = {}
+        colors = {}
+        for (
+            comp_name,
+            layers_map,
+            invert,
+        ) in self._resolve_selected_components():
+            colormaps[comp_name] = self._component_colormap(
+                comp_name, layers_map, invert
+            )
+            colors[comp_name] = self._component_curve_color(layers_map, invert)
+        if not colormaps:
+            return
+        histogram.set_dataset_series(
+            self._histogram_series, colors=colors, colormaps=colormaps
+        )
+        histogram.set_series_colormaps(colormaps)
+
+    def _component_curve_color(self, layers_map, invert):
+        """Return the color standing for a component in the histogram.
+
+        The end of the component's own fraction colormap is the color its
+        pixels are drawn with in the image, so using it for the curve ties the
+        histogram to what is on screen. The inverted (Linear Projection
+        second) component reads the colormap from the other end, matching its
+        reversed fraction scale.
+        """
+        layer = next(iter(layers_map.values()))
+        colors = np.asarray(layer.colormap.colors)
+        if colors.size == 0:
+            return None
+        return tuple(colors[0][:3] if invert else colors[-1][:3])
 
     def _on_fraction_range_changed(self, min_val, max_val):
         """Handle range slider changes on the fraction histogram.
 
-        Clips fraction layers to the specified range and refreshes the
-        histogram accordingly.
+        Clips the fraction layers of every checked component to the specified
+        range and refreshes the histogram accordingly. A layer already clipped
+        for an earlier component is left alone: the Linear Projection second
+        component shares the first one's layer, and clipping it twice (once
+        per component, with mirrored bounds) would fight with itself.
         """
-        selected_text = self.histogram_component_combobox.currentText()
-        if not selected_text:
+        resolved = self._resolve_selected_components()
+        if not resolved:
             return
 
-        fraction_layers_map, invert = self._resolve_histogram_component(
-            selected_text
-        )
-        if not fraction_layers_map:
-            return
-
-        # When the second component is displayed, the slider acts on its
-        # fraction (1 - first). Clipping it to [min_val, max_val] is equivalent
-        # to clipping the underlying first-component layer to [1-max, 1-min].
-        if invert:
-            layer_min, layer_max = 1.0 - max_val, 1.0 - min_val
-        else:
-            layer_min, layer_max = min_val, max_val
-
-        clipped_data = {}
+        clipped_by_component = {}
+        clipped_layers = set()
         self._updating_linked_layers = True
         try:
-            for img_name, fl in fraction_layers_map.items():
-                # Use original (unclipped) values when available so expanding the
-                # slider range can restore previous data.
-                original = fl.metadata.get('fraction_data_original', fl.data)
-                clipped = np.clip(original, layer_min, layer_max)
-                fl.data = clipped
+            for comp_name, layers_map, invert in resolved:
+                # When the second component is displayed, the slider acts on
+                # its fraction (1 - first). Clipping it to [min_val, max_val]
+                # is equivalent to clipping the underlying first-component
+                # layer to [1-max, 1-min].
+                if invert:
+                    layer_min, layer_max = 1.0 - max_val, 1.0 - min_val
+                else:
+                    layer_min, layer_max = min_val, max_val
 
-                current_limits = np.asarray(fl.contrast_limits, dtype=float)
-                target_limits = np.asarray([layer_min, layer_max], dtype=float)
-                if not np.allclose(current_limits, target_limits):
-                    fl.contrast_limits = [layer_min, layer_max]
+                component_data = {}
+                for img_name, fl in layers_map.items():
+                    if id(fl) in clipped_layers:
+                        clipped = np.asarray(fl.data, dtype=float)
+                    else:
+                        # Use original (unclipped) values when available so
+                        # expanding the slider range can restore previous data.
+                        original = fl.metadata.get(
+                            'fraction_data_original', fl.data
+                        )
+                        clipped = np.clip(original, layer_min, layer_max)
+                        fl.data = clipped
+                        clipped_layers.add(id(fl))
 
-                clipped_data[img_name] = 1.0 - clipped if invert else clipped
+                        current_limits = np.asarray(
+                            fl.contrast_limits, dtype=float
+                        )
+                        target_limits = np.asarray(
+                            [layer_min, layer_max], dtype=float
+                        )
+                        if not np.allclose(current_limits, target_limits):
+                            fl.contrast_limits = [layer_min, layer_max]
+
+                    component_data[img_name] = (
+                        1.0 - clipped if invert else clipped
+                    )
+                clipped_by_component[comp_name] = component_data
         finally:
             self._updating_linked_layers = False
 
         # The phasor-plot line gradient is always expressed in first-component
         # fraction space, so keep ``colormap_contrast_limits`` in that space.
-        self.colormap_contrast_limits = [layer_min, layer_max]
-        first_layer = next(iter(fraction_layers_map.values()))
-        colormap_colors = first_layer.colormap.colors
-        if invert:
-            colormap_colors = np.asarray(colormap_colors)[::-1]
+        primary_name, primary_layers, primary_invert = resolved[0]
+        if primary_invert:
+            self.colormap_contrast_limits = [1.0 - max_val, 1.0 - min_val]
+        else:
+            self.colormap_contrast_limits = [min_val, max_val]
+        colormap_colors, _limits, gamma = self._component_colormap(
+            primary_name, primary_layers, primary_invert
+        )
         self.histogram_widget.update_colormap(
             colormap_colors=colormap_colors,
             contrast_limits=[min_val, max_val],
-            gamma=first_layer.gamma,
+            gamma=gamma,
         )
 
-        # Feed the histogram one dataset per selected layer (labelled after
-        # the analysis fraction layer, as in the FRET tab) so the Merged /
-        # Individual layers / Grouped display modes and per-row statistics
-        # all work.
-        self._apply_histogram_group_remap(
-            fraction_layers_map, selected_text, invert
-        )
-        per_layer = self._label_fraction_datasets(
-            clipped_data, fraction_layers_map, selected_text, invert
-        )
-        per_layer = self._slice_datasets_for_frame(per_layer)
-        if len(per_layer) > 1:
-            self.histogram_widget.update_multi_data(per_layer)
-        else:
-            label, data = next(iter(per_layer.items()))
-            self.histogram_widget.update_data(data, label=label)
+        # Feed the histogram one dataset per selected layer and component
+        # (labelled after the analysis fraction layer, as in the FRET tab) so
+        # the Merged / Individual layers / Grouped display modes and per-row
+        # statistics all work.
+        self._apply_histogram_group_remap(resolved)
+        self._feed_histogram_datasets(resolved, clipped_by_component)
 
         self.draw_line_between_components()
 
     def update_component_histogram(self):
-        """Update the histogram with the fraction data of the selected component."""
-        selected_text = self.histogram_component_combobox.currentText()
-        if not selected_text:
+        """Update the histogram with the fraction data of the checked components.
+
+        Several components can be checked at once; each one contributes its own
+        dataset per analysed image, so their distributions are drawn together.
+        The first checked component drives the colormap gradient and the range
+        slider, which act on a single fraction scale shared by all of them.
+        """
+        resolved = self._resolve_selected_components()
+        if not resolved:
             self.histogram_widget.clear()
             self.histogram_widget.hide()
             return
 
-        fraction_layers_map, invert = self._resolve_histogram_component(
-            selected_text
+        primary_name, primary_layers, primary_invert = resolved[0]
+        colormap_colors, contrast_limits, gamma = self._component_colormap(
+            primary_name, primary_layers, primary_invert
         )
-        if not fraction_layers_map:
-            self.histogram_widget.clear()
-            self.histogram_widget.hide()
-            return
-
-        first_layer = next(iter(fraction_layers_map.values()))
-        colormap_colors = first_layer.colormap.colors
-        contrast_limits = list(first_layer.contrast_limits)
-        if invert:
-            # Second component: fraction is 1 - first, so reverse the colormap
-            # and the contrast limits to keep colors consistent with the
-            # component line gradient in the phasor plot.
-            colormap_colors = np.asarray(colormap_colors)[::-1]
-            contrast_limits = [
-                1.0 - contrast_limits[1],
-                1.0 - contrast_limits[0],
-            ]
 
         self.histogram_widget.update_colormap(
             colormap_colors=colormap_colors,
             contrast_limits=contrast_limits,
-            gamma=first_layer.gamma,
+            gamma=gamma,
         )
 
-        # Ensure the range slider uses the full original data extent.
-        # Without this, the default slider span (0..100 with factor=1000)
-        # limits the max to 0.1 and causes max values to snap/reset.
+        # Ensure the range slider uses the full original data extent of every
+        # checked component. Without this, the default slider span (0..100 with
+        # factor=1000) limits the max to 0.1 and causes max values to snap.
         original_arrays = []
-        for fl in fraction_layers_map.values():
-            original = fl.metadata.get('fraction_data_original', fl.data)
-            valid = np.asarray(original, dtype=float)
-            if invert:
-                valid = 1.0 - valid
-            valid = valid[np.isfinite(valid)]
-            if valid.size > 0:
-                original_arrays.append(valid)
+        for _comp_name, layers_map, invert in resolved:
+            for fl in layers_map.values():
+                original = fl.metadata.get('fraction_data_original', fl.data)
+                valid = np.asarray(original, dtype=float)
+                if invert:
+                    valid = 1.0 - valid
+                valid = valid[np.isfinite(valid)]
+                if valid.size > 0:
+                    original_arrays.append(valid)
 
         if original_arrays:
             pooled = np.concatenate(original_arrays)
@@ -5944,10 +6296,11 @@ class ComponentsWidget(QWidget):
             if data_max <= data_min:
                 data_max = data_min + 0.01
 
-            # Keep the current active display range from the layer, but ensure
-            # slider bounds span the full data extent.
-            range_min = float(contrast_limits[0])
-            range_max = float(contrast_limits[1])
+            # Keep the current active display range, but take it from every
+            # checked component and layer rather than from the first one, so
+            # the handles never cut off a distribution that is on screen.
+            active_limits = self._active_fraction_limits(resolved)
+            range_min, range_max = active_limits or (data_min, data_max)
             range_min = max(data_min, min(range_min, data_max))
             range_max = max(data_min, min(range_max, data_max))
             if range_max <= range_min:
@@ -5956,7 +6309,7 @@ class ComponentsWidget(QWidget):
 
             # ``colormap_contrast_limits`` drives the phasor-plot line gradient,
             # which is always expressed in first-component fraction space.
-            if invert:
+            if primary_invert:
                 self.colormap_contrast_limits = [
                     1.0 - range_max,
                     1.0 - range_min,
@@ -5966,7 +6319,7 @@ class ComponentsWidget(QWidget):
             self.histogram_widget.update_colormap(
                 colormap_colors=colormap_colors,
                 contrast_limits=[range_min, range_max],
-                gamma=first_layer.gamma,
+                gamma=gamma,
             )
 
             self.histogram_widget.set_range(
@@ -5976,32 +6329,24 @@ class ComponentsWidget(QWidget):
                 slider_max=data_max,
             )
 
-        # Feed the histogram one dataset per selected layer (labelled after
-        # the analysis fraction layer - e.g. "Component 2 fraction: <image>" -
-        # as in the FRET tab) so the Merged / Individual layers / Grouped
-        # display modes and per-row statistics all work.
-        raw_data = {
-            img_name: (
-                1.0 - np.asarray(fl.data, dtype=float)
-                if invert
-                else np.asarray(fl.data, dtype=float)
-            )
-            for img_name, fl in fraction_layers_map.items()
-        }
-        self._apply_histogram_group_remap(
-            fraction_layers_map, selected_text, invert
-        )
-        per_layer = self._label_fraction_datasets(
-            raw_data, fraction_layers_map, selected_text, invert
-        )
+        # Feed the histogram one dataset per selected layer and component
+        # (labelled after the analysis fraction layer - e.g. "Component 2
+        # fraction: <image>" - as in the FRET tab) so the Merged / Individual
+        # layers / Grouped display modes and per-row statistics all work.
+        raw_by_component = {}
+        for comp_name, layers_map, invert in resolved:
+            raw_by_component[comp_name] = {
+                img_name: (
+                    1.0 - np.asarray(fl.data, dtype=float)
+                    if invert
+                    else np.asarray(fl.data, dtype=float)
+                )
+                for img_name, fl in layers_map.items()
+            }
+        self._apply_histogram_group_remap(resolved)
         # In per-frame mode only the displayed timepoint is summarised; the
         # slider bounds above stay pooled so they don't jump while playing.
-        per_layer = self._slice_datasets_for_frame(per_layer)
-        if len(per_layer) > 1:
-            self.histogram_widget.update_multi_data(per_layer)
-        else:
-            label, data = next(iter(per_layer.items()))
-            self.histogram_widget.update_data(data, label=label)
+        self._feed_histogram_datasets(resolved, raw_by_component)
 
         self.histogram_widget.show()
 
