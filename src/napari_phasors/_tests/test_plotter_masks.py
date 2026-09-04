@@ -406,6 +406,85 @@ def test_mask_assignment_dialog_apply_all_differing_masks_ignores_stale_choice(
     dialog.close()
 
 
+def test_mask_assignment_dialog_auto_assign_button_state():
+    """Test that Auto-assign button enablement depends on available masks."""
+    from napari_phasors.plotter import MaskAssignmentDialog
+
+    # No masks available
+    dialog_empty = MaskAssignmentDialog(
+        image_layer_names=["layer_A", "layer_B"],
+        mask_layer_names=[],
+        parent=None,
+    )
+    assert hasattr(dialog_empty, "auto_assign_button")
+    assert not dialog_empty.auto_assign_button.isEnabled()
+    dialog_empty.close()
+
+    # Masks available
+    dialog_with_masks = MaskAssignmentDialog(
+        image_layer_names=["layer_A", "layer_B"],
+        mask_layer_names=["mask_A", "mask_B"],
+        parent=None,
+    )
+    assert dialog_with_masks.auto_assign_button.isEnabled()
+    dialog_with_masks.close()
+
+
+def test_mask_assignment_dialog_rank_mask_candidates():
+    """Test _rank_mask_candidates ranking accuracy."""
+    from napari_phasors.plotter import MaskAssignmentDialog
+
+    masks = [
+        "other_sample_mask",
+        "sample_1",
+        "sample_1_mask",
+        "sample_2_roi",
+    ]
+
+    # Exact match comes first
+    ranked = MaskAssignmentDialog._rank_mask_candidates("sample_1", masks)
+    assert ranked[0] == "sample_1"
+    assert "sample_1_mask" in ranked
+
+    # Substring match
+    ranked2 = MaskAssignmentDialog._rank_mask_candidates("sample_2", masks)
+    assert ranked2[0] == "sample_2_roi"
+
+    # No match
+    ranked3 = MaskAssignmentDialog._rank_mask_candidates(
+        "completely_different_name_xyz", masks
+    )
+    assert len(ranked3) == 0
+
+
+def test_mask_assignment_dialog_auto_assign_action():
+    """Test clicking Auto-assign matches each layer to the best mask."""
+    from napari_phasors.plotter import MaskAssignmentDialog
+
+    images = ["embryo_1", "embryo_2", "unmatched_image"]
+    masks = ["embryo_2_segmentation", "embryo_1", "random_mask"]
+
+    dialog = MaskAssignmentDialog(
+        image_layer_names=images,
+        mask_layer_names=masks,
+        parent=None,
+    )
+
+    # Initial state is "None" for all
+    for combo in dialog._combos.values():
+        assert combo.currentText() == "None"
+
+    # Click auto-assign
+    dialog.auto_assign_button.click()
+
+    assignments = dialog.get_assignments()
+    assert assignments["embryo_1"] == "embryo_1"
+    assert assignments["embryo_2"] == "embryo_2_segmentation"
+    assert assignments["unmatched_image"] == "None"
+
+    dialog.close()
+
+
 def test_apply_mask_assignments_different_masks_per_layer(make_viewer_model):
     """Test that _apply_mask_assignments applies distinct masks to each layer."""
     viewer = make_viewer_model()
