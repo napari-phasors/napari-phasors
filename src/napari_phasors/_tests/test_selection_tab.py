@@ -3,8 +3,8 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pytest
 from napari.layers import Labels
-from qtpy.QtCore import Qt
-from qtpy.QtGui import QColor, QValidator
+from qtpy.QtCore import QEvent, Qt
+from qtpy.QtGui import QColor, QFocusEvent, QValidator
 from qtpy.QtWidgets import QApplication, QComboBox, QDoubleSpinBox, QLabel
 
 from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
@@ -886,6 +886,29 @@ def test_mixed_spinbox_widget_behaviour(qtbot):
     assert not spin.isMixed()
     assert spin.text() == "0.40"
     assert spin.keyboardTracking()
+
+
+def test_mixed_spinbox_forgets_edits_from_a_previous_visit(qtbot):
+    """Entering the field starts a fresh edit, so no stale commit fires."""
+    spin = MixedValueSpinBox()
+    qtbot.addWidget(spin)
+    spin.setRange(-1.5, 1.5)
+    spin.setValue(0.25)
+    spin.setMixed(True)
+
+    committed = []
+    spin.valueCommitted.connect(committed.append)
+
+    # Pretend an earlier visit left an edit pending without committing it.
+    spin._edited_while_mixed = True
+    QApplication.sendEvent(
+        spin, QFocusEvent(QEvent.FocusIn, Qt.MouseFocusReason)
+    )
+
+    spin.editingFinished.emit()
+
+    assert committed == []
+    assert spin.isMixed()
 
 
 def test_batch_edit_restores_tooltips_for_single_selection(
