@@ -84,6 +84,7 @@ from ._utils import (
     make_solid_contour_cmap,
     normalize_rgb,
     populate_colormap_combobox,
+    rank_mask_candidates,
     read_ome_tiff_settings,
     required_component_harmonics,
     resolve_colormap_by_name,
@@ -2310,27 +2311,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             self.mask_folders_label.setText("<i>No mask folder selected</i>")
         self._rebuild_mask_rows()
 
-    @staticmethod
-    def _rank_mask_candidates(image_path, mask_files):
-        """Return mask files ranked by name similarity to ``image_path``."""
-        image_stem = os.path.splitext(os.path.basename(image_path))[0]
-        # Strip a trailing supported extension chunk like ``.ome``.
-        image_stem = image_stem.split(".")[0].lower()
-        scored = []
-        for mask in mask_files:
-            mask_stem = os.path.splitext(os.path.basename(mask))[0].lower()
-            if image_stem == mask_stem:
-                score = 0
-            elif image_stem and (
-                image_stem in mask_stem or mask_stem in image_stem
-            ):
-                score = 1 + abs(len(mask_stem) - len(image_stem))
-            else:
-                continue
-            scored.append((score, mask))
-        scored.sort(key=lambda item: (item[0], item[1]))
-        return [mask for _score, mask in scored]
-
     def _rebuild_mask_rows(self):
         """Rebuild one mask-pairing row per input file, best match preselected."""
         layout = self._mask_rows_layout
@@ -2359,7 +2339,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             label.setMinimumWidth(140)
             combo = QComboBox()
             combo.addItem("None", None)
-            candidates = self._rank_mask_candidates(path, self._mask_files)
+            candidates = rank_mask_candidates(path, self._mask_files)
             remaining = [m for m in self._mask_files if m not in candidates]
             for mask in candidates + remaining:
                 combo.addItem(os.path.basename(mask), mask)

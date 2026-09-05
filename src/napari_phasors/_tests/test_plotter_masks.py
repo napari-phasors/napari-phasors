@@ -430,38 +430,15 @@ def test_mask_assignment_dialog_auto_assign_button_state():
     dialog_with_masks.close()
 
 
-def test_mask_assignment_dialog_rank_mask_candidates():
-    """Test _rank_mask_candidates ranking accuracy."""
-    from napari_phasors.plotter import MaskAssignmentDialog
-
-    masks = [
-        "other_sample_mask",
-        "sample_1",
-        "sample_1_mask",
-        "sample_2_roi",
-    ]
-
-    # Exact match comes first
-    ranked = MaskAssignmentDialog._rank_mask_candidates("sample_1", masks)
-    assert ranked[0] == "sample_1"
-    assert "sample_1_mask" in ranked
-
-    # Substring match
-    ranked2 = MaskAssignmentDialog._rank_mask_candidates("sample_2", masks)
-    assert ranked2[0] == "sample_2_roi"
-
-    # No match
-    ranked3 = MaskAssignmentDialog._rank_mask_candidates(
-        "completely_different_name_xyz", masks
-    )
-    assert len(ranked3) == 0
-
-
 def test_mask_assignment_dialog_auto_assign_action():
     """Test clicking Auto-assign matches each layer to the best mask."""
     from napari_phasors.plotter import MaskAssignmentDialog
 
-    images = ["embryo_1", "embryo_2", "unmatched_image"]
+    images = [
+        "embryo_1.ptu Intensity Image",
+        "embryo_2.ptu Intensity Image",
+        "unmatched_image.ptu Intensity Image",
+    ]
     masks = ["embryo_2_segmentation", "embryo_1", "random_mask"]
 
     dialog = MaskAssignmentDialog(
@@ -478,10 +455,65 @@ def test_mask_assignment_dialog_auto_assign_action():
     dialog.auto_assign_button.click()
 
     assignments = dialog.get_assignments()
-    assert assignments["embryo_1"] == "embryo_1"
-    assert assignments["embryo_2"] == "embryo_2_segmentation"
-    assert assignments["unmatched_image"] == "None"
+    assert assignments[images[0]] == "embryo_1"
+    assert assignments[images[1]] == "embryo_2_segmentation"
+    # No name match: left alone rather than given a near-miss mask.
+    assert assignments[images[2]] == "None"
 
+    dialog.close()
+
+
+def test_mask_assignment_dialog_auto_assign_keeps_near_misses_unassigned():
+    """A layer whose only sibling mask belongs to another image stays None."""
+    from napari_phasors.plotter import MaskAssignmentDialog
+
+    dialog = MaskAssignmentDialog(
+        image_layer_names=["2026-05-03_control.lsm Intensity Image"],
+        mask_layer_names=["2026-05-03_treated_mask"],
+        parent=None,
+    )
+    dialog.auto_assign_button.click()
+
+    assert dialog.get_assignments() == {
+        "2026-05-03_control.lsm Intensity Image": "None"
+    }
+    dialog.close()
+
+
+def test_mask_assignment_dialog_auto_assign_updates_dependent_widgets():
+    """Auto-assign goes through the combo, so the row's widgets follow."""
+    from napari_phasors.plotter import MaskAssignmentDialog
+
+    dialog = MaskAssignmentDialog(
+        image_layer_names=["sample.tif Intensity Image"],
+        mask_layer_names=["sample_mask"],
+        parent=None,
+    )
+    invert = dialog._invert_checks["sample.tif Intensity Image"]
+    assert not invert.isEnabled()
+
+    dialog.auto_assign_button.click()
+
+    assert dialog.get_assignments() == {
+        "sample.tif Intensity Image": "sample_mask"
+    }
+    # The Invert checkbox is only meaningful once a mask is assigned.
+    assert invert.isEnabled()
+    dialog.close()
+
+
+def test_mask_assignment_dialog_auto_assign_without_masks_is_a_no_op():
+    """The guard holds even if the disabled button is bypassed."""
+    from napari_phasors.plotter import MaskAssignmentDialog
+
+    dialog = MaskAssignmentDialog(
+        image_layer_names=["layer_A"],
+        mask_layer_names=[],
+        parent=None,
+    )
+    dialog._on_auto_assign()
+
+    assert dialog.get_assignments() == {"layer_A": "None"}
     dialog.close()
 
 
