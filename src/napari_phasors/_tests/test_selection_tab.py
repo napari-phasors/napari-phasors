@@ -4,11 +4,12 @@ import numpy as np
 import pytest
 from napari.layers import Labels
 from qtpy.QtCore import Qt
-from qtpy.QtGui import QColor
+from qtpy.QtGui import QColor, QValidator
 from qtpy.QtWidgets import QApplication, QComboBox, QDoubleSpinBox, QLabel
 
 from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
 from napari_phasors.plotter import PlotterWidget
+from napari_phasors.selection_tab import MixedValueSpinBox
 
 
 def _visible_rows(cw):
@@ -669,6 +670,222 @@ def test_remove_cursor_in_multi_selection(make_viewer_model, qtbot):
     assert widget._selected_cursors == [c0, c2]
     assert c0['row'].property("selected")
     assert c2['row'].property("selected")
+
+
+def _multi_select(widget, cursors):
+    """Select every cursor in *cursors*, in order."""
+    widget._select_cursor(cursors[0])
+    for cursor in cursors[1:]:
+        widget._select_cursor(cursor, modifiers=Qt.ControlModifier)
+
+
+def _type_into(qtbot, spin, text):
+    """Replace a spin box's contents with *text* and press Enter."""
+    spin.setFocus()
+    spin.lineEdit().selectAll()
+    qtbot.keyClicks(spin, text)
+    qtbot.keyClick(spin, Qt.Key_Return)
+
+
+def test_mixed_indicator_marks_only_differing_parameters(
+    make_viewer_model, qtbot
+):
+    """Parameters the selected cursors disagree on show a dash."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor("circular", g=0.5, s=0.3, radius=0.05)
+    widget._add_cursor("circular", g=0.6, s=0.3, radius=0.05)
+    c0, c1 = widget._cursors
+    _multi_select(widget, [c0, c1])
+
+    # G differs: no single value can be shown for it.
+    assert c1['g_spin'].isMixed()
+    assert c1['g_spin'].text() == MixedValueSpinBox.MIXED_TEXT
+    # S and the radius agree, so their common value is shown as usual.
+    assert not c1['s_spin'].isMixed()
+    assert c1['s_spin'].value() == pytest.approx(0.3)
+    assert not c1['radius_spin'].isMixed()
+
+    # Values that round to the same displayed text are not a disagreement.
+    c0['s'] = 0.3 + 10 ** -(c1['s_spin'].decimals() + 2)
+    widget._update_editor_for_selection()
+    assert not c1['s_spin'].isMixed()
+
+
+def test_mixed_indicator_clears_for_single_selection(make_viewer_model, qtbot):
+    """One selected cursor always shows its own values, never a dash."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor("circular", g=0.5)
+    widget._add_cursor("circular", g=0.6)
+    c0, c1 = widget._cursors
+    _multi_select(widget, [c0, c1])
+    assert c1['g_spin'].isMixed()
+
+    widget._select_cursor(c1)
+
+    assert not c1['g_spin'].isMixed()
+    assert c1['g_spin'].value() == pytest.approx(0.6)
+
+
+def test_mixed_indicator_ignores_unshared_parameters(make_viewer_model, qtbot):
+    """A parameter only some cursors have is never dashed."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor("circular", g=0.5)
+    widget._add_cursor("elliptic", g=0.6, angle=30.0)
+    c_circ, c_ellip = widget._cursors
+    _multi_select(widget, [c_circ, c_ellip])
+
+    assert c_ellip['g_spin'].isMixed()
+    # Angle is not shared, so it is disabled and shows its own value.
+    assert not c_ellip['angle_spin'].isMixed()
+    assert not c_ellip['angle_spin'].isEnabled()
+    assert c_ellip['angle_spin'].value() == pytest.approx(30.0)
+
+
+def test_typing_into_mixed_field_applies_to_all_selected(
+    make_viewer_model, qtbot
+):
+    """A value typed into a dashed field is set on every selected cursor."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor("circular", g=0.5)
+    widget._add_cursor("circular", g=0.6)
+    c0, c1 = widget._cursors
+    _multi_select(widget, [c0, c1])
+    spin = c1['g_spin']
+
+    spin.setFocus()
+    spin.lineEdit().selectAll()
+    qtbot.keyClicks(spin, "0.75")
+    # Half-typed values must not reach the cursors, and the text being
+    # typed must not be overwritten by the dash.
+    assert spin.text() == "0.75"
+    assert c0['g'] == pytest.approx(0.5)
+
+    qtbot.keyClick(spin, Qt.Key_Return)
+
+    assert not spin.isMixed()
+    assert c0['g'] == pytest.approx(0.75)
+    assert c1['g'] == pytest.approx(0.75)
+    assert c0['g_spin'].value() == pytest.approx(0.75)
+
+
+def test_typing_the_held_value_into_mixed_field_still_applies(
+    make_viewer_model, qtbot
+):
+    """The typed value may be the one the field already holds."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor("circular", g=0.5)
+    widget._add_cursor("circular", g=0.6)
+    c0, c1 = widget._cursors
+    _multi_select(widget, [c0, c1])
+    # The editor shows c1's page, so its G is what the box holds.
+    assert c1['g_spin'].value() == pytest.approx(0.6)
+
+    _type_into(qtbot, c1['g_spin'], "0.60")
+
+    assert c0['g'] == pytest.approx(0.6)
+    assert c1['g'] == pytest.approx(0.6)
+
+
+def test_leaving_mixed_field_untouched_changes_nothing(
+    make_viewer_model, qtbot
+):
+    """Focus alone must not push one cursor's value onto the others."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor("circular", g=0.5)
+    widget._add_cursor("circular", g=0.6)
+    c0, c1 = widget._cursors
+    _multi_select(widget, [c0, c1])
+
+    c1['g_spin'].setFocus()
+    c1['g_spin'].editingFinished.emit()
+
+    assert c1['g_spin'].isMixed()
+    assert c0['g'] == pytest.approx(0.5)
+    assert c1['g'] == pytest.approx(0.6)
+
+
+def test_stepping_mixed_field_applies_to_all_selected(
+    make_viewer_model, qtbot
+):
+    """The arrows resolve a dashed field too, from the value on show."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor("circular", radius=0.05)
+    widget._add_cursor("circular", radius=0.08)
+    c0, c1 = widget._cursors
+    _multi_select(widget, [c0, c1])
+    spin = c1['radius_spin']
+    step = spin.singleStep()
+
+    spin.stepBy(1)
+
+    assert not spin.isMixed()
+    assert c1['radius'] == pytest.approx(0.08 + step)
+    assert c0['radius'] == pytest.approx(0.08 + step)
+
+
+def test_mixed_spinbox_widget_behaviour(qtbot):
+    """The spin box itself: dash, round trip, and explicit assignment."""
+    spin = MixedValueSpinBox()
+    qtbot.addWidget(spin)
+    spin.setRange(-1.5, 1.5)
+    spin.setDecimals(2)
+    spin.setValue(0.25)
+
+    assert not spin.isMixed()
+    assert spin.text() == "0.25"
+
+    spin.setMixed(True)
+    assert spin.isMixed()
+    assert spin.text() == MixedValueSpinBox.MIXED_TEXT
+    # The held value is untouched, and reading the dash back yields it.
+    assert spin.value() == pytest.approx(0.25)
+    assert spin.valueFromText(MixedValueSpinBox.MIXED_TEXT) == pytest.approx(
+        0.25
+    )
+    assert (
+        spin.validate(MixedValueSpinBox.MIXED_TEXT, 0)[0]
+        == QValidator.Acceptable
+    )
+    # Per-keystroke interpretation is off, so typing survives on screen.
+    assert not spin.keyboardTracking()
+
+    # Setting it again is a no-op rather than a redundant repaint.
+    spin.setMixed(True)
+    assert spin.text() == MixedValueSpinBox.MIXED_TEXT
+
+    # An explicit assignment resolves the state.
+    spin.setValue(0.4)
+    assert not spin.isMixed()
+    assert spin.text() == "0.40"
+    assert spin.keyboardTracking()
 
 
 def test_batch_edit_restores_tooltips_for_single_selection(

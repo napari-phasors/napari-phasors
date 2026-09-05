@@ -19,6 +19,7 @@ from qtpy.QtGui import (
     QPainterPath,
     QPen,
     QPixmap,
+    QValidator,
 )
 from qtpy.QtWidgets import (
     QApplication,
@@ -1921,6 +1922,111 @@ class ClickableFrame(QFrame):
         super().mousePressEvent(event)
 
 
+class MixedValueSpinBox(QDoubleSpinBox):
+    """Spin box that can show a dash for "the selected cursors disagree".
+
+    While mixed it displays :attr:`MIXED_TEXT` instead of a number and
+    keeps quiet about the value it happens to hold — that value belongs to
+    one cursor, and reporting it would push it onto all the others. Typing
+    a value (committed with Enter or by leaving the field) or stepping with
+    the arrows resolves the state.
+
+    The resolved value arrives as :attr:`valueCommitted` rather than
+    ``valueChanged``, because the value a user types into a mixed field is
+    often the one the box already holds — which ``valueChanged`` would not
+    report.
+    """
+
+    #: Emitted when the user resolves a mixed field, even when the number
+    #: itself did not change.
+    valueCommitted = Signal(float)
+
+    #: Shown in place of a number while the selected cursors disagree.
+    MIXED_TEXT = "—"
+
+    def __init__(self, *args, **kwargs):
+        """Build a spin box that starts in the ordinary (numeric) state."""
+        super().__init__(*args, **kwargs)
+        self._mixed = False
+        self._edited_while_mixed = False
+        self.lineEdit().textEdited.connect(self._on_text_edited)
+        self.editingFinished.connect(self._on_editing_finished)
+
+    def isMixed(self):
+        """Return whether the dash is being shown instead of a value."""
+        return self._mixed
+
+    def setMixed(self, mixed=True):
+        """Show (``True``) or stop showing the "values differ" dash."""
+        if self._mixed == mixed:
+            return
+        self._mixed = mixed
+        self._edited_while_mixed = False
+        # Interpreting each keystroke rewrites the field from the current
+        # value, which would replace the dash - and then whatever the user
+        # is halfway through typing - so only track the keyboard once a
+        # real number is on display.
+        self.setKeyboardTracking(not mixed)
+        self.lineEdit().setText(
+            self.prefix() + self.textFromValue(self.value()) + self.suffix()
+        )
+
+    def textFromValue(self, value):
+        """Render *value*, or the dash while mixed."""
+        if self._mixed:
+            return self.MIXED_TEXT
+        return super().textFromValue(value)
+
+    def valueFromText(self, text):
+        """Read *text*, treating the dash as "unchanged"."""
+        if text.strip() == self.MIXED_TEXT:
+            return self.value()
+        return super().valueFromText(text)
+
+    def validate(self, text, pos):
+        """Accept the dash, so it can be shown in the line edit."""
+        if text.strip() == self.MIXED_TEXT:
+            return (QValidator.Acceptable, text, pos)
+        return super().validate(text, pos)
+
+    def setValue(self, value):
+        """Assign *value*, which also resolves a mixed field.
+
+        Only reached from Python: Qt's own interpretation of what is being
+        typed goes through the base class, so it cannot clear the dash by
+        itself.
+        """
+        self.setMixed(False)
+        super().setValue(value)
+
+    def stepBy(self, steps):
+        """Step the value, committing it when that resolves a mixed field."""
+        super().stepBy(steps)
+        if self._mixed:
+            self._commit()
+
+    def focusInEvent(self, event):
+        """Start each visit to the field with no pending edit."""
+        self._edited_while_mixed = False
+        super().focusInEvent(event)
+
+    def _on_text_edited(self, _text):
+        """Note that the user is typing into a mixed field."""
+        self._edited_while_mixed = self._mixed
+
+    def _on_editing_finished(self):
+        """Commit on Enter or focus-out, but only after a real edit."""
+        if self._edited_while_mixed:
+            self._commit()
+
+    def _commit(self):
+        """Leave the mixed state and announce the resolved value."""
+        self._edited_while_mixed = False
+        value = self.value()
+        self.setMixed(False)
+        self.valueCommitted.emit(value)
+
+
 class CursorSelectionWidget(QWidget):
     """
     Unified widget for cursor-based selection in phasor plots.
@@ -2130,7 +2236,7 @@ class CursorSelectionWidget(QWidget):
         ``width_ref`` overrides the string used to measure the fixed width,
         so related spinboxes can be aligned on a common reference.
         """
-        spin = QDoubleSpinBox()
+        spin = MixedValueSpinBox()
         spin.setRange(low, high)
         spin.setSingleStep(step)
         spin.setDecimals(decimals)
@@ -2549,6 +2655,14 @@ class CursorSelectionWidget(QWidget):
                     c, p, val
                 )
             )
+            # A value typed into a field showing the "values differ" dash
+            # may equal the one already held, which valueChanged would not
+            # report — so take it from the dedicated signal instead.
+            spin.valueCommitted.connect(
+                lambda val, c=cursor, p=param: self._on_param_changed(
+                    c, p, val
+                )
+            )
         color_button.color_changed.connect(
             lambda _c, c=cursor: self._on_cursor_changed(c)
         )
@@ -2709,6 +2823,7 @@ class CursorSelectionWidget(QWidget):
             cursor = self._selected_cursors[0]
             self._details_stack.setCurrentWidget(cursor['detail'])
             self._enable_cursor_controls(cursor, enable_all=True)
+            self._update_mixed_indicators(cursor)
             self._refresh_editor_title()
             return
 
@@ -2725,7 +2840,29 @@ class CursorSelectionWidget(QWidget):
         self._details_stack.setCurrentWidget(active['detail'])
         shared = self._shared_params(self._selected_cursors)
         self._enable_cursor_controls(active, shared_params=shared)
+        self._update_mixed_indicators(active, shared)
         self._refresh_editor_title()
+
+    def _update_mixed_indicators(self, cursor, shared_params=()):
+        """Dash out shared parameters the selected cursors disagree on.
+
+        The editor shows one cursor's fields, so without this a parameter
+        that differs across the selection would display a single cursor's
+        value as if it spoke for all of them.
+        """
+        for param, spin_key in self.PARAM_SPINS.items():
+            spin = cursor[spin_key]
+            if param not in shared_params or len(self._selected_cursors) < 2:
+                spin.setMixed(False)
+                continue
+            # Compare as displayed: values that round to the same text are
+            # not a disagreement the user can act on.
+            decimals = spin.decimals()
+            values = {
+                round(other[param], decimals)
+                for other in self._selected_cursors
+            }
+            spin.setMixed(len(values) > 1)
 
     def _enable_cursor_controls(
         self, cursor, enable_all=False, shared_params=None
@@ -2871,6 +3008,11 @@ class CursorSelectionWidget(QWidget):
     def _on_param_changed(self, cursor, param, value):
         """Handle any parameter field change for a cursor."""
         if cursor not in self._cursors:
+            return
+        if cursor[self.PARAM_SPINS[param]].isMixed():
+            # The field still shows the dash: this is Qt interpreting what
+            # is being typed, not a value the user has settled on. The
+            # committed value arrives separately, via ``valueCommitted``.
             return
         cursor[param] = value
         self._update_cursor_patch(cursor)
