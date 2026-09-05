@@ -1,8 +1,6 @@
 import contextlib
 import copy
-import difflib
 import math
-import os
 import warnings
 from pathlib import Path
 
@@ -81,6 +79,7 @@ from ._utils import (
     patch_biaplotter_capture_selection_geometry,
     patch_biaplotter_fixed_histogram_range,
     populate_colormap_combobox,
+    rank_mask_candidates,
     read_ome_tiff_settings,
     resolve_colormap_by_name,
     save_groups_to_layer_metadata,
@@ -513,41 +512,34 @@ class MaskAssignmentDialog(QDialog):
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
 
-    @staticmethod
-    def _rank_mask_candidates(image_name, mask_names):
-        """Return mask names ranked by name similarity to ``image_name``."""
-        image_stem = os.path.splitext(os.path.basename(image_name))[0]
-        image_stem = image_stem.split(".")[0].lower()
-        scored = []
-        for mask in mask_names:
-            mask_stem = os.path.splitext(os.path.basename(mask))[0].lower()
-            if image_stem == mask_stem:
-                score = 0
-            elif image_stem and (
-                image_stem in mask_stem or mask_stem in image_stem
-            ):
-                score = 1 + abs(len(mask_stem) - len(image_stem))
-            else:
-                ratio = difflib.SequenceMatcher(
-                    None, image_stem, mask_stem
-                ).ratio()
-                if ratio >= 0.5:
-                    score = 100 - int(ratio * 50)
-                else:
-                    continue
-            scored.append((score, mask))
-        scored.sort(key=lambda item: (item[0], item[1]))
-        return [mask for _score, mask in scored]
-
     def _on_auto_assign(self):
-        """Auto-assign best matching mask layers to image layers by name."""
+        """Pair each image layer with the best matching mask layer by name.
+
+        Layers with no name match are left untouched rather than given a
+        near-miss mask, and the result is reported so a partial match is
+        not mistaken for a complete one.
+        """
         if not self._mask_layers:
             return
         mask_names = list(self._mask_layers.keys())
+        assigned = 0
         for image_name, combo in self._combos.items():
-            candidates = self._rank_mask_candidates(image_name, mask_names)
+            candidates = rank_mask_candidates(
+                image_name, mask_names, strip_directory=False
+            )
             if candidates:
                 combo.setCurrentText(candidates[0])
+                assigned += 1
+        total = len(self._combos)
+        if assigned == total:
+            notifications.show_info(
+                f"Auto-assigned a mask to all {total} layer(s)."
+            )
+        else:
+            notifications.show_warning(
+                f"Auto-assigned a mask to {assigned} of {total} layer(s); "
+                "no name match for the rest."
+            )
 
     def _on_apply_all_changed(self, text):
         """Auto-set all per-layer combos when a mask is selected."""
