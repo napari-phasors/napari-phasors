@@ -4236,16 +4236,36 @@ class StatisticsTableWidget(QTableWidget):
     COLUMNS = ["Name", "Center of Mass", "Mean", "Median", "Std Dev"]
     #: Column layout used when one row is shown per time-lapse frame.
     FRAME_COLUMNS = ["Frame", *COLUMNS]
+    #: Starting width per column; anything unlisted uses
+    #: :data:`DEFAULT_COLUMN_WIDTH`. Names are the widest content, frames
+    #: the narrowest, and the last column stretches over the remainder.
+    COLUMN_WIDTHS = {"Name": 140, "Frame": 60}
+    #: Starting width for the numeric statistic columns. The defaults add
+    #: up to a table that fits a narrow dock without a horizontal
+    #: scrollbar, and the stretching last column absorbs any extra width.
+    DEFAULT_COLUMN_WIDTH = 70
     #: Background of the row for the frame currently on screen.
     CURRENT_FRAME_COLOR = QColor(74, 111, 165, 120)
 
     def __init__(self, parent=None):
         """Build the read-only statistics table with its fixed columns."""
         super().__init__(parent)
+        #: Widths the user set by dragging, keyed by column name so they
+        #: survive the switch between ``COLUMNS`` and ``FRAME_COLUMNS``.
+        self._user_column_widths = {}
+        #: Guard so our own ``setColumnWidth`` calls are not mistaken for
+        #: a user drag in :meth:`_on_section_resized`.
+        self._applying_column_widths = False
         self.setColumnCount(len(self.COLUMNS))
         self.setHorizontalHeaderLabels(self.COLUMNS)
-        self.horizontalHeader().setStretchLastSection(False)
-        self.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        header = self.horizontalHeader()
+        # Interactive (not Stretch) so columns can be resized by dragging;
+        # the last section still stretches, so the table keeps filling the
+        # dock instead of leaving a gap or forcing a horizontal scrollbar.
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        header.setStretchLastSection(True)
+        header.sectionResized.connect(self._on_section_resized)
+        self._apply_column_widths()
         self.setEditTriggers(QTableWidget.NoEditTriggers)
         self.setSelectionMode(QTableWidget.ExtendedSelection)
         self.setSelectionBehavior(QTableWidget.SelectItems)
@@ -4366,6 +4386,40 @@ class StatisticsTableWidget(QTableWidget):
             return
         self.setColumnCount(len(columns))
         self.setHorizontalHeaderLabels(list(columns))
+        # Widths are positional, so without this the width of (say) "Name"
+        # would be inherited by "Frame" when the layout changes.
+        self._apply_column_widths()
+
+    def _on_section_resized(self, index, _old_width, new_width):
+        """Remember a width the user set by dragging the header."""
+        if self._applying_column_widths:
+            return
+        # The last section is sized by ``setStretchLastSection``; its
+        # "resizes" are just the table following the dock width.
+        if index == self.columnCount() - 1:
+            return
+        item = self.horizontalHeaderItem(index)
+        if item is not None:
+            self._user_column_widths[item.text()] = new_width
+
+    def _apply_column_widths(self):
+        """Size every column, preferring a width the user chose."""
+        self._applying_column_widths = True
+        try:
+            for index in range(self.columnCount()):
+                item = self.horizontalHeaderItem(index)
+                name = item.text() if item is not None else ""
+                self.setColumnWidth(
+                    index,
+                    self._user_column_widths.get(
+                        name,
+                        self.COLUMN_WIDTHS.get(
+                            name, self.DEFAULT_COLUMN_WIDTH
+                        ),
+                    ),
+                )
+        finally:
+            self._applying_column_widths = False
 
     def update_frame_statistics(self, rows, current_frame=None):
         """Show one row per time-lapse frame, highlighting the current one.
