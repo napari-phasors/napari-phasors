@@ -1992,6 +1992,8 @@ def test_plotter_close_method_closes_associated_and_plotter_dock(
     assert plotter._analysis_dock is None
     assert plotter._histogram_dock is None
     assert plotter._statistics_dock is None
+    # The plotter's own dock goes too, so no empty panel is left behind.
+    assert viewer.window._wrapped_dock_widgets == {}
 
 
 def test_destroying_plotter_dock_closes_associated_docks(
