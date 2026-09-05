@@ -671,6 +671,118 @@ def test_remove_cursor_in_multi_selection(make_viewer_model, qtbot):
     assert c2['row'].property("selected")
 
 
+def test_batch_edit_restores_tooltips_for_single_selection(
+    make_viewer_model, qtbot
+):
+    """Batch tooltips must not outlive the multi-selection that set them."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor("circular")
+    widget._add_cursor("elliptic")
+    c_circ, c_ellip = widget._cursors
+
+    radius_tip = c_ellip['radius_spin'].toolTip()
+    angle_tip = c_ellip['angle_spin'].toolTip()
+    assert radius_tip and angle_tip
+
+    widget._select_cursor(c_circ)
+    widget._select_cursor(c_ellip, modifiers=Qt.ControlModifier)
+    assert c_ellip['radius_spin'].toolTip() == widget.BATCH_TOOLTIP
+    assert c_ellip['angle_spin'].toolTip() == widget.UNSHARED_TOOLTIP
+
+    # Back to one cursor: every parameter is editable again, so the
+    # widgets must describe themselves rather than the batch state.
+    widget._select_cursor(c_ellip)
+    assert c_ellip['angle_spin'].isEnabled()
+    assert c_ellip['radius_spin'].toolTip() == radius_tip
+    assert c_ellip['angle_spin'].toolTip() == angle_tip
+
+
+def test_ctrl_deselect_moves_shift_anchor(make_viewer_model, qtbot):
+    """A deselected row must not anchor the next Shift-click range."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    for _ in range(4):
+        widget._add_cursor()
+    c0, c1, c2, c3 = widget._cursors
+
+    widget._select_cursor(c0)
+    widget._select_cursor(c2, modifiers=Qt.ControlModifier)
+    widget._select_cursor(c2, modifiers=Qt.ControlModifier)
+    assert widget._selected_cursors == [c0]
+    assert widget._last_clicked_cursor is c0
+
+    # The range runs from the still-selected row, not from c2.
+    widget._select_cursor(c3, modifiers=Qt.ShiftModifier)
+    assert widget._selected_cursors == [c0, c1, c2, c3]
+
+    # Deselecting the last selected cursor clears the anchor too.
+    widget._select_cursor(c0, modifiers=Qt.ControlModifier)
+    widget._select_cursor(c1, modifiers=Qt.ControlModifier)
+    widget._select_cursor(c2, modifiers=Qt.ControlModifier)
+    widget._select_cursor(c3, modifiers=Qt.ControlModifier)
+    assert widget._selected_cursors == []
+    assert widget._last_clicked_cursor is None
+
+
+def test_batch_edit_applies_selection_when_autoupdate_on(
+    make_viewer_model, qtbot
+):
+    """With auto-update on, one batch edit recomputes the selection once."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor(radius=0.05)
+    widget._add_cursor(radius=0.05)
+    c0, c1 = widget._cursors
+    widget._select_cursor(c0)
+    widget._select_cursor(c1, modifiers=Qt.ControlModifier)
+
+    # Enabling auto-update applies once by itself; count only what the
+    # batch edit triggers.
+    widget.autoupdate_check.setChecked(True)
+    assert widget._autoupdate_enabled
+    calls = []
+    widget._apply_selection = lambda: calls.append(True)
+
+    c1['radius_spin'].setValue(0.2)
+
+    assert len(calls) == 1
+    assert c0['radius'] == pytest.approx(0.2)
+    assert c1['radius'] == pytest.approx(0.2)
+
+
+def test_param_change_ignores_removed_cursor(make_viewer_model, qtbot):
+    """A queued edit for an already-removed cursor is a no-op."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor(radius=0.05)
+    cursor = widget._cursors[0]
+    widget._remove_cursor(cursor)
+
+    widget._on_param_changed(cursor, 'radius', 0.4)
+
+    assert cursor['radius'] == pytest.approx(0.05)
+
+
+def test_shared_params_without_cursors():
+    """No selection shares no parameters."""
+    from napari_phasors.selection_tab import CursorSelectionWidget
+
+    assert CursorSelectionWidget._shared_params([]) == set()
+
+
 def test_make_spinbox_default_width_ref(make_viewer_model, qtbot):
     """``_make_spinbox`` sizes itself from its own range when no ref given."""
     from napari_phasors.selection_tab import CursorSelectionWidget

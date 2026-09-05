@@ -1946,6 +1946,19 @@ class CursorSelectionWidget(QWidget):
         for r, g, b, _ in [plt.get_cmap('Set1')(i) for i in range(9)]
     ]
 
+    #: Spin box holding each editable cursor parameter, in the order the
+    #: editor lays them out.
+    PARAM_SPINS = {
+        'g': 'g_spin',
+        's': 's_spin',
+        'radius': 'radius_spin',
+        'radius_minor': 'radius_minor_spin',
+        'angle': 'angle_spin',
+        'phase_min': 'phase_min_spin',
+        'phase_max': 'phase_max_spin',
+        'modulation_min': 'mod_min_spin',
+        'modulation_max': 'mod_max_spin',
+    }
     CURSOR_PARAMS_BY_TYPE = {
         'circular': {'g', 's', 'radius'},
         'elliptic': {'g', 's', 'radius', 'radius_minor', 'angle'},
@@ -1956,6 +1969,12 @@ class CursorSelectionWidget(QWidget):
             'modulation_max',
         },
     }
+    #: Shown on a parameter that a batch edit will write to every selected
+    #: cursor, and on one that only some of them have.
+    BATCH_TOOLTIP = "Batch edit: modifies all selected cursors."
+    UNSHARED_TOOLTIP = (
+        "Disabled: parameter not shared across all selected cursors."
+    )
 
     @classmethod
     def _shared_params(cls, cursors):
@@ -1971,16 +1990,6 @@ class CursorSelectionWidget(QWidget):
     def _selected_cursor(self):
         """Return the primary / last selected cursor, or None."""
         return self._selected_cursors[-1] if self._selected_cursors else None
-
-    @_selected_cursor.setter
-    def _selected_cursor(self, cursor):
-        """Set the single selected cursor (for backward compatibility)."""
-        if cursor is None:
-            self._selected_cursors = []
-            self._last_clicked_cursor = None
-        else:
-            self._selected_cursors = [cursor]
-            self._last_clicked_cursor = cursor
 
     def __init__(self, viewer, parent_widget):
         """Initialize the CursorSelectionWidget."""
@@ -2533,17 +2542,8 @@ class CursorSelectionWidget(QWidget):
         type_combo.currentIndexChanged.connect(
             lambda _=0, c=cursor: self._on_cursor_type_changed(c)
         )
-        for param, spin in (
-            ('g', g_spin),
-            ('s', s_spin),
-            ('radius', radius_spin),
-            ('radius_minor', radius_minor_spin),
-            ('angle', angle_spin),
-            ('phase_min', phase_min_spin),
-            ('phase_max', phase_max_spin),
-            ('modulation_min', mod_min_spin),
-            ('modulation_max', mod_max_spin),
-        ):
+        for param, spin_key in self.PARAM_SPINS.items():
+            spin = cursor[spin_key]
             spin.valueChanged.connect(
                 lambda val, c=cursor, p=param: self._on_param_changed(
                     c, p, val
@@ -2669,6 +2669,14 @@ class CursorSelectionWidget(QWidget):
         ):
             if cursor in self._selected_cursors:
                 self._selected_cursors.remove(cursor)
+                # A row that was just deselected must not stay the anchor
+                # of the next Shift-click range.
+                if self._last_clicked_cursor is cursor:
+                    self._last_clicked_cursor = (
+                        self._selected_cursors[-1]
+                        if self._selected_cursors
+                        else None
+                    )
             else:
                 self._selected_cursors.append(cursor)
                 self._last_clicked_cursor = cursor
@@ -2745,15 +2753,19 @@ class CursorSelectionWidget(QWidget):
             is_enabled = enable_all or (param in shared_params)
             for w in widgets:
                 w.setEnabled(is_enabled)
-                if not enable_all:
-                    if is_enabled:
-                        w.setToolTip(
-                            "Batch edit: modifies all selected cursors."
-                        )
-                    else:
-                        w.setToolTip(
-                            "Disabled: parameter not shared across all selected cursors."
-                        )
+                # Batch tooltips explain a state that only exists while
+                # several cursors are selected, so the widget's own
+                # description has to come back with a single selection.
+                base_tip = w.property("base_tooltip")
+                if base_tip is None:
+                    base_tip = w.toolTip()
+                    w.setProperty("base_tooltip", base_tip)
+                if enable_all:
+                    w.setToolTip(base_tip)
+                elif is_enabled:
+                    w.setToolTip(self.BATCH_TOOLTIP)
+                else:
+                    w.setToolTip(self.UNSHARED_TOOLTIP)
 
     def _refresh_editor_title(self):
         """Sync the editor box title with the selected cursor(s)."""
@@ -2866,29 +2878,20 @@ class CursorSelectionWidget(QWidget):
         if (
             len(self._selected_cursors) > 1
             and cursor in self._selected_cursors
+            and param in self._shared_params(self._selected_cursors)
         ):
-            shared = self._shared_params(self._selected_cursors)
-            if param in shared:
-                spin_key = (
-                    "mod_min_spin"
-                    if param == "modulation_min"
-                    else (
-                        "mod_max_spin"
-                        if param == "modulation_max"
-                        else f"{param}_spin"
-                    )
-                )
-                for other in self._selected_cursors:
-                    if other is not cursor:
-                        spin = other.get(spin_key)
-                        if spin is not None:
-                            spin.blockSignals(True)
-                            spin.setValue(value)
-                            other[param] = spin.value()
-                            spin.blockSignals(False)
-                        else:
-                            other[param] = value
-                        self._update_cursor_patch(other)
+            spin_key = self.PARAM_SPINS[param]
+            for other in self._selected_cursors:
+                if other is cursor:
+                    continue
+                spin = other[spin_key]
+                spin.blockSignals(True)
+                spin.setValue(value)
+                # Read back, so a value the other spin box clamps is
+                # what gets stored on that cursor.
+                other[param] = spin.value()
+                spin.blockSignals(False)
+                self._update_cursor_patch(other)
 
         if self._dragging_cursor is None:
             if self._autoupdate_enabled:
