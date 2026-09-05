@@ -1867,10 +1867,38 @@ def test_show_analysis_dock_readds_to_right_area(make_napari_viewer, qtbot):
     )
 
 
-def test_closing_plotter_dock_closes_associated_docks(
+def test_removing_plotter_dock_closes_associated_docks(
     make_napari_viewer, qtbot
 ):
-    """Closing the main plotter dock widget closes all associated window widgets."""
+    """Removing the plotter's dock closes all associated window widgets."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    qtbot.addWidget(plotter)
+    plotter._analysis_dock_init_timer.stop()
+
+    viewer.window.add_dock_widget(plotter, name="Phasor Plot", area="right")
+    plotter._add_analysis_dock_widget()
+
+    assert plotter._analysis_dock is not None
+    assert plotter._histogram_dock is not None
+    assert plotter._statistics_dock is not None
+
+    viewer.window.remove_dock_widget(plotter)
+
+    assert plotter._is_closing is True
+    assert plotter._analysis_dock is None
+    assert plotter._histogram_dock is None
+    assert plotter._statistics_dock is None
+    assert viewer.window._wrapped_dock_widgets == {}
+
+
+def test_hiding_plotter_dock_keeps_associated_docks(make_napari_viewer, qtbot):
+    """napari's 'hide' button only hides the panel; nothing is closed.
+
+    The title bar's hide button is wired to ``QDockWidget.close()``, which
+    hides a dock rather than destroying it — the panel stays re-openable
+    with its state, so the plotter must survive it.
+    """
     viewer = make_napari_viewer()
     plotter = PlotterWidget(viewer)
     qtbot.addWidget(plotter)
@@ -1881,16 +1909,36 @@ def test_closing_plotter_dock_closes_associated_docks(
     )
     plotter._add_analysis_dock_widget()
 
+    dock.title.hide_button.click()
+
+    assert dock.isHidden()
+    assert plotter._is_closing is False
     assert plotter._analysis_dock is not None
     assert plotter._histogram_dock is not None
     assert plotter._statistics_dock is not None
+    assert "Phasor Plot" in viewer.window._wrapped_dock_widgets
 
-    dock.close()
 
-    assert plotter._is_closing is True
-    assert plotter._analysis_dock is None
-    assert plotter._histogram_dock is None
-    assert plotter._statistics_dock is None
+def test_floating_plotter_dock_keeps_associated_docks(
+    make_napari_viewer, qtbot
+):
+    """Undocking and re-docking the plotter must not close anything."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    qtbot.addWidget(plotter)
+    plotter._analysis_dock_init_timer.stop()
+
+    dock = viewer.window.add_dock_widget(
+        plotter, name="Phasor Plot", area="right"
+    )
+    plotter._add_analysis_dock_widget()
+
+    dock.setFloating(True)
+    dock.setFloating(False)
+
+    assert plotter._is_closing is False
+    assert plotter._analysis_dock is not None
+    assert plotter._plotter_dock_ref is dock
 
 
 def test_closing_associated_dock_first_shows_reopen_button_and_closing_plotter_closes_remaining(
@@ -1917,8 +1965,8 @@ def test_closing_associated_dock_first_shows_reopen_button_and_closing_plotter_c
     assert not plotter._dock_buttons_widget.isHidden()
     assert plotter._is_closing is False
 
-    # 2. Close main plotter dock
-    dock.close()
+    # 2. Close main plotter dock with its title-bar close button
+    dock.title.close_button.click()
 
     assert plotter._is_closing is True
     assert plotter._analysis_dock is None
@@ -1960,12 +2008,7 @@ def test_destroying_plotter_dock_closes_associated_docks(
     )
     plotter._add_analysis_dock_widget()
 
-    if hasattr(dock, "title") and hasattr(dock.title, "close_button"):
-        dock.title.close_button.click()
-    elif hasattr(dock, "destroyOnClose"):
-        dock.destroyOnClose()
-    else:
-        dock.close()
+    dock.title.close_button.click()
 
     assert plotter._is_closing is True
     assert plotter._analysis_dock is None
