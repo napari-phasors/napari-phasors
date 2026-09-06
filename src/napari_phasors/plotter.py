@@ -1741,6 +1741,8 @@ class PlotterWidget(QWidget):
         """Initialize the PlotterWidget."""
         super().__init__()
         self._is_closing = False
+        #: Last QDockWidget seen hosting this widget (see ``changeEvent``).
+        self._plotter_dock_ref = None
         self.viewer = napari_viewer
 
         # Unobtrusive, throttled check for a newer release (see module docs).
@@ -2682,6 +2684,43 @@ class PlotterWidget(QWidget):
                 return parent
             widget = parent
         return None
+
+    def _track_plotter_dock(self):
+        """Remember the hosting dock, so its removal can be recognised.
+
+        Returns the dock currently hosting this widget (``None`` when it is
+        not docked). ``_plotter_dock_ref`` keeps the *last* dock seen, which
+        is what tells :meth:`changeEvent` that a widget which is suddenly
+        unparented used to be docked.
+        """
+        dock = self._find_plotter_dock()
+        if dock is not None:
+            self._plotter_dock_ref = dock
+        return dock
+
+    def changeEvent(self, event):
+        """Close this widget when napari removes it from its dock.
+
+        Every destructive path — the dock's 'close X' button (napari wires
+        it to ``destroyOnClose``) and any direct
+        ``window.remove_dock_widget`` call — reparents this widget out of
+        its dock, so a ``ParentChange`` with no dock left above us means the
+        plotter is being closed and its companion docks should go with it.
+
+        The dock's *hide* button is deliberately not covered: napari wires
+        that to ``QDockWidget.close()``, which only hides the panel (it stays
+        re-openable, with its state, from the Plugins menu), so treating it
+        as a close would throw the user's cursors and settings away.
+        """
+        if event.type() == QEvent.ParentChange:
+            docked = self._track_plotter_dock()
+            if (
+                docked is None
+                and self._plotter_dock_ref is not None
+                and not self._is_closing
+            ):
+                self.close()
+        super().changeEvent(event)
 
     def _split_analysis_below_plotter(self):
         """Stack the analysis dock directly beneath the plotter dock."""
@@ -4207,6 +4246,9 @@ class PlotterWidget(QWidget):
         'hide' button (which emits visibilityChanged) and the 'close X'
         button (which destroys the dock without emitting any signal).
         """
+        if self._plotter_dock_ref is None:
+            self._track_plotter_dock()
+
         if not getattr(self, '_docks_initialized', False):
             return
 
@@ -4597,8 +4639,10 @@ class PlotterWidget(QWidget):
             for k, v in (self._contour_group_styles or {}).items()
         }
 
-        # Fall back to per-layer group metadata when no assignments exist yet
-        if not current_assignments and selected_names:
+        # Per-layer group metadata is the shared source of truth: a grouping
+        # made in a histogram tab (or restored from a saved file) shows up
+        # here, and vice versa.
+        if selected_names:
             meta_a, meta_n, meta_c, meta_s = (
                 build_group_styles_from_layer_metadata(
                     self.viewer, selected_names
@@ -4748,8 +4792,10 @@ class PlotterWidget(QWidget):
             for k, v in (self._phasor_center_group_names or {}).items()
         }
 
-        # Fall back to per-layer group metadata when no assignments exist yet
-        if not current_assignments and selected_names:
+        # Per-layer group metadata is the shared source of truth: a grouping
+        # made in a histogram tab (or in the contour dialog) shows up here,
+        # and vice versa.
+        if selected_names:
             meta_a, meta_n, meta_c = build_groups_from_layer_metadata(
                 self.viewer, selected_names
             )
@@ -4818,6 +4864,20 @@ class PlotterWidget(QWidget):
         """Show/hide configure button based on toggle state."""
         enabled = self._phasor_center_enabled
         self.plotter_inputs_widget.pc_configure_button.setVisible(enabled)
+
+    def _clear_phasor_center_statistics(self):
+        """Empty the phasor center statistics tables and redraw the canvas.
+
+        Tolerates being called before the statistics dock exists, which
+        happens while the widget is still being built.
+        """
+        stats_widget = getattr(self, '_phasor_center_stats_widget', None)
+        if stats_widget is not None:
+            with contextlib.suppress(RuntimeError):
+                stats_widget.update_centers({})
+                stats_widget.update_group_centers({})
+        with contextlib.suppress(AttributeError, RuntimeError):
+            self.canvas_widget.figure.canvas.draw_idle()
 
     def _clear_phasor_center_artists(self):
         """Remove all phasor center artists from the axes."""
@@ -5044,15 +5104,23 @@ class PlotterWidget(QWidget):
         )
 
     def _update_phasor_centers(self):
-        """Calculate and plot phasor center dots on the axes."""
+        """Recompute the phasor center dots for the current selection.
+
+        Called on every plot refresh — including when centers are disabled or
+        nothing is selected — so a dot never outlives the layers it was
+        computed from. A group whose layers have all been unchecked in
+        *Phasor Layers* therefore loses its dot and its statistics row.
+        """
         self._clear_phasor_center_artists()
 
         if not self._phasor_center_enabled or not self.has_phasor_data():
+            self._clear_phasor_center_statistics()
             return
 
         ax = self.canvas_widget.axes
         selected_layers = self.get_selected_layers()
         if not selected_layers:
+            self._clear_phasor_center_statistics()
             return
 
         has_multiple = len(selected_layers) > 1
@@ -5075,9 +5143,7 @@ class PlotterWidget(QWidget):
                 layer_centers[layer.name] = result
 
         if not layer_centers:
-            self._phasor_center_stats_widget.update_centers({})
-            self._phasor_center_stats_widget.update_group_centers({})
-            self.canvas_widget.figure.canvas.draw_idle()
+            self._clear_phasor_center_statistics()
             return
 
         default_tab10 = plt.cm.tab10.colors
@@ -7091,6 +7157,9 @@ class PlotterWidget(QWidget):
                 if self.plot_type == 'CONTOUR':
                     self._clear_contour_plot()
                     self.canvas_widget.figure.canvas.draw_idle()
+                # No layer is selected, so no center can be: drop the dots
+                # instead of returning before the plot would refresh them.
+                self._update_phasor_centers()
                 return
 
             self._update_harmonic_bounds(selected_layers)
@@ -9310,9 +9379,11 @@ class PlotterWidget(QWidget):
         self._enforce_axes_aspect()
         self._update_plot_bg_color()
 
-        # Update phasor center dots if enabled
-        if self._phasor_center_enabled:
-            self._update_phasor_centers()
+        # Always refresh the phasor centers, even when they are switched off:
+        # the dots drawn for a previous selection have to be cleared, not left
+        # behind. ``_update_phasor_centers`` no-ops beyond that clean-up when
+        # centers are disabled.
+        self._update_phasor_centers()
 
     def plot(self, x_data=None, y_data=None, selection_id_data=None):
         """Plot the selected phasor features efficiently."""
@@ -9636,18 +9707,41 @@ class PlotterWidget(QWidget):
         # inner widget has already been reparented/deleted, which double-frees
         # under PySide6 and segfaults the xdist worker at end-of-file teardown.
         window = getattr(self.viewer, 'window', None)
-        if window is not None:
-            for dock_attr in (
-                '_analysis_dock',
-                '_histogram_dock',
-                '_statistics_dock',
-            ):
-                dock = getattr(self, dock_attr, None)
-                if dock is not None:
+        for dock_attr in (
+            '_analysis_dock',
+            '_histogram_dock',
+            '_statistics_dock',
+        ):
+            dock = getattr(self, dock_attr, None)
+            if dock is not None:
+                with contextlib.suppress(
+                    Exception  # noqa: BLE001 - teardown best-effort
+                ):
+                    dock.close()
+                if window is not None:
                     with contextlib.suppress(
                         Exception  # noqa: BLE001 - teardown best-effort
                     ):
                         window.remove_dock_widget(dock)
-                    setattr(self, dock_attr, None)
+                setattr(self, dock_attr, None)
+
+        # Take the dock down too, so closing the plotter widget itself (not
+        # just its dock) leaves no empty panel behind. Deliberately resolved
+        # from the live parent chain rather than ``_plotter_dock_ref``: when
+        # this close came from ``changeEvent`` the widget is already
+        # unparented, meaning napari is mid-``remove_dock_widget`` and
+        # calling it again here would re-enter its teardown.
+        plotter_dock = self._find_plotter_dock()
+        if plotter_dock is not None:
+            with contextlib.suppress(
+                Exception  # noqa: BLE001 - teardown best-effort
+            ):
+                plotter_dock.close()
+            if window is not None:
+                with contextlib.suppress(
+                    Exception  # noqa: BLE001 - teardown best-effort
+                ):
+                    window.remove_dock_widget(plotter_dock)
+        self._plotter_dock_ref = None
 
         super().closeEvent(event)

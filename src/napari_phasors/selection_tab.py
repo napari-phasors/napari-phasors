@@ -19,6 +19,7 @@ from qtpy.QtGui import (
     QPainterPath,
     QPen,
     QPixmap,
+    QValidator,
 )
 from qtpy.QtWidgets import (
     QApplication,
@@ -1909,11 +1910,121 @@ class ClickableFrame(QFrame):
 
     clicked = Signal()
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._last_modifiers = Qt.NoModifier
+
     def mousePressEvent(self, event):
         """Emit ``clicked`` for left-button presses, then defer to the base."""
         if event.button() == Qt.LeftButton:
+            self._last_modifiers = event.modifiers()
             self.clicked.emit()
         super().mousePressEvent(event)
+
+
+class MixedValueSpinBox(QDoubleSpinBox):
+    """Spin box that can show a dash for "the selected cursors disagree".
+
+    While mixed it displays :attr:`MIXED_TEXT` instead of a number and
+    keeps quiet about the value it happens to hold — that value belongs to
+    one cursor, and reporting it would push it onto all the others. Typing
+    a value (committed with Enter or by leaving the field) or stepping with
+    the arrows resolves the state.
+
+    The resolved value arrives as :attr:`valueCommitted` rather than
+    ``valueChanged``, because the value a user types into a mixed field is
+    often the one the box already holds — which ``valueChanged`` would not
+    report.
+    """
+
+    #: Emitted when the user resolves a mixed field, even when the number
+    #: itself did not change.
+    valueCommitted = Signal(float)
+
+    #: Shown in place of a number while the selected cursors disagree.
+    MIXED_TEXT = "—"
+
+    def __init__(self, *args, **kwargs):
+        """Build a spin box that starts in the ordinary (numeric) state."""
+        super().__init__(*args, **kwargs)
+        self._mixed = False
+        self._edited_while_mixed = False
+        self.lineEdit().textEdited.connect(self._on_text_edited)
+        self.editingFinished.connect(self._on_editing_finished)
+
+    def isMixed(self):
+        """Return whether the dash is being shown instead of a value."""
+        return self._mixed
+
+    def setMixed(self, mixed=True):
+        """Show (``True``) or stop showing the "values differ" dash."""
+        if self._mixed == mixed:
+            return
+        self._mixed = mixed
+        self._edited_while_mixed = False
+        # Interpreting each keystroke rewrites the field from the current
+        # value, which would replace the dash - and then whatever the user
+        # is halfway through typing - so only track the keyboard once a
+        # real number is on display.
+        self.setKeyboardTracking(not mixed)
+        self.lineEdit().setText(
+            self.prefix() + self.textFromValue(self.value()) + self.suffix()
+        )
+
+    def textFromValue(self, value):
+        """Render *value*, or the dash while mixed."""
+        if self._mixed:
+            return self.MIXED_TEXT
+        return super().textFromValue(value)
+
+    def valueFromText(self, text):
+        """Read *text*, treating the dash as "unchanged"."""
+        if text.strip() == self.MIXED_TEXT:
+            return self.value()
+        return super().valueFromText(text)
+
+    def validate(self, text, pos):
+        """Accept the dash, so it can be shown in the line edit."""
+        if text.strip() == self.MIXED_TEXT:
+            return (QValidator.Acceptable, text, pos)
+        return super().validate(text, pos)
+
+    def setValue(self, value):
+        """Assign *value*, which also resolves a mixed field.
+
+        Only reached from Python: Qt's own interpretation of what is being
+        typed goes through the base class, so it cannot clear the dash by
+        itself.
+        """
+        self.setMixed(False)
+        super().setValue(value)
+
+    def stepBy(self, steps):
+        """Step the value, committing it when that resolves a mixed field."""
+        super().stepBy(steps)
+        if self._mixed:
+            self._commit()
+
+    def focusInEvent(self, event):
+        """Start each visit to the field with no pending edit."""
+        self._edited_while_mixed = False
+        super().focusInEvent(event)
+
+    def _on_text_edited(self, _text):
+        """Note that the user is typing into a mixed field."""
+        self._edited_while_mixed = self._mixed
+
+    def _on_editing_finished(self):
+        """Commit on Enter or focus-out, but only after a real edit."""
+        if self._edited_while_mixed:
+            self._commit()
+
+    def _commit(self):
+        """Leave the mixed state and announce the resolved value."""
+        self._edited_while_mixed = False
+        value = self.value()
+        self.setMixed(False)
+        self.valueCommitted.emit(value)
 
 
 class CursorSelectionWidget(QWidget):
@@ -1941,6 +2052,51 @@ class CursorSelectionWidget(QWidget):
         for r, g, b, _ in [plt.get_cmap('Set1')(i) for i in range(9)]
     ]
 
+    #: Spin box holding each editable cursor parameter, in the order the
+    #: editor lays them out.
+    PARAM_SPINS = {
+        'g': 'g_spin',
+        's': 's_spin',
+        'radius': 'radius_spin',
+        'radius_minor': 'radius_minor_spin',
+        'angle': 'angle_spin',
+        'phase_min': 'phase_min_spin',
+        'phase_max': 'phase_max_spin',
+        'modulation_min': 'mod_min_spin',
+        'modulation_max': 'mod_max_spin',
+    }
+    CURSOR_PARAMS_BY_TYPE = {
+        'circular': {'g', 's', 'radius'},
+        'elliptic': {'g', 's', 'radius', 'radius_minor', 'angle'},
+        'polar': {
+            'phase_min',
+            'phase_max',
+            'modulation_min',
+            'modulation_max',
+        },
+    }
+    #: Shown on a parameter that a batch edit will write to every selected
+    #: cursor, and on one that only some of them have.
+    BATCH_TOOLTIP = "Batch edit: modifies all selected cursors."
+    UNSHARED_TOOLTIP = (
+        "Disabled: parameter not shared across all selected cursors."
+    )
+
+    @classmethod
+    def _shared_params(cls, cursors):
+        """Return the set of parameter names shared by all ``cursors``."""
+        if not cursors:
+            return set()
+        param_sets = [
+            cls.CURSOR_PARAMS_BY_TYPE.get(c['type'], set()) for c in cursors
+        ]
+        return set.intersection(*param_sets)
+
+    @property
+    def _selected_cursor(self):
+        """Return the primary / last selected cursor, or None."""
+        return self._selected_cursors[-1] if self._selected_cursors else None
+
     def __init__(self, viewer, parent_widget):
         """Initialize the CursorSelectionWidget."""
         super().__init__()
@@ -1949,7 +2105,8 @@ class CursorSelectionWidget(QWidget):
 
         # Each cursor is a dict carrying both its data and its row widgets.
         self._cursors = []
-        self._selected_cursor = None
+        self._selected_cursors = []
+        self._last_clicked_cursor = None
         self._phasors_selected_layer = None
 
         # Dragging state
@@ -2079,7 +2236,7 @@ class CursorSelectionWidget(QWidget):
         ``width_ref`` overrides the string used to measure the fixed width,
         so related spinboxes can be aligned on a common reference.
         """
-        spin = QDoubleSpinBox()
+        spin = MixedValueSpinBox()
         spin.setRange(low, high)
         spin.setSingleStep(step)
         spin.setDecimals(decimals)
@@ -2471,8 +2628,19 @@ class CursorSelectionWidget(QWidget):
         self._apply_type_visibility(cursor)
         self._update_visibility_button(cursor)
 
+        for lbl in (
+            number_label,
+            n_label,
+            count_label,
+            pct_label,
+            percentage_label,
+        ):
+            lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
         # Wire signals (lambdas capture the cursor dict directly).
-        frame.clicked.connect(lambda c=cursor: self._select_cursor(c))
+        frame.clicked.connect(
+            lambda c=cursor, f=frame: self._on_row_clicked(c, f)
+        )
         # Interacting with the row's shape combo also selects the cursor.
         type_combo.activated.connect(
             lambda _=0, c=cursor: self._select_cursor(c)
@@ -2480,19 +2648,20 @@ class CursorSelectionWidget(QWidget):
         type_combo.currentIndexChanged.connect(
             lambda _=0, c=cursor: self._on_cursor_type_changed(c)
         )
-        for spin in (
-            g_spin,
-            s_spin,
-            radius_spin,
-            radius_minor_spin,
-            angle_spin,
-            phase_min_spin,
-            phase_max_spin,
-            mod_min_spin,
-            mod_max_spin,
-        ):
+        for param, spin_key in self.PARAM_SPINS.items():
+            spin = cursor[spin_key]
             spin.valueChanged.connect(
-                lambda _val, c=cursor: self._on_cursor_changed(c)
+                lambda val, c=cursor, p=param: self._on_param_changed(
+                    c, p, val
+                )
+            )
+            # A value typed into a field showing the "values differ" dash
+            # may equal the one already held, which valueChanged would not
+            # report — so take it from the dedicated signal instead.
+            spin.valueCommitted.connect(
+                lambda val, c=cursor, p=param: self._on_param_changed(
+                    c, p, val
+                )
             )
         color_button.color_changed.connect(
             lambda _c, c=cursor: self._on_cursor_changed(c)
@@ -2566,36 +2735,204 @@ class CursorSelectionWidget(QWidget):
         cursor['elliptic_widget'].setVisible(show_elliptic)
         cursor['polar_widget'].setVisible(cursor_type == "polar")
 
-    def _select_cursor(self, cursor):
-        """Show ``cursor``'s editor page and highlight its list row.
+    def _on_row_clicked(self, cursor, frame=None):
+        """Handle clicking a cursor row with potential modifier keys."""
+        modifiers = QApplication.keyboardModifiers()
+        if (
+            frame is not None
+            and getattr(frame, '_last_modifiers', Qt.NoModifier)
+            != Qt.NoModifier
+        ):
+            modifiers = modifiers | frame._last_modifiers
+        self._select_cursor(cursor, modifiers=modifiers)
 
+    def _select_cursor(self, cursor, modifiers=None):
+        """Show editor and highlight row(s) for ``cursor`` (or multi-selection).
+
+        If ``modifiers`` contains ``Qt.ShiftModifier``, a range of cursors is selected.
+        If ``modifiers`` contains ``Qt.ControlModifier`` or ``Qt.MetaModifier``,
+        the cursor's selection state is toggled.
         Passing ``None`` hides the editor (no cursors on this harmonic).
         """
         if cursor is not None and cursor not in self._cursors:
             return
-        self._selected_cursor = cursor
+
+        if cursor is None:
+            self._selected_cursors = []
+            self._last_clicked_cursor = None
+            self._update_row_selection_highlights()
+            self._editor_box.setVisible(False)
+            return
+
+        current_visible = self._current_harmonic_cursors()
+
+        if (
+            modifiers
+            and bool(modifiers & Qt.ShiftModifier)
+            and self._last_clicked_cursor in current_visible
+            and cursor in current_visible
+        ):
+            idx_start = current_visible.index(self._last_clicked_cursor)
+            idx_end = current_visible.index(cursor)
+            step = 1 if idx_start <= idx_end else -1
+            self._selected_cursors = current_visible[
+                idx_start : idx_end + step : step
+            ]
+        elif modifiers and bool(
+            modifiers & (Qt.ControlModifier | Qt.MetaModifier)
+        ):
+            if cursor in self._selected_cursors:
+                self._selected_cursors.remove(cursor)
+                # A row that was just deselected must not stay the anchor
+                # of the next Shift-click range.
+                if self._last_clicked_cursor is cursor:
+                    self._last_clicked_cursor = (
+                        self._selected_cursors[-1]
+                        if self._selected_cursors
+                        else None
+                    )
+            else:
+                self._selected_cursors.append(cursor)
+                self._last_clicked_cursor = cursor
+        else:
+            self._selected_cursors = [cursor]
+            self._last_clicked_cursor = cursor
+
+        self._update_row_selection_highlights()
+        self._update_editor_for_selection()
+
+    def _update_row_selection_highlights(self):
+        """Update the visual selected state on each cursor's row frame."""
         for c in self._cursors:
-            selected = c is cursor
+            selected = c in self._selected_cursors
             row = c['row']
             if row.property("selected") != selected:
                 row.setProperty("selected", selected)
                 row.style().unpolish(row)
                 row.style().polish(row)
-        if cursor is None:
+
+    def _update_editor_for_selection(self):
+        """Configure the details editor based on currently selected cursors."""
+        if not self._selected_cursors:
             self._editor_box.setVisible(False)
             return
-        self._details_stack.setCurrentWidget(cursor['detail'])
+
         self._editor_box.setVisible(True)
+
+        if len(self._selected_cursors) == 1:
+            cursor = self._selected_cursors[0]
+            self._details_stack.setCurrentWidget(cursor['detail'])
+            self._enable_cursor_controls(cursor, enable_all=True)
+            self._update_mixed_indicators(cursor)
+            self._refresh_editor_title()
+            return
+
+        # Multi-cursor selection: prefer showing an elliptic cursor if selected
+        # so non-shared fields (minor radius, angle) are displayed disabled.
+        active = None
+        for c in reversed(self._selected_cursors):
+            if c['type'] == 'elliptic':
+                active = c
+                break
+        if active is None:
+            active = self._selected_cursors[-1]
+
+        self._details_stack.setCurrentWidget(active['detail'])
+        shared = self._shared_params(self._selected_cursors)
+        self._enable_cursor_controls(active, shared_params=shared)
+        self._update_mixed_indicators(active, shared)
         self._refresh_editor_title()
 
+    def _update_mixed_indicators(self, cursor, shared_params=()):
+        """Dash out shared parameters the selected cursors disagree on.
+
+        The editor shows one cursor's fields, so without this a parameter
+        that differs across the selection would display a single cursor's
+        value as if it spoke for all of them.
+        """
+        for param, spin_key in self.PARAM_SPINS.items():
+            spin = cursor[spin_key]
+            if param not in shared_params or len(self._selected_cursors) < 2:
+                spin.setMixed(False)
+                continue
+            # Compare as displayed: values that round to the same text are
+            # not a disagreement the user can act on.
+            decimals = spin.decimals()
+            values = {
+                round(other[param], decimals)
+                for other in self._selected_cursors
+            }
+            spin.setMixed(len(values) > 1)
+
+    def _enable_cursor_controls(
+        self, cursor, enable_all=False, shared_params=None
+    ):
+        """Enable or disable editor parameter inputs based on shared parameters."""
+        if shared_params is None:
+            shared_params = set()
+
+        param_widgets = {
+            'g': [cursor['g_spin']],
+            's': [cursor['s_spin']],
+            'radius': [cursor['radius_label'], cursor['radius_spin']],
+            'radius_minor': [
+                cursor['radius_minor_label'],
+                cursor['radius_minor_spin'],
+            ],
+            'angle': [cursor['elliptic_widget'], cursor['angle_spin']],
+            'phase_min': [cursor['phase_min_spin']],
+            'phase_max': [cursor['phase_max_spin']],
+            'modulation_min': [cursor['mod_min_spin']],
+            'modulation_max': [cursor['mod_max_spin']],
+        }
+
+        for param, widgets in param_widgets.items():
+            is_enabled = enable_all or (param in shared_params)
+            for w in widgets:
+                w.setEnabled(is_enabled)
+                # Batch tooltips explain a state that only exists while
+                # several cursors are selected, so the widget's own
+                # description has to come back with a single selection.
+                base_tip = w.property("base_tooltip")
+                if base_tip is None:
+                    base_tip = w.toolTip()
+                    w.setProperty("base_tooltip", base_tip)
+                if enable_all:
+                    w.setToolTip(base_tip)
+                elif is_enabled:
+                    w.setToolTip(self.BATCH_TOOLTIP)
+                else:
+                    w.setToolTip(self.UNSHARED_TOOLTIP)
+
     def _refresh_editor_title(self):
-        """Sync the editor box title with the selected cursor's identity."""
-        cursor = self._selected_cursor
-        if cursor is None:
+        """Sync the editor box title with the selected cursor(s)."""
+        if not self._selected_cursors:
             return
-        number = cursor['number_label'].text().rstrip('.')
-        shape = cursor['type_combo'].currentText()
-        self._editor_box.setTitle(f"Cursor {number} — {shape}")
+        if len(self._selected_cursors) == 1:
+            cursor = self._selected_cursors[0]
+            number = cursor['number_label'].text().rstrip('.')
+            shape = cursor['type_combo'].currentText()
+            self._editor_box.setTitle(f"Cursor {number} — {shape}")
+        else:
+            numbers = ", ".join(
+                c['number_label'].text().rstrip('.')
+                for c in self._selected_cursors
+            )
+            types = {c['type'] for c in self._selected_cursors}
+            shared = self._shared_params(self._selected_cursors)
+            if not shared:
+                self._editor_box.setTitle(
+                    f"Cursors {numbers} — No shared parameters"
+                )
+            elif len(types) == 1:
+                shape = self._selected_cursors[0]['type_combo'].currentText()
+                self._editor_box.setTitle(
+                    f"Cursors {numbers} — {shape} (Batch)"
+                )
+            else:
+                self._editor_box.setTitle(
+                    f"Cursors {numbers} — Shared Parameters (Batch)"
+                )
 
     def _resolve_cursor(self, cursor_or_idx):
         """Accept either a cursor dict or its index in ``self._cursors``."""
@@ -2620,12 +2957,16 @@ class CursorSelectionWidget(QWidget):
         # Keep the selection on a visible row: after a harmonic switch the
         # selected cursor's row may have been hidden.
         harmonic_cursors = self._current_harmonic_cursors()
-        if self._selected_cursor not in harmonic_cursors:
+        self._selected_cursors = [
+            c for c in self._selected_cursors if c in harmonic_cursors
+        ]
+        if not self._selected_cursors:
             self._select_cursor(
                 harmonic_cursors[0] if harmonic_cursors else None
             )
         else:
-            self._refresh_editor_title()
+            self._update_row_selection_highlights()
+            self._update_editor_for_selection()
 
     def _current_harmonic_cursors(self):
         """Return the cursors belonging to the harmonic on display."""
@@ -2641,9 +2982,9 @@ class CursorSelectionWidget(QWidget):
     def _on_cursor_type_changed(self, cursor):
         """Handle the shape combobox changing for a cursor."""
         cursor['type'] = cursor['type_combo'].currentData()
-        if cursor is self._selected_cursor:
-            self._refresh_editor_title()
         self._apply_type_visibility(cursor)
+        if cursor in self._selected_cursors:
+            self._update_editor_for_selection()
         self._update_cursor_patch(cursor)
         if self._dragging_cursor is None:
             if self._autoupdate_enabled:
@@ -2663,6 +3004,42 @@ class CursorSelectionWidget(QWidget):
         cursor['modulation_min'] = cursor['mod_min_spin'].value()
         cursor['modulation_max'] = cursor['mod_max_spin'].value()
         cursor['color'] = cursor['color_button'].color()
+
+    def _on_param_changed(self, cursor, param, value):
+        """Handle any parameter field change for a cursor."""
+        if cursor not in self._cursors:
+            return
+        if cursor[self.PARAM_SPINS[param]].isMixed():
+            # The field still shows the dash: this is Qt interpreting what
+            # is being typed, not a value the user has settled on. The
+            # committed value arrives separately, via ``valueCommitted``.
+            return
+        cursor[param] = value
+        self._update_cursor_patch(cursor)
+
+        if (
+            len(self._selected_cursors) > 1
+            and cursor in self._selected_cursors
+            and param in self._shared_params(self._selected_cursors)
+        ):
+            spin_key = self.PARAM_SPINS[param]
+            for other in self._selected_cursors:
+                if other is cursor:
+                    continue
+                spin = other[spin_key]
+                spin.blockSignals(True)
+                spin.setValue(value)
+                # Read back, so a value the other spin box clamps is
+                # what gets stored on that cursor.
+                other[param] = spin.value()
+                spin.blockSignals(False)
+                self._update_cursor_patch(other)
+
+        if self._dragging_cursor is None:
+            if self._autoupdate_enabled:
+                self._apply_selection()
+            else:
+                self._update_cursor_statistics()
 
     def _on_cursor_changed(self, cursor):
         """Handle any field change for a cursor row."""
@@ -2691,17 +3068,27 @@ class CursorSelectionWidget(QWidget):
         cursor['row'].deleteLater()
         self._details_stack.removeWidget(cursor['detail'])
         cursor['detail'].deleteLater()
-        was_selected = cursor is self._selected_cursor
+        was_selected = cursor in self._selected_cursors
         self._cursors.remove(cursor)
         if was_selected:
-            self._selected_cursor = None
+            self._selected_cursors.remove(cursor)
+            if self._last_clicked_cursor is cursor:
+                self._last_clicked_cursor = (
+                    self._selected_cursors[-1]
+                    if self._selected_cursors
+                    else None
+                )
 
         self._update_row_visibility()
         if was_selected:
-            harmonic_cursors = self._current_harmonic_cursors()
-            self._select_cursor(
-                harmonic_cursors[-1] if harmonic_cursors else None
-            )
+            if not self._selected_cursors:
+                harmonic_cursors = self._current_harmonic_cursors()
+                self._select_cursor(
+                    harmonic_cursors[-1] if harmonic_cursors else None
+                )
+            else:
+                self._update_row_selection_highlights()
+                self._update_editor_for_selection()
         self._refresh_calculate_button_if_ready()
 
         if not self._cursors:
