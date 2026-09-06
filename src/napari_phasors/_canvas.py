@@ -619,6 +619,9 @@ class Histogram2D:
             self.ax.figure.canvas.draw_idle()
 
     def _remove_artists(self, keys: list[str] | None = None):
+        if keys is None:
+            self._color_indices = None
+            self._histogram = None
         to_remove = (
             keys
             if keys is not None
@@ -709,22 +712,26 @@ class Histogram2D:
 
     def _colorize(self, indices: np.ndarray | None):
         if indices is None or self._data is None or self._histogram is None:
-            self._remove_artists(["overlay_histogram_image"])
+            if "overlay_histogram_image" in self._mpl_artists:
+                self._remove_artists(["overlay_histogram_image"])
             return
 
         indices = np.asarray(indices)
         if indices.ndim == 0:
             if indices == 0:
-                self._remove_artists(["overlay_histogram_image"])
+                if "overlay_histogram_image" in self._mpl_artists:
+                    self._remove_artists(["overlay_histogram_image"])
                 return
             indices = np.full(len(self._data), indices, dtype=np.int32)
         elif len(indices) != len(self._data):
-            self._remove_artists(["overlay_histogram_image"])
+            if "overlay_histogram_image" in self._mpl_artists:
+                self._remove_artists(["overlay_histogram_image"])
             return
 
         non_zero = indices > 0
         if not np.any(non_zero):
-            self._remove_artists(["overlay_histogram_image"])
+            if "overlay_histogram_image" in self._mpl_artists:
+                self._remove_artists(["overlay_histogram_image"])
             return
 
         _, x_edges, y_edges = self._histogram
@@ -740,7 +747,8 @@ class Histogram2D:
 
         valid = (x_idx >= 0) & (x_idx < nx) & (y_idx >= 0) & (y_idx < ny)
         if not np.any(valid):
-            self._remove_artists(["overlay_histogram_image"])
+            if "overlay_histogram_image" in self._mpl_artists:
+                self._remove_artists(["overlay_histogram_image"])
             return
 
         grid = np.zeros((nx, ny), dtype=np.int32)
@@ -883,6 +891,8 @@ class Scatter:
             self.ax.figure.canvas.draw_idle()
 
     def _remove_artists(self, keys: list[str] | None = None):
+        if keys is None:
+            self._color_indices = None
         scatter = self._mpl_artists.pop("scatter", None)
         if scatter is not None:
             with contextlib.suppress(Exception):

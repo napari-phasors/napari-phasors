@@ -3975,7 +3975,13 @@ class PlotterWidget(QWidget):
             try:
                 for artist in getattr(cw, 'artists', {}).values():
                     if hasattr(artist, 'color_indices'):
-                        artist.color_indices = 0
+                        current_ci = getattr(artist, '_color_indices', None)
+                        if current_ci is not None:
+                            if isinstance(current_ci, (int, np.integer)):
+                                if current_ci != 0:
+                                    artist.color_indices = 0
+                            else:
+                                artist.color_indices = 0
                 self._last_histogram_color_indices = None
                 self._last_scatter_color_indices = None
             finally:
