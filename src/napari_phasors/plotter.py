@@ -79,6 +79,7 @@ from ._utils import (
     patch_biaplotter_capture_selection_geometry,
     patch_biaplotter_fixed_histogram_range,
     populate_colormap_combobox,
+    rank_mask_candidates,
     read_ome_tiff_settings,
     resolve_colormap_by_name,
     save_groups_to_layer_metadata,
@@ -493,6 +494,14 @@ class MaskAssignmentDialog(QDialog):
             self._on_apply_all_changed
         )
         apply_all_layout.addWidget(self._apply_all_combo, 1)
+
+        self.auto_assign_button = QPushButton("Auto-assign")
+        self.auto_assign_button.setToolTip(
+            "Automatically match mask layers to image layers by name."
+        )
+        self.auto_assign_button.setEnabled(bool(self._mask_layers))
+        self.auto_assign_button.clicked.connect(self._on_auto_assign)
+        apply_all_layout.addWidget(self.auto_assign_button)
         layout.addLayout(apply_all_layout)
 
         # OK / Cancel
@@ -502,6 +511,25 @@ class MaskAssignmentDialog(QDialog):
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
+
+    def _on_auto_assign(self):
+        """Pair each image layer with the best matching mask layer by name.
+
+        Layers with no name match are left untouched rather than given a
+        near-miss mask, and the result is reported so a partial match is
+        not mistaken for a complete one.
+        """
+        if not self._mask_layers:
+            return
+        mask_names = list(self._mask_layers.keys())
+        assigned = 0
+        for image_name, combo in self._combos.items():
+            candidates = rank_mask_candidates(
+                image_name, mask_names, strip_directory=False
+            )
+            if candidates:
+                combo.setCurrentText(candidates[0])
+                assigned += 1
 
     def _on_apply_all_changed(self, text):
         """Auto-set all per-layer combos when a mask is selected."""

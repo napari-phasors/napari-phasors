@@ -1246,6 +1246,76 @@ def _get_layer_group_entry(layer):
     return layer.metadata.get('group')
 
 
+def name_match_stem(value, strip_directory=True):
+    """Return the comparable stem of a file path or layer name.
+
+    Drops any directory part, the extension, and any further compound
+    suffix, so ``"sample.ome.tif"``, ``"sample.tif Intensity Image"`` and
+    ``"sample"`` all compare as ``"sample"``.
+
+    Parameters
+    ----------
+    value : str
+        File path or layer name.
+    strip_directory : bool, optional
+        Take the basename first. True for file paths; False for napari
+        layer names, which may legitimately contain a ``/``.
+
+    Returns
+    -------
+    str
+        Lower-cased stem, possibly empty.
+    """
+    if strip_directory:
+        value = os.path.basename(value)
+    return os.path.splitext(value)[0].split(".")[0].lower()
+
+
+def rank_mask_candidates(target, candidates, strip_directory=True):
+    """Return the *candidates* whose name pairs with *target*, best first.
+
+    Only exact and substring stem matches are returned: pairing masks by
+    name is only useful when it is right, and a looser (fuzzy) rule
+    silently pairs sibling names such as ``sample_control`` with
+    ``sample_treated_mask``. Anything that does not match is left out
+    entirely, so callers can tell "no candidate" from "a weak candidate"
+    and leave the choice to the user.
+
+    Parameters
+    ----------
+    target : str
+        File path or layer name to find masks for.
+    candidates : iterable of str
+        Mask file paths or mask layer names.
+    strip_directory : bool, optional
+        Passed to :func:`name_match_stem` for both sides.
+
+    Returns
+    -------
+    list of str
+        Matching candidates, best match first; empty when none match.
+    """
+    target_stem = name_match_stem(target, strip_directory)
+    if not target_stem:
+        return []
+    scored = []
+    for candidate in candidates:
+        stem = name_match_stem(candidate, strip_directory)
+        if not stem:
+            continue
+        if stem == target_stem:
+            score = 0
+        elif target_stem in stem or stem in target_stem:
+            # Closest in length wins: "s1_mask" beats "s1_mask_edited".
+            score = 1 + abs(len(stem) - len(target_stem))
+        else:
+            continue
+        scored.append((score, candidate))
+    # Name is the tie-breaker, so the ranking is stable and predictable.
+    scored.sort(key=lambda item: (item[0], item[1]))
+    return [candidate for _score, candidate in scored]
+
+
 def build_groups_from_layer_metadata(viewer, layer_names):
     """Build group assignment dicts from per-layer ``settings['group']`` metadata.
 
