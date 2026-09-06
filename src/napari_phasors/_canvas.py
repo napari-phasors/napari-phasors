@@ -1159,11 +1159,13 @@ class PhasorCanvasWidget(QWidget):
         self.layout().addWidget(self.toolbar)
 
         self.selection_tools_layout = QHBoxLayout()
-        self.selection_tools_layout.setContentsMargins(4, 2, 4, 2)
-        self.selection_tools_layout.setSpacing(6)
+        self.selection_tools_layout.setContentsMargins(0, 0, 0, 0)
+        self.selection_tools_layout.setSpacing(0)
 
-        self.selection_toolbar = SelectionToolbarWidget(self)
-        self.selection_tools_layout.addWidget(self.selection_toolbar)
+        # Selection tools are now located in the Manual Selection tab.
+        # self.selection_toolbar is kept headless for backward compatibility
+        # and is intentionally not added to self.layout().
+        self.selection_toolbar = SelectionToolbarWidget()
 
         has_light_bg = self.toolbar._napari_theme_has_light_bg()
         self.selection_toolbar.update_theme(has_light_bg)
@@ -1181,7 +1183,6 @@ class PhasorCanvasWidget(QWidget):
 
         self.class_spinbox = _ClassSpinboxStub()
 
-        self.layout().addLayout(self.selection_tools_layout)
         self.layout().addWidget(self.canvas, 1)
 
         self.artists: dict[str, Any] = {

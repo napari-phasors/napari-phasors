@@ -853,6 +853,10 @@ class SelectionWidget(QWidget):
             self.cursor_selection_widget.clear_all_patches()
         if hasattr(self, "automatic_clustering_widget"):
             self.automatic_clustering_widget.clear_all_patches()
+        if self.parent_widget is not None and hasattr(
+            self.parent_widget, "_clear_manual_selection_coloring"
+        ):
+            self.parent_widget._clear_manual_selection_coloring()
 
     def is_manual_selection_mode(self):
         """Check if manual selection mode is currently active."""
@@ -942,6 +946,10 @@ class SelectionWidget(QWidget):
             self.automatic_clustering_widget.redraw_all_patches()
             if self.parent_widget is not None:
                 self.parent_widget._set_selection_visibility(False)
+                if hasattr(
+                    self.parent_widget, "_clear_manual_selection_coloring"
+                ):
+                    self.parent_widget._clear_manual_selection_coloring()
                 self.parent_widget.plot(selection_id_data=None)
             self._manage_labels_layer_visibility(show_manual=False)
         else:  # Cursor selection mode (index 0)
@@ -952,6 +960,10 @@ class SelectionWidget(QWidget):
             self.automatic_clustering_widget.clear_all_patches()
             if self.parent_widget is not None:
                 self.parent_widget._set_selection_visibility(False)
+                if hasattr(
+                    self.parent_widget, "_clear_manual_selection_coloring"
+                ):
+                    self.parent_widget._clear_manual_selection_coloring()
                 self.parent_widget.plot(selection_id_data=None)
             self._manage_labels_layer_visibility(show_manual=False)
 

@@ -3902,6 +3902,7 @@ class PlotterWidget(QWidget):
             if hasattr(self, 'canvas_widget'):
                 self.canvas_widget._on_escape(None)
             self.selection_tab.clear_artists()
+            self._clear_manual_selection_coloring()
         if hasattr(self, 'components_tab'):
             self.components_tab.clear_artists()
         if hasattr(self, 'fret_tab'):
@@ -3918,23 +3919,43 @@ class PlotterWidget(QWidget):
             if hasattr(self.selection_tab, 'is_manual_selection_mode'):
                 is_manual = self.selection_tab.is_manual_selection_mode()
                 self._set_selection_visibility(is_manual)
-                self._set_selection_cursors_visibility(True)
             else:
                 self._set_selection_visibility(True)
+            self._set_selection_cursors_visibility(True)
         elif current_tab == getattr(self, 'components_tab', None):
             self._set_components_visibility(True)
         elif current_tab == getattr(self, 'fret_tab', None):
             self._set_fret_visibility(True)
 
+    def _clear_manual_selection_coloring(self):
+        """Remove manual selection coloring from the phasor plot."""
+        if hasattr(self, 'canvas_widget'):
+            cw = self.canvas_widget
+            old_updating = getattr(self, '_updating_plot', False)
+            self._updating_plot = True
+            try:
+                for artist in getattr(cw, 'artists', {}).values():
+                    if hasattr(artist, 'color_indices'):
+                        artist.color_indices = 0
+                self._last_histogram_color_indices = None
+                self._last_scatter_color_indices = None
+            finally:
+                self._updating_plot = old_updating
+            if hasattr(cw, 'figure') and hasattr(cw.figure, 'canvas'):
+                cw.figure.canvas.draw_idle()
+
     def _set_selection_visibility(self, visible):
         """Set visibility of selection toolbar."""
         if hasattr(self, 'selection_tab'):
-            layout = self.canvas_widget.selection_tools_layout
-            for i in range(layout.count()):
-                item = layout.itemAt(i)
-                widget = item.widget()
-                if widget is not None:
-                    widget.setVisible(visible)
+            layout = getattr(
+                self.canvas_widget, 'selection_tools_layout', None
+            )
+            if layout is not None:
+                for i in range(layout.count()):
+                    item = layout.itemAt(i)
+                    widget = item.widget()
+                    if widget is not None:
+                        widget.setVisible(visible)
 
     def _set_selection_cursors_visibility(self, visible):
         """Set visibility of cursor patches based on current selection mode."""
@@ -3951,15 +3972,15 @@ class PlotterWidget(QWidget):
                 elif mode_idx == 1:
                     w_auto.redraw_all_patches()
                 elif mode_idx == 2:
+                    if hasattr(self.selection_tab, '_update_manual_colormaps'):
+                        self.selection_tab._update_manual_colormaps()
                     self.selection_tab.update_phasor_plot_with_selection_id(
                         self.selection_tab.selection_id
                     )
             else:
                 w_cursor.clear_all_patches()
                 w_auto.clear_all_patches()
-                # Clear manual selection from plot when not visible
-                if mode_idx == 2:
-                    self.plot(selection_id_data=None)
+                self._clear_manual_selection_coloring()
 
     def _set_components_visibility(self, visible):
         """Set visibility of components tab artists."""
@@ -6328,11 +6349,19 @@ class PlotterWidget(QWidget):
         self.canvas_widget.figure.canvas.draw_idle()
 
     def _connect_selector_signals(self):
-        """Connect selection applied signal from all selectors to enforce axes aspect."""
+        """Connect selection applied signal from all selectors to enforce axes aspect and track selection."""
         for selector in self.canvas_widget.selectors.values():
             selector.selection_applied_signal.connect(
-                self._enforce_axes_aspect
+                self._on_selector_applied
             )
+
+    def _on_selector_applied(self, color_indices):
+        """Track color indices applied by canvas selectors and enforce aspect."""
+        if self.plot_type == 'HISTOGRAM2D':
+            self._last_histogram_color_indices = color_indices
+        elif self.plot_type == 'SCATTER':
+            self._last_scatter_color_indices = color_indices
+        self._enforce_axes_aspect()
 
     def _connect_active_artist_signals(self):
         """Connect signals for the currently active artist only."""

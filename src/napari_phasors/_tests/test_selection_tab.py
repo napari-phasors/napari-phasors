@@ -2518,7 +2518,7 @@ def test_manual_selection_statistics(make_viewer_model, qtbot):
 
 
 def test_manual_selection_tool_sync(make_viewer_model, qtbot):
-    """Test bidirectional synchronization of drawing tool buttons."""
+    """Test bidirectional synchronization of drawing tool buttons in manual selection tab."""
     viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.selection_tab
@@ -2529,17 +2529,69 @@ def test_manual_selection_tool_sync(make_viewer_model, qtbot):
     lasso_btn.click()
     assert lasso_btn.isChecked()
     assert cw.active_selector is not None
-    assert cw.selection_toolbar.buttons["LASSO"].isChecked()
+    assert cw.active_selector.name == "Interactive Lasso Selector"
 
-    # Click Rectangle in canvas toolbar
-    rect_btn_canvas = cw.selection_toolbar.buttons["RECTANGLE"]
-    rect_btn_canvas.click()
-    assert rect_btn_canvas.isChecked()
-    assert not cw.selection_toolbar.buttons["LASSO"].isChecked()
-    assert widget.selection_tool_buttons["RECTANGLE"].isChecked()
-    assert not widget.selection_tool_buttons["LASSO"].isChecked()
+    # Click Rectangle button in SelectionWidget
+    rect_btn = widget.selection_tool_buttons["RECTANGLE"]
+    rect_btn.click()
+    assert rect_btn.isChecked()
+    assert not lasso_btn.isChecked()
+    assert cw.active_selector is not None
+    assert cw.active_selector.name == "Interactive Rectangle Selector"
+
+    # Setting active_selector on canvas directly updates tab buttons
+    cw.active_selector = "ELLIPSE"
+    assert widget.selection_tool_buttons["ELLIPSE"].isChecked()
+    assert not rect_btn.isChecked()
+    assert cw.active_selector.name == "Interactive Ellipse Selector"
 
     # Escape deactivates all
     cw._on_escape(None)
     assert cw.active_selector is None
+    assert not widget.selection_tool_buttons["ELLIPSE"].isChecked()
     assert not widget.selection_tool_buttons["RECTANGLE"].isChecked()
+    assert not widget.selection_tool_buttons["LASSO"].isChecked()
+
+
+def test_manual_selection_coloring_removed_on_tab_change(
+    make_viewer_model, qtbot
+):
+    """Test that manual selection histogram coloring is removed when switching tabs."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+    hist = parent.canvas_widget.artists["HISTOGRAM2D"]
+
+    widget.selection_mode_combobox.setCurrentText("Manual Selection")
+
+    # Draw a selection on the canvas
+    parent.canvas_widget.active_selector = "RECTANGLE"
+    rect = parent.canvas_widget.selectors["RECTANGLE"]
+
+    class MockEvent:
+        def __init__(self, x, y):
+            self.xdata = x
+            self.ydata = y
+
+    rect.on_select(MockEvent(0.0, 0.0), MockEvent(1.0, 1.0))
+    rect.apply_selection()
+
+    assert "overlay_histogram_image" in hist._mpl_artists
+    assert isinstance(hist.color_indices, np.ndarray)
+
+    # Switch away from selection tab to components tab
+    parent.tab_widget.setCurrentWidget(parent.components_tab)
+    assert "overlay_histogram_image" not in hist._mpl_artists
+    assert hist.color_indices == 0
+
+    # Switch back to selection tab
+    parent.tab_widget.setCurrentWidget(parent.selection_tab)
+    assert "overlay_histogram_image" in hist._mpl_artists
+    assert isinstance(hist.color_indices, np.ndarray)
+
+    # Switch to cursor mode within selection tab
+    widget.selection_mode_combobox.setCurrentText("Cursor Selection")
+    assert "overlay_histogram_image" not in hist._mpl_artists
+    assert hist.color_indices == 0
