@@ -3,12 +3,13 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pytest
 from napari.layers import Labels
-from qtpy.QtCore import Qt
-from qtpy.QtGui import QColor
+from qtpy.QtCore import QEvent, Qt
+from qtpy.QtGui import QColor, QFocusEvent, QValidator
 from qtpy.QtWidgets import QApplication, QComboBox, QDoubleSpinBox, QLabel
 
 from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
 from napari_phasors.plotter import PlotterWidget
+from napari_phasors.selection_tab import MixedValueSpinBox
 
 
 def _visible_rows(cw):
@@ -495,6 +496,531 @@ def test_editor_title_updates_with_shape(make_viewer_model, qtbot):
     combo = cursor['type_combo']
     combo.setCurrentIndex(combo.findData("polar"))
     assert "Polar" in widget._editor_box.title()
+
+
+def test_multi_cursor_ctrl_selection(make_viewer_model, qtbot):
+    """Test selecting multiple cursors with Ctrl/Cmd modifier toggling."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor()
+    widget._add_cursor()
+    widget._add_cursor()
+    c0, c1, c2 = widget._cursors
+
+    # Normal click c0: single selection
+    qtbot.mouseClick(c0['row'], Qt.LeftButton)
+    assert widget._selected_cursors == [c0]
+    assert c0['row'].property("selected")
+    assert not c1['row'].property("selected")
+    assert not c2['row'].property("selected")
+
+    # Ctrl-click c1: toggles c1 into selection
+    qtbot.mouseClick(c1['row'], Qt.LeftButton, Qt.ControlModifier)
+    assert widget._selected_cursors == [c0, c1]
+    assert c0['row'].property("selected")
+    assert c1['row'].property("selected")
+    assert not c2['row'].property("selected")
+
+    # Ctrl-click c2: toggles c2 into selection
+    qtbot.mouseClick(c2['row'], Qt.LeftButton, Qt.ControlModifier)
+    assert widget._selected_cursors == [c0, c1, c2]
+    assert c0['row'].property("selected")
+    assert c1['row'].property("selected")
+    assert c2['row'].property("selected")
+
+    # Ctrl-click c1: toggles c1 out of selection
+    qtbot.mouseClick(c1['row'], Qt.LeftButton, Qt.ControlModifier)
+    assert widget._selected_cursors == [c0, c2]
+    assert c0['row'].property("selected")
+    assert not c1['row'].property("selected")
+    assert c2['row'].property("selected")
+
+
+def test_multi_cursor_shift_selection(make_viewer_model, qtbot):
+    """Test selecting a range of cursors with Shift modifier."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor()
+    widget._add_cursor()
+    widget._add_cursor()
+    c0, c1, c2 = widget._cursors
+
+    # Click c0 to set anchor
+    qtbot.mouseClick(c0['row'], Qt.LeftButton)
+    assert widget._selected_cursors == [c0]
+
+    # Shift-click c2 to select range [c0, c1, c2]
+    qtbot.mouseClick(c2['row'], Qt.LeftButton, Qt.ShiftModifier)
+    assert widget._selected_cursors == [c0, c1, c2]
+    assert all(c['row'].property("selected") for c in (c0, c1, c2))
+
+
+def test_batch_edit_same_cursor_type(make_viewer_model, qtbot):
+    """Batch editing two circular cursors updates shared parameters across all."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor(radius=0.05)
+    widget._add_cursor(radius=0.08)
+    c0, c1 = widget._cursors
+
+    # Select both cursors
+    widget._select_cursor(c0)
+    widget._select_cursor(c1, modifiers=Qt.ControlModifier)
+    assert widget._selected_cursors == [c0, c1]
+
+    # Shared parameters: {'g', 's', 'radius'}
+    shared = widget._shared_params(widget._selected_cursors)
+    assert shared == {'g', 's', 'radius'}
+
+    # Edit radius on c1: should propagate to c0
+    c1['radius_spin'].setValue(0.12)
+    assert abs(c1['radius'] - 0.12) < 1e-5
+    assert abs(c0['radius'] - 0.12) < 1e-5
+    assert abs(c0['radius_spin'].value() - 0.12) < 1e-5
+
+    # Edit Center G on c1: should propagate to c0
+    c1['g_spin'].setValue(0.65)
+    assert abs(c1['g'] - 0.65) < 1e-5
+    assert abs(c0['g'] - 0.65) < 1e-5
+    assert abs(c0['g_spin'].value() - 0.65) < 1e-5
+
+
+def test_batch_edit_circular_and_elliptic(make_viewer_model, qtbot):
+    """Batch editing circular + elliptic cursors only updates common parameters."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor("circular", radius=0.05)
+    widget._add_cursor("elliptic", radius=0.10, radius_minor=0.04, angle=30.0)
+    c_circ, c_ellip = widget._cursors
+
+    widget._select_cursor(c_circ)
+    widget._select_cursor(c_ellip, modifiers=Qt.ControlModifier)
+
+    shared = widget._shared_params(widget._selected_cursors)
+    assert shared == {'g', 's', 'radius'}
+
+    # Non-shared inputs (minor radius, angle) are disabled in editor
+    assert not c_ellip['radius_minor_spin'].isEnabled()
+    assert not c_ellip['angle_spin'].isEnabled()
+
+    # Shared input (radius) is enabled
+    assert c_ellip['radius_spin'].isEnabled()
+
+    # Changing radius updates both
+    c_ellip['radius_spin'].setValue(0.18)
+    assert abs(c_ellip['radius'] - 0.18) < 1e-5
+    assert abs(c_circ['radius'] - 0.18) < 1e-5
+
+    # Changing angle directly on elliptic cursor does not affect circular
+    c_ellip['angle_spin'].setValue(75.0)
+    assert abs(c_ellip['angle'] - 75.0) < 1e-5
+    assert 'angle' not in c_circ or c_circ.get('angle') == 0.0
+
+
+def test_batch_edit_circular_and_polar_disables_all(make_viewer_model, qtbot):
+    """Selecting circular and polar cursors results in no shared parameters."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor("circular")
+    widget._add_cursor("polar")
+    c_circ, c_polar = widget._cursors
+
+    widget._select_cursor(c_circ)
+    widget._select_cursor(c_polar, modifiers=Qt.ControlModifier)
+
+    shared = widget._shared_params(widget._selected_cursors)
+    assert shared == set()
+    assert "No shared parameters" in widget._editor_box.title()
+
+
+def test_remove_cursor_in_multi_selection(make_viewer_model, qtbot):
+    """Removing a cursor while multiple are selected updates selection cleanly."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor()
+    widget._add_cursor()
+    widget._add_cursor()
+    c0, c1, c2 = widget._cursors
+
+    widget._select_cursor(c0)
+    widget._select_cursor(c1, modifiers=Qt.ControlModifier)
+    widget._select_cursor(c2, modifiers=Qt.ControlModifier)
+    assert widget._selected_cursors == [c0, c1, c2]
+
+    # Remove c1
+    widget._remove_cursor(c1)
+    assert widget._selected_cursors == [c0, c2]
+    assert c0['row'].property("selected")
+    assert c2['row'].property("selected")
+
+
+def _multi_select(widget, cursors):
+    """Select every cursor in *cursors*, in order."""
+    widget._select_cursor(cursors[0])
+    for cursor in cursors[1:]:
+        widget._select_cursor(cursor, modifiers=Qt.ControlModifier)
+
+
+def _type_into(qtbot, spin, text):
+    """Replace a spin box's contents with *text* and press Enter."""
+    spin.setFocus()
+    spin.lineEdit().selectAll()
+    qtbot.keyClicks(spin, text)
+    qtbot.keyClick(spin, Qt.Key_Return)
+
+
+def test_mixed_indicator_marks_only_differing_parameters(
+    make_viewer_model, qtbot
+):
+    """Parameters the selected cursors disagree on show a dash."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor("circular", g=0.5, s=0.3, radius=0.05)
+    widget._add_cursor("circular", g=0.6, s=0.3, radius=0.05)
+    c0, c1 = widget._cursors
+    _multi_select(widget, [c0, c1])
+
+    # G differs: no single value can be shown for it.
+    assert c1['g_spin'].isMixed()
+    assert c1['g_spin'].text() == MixedValueSpinBox.MIXED_TEXT
+    # S and the radius agree, so their common value is shown as usual.
+    assert not c1['s_spin'].isMixed()
+    assert c1['s_spin'].value() == pytest.approx(0.3)
+    assert not c1['radius_spin'].isMixed()
+
+    # Values that round to the same displayed text are not a disagreement.
+    c0['s'] = 0.3 + 10 ** -(c1['s_spin'].decimals() + 2)
+    widget._update_editor_for_selection()
+    assert not c1['s_spin'].isMixed()
+
+
+def test_mixed_indicator_clears_for_single_selection(make_viewer_model, qtbot):
+    """One selected cursor always shows its own values, never a dash."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor("circular", g=0.5)
+    widget._add_cursor("circular", g=0.6)
+    c0, c1 = widget._cursors
+    _multi_select(widget, [c0, c1])
+    assert c1['g_spin'].isMixed()
+
+    widget._select_cursor(c1)
+
+    assert not c1['g_spin'].isMixed()
+    assert c1['g_spin'].value() == pytest.approx(0.6)
+
+
+def test_mixed_indicator_ignores_unshared_parameters(make_viewer_model, qtbot):
+    """A parameter only some cursors have is never dashed."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor("circular", g=0.5)
+    widget._add_cursor("elliptic", g=0.6, angle=30.0)
+    c_circ, c_ellip = widget._cursors
+    _multi_select(widget, [c_circ, c_ellip])
+
+    assert c_ellip['g_spin'].isMixed()
+    # Angle is not shared, so it is disabled and shows its own value.
+    assert not c_ellip['angle_spin'].isMixed()
+    assert not c_ellip['angle_spin'].isEnabled()
+    assert c_ellip['angle_spin'].value() == pytest.approx(30.0)
+
+
+def test_typing_into_mixed_field_applies_to_all_selected(
+    make_viewer_model, qtbot
+):
+    """A value typed into a dashed field is set on every selected cursor."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor("circular", g=0.5)
+    widget._add_cursor("circular", g=0.6)
+    c0, c1 = widget._cursors
+    _multi_select(widget, [c0, c1])
+    spin = c1['g_spin']
+
+    spin.setFocus()
+    spin.lineEdit().selectAll()
+    qtbot.keyClicks(spin, "0.75")
+    # Half-typed values must not reach the cursors, and the text being
+    # typed must not be overwritten by the dash.
+    assert spin.text() == "0.75"
+    assert c0['g'] == pytest.approx(0.5)
+
+    qtbot.keyClick(spin, Qt.Key_Return)
+
+    assert not spin.isMixed()
+    assert c0['g'] == pytest.approx(0.75)
+    assert c1['g'] == pytest.approx(0.75)
+    assert c0['g_spin'].value() == pytest.approx(0.75)
+
+
+def test_typing_the_held_value_into_mixed_field_still_applies(
+    make_viewer_model, qtbot
+):
+    """The typed value may be the one the field already holds."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor("circular", g=0.5)
+    widget._add_cursor("circular", g=0.6)
+    c0, c1 = widget._cursors
+    _multi_select(widget, [c0, c1])
+    # The editor shows c1's page, so its G is what the box holds.
+    assert c1['g_spin'].value() == pytest.approx(0.6)
+
+    _type_into(qtbot, c1['g_spin'], "0.60")
+
+    assert c0['g'] == pytest.approx(0.6)
+    assert c1['g'] == pytest.approx(0.6)
+
+
+def test_leaving_mixed_field_untouched_changes_nothing(
+    make_viewer_model, qtbot
+):
+    """Focus alone must not push one cursor's value onto the others."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor("circular", g=0.5)
+    widget._add_cursor("circular", g=0.6)
+    c0, c1 = widget._cursors
+    _multi_select(widget, [c0, c1])
+
+    c1['g_spin'].setFocus()
+    c1['g_spin'].editingFinished.emit()
+
+    assert c1['g_spin'].isMixed()
+    assert c0['g'] == pytest.approx(0.5)
+    assert c1['g'] == pytest.approx(0.6)
+
+
+def test_stepping_mixed_field_applies_to_all_selected(
+    make_viewer_model, qtbot
+):
+    """The arrows resolve a dashed field too, from the value on show."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor("circular", radius=0.05)
+    widget._add_cursor("circular", radius=0.08)
+    c0, c1 = widget._cursors
+    _multi_select(widget, [c0, c1])
+    spin = c1['radius_spin']
+    step = spin.singleStep()
+
+    spin.stepBy(1)
+
+    assert not spin.isMixed()
+    assert c1['radius'] == pytest.approx(0.08 + step)
+    assert c0['radius'] == pytest.approx(0.08 + step)
+
+
+def test_mixed_spinbox_widget_behaviour(qtbot):
+    """The spin box itself: dash, round trip, and explicit assignment."""
+    spin = MixedValueSpinBox()
+    qtbot.addWidget(spin)
+    spin.setRange(-1.5, 1.5)
+    spin.setDecimals(2)
+    spin.setValue(0.25)
+
+    assert not spin.isMixed()
+    assert spin.text() == "0.25"
+
+    spin.setMixed(True)
+    assert spin.isMixed()
+    assert spin.text() == MixedValueSpinBox.MIXED_TEXT
+    # The held value is untouched, and reading the dash back yields it.
+    assert spin.value() == pytest.approx(0.25)
+    assert spin.valueFromText(MixedValueSpinBox.MIXED_TEXT) == pytest.approx(
+        0.25
+    )
+    assert (
+        spin.validate(MixedValueSpinBox.MIXED_TEXT, 0)[0]
+        == QValidator.Acceptable
+    )
+    # Per-keystroke interpretation is off, so typing survives on screen.
+    assert not spin.keyboardTracking()
+
+    # Setting it again is a no-op rather than a redundant repaint.
+    spin.setMixed(True)
+    assert spin.text() == MixedValueSpinBox.MIXED_TEXT
+
+    # An explicit assignment resolves the state.
+    spin.setValue(0.4)
+    assert not spin.isMixed()
+    assert spin.text() == "0.40"
+    assert spin.keyboardTracking()
+
+
+def test_mixed_spinbox_forgets_edits_from_a_previous_visit(qtbot):
+    """Entering the field starts a fresh edit, so no stale commit fires."""
+    spin = MixedValueSpinBox()
+    qtbot.addWidget(spin)
+    spin.setRange(-1.5, 1.5)
+    spin.setValue(0.25)
+    spin.setMixed(True)
+
+    committed = []
+    spin.valueCommitted.connect(committed.append)
+
+    # Pretend an earlier visit left an edit pending without committing it.
+    spin._edited_while_mixed = True
+    QApplication.sendEvent(
+        spin, QFocusEvent(QEvent.FocusIn, Qt.MouseFocusReason)
+    )
+
+    spin.editingFinished.emit()
+
+    assert committed == []
+    assert spin.isMixed()
+
+
+def test_batch_edit_restores_tooltips_for_single_selection(
+    make_viewer_model, qtbot
+):
+    """Batch tooltips must not outlive the multi-selection that set them."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor("circular")
+    widget._add_cursor("elliptic")
+    c_circ, c_ellip = widget._cursors
+
+    radius_tip = c_ellip['radius_spin'].toolTip()
+    angle_tip = c_ellip['angle_spin'].toolTip()
+    assert radius_tip and angle_tip
+
+    widget._select_cursor(c_circ)
+    widget._select_cursor(c_ellip, modifiers=Qt.ControlModifier)
+    assert c_ellip['radius_spin'].toolTip() == widget.BATCH_TOOLTIP
+    assert c_ellip['angle_spin'].toolTip() == widget.UNSHARED_TOOLTIP
+
+    # Back to one cursor: every parameter is editable again, so the
+    # widgets must describe themselves rather than the batch state.
+    widget._select_cursor(c_ellip)
+    assert c_ellip['angle_spin'].isEnabled()
+    assert c_ellip['radius_spin'].toolTip() == radius_tip
+    assert c_ellip['angle_spin'].toolTip() == angle_tip
+
+
+def test_ctrl_deselect_moves_shift_anchor(make_viewer_model, qtbot):
+    """A deselected row must not anchor the next Shift-click range."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    for _ in range(4):
+        widget._add_cursor()
+    c0, c1, c2, c3 = widget._cursors
+
+    widget._select_cursor(c0)
+    widget._select_cursor(c2, modifiers=Qt.ControlModifier)
+    widget._select_cursor(c2, modifiers=Qt.ControlModifier)
+    assert widget._selected_cursors == [c0]
+    assert widget._last_clicked_cursor is c0
+
+    # The range runs from the still-selected row, not from c2.
+    widget._select_cursor(c3, modifiers=Qt.ShiftModifier)
+    assert widget._selected_cursors == [c0, c1, c2, c3]
+
+    # Deselecting the last selected cursor clears the anchor too.
+    widget._select_cursor(c0, modifiers=Qt.ControlModifier)
+    widget._select_cursor(c1, modifiers=Qt.ControlModifier)
+    widget._select_cursor(c2, modifiers=Qt.ControlModifier)
+    widget._select_cursor(c3, modifiers=Qt.ControlModifier)
+    assert widget._selected_cursors == []
+    assert widget._last_clicked_cursor is None
+
+
+def test_batch_edit_applies_selection_when_autoupdate_on(
+    make_viewer_model, qtbot
+):
+    """With auto-update on, one batch edit recomputes the selection once."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor(radius=0.05)
+    widget._add_cursor(radius=0.05)
+    c0, c1 = widget._cursors
+    widget._select_cursor(c0)
+    widget._select_cursor(c1, modifiers=Qt.ControlModifier)
+
+    # Enabling auto-update applies once by itself; count only what the
+    # batch edit triggers.
+    widget.autoupdate_check.setChecked(True)
+    assert widget._autoupdate_enabled
+    calls = []
+    widget._apply_selection = lambda: calls.append(True)
+
+    c1['radius_spin'].setValue(0.2)
+
+    assert len(calls) == 1
+    assert c0['radius'] == pytest.approx(0.2)
+    assert c1['radius'] == pytest.approx(0.2)
+
+
+def test_param_change_ignores_removed_cursor(make_viewer_model, qtbot):
+    """A queued edit for an already-removed cursor is a no-op."""
+    viewer = make_viewer_model()
+    viewer.add_layer(create_image_layer_with_phasors())
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab.cursor_selection_widget
+
+    widget._add_cursor(radius=0.05)
+    cursor = widget._cursors[0]
+    widget._remove_cursor(cursor)
+
+    widget._on_param_changed(cursor, 'radius', 0.4)
+
+    assert cursor['radius'] == pytest.approx(0.05)
+
+
+def test_shared_params_without_cursors():
+    """No selection shares no parameters."""
+    from napari_phasors.selection_tab import CursorSelectionWidget
+
+    assert CursorSelectionWidget._shared_params([]) == set()
 
 
 def test_make_spinbox_default_width_ref(make_viewer_model, qtbot):
