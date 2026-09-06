@@ -1741,6 +1741,8 @@ class PlotterWidget(QWidget):
         """Initialize the PlotterWidget."""
         super().__init__()
         self._is_closing = False
+        #: Last QDockWidget seen hosting this widget (see ``changeEvent``).
+        self._plotter_dock_ref = None
         self.viewer = napari_viewer
 
         # Unobtrusive, throttled check for a newer release (see module docs).
@@ -2682,6 +2684,43 @@ class PlotterWidget(QWidget):
                 return parent
             widget = parent
         return None
+
+    def _track_plotter_dock(self):
+        """Remember the hosting dock, so its removal can be recognised.
+
+        Returns the dock currently hosting this widget (``None`` when it is
+        not docked). ``_plotter_dock_ref`` keeps the *last* dock seen, which
+        is what tells :meth:`changeEvent` that a widget which is suddenly
+        unparented used to be docked.
+        """
+        dock = self._find_plotter_dock()
+        if dock is not None:
+            self._plotter_dock_ref = dock
+        return dock
+
+    def changeEvent(self, event):
+        """Close this widget when napari removes it from its dock.
+
+        Every destructive path — the dock's 'close X' button (napari wires
+        it to ``destroyOnClose``) and any direct
+        ``window.remove_dock_widget`` call — reparents this widget out of
+        its dock, so a ``ParentChange`` with no dock left above us means the
+        plotter is being closed and its companion docks should go with it.
+
+        The dock's *hide* button is deliberately not covered: napari wires
+        that to ``QDockWidget.close()``, which only hides the panel (it stays
+        re-openable, with its state, from the Plugins menu), so treating it
+        as a close would throw the user's cursors and settings away.
+        """
+        if event.type() == QEvent.ParentChange:
+            docked = self._track_plotter_dock()
+            if (
+                docked is None
+                and self._plotter_dock_ref is not None
+                and not self._is_closing
+            ):
+                self.close()
+        super().changeEvent(event)
 
     def _split_analysis_below_plotter(self):
         """Stack the analysis dock directly beneath the plotter dock."""
@@ -4207,6 +4246,9 @@ class PlotterWidget(QWidget):
         'hide' button (which emits visibilityChanged) and the 'close X'
         button (which destroys the dock without emitting any signal).
         """
+        if self._plotter_dock_ref is None:
+            self._track_plotter_dock()
+
         if not getattr(self, '_docks_initialized', False):
             return
 
@@ -9665,18 +9707,41 @@ class PlotterWidget(QWidget):
         # inner widget has already been reparented/deleted, which double-frees
         # under PySide6 and segfaults the xdist worker at end-of-file teardown.
         window = getattr(self.viewer, 'window', None)
-        if window is not None:
-            for dock_attr in (
-                '_analysis_dock',
-                '_histogram_dock',
-                '_statistics_dock',
-            ):
-                dock = getattr(self, dock_attr, None)
-                if dock is not None:
+        for dock_attr in (
+            '_analysis_dock',
+            '_histogram_dock',
+            '_statistics_dock',
+        ):
+            dock = getattr(self, dock_attr, None)
+            if dock is not None:
+                with contextlib.suppress(
+                    Exception  # noqa: BLE001 - teardown best-effort
+                ):
+                    dock.close()
+                if window is not None:
                     with contextlib.suppress(
                         Exception  # noqa: BLE001 - teardown best-effort
                     ):
                         window.remove_dock_widget(dock)
-                    setattr(self, dock_attr, None)
+                setattr(self, dock_attr, None)
+
+        # Take the dock down too, so closing the plotter widget itself (not
+        # just its dock) leaves no empty panel behind. Deliberately resolved
+        # from the live parent chain rather than ``_plotter_dock_ref``: when
+        # this close came from ``changeEvent`` the widget is already
+        # unparented, meaning napari is mid-``remove_dock_widget`` and
+        # calling it again here would re-enter its teardown.
+        plotter_dock = self._find_plotter_dock()
+        if plotter_dock is not None:
+            with contextlib.suppress(
+                Exception  # noqa: BLE001 - teardown best-effort
+            ):
+                plotter_dock.close()
+            if window is not None:
+                with contextlib.suppress(
+                    Exception  # noqa: BLE001 - teardown best-effort
+                ):
+                    window.remove_dock_widget(plotter_dock)
+        self._plotter_dock_ref = None
 
         super().closeEvent(event)
