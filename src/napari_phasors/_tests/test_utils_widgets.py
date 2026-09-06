@@ -147,6 +147,99 @@ def test_histogram_widget_save_csv(qtbot, tmp_path, monkeypatch):
     assert len(rows) == 3
 
 
+def test_histogram_widget_normalize_scales_each_curve_to_its_max(qtbot):
+    """Normalize to maximum brings curves of very different sizes onto one scale."""
+    widget = HistogramWidget(bins=10)
+    qtbot.addWidget(widget)
+
+    rng = np.random.default_rng(0)
+    datasets = {
+        "small": rng.normal(0.5, 0.1, 200),
+        "large": rng.normal(0.5, 0.1, 20000),
+    }
+    widget.display_mode = "Individual layers"
+    widget.update_multi_data(datasets)
+
+    raw_peaks = sorted(
+        float(np.max(line.get_ydata())) for line in widget.ax.lines
+    )
+    # Without normalisation the small distribution is dwarfed by the large one.
+    assert raw_peaks[1] > 10 * raw_peaks[0]
+
+    widget.normalize = True
+
+    peaks = [float(np.max(line.get_ydata())) for line in widget.ax.lines]
+    assert len(peaks) == 2
+    assert all(abs(peak - 1.0) < 1e-9 for peak in peaks)
+
+    widget.normalize = False
+    peaks = sorted(float(np.max(line.get_ydata())) for line in widget.ax.lines)
+    assert peaks == raw_peaks
+
+
+def test_histogram_widget_normalize_keeps_sd_band_relative(qtbot):
+    """The SD band is scaled by the same factor as the mean curve it wraps."""
+    widget = HistogramWidget(bins=10)
+    qtbot.addWidget(widget)
+
+    rng = np.random.default_rng(1)
+    datasets = {
+        "G::a": rng.normal(0.3, 0.05, 500),
+        "G::b": rng.normal(0.32, 0.05, 5000),
+    }
+    widget._group_assignments = {"G::a": 1, "G::b": 1}
+    widget._group_names = {1: "Group 1"}
+    widget.display_mode = "Grouped"
+    widget.update_multi_data(datasets)
+    widget.show_sd = True
+
+    def band_extent():
+        from matplotlib.collections import PolyCollection
+
+        band = next(
+            c for c in widget.ax.collections if isinstance(c, PolyCollection)
+        )
+        vertices = band.get_paths()[0].vertices[:, 1]
+        return float(np.max(vertices))
+
+    mean_peak = float(np.max(widget.ax.lines[0].get_ydata()))
+    ratio = band_extent() / mean_peak
+
+    widget.normalize = True
+    assert abs(float(np.max(widget.ax.lines[0].get_ydata())) - 1.0) < 1e-9
+    assert abs(band_extent() / 1.0 - ratio) < 1e-6
+
+
+def test_histogram_widget_normalize_labels_axis_and_csv(
+    qtbot, tmp_path, monkeypatch
+):
+    """A normalised histogram says so on the y axis and in its CSV export."""
+    from qtpy.QtWidgets import QFileDialog
+
+    widget = HistogramWidget(bins=2)
+    qtbot.addWidget(widget)
+    widget.update_data(np.array([1.0, 1.0, 1.0, 2.0]), label="Layer 1")
+
+    assert widget.ax.get_ylabel() == "Pixel count"
+    widget.normalize = True
+    assert widget.ax.get_ylabel() == "Pixel count (normalized)"
+
+    csv_file = tmp_path / "normalized.csv"
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        lambda *args, **kwargs: (str(csv_file), ""),
+    )
+    widget._save_histogram_csv()
+
+    with open(csv_file, newline='') as f:
+        rows = list(csv.reader(f))
+
+    assert rows[0] == ['Bin Center', 'Normalized Counts']
+    values = [float(row[1]) for row in rows[1:]]
+    assert max(values) == 1.0
+
+
 def test_histogram_widget_default_filter_keeps_zero(qtbot):
     """Default filtering should keep zero values (drop only NaN/Inf)."""
     widget = HistogramWidget(bins=5)
@@ -182,6 +275,83 @@ def test_histogram_widget_update_multi_data_autosd(qtbot):
     assert set(widget._datasets.keys()) == {"Layer A", "Layer B"}
     assert set(widget._counts_per_dataset.keys()) == {"Layer A", "Layer B"}
     assert widget._show_sd is True
+
+
+def test_histogram_widget_merged_pools_layers_not_series(qtbot):
+    """Merged mode averages the layers of a series, never two series."""
+    widget = HistogramWidget(bins=40)
+    qtbot.addWidget(widget)
+    widget._smooth_curves = False
+
+    rng = np.random.default_rng(3)
+    datasets = {
+        "A::img1": rng.normal(0.3, 0.05, 500),
+        "A::img2": rng.normal(0.3, 0.05, 500),
+        "B::img1": rng.normal(0.7, 0.05, 500),
+        "B::img2": rng.normal(0.7, 0.05, 500),
+    }
+    widget.set_dataset_series(
+        {
+            "A::img1": "A",
+            "A::img2": "A",
+            "B::img1": "B",
+            "B::img2": "B",
+        },
+        colors={"A": (1.0, 0.0, 0.0), "B": (0.0, 0.0, 1.0)},
+    )
+    widget._show_legend = True
+    widget.update_multi_data(datasets)
+
+    assert widget.display_mode == "Merged"
+    lines = widget.ax.lines
+    assert len(lines) == 2
+    assert [line.get_label() for line in lines] == ["A", "B"]
+
+    # Each curve peaks over its own series, not between the two.
+    peaks = [
+        float(line.get_xdata()[np.argmax(line.get_ydata())]) for line in lines
+    ]
+    assert 0.2 < peaks[0] < 0.4
+    assert 0.6 < peaks[1] < 0.8
+
+    # Without series information the datasets merge into one curve again.
+    widget.set_dataset_series({})
+    widget._render()
+    assert len(widget.ax.lines) == 0  # gradient fill, not a plain line
+
+
+def test_histogram_widget_merged_series_csv_has_one_column_pair_each(
+    qtbot, tmp_path, monkeypatch
+):
+    """The merged CSV keeps the series apart just like the plot does."""
+    from qtpy.QtWidgets import QFileDialog
+
+    widget = HistogramWidget(bins=2)
+    qtbot.addWidget(widget)
+    widget.set_dataset_series(
+        {"A::1": "A", "A::2": "A", "B::1": "B"},
+    )
+    widget.update_multi_data(
+        {
+            "A::1": np.array([1.0, 1.0, 2.0]),
+            "A::2": np.array([1.0, 2.0, 2.0]),
+            "B::1": np.array([1.0, 2.0, 2.0]),
+        }
+    )
+
+    csv_file = tmp_path / "series.csv"
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        lambda *args, **kwargs: (str(csv_file), ""),
+    )
+    widget._save_histogram_csv()
+
+    with open(csv_file, newline='') as f:
+        rows = list(csv.reader(f))
+
+    # Series A has two layers, so it also gets an SD column; B has one.
+    assert rows[0] == ['Bin Center', 'A Mean', 'A Std', 'B Mean']
 
 
 def test_histogram_widget_gamma_uses_power_norm(qtbot):
@@ -321,6 +491,192 @@ def test_statistics_dock_widget_updates_for_single_and_grouped_data(qtbot):
     assert stats_dock.layer_stats_section.isHidden()
     assert stats_dock.group_stats_section.isHidden()
     assert not stats_dock.export_csv_button.isEnabled()
+
+
+def test_histogram_widget_series_style_solid_uses_series_colors(qtbot):
+    """Solid style draws flat curves; colormap style draws gradients."""
+    from matplotlib.collections import LineCollection
+
+    widget = HistogramWidget(bins=20)
+    qtbot.addWidget(widget)
+    widget._smooth_curves = False
+
+    rng = np.random.default_rng(7)
+    datasets = {
+        "A": rng.normal(0.3, 0.05, 300),
+        "B": rng.normal(0.7, 0.05, 300),
+    }
+    colormap = np.array([[0.0, 0.0, 1.0, 1.0], [1.0, 0.0, 0.0, 1.0]])
+    widget.set_dataset_series(
+        {"A": "A", "B": "B"},
+        colors={"A": (1.0, 0.0, 0.0), "B": (0.0, 0.0, 1.0)},
+        colormaps={
+            "A": (colormap, [0.0, 1.0], 1.0),
+            "B": (colormap[::-1], [0.0, 1.0], 1.0),
+        },
+    )
+    widget.update_multi_data(datasets)
+
+    gradients = [
+        artist
+        for artist in widget.ax.collections
+        if isinstance(artist, LineCollection)
+    ]
+    assert len(gradients) == 2
+    assert len(widget.ax.lines) == 0
+
+    # A tab can propose solid colours for mirrored colormaps.
+    widget.set_default_series_style("solid")
+
+    assert len(widget.ax.lines) == 2
+    colors = [line.get_color() for line in widget.ax.lines]
+    assert colors == [(1.0, 0.0, 0.0), (0.0, 0.0, 1.0)]
+
+    # An explicit choice in the dialog is not overridden by the tab.
+    widget._series_style_explicit = True
+    widget.set_default_series_style("colormap")
+    assert len(widget.ax.lines) == 2
+
+
+def test_histogram_settings_dialog_edits_series_colors(qtbot, monkeypatch):
+    """The dialog offers a colour per series and a colouring choice."""
+    from qtpy.QtWidgets import QDialog
+
+    widget = HistogramWidget(bins=10)
+    qtbot.addWidget(widget)
+    widget.set_dataset_series({"A": "A", "B": "B"})
+    widget.update_multi_data(
+        {"A": np.array([1.0, 2.0]), "B": np.array([3.0, 4.0])}
+    )
+
+    captured = {}
+
+    def fake_exec(self):
+        captured['series'] = list(self._series_color_buttons)
+        self.series_style_combo.setCurrentIndex(
+            self.series_style_combo.findData("solid")
+        )
+        self._set_btn_color(self._series_color_buttons["A"], (0.0, 1.0, 0.0))
+        return QDialog.Accepted
+
+    monkeypatch.setattr(HistogramSettingsDialog, 'exec', fake_exec)
+    widget._open_settings_dialog()
+
+    assert captured['series'] == ["A", "B"]
+    assert widget._series_style == "solid"
+    assert widget._series_color_overrides["A"] == (0.0, 1.0, 0.0)
+    assert widget._series_style_explicit is True
+
+
+def test_statistics_columns_name_the_quantity(qtbot):
+    """Statistic columns say what was measured, unless quantities are mixed."""
+    histogram_widget = HistogramWidget(bins=12, xlabel="FRET efficiency")
+    qtbot.addWidget(histogram_widget)
+    stats_dock = StatisticsDockWidget(histogram_widget)
+    qtbot.addWidget(stats_dock)
+
+    histogram_widget.update_data(np.array([0.1, 0.2, 0.3]), label="img0")
+
+    table = stats_dock.layer_stats_table
+    headers = [
+        table.horizontalHeaderItem(col).text()
+        for col in range(table.columnCount())
+    ]
+    assert headers == [
+        "Name",
+        "FRET efficiency Center of Mass",
+        "FRET efficiency Mean",
+        "FRET efficiency Median",
+        "FRET efficiency Std Dev",
+    ]
+
+    # A single series names itself rather than the axis.
+    histogram_widget.set_dataset_series({"C1: img0": "Component 1"})
+    histogram_widget.update_multi_data({"C1: img0": np.array([0.1, 0.2])})
+    headers = [
+        table.horizontalHeaderItem(col).text()
+        for col in range(table.columnCount())
+    ]
+    assert headers[1] == "Component 1 Center of Mass"
+
+    # Several quantities widen the table instead of repeating rows: one row
+    # per analysed layer, one column block per quantity.
+    histogram_widget.set_dataset_sources(
+        {"C1: img0": "img0", "C2: img0": "img0"}
+    )
+    histogram_widget.set_dataset_series(
+        {"C1: img0": "Component 1", "C2: img0": "Component 2"}
+    )
+    histogram_widget.update_multi_data(
+        {
+            "C1: img0": np.array([0.1, 0.2]),
+            "C2: img0": np.array([0.8, 0.9]),
+        }
+    )
+    headers = [
+        table.horizontalHeaderItem(col).text()
+        for col in range(table.columnCount())
+    ]
+    assert headers == [
+        "Name",
+        "Component 1 Center of Mass",
+        "Component 1 Mean",
+        "Component 1 Median",
+        "Component 1 Std Dev",
+        "Component 2 Center of Mass",
+        "Component 2 Mean",
+        "Component 2 Median",
+        "Component 2 Std Dev",
+    ]
+    assert table.rowCount() == 1
+    assert table.item(0, 0).text() == "img0"
+
+
+def test_statistics_dock_lists_one_row_per_group_and_series(qtbot):
+    """Grouped statistics never pool two series into a single row."""
+    histogram_widget = HistogramWidget(bins=12)
+    qtbot.addWidget(histogram_widget)
+    stats_dock = StatisticsDockWidget(histogram_widget)
+    qtbot.addWidget(stats_dock)
+
+    datasets = {
+        f"{comp}: {img}": np.array([1.0, 2.0, 3.0])
+        for comp in ("C1", "C2", "C3")
+        for img in ("img0", "img1", "img2", "img3")
+    }
+    histogram_widget.set_dataset_sources(
+        {label: label.split(": ")[1] for label in datasets}
+    )
+    histogram_widget.set_dataset_series(
+        {label: label.split(": ")[0] for label in datasets}
+    )
+    histogram_widget._group_assignments = {
+        "img0": 1,
+        "img1": 1,
+        "img2": 2,
+        "img3": 2,
+    }
+    histogram_widget._group_names = {1: "Control", 2: "Treated"}
+    histogram_widget.display_mode = "Grouped"
+    histogram_widget.update_multi_data(datasets)
+
+    # Three components and two groups: six curves, whatever the number of
+    # layers in each group. The table lays the same six out as two rows of
+    # three column blocks.
+    assert len(histogram_widget.ax.lines) == 6
+
+    table = stats_dock.group_stats_table
+    assert table.rowCount() == 2
+    names = [table.item(row, 0).text() for row in range(table.rowCount())]
+    assert names == ["Control", "Treated"]
+    headers = [
+        table.horizontalHeaderItem(col).text()
+        for col in range(table.columnCount())
+    ]
+    assert headers[0] == "Name"
+    assert len(headers) == 1 + 3 * 4
+    assert headers[1] == "C1 Center of Mass"
+    assert headers[5] == "C2 Center of Mass"
 
 
 def test_histogram_dock_widget_links_statistics_dock(qtbot):
@@ -864,6 +1220,338 @@ def test_histogram_widget_saves_groups_to_layer_metadata(qtbot, monkeypatch):
     assert grp_a['name'] == 'GroupX'
     assert grp_b['name'] == 'GroupY'
     assert grp_a['color'] == [1.0, 0.0, 0.0]
+
+
+def test_histogram_widget_groups_persist_on_source_layers(qtbot, monkeypatch):
+    """Groups are written to the analysed image layer, not the derived one."""
+    from qtpy.QtWidgets import QDialog
+
+    layers = {
+        'Image A': _FakeLayer({}),
+        'Image B': _FakeLayer({}),
+        'Fractions: A': _FakeLayer({}),
+        'Fractions: B': _FakeLayer({}),
+    }
+    viewer = _FakeViewer(layers)
+
+    widget = HistogramWidget(bins=10, viewer=viewer)
+    qtbot.addWidget(widget)
+    widget.set_dataset_sources(
+        {'Fractions: A': 'Image A', 'Fractions: B': 'Image B'}
+    )
+    widget.update_multi_data(
+        {
+            'Fractions: A': np.array([1.0, 2.0]),
+            'Fractions: B': np.array([3.0, 4.0]),
+        }
+    )
+
+    def fake_exec(self):
+        self.mode_combo.setCurrentText('Grouped')
+        return QDialog.Accepted
+
+    monkeypatch.setattr(HistogramSettingsDialog, 'exec', fake_exec)
+
+    # Groups are keyed by the analysed layer, not by the curve drawn from it.
+    widget._group_assignments = {'Image A': 1, 'Image B': 2}
+    widget._group_names = {1: 'Ctrl', 2: 'Trt'}
+    widget._group_colors = {1: (1.0, 0.0, 0.0), 2: (0.0, 1.0, 0.0)}
+    widget._open_settings_dialog()
+
+    # The grouping lands on the source images, so the Plot Settings tab and
+    # the other analysis tabs see it.
+    assert layers['Image A'].metadata['settings']['group']['name'] == 'Ctrl'
+    assert layers['Image B'].metadata['settings']['group']['name'] == 'Trt'
+    assert 'group' not in layers['Fractions: A'].metadata.get('settings', {})
+
+
+def test_histogram_widget_reads_groups_of_source_layers(qtbot, monkeypatch):
+    """Grouping set elsewhere on the source image pre-populates the dialog."""
+    from qtpy.QtWidgets import QDialog
+
+    layers = {
+        'Image A': _FakeLayer(
+            {'settings': {'group': {'name': 'Ctrl', 'color': [1.0, 0.0, 0.0]}}}
+        ),
+        'Image B': _FakeLayer(
+            {'settings': {'group': {'name': 'Trt', 'color': [0.0, 0.0, 1.0]}}}
+        ),
+        'FRET efficiency: A': _FakeLayer({}),
+        'FRET efficiency: B': _FakeLayer({}),
+    }
+    viewer = _FakeViewer(layers)
+
+    widget = HistogramWidget(bins=10, viewer=viewer)
+    qtbot.addWidget(widget)
+    widget.set_dataset_sources(
+        {'FRET efficiency: A': 'Image A', 'FRET efficiency: B': 'Image B'}
+    )
+    widget.update_multi_data(
+        {
+            'FRET efficiency: A': np.array([1.0, 2.0]),
+            'FRET efficiency: B': np.array([3.0, 4.0]),
+        }
+    )
+
+    captured = {}
+
+    def fake_exec(self):
+        captured['assignments'] = {
+            row['name_edit'].text(): row['layer_combo'].checkedItems()
+            for row in self._group_row_data
+        }
+        return QDialog.Rejected
+
+    monkeypatch.setattr(HistogramSettingsDialog, 'exec', fake_exec)
+    widget._open_settings_dialog()
+
+    # The group rows offer the analysed layers, not the derived datasets.
+    assert captured['assignments']['Ctrl'] == ['Image A']
+    assert captured['assignments']['Trt'] == ['Image B']
+
+
+def test_histogram_widget_groups_list_each_source_once(qtbot, monkeypatch):
+    """Several curves of one layer contribute a single group entry.
+
+    With two components plotted per image the dialog must still offer the
+    images, not one row entry per component curve.
+    """
+    from qtpy.QtWidgets import QDialog
+
+    layers = {'img0': _FakeLayer({}), 'img1': _FakeLayer({})}
+    viewer = _FakeViewer(layers)
+
+    widget = HistogramWidget(bins=10, viewer=viewer)
+    qtbot.addWidget(widget)
+    widget.set_dataset_sources(
+        {
+            'C1: img0': 'img0',
+            'C2: img0': 'img0',
+            'C1: img1': 'img1',
+            'C2: img1': 'img1',
+        }
+    )
+    widget.update_multi_data(
+        {
+            'C1: img0': np.array([1.0, 2.0]),
+            'C2: img0': np.array([2.0, 3.0]),
+            'C1: img1': np.array([3.0, 4.0]),
+            'C2: img1': np.array([4.0, 5.0]),
+        }
+    )
+
+    captured = {}
+
+    def fake_exec(self):
+        captured['offered'] = self._group_labels
+        captured['colour_rows'] = list(self._layer_color_buttons)
+        return QDialog.Rejected
+
+    monkeypatch.setattr(HistogramSettingsDialog, 'exec', fake_exec)
+    widget._open_settings_dialog()
+
+    assert captured['offered'] == ['img0', 'img1']
+    # Per-curve colours still list every dataset.
+    assert len(captured['colour_rows']) == 4
+
+
+def test_histogram_widget_group_applies_to_every_curve_of_a_layer(qtbot):
+    """A layer's group covers all its curves, and series stay apart."""
+    widget = HistogramWidget(bins=20)
+    qtbot.addWidget(widget)
+    widget._smooth_curves = False
+
+    rng = np.random.default_rng(5)
+    datasets = {
+        'C1: img0': rng.normal(0.3, 0.05, 300),
+        'C2: img0': rng.normal(0.7, 0.05, 300),
+        'C1: img1': rng.normal(0.3, 0.05, 300),
+        'C2: img1': rng.normal(0.7, 0.05, 300),
+    }
+    widget.set_dataset_sources(
+        {
+            'C1: img0': 'img0',
+            'C2: img0': 'img0',
+            'C1: img1': 'img1',
+            'C2: img1': 'img1',
+        }
+    )
+    widget.set_dataset_series(
+        {
+            'C1: img0': 'C1',
+            'C2: img0': 'C2',
+            'C1: img1': 'C1',
+            'C2: img1': 'C2',
+        }
+    )
+    # One group holding both images, assigned by layer.
+    widget._group_assignments = {'img0': 1, 'img1': 1}
+    widget._group_names = {1: 'Ctrl'}
+    widget._show_legend = True
+    widget.display_mode = "Grouped"
+    widget.update_multi_data(datasets)
+
+    labels = [line.get_label() for line in widget.ax.lines]
+    # The group pools its two images but never the two components.
+    assert labels == ['Ctrl \u2013 C1', 'Ctrl \u2013 C2']
+    styles = {line.get_linestyle() for line in widget.ax.lines}
+    assert len(styles) == 2
+
+
+def test_histogram_widget_metadata_groups_win_over_local_state(
+    qtbot, monkeypatch
+):
+    """Metadata is the shared truth; datasets it omits keep their local group."""
+
+    layers = {
+        'A': _FakeLayer(
+            {'settings': {'group': {'name': 'Ctrl', 'color': [1.0, 0.0, 0.0]}}}
+        ),
+        'B': _FakeLayer({}),
+    }
+    viewer = _FakeViewer(layers)
+
+    widget = HistogramWidget(bins=10, viewer=viewer)
+    qtbot.addWidget(widget)
+    widget.update_multi_data(
+        {'A': np.array([1.0, 2.0]), 'B': np.array([3.0, 4.0])}
+    )
+
+    # A stale local grouping that disagrees with the metadata for 'A'.
+    widget._group_assignments = {'A': 1, 'B': 1}
+    widget._group_names = {1: 'Everything'}
+
+    assignments, names, _colors = widget._group_state_for_dialog(['A', 'B'])
+
+    assert names[assignments['A']] == 'Ctrl'
+    assert names[assignments['B']] == 'Everything'
+
+
+def test_colormap_group_is_shown_in_matching_solid_color():
+    """A group given a colormap reads back as its colormap's top colour.
+
+    Dialogs that only offer solid colours — the histogram and phasor centers —
+    then show the group in the colour it is actually drawn with.
+    """
+    from napari_phasors._utils import colormap_max_color
+
+    layers = {'A': _FakeLayer({})}
+    viewer = _FakeViewer(layers)
+
+    save_groups_to_layer_metadata(
+        viewer,
+        ['A'],
+        {'A': 1},
+        {1: 'Ctrl'},
+        {1: (1.0, 1.0, 1.0)},
+        group_styles={1: {'mode': 'colormap', 'colormap': 'viridis'}},
+    )
+
+    stored = layers['A'].metadata['settings']['group']
+    assert stored['colormap'] == 'viridis'
+    np.testing.assert_allclose(
+        stored['color'], colormap_max_color('viridis'), atol=1e-6
+    )
+
+    _assignments, _names, colors = build_groups_from_layer_metadata(
+        viewer, ['A']
+    )
+    np.testing.assert_allclose(
+        colors[1], colormap_max_color('viridis'), atol=1e-6
+    )
+
+
+def test_solid_group_reaches_the_contour_dialog_as_its_own_colour():
+    """A group created solid keeps its colour for the contour to ramp from.
+
+    The contour renderer builds a colormap out of a solid group's colour, so
+    carrying the colour through is all that is needed.
+    """
+    layers = {'A': _FakeLayer({})}
+    viewer = _FakeViewer(layers)
+
+    save_groups_to_layer_metadata(
+        viewer, ['A'], {'A': 1}, {1: 'Ctrl'}, {1: (0.0, 0.5, 1.0)}
+    )
+
+    _a, _n, colors, styles = build_group_styles_from_layer_metadata(
+        viewer, ['A']
+    )
+    assert styles[1]['mode'] == 'solid'
+    assert styles[1]['style'] == 'solid'
+    np.testing.assert_allclose(styles[1]['color'], (0.0, 0.5, 1.0))
+    np.testing.assert_allclose(colors[1], (0.0, 0.5, 1.0))
+
+
+def test_contour_group_mode_survives_the_metadata_round_trip():
+    """The contour dialog's ``mode`` key is what comes back out."""
+    layers = {'A': _FakeLayer({}), 'B': _FakeLayer({})}
+    viewer = _FakeViewer(layers)
+
+    save_groups_to_layer_metadata(
+        viewer,
+        ['A', 'B'],
+        {'A': 1, 'B': 2},
+        {1: 'Ctrl', 2: 'Trt'},
+        {1: (1.0, 0.0, 0.0), 2: (0.0, 0.0, 1.0)},
+        group_styles={
+            1: {'mode': 'colormap', 'colormap': 'magma'},
+            2: {'mode': 'solid', 'color': (0.0, 0.0, 1.0)},
+        },
+    )
+
+    _a, _n, _c, styles = build_group_styles_from_layer_metadata(
+        viewer, ['A', 'B']
+    )
+    assert styles[1]['mode'] == 'colormap'
+    assert styles[1]['colormap'] == 'magma'
+    assert styles[2]['mode'] == 'solid'
+
+
+def test_save_groups_preserves_contour_style_of_same_group(qtbot):
+    """A histogram group edit keeps the contour style it did not touch."""
+    from napari_phasors._utils import colormap_max_color
+
+    viridis_max = list(colormap_max_color('viridis'))
+    layers = {
+        'A': _FakeLayer(
+            {
+                'settings': {
+                    'group': {
+                        'name': 'Ctrl',
+                        'color': viridis_max,
+                        'style': 'colormap',
+                        'colormap': 'viridis',
+                    }
+                }
+            }
+        ),
+    }
+    viewer = _FakeViewer(layers)
+
+    # Re-saved with the colour the colormap gave it: the styling stands.
+    save_groups_to_layer_metadata(
+        viewer, ['A'], {'A': 1}, {1: 'Ctrl'}, {1: tuple(viridis_max)}
+    )
+
+    group = layers['A'].metadata['settings']['group']
+    assert group['style'] == 'colormap'
+    assert group['colormap'] == 'viridis'
+
+    # A different colour means the user picked one: the contour should be
+    # regenerated from it rather than keeping the stale colormap.
+    save_groups_to_layer_metadata(
+        viewer, ['A'], {'A': 1}, {1: 'Ctrl'}, {1: (0.0, 1.0, 0.0)}
+    )
+    group = layers['A'].metadata['settings']['group']
+    assert group['color'] == [0.0, 1.0, 0.0]
+    assert 'colormap' not in group
+
+    # Moving the layer to a different group drops the old group's style.
+    save_groups_to_layer_metadata(
+        viewer, ['A'], {'A': 1}, {1: 'Other'}, {1: (0.0, 0.0, 1.0)}
+    )
+    assert 'style' not in layers['A'].metadata['settings']['group']
 
 
 def test_histogram_widget_no_viewer_does_not_crash(qtbot, monkeypatch):

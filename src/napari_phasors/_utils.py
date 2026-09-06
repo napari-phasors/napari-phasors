@@ -305,6 +305,32 @@ def make_solid_contour_cmap(name, target_color):
     )
 
 
+def colormap_max_color(cmap_name):
+    """Return the RGB at the top of *cmap_name*, or None if unresolvable.
+
+    Dialogs that only offer solid colours use it to show a group that was
+    given a colormap elsewhere in a matching colour, so the same group looks
+    the same wherever it is configured.
+    """
+    cmap = resolve_colormap_by_name(cmap_name)
+    if cmap is None:
+        return None
+    return tuple(float(channel) for channel in cmap(1.0)[:3])
+
+
+def group_style_mode(style, default='solid'):
+    """Return ``"colormap"`` or ``"solid"`` from a group style dict.
+
+    Group styles reach this module under two spellings: the contour dialog
+    and its renderer use ``"mode"``, while the copy persisted in layer
+    metadata uses ``"style"``. Read either so a style survives the round trip.
+    """
+    if not isinstance(style, dict):
+        return default
+    mode = style.get('mode', style.get('style'))
+    return mode if mode in ('colormap', 'solid') else default
+
+
 class PopoutWindowMixin:
     """Mixin that turns a napari dock-widget contribution into a standalone window.
 
@@ -1305,7 +1331,10 @@ def build_group_styles_from_layer_metadata(viewer, layer_names):
             c = tuple(gcolor) if gcolor is not None else (1.0, 0.0, 0.0)
             colors[next_gid] = c
             styles[next_gid] = {
+                # Both spellings: the contour dialog and its renderer read
+                # ``mode``, older persisted styles say ``style``.
                 'style': gstyle,
+                'mode': gstyle,
                 'colormap': gcmap or 'jet',
                 'color': c,
             }
@@ -1313,6 +1342,15 @@ def build_group_styles_from_layer_metadata(viewer, layer_names):
         assignments[layer_name] = name_to_gid[gname]
 
     return assignments, names, colors, styles
+
+
+def _colors_match(first, second, tolerance=1e-3):
+    """Return True when two RGB colours are the same within *tolerance*."""
+    if first is None or second is None:
+        return False
+    first = np.asarray(normalize_rgb(first), dtype=float)[:3]
+    second = np.asarray(normalize_rgb(second), dtype=float)[:3]
+    return bool(np.allclose(first, second, atol=tolerance))
 
 
 def save_groups_to_layer_metadata(
@@ -1344,7 +1382,11 @@ def save_groups_to_layer_metadata(
     group_styles : dict {gid: dict}, optional
         Contour-specific style data with keys ``style``, ``colormap``,
         ``color``.  When provided the ``colormap`` and ``style`` keys are
-        also persisted so the contour dialog can restore them.
+        also persisted so the contour dialog can restore them.  When it is
+        omitted — as it is for every caller that does not draw contours —
+        any style already stored for a group of the same name is carried
+        over, so grouping edited from the histogram does not silently reset
+        the contour styling.
     """
     for layer_name in layer_names:
         try:
@@ -1365,10 +1407,32 @@ def save_groups_to_layer_metadata(
         }
         if group_styles:
             style_data = group_styles.get(gid, {})
-            gstyle = style_data.get('style', 'solid')
+            gstyle = group_style_mode(style_data)
             group_data['style'] = gstyle
             if gstyle == 'colormap':
-                group_data['colormap'] = style_data.get('colormap', 'jet')
+                colormap_name = style_data.get('colormap', 'jet')
+                group_data['colormap'] = colormap_name
+                # Dialogs that only offer solid colours read ``color``, so
+                # store the top of the colormap: the group then shows up
+                # there in the colour it is actually drawn with.
+                max_color = colormap_max_color(colormap_name)
+                if max_color is not None:
+                    group_data['color'] = list(max_color)
+        else:
+            # A caller that does not draw contours keeps whatever contour
+            # styling the group already had — unless the colour it is saving
+            # is no longer the colormap's, which means the user picked a new
+            # one and the contour should be regenerated from it.
+            existing = _get_layer_group_entry(layer) or {}
+            existing_cmap = existing.get('colormap')
+            if existing.get('name') == gname and (
+                group_style_mode(existing) == 'solid'
+                or gcolor is None
+                or _colors_match(gcolor, colormap_max_color(existing_cmap))
+            ):
+                for key in ('style', 'colormap'):
+                    if key in existing:
+                        group_data[key] = existing[key]
         layer.metadata['settings']['group'] = group_data
 
 
@@ -2198,9 +2262,12 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
     Provides controls for:
     - Display mode: Merged / Individual layers / Grouped.
     - Toggling SD shading (for Merged and Grouped modes).
+    - Normalising every curve to its own maximum.
     - Central-tendency vertical line (Mean / Median / Center of mass).
     - Show / hide legend.
     - Per-layer colour selection (Individual layers mode).
+    - Curve colouring and per-series colours when several quantities are
+      merged into one curve each (Merged mode).
     - Group assignment and per-group colour (Grouped mode).
 
     Parameters
@@ -2209,16 +2276,30 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         Initial display mode.
     show_sd : bool
         Initial state of the *Show standard deviation* checkbox.
+    normalize : bool
+        Initial state of the *Normalize to maximum* checkbox.
     central_tendency : str
         Initial central-tendency line selection.
     show_legend : bool
         Initial state of the *Show legend* checkbox.
     layer_labels : list of str, optional
-        Layer names for group assignment.
+        Dataset names offered per-curve colours in *Individual layers* mode.
+    group_labels : list of str, optional
+        Names offered for group assignment, defaulting to *layer_labels*.
+        They can differ: a tab that plots several quantities per acquisition
+        groups the acquisitions, not each of the curves derived from them.
     group_assignments : dict, optional
-        ``{label: group_int}`` initial group assignments.
+        ``{group_label: group_int}`` initial group assignments.
     layer_colors : dict, optional
         ``{label: (r, g, b)}`` initial per-layer colours (0-1 floats).
+    series_labels : list of str, optional
+        Names of the series merged into one curve each. When given, Merged
+        mode offers a colouring choice and one colour per series.
+    series_colors : dict, optional
+        ``{series_name: (r, g, b)}`` initial per-series colours.
+    series_style : str, optional
+        ``"colormap"`` to draw each series in its layers' colormap, or
+        ``"solid"`` for one flat colour per series.
     group_colors : dict, optional
         ``{group_id: (r, g, b)}`` initial per-group colours (0-1 floats).
     group_names : dict, optional
@@ -2240,12 +2321,17 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         self,
         display_mode: str = "Merged",
         show_sd: bool = False,
+        normalize: bool = False,
         central_tendency: str = "None",
         show_legend: bool = False,
         aspect_ratio: str = "auto",
         layer_labels: list = None,
+        group_labels: list = None,
         group_assignments: dict = None,
         layer_colors: dict = None,
+        series_labels: list = None,
+        series_colors: dict = None,
+        series_style: str = "colormap",
         group_colors: dict = None,
         group_names: dict = None,
         parent: QWidget = None,
@@ -2270,6 +2356,16 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         self.sd_checkbox = QCheckBox("Show standard deviation")
         self.sd_checkbox.setChecked(show_sd)
         layout.addWidget(self.sd_checkbox)
+
+        # --- Normalise to maximum ---
+        self.normalize_checkbox = QCheckBox("Normalize to maximum")
+        self.normalize_checkbox.setToolTip(
+            "Scale every curve so its highest point is 1. Distributions "
+            "with very different pixel counts can then be compared in the "
+            "same plot."
+        )
+        self.normalize_checkbox.setChecked(normalize)
+        layout.addWidget(self.normalize_checkbox)
 
         # --- Central tendency ---
         ct_layout = QHBoxLayout()
@@ -2336,6 +2432,48 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
                 self._layer_color_buttons[label] = btn
         layout.addWidget(self._layer_section)
 
+        # --- Series colours (Merged mode with several quantities) ---
+        self._series_section = QWidget()
+        series_layout = QVBoxLayout(self._series_section)
+        series_layout.setContentsMargins(0, 0, 0, 0)
+
+        style_row = QHBoxLayout()
+        style_row.addWidget(QLabel("Curve colours:"))
+        self.series_style_combo = QComboBox()
+        self.series_style_combo.addItem("Layer colormap", "colormap")
+        self.series_style_combo.addItem("Solid colours", "solid")
+        self.series_style_combo.setToolTip(
+            "Draw each curve as a gradient in the colormap of its own layers, "
+            "or in one flat colour. Solid colours read better when the "
+            "colormaps are reversals of each other, as they are for the two "
+            "components of a Linear Projection."
+        )
+        index = self.series_style_combo.findData(series_style)
+        self.series_style_combo.setCurrentIndex(max(index, 0))
+        style_row.addWidget(self.series_style_combo)
+        style_row.addStretch()
+        series_layout.addLayout(style_row)
+
+        self._series_color_buttons = {}
+        if series_labels:
+            for idx, label in enumerate(series_labels):
+                row = QHBoxLayout()
+                name_lbl = QLabel(label)
+                name_lbl.setMaximumWidth(200)
+                row.addWidget(name_lbl)
+                if series_colors and label in series_colors:
+                    color = series_colors[label]
+                else:
+                    color = default_tab10[idx % len(default_tab10)][:3]
+                btn = QPushButton()
+                btn.setFixedSize(24, 24)
+                self._set_btn_color(btn, color)
+                btn.clicked.connect(lambda checked, b=btn: self._pick_color(b))
+                row.addWidget(btn)
+                series_layout.addLayout(row)
+                self._series_color_buttons[label] = btn
+        layout.addWidget(self._series_section)
+
         # --- Group section (Grouped mode) ---
         self._group_section = QWidget()
         group_layout = QVBoxLayout(self._group_section)
@@ -2353,9 +2491,14 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         #   'container', 'name_edit', 'color_btn', 'layer_combo'
         self._group_row_data = []
         self._layer_labels = layer_labels or []
+        # What the group rows offer; the histogram groups source layers, which
+        # are not always the datasets it draws.
+        self._group_labels = (
+            list(group_labels) if group_labels else list(self._layer_labels)
+        )
 
         # Populate groups from existing assignments
-        if group_assignments and layer_labels:
+        if group_assignments and self._group_labels:
             # Infer groups from assignments and keep explicitly configured
             # groups (name/color) even if currently empty.
             groups_seen = {}
@@ -2450,6 +2593,13 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         is_individual = mode == "Individual layers"
         self._group_section.setVisible(is_grouped)
         self._layer_section.setVisible(is_individual)
+        # Series colours only drive the Merged curves; the other modes colour
+        # by layer or by group.
+        self._series_section.setVisible(
+            bool(self._series_color_buttons)
+            and not is_grouped
+            and not is_individual
+        )
         # SD only meaningful for Merged / Grouped
         self.sd_checkbox.setEnabled(not is_individual)
         # Legend only meaningful for Individual / Grouped
@@ -2505,7 +2655,7 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         layer_combo = CheckableComboBox(
             placeholder="Select layers...", parent=self
         )
-        layer_combo.addItems(self._layer_labels)
+        layer_combo.addItems(self._group_labels)
         if checked_layers:
             layer_combo.setCheckedItems(checked_layers)
         layer_combo.selectionChanged.connect(self._sync_group_exclusivity)
@@ -2559,7 +2709,7 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         first group.
         """
         return unassigned_layer_labels(
-            self._layer_labels, self.get_group_assignments()
+            self._group_labels, self.get_group_assignments()
         )
 
     def accept(self) -> None:
@@ -2576,6 +2726,17 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         ):
             return
         super().accept()
+
+    def get_series_style(self) -> str:
+        """Return ``"colormap"`` or ``"solid"`` for the merged curves."""
+        return self.series_style_combo.currentData()
+
+    def get_series_colors(self) -> dict:
+        """Return ``{series_name: (r, g, b)}`` from the colour buttons."""
+        return {
+            label: btn._color
+            for label, btn in self._series_color_buttons.items()
+        }
 
     def get_group_assignments(self) -> dict:
         """Return ``{label: group_int}`` from the dialog.
@@ -2655,6 +2816,10 @@ class HistogramWidget(QWidget):
     exclude_nonpositive : bool, optional
         If ``True``, values ``<= 0`` are removed before histogramming.
         If ``False`` (default), only NaN/Inf values are removed.
+    normalize : bool, optional
+        If ``True``, every curve is divided by its own maximum so
+        distributions with different pixel counts share one y scale.
+        Toggled at runtime from the settings dialog, by default ``False``.
     viewer : napari.Viewer, optional
         Napari viewer instance used to look up layer metadata for restoring
         group assignments across analyses.  When provided, grouped-mode
@@ -2681,6 +2846,7 @@ class HistogramWidget(QWidget):
         range_label_prefix: str = "Range",
         range_factor: int = 1000,
         exclude_nonpositive: bool = False,
+        normalize: bool = False,
         viewer=None,
         parent: QWidget = None,
     ):
@@ -2700,6 +2866,23 @@ class HistogramWidget(QWidget):
 
         # Multi-layer state
         self._datasets = {}  # {label: valid_1d_array}
+        # {label: source image layer name}; grouping is stored on the source
+        # layer so every tab and the plot settings share one set of groups.
+        self._dataset_sources = {}
+        # {label: series name} plus optional per-series colors. A series is a
+        # family of datasets that may be pooled together in Merged mode (e.g.
+        # every layer analysed for one component); datasets of different
+        # series are never merged into a single curve.
+        self._dataset_series = {}
+        self._series_colors = {}
+        self._series_colormaps = {}
+        # How the per-series curves are coloured: in each series' own layer
+        # colormap, or in one solid colour each. Mirrored colormaps (the two
+        # components of a Linear Projection) read as noise, so a tab can ask
+        # for solid by default; an explicit choice in the dialog wins.
+        self._series_style = "colormap"
+        self._series_style_explicit = False
+        self._series_color_overrides = {}
         self._counts_per_dataset = {}  # {label: counts on common bins}
         self._previous_dataset_count = (
             0  # Track transitions for auto-enabling SD
@@ -2725,7 +2908,10 @@ class HistogramWidget(QWidget):
             "Merged"  # "Merged", "Individual layers", "Grouped"
         )
         self._show_sd = False
-        self._group_assignments = {}  # {label: group_int}
+        self._normalize = normalize
+        # {source layer name: group_int}; a layer's group applies to every
+        # dataset derived from it (see :meth:`set_dataset_sources`).
+        self._group_assignments = {}
         self._group_names = {}  # {group_id: str}
         self._central_tendency = "None"
         self._show_legend = True
@@ -3002,7 +3188,14 @@ class HistogramWidget(QWidget):
         self.fig.canvas.draw_idle()
 
     def _save_histogram_csv(self):
-        """Save the histogram data as a CSV file."""
+        """Save the histogram data as a CSV file.
+
+        With *Normalize to maximum* enabled the exported curves are scaled
+        the way they are drawn — each one divided by its own peak — and the
+        column headers say so. The scaling is computed from the raw binned
+        counts written here, not from the smoothed display curve, so the
+        exported peak is 1 by construction.
+        """
         if self.counts is None or self.bin_centers is None:
             return
 
@@ -3025,37 +3218,48 @@ class HistogramWidget(QWidget):
             with open(file_path, mode='w', newline='') as file:
                 writer = csv.writer(file)
                 n_datasets = len(self._counts_per_dataset)
+                prefix = 'Normalized ' if self._normalize else ''
 
                 if self._display_mode == "Individual layers":
                     # Export individual counts per dataset aligned on the same bins
-                    header = ['Bin Center'] + list(
-                        self._counts_per_dataset.keys()
-                    )
+                    header = ['Bin Center'] + [
+                        f"{prefix}{label}"
+                        for label in self._counts_per_dataset
+                    ]
                     writer.writerow(header)
+                    scaled = {
+                        label: counts * self._display_scale(counts)
+                        for label, counts in self._counts_per_dataset.items()
+                    }
                     for i in range(len(self.bin_centers)):
                         row = [self.bin_centers[i]]
-                        for label in self._counts_per_dataset:
-                            row.append(self._counts_per_dataset[label][i])
+                        for label in scaled:
+                            row.append(scaled[label][i])
                         writer.writerow(row)
 
                 elif self._display_mode == "Grouped":
-                    # Export grouped means and stdevs. Layers left out of
-                    # every group are excluded rather than folded into the
-                    # first group.
-                    groups, _unassigned = split_items_by_group(
-                        self._counts_per_dataset, self._group_assignments
+                    # Export grouped means and stdevs, one column pair per
+                    # group and series exactly as they are drawn. Layers left
+                    # out of every group are excluded rather than folded into
+                    # the first group.
+                    curves, _unassigned = self._grouped_series_curves(
+                        self._counts_per_dataset
                     )
+                    series_order = list(
+                        self._series_members(self._counts_per_dataset)
+                    )
+                    multiple_series = len(series_order) > 1
 
                     header = ['Bin Center']
-                    group_stats = {}
+                    group_stats = []
 
-                    for group_id, members in sorted(groups.items()):
-                        group_label = self._group_names.get(
-                            group_id, f"Group {group_id}"
+                    for group_id, series_name, members in curves:
+                        curve_label = self._grouped_curve_label(
+                            group_id, series_name, multiple_series
                         )
-                        header.append(f"{group_label} Mean")
+                        header.append(f"{curve_label} {prefix}Mean")
                         if len(members) > 1:
-                            header.append(f"{group_label} Std")
+                            header.append(f"{curve_label} {prefix}Std")
 
                         all_counts = np.array(
                             [c for _, c in members], dtype=float
@@ -3066,15 +3270,17 @@ class HistogramWidget(QWidget):
                             if len(members) > 1
                             else None
                         )
-                        group_stats[group_id] = (mean_c, std_c)
+                        scale = self._display_scale(mean_c)
+                        mean_c = mean_c * scale
+                        if std_c is not None:
+                            std_c = std_c * scale
+                        group_stats.append((mean_c, std_c))
 
                     writer.writerow(header)
 
                     for i in range(len(self.bin_centers)):
                         row = [self.bin_centers[i]]
-                        for _group_id, (mean_c, std_c) in sorted(
-                            group_stats.items()
-                        ):
+                        for mean_c, std_c in group_stats:
                             row.append(mean_c[i])
                             if std_c is not None:
                                 row.append(std_c[i])
@@ -3082,16 +3288,55 @@ class HistogramWidget(QWidget):
 
                 else:
                     # Merged mode
-                    if n_datasets > 1:
+                    series = self._series_members(self._counts_per_dataset)
+                    if len(series) > 1:
+                        # One merged curve per series: pool layers, not series.
+                        header = ['Bin Center']
+                        series_stats = {}
+                        for name, members in series.items():
+                            header.append(f"{name} {prefix}Mean")
+                            if len(members) > 1:
+                                header.append(f"{name} {prefix}Std")
+                            all_counts = np.array(
+                                [c for _, c in members], dtype=float
+                            )
+                            mean_c = np.mean(all_counts, axis=0)
+                            std_c = (
+                                np.std(all_counts, axis=0, ddof=1)
+                                if len(members) > 1
+                                else None
+                            )
+                            scale = self._display_scale(mean_c)
+                            mean_c = mean_c * scale
+                            if std_c is not None:
+                                std_c = std_c * scale
+                            series_stats[name] = (mean_c, std_c)
+
+                        writer.writerow(header)
+                        for i in range(len(self.bin_centers)):
+                            row = [self.bin_centers[i]]
+                            for mean_c, std_c in series_stats.values():
+                                row.append(mean_c[i])
+                                if std_c is not None:
+                                    row.append(std_c[i])
+                            writer.writerow(row)
+                    elif n_datasets > 1:
                         all_counts = np.array(
                             list(self._counts_per_dataset.values()),
                             dtype=float,
                         )
                         mean_counts = np.mean(all_counts, axis=0)
                         std_counts = np.std(all_counts, axis=0, ddof=1)
+                        scale = self._display_scale(mean_counts)
+                        mean_counts = mean_counts * scale
+                        std_counts = std_counts * scale
 
                         writer.writerow(
-                            ['Bin Center', 'Mean Counts', 'Std Counts']
+                            [
+                                'Bin Center',
+                                f'{prefix}Mean Counts',
+                                f'{prefix}Std Counts',
+                            ]
                         )
                         for i in range(len(self.bin_centers)):
                             writer.writerow(
@@ -3102,35 +3347,268 @@ class HistogramWidget(QWidget):
                                 ]
                             )
                     else:
-                        writer.writerow(['Bin Center', 'Counts'])
+                        counts = self.counts.astype(float)
+                        counts = counts * self._display_scale(counts)
+                        writer.writerow(['Bin Center', f'{prefix}Counts'])
                         for i in range(len(self.bin_centers)):
-                            writer.writerow(
-                                [self.bin_centers[i], self.counts[i]]
-                            )
+                            writer.writerow([self.bin_centers[i], counts[i]])
         except (OSError, csv.Error) as e:
             from napari.utils.notifications import show_error
 
             show_error(f"Error saving CSV: {str(e)}")
 
+    def set_dataset_sources(self, sources: dict) -> None:
+        """Record the source image layer each dataset was derived from.
+
+        Grouping is a property of the acquisition, not of one analysis, so it
+        is stored on the source layer rather than on the derived layer that
+        happens to be plotted. Telling the histogram which layer each dataset
+        came from is what lets the Components, FRET and Phasor Mapping
+        histograms — and the grouped modes of the Plot Settings tab — all show
+        the same groups.
+
+        Parameters
+        ----------
+        sources : dict
+            ``{dataset_label: source_layer_name}``. Labels left out fall back
+            to being their own source.
+        """
+        self._dataset_sources = dict(sources or {})
+
+    def set_dataset_series(
+        self, series: dict, colors: dict = None, colormaps: dict = None
+    ) -> None:
+        """Group datasets into series that Merged mode may pool together.
+
+        Merging exists to average replicates, not to blend quantities that
+        mean different things. When a tab plots more than one quantity at once
+        — the Components tab drawing several component fractions, say — it
+        names the series each dataset belongs to here, and Merged mode then
+        draws one curve per series, each pooling only its own layers.
+
+        Parameters
+        ----------
+        series : dict
+            ``{dataset_label: series_name}``. Labels left out share a single
+            unnamed series, which reproduces the plain merged curve.
+        colors : dict, optional
+            ``{series_name: color}`` used for the per-series curves. Any
+            series without one falls back to the default color cycle.
+        colormaps : dict, optional
+            ``{series_name: (colormap_colors, contrast_limits, gamma)}``.
+            A series with a colormap has its curve drawn as a gradient in
+            that colormap — the one its own layers are displayed with —
+            rather than in a flat color.
+        """
+        self._dataset_series = dict(series or {})
+        self._series_colors = dict(colors or {})
+        self._series_colormaps = dict(colormaps or {})
+
+    def set_series_colormaps(self, colormaps: dict) -> None:
+        """Update the per-series colormaps and re-draw.
+
+        Separate from :meth:`set_dataset_series` so a tab can follow a layer
+        whose colormap, contrast limits or gamma changed without recomputing
+        any histogram.
+
+        Parameters
+        ----------
+        colormaps : dict
+            ``{series_name: (colormap_colors, contrast_limits, gamma)}``.
+        """
+        self._series_colormaps = dict(colormaps or {})
+        if self.counts is not None:
+            self._render()
+
+    def _series_members(self, items: dict) -> dict:
+        """Return ``{series_name: [(label, value)]}`` for *items*.
+
+        Datasets with no series share the ``None`` key, so a widget that never
+        calls :meth:`set_dataset_series` always sees exactly one series.
+        """
+        grouped = {}
+        for label, value in items.items():
+            grouped.setdefault(self._dataset_series.get(label), []).append(
+                (label, value)
+            )
+        return grouped
+
+    def set_default_series_style(self, style: str) -> None:
+        """Set how per-series curves are coloured, unless the user chose.
+
+        Tabs call this to propose the sensible default for what they are
+        plotting — solid colours when the series' colormaps are reversals of
+        one another and a gradient would only confuse. A choice made in the
+        settings dialog is never overridden.
+
+        Parameters
+        ----------
+        style : {"colormap", "solid"}
+        """
+        if self._series_style_explicit or style == self._series_style:
+            return
+        self._series_style = style
+        if self.counts is not None:
+            self._render()
+
+    def _series_color(self, name, index):
+        """Return the color for series *name*, falling back to the cycle.
+
+        A colour picked in the settings dialog wins over the one the tab
+        proposed, which in turn wins over the default cycle.
+        """
+        default_colors = plt.cm.tab10.colors
+        if name in self._series_color_overrides:
+            return self._series_color_overrides[name]
+        return self._series_colors.get(
+            name, default_colors[index % len(default_colors)][:3]
+        )
+
+    def _series_names(self) -> list:
+        """Return the series names currently drawn, in dataset order."""
+        return [
+            name
+            for name in self._series_members(self._datasets)
+            if name is not None
+        ]
+
+    def _series_cmap_and_norm(self, name):
+        """Return ``(cmap, norm)`` for series *name*, or None if it has none."""
+        entry = self._series_colormaps.get(name)
+        if not entry:
+            return None
+        colors, contrast_limits, gamma = entry
+        if colors is None or contrast_limits is None:
+            return None
+        vmin, vmax = float(contrast_limits[0]), float(contrast_limits[1])
+        if vmax <= vmin:
+            return None
+        cmap = LinearSegmentedColormap.from_list("series_cmap", colors)
+        gamma = gamma or 1.0
+        norm = (
+            PowerNorm(gamma, vmin=vmin, vmax=vmax)
+            if gamma != 1.0
+            else plt.Normalize(vmin=vmin, vmax=vmax)
+        )
+        return cmap, norm
+
+    def _source_for(self, label: str) -> str:
+        """Return the source layer name behind *label* (the label itself by
+        default)."""
+        return self._dataset_sources.get(label, label)
+
+    def _group_source_names(self) -> list:
+        """Return the layers that can be grouped, in dataset order.
+
+        Grouping applies to the analysed layers behind the plot, so several
+        curves derived from the same acquisition — one per component, say —
+        contribute a single entry.
+        """
+        sources = []
+        for label in self._datasets:
+            source = self._source_for(label)
+            if source not in sources:
+                sources.append(source)
+        return sources
+
+    def _group_state_from_metadata(self, sources):
+        """Return ``(assignments, names, colors)`` read from the source layers.
+
+        Assignments come back keyed by source layer, the same key the Plot
+        Settings dialogs use.
+        """
+        if self._viewer is None or not sources:
+            return {}, {}, {}
+        return build_groups_from_layer_metadata(self._viewer, sources)
+
+    def _group_state_for_dialog(self, sources):
+        """Return the group state to open the settings dialog with.
+
+        The layer metadata wins, so a grouping made in another tab or in the
+        Plot Settings tab shows up here. Layers the metadata says nothing
+        about keep the group they have in this widget, matched by group name
+        so the two sources of truth cannot end up with clashing ids.
+        """
+        meta_assignments, meta_names, meta_colors = (
+            self._group_state_from_metadata(sources)
+        )
+        if not meta_assignments:
+            return (
+                dict(self._group_assignments),
+                dict(self._group_names),
+                dict(self._group_colors),
+            )
+
+        assignments = dict(meta_assignments)
+        names = dict(meta_names)
+        colors = dict(meta_colors)
+        name_to_gid = {name: gid for gid, name in names.items()}
+
+        for source in sources or []:
+            if source in assignments:
+                continue
+            local_gid = self._group_assignments.get(source)
+            if local_gid is None:
+                continue
+            group_name = self._group_names.get(local_gid, f"Group {local_gid}")
+            gid = name_to_gid.get(group_name)
+            if gid is None:
+                gid = max(names, default=0) + 1
+                names[gid] = group_name
+                if local_gid in self._group_colors:
+                    colors[gid] = self._group_colors[local_gid]
+                name_to_gid[group_name] = gid
+            assignments[source] = gid
+
+        return assignments, names, colors
+
+    def _save_groups_to_sources(self, sources) -> None:
+        """Persist the current grouping onto the grouped layers themselves."""
+        if self._viewer is None or not sources:
+            return
+
+        assignments = {
+            source: self._group_assignments[source]
+            for source in sources
+            if source in self._group_assignments
+        }
+        save_groups_to_layer_metadata(
+            self._viewer,
+            list(sources),
+            assignments,
+            self._group_names,
+            self._group_colors,
+        )
+
     def _open_settings_dialog(self):
         """Open the histogram settings dialog."""
         layer_labels = list(self._datasets.keys()) if self._datasets else None
+        # Curves get their own colours, but groups are assigned to the layers
+        # behind them: with several components on screen the group rows still
+        # list the analysed layers, not one entry per component.
+        group_labels = self._group_source_names()
 
-        # Pre-populate groups from per-layer metadata when none are set yet
-        group_assignments = self._group_assignments
-        group_names = self._group_names
-        group_colors = self._group_colors
-        if self._viewer is not None and not group_assignments and layer_labels:
-            group_assignments, group_names, group_colors = (
-                build_groups_from_layer_metadata(self._viewer, layer_labels)
-            )
+        group_assignments, group_names, group_colors = (
+            self._group_state_for_dialog(group_labels)
+        )
+
+        series_labels = self._series_names()
+        series_colors = {
+            name: self._series_color(name, index)
+            for index, name in enumerate(series_labels)
+        }
 
         dlg = HistogramSettingsDialog(
             display_mode=self._display_mode,
             show_sd=self._show_sd,
+            normalize=self._normalize,
             central_tendency=self._central_tendency,
             show_legend=self._show_legend,
             layer_labels=layer_labels,
+            group_labels=group_labels,
+            series_labels=series_labels if len(series_labels) > 1 else None,
+            series_colors=series_colors,
+            series_style=self._series_style,
             group_assignments=group_assignments,
             layer_colors=self._layer_colors,
             group_colors=group_colors,
@@ -3144,6 +3622,7 @@ class HistogramWidget(QWidget):
         if dlg.exec() == QDialog.Accepted:
             self._display_mode = dlg.mode_combo.currentText()
             self._show_sd = dlg.sd_checkbox.isChecked()
+            self._normalize = dlg.normalize_checkbox.isChecked()
             self._central_tendency = dlg.central_tendency_combo.currentText()
             self._show_legend = dlg.legend_checkbox.isChecked()
             self._white_background = dlg.white_bg_checkbox.isChecked()
@@ -3153,16 +3632,13 @@ class HistogramWidget(QWidget):
                 self._group_assignments = dlg.get_group_assignments()
                 self._group_colors = dlg.get_group_colors()
                 self._group_names = dlg.get_group_names()
-                if self._viewer is not None and layer_labels:
-                    save_groups_to_layer_metadata(
-                        self._viewer,
-                        layer_labels,
-                        self._group_assignments,
-                        self._group_names,
-                        self._group_colors,
-                    )
+                self._save_groups_to_sources(group_labels)
             if dlg._layer_color_buttons:
                 self._layer_colors = dlg.get_layer_colors()
+            if dlg._series_color_buttons:
+                self._series_color_overrides = dlg.get_series_colors()
+                self._series_style = dlg.get_series_style()
+                self._series_style_explicit = True
             if self.counts is not None:
                 self._render()
             self.dataChanged.emit()
@@ -3300,6 +3776,12 @@ class HistogramWidget(QWidget):
             self._frame_source_datasets[new_name] = (
                 self._frame_source_datasets.pop(old_name)
             )
+        if old_name in self._dataset_sources:
+            self._dataset_sources[new_name] = self._dataset_sources.pop(
+                old_name
+            )
+        if old_name in self._dataset_series:
+            self._dataset_series[new_name] = self._dataset_series.pop(old_name)
 
         if self._datasets:
             self._render()
@@ -3328,9 +3810,19 @@ class HistogramWidget(QWidget):
         new_group_assignments = dict(self._group_assignments)
         new_layer_colors = dict(self._layer_colors)
         new_frame_source_datasets = dict(self._frame_source_datasets)
+        new_dataset_sources = dict(self._dataset_sources)
+        new_dataset_series = dict(self._dataset_series)
         for old_label, new_label in old_to_new.items():
             if old_label == new_label:
                 continue
+            if old_label in new_dataset_sources:
+                new_dataset_sources[new_label] = new_dataset_sources.pop(
+                    old_label
+                )
+            if old_label in new_dataset_series:
+                new_dataset_series[new_label] = new_dataset_series.pop(
+                    old_label
+                )
             if old_label in self._group_assignments:
                 new_group_assignments[new_label] = self._group_assignments[
                     old_label
@@ -3344,6 +3836,8 @@ class HistogramWidget(QWidget):
         self._group_assignments = new_group_assignments
         self._layer_colors = new_layer_colors
         self._frame_source_datasets = new_frame_source_datasets
+        self._dataset_sources = new_dataset_sources
+        self._dataset_series = new_dataset_series
 
     def update_colormap(
         self,
@@ -3418,6 +3912,18 @@ class HistogramWidget(QWidget):
             self._render()
 
     @property
+    def normalize(self) -> bool:
+        """Whether each curve is scaled to its own maximum."""
+        return self._normalize
+
+    @normalize.setter
+    def normalize(self, value: bool):
+        """Toggle max-normalisation and re-render if data is loaded."""
+        self._normalize = bool(value)
+        if self.counts is not None:
+            self._render()
+
+    @property
     def white_background(self) -> bool:
         """Whether white background is enabled."""
         return self._white_background
@@ -3464,7 +3970,10 @@ class HistogramWidget(QWidget):
         for spine in self.ax.spines.values():
             spine.set_color(color)
             spine.set_linewidth(1)
-        self.ax.set_ylabel(self.ylabel, fontsize=6, color=color)
+        ylabel = (
+            f"{self.ylabel} (normalized)" if self._normalize else self.ylabel
+        )
+        self.ax.set_ylabel(ylabel, fontsize=6, color=color)
         self.ax.set_xlabel(self.xlabel, fontsize=6, color=color)
 
         if self._range_slider_enabled:
@@ -3547,6 +4056,21 @@ class HistogramWidget(QWidget):
             y_fine = y.astype(float)
         return x_fine, y_fine
 
+    def _display_scale(self, reference) -> float:
+        """Return the factor that maps *reference* onto the displayed y axis.
+
+        With *Normalize to maximum* enabled every curve is divided by its own
+        peak, so distributions whose pixel counts differ by orders of
+        magnitude can be compared in one plot. The factor is computed once
+        per curve and applied to its SD band as well, which keeps the band's
+        width relative to the curve.
+        """
+        if not self._normalize:
+            return 1.0
+        reference = np.asarray(reference, dtype=float)
+        peak = float(np.max(reference)) if reference.size else 0.0
+        return 1.0 / peak if peak > 0 else 1.0
+
     @staticmethod
     def _compute_central_tendency(
         data: np.ndarray,
@@ -3601,12 +4125,23 @@ class HistogramWidget(QWidget):
                         val, color=color, ls="--", lw=2, alpha=0.85
                     )
         elif n_datasets > 1 and self._display_mode == "Grouped":
-            groups, _unassigned = split_items_by_group(
-                self._datasets, self._group_assignments
-            )
-            for _gidx, (gid, members) in enumerate(sorted(groups.items())):
-                default_c = default_colors[(gid - 1) % len(default_colors)][:3]
-                color = self._group_colors.get(gid, default_c)
+            curves, _unassigned = self._grouped_series_curves(self._datasets)
+            for gid, _series_name, members in curves:
+                color = self._group_color(gid)
+                pooled = np.concatenate([v for _, v in members])
+                val = self._compute_central_tendency(
+                    pooled, choice, self.bin_centers, self.bin_edges
+                )
+                if val is not None:
+                    self.ax.axvline(
+                        val, color=color, ls="--", lw=2, alpha=0.85
+                    )
+        elif n_datasets > 1 and len(self._series_members(self._datasets)) > 1:
+            # Merged mode with several series: one line per merged curve.
+            for index, (name, members) in enumerate(
+                self._series_members(self._datasets).items()
+            ):
+                color = self._series_color(name, index)
                 pooled = np.concatenate([v for _, v in members])
                 val = self._compute_central_tendency(
                     pooled, choice, self.bin_centers, self.bin_edges
@@ -3666,6 +4201,7 @@ class HistogramWidget(QWidget):
         cmap, norm = self._get_cmap_and_norm()
         x = self.bin_centers
         y = self.counts.astype(float)
+        y = y * self._display_scale(y)
         self._fill_gradient(x, y, np.zeros_like(y), cmap, norm, alpha=0.7)
 
     def _fill_gradient(
@@ -3728,10 +4264,12 @@ class HistogramWidget(QWidget):
         norm,
         *,
         linewidth: float = 2,
+        label: str = None,
     ) -> None:
         """Draw a line colored by a smooth colormap gradient.
 
-        Uses a ``LineCollection`` for efficient per-segment coloring.
+        Uses a ``LineCollection`` for efficient per-segment coloring. Passing
+        *label* makes the line appear in the legend.
         """
         from matplotlib.collections import LineCollection
 
@@ -3741,14 +4279,153 @@ class HistogramWidget(QWidget):
         segments = np.concatenate([points[:-1], points[1:]], axis=1)
         colors = cmap(norm(x[:-1]))
         lc = LineCollection(segments, colors=colors, linewidths=linewidth)
+        if label is not None:
+            lc.set_label(label)
         self.ax.add_collection(lc)
+        # A LineCollection does not take part in autoscaling, so make sure the
+        # curve it draws is inside the view.
+        self.ax.update_datalim(np.column_stack([x, y]))
+        self.ax.autoscale_view()
+
+    def _label_group_assignments(self, labels) -> dict:
+        """Return ``{dataset_label: gid}`` from the source-keyed grouping.
+
+        Groups are assigned to the analysed layers, not to the individual
+        curves derived from them, so every dataset of a grouped layer — each
+        component fraction of one image, say — inherits that layer's group.
+        """
+        assignments = {}
+        for label in labels:
+            gid = self._group_assignments.get(self._source_for(label))
+            if gid is not None:
+                assignments[label] = gid
+        return assignments
+
+    def _grouped_series_curves(self, items: dict):
+        """Return ``([(gid, series_name, members)], unassigned)`` for *items*.
+
+        One entry per group and series: a group pools its layers, never two
+        series.
+        """
+        groups, unassigned = split_items_by_group(
+            items, self._label_group_assignments(items)
+        )
+        curves = []
+        for group_id in sorted(groups):
+            members = dict(groups[group_id])
+            for series_name, series_members in self._series_members(
+                members
+            ).items():
+                curves.append((group_id, series_name, series_members))
+        return curves, unassigned
+
+    def statistics_quantity_label(self):
+        """Return the name of the quantity the statistics describe.
+
+        Used to label the statistics columns, so a table (or its CSV) says
+        what was measured — ``"FRET efficiency"``, ``"Lifetime (ns)"``,
+        ``"Component 1"`` — instead of a bare ``Mean``. Returns None when
+        several quantities share the table: their names are then on the rows,
+        and one column cannot stand for all of them.
+        """
+        names = self._series_names()
+        if len(names) == 1:
+            return names[0]
+        if names:
+            return None
+        return self.xlabel or None
+
+    def series_statistics_datasets(self):
+        """Return ``({layer: {series: values}}, series_names)`` for the table.
+
+        Used when several quantities are plotted at once: the table then shows
+        one row per analysed layer and one column block per quantity, instead
+        of one row per layer and quantity. Returns ``(None, [])`` when a single
+        quantity is on screen, where the simple layout already says everything.
+        """
+        names = self._series_names()
+        if len(names) < 2:
+            return None, []
+        rows = {}
+        for label, values in self._datasets.items():
+            source = self._source_for(label)
+            rows.setdefault(source, {})[
+                self._dataset_series.get(label)
+            ] = values
+        return rows, names
+
+    def grouped_series_statistics_datasets(self):
+        """Return ``({group: {series: pooled}}, series_names)``.
+
+        The grouped counterpart of :meth:`series_statistics_datasets`: one row
+        per group, one column block per quantity.
+        """
+        names = self._series_names()
+        if len(names) < 2:
+            return None, []
+        curves, _unassigned = self._grouped_series_curves(self._datasets)
+        rows = {}
+        for group_id, series_name, members in curves:
+            label = self._group_names.get(group_id, f"Group {group_id}")
+            rows.setdefault(label, {})[series_name] = np.concatenate(
+                [values for _, values in members]
+            )
+        return rows, names
+
+    def grouped_dataset_statistics(self) -> dict:
+        """Return ``{curve_label: pooled_values}``, one entry per drawn curve.
+
+        Mirrors what Grouped mode plots, so the statistics table never pools
+        two series into one row either.
+        """
+        curves, _unassigned = self._grouped_series_curves(self._datasets)
+        multiple_series = len(self._series_members(self._datasets)) > 1
+        pooled = {}
+        for group_id, series_name, members in curves:
+            label = self._grouped_curve_label(
+                group_id, series_name, multiple_series
+            )
+            pooled[label] = np.concatenate([values for _, values in members])
+        return pooled
+
+    def _group_color(self, group_id):
+        """Return the color of *group_id*, falling back to the cycle."""
+        default_colors = plt.cm.tab10.colors
+        return self._group_colors.get(
+            group_id, default_colors[(group_id - 1) % len(default_colors)][:3]
+        )
+
+    @staticmethod
+    def _series_linestyle(series_name, series_order):
+        """Return the line style telling *series_name* apart within a group."""
+        styles = ("-", "--", ":", "-.")
+        try:
+            index = series_order.index(series_name)
+        except ValueError:
+            index = 0
+        return styles[index % len(styles)]
+
+    def _grouped_curve_label(self, group_id, series_name, multiple_series):
+        """Return the legend label for one grouped curve."""
+        group_label = self._group_names.get(group_id, f"Group {group_id}")
+        if multiple_series and series_name is not None:
+            return f"{group_label} \u2013 {series_name}"
+        return group_label
 
     def _render_merged(self) -> None:
         """Render merged histogram with optional SD shading.
 
-        Uses ``imshow`` with polygon clipping for seamless color-mapped
-        gradient fills, and ``LineCollection`` for efficient line rendering.
+        Layers are pooled, series are not: when the datasets belong to several
+        series (see :meth:`set_dataset_series`) each one gets its own curve
+        averaging only its own layers. A single series keeps the classic
+        colormap-gradient curve, drawn with ``imshow`` plus polygon clipping
+        for a seamless fill and a ``LineCollection`` for the outline.
         """
+        series = self._series_members(self._counts_per_dataset)
+        if len(series) > 1:
+            self._render_merged_series(series)
+            return
+
         cmap, norm = self._get_cmap_and_norm()
         n = len(self._counts_per_dataset)
 
@@ -3765,6 +4442,11 @@ class HistogramWidget(QWidget):
             _, lower_fine = self._smooth_curve(lower)
             _, upper_fine = self._smooth_curve(upper)
 
+            scale = self._display_scale(mean_fine)
+            mean_fine = mean_fine * scale
+            lower_fine = lower_fine * scale
+            upper_fine = upper_fine * scale
+
             self._fill_gradient(
                 x_fine, upper_fine, lower_fine, cmap, norm, alpha=0.35
             )
@@ -3774,6 +4456,7 @@ class HistogramWidget(QWidget):
         elif self._show_sd and n == 1:
             counts = list(self._counts_per_dataset.values())[0]
             x_fine, y_fine = self._smooth_curve(counts)
+            y_fine = y_fine * self._display_scale(y_fine)
             self._draw_gradient_line(x_fine, y_fine, cmap, norm, linewidth=2)
             self.ax.set_xlim(float(x_fine[0]), float(x_fine[-1]))
             self.ax.set_ylim(0, float(np.max(y_fine)) * 1.05)
@@ -3787,6 +4470,7 @@ class HistogramWidget(QWidget):
                 mean_counts = list(self._counts_per_dataset.values())[0]
 
             x_fine, mean_fine = self._smooth_curve(mean_counts)
+            mean_fine = mean_fine * self._display_scale(mean_fine)
 
             self._fill_gradient(
                 x_fine,
@@ -3800,6 +4484,68 @@ class HistogramWidget(QWidget):
                 x_fine, mean_fine, cmap, norm, linewidth=2
             )
 
+    def _render_merged_series(self, series: dict) -> None:
+        """Draw one merged curve per series, each pooling only its own layers.
+
+        Parameters
+        ----------
+        series : dict
+            ``{series_name: [(label, counts)]}`` from :meth:`_series_members`.
+        """
+        for index, (name, members) in enumerate(series.items()):
+            color = self._series_color(name, index)
+            all_counts = np.array([c for _, c in members], dtype=float)
+            mean_counts = np.mean(all_counts, axis=0)
+
+            x_fine, mean_fine = self._smooth_curve(mean_counts)
+            scale = self._display_scale(mean_fine)
+            mean_fine = mean_fine * scale
+
+            # Draw the outline in the series' own colormap when it has one and
+            # the user has not asked for solid colours, so the curve is colored
+            # like the layers it summarises.
+            series_cmap = (
+                self._series_cmap_and_norm(name)
+                if self._series_style == "colormap"
+                else None
+            )
+            if series_cmap is not None:
+                cmap, norm = series_cmap
+                self._draw_gradient_line(
+                    x_fine,
+                    mean_fine,
+                    cmap,
+                    norm,
+                    linewidth=2,
+                    label=str(name),
+                )
+            else:
+                self.ax.plot(
+                    x_fine,
+                    mean_fine,
+                    color=color,
+                    linewidth=2,
+                    label=str(name),
+                )
+
+            if self._show_sd and len(members) > 1:
+                std_counts = np.std(all_counts, axis=0, ddof=1)
+                lower = np.maximum(mean_counts - std_counts, 0)
+                upper = mean_counts + std_counts
+                _, lower_fine = self._smooth_curve(lower)
+                _, upper_fine = self._smooth_curve(upper)
+                self.ax.fill_between(
+                    x_fine,
+                    lower_fine * scale,
+                    upper_fine * scale,
+                    color=color,
+                    alpha=0.25,
+                    linewidth=0,
+                )
+
+        if self._show_legend:
+            self.ax.legend(fontsize=5, loc="upper right")
+
     def _render_individual(self) -> None:
         """Render each dataset as a smooth outline."""
         default_colors = plt.cm.tab10.colors
@@ -3809,6 +4555,7 @@ class HistogramWidget(QWidget):
             default_c = default_colors[idx % len(default_colors)][:3]
             color = self._layer_colors.get(label, default_c)
             x_fine, y_fine = self._smooth_curve(counts)
+            y_fine = y_fine * self._display_scale(y_fine)
             self.ax.plot(
                 x_fine,
                 y_fine,
@@ -3820,29 +4567,36 @@ class HistogramWidget(QWidget):
             self.ax.legend(fontsize=5, loc="upper right")
 
     def _render_grouped(self) -> None:
-        """Render grouped histograms with smooth curves and optional SD."""
-        default_colors = plt.cm.tab10.colors
+        """Render grouped histograms with smooth curves and optional SD.
 
-        groups, _unassigned = split_items_by_group(
-            self._counts_per_dataset, self._group_assignments
+        A group pools the layers assigned to it, but never two series: with
+        several series on screen each group contributes one curve per series,
+        colored by the group and dashed differently per series, so both the
+        group and the quantity stay readable.
+        """
+        curves, _unassigned = self._grouped_series_curves(
+            self._counts_per_dataset
         )
+        series_order = list(self._series_members(self._counts_per_dataset))
+        multiple_series = len(series_order) > 1
 
-        for _gidx, (group_id, members) in enumerate(sorted(groups.items())):
-            default_c = default_colors[(group_id - 1) % len(default_colors)][
-                :3
-            ]
-            color = self._group_colors.get(group_id, default_c)
+        for group_id, series_name, members in curves:
+            color = self._group_color(group_id)
             all_counts = np.array([c for _, c in members], dtype=float)
             mean_counts = np.mean(all_counts, axis=0)
 
             x_fine, mean_fine = self._smooth_curve(mean_counts)
-            group_label = self._group_names.get(group_id, f"Group {group_id}")
+            scale = self._display_scale(mean_fine)
+            mean_fine = mean_fine * scale
             self.ax.plot(
                 x_fine,
                 mean_fine,
                 color=color,
                 linewidth=2,
-                label=group_label,
+                linestyle=self._series_linestyle(series_name, series_order),
+                label=self._grouped_curve_label(
+                    group_id, series_name, multiple_series
+                ),
             )
 
             if self._show_sd and len(members) > 1:
@@ -3851,6 +4605,8 @@ class HistogramWidget(QWidget):
                 upper = mean_counts + std_counts
                 _, lower_fine = self._smooth_curve(lower)
                 _, upper_fine = self._smooth_curve(upper)
+                lower_fine = lower_fine * scale
+                upper_fine = upper_fine * scale
                 self.ax.fill_between(
                     x_fine,
                     lower_fine,
@@ -3860,7 +4616,7 @@ class HistogramWidget(QWidget):
                     linewidth=0,
                 )
 
-        if self._show_legend and groups:
+        if self._show_legend and curves:
             self.ax.legend(fontsize=5, loc="upper right")
 
 
@@ -4242,6 +4998,9 @@ class StatisticsTableWidget(QTableWidget):
     def __init__(self, parent=None):
         """Build the read-only statistics table with its fixed columns."""
         super().__init__(parent)
+        # Name of the quantity summarised, prefixed onto the statistic
+        # columns so a table or its export says what was measured.
+        self._quantity_label = None
         self.setColumnCount(len(self.COLUMNS))
         self.setHorizontalHeaderLabels(self.COLUMNS)
         self.horizontalHeader().setStretchLastSection(True)
@@ -4352,8 +5111,72 @@ class StatisticsTableWidget(QTableWidget):
                     QTableWidgetItem(f"{stats[column_name]:.4f}"),
                 )
 
+    def set_quantity_label(self, label):
+        """Name the quantity summarised, or None to keep generic columns.
+
+        The statistic columns are shown as ``"<quantity> Mean"`` and so on,
+        which carries into the CSV export since that reads the live headers.
+        """
+        self._quantity_label = label or None
+
+    def _display_headers(self, columns):
+        """Return *columns* with the quantity prefixed onto the statistics."""
+        if not self._quantity_label:
+            return list(columns)
+        return [
+            (
+                column
+                if column in ("Name", "Frame")
+                else f"{self._quantity_label} {column}"
+            )
+            for column in columns
+        ]
+
+    def update_series_statistics(
+        self, rows, series_names, bin_centers=None, bin_edges=None
+    ):
+        """Show one row per name and one column block per quantity.
+
+        Parameters
+        ----------
+        rows : dict
+            ``{row_label: {series_name: np.ndarray}}``. A row without data for
+            a series leaves those cells empty.
+        series_names : list of str
+            Quantities to lay out, in column order.
+        bin_centers, bin_edges : np.ndarray, optional
+            Binning used for the centre of mass.
+        """
+        columns = ["Name"] + [
+            f"{series} {column}"
+            for series in series_names
+            for column in self.COLUMNS[1:]
+        ]
+        self._apply_columns(columns)
+        self.setRowCount(len(rows))
+
+        for row, (name, per_series) in enumerate(rows.items()):
+            self.setItem(row, 0, QTableWidgetItem(str(name)))
+            col = 1
+            for series in series_names:
+                data = per_series.get(series)
+                stats = (
+                    compute_dataset_statistics(data, bin_centers, bin_edges)
+                    if data is not None
+                    else None
+                )
+                for column_name in self.COLUMNS[1:]:
+                    text = (
+                        f"{stats[column_name]:.4f}"
+                        if stats is not None
+                        else ""
+                    )
+                    self.setItem(row, col, QTableWidgetItem(text))
+                    col += 1
+
     def _apply_columns(self, columns):
         """Switch the table to *columns*, leaving it alone if already set."""
+        headers = self._display_headers(columns)
         current = [
             (
                 self.horizontalHeaderItem(index).text()
@@ -4362,10 +5185,10 @@ class StatisticsTableWidget(QTableWidget):
             )
             for index in range(self.columnCount())
         ]
-        if current == list(columns):
+        if current == headers:
             return
-        self.setColumnCount(len(columns))
-        self.setHorizontalHeaderLabels(list(columns))
+        self.setColumnCount(len(headers))
+        self.setHorizontalHeaderLabels(headers)
 
     def update_frame_statistics(self, rows, current_frame=None):
         """Show one row per time-lapse frame, highlighting the current one.
@@ -4589,6 +5412,12 @@ class StatisticsDockWidget(QWidget):
         """Recompute the statistics tables from the histogram's data."""
         hw = self.histogram_widget
 
+        # Say what was measured in the column headers rather than leaving a
+        # bare "Mean" that could be a lifetime, a fraction or an efficiency.
+        quantity = hw.statistics_quantity_label()
+        self.layer_stats_table.set_quantity_label(quantity)
+        self.group_stats_table.set_quantity_label(quantity)
+
         if self._shows_per_frame_rows():
             rows, _centers, _edges = self._frame_statistics_rows()
             if rows:
@@ -4610,19 +5439,38 @@ class StatisticsDockWidget(QWidget):
         )
 
         if has_multi:
-            self.layer_stats_table.update_statistics(
-                hw._datasets, hw.bin_centers, hw.bin_edges
-            )
+            # With several quantities on screen the table widens instead of
+            # repeating a row per quantity: one row per layer, one column
+            # block per quantity.
+            series_rows, series_names = hw.series_statistics_datasets()
+            if series_rows:
+                self.layer_stats_table.update_series_statistics(
+                    series_rows, series_names, hw.bin_centers, hw.bin_edges
+                )
+            else:
+                self.layer_stats_table.update_statistics(
+                    hw._datasets, hw.bin_centers, hw.bin_edges
+                )
             self.layer_stats_section.setVisible(True)
 
             if hw._display_mode == "Grouped" and hw._group_assignments:
-                self.group_stats_table.update_group_statistics(
-                    hw._datasets,
-                    hw._group_assignments,
-                    group_names=hw._group_names,
-                    bin_centers=hw.bin_centers,
-                    bin_edges=hw.bin_edges,
+                # Groups pool their layers, never two series into one number.
+                grouped_rows, series_names = (
+                    hw.grouped_series_statistics_datasets()
                 )
+                if grouped_rows:
+                    self.group_stats_table.update_series_statistics(
+                        grouped_rows,
+                        series_names,
+                        hw.bin_centers,
+                        hw.bin_edges,
+                    )
+                else:
+                    self.group_stats_table.update_statistics(
+                        hw.grouped_dataset_statistics(),
+                        hw.bin_centers,
+                        hw.bin_edges,
+                    )
                 self.group_stats_section.setVisible(True)
             else:
                 self.group_stats_section.setVisible(False)
@@ -4719,6 +5567,21 @@ class StatisticsDockWidget(QWidget):
                     ),
                 }
                 for name, data in datasets.items()
+            ]
+
+        # Match the on-screen headers, which name the quantity measured.
+        quantity = hw.statistics_quantity_label()
+        if quantity:
+            rows = [
+                {
+                    (
+                        key
+                        if key in ("Frame", "Name")
+                        else f"{quantity} {key}"
+                    ): value
+                    for key, value in row.items()
+                }
+                for row in rows
             ]
 
         write_rows_to_csv(file_path, rows, float_format="{:.4f}")

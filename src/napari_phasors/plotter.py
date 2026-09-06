@@ -4597,8 +4597,10 @@ class PlotterWidget(QWidget):
             for k, v in (self._contour_group_styles or {}).items()
         }
 
-        # Fall back to per-layer group metadata when no assignments exist yet
-        if not current_assignments and selected_names:
+        # Per-layer group metadata is the shared source of truth: a grouping
+        # made in a histogram tab (or restored from a saved file) shows up
+        # here, and vice versa.
+        if selected_names:
             meta_a, meta_n, meta_c, meta_s = (
                 build_group_styles_from_layer_metadata(
                     self.viewer, selected_names
@@ -4748,8 +4750,10 @@ class PlotterWidget(QWidget):
             for k, v in (self._phasor_center_group_names or {}).items()
         }
 
-        # Fall back to per-layer group metadata when no assignments exist yet
-        if not current_assignments and selected_names:
+        # Per-layer group metadata is the shared source of truth: a grouping
+        # made in a histogram tab (or in the contour dialog) shows up here,
+        # and vice versa.
+        if selected_names:
             meta_a, meta_n, meta_c = build_groups_from_layer_metadata(
                 self.viewer, selected_names
             )
@@ -4818,6 +4822,20 @@ class PlotterWidget(QWidget):
         """Show/hide configure button based on toggle state."""
         enabled = self._phasor_center_enabled
         self.plotter_inputs_widget.pc_configure_button.setVisible(enabled)
+
+    def _clear_phasor_center_statistics(self):
+        """Empty the phasor center statistics tables and redraw the canvas.
+
+        Tolerates being called before the statistics dock exists, which
+        happens while the widget is still being built.
+        """
+        stats_widget = getattr(self, '_phasor_center_stats_widget', None)
+        if stats_widget is not None:
+            with contextlib.suppress(RuntimeError):
+                stats_widget.update_centers({})
+                stats_widget.update_group_centers({})
+        with contextlib.suppress(AttributeError, RuntimeError):
+            self.canvas_widget.figure.canvas.draw_idle()
 
     def _clear_phasor_center_artists(self):
         """Remove all phasor center artists from the axes."""
@@ -5044,15 +5062,23 @@ class PlotterWidget(QWidget):
         )
 
     def _update_phasor_centers(self):
-        """Calculate and plot phasor center dots on the axes."""
+        """Recompute the phasor center dots for the current selection.
+
+        Called on every plot refresh — including when centers are disabled or
+        nothing is selected — so a dot never outlives the layers it was
+        computed from. A group whose layers have all been unchecked in
+        *Phasor Layers* therefore loses its dot and its statistics row.
+        """
         self._clear_phasor_center_artists()
 
         if not self._phasor_center_enabled or not self.has_phasor_data():
+            self._clear_phasor_center_statistics()
             return
 
         ax = self.canvas_widget.axes
         selected_layers = self.get_selected_layers()
         if not selected_layers:
+            self._clear_phasor_center_statistics()
             return
 
         has_multiple = len(selected_layers) > 1
@@ -5075,9 +5101,7 @@ class PlotterWidget(QWidget):
                 layer_centers[layer.name] = result
 
         if not layer_centers:
-            self._phasor_center_stats_widget.update_centers({})
-            self._phasor_center_stats_widget.update_group_centers({})
-            self.canvas_widget.figure.canvas.draw_idle()
+            self._clear_phasor_center_statistics()
             return
 
         default_tab10 = plt.cm.tab10.colors
@@ -7091,6 +7115,9 @@ class PlotterWidget(QWidget):
                 if self.plot_type == 'CONTOUR':
                     self._clear_contour_plot()
                     self.canvas_widget.figure.canvas.draw_idle()
+                # No layer is selected, so no center can be: drop the dots
+                # instead of returning before the plot would refresh them.
+                self._update_phasor_centers()
                 return
 
             self._update_harmonic_bounds(selected_layers)
@@ -9310,9 +9337,11 @@ class PlotterWidget(QWidget):
         self._enforce_axes_aspect()
         self._update_plot_bg_color()
 
-        # Update phasor center dots if enabled
-        if self._phasor_center_enabled:
-            self._update_phasor_centers()
+        # Always refresh the phasor centers, even when they are switched off:
+        # the dots drawn for a previous selection have to be cleared, not left
+        # behind. ``_update_phasor_centers`` no-ops beyond that clean-up when
+        # centers are disabled.
+        self._update_phasor_centers()
 
     def plot(self, x_data=None, y_data=None, selection_id_data=None):
         """Plot the selected phasor features efficiently."""
