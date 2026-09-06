@@ -1050,6 +1050,7 @@ def default_group_config():
         "group_colors": {},
         "layer_colors": {},
         "show_sd": True,
+        "normalize": False,
         "central_tendency": "None",
         "show_legend": True,
         "white_background": False,
@@ -3659,6 +3660,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         dialog = HistogramSettingsDialog(
             display_mode=self._group_config.get("mode", "Merged"),
             show_sd=self._group_config.get("show_sd", True),
+            normalize=self._group_config.get("normalize", False),
             central_tendency=self._group_config.get(
                 "central_tendency", "None"
             ),
@@ -3686,6 +3688,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                     "group_colors": dialog.get_group_colors(),
                     "layer_colors": dialog.get_layer_colors(),
                     "show_sd": dialog.sd_checkbox.isChecked(),
+                    "normalize": dialog.normalize_checkbox.isChecked(),
                     "central_tendency": (
                         dialog.central_tendency_combo.currentText()
                     ),
@@ -4652,6 +4655,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 int(k): v for k, v in stored.get("group_colors", {}).items()
             },
             "show_sd": stored.get("show_sd", True),
+            "normalize": stored.get("normalize", False),
             "central_tendency": stored.get("central_tendency", "None"),
             "show_legend": stored.get("show_legend", True),
         }
@@ -8016,6 +8020,7 @@ def _new_export_histogram(config, label):
     hw = HistogramWidget()
     hw.white_background = config.get("white_background", False)
     hw._smooth_curves = config.get("smooth_curves", True)
+    hw._normalize = config.get("normalize", False)
     hw._central_tendency = config.get("central_tendency", "None")
     hw._show_legend = config.get("show_legend", True)
     hw.xlabel = label
@@ -8187,6 +8192,7 @@ def _store_plot_settings(layer, plot_settings, group_config=None):
                 for k, v in group_config.get("group_colors", {}).items()
             },
             "show_sd": group_config.get("show_sd"),
+            "normalize": group_config.get("normalize"),
             "central_tendency": group_config.get("central_tendency"),
             "show_legend": group_config.get("show_legend"),
         }
