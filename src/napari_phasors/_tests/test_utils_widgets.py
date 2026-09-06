@@ -1,7 +1,7 @@
 import csv
 
 import numpy as np
-from qtpy.QtWidgets import QDialog
+from qtpy.QtWidgets import QDialog, QHeaderView
 
 from napari_phasors._utils import (
     CurrentPageStackedWidget,
@@ -455,6 +455,96 @@ def test_statistics_table_widget_handles_empty_histogram_bins(qtbot):
 
     assert table.rowCount() == 1
     assert table.item(0, 1).text() == "nan"
+
+
+def test_statistics_table_widget_columns_resizable(qtbot):
+    """StatisticsTableWidget should allow changing the width of columns."""
+    table = StatisticsTableWidget()
+    qtbot.addWidget(table)
+
+    header = table.horizontalHeader()
+    # The last section keeps stretching so the table still fills its dock.
+    assert header.stretchLastSection()
+
+    for col in range(table.columnCount()):
+        assert header.sectionResizeMode(col) == QHeaderView.Interactive
+
+    # Columns start at content-appropriate widths, not Qt's uniform default.
+    assert table.columnWidth(0) == StatisticsTableWidget.COLUMN_WIDTHS["Name"]
+    assert table.columnWidth(1) == StatisticsTableWidget.DEFAULT_COLUMN_WIDTH
+
+    # Can change column width programmatically and via header resizeSection
+    table.setColumnWidth(0, 150)
+    assert table.columnWidth(0) == 150
+
+    header.resizeSection(1, 130)
+    assert table.columnWidth(1) == 130
+
+    table.setColumnWidth(3, 180)
+    assert table.columnWidth(3) == 180
+
+    # Updating statistics preserves interactive resize mode and column widths can still change
+    datasets = {
+        "Layer A": np.array([1.0, 2.0, 3.0]),
+        "Layer B": np.array([2.0, 4.0, 6.0]),
+    }
+    table.update_statistics(datasets)
+    for col in range(table.columnCount()):
+        assert header.sectionResizeMode(col) == QHeaderView.Interactive
+    assert table.columnWidth(0) == 150
+
+    table.setColumnWidth(2, 140)
+    assert table.columnWidth(2) == 140
+
+
+def test_statistics_table_widget_column_widths_follow_column_names(qtbot):
+    """User widths are keyed by column name, not by position."""
+    table = StatisticsTableWidget()
+    qtbot.addWidget(table)
+    header = table.horizontalHeader()
+
+    # A drag on the "Name" column is remembered ...
+    header.resizeSection(0, 210)
+    assert table._user_column_widths == {"Name": 210}
+
+    # ... and survives the switch to the time-lapse layout, where "Name"
+    # has moved to index 1 and "Frame" takes over index 0.
+    table.update_frame_statistics(
+        [
+            {
+                "Frame": 0,
+                "Name": "Layer A",
+                "Center of Mass": 1.0,
+                "Mean": 1.0,
+                "Median": 1.0,
+                "Std Dev": 0.0,
+            }
+        ],
+        current_frame=0,
+    )
+    assert table.horizontalHeaderItem(0).text() == "Frame"
+    assert table.columnWidth(0) == StatisticsTableWidget.COLUMN_WIDTHS["Frame"]
+    assert table.columnWidth(1) == 210
+
+    # Switching back restores the same width for "Name" at index 0.
+    table.update_statistics({"Layer A": np.array([1.0, 2.0, 3.0])})
+    assert table.horizontalHeaderItem(0).text() == "Name"
+    assert table.columnWidth(0) == 210
+
+
+def test_statistics_table_widget_ignores_non_user_section_resizes(qtbot):
+    """Stretch-driven and programmatic resizes are not recorded as user widths."""
+    table = StatisticsTableWidget()
+    qtbot.addWidget(table)
+    last = table.columnCount() - 1
+
+    # The stretching last section resizes itself whenever the table does.
+    table._on_section_resized(last, 80, 400)
+    assert table._user_column_widths == {}
+
+    # Widths applied by the widget itself are not user choices either.
+    table._apply_column_widths()
+    assert table._user_column_widths == {}
 
 
 def test_statistics_dock_widget_updates_for_single_and_grouped_data(qtbot):
