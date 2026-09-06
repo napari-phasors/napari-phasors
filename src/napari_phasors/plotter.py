@@ -530,16 +530,6 @@ class MaskAssignmentDialog(QDialog):
             if candidates:
                 combo.setCurrentText(candidates[0])
                 assigned += 1
-        total = len(self._combos)
-        if assigned == total:
-            notifications.show_info(
-                f"Auto-assigned a mask to all {total} layer(s)."
-            )
-        else:
-            notifications.show_warning(
-                f"Auto-assigned a mask to {assigned} of {total} layer(s); "
-                "no name match for the rest."
-            )
 
     def _on_apply_all_changed(self, text):
         """Auto-set all per-layer combos when a mask is selected."""
