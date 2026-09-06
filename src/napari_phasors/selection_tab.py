@@ -2,6 +2,7 @@ import contextlib
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import ListedColormap
 from matplotlib.patches import Circle, Ellipse, Wedge
 from napari.layers import Labels
 from napari.utils import DirectLabelColormap
@@ -36,11 +37,13 @@ from qtpy.QtWidgets import (
     QSpinBox,
     QStyle,
     QTableWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 from superqt import QToggleSwitch
 
+from ._canvas import _make_selector_icon
 from ._utils import (
     CurrentPageStackedWidget,
     active_selection_region,
@@ -86,6 +89,82 @@ def _make_eye_icon(color, size=18, crossed=False):
 
     painter.end()
     return QIcon(pixmap)
+
+
+ROW_STYLE = (
+    "QFrame#cursorRow {"
+    "  border: 1px solid rgba(128, 128, 128, 0.35);"
+    "  border-radius: 4px;"
+    "}"
+    'QFrame#cursorRow[selected="true"] {'
+    "  border: 1px solid rgba(108, 158, 217, 0.9);"
+    "  background-color: rgba(108, 158, 217, 0.12);"
+    "}"
+)
+
+DEFAULT_MANUAL_COLORS = [
+    QColor("#ff7f0e"),  # Orange
+    QColor("#1f77b4"),  # Blue
+    QColor("#2ca02c"),  # Green
+    QColor("#9400d3"),  # Purple
+    QColor("#e377c2"),  # Pink
+    QColor("#8c564b"),  # Brown
+    QColor("#bcbd22"),  # Olive / Yellow-green
+    QColor("#17becf"),  # Cyan
+    QColor("#e41a1c"),  # Red
+    QColor("#ffd700"),  # Gold
+]
+
+
+class ColorButton(QPushButton):
+    """A button that displays a color and opens a color dialog when clicked."""
+
+    color_changed = Signal(QColor)
+    """Signal emitted with the new QColor when the color is changed."""
+
+    def __init__(self, color=None, parent=None):
+        """Initialize the ColorButton."""
+        super().__init__(parent)
+        self._color = color or QColor(255, 0, 0)
+        self.setFixedSize(25, 25)
+        self._update_style()
+        self.clicked.connect(self._on_clicked)
+
+    def _update_style(self):
+        """Update the button style to show the current color."""
+        self.setStyleSheet(
+            f"background-color: {self._color.name()}; "
+            f"border: 1px solid #555; border-radius: 3px;"
+        )
+
+    def _on_clicked(self):
+        """Open a color dialog when clicked."""
+        color = QColorDialog.getColor(self._color, self, "Select Color")
+        if color.isValid():
+            self._color = color
+            self._update_style()
+            self.color_changed.emit(color)
+
+    def color(self):
+        """Return the current color."""
+        return self._color
+
+    def set_color(self, color):
+        """Set the current color."""
+        self._color = color
+        self._update_style()
+
+
+class ClickableFrame(QFrame):
+    """A ``QFrame`` that emits ``clicked`` when pressed with the left button."""
+
+    clicked = Signal()
+
+    def mousePressEvent(self, event):
+        """Emit ``clicked`` for left-button presses, then defer to the base."""
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
 
 
 class SelectionWidget(QWidget):
@@ -162,7 +241,7 @@ class SelectionWidget(QWidget):
         manual_layout = QVBoxLayout(self.manual_selection_widget)
         manual_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Build the manual-selection controls (formerly a .ui file).
+        # Build the manual-selection controls programmatically.
         self.selection_input_widget = self._build_selection_input_widget()
         manual_layout.addWidget(self.selection_input_widget)
 
@@ -179,25 +258,6 @@ class SelectionWidget(QWidget):
         self.selection_id = "None"
         self._phasors_selected_layer = None
 
-        # Create refresh button and add it to the scroll area layout
-        self.refresh_selection_button = QPushButton()
-        self.refresh_selection_button.setIcon(
-            self.refresh_selection_button.style().standardIcon(
-                QStyle.SP_BrowserReload
-            )
-        )
-        self.refresh_selection_button.setMaximumWidth(35)
-        self.refresh_selection_button.clicked.connect(
-            self._on_refresh_selection_clicked
-        )
-
-        # Find the grid layout and add the button to row 4, column 3
-        scroll_area_layout = self.selection_input_widget.findChild(
-            QWidget, "scrollAreaWidgetContents"
-        ).layout()
-        if scroll_area_layout is not None:
-            scroll_area_layout.addWidget(self.refresh_selection_button, 4, 3)
-
         # Connect to signals for user-initiated selection changes only.
         # Use activated (user clicks dropdown) + editingFinished (user
         # types in line edit).  Do NOT use currentIndexChanged — it fires
@@ -207,13 +267,31 @@ class SelectionWidget(QWidget):
         )
         if hasattr(
             self.selection_input_widget.phasor_selection_id_combobox,
-            'lineEdit',
+            "lineEdit",
         ):
             line_edit = (
                 self.selection_input_widget.phasor_selection_id_combobox.lineEdit()
             )
             if line_edit:
                 line_edit.editingFinished.connect(self.on_selection_id_changed)
+
+        # Manual selections state and default Selection 1
+        self._manual_selections = []
+        self._selected_class_id = 1
+        self._add_manual_selection(1)
+
+        # Connect drawing selector signals if canvas_widget is available
+        if (
+            self.parent_widget is not None
+            and hasattr(self.parent_widget, "canvas_widget")
+            and self.parent_widget.canvas_widget is not None
+            and hasattr(
+                self.parent_widget.canvas_widget, "selector_changed_signal"
+            )
+        ):
+            self.parent_widget.canvas_widget.selector_changed_signal.connect(
+                self._sync_tool_buttons
+            )
 
         # === Cursor Selection Mode Widget (index 0) ===
         self.cursor_selection_widget = CursorSelectionWidget(
@@ -235,44 +313,529 @@ class SelectionWidget(QWidget):
             self._on_selection_mode_changed
         )
 
+    EYE_COLOR = "white"
+
     def _build_selection_input_widget(self):
         """Build the manual-selection controls programmatically.
 
-        Reproduces the former ``selection_tab.ui``: a scroll area whose content
-        widget is named ``scrollAreaWidgetContents`` (so the refresh button can
-        be added to its grid) and exposes ``phasor_selection_id_combobox``.
+        Creates a scroll area with:
+          - Phasor Selection ID dropdown and refresh button
+          - Drawing Tools toolbar (Lasso, Ellipse, Rectangle)
+          - Selections list with color picker, stats, visibility, delete,
+            and an "+ Add Selection" button.
         """
         widget = QWidget()
-        outer = QGridLayout(widget)
+        outer = QVBoxLayout(widget)
+        outer.setContentsMargins(0, 0, 0, 0)
 
         scroll_area = QScrollArea()
         scroll_area.setMinimumHeight(130)
         scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.NoFrame)
 
         contents = QWidget()
         contents.setObjectName("scrollAreaWidgetContents")
-        grid = QGridLayout(contents)
+        layout = QVBoxLayout(contents)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
 
-        instructions = [
-            "• Select regions with the selection toolbar above plot.",
-            "• Change the class number to have different colors.",
-            "• Use class 0 to remove selections.",
-            "• Right-click to apply.",
-        ]
-        for row, text in enumerate(instructions):
-            grid.addWidget(QLabel(text), row, 0, 1, 3)
-
-        grid.addWidget(QLabel("Phasor Selection ID:"), 4, 0)
+        # 1. Phasor Selection ID section
+        id_box, id_box_layout = make_section("Phasor Selection ID")
+        id_row = QHBoxLayout()
+        id_row.setContentsMargins(0, 0, 0, 0)
+        id_row.setSpacing(4)
         widget.phasor_selection_id_combobox = QComboBox()
         widget.phasor_selection_id_combobox.setEditable(True)
         widget.phasor_selection_id_combobox.setToolTip(
             "Choose or type new text to edit different selection layers."
         )
-        grid.addWidget(widget.phasor_selection_id_combobox, 4, 1, 1, 2)
+        id_row.addWidget(widget.phasor_selection_id_combobox, 1)
 
+        self.refresh_selection_button = QPushButton()
+        self.refresh_selection_button.setIcon(
+            self.refresh_selection_button.style().standardIcon(
+                QStyle.SP_BrowserReload
+            )
+        )
+        self.refresh_selection_button.setMaximumWidth(35)
+        self.refresh_selection_button.setToolTip(
+            "Refresh phasor selection layers."
+        )
+        self.refresh_selection_button.clicked.connect(
+            self._on_refresh_selection_clicked
+        )
+        id_row.addWidget(self.refresh_selection_button)
+        id_box_layout.addLayout(id_row)
+        layout.addWidget(id_box)
+
+        # 2. Drawing Tools section
+        tools_box, tools_layout = make_section("Drawing Tools")
+        tools_row = QHBoxLayout()
+        tools_row.setContentsMargins(0, 0, 0, 0)
+        tools_row.setSpacing(6)
+
+        self.selection_tool_buttons = {}
+        for name, shape, tooltip in [
+            (
+                "LASSO",
+                "lasso",
+                "Lasso selection tool: draw free-form region on phasor plot",
+            ),
+            (
+                "ELLIPSE",
+                "ellipse",
+                "Ellipse selection tool: click & drag ellipse, right-click to apply",
+            ),
+            (
+                "RECTANGLE",
+                "rectangle",
+                "Rectangle selection tool: click & drag rectangle, right-click to apply",
+            ),
+        ]:
+            btn = QToolButton()
+            btn.setCheckable(True)
+            btn.setIcon(_make_selector_icon(shape))
+            btn.setIconSize(QSize(20, 20))
+            btn.setFixedSize(28, 28)
+            btn.setToolTip(tooltip)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet(
+                "QToolButton {"
+                "  border: 1px solid rgba(128, 128, 128, 0.35);"
+                "  border-radius: 4px;"
+                "  padding: 2px;"
+                "  background: transparent;"
+                "}"
+                "QToolButton:hover {"
+                "  border: 1px solid rgba(128, 128, 128, 0.6);"
+                "  background-color: rgba(128, 128, 128, 0.15);"
+                "}"
+                "QToolButton:checked {"
+                "  border: 1px solid rgba(0, 193, 140, 0.9);"
+                "  background-color: rgba(0, 193, 140, 0.25);"
+                "}"
+            )
+            btn.clicked.connect(
+                lambda checked, n=name: self._on_tool_btn_clicked(n)
+            )
+            tools_row.addWidget(btn)
+            self.selection_tool_buttons[name] = btn
+
+        tools_row.addStretch()
+        tools_layout.addLayout(tools_row)
+        layout.addWidget(tools_box)
+
+        # 3. Selections section
+        selections_box, selections_box_layout = make_section("Selections")
+
+        self._manual_rows_container = QWidget()
+        self._manual_rows_layout = QVBoxLayout(self._manual_rows_container)
+        self._manual_rows_layout.setContentsMargins(0, 0, 0, 0)
+        self._manual_rows_layout.setSpacing(4)
+        selections_box_layout.addWidget(self._manual_rows_container)
+
+        self.add_manual_selection_button = QPushButton("+ Add Selection")
+        self.add_manual_selection_button.setToolTip(
+            "Add a new selection class."
+        )
+        self.add_manual_selection_button.clicked.connect(
+            lambda: self._add_manual_selection()
+        )
+        selections_box_layout.addWidget(self.add_manual_selection_button)
+        layout.addWidget(selections_box)
+
+        # Hints
+        hints = [
+            "• Select a drawing tool and draw on the phasor plot.",
+            "• Right-click to apply rectangular or elliptical selections.",
+            "• Click a selection row to draw with that class.",
+        ]
+        hints_label = QLabel("\n".join(hints))
+        hints_label.setStyleSheet("color: gray; font-size: 11px;")
+        hints_label.setWordWrap(True)
+        layout.addWidget(hints_label)
+
+        layout.addStretch()
         scroll_area.setWidget(contents)
-        outer.addWidget(scroll_area, 0, 0)
+        outer.addWidget(scroll_area)
         return widget
+
+    def _on_tool_btn_clicked(self, name: str):
+        """Handle drawing tool button click in the Manual Selection tab."""
+        if (
+            self.parent_widget is None
+            or not hasattr(self.parent_widget, "canvas_widget")
+            or self.parent_widget.canvas_widget is None
+        ):
+            return
+        cw = self.parent_widget.canvas_widget
+        btn = self.selection_tool_buttons.get(name)
+        if btn is not None and btn.isChecked():
+            cw.active_selector = name
+        else:
+            cw.active_selector = None
+
+    def _sync_tool_buttons(self, active_name: str):
+        """Synchronize tab drawing tool buttons with canvas active selector."""
+        active_upper = (active_name or "").upper()
+        for name, btn in getattr(self, "selection_tool_buttons", {}).items():
+            is_active = name == active_upper
+            if btn.isChecked() != is_active:
+                btn.blockSignals(True)
+                btn.setChecked(is_active)
+                btn.blockSignals(False)
+
+    def _add_manual_selection(self, class_id=None, color=None, visible=True):
+        """Add a new manual selection class row."""
+        if class_id is None:
+            existing_ids = {s["class_id"] for s in self._manual_selections}
+            class_id = 1
+            while class_id in existing_ids:
+                class_id += 1
+
+        if color is None:
+            color = DEFAULT_MANUAL_COLORS[
+                (class_id - 1) % len(DEFAULT_MANUAL_COLORS)
+            ]
+
+        selection = {
+            "class_id": class_id,
+            "color": color,
+            "visible": visible,
+        }
+        self._build_manual_row(selection)
+        self._manual_selections.append(selection)
+        self._select_manual_row(selection)
+        self._update_manual_colormaps()
+        self._update_manual_selection_statistics()
+        return selection
+
+    def _build_manual_row(self, selection):
+        """Construct a compact list row for a manual selection class."""
+        frame = ClickableFrame()
+        frame.setObjectName("cursorRow")
+        frame.setStyleSheet(ROW_STYLE)
+        frame.setToolTip(
+            f"Click to select Selection {selection['class_id']} and draw with this class."
+        )
+        frame.setCursor(Qt.PointingHandCursor)
+        row_layout = QHBoxLayout(frame)
+        row_layout.setContentsMargins(6, 2, 4, 2)
+        row_layout.setSpacing(6)
+
+        number_label = QLabel(f"Selection {selection['class_id']}")
+        number_label.setStyleSheet("font-weight: 600;")
+
+        color_button = ColorButton(selection["color"])
+        color_button.setToolTip("Color of this selection class.")
+
+        count_label = QLabel("-")
+        count_label.setAlignment(Qt.AlignCenter)
+        count_label.setMinimumWidth(45)
+        count_label.setToolTip("Number of pixels inside this selection class.")
+
+        percentage_label = QLabel("-")
+        percentage_label.setAlignment(Qt.AlignCenter)
+        percentage_label.setMinimumWidth(40)
+        percentage_label.setToolTip(
+            "Percentage of valid pixels inside this selection class."
+        )
+
+        n_label = QLabel("n:")
+        n_label.setToolTip("Number of pixels inside this selection class.")
+        pct_label = QLabel("%:")
+        pct_label.setToolTip(
+            "Percentage of valid pixels inside this selection class."
+        )
+
+        visibility_button = QPushButton()
+        visibility_button.setFixedSize(25, 25)
+        visibility_button.setIconSize(QSize(18, 18))
+
+        remove_button = QPushButton("×")
+        remove_button.setFixedSize(25, 25)
+        remove_button.setToolTip(
+            f"Remove Selection {selection['class_id']} and clear its pixels."
+        )
+
+        row_layout.addWidget(number_label)
+        row_layout.addWidget(color_button)
+        row_layout.addStretch()
+        row_layout.addWidget(n_label)
+        row_layout.addWidget(count_label)
+        row_layout.addWidget(pct_label)
+        row_layout.addWidget(percentage_label)
+        row_layout.addWidget(visibility_button)
+        row_layout.addWidget(remove_button)
+
+        selection.update(
+            {
+                "row": frame,
+                "number_label": number_label,
+                "color_button": color_button,
+                "count_label": count_label,
+                "percentage_label": percentage_label,
+                "visibility_button": visibility_button,
+                "remove_button": remove_button,
+            }
+        )
+
+        self._manual_rows_layout.addWidget(frame)
+        self._update_manual_visibility_button(selection)
+
+        # Wire signals
+        frame.clicked.connect(lambda s=selection: self._select_manual_row(s))
+        color_button.color_changed.connect(
+            lambda col, s=selection: self._on_manual_color_changed(s, col)
+        )
+        visibility_button.clicked.connect(
+            lambda _=False, s=selection: self._toggle_manual_visibility(s)
+        )
+        remove_button.clicked.connect(
+            lambda _=False, s=selection: self._remove_manual_selection(s)
+        )
+
+    def _select_manual_row(self, selection):
+        """Select a manual selection row and set it as the active drawing class."""
+        if selection is not None and selection not in self._manual_selections:
+            return
+        self._selected_class_id = selection["class_id"] if selection else 1
+        for s in self._manual_selections:
+            selected = s is selection
+            row = s["row"]
+            if row.property("selected") != selected:
+                row.setProperty("selected", selected)
+                row.style().unpolish(row)
+                row.style().polish(row)
+
+        if (
+            self.parent_widget is not None
+            and hasattr(self.parent_widget, "canvas_widget")
+            and self.parent_widget.canvas_widget is not None
+        ):
+            cw = self.parent_widget.canvas_widget
+            for sel in cw.selectors.values():
+                sel.class_value = self._selected_class_id
+            if hasattr(cw, "class_spinbox"):
+                cw.class_spinbox.value = self._selected_class_id
+
+    def _on_manual_color_changed(self, selection, new_color):
+        """Handle color change from ColorButton."""
+        selection["color"] = new_color
+        self._update_manual_colormaps()
+
+    def _toggle_manual_visibility(self, selection):
+        """Toggle show/hide state of a manual selection class."""
+        selection["visible"] = not selection.get("visible", True)
+        self._update_manual_visibility_button(selection)
+        self._update_manual_colormaps()
+        self._update_manual_selection_statistics()
+
+    def _update_manual_visibility_button(self, selection):
+        """Update eye icon and tooltip according to visibility."""
+        btn = selection["visibility_button"]
+        is_visible = selection.get("visible", True)
+        btn.setIcon(_make_eye_icon(self.EYE_COLOR, crossed=not is_visible))
+        if is_visible:
+            btn.setToolTip(
+                f"Selection {selection['class_id']} is visible. Click to hide."
+            )
+        else:
+            btn.setToolTip(
+                f"Selection {selection['class_id']} is hidden. Click to show."
+            )
+
+    def _remove_manual_selection(self, selection):
+        """Remove a manual selection class and reset its pixels in layers."""
+        class_id = selection["class_id"]
+        selected_layers = self._get_selected_layers()
+        for layer in selected_layers:
+            if (
+                "settings" in layer.metadata
+                and "selections" in layer.metadata["settings"]
+                and "manual_selections"
+                in layer.metadata["settings"]["selections"]
+                and self.selection_id
+                in layer.metadata["settings"]["selections"][
+                    "manual_selections"
+                ]
+            ):
+                s_map = layer.metadata["settings"]["selections"][
+                    "manual_selections"
+                ][self.selection_id]
+                s_map[s_map == class_id] = 0
+
+        self.update_phasors_layer()
+
+        if self.is_manual_selection_mode():
+            self.update_phasor_plot_with_selection_id(self.selection_id)
+
+        selection["row"].setParent(None)
+        selection["row"].deleteLater()
+        if selection in self._manual_selections:
+            self._manual_selections.remove(selection)
+
+        if not self._manual_selections:
+            self._add_manual_selection(class_id=1)
+        else:
+            if self._selected_class_id == class_id:
+                self._select_manual_row(self._manual_selections[0])
+
+        self._update_manual_colormaps()
+        self._update_manual_selection_statistics()
+
+    def _update_manual_colormaps(self):
+        """Synchronize custom colors and visibility to canvas artists and napari labels."""
+        if not self._manual_selections:
+            return
+
+        max_id = max(
+            (s["class_id"] for s in self._manual_selections), default=1
+        )
+        rgba_list = [(0.0, 0.0, 0.0, 0.0)] * (max_id + 1)
+        color_dict = {None: (0.0, 0.0, 0.0, 0.0), 0: (0.0, 0.0, 0.0, 0.0)}
+
+        for sel in self._manual_selections:
+            cid = sel["class_id"]
+            c = sel["color"]
+            if sel.get("visible", True):
+                rgba = (c.redF(), c.greenF(), c.blueF(), 1.0)
+            else:
+                rgba = (0.0, 0.0, 0.0, 0.0)
+            if cid < len(rgba_list):
+                rgba_list[cid] = rgba
+            color_dict[cid] = rgba
+
+        overlay_cmap = ListedColormap(
+            rgba_list, name="manual_selection_overlay"
+        )
+
+        if (
+            self.parent_widget is not None
+            and hasattr(self.parent_widget, "canvas_widget")
+            and self.parent_widget.canvas_widget is not None
+        ):
+            cw = self.parent_widget.canvas_widget
+            if "HISTOGRAM2D" in cw.artists:
+                cw.artists["HISTOGRAM2D"].overlay_colormap = overlay_cmap
+            if "SCATTER" in cw.artists:
+                cw.artists["SCATTER"].overlay_colormap = overlay_cmap
+            if hasattr(cw, "figure") and hasattr(cw.figure, "canvas"):
+                cw.figure.canvas.draw_idle()
+
+        # Update colormap on existing labels layers
+        if self.selection_id:
+            for layer in self._get_selected_layers():
+                layer_name = f"{self.selection_id}: {layer.name}"
+                sel_layer = self._find_phasors_layer_by_name(layer_name)
+                if sel_layer is not None:
+                    sel_layer.colormap = DirectLabelColormap(
+                        color_dict=color_dict, name="manual_selection_colors"
+                    )
+
+    def _update_manual_selection_statistics(self):
+        """Update count and percentage labels for each manual selection."""
+        selected_layers = self._get_selected_layers()
+        if not selected_layers or not self.selection_id:
+            for sel in self._manual_selections:
+                sel["count_label"].setText("-")
+                sel["percentage_label"].setText("-")
+            return
+
+        total_valid_pixels = 0
+        for layer in selected_layers:
+            g_array = layer.metadata.get("G")
+            s_array = layer.metadata.get("S")
+            harmonics_array = layer.metadata.get("harmonics")
+            if g_array is None or s_array is None:
+                continue
+            if harmonics_array is not None:
+                harmonics_array = np.atleast_1d(harmonics_array)
+                target_harmonic = (
+                    self.parent_widget.harmonic if self.parent_widget else 1
+                )
+                try:
+                    harmonic_idx = int(
+                        np.where(harmonics_array == target_harmonic)[0][0]
+                    )
+                except (IndexError, ValueError):
+                    continue
+            else:
+                harmonic_idx = 0
+            if g_array.ndim > layer.data.ndim:
+                g = g_array[harmonic_idx]
+                s = s_array[harmonic_idx]
+            else:
+                g = g_array
+                s = s_array
+            valid = self._frame_valid_mask(g, s)
+            total_valid_pixels += int(np.sum(valid))
+
+        if total_valid_pixels == 0:
+            for sel in self._manual_selections:
+                sel["count_label"].setText("-")
+                sel["percentage_label"].setText("-")
+            return
+
+        for sel in self._manual_selections:
+            if not sel.get("visible", True):
+                sel["count_label"].setText("-")
+                sel["percentage_label"].setText("-")
+                continue
+
+            class_id = sel["class_id"]
+            count = 0
+            for layer in selected_layers:
+                if (
+                    "settings" in layer.metadata
+                    and "selections" in layer.metadata["settings"]
+                    and "manual_selections"
+                    in layer.metadata["settings"]["selections"]
+                    and self.selection_id
+                    in layer.metadata["settings"]["selections"][
+                        "manual_selections"
+                    ]
+                ):
+                    s_map = layer.metadata["settings"]["selections"][
+                        "manual_selections"
+                    ][self.selection_id]
+                    count += int(np.sum(s_map == class_id))
+            percentage = (
+                (count / total_valid_pixels * 100)
+                if total_valid_pixels > 0
+                else 0.0
+            )
+            sel["count_label"].setText(str(count))
+            sel["percentage_label"].setText(f"{percentage:.1f}")
+
+    def _sync_manual_selections_from_layer(self):
+        """Sync manual selection list with classes found in active layer."""
+        selected_layers = self._get_selected_layers()
+        if not selected_layers or not self.selection_id:
+            return
+
+        layer_classes = set()
+        for layer in selected_layers:
+            if (
+                "settings" in layer.metadata
+                and "selections" in layer.metadata["settings"]
+                and "manual_selections"
+                in layer.metadata["settings"]["selections"]
+                and self.selection_id
+                in layer.metadata["settings"]["selections"][
+                    "manual_selections"
+                ]
+            ):
+                s_map = layer.metadata["settings"]["selections"][
+                    "manual_selections"
+                ][self.selection_id]
+                unique_vals = np.unique(s_map)
+                layer_classes.update(unique_vals[unique_vals > 0].tolist())
+
+        existing_ids = {s["class_id"] for s in self._manual_selections}
+        for cid in sorted(layer_classes):
+            if cid not in existing_ids:
+                self._add_manual_selection(class_id=int(cid))
 
     def on_harmonic_changed(self):
         """Callback when harmonic spinbox is changed."""
@@ -286,9 +849,9 @@ class SelectionWidget(QWidget):
     def clear_artists(self):
         """Clear (remove) all artists created by this widget."""
         # Clear artists from all sub-widgets
-        if hasattr(self, 'cursor_selection_widget'):
+        if hasattr(self, "cursor_selection_widget"):
             self.cursor_selection_widget.clear_all_patches()
-        if hasattr(self, 'automatic_clustering_widget'):
+        if hasattr(self, "automatic_clustering_widget"):
             self.automatic_clustering_widget.clear_all_patches()
 
     def is_manual_selection_mode(self):
@@ -313,26 +876,26 @@ class SelectionWidget(QWidget):
         for viewer_layer in self.viewer.layers:
             if not isinstance(viewer_layer, Labels):
                 continue
-            if not hasattr(viewer_layer, 'metadata'):
+            if not hasattr(viewer_layer, "metadata"):
                 continue
 
             # Check metadata tags to identify layer type
-            if 'napari_phasors_selection_type' in viewer_layer.metadata:
+            if "napari_phasors_selection_type" in viewer_layer.metadata:
                 selection_type = viewer_layer.metadata[
-                    'napari_phasors_selection_type'
+                    "napari_phasors_selection_type"
                 ]
                 source_layer = viewer_layer.metadata.get(
-                    'napari_phasors_source_layer'
+                    "napari_phasors_source_layer"
                 )
 
                 # Only manage layers belonging to the current image layer
                 if source_layer == layer.name:
                     if (
-                        selection_type == 'cursor_selection'
-                        or selection_type == 'automatic_clustering'
+                        selection_type == "cursor_selection"
+                        or selection_type == "automatic_clustering"
                     ):
                         viewer_layer.visible = not show_manual
-                    elif selection_type == 'manual':
+                    elif selection_type == "manual":
                         viewer_layer.visible = show_manual
 
     def _set_labels_layer_visibility(self, visible):
@@ -343,12 +906,12 @@ class SelectionWidget(QWidget):
                 return
             for viewer_layer in self.viewer.layers:
                 if not isinstance(viewer_layer, Labels) or not hasattr(
-                    viewer_layer, 'metadata'
+                    viewer_layer, "metadata"
                 ):
                     continue
-                if 'napari_phasors_selection_type' in viewer_layer.metadata:
+                if "napari_phasors_selection_type" in viewer_layer.metadata:
                     source_layer = viewer_layer.metadata.get(
-                        'napari_phasors_source_layer'
+                        "napari_phasors_source_layer"
                     )
                     if source_layer == layer.name:
                         viewer_layer.visible = False
@@ -368,6 +931,9 @@ class SelectionWidget(QWidget):
                 self.parent_widget._set_selection_visibility(True)
             self._manage_labels_layer_visibility(show_manual=True)
             self.update_phasor_plot_with_selection_id(self.selection_id)
+            self._sync_manual_selections_from_layer()
+            self._update_manual_colormaps()
+            self._update_manual_selection_statistics()
         elif index == 1:  # Automatic clustering mode
             # Deactivate any active selection tools before hiding toolbar
             if self.parent_widget is not None:
@@ -509,10 +1075,13 @@ class SelectionWidget(QWidget):
 
             processed_selection_id = new_selection_id
 
-            if not getattr(self, '_processing_initial_selection', False):
+            if not getattr(self, "_processing_initial_selection", False):
                 self.update_phasor_plot_with_selection_id(
                     processed_selection_id
                 )
+                self._sync_manual_selections_from_layer()
+                self._update_manual_colormaps()
+                self._update_manual_selection_statistics()
 
             self._switching_selection_id = False
 
@@ -520,6 +1089,9 @@ class SelectionWidget(QWidget):
         """Callback when the image layer changes - restores cursors from metadata."""
         self.cursor_selection_widget._on_image_layer_changed()
         self.automatic_clustering_widget._refresh_apply_button_if_ready()
+        self._sync_manual_selections_from_layer()
+        self._update_manual_colormaps()
+        self._update_manual_selection_statistics()
 
     def update_phasor_plot_with_selection_id(self, selection_id):
         """Update the phasor plot with the selected ID and show/hide label layers."""
@@ -528,7 +1100,7 @@ class SelectionWidget(QWidget):
             return
 
         # Prevent this from running during plot updates
-        if getattr(self.parent_widget, '_updating_plot', False):
+        if getattr(self.parent_widget, "_updating_plot", False):
             return
 
         if selection_id is None or selection_id == "":
@@ -602,9 +1174,9 @@ class SelectionWidget(QWidget):
                 selection_map = np.zeros(spatial_shape, dtype=np.uint32)
 
             # Get valid pixels for this layer
-            g_array = layer.metadata.get('G')
-            s_array = layer.metadata.get('S')
-            harmonics_array = layer.metadata.get('harmonics')
+            g_array = layer.metadata.get("G")
+            s_array = layer.metadata.get("S")
+            harmonics_array = layer.metadata.get("harmonics")
 
             if g_array is not None and s_array is not None:
                 # Extract correct harmonic if arrays are 3D
@@ -678,7 +1250,7 @@ class SelectionWidget(QWidget):
 
     def _frame_context(self):
         """Return the plotter's time-lapse frame context, if available."""
-        return getattr(self.parent_widget, 'frame_context', None)
+        return getattr(self.parent_widget, "frame_context", None)
 
     def _frame_valid_mask(self, g, s):
         """Return the flat finite-sample mask used by the phasor plot.
@@ -749,10 +1321,10 @@ class SelectionWidget(QWidget):
         if not selected_layers:
             return
 
-        if getattr(self.parent_widget, '_updating_plot', False):
+        if getattr(self.parent_widget, "_updating_plot", False):
             return
 
-        if getattr(self, '_switching_selection_id', False):
+        if getattr(self, "_switching_selection_id", False):
             return
 
         current_combobox_text = (
@@ -773,12 +1345,12 @@ class SelectionWidget(QWidget):
 
         selection_to_use = manual_selection
         if (
-            hasattr(self, '_processing_initial_selection')
+            hasattr(self, "_processing_initial_selection")
             and self._processing_initial_selection
         ):
             selection_to_use = self._initial_manual_selection
             self._processing_initial_selection = False
-            delattr(self, '_initial_manual_selection')
+            delattr(self, "_initial_manual_selection")
 
         # The manual_selection array corresponds to merged/concatenated data from all layers
         # We need to split it back to individual layers based on valid pixel counts
@@ -786,9 +1358,9 @@ class SelectionWidget(QWidget):
             # Calculate how many valid pixels each layer contributes
             layer_valid_counts = []
             for layer in selected_layers:
-                g_array = layer.metadata.get('G')
-                s_array = layer.metadata.get('S')
-                harmonics_array = layer.metadata.get('harmonics')
+                g_array = layer.metadata.get("G")
+                s_array = layer.metadata.get("S")
+                harmonics_array = layer.metadata.get("harmonics")
 
                 if g_array is not None and s_array is not None:
                     # Extract correct harmonic if arrays are 3D
@@ -858,9 +1430,9 @@ class SelectionWidget(QWidget):
             selection_map_flat = selection_map.ravel()
 
             # Get valid pixels mask for this specific layer
-            g_array = layer.metadata.get('G')
-            s_array = layer.metadata.get('S')
-            harmonics_array = layer.metadata.get('harmonics')
+            g_array = layer.metadata.get("G")
+            s_array = layer.metadata.get("S")
+            harmonics_array = layer.metadata.get("harmonics")
 
             if g_array is None or s_array is None:
                 continue
@@ -916,6 +1488,9 @@ class SelectionWidget(QWidget):
             ] = selection_map.copy()
 
         self.update_phasors_layer()
+        self._sync_manual_selections_from_layer()
+        self._update_manual_colormaps()
+        self._update_manual_selection_statistics()
 
     def create_phasors_selected_layer(self):
         """Create the phasors selected layer for all selected layers."""
@@ -925,11 +1500,28 @@ class SelectionWidget(QWidget):
         if self.selection_id is None or self.selection_id == "":
             return
 
-        color_dict = colormap_to_dict(
-            self.parent_widget._colormap,
-            self.parent_widget._colormap.N,
-            exclude_first=True,
-        )
+        color_dict = {None: (0.0, 0.0, 0.0, 0.0), 0: (0.0, 0.0, 0.0, 0.0)}
+        if (
+            self.parent_widget is not None
+            and hasattr(self.parent_widget, "_colormap")
+            and self.parent_widget._colormap is not None
+        ):
+            color_dict.update(
+                colormap_to_dict(
+                    self.parent_widget._colormap,
+                    getattr(self.parent_widget._colormap, "N", 256),
+                    exclude_first=True,
+                )
+            )
+
+        if hasattr(self, "_manual_selections") and self._manual_selections:
+            for sel in self._manual_selections:
+                cid = sel["class_id"]
+                c = sel["color"]
+                if sel.get("visible", True):
+                    color_dict[cid] = (c.redF(), c.greenF(), c.blueF(), 1.0)
+                else:
+                    color_dict[cid] = (0.0, 0.0, 0.0, 0.0)
 
         # Create selection layer for each selected layer
         for layer in selected_layers:
@@ -964,11 +1556,11 @@ class SelectionWidget(QWidget):
                 name=layer_name,
                 scale=layer.scale,
                 colormap=DirectLabelColormap(
-                    color_dict=color_dict, name="cat10_mod"
+                    color_dict=color_dict, name="manual_selection_colors"
                 ),
                 metadata={
-                    'napari_phasors_selection_type': 'manual',
-                    'napari_phasors_source_layer': layer.name,
+                    "napari_phasors_selection_type": "manual",
+                    "napari_phasors_source_layer": layer.name,
                 },
             )
 
@@ -1036,23 +1628,40 @@ class SelectionWidget(QWidget):
         if self._find_phasors_layer_by_name(layer_name):
             return
 
-        color_dict = colormap_to_dict(
-            self.parent_widget._colormap,
-            self.parent_widget._colormap.N,
-            exclude_first=True,
-        )
+        color_dict = {None: (0.0, 0.0, 0.0, 0.0), 0: (0.0, 0.0, 0.0, 0.0)}
+        if (
+            self.parent_widget is not None
+            and hasattr(self.parent_widget, "_colormap")
+            and self.parent_widget._colormap is not None
+        ):
+            color_dict.update(
+                colormap_to_dict(
+                    self.parent_widget._colormap,
+                    getattr(self.parent_widget._colormap, "N", 256),
+                    exclude_first=True,
+                )
+            )
+
+        if hasattr(self, "_manual_selections") and self._manual_selections:
+            for sel in self._manual_selections:
+                cid = sel["class_id"]
+                c = sel["color"]
+                if sel.get("visible", True):
+                    color_dict[cid] = (c.redF(), c.greenF(), c.blueF(), 1.0)
+                else:
+                    color_dict[cid] = (0.0, 0.0, 0.0, 0.0)
 
         phasors_selected_layer = Labels(
             selection_map,
             name=layer_name,
             scale=layer.scale,
             colormap=DirectLabelColormap(
-                color_dict=color_dict, name="cat10_mod"
+                color_dict=color_dict, name="manual_selection_colors"
             ),
             visible=False,
             metadata={
-                'napari_phasors_selection_type': 'manual',
-                'napari_phasors_source_layer': layer.name,
+                "napari_phasors_selection_type": "manual",
+                "napari_phasors_source_layer": layer.name,
             },
         )
 
@@ -1076,7 +1685,7 @@ class AutomaticClusteringWidget(QWidget):
 
     DEFAULT_COLORS = [
         QColor(int(r * 255), int(g * 255), int(b * 255))
-        for r, g, b, _ in [plt.get_cmap('Set1')(i) for i in range(9)]
+        for r, g, b, _ in [plt.get_cmap("Set1")(i) for i in range(9)]
     ]
 
     def __init__(self, viewer, parent_widget):
@@ -1205,8 +1814,8 @@ class AutomaticClusteringWidget(QWidget):
         layer_data = []  # Store layer info for later use
 
         for layer in selected_layers:
-            g_array = layer.metadata.get('G')
-            s_array = layer.metadata.get('S')
+            g_array = layer.metadata.get("G")
+            s_array = layer.metadata.get("S")
 
             if g_array is None or s_array is None:
                 continue
@@ -1228,10 +1837,10 @@ class AutomaticClusteringWidget(QWidget):
             s_list.append(s.ravel())
             layer_data.append(
                 {
-                    'layer': layer,
-                    'g': g,
-                    's': s,
-                    'spatial_shape': spatial_shape,
+                    "layer": layer,
+                    "g": g,
+                    "s": s,
+                    "spatial_shape": spatial_shape,
                 }
             )
 
@@ -1267,13 +1876,13 @@ class AutomaticClusteringWidget(QWidget):
             for i in range(n_clusters):
                 color_idx = i % len(self.DEFAULT_COLORS)
                 cluster_data = {
-                    'g': center_real[i],
-                    's': center_imag[i],
-                    'radius': radius[i],
-                    'radius_minor': radius_minor[i],
-                    'angle': angle[i],
-                    'color': self.DEFAULT_COLORS[color_idx],
-                    'harmonic': self.parent_widget.harmonic,
+                    "g": center_real[i],
+                    "s": center_imag[i],
+                    "radius": radius[i],
+                    "radius_minor": radius_minor[i],
+                    "angle": angle[i],
+                    "color": self.DEFAULT_COLORS[color_idx],
+                    "harmonic": self.parent_widget.harmonic,
                 }
                 self._clusters.append(cluster_data)
 
@@ -1282,10 +1891,10 @@ class AutomaticClusteringWidget(QWidget):
 
             # Step 4: Apply the same cluster parameters to each layer
             for layer_info in layer_data:
-                layer = layer_info['layer']
-                g = layer_info['g']
-                s = layer_info['s']
-                spatial_shape = layer_info['spatial_shape']
+                layer = layer_info["layer"]
+                g = layer_info["g"]
+                s = layer_info["s"]
+                spatial_shape = layer_info["spatial_shape"]
 
                 # Create selection map using elliptic cursor masks
                 selection_map = np.zeros(spatial_shape, dtype=np.uint32)
@@ -1295,11 +1904,11 @@ class AutomaticClusteringWidget(QWidget):
                     mask = mask_from_elliptic_cursor(
                         g,
                         s,
-                        cluster['g'],
-                        cluster['s'],
-                        radius=cluster['radius'],
-                        radius_minor=cluster['radius_minor'],
-                        angle=cluster['angle'],
+                        cluster["g"],
+                        cluster["s"],
+                        radius=cluster["radius"],
+                        radius_minor=cluster["radius_minor"],
+                        angle=cluster["angle"],
                     )
                     selection_map[mask] = idx + 1
 
@@ -1368,7 +1977,7 @@ class AutomaticClusteringWidget(QWidget):
             self.cluster_table.setCellWidget(table_row, 3, minor_r_label)
 
             # Color button (editable)
-            color_button = ColorButton(cluster['color'])
+            color_button = ColorButton(cluster["color"])
             color_button.color_changed.connect(
                 lambda c, idx=cluster_idx: self._on_cluster_color_changed(
                     idx, c
@@ -1402,7 +2011,7 @@ class AutomaticClusteringWidget(QWidget):
             return
 
         # Update cluster color
-        self._clusters[cluster_idx]['color'] = new_color
+        self._clusters[cluster_idx]["color"] = new_color
 
         # Redraw ellipse with new color
         self._redraw_cluster_ellipse(cluster_idx)
@@ -1425,7 +2034,7 @@ class AutomaticClusteringWidget(QWidget):
         patch = self._ellipse_patches[cluster_idx]
 
         # Update patch color
-        color = cluster['color']
+        color = cluster["color"]
         color_rgb = (color.redF(), color.greenF(), color.blueF())
         patch.set_edgecolor(color_rgb)
 
@@ -1469,15 +2078,15 @@ class AutomaticClusteringWidget(QWidget):
         current_harmonic = self.parent_widget.harmonic
 
         for layer in selected_layers:
-            g_array = layer.metadata.get('G')
-            s_array = layer.metadata.get('S')
+            g_array = layer.metadata.get("G")
+            s_array = layer.metadata.get("S")
 
             if g_array is None or s_array is None:
                 continue
 
             # Extract correct harmonic if arrays are 3D
             if g_array.ndim > layer.data.ndim:
-                harmonics_array = layer.metadata.get('harmonics')
+                harmonics_array = layer.metadata.get("harmonics")
                 if harmonics_array is not None:
                     harmonics_array = np.atleast_1d(harmonics_array)
                     try:
@@ -1501,16 +2110,16 @@ class AutomaticClusteringWidget(QWidget):
 
             # Apply each cluster
             for idx, cluster in enumerate(self._clusters):
-                if cluster.get('harmonic', 1) != current_harmonic:
+                if cluster.get("harmonic", 1) != current_harmonic:
                     continue
                 mask = mask_from_elliptic_cursor(
                     g,
                     s,
-                    cluster['g'],
-                    cluster['s'],
-                    radius=cluster['radius'],
-                    radius_minor=cluster['radius_minor'],
-                    angle=cluster['angle'],
+                    cluster["g"],
+                    cluster["s"],
+                    radius=cluster["radius"],
+                    radius_minor=cluster["radius_minor"],
+                    angle=cluster["angle"],
                 )
                 selection_map[mask] = idx + 1
 
@@ -1531,9 +2140,9 @@ class AutomaticClusteringWidget(QWidget):
         # Calculate total valid pixels across all selected layers
         total_valid_pixels = 0
         for layer in selected_layers:
-            g_array = layer.metadata.get('G')
-            s_array = layer.metadata.get('S')
-            harmonics_array = layer.metadata.get('harmonics')
+            g_array = layer.metadata.get("G")
+            s_array = layer.metadata.get("S")
+            harmonics_array = layer.metadata.get("harmonics")
 
             if g_array is None or s_array is None:
                 continue
@@ -1575,14 +2184,14 @@ class AutomaticClusteringWidget(QWidget):
         # Calculate statistics for each cluster
         cluster_pixel_counts = {}
         for cluster_idx, cluster in enumerate(self._clusters):
-            if cluster.get('harmonic', 1) != current_harmonic:
+            if cluster.get("harmonic", 1) != current_harmonic:
                 continue
 
             count = 0
             for layer in selected_layers:
-                g_array = layer.metadata.get('G')
-                s_array = layer.metadata.get('S')
-                harmonics_array = layer.metadata.get('harmonics')
+                g_array = layer.metadata.get("G")
+                s_array = layer.metadata.get("S")
+                harmonics_array = layer.metadata.get("harmonics")
 
                 if g_array is None or s_array is None:
                     continue
@@ -1611,11 +2220,11 @@ class AutomaticClusteringWidget(QWidget):
                 mask = mask_from_elliptic_cursor(
                     g,
                     s,
-                    cluster['g'],
-                    cluster['s'],
-                    radius=cluster['radius'],
-                    radius_minor=cluster['radius_minor'],
-                    angle=cluster['angle'],
+                    cluster["g"],
+                    cluster["s"],
+                    radius=cluster["radius"],
+                    radius_minor=cluster["radius_minor"],
+                    angle=cluster["angle"],
                 )
 
                 count += np.sum(mask)
@@ -1682,7 +2291,7 @@ class AutomaticClusteringWidget(QWidget):
                 height=height,
                 angle=angle_degrees,
                 edgecolor=color_rgb,
-                facecolor='none',
+                facecolor="none",
                 linewidth=2,
                 alpha=1,
                 picker=False,  # Not pickable, so not draggable
@@ -1751,23 +2360,23 @@ class AutomaticClusteringWidget(QWidget):
 
         for cluster in self._clusters:
             # Only draw if harmonic matches
-            if cluster.get('harmonic', 1) != current_harmonic:
+            if cluster.get("harmonic", 1) != current_harmonic:
                 continue
 
-            color = cluster['color']
+            color = cluster["color"]
             color_rgb = (color.redF(), color.greenF(), color.blueF())
 
-            width = 2 * cluster['radius']
-            height = 2 * cluster['radius_minor']
-            angle_degrees = np.degrees(cluster['angle'])
+            width = 2 * cluster["radius"]
+            height = 2 * cluster["radius_minor"]
+            angle_degrees = np.degrees(cluster["angle"])
 
             ellipse = Ellipse(
-                xy=(cluster['g'], cluster['s']),
+                xy=(cluster["g"], cluster["s"]),
                 width=width,
                 height=height,
                 angle=angle_degrees,
                 edgecolor=color_rgb,
-                facecolor='none',
+                facecolor="none",
                 linewidth=2,
                 alpha=1,
                 picker=False,
@@ -1791,7 +2400,7 @@ class AutomaticClusteringWidget(QWidget):
 
         color_dict = {None: (0, 0, 0, 0)}
         for idx, cluster in enumerate(self._clusters):
-            color = cluster['color']
+            color = cluster["color"]
             color_dict[idx + 1] = (
                 color.redF(),
                 color.greenF(),
@@ -1816,8 +2425,8 @@ class AutomaticClusteringWidget(QWidget):
                     color_dict=color_dict, name="cluster_colors"
                 ),
                 metadata={
-                    'napari_phasors_selection_type': 'automatic_clustering',
-                    'napari_phasors_source_layer': image_layer.name,
+                    "napari_phasors_selection_type": "automatic_clustering",
+                    "napari_phasors_source_layer": image_layer.name,
                 },
             )
             labels_layer = self.viewer.add_layer(labels_layer)
@@ -1827,7 +2436,7 @@ class AutomaticClusteringWidget(QWidget):
         """Update colors in all labels layers after color changes."""
         color_dict = {None: (0, 0, 0, 0)}
         for idx, cluster in enumerate(self._clusters):
-            color = cluster['color']
+            color = cluster["color"]
             color_dict[idx + 1] = (
                 color.redF(),
                 color.greenF(),
@@ -1855,7 +2464,7 @@ class AutomaticClusteringWidget(QWidget):
 
     def _refresh_apply_button_if_ready(self):
         """Re-evaluate the Apply button state if it has been wired up."""
-        refresh = getattr(self, '_refresh_apply_button', None)
+        refresh = getattr(self, "_refresh_apply_button", None)
         if refresh is not None:
             refresh()
 
@@ -1863,57 +2472,6 @@ class AutomaticClusteringWidget(QWidget):
         """Callback when image layer changes - clear clusters."""
         self._clear_clusters()
         self._refresh_apply_button_if_ready()
-
-
-class ColorButton(QPushButton):
-    """A button that displays a color and opens a color dialog when clicked."""
-
-    color_changed = Signal(QColor)
-    """Signal emitted with the new QColor when the color is changed."""
-
-    def __init__(self, color=None, parent=None):
-        """Initialize the ColorButton."""
-        super().__init__(parent)
-        self._color = color or QColor(255, 0, 0)
-        self.setFixedSize(25, 25)
-        self._update_style()
-        self.clicked.connect(self._on_clicked)
-
-    def _update_style(self):
-        """Update the button style to show the current color."""
-        self.setStyleSheet(
-            f"background-color: {self._color.name()}; "
-            f"border: 1px solid #555; border-radius: 3px;"
-        )
-
-    def _on_clicked(self):
-        """Open a color dialog when clicked."""
-        color = QColorDialog.getColor(self._color, self, "Select Cursor Color")
-        if color.isValid():
-            self._color = color
-            self._update_style()
-            self.color_changed.emit(color)
-
-    def color(self):
-        """Return the current color."""
-        return self._color
-
-    def set_color(self, color):
-        """Set the current color."""
-        self._color = color
-        self._update_style()
-
-
-class ClickableFrame(QFrame):
-    """A ``QFrame`` that emits ``clicked`` when pressed with the left button."""
-
-    clicked = Signal()
-
-    def mousePressEvent(self, event):
-        """Emit ``clicked`` for left-button presses, then defer to the base."""
-        if event.button() == Qt.LeftButton:
-            self.clicked.emit()
-        super().mousePressEvent(event)
 
 
 class CursorSelectionWidget(QWidget):
@@ -1938,7 +2496,7 @@ class CursorSelectionWidget(QWidget):
 
     DEFAULT_COLORS = [
         QColor(int(r * 255), int(g * 255), int(b * 255))
-        for r, g, b, _ in [plt.get_cmap('Set1')(i) for i in range(9)]
+        for r, g, b, _ in [plt.get_cmap("Set1")(i) for i in range(9)]
     ]
 
     def __init__(self, viewer, parent_widget):
@@ -2042,7 +2600,7 @@ class CursorSelectionWidget(QWidget):
             current_harmonic_count = sum(
                 1
                 for c in self._cursors
-                if c.get('harmonic', 1) == current_harmonic
+                if c.get("harmonic", 1) == current_harmonic
             )
             index = current_harmonic_count % len(self.DEFAULT_COLORS)
         return self.DEFAULT_COLORS[index]
@@ -2050,17 +2608,17 @@ class CursorSelectionWidget(QWidget):
     def _get_last_radius(self):
         """Get the radius from the last cursor with one, or a default."""
         for cursor in reversed(self._cursors):
-            if 'radius' in cursor and cursor['radius'] is not None:
-                return cursor['radius']
+            if "radius" in cursor and cursor["radius"] is not None:
+                return cursor["radius"]
         return 0.05
 
     def _axes_center(self):
         """Return the current axes center (g, s), or (0.5, 0.5) as fallback."""
         if (
             self.parent_widget is not None
-            and hasattr(self.parent_widget, 'canvas_widget')
+            and hasattr(self.parent_widget, "canvas_widget")
             and self.parent_widget.canvas_widget is not None
-            and hasattr(self.parent_widget.canvas_widget, 'axes')
+            and hasattr(self.parent_widget.canvas_widget, "axes")
             and self.parent_widget.canvas_widget.axes is not None
         ):
             xlim = self.parent_widget.canvas_widget.axes.get_xlim()
@@ -2171,20 +2729,20 @@ class CursorSelectionWidget(QWidget):
             color = self._get_next_color()
 
         cursor = {
-            'type': cursor_type,
-            'g': g,
-            's': s,
-            'radius': radius,
-            'radius_minor': radius_minor,
-            'angle': angle,
-            'phase_min': phase_min,
-            'phase_max': phase_max,
-            'modulation_min': modulation_min,
-            'modulation_max': modulation_max,
-            'color': color,
-            'patch': None,
-            'visible': bool(visible),
-            'harmonic': (
+            "type": cursor_type,
+            "g": g,
+            "s": s,
+            "radius": radius,
+            "radius_minor": radius_minor,
+            "angle": angle,
+            "phase_min": phase_min,
+            "phase_max": phase_max,
+            "modulation_min": modulation_min,
+            "modulation_max": modulation_max,
+            "color": color,
+            "patch": None,
+            "visible": bool(visible),
+            "harmonic": (
                 self.parent_widget.harmonic if self.parent_widget else 1
             ),
         }
@@ -2245,13 +2803,13 @@ class CursorSelectionWidget(QWidget):
         type_combo.addItem("Circular", "circular")
         type_combo.addItem("Elliptical", "elliptic")
         type_combo.addItem("Polar", "polar")
-        type_combo.setCurrentIndex(type_combo.findData(cursor['type']))
+        type_combo.setCurrentIndex(type_combo.findData(cursor["type"]))
         type_combo.setToolTip(
             "Cursor shape: a circular, elliptical or polar (wedge) region "
             "of the phasor plot."
         )
 
-        color_button = ColorButton(cursor['color'])
+        color_button = ColorButton(cursor["color"])
         color_button.setToolTip(
             "Color of this cursor's region in the selection overlay."
         )
@@ -2265,16 +2823,16 @@ class CursorSelectionWidget(QWidget):
             spin.setToolTip(tooltip)
             return lbl
 
-        g_spin = self._make_spinbox(-1.5, 1.5, cursor['g'], 2, 0.01, ref)
-        s_spin = self._make_spinbox(-1.5, 1.5, cursor['s'], 2, 0.01, ref)
+        g_spin = self._make_spinbox(-1.5, 1.5, cursor["g"], 2, 0.01, ref)
+        s_spin = self._make_spinbox(-1.5, 1.5, cursor["s"], 2, 0.01, ref)
         radius_spin = self._make_spinbox(
-            0.001, 1.0, cursor['radius'], 3, 0.01, ref
+            0.001, 1.0, cursor["radius"], 3, 0.01, ref
         )
         radius_minor_spin = self._make_spinbox(
-            0.001, 1.0, cursor['radius_minor'], 3, 0.01, ref
+            0.001, 1.0, cursor["radius_minor"], 3, 0.01, ref
         )
         angle_spin = self._make_spinbox(
-            -360.0, 360.0, cursor['angle'], 1, 1.0, ref
+            -360.0, 360.0, cursor["angle"], 1, 1.0, ref
         )
 
         radius_label = _grid_label(
@@ -2331,16 +2889,16 @@ class CursorSelectionWidget(QWidget):
         ce_grid.addWidget(elliptic_widget, 1, 4, 1, 2)
 
         phase_min_spin = self._make_spinbox(
-            -360.0, 360.0, cursor['phase_min'], 1, 1.0, ref
+            -360.0, 360.0, cursor["phase_min"], 1, 1.0, ref
         )
         phase_max_spin = self._make_spinbox(
-            -360.0, 360.0, cursor['phase_max'], 1, 1.0, ref
+            -360.0, 360.0, cursor["phase_max"], 1, 1.0, ref
         )
         mod_min_spin = self._make_spinbox(
-            0.0, 1.0, cursor['modulation_min'], 2, 0.01, ref
+            0.0, 1.0, cursor["modulation_min"], 2, 0.01, ref
         )
         mod_max_spin = self._make_spinbox(
-            0.0, 1.0, cursor['modulation_max'], 2, 0.01, ref
+            0.0, 1.0, cursor["modulation_max"], 2, 0.01, ref
         )
         polar_widget = QWidget()
         polar_grid = QGridLayout(polar_widget)
@@ -2439,30 +2997,30 @@ class CursorSelectionWidget(QWidget):
 
         cursor.update(
             {
-                'row': frame,
-                'detail': detail,
-                'number_label': number_label,
-                'type_combo': type_combo,
-                'color_button': color_button,
-                'center_widget': center_widget,
-                'ce_grid': ce_grid,
-                'g_spin': g_spin,
-                's_spin': s_spin,
-                'radius_label': radius_label,
-                'radius_spin': radius_spin,
-                'radius_minor_label': radius_minor_label,
-                'radius_minor_spin': radius_minor_spin,
-                'elliptic_widget': elliptic_widget,
-                'angle_spin': angle_spin,
-                'polar_widget': polar_widget,
-                'phase_min_spin': phase_min_spin,
-                'phase_max_spin': phase_max_spin,
-                'mod_min_spin': mod_min_spin,
-                'mod_max_spin': mod_max_spin,
-                'count_label': count_label,
-                'percentage_label': percentage_label,
-                'visibility_button': visibility_button,
-                'remove_button': remove_button,
+                "row": frame,
+                "detail": detail,
+                "number_label": number_label,
+                "type_combo": type_combo,
+                "color_button": color_button,
+                "center_widget": center_widget,
+                "ce_grid": ce_grid,
+                "g_spin": g_spin,
+                "s_spin": s_spin,
+                "radius_label": radius_label,
+                "radius_spin": radius_spin,
+                "radius_minor_label": radius_minor_label,
+                "radius_minor_spin": radius_minor_spin,
+                "elliptic_widget": elliptic_widget,
+                "angle_spin": angle_spin,
+                "polar_widget": polar_widget,
+                "phase_min_spin": phase_min_spin,
+                "phase_max_spin": phase_max_spin,
+                "mod_min_spin": mod_min_spin,
+                "mod_max_spin": mod_max_spin,
+                "count_label": count_label,
+                "percentage_label": percentage_label,
+                "visibility_button": visibility_button,
+                "remove_button": remove_button,
             }
         )
 
@@ -2510,8 +3068,8 @@ class CursorSelectionWidget(QWidget):
 
     def _update_visibility_button(self, cursor):
         """Update the eye icon and tooltip from the ``visible`` state."""
-        button = cursor['visibility_button']
-        if cursor['visible']:
+        button = cursor["visibility_button"]
+        if cursor["visible"]:
             button.setToolTip(
                 "Cursor is shown and included in the selection. "
                 "Click to hide it."
@@ -2521,7 +3079,7 @@ class CursorSelectionWidget(QWidget):
                 "Cursor is hidden and excluded from the selection. "
                 "Click to show it."
             )
-        crossed = not cursor['visible']
+        crossed = not cursor["visible"]
         button.setIcon(_make_eye_icon(self.EYE_COLOR, crossed=crossed))
         button.setProperty("eyeCrossed", crossed)
 
@@ -2529,7 +3087,7 @@ class CursorSelectionWidget(QWidget):
         """Toggle a cursor's visibility, recomputing the selection."""
         if cursor not in self._cursors:
             return
-        cursor['visible'] = not cursor['visible']
+        cursor["visible"] = not cursor["visible"]
         self._update_visibility_button(cursor)
         self._update_cursor_patch(cursor)
         # Recompute the selection so hidden cursors are excluded (and shown
@@ -2542,10 +3100,10 @@ class CursorSelectionWidget(QWidget):
 
     def _apply_type_visibility(self, cursor):
         """Show/hide (and re-place) the shape-specific fields for a cursor."""
-        cursor_type = cursor['type']
-        grid = cursor['ce_grid']
-        radius_label = cursor['radius_label']
-        radius = cursor['radius_spin']
+        cursor_type = cursor["type"]
+        grid = cursor["ce_grid"]
+        radius_label = cursor["radius_label"]
+        radius = cursor["radius_spin"]
 
         grid.removeWidget(radius_label)
         grid.removeWidget(radius)
@@ -2558,13 +3116,13 @@ class CursorSelectionWidget(QWidget):
 
         show_center = cursor_type != "polar"
         show_elliptic = cursor_type == "elliptic"
-        cursor['center_widget'].setVisible(show_center)
+        cursor["center_widget"].setVisible(show_center)
         radius_label.setVisible(show_center)
         radius.setVisible(show_center)
-        cursor['radius_minor_label'].setVisible(show_elliptic)
-        cursor['radius_minor_spin'].setVisible(show_elliptic)
-        cursor['elliptic_widget'].setVisible(show_elliptic)
-        cursor['polar_widget'].setVisible(cursor_type == "polar")
+        cursor["radius_minor_label"].setVisible(show_elliptic)
+        cursor["radius_minor_spin"].setVisible(show_elliptic)
+        cursor["elliptic_widget"].setVisible(show_elliptic)
+        cursor["polar_widget"].setVisible(cursor_type == "polar")
 
     def _select_cursor(self, cursor):
         """Show ``cursor``'s editor page and highlight its list row.
@@ -2576,7 +3134,7 @@ class CursorSelectionWidget(QWidget):
         self._selected_cursor = cursor
         for c in self._cursors:
             selected = c is cursor
-            row = c['row']
+            row = c["row"]
             if row.property("selected") != selected:
                 row.setProperty("selected", selected)
                 row.style().unpolish(row)
@@ -2584,7 +3142,7 @@ class CursorSelectionWidget(QWidget):
         if cursor is None:
             self._editor_box.setVisible(False)
             return
-        self._details_stack.setCurrentWidget(cursor['detail'])
+        self._details_stack.setCurrentWidget(cursor["detail"])
         self._editor_box.setVisible(True)
         self._refresh_editor_title()
 
@@ -2593,8 +3151,8 @@ class CursorSelectionWidget(QWidget):
         cursor = self._selected_cursor
         if cursor is None:
             return
-        number = cursor['number_label'].text().rstrip('.')
-        shape = cursor['type_combo'].currentText()
+        number = cursor["number_label"].text().rstrip(".")
+        shape = cursor["type_combo"].currentText()
         self._editor_box.setTitle(f"Cursor {number} — {shape}")
 
     def _resolve_cursor(self, cursor_or_idx):
@@ -2612,10 +3170,10 @@ class CursorSelectionWidget(QWidget):
         )
         number = 1
         for cursor in self._cursors:
-            visible = cursor.get('harmonic', 1) == current_harmonic
-            cursor['row'].setVisible(visible)
+            visible = cursor.get("harmonic", 1) == current_harmonic
+            cursor["row"].setVisible(visible)
             if visible:
-                cursor['number_label'].setText(f"{number}.")
+                cursor["number_label"].setText(f"{number}.")
                 number += 1
         # Keep the selection on a visible row: after a harmonic switch the
         # selected cursor's row may have been hidden.
@@ -2635,12 +3193,12 @@ class CursorSelectionWidget(QWidget):
         return [
             c
             for c in self._cursors
-            if c.get('harmonic', 1) == current_harmonic
+            if c.get("harmonic", 1) == current_harmonic
         ]
 
     def _on_cursor_type_changed(self, cursor):
         """Handle the shape combobox changing for a cursor."""
-        cursor['type'] = cursor['type_combo'].currentData()
+        cursor["type"] = cursor["type_combo"].currentData()
         if cursor is self._selected_cursor:
             self._refresh_editor_title()
         self._apply_type_visibility(cursor)
@@ -2653,16 +3211,16 @@ class CursorSelectionWidget(QWidget):
 
     def _sync_cursor_from_widgets(self, cursor):
         """Read all field values from the row widgets into the cursor data."""
-        cursor['g'] = cursor['g_spin'].value()
-        cursor['s'] = cursor['s_spin'].value()
-        cursor['radius'] = cursor['radius_spin'].value()
-        cursor['radius_minor'] = cursor['radius_minor_spin'].value()
-        cursor['angle'] = cursor['angle_spin'].value()
-        cursor['phase_min'] = cursor['phase_min_spin'].value()
-        cursor['phase_max'] = cursor['phase_max_spin'].value()
-        cursor['modulation_min'] = cursor['mod_min_spin'].value()
-        cursor['modulation_max'] = cursor['mod_max_spin'].value()
-        cursor['color'] = cursor['color_button'].color()
+        cursor["g"] = cursor["g_spin"].value()
+        cursor["s"] = cursor["s_spin"].value()
+        cursor["radius"] = cursor["radius_spin"].value()
+        cursor["radius_minor"] = cursor["radius_minor_spin"].value()
+        cursor["angle"] = cursor["angle_spin"].value()
+        cursor["phase_min"] = cursor["phase_min_spin"].value()
+        cursor["phase_max"] = cursor["phase_max_spin"].value()
+        cursor["modulation_min"] = cursor["mod_min_spin"].value()
+        cursor["modulation_max"] = cursor["mod_max_spin"].value()
+        cursor["color"] = cursor["color_button"].color()
 
     def _on_cursor_changed(self, cursor):
         """Handle any field change for a cursor row."""
@@ -2682,15 +3240,15 @@ class CursorSelectionWidget(QWidget):
         if cursor is None or cursor not in self._cursors:
             return
 
-        if cursor.get('patch') is not None:
+        if cursor.get("patch") is not None:
             with contextlib.suppress(ValueError):
-                cursor['patch'].remove()
-            cursor['patch'] = None
+                cursor["patch"].remove()
+            cursor["patch"] = None
 
-        cursor['row'].setParent(None)
-        cursor['row'].deleteLater()
-        self._details_stack.removeWidget(cursor['detail'])
-        cursor['detail'].deleteLater()
+        cursor["row"].setParent(None)
+        cursor["row"].deleteLater()
+        self._details_stack.removeWidget(cursor["detail"])
+        cursor["detail"].deleteLater()
         was_selected = cursor is self._selected_cursor
         self._cursors.remove(cursor)
         if was_selected:
@@ -2718,13 +3276,13 @@ class CursorSelectionWidget(QWidget):
     def _clear_all_cursors(self):
         """Clear all cursors."""
         for cursor in self._cursors:
-            if cursor.get('patch') is not None:
+            if cursor.get("patch") is not None:
                 with contextlib.suppress(ValueError):
-                    cursor['patch'].remove()
-            cursor['row'].setParent(None)
-            cursor['row'].deleteLater()
-            self._details_stack.removeWidget(cursor['detail'])
-            cursor['detail'].deleteLater()
+                    cursor["patch"].remove()
+            cursor["row"].setParent(None)
+            cursor["row"].deleteLater()
+            self._details_stack.removeWidget(cursor["detail"])
+            cursor["detail"].deleteLater()
         self._cursors.clear()
         self._select_cursor(None)
         self._remove_selection_layer()
@@ -2739,56 +3297,56 @@ class CursorSelectionWidget(QWidget):
             return
 
         current_harmonic = self.parent_widget.harmonic
-        cursor_harmonic = cursor.get('harmonic', 1)
+        cursor_harmonic = cursor.get("harmonic", 1)
 
-        if cursor.get('patch') is not None:
+        if cursor.get("patch") is not None:
             with contextlib.suppress(ValueError):
-                cursor['patch'].remove()
-            cursor['patch'] = None
+                cursor["patch"].remove()
+            cursor["patch"] = None
 
         # Hidden cursors and cursors of a different harmonic draw no patch.
         if cursor_harmonic != current_harmonic or not cursor.get(
-            'visible', True
+            "visible", True
         ):
             self.parent_widget.canvas_widget.canvas.draw_idle()
             return
 
         ax = self.parent_widget.canvas_widget.axes
-        color = cursor['color']
+        color = cursor["color"]
         edge_rgba = (color.redF(), color.greenF(), color.blueF(), 1.0)
 
-        if cursor['type'] == "circular":
+        if cursor["type"] == "circular":
             patch = Circle(
-                (cursor['g'], cursor['s']),
-                cursor['radius'],
+                (cursor["g"], cursor["s"]),
+                cursor["radius"],
                 fill=False,
                 edgecolor=edge_rgba,
                 linewidth=2,
                 zorder=10,
                 picker=True,
             )
-        elif cursor['type'] == "elliptic":
+        elif cursor["type"] == "elliptic":
             patch = Ellipse(
-                xy=(cursor['g'], cursor['s']),
-                width=2 * cursor['radius'],
-                height=2 * cursor['radius_minor'],
-                angle=cursor['angle'],
-                facecolor='none',
+                xy=(cursor["g"], cursor["s"]),
+                width=2 * cursor["radius"],
+                height=2 * cursor["radius_minor"],
+                angle=cursor["angle"],
+                facecolor="none",
                 edgecolor=edge_rgba,
                 linewidth=2,
                 zorder=10,
                 picker=True,
             )
         else:  # polar
-            r = cursor['modulation_max']
-            width = cursor['modulation_max'] - cursor['modulation_min']
+            r = cursor["modulation_max"]
+            width = cursor["modulation_max"] - cursor["modulation_min"]
             if width <= 0:
                 width = 0.001
             patch = Wedge(
                 (0, 0),
                 r,
-                cursor['phase_min'],
-                cursor['phase_max'],
+                cursor["phase_min"],
+                cursor["phase_max"],
                 width=width,
                 fill=False,
                 edgecolor=edge_rgba,
@@ -2797,16 +3355,16 @@ class CursorSelectionWidget(QWidget):
                 picker=True,
             )
 
-        cursor['patch'] = ax.add_patch(patch)
+        cursor["patch"] = ax.add_patch(patch)
         self.parent_widget.canvas_widget.canvas.draw_idle()
 
     def clear_all_patches(self):
         """Clear all patches from the canvas (called when switching modes)."""
         for cursor in self._cursors:
-            if cursor.get('patch') is not None:
+            if cursor.get("patch") is not None:
                 with contextlib.suppress(ValueError):
-                    cursor['patch'].remove()
-                cursor['patch'] = None
+                    cursor["patch"].remove()
+                cursor["patch"] = None
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
@@ -2854,7 +3412,7 @@ class CursorSelectionWidget(QWidget):
 
     def _refresh_calculate_button_if_ready(self):
         """Re-evaluate the Calculate button state if it has been wired up."""
-        refresh = getattr(self, '_refresh_calculate_button', None)
+        refresh = getattr(self, "_refresh_calculate_button", None)
         if refresh is not None:
             refresh()
 
@@ -2886,11 +3444,11 @@ class CursorSelectionWidget(QWidget):
     @staticmethod
     def _layer_harmonic_arrays(layer, target_harmonic):
         """Return (g, s) arrays for ``target_harmonic`` or (None, None)."""
-        g_array = layer.metadata.get('G')
-        s_array = layer.metadata.get('S')
+        g_array = layer.metadata.get("G")
+        s_array = layer.metadata.get("S")
         if g_array is None or s_array is None:
             return None, None
-        harmonics_array = layer.metadata.get('harmonics')
+        harmonics_array = layer.metadata.get("harmonics")
         if harmonics_array is not None:
             harmonics_array = np.atleast_1d(harmonics_array)
             try:
@@ -2908,64 +3466,64 @@ class CursorSelectionWidget(QWidget):
     @staticmethod
     def _cursor_mask(cursor, g, s):
         """Return the boolean mask of pixels inside a single cursor."""
-        if cursor['type'] == "circular":
+        if cursor["type"] == "circular":
             return mask_from_circular_cursor(
-                g, s, [cursor['g']], [cursor['s']], radius=[cursor['radius']]
+                g, s, [cursor["g"]], [cursor["s"]], radius=[cursor["radius"]]
             )[0]
-        if cursor['type'] == "elliptic":
+        if cursor["type"] == "elliptic":
             return mask_from_elliptic_cursor(
                 g,
                 s,
-                cursor['g'],
-                cursor['s'],
-                radius=cursor['radius'],
-                radius_minor=cursor['radius_minor'],
-                angle=np.deg2rad(cursor['angle']),
+                cursor["g"],
+                cursor["s"],
+                radius=cursor["radius"],
+                radius_minor=cursor["radius_minor"],
+                angle=np.deg2rad(cursor["angle"]),
             )
         return mask_from_polar_cursor(
             g,
             s,
-            np.deg2rad(cursor['phase_min']),
-            np.deg2rad(cursor['phase_max']),
-            cursor['modulation_min'],
-            cursor['modulation_max'],
+            np.deg2rad(cursor["phase_min"]),
+            np.deg2rad(cursor["phase_max"]),
+            cursor["modulation_min"],
+            cursor["modulation_max"],
         )
 
     def _cursor_metadata_params(self, cursor):
         """Return the metadata dict (per-shape) for a cursor."""
-        color = cursor['color']
+        color = cursor["color"]
         color_tuple = (
             color.red(),
             color.green(),
             color.blue(),
             color.alpha(),
         )
-        visible = bool(cursor.get('visible', True))
-        if cursor['type'] == "circular":
+        visible = bool(cursor.get("visible", True))
+        if cursor["type"] == "circular":
             return {
-                'g': cursor['g'],
-                's': cursor['s'],
-                'radius': cursor['radius'],
-                'color': color_tuple,
-                'visible': visible,
+                "g": cursor["g"],
+                "s": cursor["s"],
+                "radius": cursor["radius"],
+                "color": color_tuple,
+                "visible": visible,
             }
-        if cursor['type'] == "elliptic":
+        if cursor["type"] == "elliptic":
             return {
-                'g': cursor['g'],
-                's': cursor['s'],
-                'radius': cursor['radius'],
-                'radius_minor': cursor['radius_minor'],
-                'angle': cursor['angle'],
-                'color': color_tuple,
-                'visible': visible,
+                "g": cursor["g"],
+                "s": cursor["s"],
+                "radius": cursor["radius"],
+                "radius_minor": cursor["radius_minor"],
+                "angle": cursor["angle"],
+                "color": color_tuple,
+                "visible": visible,
             }
         return {
-            'phase_min': cursor['phase_min'],
-            'phase_max': cursor['phase_max'],
-            'modulation_min': cursor['modulation_min'],
-            'modulation_max': cursor['modulation_max'],
-            'color': color_tuple,
-            'visible': visible,
+            "phase_min": cursor["phase_min"],
+            "phase_max": cursor["phase_max"],
+            "modulation_min": cursor["modulation_min"],
+            "modulation_max": cursor["modulation_max"],
+            "color": color_tuple,
+            "visible": visible,
         }
 
     def _apply_selection(self):
@@ -2988,9 +3546,9 @@ class CursorSelectionWidget(QWidget):
         circular_params, elliptical_params, polar_params = [], [], []
         for cursor in current_harmonic_cursors:
             params = self._cursor_metadata_params(cursor)
-            if cursor['type'] == "circular":
+            if cursor["type"] == "circular":
                 circular_params.append(params)
-            elif cursor['type'] == "elliptic":
+            elif cursor["type"] == "elliptic":
                 elliptical_params.append(params)
             else:
                 polar_params.append(params)
@@ -3008,7 +3566,7 @@ class CursorSelectionWidget(QWidget):
         # Only visible cursors contribute to the selection (and to the
         # label-id / color mapping); hidden cursors behave as if absent.
         visible_cursors = [
-            c for c in current_harmonic_cursors if c.get('visible', True)
+            c for c in current_harmonic_cursors if c.get("visible", True)
         ]
 
         if not visible_cursors:
@@ -3050,16 +3608,16 @@ class CursorSelectionWidget(QWidget):
 
         if total_valid_pixels == 0:
             for cursor in current_harmonic_cursors:
-                cursor['count_label'].setText("-")
-                cursor['percentage_label'].setText("-")
+                cursor["count_label"].setText("-")
+                cursor["percentage_label"].setText("-")
             return
 
         for cursor in current_harmonic_cursors:
             # Hidden cursors are excluded from the selection, so report no
             # statistics for them.
-            if not cursor.get('visible', True):
-                cursor['count_label'].setText("-")
-                cursor['percentage_label'].setText("-")
+            if not cursor.get("visible", True):
+                cursor["count_label"].setText("-")
+                cursor["percentage_label"].setText("-")
                 continue
             count = 0
             for layer in selected_layers:
@@ -3068,8 +3626,8 @@ class CursorSelectionWidget(QWidget):
                     continue
                 count += int(np.sum(self._cursor_mask(cursor, g, s)))
             percentage = count / total_valid_pixels * 100
-            cursor['count_label'].setText(str(count))
-            cursor['percentage_label'].setText(f"{percentage:.1f}")
+            cursor["count_label"].setText(str(count))
+            cursor["percentage_label"].setText(f"{percentage:.1f}")
 
     def _create_or_update_labels_layer(
         self, image_layer, selection_map, cursors_list
@@ -3079,7 +3637,7 @@ class CursorSelectionWidget(QWidget):
 
         color_dict = {None: (0, 0, 0, 0)}
         for idx, cursor in enumerate(cursors_list):
-            color = cursor['color']
+            color = cursor["color"]
             color_dict[idx + 1] = (
                 color.redF(),
                 color.greenF(),
@@ -3109,8 +3667,8 @@ class CursorSelectionWidget(QWidget):
                     color_dict=color_dict, name="cursor_selection_colors"
                 ),
                 metadata={
-                    'napari_phasors_selection_type': 'cursor_selection',
-                    'napari_phasors_source_layer': image_layer.name,
+                    "napari_phasors_selection_type": "cursor_selection",
+                    "napari_phasors_source_layer": image_layer.name,
                 },
             )
             self._phasors_selected_layer = self.viewer.add_layer(labels_layer)
@@ -3118,12 +3676,12 @@ class CursorSelectionWidget(QWidget):
     def _on_image_layer_changed(self):
         """Restore cursors from the new image layer's metadata."""
         for cursor in self._cursors:
-            if cursor.get('patch') is not None:
+            if cursor.get("patch") is not None:
                 with contextlib.suppress(ValueError):
-                    cursor['patch'].remove()
-                cursor['patch'] = None
-            cursor['row'].setParent(None)
-            cursor['row'].deleteLater()
+                    cursor["patch"].remove()
+                cursor["patch"] = None
+            cursor["row"].setParent(None)
+            cursor["row"].deleteLater()
         self._cursors.clear()
         self._selection_active = False
         self._refresh_calculate_button_if_ready()
@@ -3181,18 +3739,18 @@ class CursorSelectionWidget(QWidget):
         if self.parent_widget is None:
             return
         canvas = self.parent_widget.canvas_widget.canvas
-        canvas.mpl_connect('pick_event', self._on_pick)
-        canvas.mpl_connect('motion_notify_event', self._on_motion)
-        canvas.mpl_connect('button_release_event', self._on_release)
-        canvas.mpl_connect('key_press_event', self._update_hover_cursor)
-        canvas.mpl_connect('key_release_event', self._update_hover_cursor)
+        canvas.mpl_connect("pick_event", self._on_pick)
+        canvas.mpl_connect("motion_notify_event", self._on_motion)
+        canvas.mpl_connect("button_release_event", self._on_release)
+        canvas.mpl_connect("key_press_event", self._update_hover_cursor)
+        canvas.mpl_connect("key_release_event", self._update_hover_cursor)
 
     def _on_pick(self, event):
         """Handle pick event when clicking on a cursor patch."""
         if event.artist is None:
             return
         for cursor in self._cursors:
-            if cursor.get('patch') == event.artist:
+            if cursor.get("patch") == event.artist:
                 self._dragging_cursor = cursor
                 # Editing on the plot selects the cursor, so its parameters
                 # are shown in the editor while dragging.
@@ -3200,26 +3758,26 @@ class CursorSelectionWidget(QWidget):
                 click_pos = (event.mouseevent.xdata, event.mouseevent.ydata)
                 modifiers = QApplication.keyboardModifiers()
                 is_shift = bool(modifiers & Qt.ShiftModifier)
-                if cursor['type'] == "polar":
+                if cursor["type"] == "polar":
                     # Polar cursors are not translated; instead the nearest
                     # edge (a phase or modulation bound) is dragged.
-                    self._drag_mode = 'polar_edge'
+                    self._drag_mode = "polar_edge"
                     self._polar_edge = self._closest_polar_edge(
                         cursor, click_pos
                     )
-                elif cursor['type'] == "elliptic" and is_shift:
-                    self._drag_mode = 'rotate'
+                elif cursor["type"] == "elliptic" and is_shift:
+                    self._drag_mode = "rotate"
                     if click_pos[0] is not None and click_pos[1] is not None:
-                        dy = click_pos[1] - cursor['s']
-                        dx = click_pos[0] - cursor['g']
+                        dy = click_pos[1] - cursor["s"]
+                        dx = click_pos[0] - cursor["g"]
                         self._drag_start_angle = np.degrees(np.arctan2(dy, dx))
-                        self._drag_start_cursor_angle = cursor['angle']
+                        self._drag_start_cursor_angle = cursor["angle"]
                 else:
-                    self._drag_mode = 'translate'
+                    self._drag_mode = "translate"
                     if click_pos[0] is not None and click_pos[1] is not None:
                         self._drag_offset = (
-                            cursor['g'] - click_pos[0],
-                            cursor['s'] - click_pos[1],
+                            cursor["g"] - click_pos[0],
+                            cursor["s"] - click_pos[1],
                         )
                 break
 
@@ -3240,17 +3798,17 @@ class CursorSelectionWidget(QWidget):
             return abs(((a - b + 180.0) % 360.0) - 180.0)
 
         # Distances (in data units) to each of the four boundaries.
-        d_inner = abs(r - cursor['modulation_min'])
-        d_outer = abs(r - cursor['modulation_max'])
+        d_inner = abs(r - cursor["modulation_min"])
+        d_outer = abs(r - cursor["modulation_max"])
         radial = max(r, 1e-6)
-        d_pmin = np.radians(angle_diff(theta, cursor['phase_min'])) * radial
-        d_pmax = np.radians(angle_diff(theta, cursor['phase_max'])) * radial
+        d_pmin = np.radians(angle_diff(theta, cursor["phase_min"])) * radial
+        d_pmax = np.radians(angle_diff(theta, cursor["phase_max"])) * radial
 
         edges = {
-            'modulation_min': d_inner,
-            'modulation_max': d_outer,
-            'phase_min': d_pmin,
-            'phase_max': d_pmax,
+            "modulation_min": d_inner,
+            "modulation_max": d_outer,
+            "phase_min": d_pmin,
+            "phase_max": d_pmax,
         }
         return min(edges, key=edges.get)
 
@@ -3264,11 +3822,11 @@ class CursorSelectionWidget(QWidget):
         is_hovering = False
         hovered = None
         if (
-            getattr(event, 'inaxes', None) is not None
-            and getattr(event, 'xdata', None) is not None
+            getattr(event, "inaxes", None) is not None
+            and getattr(event, "xdata", None) is not None
         ):
             for cursor in self._cursors:
-                patch = cursor.get('patch')
+                patch = cursor.get("patch")
                 if patch is not None and patch.axes == event.inaxes:
                     contains, _ = patch.contains(event)
                     if contains:
@@ -3278,7 +3836,7 @@ class CursorSelectionWidget(QWidget):
         if is_hovering:
             modifiers = QApplication.keyboardModifiers()
             is_shift = bool(modifiers & Qt.ShiftModifier)
-            if hovered['type'] == "elliptic" and is_shift:
+            if hovered["type"] == "elliptic" and is_shift:
                 canvas.setCursor(Qt.CrossCursor)
             else:
                 canvas.setCursor(Qt.SizeAllCursor)
@@ -3295,32 +3853,32 @@ class CursorSelectionWidget(QWidget):
         if event.xdata is None or event.ydata is None:
             return
 
-        if self._drag_mode == 'polar_edge' and cursor['type'] == "polar":
+        if self._drag_mode == "polar_edge" and cursor["type"] == "polar":
             self._drag_polar_edge(cursor, event.xdata, event.ydata)
-        elif self._drag_mode == 'rotate' and cursor['type'] == "elliptic":
-            dy = event.ydata - cursor['s']
-            dx = event.xdata - cursor['g']
+        elif self._drag_mode == "rotate" and cursor["type"] == "elliptic":
+            dy = event.ydata - cursor["s"]
+            dx = event.xdata - cursor["g"]
             current_angle = np.degrees(np.arctan2(dy, dx))
             angle_diff = current_angle - self._drag_start_angle
             new_angle = (self._drag_start_cursor_angle + angle_diff) % 360.0
-            cursor['angle'] = new_angle
-            if cursor.get('patch') is not None:
-                cursor['patch'].set_angle(new_angle)
-            cursor['angle_spin'].blockSignals(True)
-            cursor['angle_spin'].setValue(new_angle)
-            cursor['angle_spin'].blockSignals(False)
+            cursor["angle"] = new_angle
+            if cursor.get("patch") is not None:
+                cursor["patch"].set_angle(new_angle)
+            cursor["angle_spin"].blockSignals(True)
+            cursor["angle_spin"].setValue(new_angle)
+            cursor["angle_spin"].blockSignals(False)
         else:  # translate
             new_g = event.xdata + self._drag_offset[0]
             new_s = event.ydata + self._drag_offset[1]
-            cursor['g'] = new_g
-            cursor['s'] = new_s
-            patch = cursor.get('patch')
+            cursor["g"] = new_g
+            cursor["s"] = new_s
+            patch = cursor.get("patch")
             if patch is not None:
-                if cursor['type'] == "circular":
+                if cursor["type"] == "circular":
                     patch.center = (new_g, new_s)
                 else:
                     patch.set_center((new_g, new_s))
-            for key, val in (('g_spin', new_g), ('s_spin', new_s)):
+            for key, val in (("g_spin", new_g), ("s_spin", new_s)):
                 cursor[key].blockSignals(True)
                 cursor[key].setValue(val)
                 cursor[key].blockSignals(False)
@@ -3330,26 +3888,26 @@ class CursorSelectionWidget(QWidget):
 
     def _drag_polar_edge(self, cursor, x, y):
         """Move the picked polar boundary to the pointer position."""
-        edge = getattr(self, '_polar_edge', None)
+        edge = getattr(self, "_polar_edge", None)
         if edge is None:
             return
         r = float(np.hypot(x, y))
         theta = float(np.degrees(np.arctan2(y, x)))
 
-        if edge == 'phase_min':
-            cursor['phase_min'] = theta
-            spin, value = cursor['phase_min_spin'], theta
-        elif edge == 'phase_max':
-            cursor['phase_max'] = theta
-            spin, value = cursor['phase_max_spin'], theta
-        elif edge == 'modulation_min':
-            value = min(max(0.0, min(1.0, r)), cursor['modulation_max'])
-            cursor['modulation_min'] = value
-            spin = cursor['mod_min_spin']
+        if edge == "phase_min":
+            cursor["phase_min"] = theta
+            spin, value = cursor["phase_min_spin"], theta
+        elif edge == "phase_max":
+            cursor["phase_max"] = theta
+            spin, value = cursor["phase_max_spin"], theta
+        elif edge == "modulation_min":
+            value = min(max(0.0, min(1.0, r)), cursor["modulation_max"])
+            cursor["modulation_min"] = value
+            spin = cursor["mod_min_spin"]
         else:  # modulation_max
-            value = max(max(0.0, min(1.0, r)), cursor['modulation_min'])
-            cursor['modulation_max'] = value
-            spin = cursor['mod_max_spin']
+            value = max(max(0.0, min(1.0, r)), cursor["modulation_min"])
+            cursor["modulation_max"] = value
+            spin = cursor["mod_max_spin"]
 
         spin.blockSignals(True)
         spin.setValue(value)
@@ -3373,7 +3931,7 @@ class CursorSelectionWidget(QWidget):
 
     def closeEvent(self, event):
         """Clean up signal connections before closing."""
-        if hasattr(self, 'parent_widget') and self.parent_widget:
+        if hasattr(self, "parent_widget") and self.parent_widget:
             with contextlib.suppress(TypeError, ValueError, AttributeError):
                 self.parent_widget.canvas_widget.show_color_overlay_signal.disconnect()
         event.accept()
@@ -3428,15 +3986,15 @@ def draw_selection_overlay(ax, cursors, mode="cursor", settings=None):
             )
             ax.add_patch(patch)
         elif cursor_type == "polar":
-            r = cursor['modulation_max']
-            width = cursor['modulation_max'] - cursor['modulation_min']
+            r = cursor["modulation_max"]
+            width = cursor["modulation_max"] - cursor["modulation_min"]
             if width <= 0:
                 width = 0.001
             patch = Wedge(
                 (0, 0),
                 r,
-                cursor['phase_min'],
-                cursor['phase_max'],
+                cursor["phase_min"],
+                cursor["phase_max"],
                 width=width,
                 fill=False,
                 edgecolor=color,

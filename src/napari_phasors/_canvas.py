@@ -753,8 +753,12 @@ class Histogram2D:
         )
 
         grid_t = grid.T
-        norm = Normalize(vmin=0, vmax=max(int(np.max(grid_t)), 1))
-        overlay_rgba = overlay_cmap(norm(grid_t))
+        if isinstance(overlay_cmap, mcolors.ListedColormap):
+            clipped_grid = np.clip(grid_t, 0, overlay_cmap.N - 1)
+            overlay_rgba = overlay_cmap(clipped_grid)
+        else:
+            norm = Normalize(vmin=0, vmax=max(int(np.max(grid_t)), 1))
+            overlay_rgba = overlay_cmap(norm(grid_t))
         overlay_rgba[grid_t == 0, 3] = 0.0
 
         extent = [x_edges[0], x_edges[-1], y_edges[0], y_edges[-1]]
@@ -931,9 +935,13 @@ class Scatter:
             if isinstance(self._overlay_colormap, mcolors.Colormap)
             else plt.get_cmap(self._overlay_colormap)
         )
-        max_idx = max(int(np.nanmax(indices)), 1)
-        norm = Normalize(vmin=0, vmax=max_idx)
-        colors = cmap(norm(indices))
+        if isinstance(cmap, mcolors.ListedColormap):
+            clipped = np.clip(indices, 0, cmap.N - 1)
+            colors = cmap(clipped)
+        else:
+            max_idx = max(int(np.nanmax(indices)), 1)
+            norm = Normalize(vmin=0, vmax=max_idx)
+            colors = cmap(norm(indices))
         scatter.set_color(colors)
 
 
@@ -1063,6 +1071,23 @@ class SelectionToolbarWidget(QWidget):
         layout.setSpacing(4)
         self.setLayout(layout)
 
+        self.setStyleSheet(
+            "QToolButton {"
+            "  border: 1px solid transparent;"
+            "  border-radius: 4px;"
+            "  padding: 2px;"
+            "  background: transparent;"
+            "}"
+            "QToolButton:hover {"
+            "  border: 1px solid rgba(128, 128, 128, 0.4);"
+            "  background-color: rgba(128, 128, 128, 0.15);"
+            "}"
+            "QToolButton:checked {"
+            "  border: 1px solid rgba(0, 193, 140, 0.9);"
+            "  background-color: rgba(0, 193, 140, 0.25);"
+            "}"
+        )
+
         self.buttons: dict[str, QToolButton] = {}
 
         self._add_button("LASSO", "Lasso selection tool", "lasso")
@@ -1075,6 +1100,7 @@ class SelectionToolbarWidget(QWidget):
         btn.setCheckable(True)
         btn.setIcon(_make_selector_icon(shape))
         btn.setIconSize(QSize(20, 20))
+        btn.setFixedSize(28, 28)
         btn.setCursor(Qt.PointingHandCursor)
         self.layout().addWidget(btn)
         self.buttons[name] = btn

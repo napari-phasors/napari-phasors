@@ -13,7 +13,7 @@ from napari_phasors.plotter import PlotterWidget
 
 def _visible_rows(cw):
     """Number of cursor rows currently shown (current-harmonic cursors)."""
-    return sum(not c['row'].isHidden() for c in cw._cursors)
+    return sum(not c["row"].isHidden() for c in cw._cursors)
 
 
 # ---------------------------------------------------------------------------
@@ -46,11 +46,11 @@ def test_selection_widget_initialization_values(make_viewer_model, qtbot):
     assert widget.stacked_widget.count() == 3
     assert widget.stacked_widget.currentIndex() == 0
 
-    assert hasattr(widget, 'cursor_selection_widget')
+    assert hasattr(widget, "cursor_selection_widget")
     assert widget.cursor_selection_widget is not None
-    assert hasattr(widget, 'manual_selection_widget')
+    assert hasattr(widget, "manual_selection_widget")
     assert widget.manual_selection_widget is not None
-    assert hasattr(widget, 'automatic_clustering_widget')
+    assert hasattr(widget, "automatic_clustering_widget")
     assert widget.automatic_clustering_widget is not None
 
     combobox = widget.selection_input_widget.phasor_selection_id_combobox
@@ -174,7 +174,7 @@ def test_update_phasor_plot_no_layer(make_viewer_model, qtbot):
     parent = PlotterWidget(viewer)
     widget = parent.selection_tab
 
-    with patch.object(parent, 'plot') as mock_plot:
+    with patch.object(parent, "plot") as mock_plot:
         result = widget.update_phasor_plot_with_selection_id("test_selection")
         assert result is None
         mock_plot.assert_not_called()
@@ -187,7 +187,7 @@ def test_update_phasor_plot_during_update(make_viewer_model, qtbot):
     parent._updating_plot = True
     widget = parent.selection_tab
 
-    with patch.object(parent, 'plot') as mock_plot:
+    with patch.object(parent, "plot") as mock_plot:
         result = widget.update_phasor_plot_with_selection_id("test_selection")
         assert result is None
         mock_plot.assert_not_called()
@@ -200,14 +200,14 @@ def test_create_phasors_selected_layer_no_layer(make_viewer_model, qtbot):
     widget = parent.selection_tab
 
     with patch(
-        'napari_phasors.selection_tab.colormap_to_dict'
+        "napari_phasors.selection_tab.colormap_to_dict"
     ) as mock_colormap_to_dict:
         result = widget.create_phasors_selected_layer()
         assert result is None
         mock_colormap_to_dict.assert_not_called()
 
 
-@patch('napari_phasors.selection_tab.colormap_to_dict')
+@patch("napari_phasors.selection_tab.colormap_to_dict")
 def test_create_phasors_selected_layer_with_data(
     mock_colormap_to_dict, make_viewer_model, qtbot
 ):
@@ -298,12 +298,12 @@ def test_cursor_selection_widget_initialization(make_viewer_model, qtbot):
     assert widget.parent_widget == parent
     assert widget.layout().count() > 0
 
-    assert hasattr(widget, 'add_cursor_button')
-    assert hasattr(widget, 'calculate_button')
-    assert hasattr(widget, 'autoupdate_check')
+    assert hasattr(widget, "add_cursor_button")
+    assert hasattr(widget, "calculate_button")
+    assert hasattr(widget, "autoupdate_check")
     assert "Add Cursor" in widget.add_cursor_button.text()
     assert "Calculate" in widget.calculate_button.text()
-    assert widget.autoupdate_check.text() == 'Autoupdate'
+    assert widget.autoupdate_check.text() == "Autoupdate"
     assert not widget.autoupdate_check.isChecked()
 
     assert widget._cursors == []
@@ -327,19 +327,19 @@ def test_cursor_add_circular(make_viewer_model, qtbot):
     assert _visible_rows(widget) == 1
 
     cursor = widget._cursors[0]
-    assert cursor['type'] == 'circular'
-    assert {'g', 's', 'radius', 'color', 'patch'} <= set(cursor)
+    assert cursor["type"] == "circular"
+    assert {"g", "s", "radius", "color", "patch"} <= set(cursor)
     xlim = parent.canvas_widget.axes.get_xlim()
     ylim = parent.canvas_widget.axes.get_ylim()
     expected_g = max(-1.5, min(1.5, (xlim[0] + xlim[1]) / 2.0))
     expected_s = max(-1.5, min(1.5, (ylim[0] + ylim[1]) / 2.0))
-    assert np.isclose(cursor['g'], expected_g)
-    assert np.isclose(cursor['s'], expected_s)
-    assert cursor['radius'] == 0.05
+    assert np.isclose(cursor["g"], expected_g)
+    assert np.isclose(cursor["s"], expected_s)
+    assert cursor["radius"] == 0.05
 
     widget._add_cursor()
     assert len(widget._cursors) == 2
-    assert widget._cursors[0]['color'] != widget._cursors[1]['color']
+    assert widget._cursors[0]["color"] != widget._cursors[1]["color"]
 
 
 def test_cursor_add_elliptic_defaults(make_viewer_model, qtbot):
@@ -352,10 +352,10 @@ def test_cursor_add_elliptic_defaults(make_viewer_model, qtbot):
 
     widget._add_cursor(cursor_type="elliptic")
     cursor = widget._cursors[0]
-    assert cursor['type'] == 'elliptic'
-    assert cursor['radius'] == 0.1
-    assert cursor['radius_minor'] == 0.05
-    assert cursor['angle'] == 0.0
+    assert cursor["type"] == "elliptic"
+    assert cursor["radius"] == 0.1
+    assert cursor["radius_minor"] == 0.05
+    assert cursor["angle"] == 0.0
 
 
 def test_cursor_add_polar_defaults(make_viewer_model, qtbot):
@@ -368,7 +368,7 @@ def test_cursor_add_polar_defaults(make_viewer_model, qtbot):
 
     widget._add_cursor(cursor_type="polar")
     cursor = widget._cursors[0]
-    assert cursor['type'] == 'polar'
+    assert cursor["type"] == "polar"
 
     xlim = parent.canvas_widget.axes.get_xlim()
     ylim = parent.canvas_widget.axes.get_ylim()
@@ -379,10 +379,10 @@ def test_cursor_add_polar_defaults(make_viewer_model, qtbot):
     expected_mod_min = max(0.0, min(1.0, center_modulation - 0.1))
     expected_mod_max = max(0.0, min(1.0, center_modulation + 0.1))
 
-    assert np.allclose(cursor['phase_min'], center_phase - 10.0)
-    assert np.allclose(cursor['phase_max'], center_phase + 10.0)
-    assert np.allclose(cursor['modulation_min'], expected_mod_min)
-    assert np.allclose(cursor['modulation_max'], expected_mod_max)
+    assert np.allclose(cursor["phase_min"], center_phase - 10.0)
+    assert np.allclose(cursor["phase_max"], center_phase + 10.0)
+    assert np.allclose(cursor["modulation_min"], expected_mod_min)
+    assert np.allclose(cursor["modulation_max"], expected_mod_max)
 
 
 def test_cursor_type_change_field_visibility(make_viewer_model, qtbot):
@@ -395,27 +395,27 @@ def test_cursor_type_change_field_visibility(make_viewer_model, qtbot):
 
     widget._add_cursor()
     cursor = widget._cursors[0]
-    combo = cursor['type_combo']
+    combo = cursor["type_combo"]
     assert isinstance(combo, QComboBox)
 
     # Circular: center fields shown, others hidden.
-    assert cursor['center_widget'].isVisibleTo(cursor['detail'])
-    assert not cursor['elliptic_widget'].isVisibleTo(cursor['detail'])
-    assert not cursor['polar_widget'].isVisibleTo(cursor['detail'])
+    assert cursor["center_widget"].isVisibleTo(cursor["detail"])
+    assert not cursor["elliptic_widget"].isVisibleTo(cursor["detail"])
+    assert not cursor["polar_widget"].isVisibleTo(cursor["detail"])
 
     # Switch to elliptical.
     combo.setCurrentIndex(combo.findData("elliptic"))
-    assert cursor['type'] == 'elliptic'
-    assert cursor['center_widget'].isVisibleTo(cursor['detail'])
-    assert cursor['elliptic_widget'].isVisibleTo(cursor['detail'])
-    assert not cursor['polar_widget'].isVisibleTo(cursor['detail'])
+    assert cursor["type"] == "elliptic"
+    assert cursor["center_widget"].isVisibleTo(cursor["detail"])
+    assert cursor["elliptic_widget"].isVisibleTo(cursor["detail"])
+    assert not cursor["polar_widget"].isVisibleTo(cursor["detail"])
 
     # Switch to polar.
     combo.setCurrentIndex(combo.findData("polar"))
-    assert cursor['type'] == 'polar'
-    assert not cursor['center_widget'].isVisibleTo(cursor['detail'])
-    assert not cursor['elliptic_widget'].isVisibleTo(cursor['detail'])
-    assert cursor['polar_widget'].isVisibleTo(cursor['detail'])
+    assert cursor["type"] == "polar"
+    assert not cursor["center_widget"].isVisibleTo(cursor["detail"])
+    assert not cursor["elliptic_widget"].isVisibleTo(cursor["detail"])
+    assert cursor["polar_widget"].isVisibleTo(cursor["detail"])
 
 
 def test_cursor_selection_follows_add_and_row_click(make_viewer_model, qtbot):
@@ -433,22 +433,22 @@ def test_cursor_selection_follows_add_and_row_click(make_viewer_model, qtbot):
     widget._add_cursor()
     first = widget._cursors[0]
     assert widget._selected_cursor is first
-    assert widget._details_stack.currentWidget() is first['detail']
-    assert first['row'].property("selected")
+    assert widget._details_stack.currentWidget() is first["detail"]
+    assert first["row"].property("selected")
 
     # Adding a second cursor moves the selection to the new cursor.
     widget._add_cursor()
     second = widget._cursors[1]
     assert widget._selected_cursor is second
-    assert not first['row'].property("selected")
-    assert second['row'].property("selected")
+    assert not first["row"].property("selected")
+    assert second["row"].property("selected")
 
     # Left-clicking the first cursor's row selects it again (exercises
     # ClickableFrame.mousePressEvent -> clicked -> _select_cursor).
-    qtbot.mouseClick(first['row'], Qt.LeftButton)
+    qtbot.mouseClick(first["row"], Qt.LeftButton)
     assert widget._selected_cursor is first
-    assert first['row'].property("selected")
-    assert widget._details_stack.currentWidget() is first['detail']
+    assert first["row"].property("selected")
+    assert widget._details_stack.currentWidget() is first["detail"]
     # The editor title reflects the selected cursor's number and shape.
     assert "Circular" in widget._editor_box.title()
 
@@ -465,7 +465,7 @@ def test_select_cursor_ignores_foreign_cursor(make_viewer_model, qtbot):
     assert selected is not None
 
     # Passing a dict that is not one of the widget's cursors is a no-op.
-    widget._select_cursor({'not': 'a real cursor'})
+    widget._select_cursor({"not": "a real cursor"})
     assert widget._selected_cursor is selected
 
 
@@ -492,7 +492,7 @@ def test_editor_title_updates_with_shape(make_viewer_model, qtbot):
     cursor = widget._cursors[0]
     assert "Circular" in widget._editor_box.title()
 
-    combo = cursor['type_combo']
+    combo = cursor["type_combo"]
     combo.setCurrentIndex(combo.findData("polar"))
     assert "Polar" in widget._editor_box.title()
 
@@ -541,14 +541,14 @@ def test_cursor_set1_colormap(make_viewer_model, qtbot):
     for _ in range(9):
         widget._add_cursor()
 
-    colors = [cursor['color'] for cursor in widget._cursors]
+    colors = [cursor["color"] for cursor in widget._cursors]
     color_tuples = [(c.red(), c.green(), c.blue()) for c in colors]
     assert len(set(color_tuples)) == 9
 
     widget._add_cursor()
     assert len(widget._cursors) == 10
-    color_0 = widget._cursors[0]['color']
-    color_9 = widget._cursors[9]['color']
+    color_0 = widget._cursors[0]["color"]
+    color_9 = widget._cursors[9]["color"]
     assert (color_0.red(), color_0.green(), color_0.blue()) == (
         color_9.red(),
         color_9.green(),
@@ -566,15 +566,15 @@ def test_cursor_row_spinbox_updates(make_viewer_model, qtbot):
 
     widget._add_cursor()
     cursor = widget._cursors[0]
-    assert isinstance(cursor['g_spin'], QDoubleSpinBox)
+    assert isinstance(cursor["g_spin"], QDoubleSpinBox)
 
-    cursor['g_spin'].setValue(0.7)
-    cursor['s_spin'].setValue(0.4)
-    cursor['radius_spin'].setValue(0.15)
+    cursor["g_spin"].setValue(0.7)
+    cursor["s_spin"].setValue(0.4)
+    cursor["radius_spin"].setValue(0.15)
 
-    assert cursor['g'] == 0.7
-    assert cursor['s'] == 0.4
-    assert cursor['radius'] == 0.15
+    assert cursor["g"] == 0.7
+    assert cursor["s"] == 0.4
+    assert cursor["radius"] == 0.15
 
 
 def test_cursor_last_radius_used(make_viewer_model, qtbot):
@@ -586,13 +586,13 @@ def test_cursor_last_radius_used(make_viewer_model, qtbot):
     widget = parent.selection_tab.cursor_selection_widget
 
     widget._add_cursor()
-    assert widget._cursors[0]['radius'] == 0.05
+    assert widget._cursors[0]["radius"] == 0.05
 
-    widget._cursors[0]['radius_spin'].setValue(0.25)
-    assert widget._cursors[0]['radius'] == 0.25
+    widget._cursors[0]["radius_spin"].setValue(0.25)
+    assert widget._cursors[0]["radius"] == 0.25
 
     widget._add_cursor()
-    assert widget._cursors[1]['radius'] == 0.25
+    assert widget._cursors[1]["radius"] == 0.25
 
 
 def test_cursor_creates_labels_layer(make_viewer_model, qtbot):
@@ -637,8 +637,8 @@ def test_cursor_combined_layer_mixed_shapes(make_viewer_model, qtbot):
     assert layer_names.count(layer_name) == 1
     labels_layer = viewer.layers[layer_name]
     assert (
-        labels_layer.metadata['napari_phasors_selection_type']
-        == 'cursor_selection'
+        labels_layer.metadata["napari_phasors_selection_type"]
+        == "cursor_selection"
     )
 
     # All three shape metadata keys are persisted (Batch Analysis interop).
@@ -731,18 +731,18 @@ def test_cursor_count_and_percentage(make_viewer_model, qtbot):
     widget._add_cursor(g=0.5, s=0.5, radius=0.5)
     cursor = widget._cursors[0]
 
-    assert isinstance(cursor['count_label'], QLabel)
-    assert isinstance(cursor['percentage_label'], QLabel)
+    assert isinstance(cursor["count_label"], QLabel)
+    assert isinstance(cursor["percentage_label"], QLabel)
 
-    count_text = cursor['count_label'].text()
-    percentage_text = cursor['percentage_label'].text()
+    count_text = cursor["count_label"].text()
+    percentage_text = cursor["percentage_label"].text()
     assert count_text != "-"
     assert percentage_text != "-"
     assert int(count_text) >= 0
     assert "." in percentage_text or percentage_text.isdigit()
 
     widget._update_cursor_statistics()
-    assert cursor['count_label'].text() != "-"
+    assert cursor["count_label"].text() != "-"
 
 
 def test_cursor_statistics_update_on_change(make_viewer_model, qtbot):
@@ -756,10 +756,10 @@ def test_cursor_statistics_update_on_change(make_viewer_model, qtbot):
     assert not widget._autoupdate_enabled
     widget._add_cursor(g=0.5, s=0.5, radius=0.1)
     cursor = widget._cursors[0]
-    assert cursor['count_label'].text() != "-"
+    assert cursor["count_label"].text() != "-"
 
-    cursor['radius_spin'].setValue(0.5)
-    assert cursor['count_label'].text() != "-"
+    cursor["radius_spin"].setValue(0.5)
+    assert cursor["count_label"].text() != "-"
 
 
 def test_cursor_clear_and_redraw_patches(make_viewer_model, qtbot):
@@ -774,16 +774,16 @@ def test_cursor_clear_and_redraw_patches(make_viewer_model, qtbot):
     widget._add_cursor()
     assert len(widget._cursors) == 2
     for cursor in widget._cursors:
-        assert cursor['patch'] is not None
+        assert cursor["patch"] is not None
 
     widget.clear_all_patches()
     for cursor in widget._cursors:
-        assert cursor['patch'] is None
+        assert cursor["patch"] is None
 
     widget.redraw_all_patches()
     for cursor in widget._cursors:
-        assert cursor['patch'] is not None
-        assert cursor['patch'].get_visible()
+        assert cursor["patch"] is not None
+        assert cursor["patch"].get_visible()
 
 
 def test_cursor_clear_all(make_viewer_model, qtbot):
@@ -847,13 +847,13 @@ def test_cursor_drag_initialization(make_viewer_model, qtbot):
     cursor = widget._cursors[0]
 
     mock_event = Mock()
-    mock_event.artist = cursor['patch']
+    mock_event.artist = cursor["patch"]
     mock_event.mouseevent.xdata = 0.5
     mock_event.mouseevent.ydata = 0.3
 
     assert widget._dragging_cursor is None
     with patch.object(
-        QApplication, 'keyboardModifiers', return_value=Qt.NoModifier
+        QApplication, "keyboardModifiers", return_value=Qt.NoModifier
     ):
         widget._on_pick(mock_event)
 
@@ -871,25 +871,25 @@ def test_cursor_drag_motion(make_viewer_model, qtbot):
 
     widget._add_cursor()
     cursor = widget._cursors[0]
-    initial_g = cursor['g']
+    initial_g = cursor["g"]
 
     widget._dragging_cursor = cursor
-    widget._drag_mode = 'translate'
+    widget._drag_mode = "translate"
     widget._drag_offset = (0, 0)
 
     mock_event = Mock()
     mock_event.xdata = 0.7
     mock_event.ydata = 0.4
     with patch.object(
-        QApplication, 'keyboardModifiers', return_value=Qt.NoModifier
+        QApplication, "keyboardModifiers", return_value=Qt.NoModifier
     ):
         widget._on_motion(mock_event)
 
-    assert cursor['g'] == 0.7
-    assert cursor['s'] == 0.4
-    assert cursor['g'] != initial_g
-    assert cursor['g_spin'].value() == 0.7
-    assert cursor['s_spin'].value() == 0.4
+    assert cursor["g"] == 0.7
+    assert cursor["s"] == 0.4
+    assert cursor["g"] != initial_g
+    assert cursor["g_spin"].value() == 0.7
+    assert cursor["s_spin"].value() == 0.4
 
 
 def test_cursor_drag_release(make_viewer_model, qtbot):
@@ -918,19 +918,19 @@ def test_cursor_drag_without_pick(make_viewer_model, qtbot):
 
     widget._add_cursor()
     cursor = widget._cursors[0]
-    initial_g = cursor['g']
-    initial_s = cursor['s']
+    initial_g = cursor["g"]
+    initial_s = cursor["s"]
 
     mock_event = Mock()
     mock_event.xdata = 0.9
     mock_event.ydata = 0.5
     with patch.object(
-        QApplication, 'keyboardModifiers', return_value=Qt.NoModifier
+        QApplication, "keyboardModifiers", return_value=Qt.NoModifier
     ):
         widget._on_motion(mock_event)
 
-    assert cursor['g'] == initial_g
-    assert cursor['s'] == initial_s
+    assert cursor["g"] == initial_g
+    assert cursor["s"] == initial_s
 
 
 def test_cursor_drag_updates_patch_position(make_viewer_model, qtbot):
@@ -943,18 +943,18 @@ def test_cursor_drag_updates_patch_position(make_viewer_model, qtbot):
 
     widget._add_cursor()
     cursor = widget._cursors[0]
-    circle_patch = cursor['patch']
+    circle_patch = cursor["patch"]
     initial_center = circle_patch.center
 
     widget._dragging_cursor = cursor
-    widget._drag_mode = 'translate'
+    widget._drag_mode = "translate"
     widget._drag_offset = (0, 0)
 
     mock_event = Mock()
     mock_event.xdata = 0.8
     mock_event.ydata = 0.45
     with patch.object(
-        QApplication, 'keyboardModifiers', return_value=Qt.NoModifier
+        QApplication, "keyboardModifiers", return_value=Qt.NoModifier
     ):
         widget._on_motion(mock_event)
 
@@ -973,10 +973,10 @@ def test_cursor_no_auto_apply_during_drag(make_viewer_model, qtbot):
     widget._add_cursor()
     cursor = widget._cursors[0]
 
-    with patch.object(widget, '_apply_selection') as mock_apply:
+    with patch.object(widget, "_apply_selection") as mock_apply:
         widget._dragging_cursor = cursor
         widget._drag_offset = (0, 0)
-        cursor['g_spin'].setValue(0.8)
+        cursor["g_spin"].setValue(0.8)
         mock_apply.assert_not_called()
         widget._on_release(Mock())
 
@@ -994,20 +994,20 @@ def test_elliptical_cursor_drag_and_rotate_logic(make_viewer_model, qtbot):
 
     widget._dragging_cursor = cursor
     widget._drag_offset = (0, 0)
-    widget._drag_mode = 'translate'
+    widget._drag_mode = "translate"
 
     mock_event = Mock()
     mock_event.xdata = 0.6
     mock_event.ydata = 0.6
     with patch.object(
-        QApplication, 'keyboardModifiers', return_value=Qt.NoModifier
+        QApplication, "keyboardModifiers", return_value=Qt.NoModifier
     ):
         widget._on_motion(mock_event)
-    assert cursor['g'] == 0.6
-    assert cursor['s'] == 0.6
+    assert cursor["g"] == 0.6
+    assert cursor["s"] == 0.6
 
     widget._dragging_cursor = cursor
-    widget._drag_mode = 'rotate'
+    widget._drag_mode = "rotate"
     widget._drag_start_angle = 0.0
     widget._drag_start_cursor_angle = 0.0
 
@@ -1015,10 +1015,10 @@ def test_elliptical_cursor_drag_and_rotate_logic(make_viewer_model, qtbot):
     mock_rotate_event.xdata = 0.6
     mock_rotate_event.ydata = 0.7
     with patch.object(
-        QApplication, 'keyboardModifiers', return_value=Qt.ShiftModifier
+        QApplication, "keyboardModifiers", return_value=Qt.ShiftModifier
     ):
         widget._on_motion(mock_rotate_event)
-    assert np.isclose(cursor['angle'], 90.0)
+    assert np.isclose(cursor["angle"], 90.0)
 
 
 def test_elliptical_cursor_drag_cycle(make_viewer_model, qtbot):
@@ -1033,11 +1033,11 @@ def test_elliptical_cursor_drag_cycle(make_viewer_model, qtbot):
     cursor = widget._cursors[0]
 
     pick = Mock()
-    pick.artist = cursor['patch']
+    pick.artist = cursor["patch"]
     pick.mouseevent.xdata = 0.5
     pick.mouseevent.ydata = 0.3
     with patch.object(
-        QApplication, 'keyboardModifiers', return_value=Qt.NoModifier
+        QApplication, "keyboardModifiers", return_value=Qt.NoModifier
     ):
         widget._on_pick(pick)
 
@@ -1045,7 +1045,7 @@ def test_elliptical_cursor_drag_cycle(make_viewer_model, qtbot):
     motion.xdata = 0.6
     motion.ydata = 0.4
     with patch.object(
-        QApplication, 'keyboardModifiers', return_value=Qt.NoModifier
+        QApplication, "keyboardModifiers", return_value=Qt.NoModifier
     ):
         widget._on_motion(motion)
 
@@ -1072,7 +1072,7 @@ def test_polar_cursor_not_translated_but_edge_editable(
     )
     cursor = widget._cursors[0]
     # The polar patch is pickable (so its edges can be grabbed).
-    assert cursor['patch'].get_picker() is True
+    assert cursor["patch"].get_picker() is True
 
 
 def test_polar_closest_edge_detection(make_viewer_model, qtbot):
@@ -1098,13 +1098,13 @@ def test_polar_closest_edge_detection(make_viewer_model, qtbot):
         )
 
     assert (
-        widget._closest_polar_edge(cursor, point(20, 0.8)) == 'modulation_max'
+        widget._closest_polar_edge(cursor, point(20, 0.8)) == "modulation_max"
     )
     assert (
-        widget._closest_polar_edge(cursor, point(20, 0.4)) == 'modulation_min'
+        widget._closest_polar_edge(cursor, point(20, 0.4)) == "modulation_min"
     )
-    assert widget._closest_polar_edge(cursor, point(10, 0.6)) == 'phase_min'
-    assert widget._closest_polar_edge(cursor, point(30, 0.6)) == 'phase_max'
+    assert widget._closest_polar_edge(cursor, point(10, 0.6)) == "phase_min"
+    assert widget._closest_polar_edge(cursor, point(30, 0.6)) == "phase_max"
 
 
 def test_polar_edge_drag_changes_value_not_center(make_viewer_model, qtbot):
@@ -1125,31 +1125,31 @@ def test_polar_edge_drag_changes_value_not_center(make_viewer_model, qtbot):
 
     # Pick the outer arc (modulation_max) at 20 degrees, r=0.6.
     pick = Mock()
-    pick.artist = cursor['patch']
+    pick.artist = cursor["patch"]
     pick.mouseevent.xdata = 0.6 * np.cos(np.deg2rad(20))
     pick.mouseevent.ydata = 0.6 * np.sin(np.deg2rad(20))
     with patch.object(
-        QApplication, 'keyboardModifiers', return_value=Qt.NoModifier
+        QApplication, "keyboardModifiers", return_value=Qt.NoModifier
     ):
         widget._on_pick(pick)
-    assert widget._drag_mode == 'polar_edge'
-    assert widget._polar_edge == 'modulation_max'
+    assert widget._drag_mode == "polar_edge"
+    assert widget._polar_edge == "modulation_max"
 
     # Drag outward to r=0.85 at the same angle.
     motion = Mock()
     motion.xdata = 0.85 * np.cos(np.deg2rad(20))
     motion.ydata = 0.85 * np.sin(np.deg2rad(20))
     with patch.object(
-        QApplication, 'keyboardModifiers', return_value=Qt.NoModifier
+        QApplication, "keyboardModifiers", return_value=Qt.NoModifier
     ):
         widget._on_motion(motion)
 
-    assert np.isclose(cursor['modulation_max'], 0.85, atol=1e-6)
-    assert np.isclose(cursor['mod_max_spin'].value(), 0.85, atol=1e-2)
+    assert np.isclose(cursor["modulation_max"], 0.85, atol=1e-6)
+    assert np.isclose(cursor["mod_max_spin"].value(), 0.85, atol=1e-2)
     # Phase bounds and the modulation_min are untouched.
-    assert cursor['phase_min'] == 10.0
-    assert cursor['phase_max'] == 30.0
-    assert cursor['modulation_min'] == 0.4
+    assert cursor["phase_min"] == 10.0
+    assert cursor["phase_max"] == 30.0
+    assert cursor["modulation_min"] == 0.4
 
     widget._on_release(Mock())
     assert widget._dragging_cursor is None
@@ -1172,25 +1172,25 @@ def test_polar_edge_drag_changes_phase(make_viewer_model, qtbot):
     cursor = widget._cursors[0]
 
     pick = Mock()
-    pick.artist = cursor['patch']
+    pick.artist = cursor["patch"]
     pick.mouseevent.xdata = 0.5 * np.cos(np.deg2rad(30))
     pick.mouseevent.ydata = 0.5 * np.sin(np.deg2rad(30))
     with patch.object(
-        QApplication, 'keyboardModifiers', return_value=Qt.NoModifier
+        QApplication, "keyboardModifiers", return_value=Qt.NoModifier
     ):
         widget._on_pick(pick)
-    assert widget._polar_edge == 'phase_max'
+    assert widget._polar_edge == "phase_max"
 
     motion = Mock()
     motion.xdata = 0.5 * np.cos(np.deg2rad(45))
     motion.ydata = 0.5 * np.sin(np.deg2rad(45))
     with patch.object(
-        QApplication, 'keyboardModifiers', return_value=Qt.NoModifier
+        QApplication, "keyboardModifiers", return_value=Qt.NoModifier
     ):
         widget._on_motion(motion)
 
-    assert np.isclose(cursor['phase_max'], 45.0, atol=1e-6)
-    assert cursor['phase_min'] == 10.0
+    assert np.isclose(cursor["phase_max"], 45.0, atol=1e-6)
+    assert cursor["phase_min"] == 10.0
 
 
 # ---------------------------------------------------------------------------
@@ -1214,12 +1214,12 @@ def test_cursor_storage_in_metadata(make_viewer_model, qtbot):
     selections = intensity_image_layer.metadata["settings"]["selections"]
     cursors = selections["circular_cursors"]
     assert len(cursors) == 3
-    assert cursors[0]['g'] == 0.5
-    assert cursors[0]['s'] == 0.3
-    assert cursors[0]['radius'] == 0.1
-    assert len(cursors[0]['color']) == 4
-    assert cursors[1]['g'] == 0.6
-    assert cursors[2]['radius'] == 0.08
+    assert cursors[0]["g"] == 0.5
+    assert cursors[0]["s"] == 0.3
+    assert cursors[0]["radius"] == 0.1
+    assert len(cursors[0]["color"]) == 4
+    assert cursors[1]["g"] == 0.6
+    assert cursors[2]["radius"] == 0.08
 
 
 def test_cursor_restoration_from_metadata(make_viewer_model, qtbot):
@@ -1244,10 +1244,10 @@ def test_cursor_restoration_from_metadata(make_viewer_model, qtbot):
     parent.on_image_layer_changed()
 
     assert len(widget._cursors) == 2
-    assert abs(widget._cursors[0]['g'] - 0.5) < 0.001
-    assert abs(widget._cursors[0]['s'] - 0.3) < 0.001
-    assert abs(widget._cursors[0]['radius'] - 0.1) < 0.001
-    assert abs(widget._cursors[1]['g'] - 0.6) < 0.001
+    assert abs(widget._cursors[0]["g"] - 0.5) < 0.001
+    assert abs(widget._cursors[0]["s"] - 0.3) < 0.001
+    assert abs(widget._cursors[0]["radius"] - 0.1) < 0.001
+    assert abs(widget._cursors[1]["g"] - 0.6) < 0.001
 
 
 def test_cursor_metadata_updates_on_change(make_viewer_model, qtbot):
@@ -1261,15 +1261,15 @@ def test_cursor_metadata_updates_on_change(make_viewer_model, qtbot):
     widget._add_cursor(g=0.5, s=0.3, radius=0.1)
     widget._apply_selection()
     selections = intensity_image_layer.metadata["settings"]["selections"]
-    assert selections["circular_cursors"][0]['g'] == 0.5
+    assert selections["circular_cursors"][0]["g"] == 0.5
 
-    widget._cursors[0]['g_spin'].setValue(0.7)
+    widget._cursors[0]["g_spin"].setValue(0.7)
     widget._apply_selection()
     cursors = intensity_image_layer.metadata["settings"]["selections"][
         "circular_cursors"
     ]
-    assert cursors[0]['g'] == 0.7
-    assert cursors[0]['s'] == 0.3
+    assert cursors[0]["g"] == 0.7
+    assert cursors[0]["s"] == 0.3
 
 
 def test_polar_cursor_restore_from_metadata(make_viewer_model, qtbot):
@@ -1293,7 +1293,7 @@ def test_polar_cursor_restore_from_metadata(make_viewer_model, qtbot):
     w = parent.selection_tab.cursor_selection_widget
     w._on_image_layer_changed()
     assert len(w._cursors) == 1
-    assert w._cursors[0]['type'] == 'polar'
+    assert w._cursors[0]["type"] == "polar"
 
 
 def test_elliptical_cursor_restore_from_metadata(make_viewer_model, qtbot):
@@ -1318,7 +1318,7 @@ def test_elliptical_cursor_restore_from_metadata(make_viewer_model, qtbot):
     w = parent.selection_tab.cursor_selection_widget
     w._on_image_layer_changed()
     assert len(w._cursors) == 1
-    assert w._cursors[0]['type'] == 'elliptic'
+    assert w._cursors[0]["type"] == "elliptic"
 
 
 def test_cursor_harmonic_storage(make_viewer_model, qtbot):
@@ -1331,11 +1331,11 @@ def test_cursor_harmonic_storage(make_viewer_model, qtbot):
 
     parent.harmonic_spinbox.setValue(1)
     widget._add_cursor()
-    assert widget._cursors[0]['harmonic'] == 1
+    assert widget._cursors[0]["harmonic"] == 1
 
     parent.harmonic_spinbox.setValue(2)
     widget._add_cursor()
-    assert widget._cursors[1]['harmonic'] == 2
+    assert widget._cursors[1]["harmonic"] == 2
 
 
 def test_cursor_harmonic_visibility(make_viewer_model, qtbot):
@@ -1348,19 +1348,19 @@ def test_cursor_harmonic_visibility(make_viewer_model, qtbot):
 
     parent.harmonic_spinbox.setValue(1)
     widget._add_cursor()
-    assert widget._cursors[0]['patch'] is not None
+    assert widget._cursors[0]["patch"] is not None
 
     parent.harmonic_spinbox.setValue(2)
     widget.on_harmonic_changed()
-    assert widget._cursors[0]['patch'] is None
+    assert widget._cursors[0]["patch"] is None
 
     widget._add_cursor()
-    assert widget._cursors[1]['patch'] is not None
+    assert widget._cursors[1]["patch"] is not None
 
     parent.harmonic_spinbox.setValue(1)
     widget.on_harmonic_changed()
-    assert widget._cursors[0]['patch'] is not None
-    assert widget._cursors[1]['patch'] is None
+    assert widget._cursors[0]["patch"] is not None
+    assert widget._cursors[1]["patch"] is None
 
 
 def test_cursor_harmonic_row_filtering(make_viewer_model, qtbot):
@@ -1401,11 +1401,11 @@ def test_cursor_harmonic_color_indexing(make_viewer_model, qtbot):
 
     parent.harmonic_spinbox.setValue(1)
     widget._add_cursor()
-    h1_color1 = widget._cursors[0]['color']
+    h1_color1 = widget._cursors[0]["color"]
 
     parent.harmonic_spinbox.setValue(2)
     widget._add_cursor()
-    h2_color1 = widget._cursors[1]['color']
+    h2_color1 = widget._cursors[1]["color"]
 
     assert (h1_color1.red(), h1_color1.green(), h1_color1.blue()) == (
         h2_color1.red(),
@@ -1414,7 +1414,7 @@ def test_cursor_harmonic_color_indexing(make_viewer_model, qtbot):
     )
 
     widget._add_cursor()
-    h2_color2 = widget._cursors[2]['color']
+    h2_color2 = widget._cursors[2]["color"]
     assert h2_color1 != h2_color2
 
 
@@ -1472,29 +1472,29 @@ def test_polar_cursor_clamping_and_validation(make_viewer_model, qtbot):
         cursor_type="polar", modulation_min=0.8, modulation_max=0.4
     )
     cursor = widget._cursors[-1]
-    assert cursor['modulation_min'] == 0.4
-    assert cursor['modulation_max'] == 0.8
+    assert cursor["modulation_min"] == 0.4
+    assert cursor["modulation_max"] == 0.8
 
     widget._add_cursor(
         cursor_type="polar", modulation_min=-0.5, modulation_max=1.5
     )
     cursor = widget._cursors[-1]
-    assert cursor['modulation_min'] == 0.0
-    assert cursor['modulation_max'] == 1.0
+    assert cursor["modulation_min"] == 0.0
+    assert cursor["modulation_max"] == 1.0
 
     widget._add_cursor(
         cursor_type="polar", modulation_min=1.2, modulation_max=1.0
     )
     cursor = widget._cursors[-1]
-    assert cursor['modulation_min'] == 0.99
-    assert cursor['modulation_max'] == 1.0
+    assert cursor["modulation_min"] == 0.99
+    assert cursor["modulation_max"] == 1.0
 
     widget._add_cursor(
         cursor_type="polar", modulation_min=0.5, modulation_max=0.5
     )
     cursor = widget._cursors[-1]
-    assert np.isclose(cursor['modulation_min'], 0.5)
-    assert np.isclose(cursor['modulation_max'], 0.51)
+    assert np.isclose(cursor["modulation_min"], 0.5)
+    assert np.isclose(cursor["modulation_max"], 0.51)
 
 
 def test_cursor_coordinate_clipping(make_viewer_model, qtbot):
@@ -1507,13 +1507,13 @@ def test_cursor_coordinate_clipping(make_viewer_model, qtbot):
 
     widget._add_cursor(cursor_type="circular", g=2.0, s=-2.0)
     cursor = widget._cursors[-1]
-    assert cursor['g'] == 1.5
-    assert cursor['s'] == -1.5
+    assert cursor["g"] == 1.5
+    assert cursor["s"] == -1.5
 
     widget._add_cursor(cursor_type="elliptic", g=-2.5, s=3.0)
     cursor = widget._cursors[-1]
-    assert cursor['g'] == -1.5
-    assert cursor['s'] == 1.5
+    assert cursor["g"] == -1.5
+    assert cursor["s"] == 1.5
 
 
 def test_cursor_added_at_custom_limits(make_viewer_model, qtbot):
@@ -1534,12 +1534,12 @@ def test_cursor_added_at_custom_limits(make_viewer_model, qtbot):
     widget = parent.selection_tab.cursor_selection_widget
 
     widget._add_cursor(cursor_type="circular")
-    assert np.isclose(widget._cursors[-1]['g'], expected_g)
-    assert np.isclose(widget._cursors[-1]['s'], expected_s)
+    assert np.isclose(widget._cursors[-1]["g"], expected_g)
+    assert np.isclose(widget._cursors[-1]["s"], expected_s)
 
     widget._add_cursor(cursor_type="elliptic")
-    assert np.isclose(widget._cursors[-1]['g'], expected_g)
-    assert np.isclose(widget._cursors[-1]['s'], expected_s)
+    assert np.isclose(widget._cursors[-1]["g"], expected_g)
+    assert np.isclose(widget._cursors[-1]["s"], expected_s)
 
 
 @pytest.mark.parametrize("cursor_type", ["circular", "elliptic", "polar"])
@@ -1556,7 +1556,7 @@ def test_cursor_lifecycle(make_viewer_model, qtbot, cursor_type):
     widget._add_cursor(cursor_type=cursor_type)
     widget._add_cursor(cursor_type=cursor_type)
     assert len(widget._cursors) == 2
-    assert widget._cursors[0]['color'] != widget._cursors[1]['color']
+    assert widget._cursors[0]["color"] != widget._cursors[1]["color"]
 
     widget._update_cursor_statistics()
     widget.on_harmonic_changed()
@@ -1602,13 +1602,13 @@ def test_cursor_statistics_with_autoupdate_and_hover(make_viewer_model, qtbot):
     )
     w._update_cursor_statistics()
 
-    ell_patch = w._cursors[0]['patch']
+    ell_patch = w._cursors[0]["patch"]
     ev = Mock()
     ev.inaxes = ell_patch.axes
-    ev.xdata = w._cursors[0]['g']
-    ev.ydata = w._cursors[0]['s']
+    ev.xdata = w._cursors[0]["g"]
+    ev.ydata = w._cursors[0]["s"]
     with patch.object(
-        QApplication, 'keyboardModifiers', return_value=Qt.NoModifier
+        QApplication, "keyboardModifiers", return_value=Qt.NoModifier
     ):
         w._update_hover_cursor(ev)
         ev2 = Mock()
@@ -1650,7 +1650,7 @@ def test_cursor_multi_statistics(make_viewer_model, qtbot):
         cursor_type="elliptic", g=0.4, s=0.25, radius=0.4, radius_minor=0.3
     )
     w._update_cursor_statistics()
-    w._cursors[0]['radius_spin'].setValue(0.5)
+    w._cursors[0]["radius_spin"].setValue(0.5)
     w._update_cursor_statistics()
     assert len(w._cursors) == 2
 
@@ -1666,11 +1666,11 @@ def test_cursor_row_edit_updates_patch(make_viewer_model, qtbot):
         cursor_type="elliptic", g=0.5, s=0.3, radius=0.2, radius_minor=0.1
     )
     cursor = w._cursors[0]
-    cursor['g_spin'].setValue(0.6)
-    cursor['s_spin'].setValue(0.25)
-    cursor['radius_spin'].setValue(0.25)
-    assert cursor['g'] == 0.6
-    assert cursor['patch'] is not None
+    cursor["g_spin"].setValue(0.6)
+    cursor["s_spin"].setValue(0.25)
+    cursor["radius_spin"].setValue(0.25)
+    assert cursor["g"] == 0.6
+    assert cursor["patch"] is not None
 
 
 # ---------------------------------------------------------------------------
@@ -1688,20 +1688,20 @@ def test_automatic_clustering_widget_initialization(make_viewer_model, qtbot):
     assert widget.parent_widget == parent
     assert widget.layout().count() > 0
 
-    assert hasattr(widget, 'clustering_method_combobox')
+    assert hasattr(widget, "clustering_method_combobox")
     assert widget.clustering_method_combobox.count() == 1
     assert (
         widget.clustering_method_combobox.itemText(0)
         == "GMM (Gaussian Mixture Model)"
     )
 
-    assert hasattr(widget, 'num_clusters_spinbox')
+    assert hasattr(widget, "num_clusters_spinbox")
     assert widget.num_clusters_spinbox.minimum() == 2
     assert widget.num_clusters_spinbox.maximum() == 100
     assert widget.num_clusters_spinbox.value() == 2
 
-    assert hasattr(widget, 'apply_button')
-    assert hasattr(widget, 'clear_button')
+    assert hasattr(widget, "apply_button")
+    assert hasattr(widget, "clear_button")
     assert widget.apply_button.text() == "Apply Clustering"
     assert widget.clear_button.text() == "Clear Clusters"
     assert not widget.clear_button.isEnabled()
@@ -1731,15 +1731,15 @@ def test_automatic_clustering_apply_gmm(make_viewer_model, qtbot):
     assert len(widget._clusters) == 3
     cluster = widget._clusters[0]
     assert {
-        'g',
-        's',
-        'radius',
-        'radius_minor',
-        'angle',
-        'color',
-        'harmonic',
+        "g",
+        "s",
+        "radius",
+        "radius_minor",
+        "angle",
+        "color",
+        "harmonic",
     } <= set(cluster)
-    assert cluster['harmonic'] == 1
+    assert cluster["harmonic"] == 1
     assert len(widget._ellipse_patches) == 3
     assert widget.cluster_table.rowCount() == 3
     assert widget.clear_button.isEnabled()
@@ -1815,7 +1815,7 @@ def test_automatic_clustering_harmonic_storage(make_viewer_model, qtbot):
 
     assert len(widget._clusters) == 3
     for cluster in widget._clusters:
-        assert cluster['harmonic'] == 2
+        assert cluster["harmonic"] == 2
 
 
 def test_automatic_clustering_remove_cluster(make_viewer_model, qtbot):
@@ -1929,7 +1929,7 @@ def test_on_harmonic_changed_only_updates_active_mode(
     parent.harmonic_spinbox.setValue(1)
     selection_widget.on_harmonic_changed()
 
-    assert cursor_widget._cursors[0]['patch'] is not None
+    assert cursor_widget._cursors[0]["patch"] is not None
 
 
 def test_labels_layer_visibility_on_tab_toggle(make_viewer_model, qtbot):
@@ -2062,21 +2062,21 @@ def test_cursor_row_parameter_tooltips(make_viewer_model, qtbot):
     cursor = widget._cursors[0]
 
     for key in (
-        'type_combo',
-        'color_button',
-        'g_spin',
-        's_spin',
-        'radius_spin',
-        'radius_minor_spin',
-        'angle_spin',
-        'phase_min_spin',
-        'phase_max_spin',
-        'mod_min_spin',
-        'mod_max_spin',
-        'count_label',
-        'percentage_label',
-        'visibility_button',
-        'remove_button',
+        "type_combo",
+        "color_button",
+        "g_spin",
+        "s_spin",
+        "radius_spin",
+        "radius_minor_spin",
+        "angle_spin",
+        "phase_min_spin",
+        "phase_max_spin",
+        "mod_min_spin",
+        "mod_max_spin",
+        "count_label",
+        "percentage_label",
+        "visibility_button",
+        "remove_button",
     ):
         assert cursor[key].toolTip() != "", f"missing tooltip on {key}"
 
@@ -2096,12 +2096,12 @@ def test_cursor_visibility_button_defaults(make_viewer_model, qtbot):
 
     widget._add_cursor()
     cursor = widget._cursors[0]
-    assert cursor['visible'] is True
+    assert cursor["visible"] is True
     # The eye button is a plain (non-checkable) button, like the remove "×".
-    assert cursor['visibility_button'].isCheckable() is False
+    assert cursor["visibility_button"].isCheckable() is False
     # Plain (un-crossed) white eye icon shown when visible.
-    assert not cursor['visibility_button'].icon().isNull()
-    assert cursor['visibility_button'].property("eyeCrossed") is False
+    assert not cursor["visibility_button"].icon().isNull()
+    assert cursor["visibility_button"].property("eyeCrossed") is False
 
 
 def test_cursor_visibility_toggle_hides_patch(make_viewer_model, qtbot):
@@ -2114,19 +2114,19 @@ def test_cursor_visibility_toggle_hides_patch(make_viewer_model, qtbot):
 
     widget._add_cursor()
     cursor = widget._cursors[0]
-    assert cursor['patch'] is not None
+    assert cursor["patch"] is not None
 
-    cursor['visibility_button'].click()
-    assert cursor['visible'] is False
-    assert cursor['patch'] is None
+    cursor["visibility_button"].click()
+    assert cursor["visible"] is False
+    assert cursor["patch"] is None
     # Crossed-out white eye when hidden (same colour, slashed shape).
-    assert cursor['visibility_button'].property("eyeCrossed") is True
+    assert cursor["visibility_button"].property("eyeCrossed") is True
 
     # Showing it again clears the slash and recreates the patch.
-    cursor['visibility_button'].click()
-    assert cursor['visible'] is True
-    assert cursor['patch'] is not None
-    assert cursor['visibility_button'].property("eyeCrossed") is False
+    cursor["visibility_button"].click()
+    assert cursor["visible"] is True
+    assert cursor["patch"] is not None
+    assert cursor["visibility_button"].property("eyeCrossed") is False
 
 
 def test_cursor_visibility_excludes_from_selection(make_viewer_model, qtbot):
@@ -2154,16 +2154,16 @@ def test_cursor_visibility_excludes_from_selection(make_viewer_model, qtbot):
     )
 
     # Hide the second cursor -> only the first contributes (id 1).
-    widget._cursors[1]['visibility_button'].click()
+    widget._cursors[1]["visibility_button"].click()
     assert set(np.unique(labels_layer.data)) == {0, 1}
     assert int(np.count_nonzero(labels_layer.data)) == cursor0_mask_count
 
     # Hidden cursor's statistics are blanked.
-    assert widget._cursors[1]['count_label'].text() == "-"
-    assert widget._cursors[1]['percentage_label'].text() == "-"
+    assert widget._cursors[1]["count_label"].text() == "-"
+    assert widget._cursors[1]["percentage_label"].text() == "-"
 
     # Show it again -> id 2 returns.
-    widget._cursors[1]['visibility_button'].click()
+    widget._cursors[1]["visibility_button"].click()
     assert 2 in np.unique(labels_layer.data)
 
 
@@ -2189,7 +2189,7 @@ def test_cursor_visibility_overlap_logic(make_viewer_model, qtbot):
     assert 2 in np.unique(labels_layer.data)
 
     # Hide the second: overlap pixels fall back to the first cursor (id 1).
-    widget._cursors[1]['visibility_button'].click()
+    widget._cursors[1]["visibility_button"].click()
     assert set(np.unique(labels_layer.data)) == {0, 1}
     assert int(np.count_nonzero(labels_layer.data)) == int(
         np.sum(cursor0_mask)
@@ -2214,11 +2214,11 @@ def test_cursor_visibility_recompute_when_layer_exists(
     assert layer_name in [ly.name for ly in viewer.layers]
 
     # Hiding the only cursor removes the (now empty) selection layer.
-    widget._cursors[0]['visibility_button'].click()
+    widget._cursors[0]["visibility_button"].click()
     assert layer_name not in [ly.name for ly in viewer.layers]
 
     # Showing it again recreates the layer.
-    widget._cursors[0]['visibility_button'].click()
+    widget._cursors[0]["visibility_button"].click()
     assert layer_name in [ly.name for ly in viewer.layers]
 
 
@@ -2236,10 +2236,10 @@ def test_cursor_visibility_no_recompute_without_layer(
     layer_name = f"Cursor Selection: {intensity_image_layer.name}"
     assert layer_name not in [ly.name for ly in viewer.layers]
 
-    widget._cursors[0]['visibility_button'].click()
+    widget._cursors[0]["visibility_button"].click()
     # No selection layer is created just by toggling.
     assert layer_name not in [ly.name for ly in viewer.layers]
-    assert widget._cursors[0]['patch'] is None
+    assert widget._cursors[0]["patch"] is None
 
 
 def test_cursor_visibility_persisted_in_metadata(make_viewer_model, qtbot):
@@ -2252,15 +2252,15 @@ def test_cursor_visibility_persisted_in_metadata(make_viewer_model, qtbot):
 
     widget._add_cursor(cursor_type="circular", g=0.5, s=0.3, radius=0.1)
     widget._add_cursor(cursor_type="circular", g=0.6, s=0.4, radius=0.1)
-    widget._cursors[1]['visibility_button'].click()
+    widget._cursors[1]["visibility_button"].click()
     widget._apply_selection()
 
     cursors = intensity_image_layer.metadata["settings"]["selections"][
         "circular_cursors"
     ]
     assert len(cursors) == 2
-    assert cursors[0]['visible'] is True
-    assert cursors[1]['visible'] is False
+    assert cursors[0]["visible"] is True
+    assert cursors[1]["visible"] is False
 
 
 def test_cursor_visibility_restored_from_metadata(make_viewer_model, qtbot):
@@ -2284,9 +2284,9 @@ def test_cursor_visibility_restored_from_metadata(make_viewer_model, qtbot):
     w._on_image_layer_changed()
 
     assert len(w._cursors) == 1
-    assert w._cursors[0]['visible'] is False
-    assert w._cursors[0]['visibility_button'].property("eyeCrossed") is True
-    assert w._cursors[0]['patch'] is None
+    assert w._cursors[0]["visible"] is False
+    assert w._cursors[0]["visibility_button"].property("eyeCrossed") is True
+    assert w._cursors[0]["patch"] is None
 
 
 def test_cursor_visibility_missing_metadata_defaults_true(
@@ -2306,4 +2306,240 @@ def test_cursor_visibility_missing_metadata_defaults_true(
     w._on_image_layer_changed()
 
     assert len(w._cursors) == 1
-    assert w._cursors[0]['visible'] is True
+    assert w._cursors[0]["visible"] is True
+
+
+# ===========================================================================
+# Manual Selection UI tests
+# ===========================================================================
+
+
+def test_manual_selection_ui_init(make_viewer_model, qtbot):
+    """Test manual selection initialization with default Selection 1 and tools."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+
+    assert hasattr(widget, "_manual_selections")
+    assert len(widget._manual_selections) == 1
+    sel1 = widget._manual_selections[0]
+    assert sel1["class_id"] == 1
+    assert sel1["visible"] is True
+    assert widget._selected_class_id == 1
+
+    # Check drawing tools
+    assert hasattr(widget, "selection_tool_buttons")
+    assert set(widget.selection_tool_buttons.keys()) == {
+        "LASSO",
+        "ELLIPSE",
+        "RECTANGLE",
+    }
+    for btn in widget.selection_tool_buttons.values():
+        assert not btn.isChecked()
+
+    # Check that canvas selectors were set to class 1
+    for selector in parent.canvas_widget.selectors.values():
+        assert selector.class_value == 1
+
+
+def test_manual_selection_add_and_select(make_viewer_model, qtbot):
+    """Test adding a new manual selection and selecting rows."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+
+    # Add Selection 2
+    widget.add_manual_selection_button.click()
+    assert len(widget._manual_selections) == 2
+    sel2 = widget._manual_selections[1]
+    assert sel2["class_id"] == 2
+    assert widget._selected_class_id == 2
+
+    # Canvas selectors should now have class_value == 2
+    for selector in parent.canvas_widget.selectors.values():
+        assert selector.class_value == 2
+
+    # Select Selection 1 again
+    sel1 = widget._manual_selections[0]
+    widget._select_manual_row(sel1)
+    assert widget._selected_class_id == 1
+    for selector in parent.canvas_widget.selectors.values():
+        assert selector.class_value == 1
+
+
+def test_manual_selection_color_change(make_viewer_model, qtbot):
+    """Test updating color of a manual selection."""
+    viewer = make_viewer_model()
+    intensity_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+
+    widget.selection_mode_combobox.setCurrentText("Manual Selection")
+    widget.selection_id = "MANUAL SELECTION #1"
+    widget.create_phasors_selected_layer()
+
+    sel1 = widget._manual_selections[0]
+    new_color = QColor(255, 0, 128)
+    widget._on_manual_color_changed(sel1, new_color)
+
+    assert sel1["color"] == new_color
+
+    # Verify artist colormap has updated color
+    cw = parent.canvas_widget
+    overlay_cmap = cw.artists["HISTOGRAM2D"].overlay_colormap
+    rgba = overlay_cmap(1)
+    assert np.isclose(rgba[0], 255 / 255.0, atol=1e-2)
+    assert np.isclose(rgba[1], 0.0, atol=1e-2)
+    assert np.isclose(rgba[2], 128 / 255.0, atol=1e-2)
+
+    # Verify napari labels layer colormap
+    sel_layer = viewer.layers[f"MANUAL SELECTION #1: {intensity_layer.name}"]
+    assert 1 in sel_layer.colormap.color_dict
+    layer_rgba = sel_layer.colormap.color_dict[1]
+    assert np.isclose(layer_rgba[0], 255 / 255.0, atol=1e-2)
+    assert np.isclose(layer_rgba[1], 0.0, atol=1e-2)
+    assert np.isclose(layer_rgba[2], 128 / 255.0, atol=1e-2)
+
+
+def test_manual_selection_toggle_visibility(make_viewer_model, qtbot):
+    """Test show/hide visibility toggling of a manual selection."""
+    viewer = make_viewer_model()
+    intensity_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+
+    widget.selection_mode_combobox.setCurrentText("Manual Selection")
+    widget.selection_id = "MANUAL SELECTION #1"
+    widget.create_phasors_selected_layer()
+
+    sel1 = widget._manual_selections[0]
+    assert sel1["visible"] is True
+
+    # Toggle to hidden
+    widget._toggle_manual_visibility(sel1)
+    assert sel1["visible"] is False
+
+    # Colormaps should have alpha 0 for class 1
+    cw = parent.canvas_widget
+    overlay_cmap = cw.artists["HISTOGRAM2D"].overlay_colormap
+    rgba = overlay_cmap(1)
+    assert rgba[3] == 0.0
+
+    sel_layer = viewer.layers[f"MANUAL SELECTION #1: {intensity_layer.name}"]
+    assert sel_layer.colormap.color_dict[1][3] == 0.0
+    assert sel1["count_label"].text() == "-"
+    assert sel1["percentage_label"].text() == "-"
+
+    # Toggle back to visible
+    widget._toggle_manual_visibility(sel1)
+    assert sel1["visible"] is True
+    overlay_cmap = cw.artists["HISTOGRAM2D"].overlay_colormap
+    rgba_vis = overlay_cmap(1)
+    assert rgba_vis[3] == 1.0
+    assert sel_layer.colormap.color_dict[1][3] == 1.0
+
+
+def test_manual_selection_remove(make_viewer_model, qtbot):
+    """Test removing a manual selection resets pixels and updates UI."""
+    viewer = make_viewer_model()
+    intensity_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+
+    widget.selection_mode_combobox.setCurrentText("Manual Selection")
+    widget.selection_id = "MANUAL SELECTION #1"
+
+    # Set selection with class 1 and class 2
+    widget._add_manual_selection(class_id=2)
+    assert len(widget._manual_selections) == 2
+
+    manual_data = np.zeros(10, dtype=np.uint32)
+    manual_data[0:3] = 1
+    manual_data[3:6] = 2
+    widget.manual_selection_changed(manual_data)
+
+    s_map = intensity_layer.metadata["settings"]["selections"][
+        "manual_selections"
+    ]["MANUAL SELECTION #1"]
+    assert np.any(s_map == 1)
+    assert np.any(s_map == 2)
+
+    # Remove class 1
+    sel1 = widget._manual_selections[0]
+    widget._remove_manual_selection(sel1)
+
+    assert len(widget._manual_selections) == 1
+    assert widget._manual_selections[0]["class_id"] == 2
+    assert not np.any(s_map == 1)
+    assert np.any(s_map == 2)
+
+
+def test_manual_selection_statistics(make_viewer_model, qtbot):
+    """Test statistics calculation for multiple manual selection classes."""
+    viewer = make_viewer_model()
+    intensity_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+
+    widget.selection_mode_combobox.setCurrentText("Manual Selection")
+    widget.selection_id = "MANUAL SELECTION #1"
+    widget._add_manual_selection(class_id=2)
+
+    # Total valid pixels in the test layer for the current harmonic
+    g = intensity_layer.metadata["G"]
+    s = intensity_layer.metadata["S"]
+    g_harm = g[0] if g.ndim > intensity_layer.data.ndim else g
+    s_harm = s[0] if s.ndim > intensity_layer.data.ndim else s
+    total_valid = int(np.sum(np.isfinite(g_harm) & np.isfinite(s_harm)))
+
+    # Apply 4 pixels to class 1, 6 pixels to class 2
+    s_map = np.zeros_like(intensity_layer.data, dtype=np.uint32)
+    s_map.flat[0:4] = 1
+    s_map.flat[4:10] = 2
+    intensity_layer.metadata.setdefault("settings", {}).setdefault(
+        "selections", {}
+    ).setdefault("manual_selections", {})["MANUAL SELECTION #1"] = s_map
+
+    widget._update_manual_selection_statistics()
+
+    sel1 = [s for s in widget._manual_selections if s["class_id"] == 1][0]
+    sel2 = [s for s in widget._manual_selections if s["class_id"] == 2][0]
+
+    assert sel1["count_label"].text() == "4"
+    assert sel2["count_label"].text() == "6"
+    pct1 = float(sel1["percentage_label"].text())
+    pct2 = float(sel2["percentage_label"].text())
+    assert np.isclose(pct1, 4 / total_valid * 100, atol=0.1)
+    assert np.isclose(pct2, 6 / total_valid * 100, atol=0.1)
+
+
+def test_manual_selection_tool_sync(make_viewer_model, qtbot):
+    """Test bidirectional synchronization of drawing tool buttons."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+    cw = parent.canvas_widget
+
+    # Click Lasso button in SelectionWidget
+    lasso_btn = widget.selection_tool_buttons["LASSO"]
+    lasso_btn.click()
+    assert lasso_btn.isChecked()
+    assert cw.active_selector is not None
+    assert cw.selection_toolbar.buttons["LASSO"].isChecked()
+
+    # Click Rectangle in canvas toolbar
+    rect_btn_canvas = cw.selection_toolbar.buttons["RECTANGLE"]
+    rect_btn_canvas.click()
+    assert rect_btn_canvas.isChecked()
+    assert not cw.selection_toolbar.buttons["LASSO"].isChecked()
+    assert widget.selection_tool_buttons["RECTANGLE"].isChecked()
+    assert not widget.selection_tool_buttons["LASSO"].isChecked()
+
+    # Escape deactivates all
+    cw._on_escape(None)
+    assert cw.active_selector is None
+    assert not widget.selection_tool_buttons["RECTANGLE"].isChecked()
