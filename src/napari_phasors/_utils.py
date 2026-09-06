@@ -3979,113 +3979,21 @@ def write_rows_to_csv(file_path, rows, float_format="{:.6f}"):
 
 
 def patch_biaplotter_capture_selection_geometry():
-    """Make biaplotter's selectors remember the region the user drew.
-
-    biaplotter's selectors turn the drawn shape into indices into the data
-    that is *currently plotted* and then discard the geometry. That is enough
-    while the phasor plot shows every timepoint at once, but when it shows a
-    single time-lapse frame the indices only cover that frame, so a selection
-    could never be applied to the rest of the stack.
-
-    Wrapping the geometry-only ``on_select`` of each base selector records
-    the call on the instance, which lets
-    :func:`active_selection_region` replay it against any other set of
-    points — reusing biaplotter's own maths for every shape rather than
-    reimplementing it here.
-
-    Safe to call repeatedly; the patch installs at most once.
-    """
-    try:
-        from biaplotter.selectors import (
-            BaseEllipseSelector,
-            BaseLassoSelector,
-            BaseRectangleSelector,
-        )
-    except ImportError:  # pragma: no cover - biaplotter is a hard dependency
-        return
-
-    for selector_class in (
-        BaseRectangleSelector,
-        BaseEllipseSelector,
-        BaseLassoSelector,
-    ):
-        if getattr(
-            selector_class, "_napari_phasors_capture_geometry_patch", False
-        ):
-            continue
-
-        original_on_select = selector_class.on_select
-
-        def _on_select_recording(self, *args, _original=original_on_select):
-            self._napari_phasors_region = (_original, args)
-            return _original(self, *args)
-
-        selector_class.on_select = _on_select_recording
-        selector_class._napari_phasors_capture_geometry_patch = True
+    """Deprecated no-op. Retained for backwards compatibility."""
+    return
 
 
 def patch_biaplotter_fixed_histogram_range():
-    """Let a 2D histogram keep one colour scale across time-lapse frames.
-
-    biaplotter derives the histogram's colour normalisation from the counts
-    it is currently drawing. That is right for a static plot, but when the
-    phasor plot shows one timepoint at a time it rescales on every frame, so
-    the same colour — and the colorbar beside it — means a different number
-    of pixels at each timepoint.
-
-    The patch honours an optional ``_napari_phasors_fixed_counts_range``
-    attribute on the artist, pinning vmin/vmax for the histogram (never for
-    the selection overlay). When the attribute is absent or None,
-    biaplotter's own behaviour is used unchanged.
-
-    Safe to call repeatedly; the patch installs at most once.
-    """
-    try:
-        from biaplotter.artists import Histogram2D
-    except ImportError:  # pragma: no cover - biaplotter is a hard dependency
-        return
-
-    if getattr(Histogram2D, "_napari_phasors_fixed_range_patch", False):
-        return
-
-    original_get_normalization = Histogram2D._get_normalization
-
-    def _get_normalization_fixed(self, values, is_overlay: bool = True):
-        fixed = getattr(self, "_napari_phasors_fixed_counts_range", None)
-        if is_overlay or fixed is None:
-            return original_get_normalization(
-                self, values, is_overlay=is_overlay
-            )
-
-        method = self._histogram_color_normalization_method
-        norm_class = self._normalization_methods.get(method)
-        if norm_class is None or method not in ("linear", "log"):
-            return original_get_normalization(
-                self, values, is_overlay=is_overlay
-            )
-
-        vmin, vmax = (float(fixed[0]), float(fixed[1]))
-        if method == "log":
-            # LogNorm cannot represent a non-positive floor.
-            vmin = max(vmin, 0.01)
-            vmax = max(vmax, vmin * 1.000001)
-        elif vmax <= vmin:
-            vmax = vmin + 1.0
-        return norm_class(vmin=vmin, vmax=vmax)
-
-    Histogram2D._get_normalization = _get_normalization_fixed
-    Histogram2D._napari_phasors_fixed_range_patch = True
+    """Deprecated no-op. Retained for backwards compatibility."""
+    return
 
 
 def active_selection_region(canvas_widget):
     """Return a predicate for the region last drawn on *canvas_widget*.
 
-    Requires :func:`patch_biaplotter_capture_selection_geometry` to have been
-    applied (it is, on importing the plotter module).
-
     Parameters
     ----------
-    canvas_widget : biaplotter.plotter.CanvasWidget
+    canvas_widget : napari_phasors._canvas.PhasorCanvasWidget
         Canvas whose active selector should be inspected.
 
     Returns
@@ -4095,6 +4003,11 @@ def active_selection_region(canvas_widget):
         boolean mask of the points inside the drawn region, or None when no
         region has been drawn (or the geometry could not be captured).
     """
+    if hasattr(canvas_widget, "active_selection_region"):
+        fn = canvas_widget.active_selection_region()
+        if fn is not None:
+            return fn
+
     selector = getattr(canvas_widget, "active_selector", None)
     recorded = getattr(selector, "_napari_phasors_region", None)
     if recorded is None:
