@@ -1114,3 +1114,36 @@ def test_write_ometif_multi_save_via_viewer(make_napari_viewer, tmp_path):
     # Base name matching the layer name -> just "<layer>.ome.tif".
     paths = write_ome_tiff(str(tmp_path / "img1.ome.tif"), l1)
     assert os.path.basename(paths[0]) == "img1.ome.tif"
+
+
+def test_export_csv_skips_a_fully_nan_harmonic(tmp_path):
+    """A harmonic with no finite pixel contributes no rows at all."""
+    import pandas as pd
+    from napari.layers import Image
+
+    from napari_phasors._writer import export_layer_as_csv
+
+    rng = np.random.default_rng(1)
+    G = rng.random((2, 4, 4))
+    S = rng.random((2, 4, 4))
+    # The second harmonic was never computed for this layer.
+    G[1] = np.nan
+    S[1] = np.nan
+
+    layer = Image(
+        np.ones((4, 4)),
+        name="half_nan",
+        metadata={
+            "G": G,
+            "S": S,
+            "G_original": G.copy(),
+            "S_original": S.copy(),
+            "harmonics": [1, 2],
+        },
+    )
+
+    out = export_layer_as_csv(str(tmp_path / "out.csv"), layer)
+    df = pd.read_csv(out[0])
+
+    assert set(df["harmonic"]) == {1}
+    assert len(df) == 16
