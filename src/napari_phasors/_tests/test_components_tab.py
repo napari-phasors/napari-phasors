@@ -54,8 +54,6 @@ def test_components_widget_initialization_values(make_viewer_model, qtbot):
     # UI elements exist - updated for new structure
     assert comp_widget.analysis_type_combo is not None
     assert comp_widget.add_component_btn is not None
-    assert comp_widget.remove_component_btn is not None
-    assert comp_widget.clear_components_btn is not None
     assert comp_widget.calculate_button is not None
     # Check first component exists
     assert comp_widget.components[0] is not None
@@ -567,19 +565,23 @@ def test_components_widget_add_remove_components(make_viewer_model, qtbot):
     # Initially should have 2 components
     assert len(comp_widget.components) == 2
     assert comp_widget.add_component_btn.isEnabled()
-    assert (
-        not comp_widget.remove_component_btn.isEnabled()
-    )  # Can't remove when only 2
+    assert not comp_widget.components[
+        0
+    ].remove_button.isEnabled()  # Can't remove when only 2
 
     # Add a component
     comp_widget._add_component()
     assert len(comp_widget.components) == 3
-    assert comp_widget.remove_component_btn.isEnabled()  # Now can remove
+    assert comp_widget.components[
+        0
+    ].remove_button.isEnabled()  # Now can remove
 
     # Remove a component
     comp_widget._remove_component()
     assert len(comp_widget.components) == 2
-    assert not comp_widget.remove_component_btn.isEnabled()  # Back to minimum
+    assert not comp_widget.components[
+        0
+    ].remove_button.isEnabled()  # Back to minimum
 
 
 def test_components_widget_analysis_type_changes(make_viewer_model, qtbot):
@@ -4466,7 +4468,6 @@ def test_components_remove_specific_button(make_viewer_model, qtbot):
     # Now remove buttons should be disabled because count == 2
     assert not comp.components[0].remove_button.isEnabled()
     assert not comp.components[1].remove_button.isEnabled()
-    assert not comp.remove_component_btn.isEnabled()
 
 
 def test_components_canvas_interaction_selects_component(

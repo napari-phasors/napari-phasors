@@ -576,23 +576,6 @@ class ComponentsWidget(QWidget):
         self.add_component_btn.setToolTip("Add a new component.")
         components_box_layout.addWidget(self.add_component_btn)
 
-        # Component management row
-        comp_management_layout = QHBoxLayout()
-        self.remove_component_btn = QPushButton("Remove Component")
-        self.remove_component_btn.clicked.connect(self._remove_component)
-        self.remove_component_btn.setToolTip(
-            "Remove the last component field."
-        )
-        comp_management_layout.addWidget(self.remove_component_btn)
-
-        self.clear_components_btn = QPushButton("Clear All")
-        self.clear_components_btn.clicked.connect(self._clear_components)
-        self.clear_components_btn.setToolTip("Clear all component values.")
-        comp_management_layout.addWidget(self.clear_components_btn)
-
-        comp_management_layout.addStretch()
-        components_box_layout.addLayout(comp_management_layout)
-
         # Hints
         hint_label = QLabel(
             "• Click 'Select' or click and drag component dots on the plot."
@@ -1289,7 +1272,6 @@ class ComponentsWidget(QWidget):
         max_components = self._get_max_components()
 
         self.add_component_btn.setEnabled(total_count < max_components)
-        self.remove_component_btn.setEnabled(total_count > 2)
 
         for comp in self.components:
             if (
