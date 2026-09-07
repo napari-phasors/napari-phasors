@@ -1421,6 +1421,51 @@ def test_group_for_modes(qtbot, make_viewer_model):
     }
     assert widget._group_for("a.ome.tif") == (1, "Ctrl", "#ff0000")
     assert widget._group_for("b.ome.tif") == (2, "Treated", "#0000ff")
+    # A file assigned to no group joins none, rather than falling into
+    # group 1 and corrupting its combined output.
+    assert widget._group_for("c.ome.tif") == (None, None, None)
+
+
+def test_warn_unassigned_files_before_grouped_run(
+    qtbot, make_viewer_model, monkeypatch
+):
+    """A grouped run names the scanned files that belong to no group."""
+    import napari_phasors._batch_analysis as batch_mod
+
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+
+    warnings = []
+    monkeypatch.setattr(
+        batch_mod, "show_warning", lambda msg: warnings.append(msg)
+    )
+
+    files = ["/data/a.ome.tif", "/data/b.ome.tif", "/data/new.ome.tif"]
+
+    # Merged mode says nothing.
+    widget._group_config = {"mode": "Merged"}
+    widget._warn_unassigned_files(files)
+    assert warnings == []
+
+    widget._group_config = {
+        "mode": "Grouped",
+        "assignments": {"a.ome.tif": 1, "b.ome.tif": 2},
+    }
+    widget._warn_unassigned_files(files)
+    assert len(warnings) == 1
+    assert "new.ome.tif" in warnings[0]
+
+    # Nothing to report once every file has a group.
+    warnings.clear()
+    widget._group_config["assignments"]["new.ome.tif"] = 1
+    widget._warn_unassigned_files(files)
+    assert warnings == []
+
+    # Grouped mode with nothing assigned at all names every file.
+    widget._group_config = {"mode": "Grouped", "assignments": {}}
+    widget._warn_unassigned_files(files)
+    assert len(warnings) == 1
+    assert "a.ome.tif" in warnings[0]
 
 
 def test_contour_key_styles_grouped(qtbot, make_viewer_model):
@@ -4392,3 +4437,52 @@ def test_color_plot_by_metric_falls_back_to_jet_when_resolution_fails(
 
     assert calls["n"] == 2
     assert plot.ax.kwargs["cmap"] is not None
+
+
+def test_batch_files_in_flight_is_bounded_by_the_workers(tmp_path):
+    """Twice the worker count keeps the pool fed without queueing the batch."""
+    from napari_phasors._batch_analysis import _batch_files_in_flight
+
+    files = []
+    for index in range(20):
+        path = tmp_path / f"{index}.bin"
+        path.write_bytes(b"x" * 1024)
+        files.append(str(path))
+
+    assert _batch_files_in_flight(files, 1) == 2
+    assert _batch_files_in_flight(files, 4) == 8
+    # Never zero, whatever is passed in.
+    assert _batch_files_in_flight(files, 0) == 1
+
+
+def test_batch_files_in_flight_drops_when_memory_is_tight(
+    tmp_path, monkeypatch
+):
+    """A machine that cannot hold 2N decoded files decodes fewer at once."""
+    from napari_phasors import _batch_analysis, _parallel
+    from napari_phasors._batch_analysis import _batch_files_in_flight
+
+    path = tmp_path / "big.bin"
+    path.write_bytes(b"x" * 4096)
+    files = [str(path)] * 8
+
+    monkeypatch.setattr(_batch_analysis, "items_for_memory", lambda *a, **k: 3)
+    assert _batch_files_in_flight(files, 8) == 3
+    # A cap looser than the structural bound leaves it alone.
+    monkeypatch.setattr(
+        _batch_analysis, "items_for_memory", lambda *a, **k: 999
+    )
+    assert _batch_files_in_flight(files, 2) == 4
+    # No reading at all means no cap.
+    monkeypatch.setattr(
+        _batch_analysis, "items_for_memory", lambda *a, **k: None
+    )
+    assert _batch_files_in_flight(files, 2) == 4
+    assert _parallel.memory_fraction() > 0
+
+
+def test_batch_files_in_flight_ignores_unreadable_paths(tmp_path):
+    """A path that cannot be stat'ed contributes nothing rather than raising."""
+    from napari_phasors._batch_analysis import _batch_files_in_flight
+
+    assert _batch_files_in_flight([str(tmp_path / "missing.bin")], 2) == 4

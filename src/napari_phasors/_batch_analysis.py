@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from napari.layers import Image, Labels
-from napari.utils.notifications import show_error, show_info
+from napari.utils.notifications import show_error, show_info, show_warning
 from phasorpy.cluster import phasor_cluster_gmm
 from phasorpy.component import phasor_component_fit, phasor_component_fraction
 from phasorpy.cursor import (
@@ -71,6 +71,7 @@ from qtpy.QtWidgets import (
 )
 from superqt import QToggleSwitch
 
+from ._parallel import default_workers, items_for_memory, parallel_stream
 from ._reader import extension_mapping, napari_get_reader
 from ._utils import (
     LIFETIME_OUTPUT_TYPES,
@@ -84,6 +85,7 @@ from ._utils import (
     make_solid_contour_cmap,
     normalize_rgb,
     populate_colormap_combobox,
+    rank_mask_candidates,
     read_ome_tiff_settings,
     required_component_harmonics,
     resolve_colormap_by_name,
@@ -1050,6 +1052,7 @@ def default_group_config():
         "group_colors": {},
         "layer_colors": {},
         "show_sd": True,
+        "normalize": False,
         "central_tendency": "None",
         "show_legend": True,
         "white_background": False,
@@ -1713,7 +1716,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self.threads_spin.setValue(1)
         self.threads_spin.setToolTip(
             "Read and compute files concurrently (1 = single-threaded). "
-            "File writing and plot rendering stay on the main thread."
+            "File writing and plot rendering stay on the main thread. "
+            "Ignored while 'Parallel images' is off in Plot Settings."
         )
         workers_row.addWidget(self.threads_spin)
         workers_row.addStretch()
@@ -1891,15 +1895,19 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 return True, ""
             return (
                 False,
-                "These OME-TIFF files do not contain a stored signal (they "
-                "were not written by napari-phasors), so the signal cannot be "
-                "reconstructed. Signal export is unavailable for this format.",
+                (
+                    "These OME-TIFF files do not contain a stored signal (they "
+                    "were not written by napari-phasors), so the signal cannot be "
+                    "reconstructed. Signal export is unavailable for this format."
+                ),
             )
         return (
             False,
-            "This processed format stores only phasor coordinates, not the "
-            "original signal, so signal export is unavailable. Use the raw "
-            "files or napari-phasors OME-TIFFs instead.",
+            (
+                "This processed format stores only phasor coordinates, not the "
+                "original signal, so signal export is unavailable. Use the raw "
+                "files or napari-phasors OME-TIFFs instead."
+            ),
         )
 
     def _refresh_signal_availability(self):
@@ -2310,27 +2318,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             self.mask_folders_label.setText("<i>No mask folder selected</i>")
         self._rebuild_mask_rows()
 
-    @staticmethod
-    def _rank_mask_candidates(image_path, mask_files):
-        """Return mask files ranked by name similarity to ``image_path``."""
-        image_stem = os.path.splitext(os.path.basename(image_path))[0]
-        # Strip a trailing supported extension chunk like ``.ome``.
-        image_stem = image_stem.split(".")[0].lower()
-        scored = []
-        for mask in mask_files:
-            mask_stem = os.path.splitext(os.path.basename(mask))[0].lower()
-            if image_stem == mask_stem:
-                score = 0
-            elif image_stem and (
-                image_stem in mask_stem or mask_stem in image_stem
-            ):
-                score = 1 + abs(len(mask_stem) - len(image_stem))
-            else:
-                continue
-            scored.append((score, mask))
-        scored.sort(key=lambda item: (item[0], item[1]))
-        return [mask for _score, mask in scored]
-
     def _rebuild_mask_rows(self):
         """Rebuild one mask-pairing row per input file, best match preselected."""
         layout = self._mask_rows_layout
@@ -2359,7 +2346,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             label.setMinimumWidth(140)
             combo = QComboBox()
             combo.addItem("None", None)
-            candidates = self._rank_mask_candidates(path, self._mask_files)
+            candidates = rank_mask_candidates(path, self._mask_files)
             remaining = [m for m in self._mask_files if m not in candidates]
             for mask in candidates + remaining:
                 combo.addItem(os.path.basename(mask), mask)
@@ -2745,8 +2732,6 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
 
     def _auto_mapping_ranges(self):
         """Set the mesh phase/modulation ranges from *all* scanned files."""
-        from napari.utils.notifications import show_warning
-
         harmonic = self.mapping_harmonic_spin.value()
         coords = self._gather_all_phasor_coords(harmonic)
         if coords is None:
@@ -3661,6 +3646,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         dialog = HistogramSettingsDialog(
             display_mode=self._group_config.get("mode", "Merged"),
             show_sd=self._group_config.get("show_sd", True),
+            normalize=self._group_config.get("normalize", False),
             central_tendency=self._group_config.get(
                 "central_tendency", "None"
             ),
@@ -3688,6 +3674,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                     "group_colors": dialog.get_group_colors(),
                     "layer_colors": dialog.get_layer_colors(),
                     "show_sd": dialog.sd_checkbox.isChecked(),
+                    "normalize": dialog.normalize_checkbox.isChecked(),
                     "central_tendency": (
                         dialog.central_tendency_combo.currentText()
                     ),
@@ -3730,8 +3717,36 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 }
             )
 
+    def _warn_unassigned_files(self, files):
+        """Warn about files left out of every group before a grouped run.
+
+        In *Grouped* mode a file with no assignment (typically one added to
+        the folder after the groups were configured) takes part in no
+        combined output, so name it instead of dropping it quietly.
+        """
+        if self._group_config.get("mode") != "Grouped":
+            return
+        # An empty ``assignments`` in Grouped mode means nothing is grouped
+        # at all, which is exactly the case worth warning about.
+        assignments = self._group_config.get("assignments", {})
+        missing = [
+            os.path.basename(f)
+            for f in files
+            if os.path.basename(f) not in assignments
+        ]
+        if missing:
+            show_warning(
+                "Not assigned to any group, excluded from the combined "
+                "outputs: " + ", ".join(missing)
+            )
+
     def _group_for(self, filename):
-        """Return ``(group_id, group_name, color)`` for ``filename``."""
+        """Return ``(group_id, group_name, color)`` for ``filename``.
+
+        In *Grouped* mode a file the user did not assign to any group has no
+        group at all: ``(None, None, None)`` is returned so callers leave it
+        out of the combined outputs instead of folding it into group 1.
+        """
         config = self._group_config
         mode = config.get("mode", "Merged")
         if mode == "Merged":
@@ -3739,7 +3754,9 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         if mode == "Individual layers":
             color = config.get("layer_colors", {}).get(filename, None)
             return (filename, filename, color)
-        gid = config.get("assignments", {}).get(filename, 1)
+        gid = config.get("assignments", {}).get(filename)
+        if gid is None:
+            return (None, None, None)
         name = config.get("group_names", {}).get(gid, f"Group {gid}")
         color = config.get("group_colors", {}).get(
             gid, DEFAULT_CURSOR_COLORS[(gid - 1) % len(DEFAULT_CURSOR_COLORS)]
@@ -4624,6 +4641,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 int(k): v for k, v in stored.get("group_colors", {}).items()
             },
             "show_sd": stored.get("show_sd", True),
+            "normalize": stored.get("normalize", False),
             "central_tendency": stored.get("central_tendency", "None"),
             "show_legend": stored.get("show_legend", True),
         }
@@ -5058,6 +5076,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         if not self._export_folder:
             show_error("Select an export folder.")
             return
+        self._warn_unassigned_files(files)
 
         output_types = []
         if self.export_ometiff_checkbox.isChecked():
@@ -5192,7 +5211,11 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         suffix = self.suffix_edit.text()
         preserve = self.preserve_paths_checkbox.isChecked()
         load_into_viewer = self.load_into_viewer_checkbox.isChecked()
-        workers = self.threads_spin.value()
+        # The batch tab has its own worker spinbox, but the plugin-wide
+        # "Parallel images" switch outranks it: a batch fans out over whole
+        # files, so turning that scope off has to mean off everywhere, not
+        # everywhere except here.
+        workers = default_workers(len(files), self.threads_spin.value())
         masks_enabled = self.masks_group.isChecked()
         self._auto_tabs = self._auto_contrast_tabs()
         self._global_contrast = {}
@@ -5262,29 +5285,31 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             )
             QApplication.processEvents()
 
-        if workers > 1 and len(files) > 1:
-            from concurrent.futures import ThreadPoolExecutor
-
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                futures = [
-                    (path, executor.submit(read_compute, path))
-                    for path in files
-                ]
-                for index, (path, future) in enumerate(futures):
-                    try:
-                        emit(path, future.result())
-                        processed += 1
-                    except Exception as exc:  # noqa: BLE001
-                        failed.append((os.path.basename(path), str(exc)))
-                    update_progress(index)
-        else:
-            for index, path in enumerate(files):
+        # Files are read and computed in a pool while ``emit`` runs here, in
+        # file order, as each result arrives. ``parallel_stream`` -- rather
+        # than ``parallel_map`` -- because a batch is exactly the case where
+        # holding every result is fatal: submitting all of a 500-file run at
+        # once lets every decoded file pile up whenever the workers outrun
+        # ``emit``, which they do as soon as anything is written to disk.
+        for index, path, result in parallel_stream(
+            read_compute,
+            files,
+            workers=workers,
+            max_in_flight=_batch_files_in_flight(files, workers),
+            on_error="collect",
+        ):
+            if isinstance(result, BaseException):
+                failed.append((os.path.basename(path), str(result)))
+            else:
                 try:
-                    emit(path, read_compute(path))
+                    emit(path, result)
                     processed += 1
                 except Exception as exc:  # noqa: BLE001
                     failed.append((os.path.basename(path), str(exc)))
-                update_progress(index)
+                # Release the arrays before waiting on the next file, so the
+                # in-flight bound above actually bounds resident memory.
+                del result
+            update_progress(index)
 
         try:
             self._flush_deferred_exports()
@@ -5786,6 +5811,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             and (job["stats"] or job["histogram"])
             and aggregate is not None
             and group is not None
+            # A file assigned to no group joins no combined output.
+            and group[0] is not None
         ):
             key, gname, gcolor = group
             aggregate["group_meta"][key] = (gname, gcolor)
@@ -6099,10 +6126,16 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 )
 
     def _accumulate_phasor_aggregate(self, layer, aggregate, group):
-        """Accumulate per-group phasor data for combined plots."""
+        """Accumulate per-group phasor data for combined plots.
+
+        A file assigned to no group is skipped rather than pooled into the
+        first group.
+        """
         if not (aggregate["contour"] or aggregate["centers"]):
             return
         key, group_name, group_color = group
+        if key is None:
+            return  # not assigned to any group
         aggregate["group_meta"][key] = (group_name, group_color)
         harmonics = np.atleast_1d(layer.metadata.get("harmonics"))
         mean = layer.metadata.get("original_mean")
@@ -6167,6 +6200,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         aggregate["tab_phasor_overlay"].setdefault(suffix, job["overlay"])
         aggregate["tab_phasor_subfolder"].setdefault(suffix, subfolder)
         key, group_name, group_color = group
+        if key is None:
+            return  # not assigned to any group
         aggregate["group_meta"][key] = (group_name, group_color)
         harmonics = np.atleast_1d(layer.metadata.get("harmonics"))
         for harmonic in harmonics:
@@ -6793,6 +6828,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             group_key, group_name, group_color = self._group_for(
                 os.path.basename(path)
             )
+            if group_key is None:
+                return  # not assigned to any group
             entry = self._signal_combined.setdefault(
                 group_key,
                 {"name": group_name, "color": group_color, "channels": {}},
@@ -7316,6 +7353,7 @@ def _save_phasor_plot_png(
                 fmt="o",
                 markersize=display.get("marker_size", 5),
                 color=display.get("marker_color") or None,
+                markeredgewidth=0,
                 alpha=display.get("marker_alpha", 0.3),
                 zorder=5,
             )
@@ -7604,6 +7642,8 @@ def _color_plot_by_metric(
             vmax=vmax,
             s=display.get("marker_size", 5),
             alpha=display.get("marker_alpha", 0.6),
+            edgecolors="none",
+            linewidths=0,
             zorder=5,
         )
         return
@@ -7758,7 +7798,14 @@ def _save_grouped_overlay_plot(
         name = group_meta.get(key, (str(key), None))[0]
         color = colors.get(key)
         plot.ax.scatter(
-            real, imag, s=marker_size, color=color, alpha=alpha, zorder=5
+            real,
+            imag,
+            s=marker_size,
+            color=color,
+            alpha=alpha,
+            edgecolors="none",
+            linewidths=0,
+            zorder=5,
         )
         handles.append(
             Line2D([0], [0], marker="o", linestyle="", color=color, label=name)
@@ -7975,6 +8022,7 @@ def _new_export_histogram(config, label):
     hw = HistogramWidget()
     hw.white_background = config.get("white_background", False)
     hw._smooth_curves = config.get("smooth_curves", True)
+    hw._normalize = config.get("normalize", False)
     hw._central_tendency = config.get("central_tendency", "None")
     hw._show_legend = config.get("show_legend", True)
     hw.xlabel = label
@@ -7993,6 +8041,44 @@ def _save_export_histogram(hw, path, dpi=300):
         transparent=use_transparent,
         facecolor='white' if hw._white_background else 'none',
     )
+
+
+def _batch_files_in_flight(files, workers):
+    """Return how many batch files may be decoded but not yet written out.
+
+    Two bounds, whichever is tighter. The first is structural: twice the
+    worker count keeps every worker fed while ``emit`` writes the previous
+    file, and nothing is gained by queueing more. The second is the memory
+    budget -- on a machine whose free RAM cannot hold even that many decoded
+    files, in-flight work has to come down further.
+
+    The on-disk size of the largest input stands in for a decoded file. It
+    is a floor rather than an estimate: a compressed FLIM file expands
+    several-fold once it is a float phasor set. It is used only to notice
+    that free memory is small relative to the inputs, which is the case that
+    matters.
+
+    Parameters
+    ----------
+    files : sequence of str
+        The batch's input paths.
+    workers : int
+        Resolved worker count for this run.
+
+    Returns
+    -------
+    int
+        At least ``1``.
+    """
+    structural = max(1, 2 * int(workers))
+    largest = 0
+    for path in files:
+        with contextlib.suppress(OSError):
+            largest = max(largest, os.path.getsize(path))
+    affordable = items_for_memory(largest)
+    if affordable is None:
+        return structural
+    return max(1, min(structural, affordable))
 
 
 class _SpillStore:
@@ -8146,6 +8232,7 @@ def _store_plot_settings(layer, plot_settings, group_config=None):
                 for k, v in group_config.get("group_colors", {}).items()
             },
             "show_sd": group_config.get("show_sd"),
+            "normalize": group_config.get("normalize"),
             "central_tendency": group_config.get("central_tendency"),
             "show_legend": group_config.get("show_legend"),
         }

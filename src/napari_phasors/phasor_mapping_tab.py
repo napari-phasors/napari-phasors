@@ -1731,7 +1731,7 @@ class PhasorMappingWidget(QWidget):
             if g_array is None or s_array is None:
                 return None
 
-            if harmonics is not None:
+            if harmonics is not None and g_array.ndim > layer.data.ndim:
                 try:
                     harmonics_array = np.atleast_1d(harmonics)
                     harmonic_index = np.where(harmonics_array == harmonic)[0][
@@ -1954,6 +1954,11 @@ class PhasorMappingWidget(QWidget):
             if layers != self.metric_layers:
                 self._set_metric_layers(layers)
             named = {layer.name: layer.data for layer in layers}
+            # Groups live on the analysed image layer, not on the derived
+            # output layer, so every tab sees the same grouping.
+            sources = {
+                layer.name: source for source, layer in output_layers.items()
+            }
         elif not self._has_calculated_output:
             # Keep a narrow fallback for calculations that have populated
             # per-layer arrays but have not created the viewer layers yet.
@@ -1962,8 +1967,16 @@ class PhasorMappingWidget(QWidget):
                 for name, data in (self.per_layer_metric_data or {}).items()
                 if name in selected_names
             }
+            sources = {
+                f"{output_type}: {name}": name
+                for name in (self.per_layer_metric_data or {})
+                if name in selected_names
+            }
         else:
             named = {}
+            sources = {}
+
+        self.histogram_widget.set_dataset_sources(sources)
 
         if not named:
             self.histogram_widget.clear()
