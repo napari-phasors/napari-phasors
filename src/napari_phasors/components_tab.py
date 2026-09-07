@@ -33,6 +33,7 @@ from qtpy.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -59,9 +60,42 @@ from ._utils import (
     required_component_harmonics,
     setup_primary_button,
 )
+from .selection_tab import ClickableFrame
 
 if TYPE_CHECKING:
     import napari
+
+COMPONENT_CARD_STYLE = (
+    "QFrame#componentCard, QFrame#componentRow {"
+    "  border: 1px solid rgba(128, 128, 128, 0.3);"
+    "  border-radius: 4px;"
+    "  background-color: rgba(255, 255, 255, 0.02);"
+    "}"
+    "QFrame#componentCard:hover, QFrame#componentRow:hover {"
+    "  border: 1px solid rgba(128, 128, 128, 0.55);"
+    "}"
+    'QFrame#componentCard[selected="true"], QFrame#componentRow[selected="true"] {'
+    "  border: 1px solid rgba(0, 193, 140, 0.85);"
+    "  background-color: rgba(0, 193, 140, 0.06);"
+    "}"
+    "QPushButton#componentRemoveBtn {"
+    "  background: transparent;"
+    "  border: none;"
+    "  color: rgba(200, 200, 200, 0.7);"
+    "  font-size: 15px;"
+    "  font-weight: bold;"
+    "  padding: 0px;"
+    "  border-radius: 3px;"
+    "}"
+    "QPushButton#componentRemoveBtn:hover {"
+    "  color: #ff5555;"
+    "  background: rgba(255, 85, 85, 0.15);"
+    "}"
+    "QPushButton#componentRemoveBtn:disabled {"
+    "  color: rgba(128, 128, 128, 0.25);"
+    "}"
+)
+COMPONENT_ROW_STYLE = COMPONENT_CARD_STYLE
 
 
 def _fit_components(mean, real, imag, component_g, component_s):
@@ -96,6 +130,13 @@ class ComponentState:
     label: str = "Component"
     # Layer names last used to compute the phasor center for this component.
     phasor_center_layers: list[str] = field(default_factory=list)
+    card_frame: any = None
+    row_frame: any = None
+    name_label: QLabel | None = None
+    coords_label: QLabel | None = None
+    remove_button: QPushButton | None = None
+    detail_widget: QWidget | None = None
+    ui_elements: dict = field(default_factory=dict)
 
 
 class ComponentSelectorComboBox(CheckableComboBox):
@@ -456,6 +497,7 @@ class ComponentsWidget(QWidget):
         self._active_select_shortcut = None
         self._active_select_idx = None
         self._active_select_original_text = "Select"
+        self._selected_component = None
 
         self.setup_ui()
         self._update_lifetime_inputs_visibility()
@@ -473,6 +515,7 @@ class ComponentsWidget(QWidget):
         # Scroll area
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.NoFrame)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         root_layout.addWidget(scroll_area)
 
@@ -520,24 +563,21 @@ class ComponentsWidget(QWidget):
         self._refresh_components_info_label()
         components_box_layout.addWidget(self.components_info_label)
 
-        # Components inputs
-        self.components_layout = QVBoxLayout()
-        components_box_layout.addLayout(self.components_layout)
+        # Container holding one QFrame per component row
+        self._rows_container = QWidget()
+        self.components_layout = QVBoxLayout(self._rows_container)
+        self.components_layout.setContentsMargins(0, 0, 0, 0)
+        self.components_layout.setSpacing(6)
+        components_box_layout.addWidget(self._rows_container)
 
-        # Initialize with 2 components
-        for i in range(2):
-            self._add_component_ui(i)
-
-        # Move the visibility update to AFTER components are created
-        self._update_lifetime_inputs_visibility()
-
-        # Component management section
-        comp_management_layout = QHBoxLayout()
-        self.add_component_btn = QPushButton("Add Component")
+        # "+ Add Component" button, full width
+        self.add_component_btn = QPushButton("+ Add Component")
         self.add_component_btn.clicked.connect(self._add_component)
-        self.add_component_btn.setToolTip("Add a new component field.")
-        comp_management_layout.addWidget(self.add_component_btn)
+        self.add_component_btn.setToolTip("Add a new component.")
+        components_box_layout.addWidget(self.add_component_btn)
 
+        # Component management row
+        comp_management_layout = QHBoxLayout()
         self.remove_component_btn = QPushButton("Remove Component")
         self.remove_component_btn.clicked.connect(self._remove_component)
         self.remove_component_btn.setToolTip(
@@ -552,10 +592,32 @@ class ComponentsWidget(QWidget):
 
         comp_management_layout.addStretch()
         components_box_layout.addLayout(comp_management_layout)
+
+        # Hints
+        hint_label = QLabel(
+            "• Click 'Select' or click and drag component dots on the plot."
+        )
+        hint_label.setWordWrap(True)
+        hint_label.setStyleSheet(
+            "color: rgba(128, 128, 128, 0.7); font-size: 11px;"
+        )
+        components_box_layout.addWidget(hint_label)
+
         layout.addWidget(components_box)
+
+        # Initialize with 2 components
+        for i in range(2):
+            self._add_component_ui(i)
+
+        # Move the visibility update to AFTER components are created
+        self._update_lifetime_inputs_visibility()
+
+        # Select the first component by default
+        self._select_component_item(0)
 
         # Calculate button (validated: greyed out until components are set)
         self.calculate_button = QPushButton("Run Component Analysis")
+        self.calculate_button.setMinimumHeight(34)
         self._refresh_run_button = setup_primary_button(
             self.calculate_button,
             self._components_validation,
@@ -626,6 +688,17 @@ class ComponentsWidget(QWidget):
             self._on_fraction_range_changed
         )
 
+        # Hints matching Selections tab
+        hints = [
+            "• Click a component row or on the plot to select and edit it.",
+            "• Use the Select button to place components from cursors or plot clicks.",
+            "• Drag components directly on the phasor plot to reposition them.",
+        ]
+        hints_label = QLabel("\n".join(hints))
+        hints_label.setStyleSheet("color: gray; font-size: 11px;")
+        hints_label.setWordWrap(True)
+        layout.addWidget(hints_label)
+
         layout.addStretch()
         self.setLayout(root_layout)
 
@@ -633,73 +706,119 @@ class ComponentsWidget(QWidget):
         self._update_component_visibility()
         self._update_button_states()
 
+    def _select_component_item(self, idx_or_comp):
+        """Highlight card for the selected component."""
+        if isinstance(idx_or_comp, int):
+            if idx_or_comp < 0 or idx_or_comp >= len(self.components):
+                comp = None
+            else:
+                comp = self.components[idx_or_comp]
+        else:
+            comp = idx_or_comp
+
+        if comp is not None and comp not in self.components:
+            return
+
+        self._selected_component = comp
+
+        for c in self.components:
+            if c is not None:
+                frame = getattr(c, 'card_frame', None) or getattr(
+                    c, 'row_frame', None
+                )
+                if frame is not None:
+                    selected = c is comp
+                    frame.setProperty("selected", selected)
+                    frame.style().unpolish(frame)
+                    frame.style().polish(frame)
+
+    def _refresh_editor_title(self):
+        """No-op kept for backward compatibility."""
+
+    def _update_row_coords_label(self, idx: int):
+        """No-op kept for backward compatibility."""
+
+    def _update_all_row_coords_labels(self):
+        """No-op kept for backward compatibility."""
+
     def _add_component_ui(self, idx):
-        """Add UI elements for a component."""
-        # Single component layout with all elements in one row
-        comp_layout = QHBoxLayout()
+        """Add inline two-line card UI elements for a component."""
+        card_frame = ClickableFrame(self._rows_container)
+        card_frame.setObjectName("componentCard")
+        card_frame.setStyleSheet(COMPONENT_CARD_STYLE)
+        card_frame.setCursor(Qt.PointingHandCursor)
 
-        # Component number label
+        card_layout = QVBoxLayout(card_frame)
+        card_layout.setContentsMargins(8, 6, 8, 6)
+        card_layout.setSpacing(4)
+
+        # 1. Top row: Number, Name (expanding), Select button, Remove button
+        row1 = QHBoxLayout()
+        row1.setContentsMargins(0, 0, 0, 0)
+        row1.setSpacing(6)
+
         number_label = QLabel(f"{idx + 1}.")
-        number_label.setStyleSheet("font-weight: bold;")
-        number_label.setMinimumWidth(20)
-        comp_layout.addWidget(number_label)
+        number_label.setStyleSheet("font-weight: 600;")
+        number_label.setMinimumWidth(18)
+        row1.addWidget(number_label)
 
-        # Component name
         name_edit = QLineEdit()
         name_edit.setPlaceholderText("Component name (optional)")
-        name_edit.setMaximumWidth(150)
         name_edit.setToolTip("Enter a name for this component (optional).")
-        comp_layout.addWidget(name_edit)
+        row1.addWidget(name_edit, 1)
 
-        # Select button
         select_button = QPushButton("Select")
         select_button.setMaximumWidth(70)
         select_button.setToolTip(
             "Click here to choose how to select the component location (on plot, from cursor, or auto intersect)."
         )
-        comp_layout.addWidget(select_button)
-
-        # Create dynamic menu for the Select button
         menu = QMenu(self)
-        menu.aboutToShow.connect(
-            lambda idx=idx, m=menu: self._populate_select_menu(idx, m)
-        )
         select_button.setMenu(menu)
+        row1.addWidget(select_button)
 
-        # G coordinate
-        comp_layout.addWidget(QLabel("G:"))
+        remove_button = QPushButton("×")
+        remove_button.setObjectName("componentRemoveBtn")
+        remove_button.setFixedSize(22, 22)
+        remove_button.setToolTip(f"Remove Component {idx + 1}.")
+        row1.addWidget(remove_button)
+
+        card_layout.addLayout(row1)
+
+        # 2. Bottom row: G, S, lifetime
+        row2 = QHBoxLayout()
+        row2.setContentsMargins(0, 0, 0, 0)
+        row2.setSpacing(6)
+
+        row2.addWidget(QLabel("G:"))
         g_edit = QLineEdit()
-        g_edit.setPlaceholderText("Real coordinate")
-        g_edit.setMaximumWidth(100)
+        g_edit.setPlaceholderText("Real")
+        g_edit.setMaximumWidth(90)
         g_edit.setToolTip("Edit the G (real) coordinate of the component.")
-        comp_layout.addWidget(g_edit)
+        row2.addWidget(g_edit)
 
-        # S coordinate
-        comp_layout.addWidget(QLabel("S:"))
+        row2.addWidget(QLabel("S:"))
         s_edit = QLineEdit()
-        s_edit.setPlaceholderText("Imaginary coordinate")
-        s_edit.setMaximumWidth(100)
+        s_edit.setPlaceholderText("Imaginary")
+        s_edit.setMaximumWidth(90)
         s_edit.setToolTip(
             "Edit the S (imaginary) coordinate of the component."
         )
-        comp_layout.addWidget(s_edit)
+        row2.addWidget(s_edit)
 
-        # Lifetime input
         lifetime_label = QLabel("τ:")
         lifetime_edit = QLineEdit()
         lifetime_edit.setPlaceholderText("Lifetime (ns)")
-        lifetime_edit.setMaximumWidth(80)
+        lifetime_edit.setMaximumWidth(85)
         lifetime_edit.setToolTip("Edit the lifetime (in ns) of the component.")
-        comp_layout.addWidget(lifetime_label)
-        comp_layout.addWidget(lifetime_edit)
+        row2.addWidget(lifetime_label)
+        row2.addWidget(lifetime_edit)
+        row2.addStretch()
 
-        # Add stretch to push everything to the left
-        comp_layout.addStretch()
+        card_layout.addLayout(row2)
 
-        # Add layout to components section
-        self.components_layout.addLayout(comp_layout)
+        self.components_layout.addWidget(card_frame)
 
-        # Create component state
+        # 3. Component state
         comp = ComponentState(
             idx=idx,
             name_edit=name_edit,
@@ -708,46 +827,68 @@ class ComponentsWidget(QWidget):
             s_edit=s_edit,
             select_button=select_button,
             number_label=number_label,
-            label=f"Component {idx+1}",
+            label=f"Component {idx + 1}",
             text_offset=(0.02, 0.02),
+            card_frame=card_frame,
+            row_frame=card_frame,
+            remove_button=remove_button,
+            ui_elements={
+                'comp_layout': row2,
+                'card_layout': card_layout,
+                'lifetime_label': lifetime_label,
+            },
         )
 
-        # Extend components list if needed
         while len(self.components) <= idx:
             self.components.append(None)
         self.components[idx] = comp
 
         # Connect signals
+        menu.aboutToShow.connect(
+            lambda c=comp, m=menu: self._populate_select_menu(c.idx, m)
+        )
+        card_frame.clicked.connect(
+            lambda c=comp: self._select_component_item(c)
+        )
+        remove_button.clicked.connect(
+            lambda _, c=comp: self._remove_component(c.idx)
+        )
         name_edit.textChanged.connect(
-            lambda: self._on_component_name_changed(idx)
+            lambda _, c=comp: self._on_component_name_changed(c.idx)
+        )
+        name_edit.cursorPositionChanged.connect(
+            lambda *_, c=comp: self._select_component_item(c)
         )
         g_edit.editingFinished.connect(
-            lambda: self._on_component_coords_changed(idx)
+            lambda c=comp: self._on_component_coords_changed(c.idx)
         )
         g_edit.textChanged.connect(
-            lambda: self._update_component_input_styling(idx)
+            lambda _, c=comp: self._update_component_input_styling(c.idx)
         )
         g_edit.textChanged.connect(
             lambda _=None: self._refresh_run_button_if_ready()
+        )
+        g_edit.cursorPositionChanged.connect(
+            lambda *_, c=comp: self._select_component_item(c)
         )
         s_edit.editingFinished.connect(
-            lambda: self._on_component_coords_changed(idx)
+            lambda c=comp: self._on_component_coords_changed(c.idx)
         )
         s_edit.textChanged.connect(
-            lambda: self._update_component_input_styling(idx)
+            lambda _, c=comp: self._update_component_input_styling(c.idx)
         )
         s_edit.textChanged.connect(
             lambda _=None: self._refresh_run_button_if_ready()
         )
-        lifetime_edit.editingFinished.connect(
-            lambda: self._update_component_from_lifetime(idx)
+        s_edit.cursorPositionChanged.connect(
+            lambda *_, c=comp: self._select_component_item(c)
         )
-        # Select button action is handled by the dynamic QMenu
-
-        comp.ui_elements = {
-            'comp_layout': comp_layout,
-            'lifetime_label': lifetime_label,
-        }
+        lifetime_edit.editingFinished.connect(
+            lambda c=comp: self._update_component_from_lifetime(c.idx)
+        )
+        lifetime_edit.cursorPositionChanged.connect(
+            lambda *_, c=comp: self._select_component_item(c)
+        )
 
     def _auto_place_second_component(self):
         """Auto-place Component 2 on the universal circle based on Component 1 and the data center."""
@@ -963,6 +1104,7 @@ class ComponentsWidget(QWidget):
             return
 
         self._add_component_ui(total_count)
+        self._select_component_item(total_count)
         self._update_component_visibility()
         self._update_analysis_options()
         self._update_button_states()
@@ -970,22 +1112,41 @@ class ComponentsWidget(QWidget):
         if self.parent_widget is not None:
             self._update_lifetime_inputs_visibility()
 
-    def _remove_component(self):
-        """Remove the last component."""
+    def _remove_component(self, idx=None):
+        """Remove a component (by default, the last one)."""
         if len(self.components) <= 2:
             self._update_button_states()
             return
 
-        last_idx = len(self.components) - 1
-        comp = self.components[last_idx]
+        if idx is None:
+            idx = len(self.components) - 1
+        elif isinstance(idx, ComponentState):
+            idx = self.components.index(idx)
+
+        if idx < 0 or idx >= len(self.components):
+            return
+
+        comp = self.components[idx]
+        was_selected = self._selected_component is comp
 
         if comp is not None:
             if comp.dot is not None:
-                comp.dot.remove()
+                with contextlib.suppress(ValueError, AttributeError):
+                    comp.dot.remove()
             if comp.text is not None:
-                comp.text.remove()
+                with contextlib.suppress(ValueError, AttributeError):
+                    comp.text.remove()
 
-            if hasattr(comp, 'ui_elements'):
+            frame = getattr(comp, 'card_frame', None) or getattr(
+                comp, 'row_frame', None
+            )
+            if frame is not None:
+                self.components_layout.removeWidget(frame)
+                frame.deleteLater()
+            elif (
+                hasattr(comp, 'ui_elements')
+                and 'comp_layout' in comp.ui_elements
+            ):
                 comp_layout = comp.ui_elements['comp_layout']
                 while comp_layout.count():
                     item = comp_layout.takeAt(0)
@@ -993,9 +1154,15 @@ class ComponentsWidget(QWidget):
                         item.widget().deleteLater()
                 self.components_layout.removeItem(comp_layout)
 
-        self.components.pop()
+        self.components.pop(idx)
 
         self._update_component_numbering()
+
+        if was_selected:
+            new_sel_idx = min(idx, len(self.components) - 1)
+            self._select_component_item(new_sel_idx)
+        else:
+            self._select_component_item(self._selected_component)
 
         if len(self.components) == 2:
             self._update_analysis_options()
@@ -1033,10 +1200,10 @@ class ComponentsWidget(QWidget):
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
-        self._remove_last_component_from_settings()
+        self._remove_component_from_settings(idx)
 
-    def _remove_last_component_from_settings(self):
-        """Remove the last component from the settings in metadata."""
+    def _remove_component_from_settings(self, idx=None):
+        """Remove a component from the settings in metadata and reindex."""
         if self._updating_settings:
             return
 
@@ -1057,8 +1224,24 @@ class ComponentsWidget(QWidget):
         settings = layer.metadata['settings']['component_analysis']
 
         if 'components' in settings and len(settings['components']) > 0:
-            max_idx_str = max(settings['components'].keys(), key=int)
-            del settings['components'][max_idx_str]
+            if idx is None or idx >= len(self.components):
+                max_idx_str = max(settings['components'].keys(), key=int)
+                if max_idx_str in settings['components']:
+                    del settings['components'][max_idx_str]
+            else:
+                old_comps = settings['components']
+                new_comps = {}
+                new_i = 0
+                for i_str in sorted(old_comps.keys(), key=int):
+                    if int(i_str) == idx:
+                        continue
+                    new_comps[str(new_i)] = old_comps[i_str]
+                    new_i += 1
+                settings['components'] = new_comps
+
+    def _remove_last_component_from_settings(self):
+        """Remove the last component from the settings in metadata."""
+        self._remove_component_from_settings(None)
 
     def _get_max_components(self):
         """Get maximum number of components based on available harmonics."""
@@ -1106,8 +1289,22 @@ class ComponentsWidget(QWidget):
         max_components = self._get_max_components()
 
         self.add_component_btn.setEnabled(total_count < max_components)
-
         self.remove_component_btn.setEnabled(total_count > 2)
+
+        for comp in self.components:
+            if (
+                comp is not None
+                and getattr(comp, 'remove_button', None) is not None
+            ):
+                comp.remove_button.setEnabled(total_count > 2)
+                if total_count <= 2:
+                    comp.remove_button.setToolTip(
+                        "At least two components are required."
+                    )
+                else:
+                    comp.remove_button.setToolTip(
+                        f"Remove Component {comp.idx + 1}."
+                    )
 
         self._refresh_run_button_if_ready()
 
@@ -1129,6 +1326,10 @@ class ComponentsWidget(QWidget):
             comp.name_edit.clear()
             if comp.lifetime_edit is not None:
                 comp.lifetime_edit.clear()
+            if getattr(comp, 'coords_label', None) is not None:
+                comp.coords_label.setText("G: -, S: -")
+            if getattr(comp, 'name_label', None) is not None:
+                comp.name_label.setText(f"Component {comp.idx + 1}")
 
         if self.component_line is not None:
             with contextlib.suppress(ValueError, AttributeError):
@@ -1144,14 +1345,29 @@ class ComponentsWidget(QWidget):
 
         self._update_components_setting_in_metadata('components', {})
 
+        self._refresh_editor_title()
+
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
     def _update_component_numbering(self):
         """Update the numbering labels for all components."""
         for i, comp in enumerate(self.components):
-            if comp is not None and comp.number_label is not None:
-                comp.number_label.setText(f"{i + 1}.")
+            if comp is not None:
+                comp.idx = i
+                comp.label = f"Component {i + 1}"
+                if comp.number_label is not None:
+                    comp.number_label.setText(f"{i + 1}.")
+                if getattr(comp, 'name_label', None) is not None:
+                    name = (
+                        comp.name_edit.text().strip() if comp.name_edit else ""
+                    )
+                    comp.name_label.setText(
+                        name if name else f"Component {i + 1}"
+                    )
+                if getattr(comp, 'remove_button', None) is not None:
+                    comp.remove_button.setToolTip(f"Remove Component {i + 1}.")
+        self._refresh_editor_title()
 
     def _get_default_components_settings(self):
         """Get default settings dictionary for components parameters."""
@@ -1322,13 +1538,20 @@ class ComponentsWidget(QWidget):
                             comp.text.remove()
                             comp.text = None
 
-                        if hasattr(comp, 'ui_elements'):
-                            comp_layout = comp.ui_elements['comp_layout']
-                            while comp_layout.count():
-                                item = comp_layout.takeAt(0)
-                                if item.widget():
-                                    item.widget().deleteLater()
-                            self.components_layout.removeItem(comp_layout)
+                        frame = getattr(comp, 'card_frame', None) or getattr(
+                            comp, 'row_frame', None
+                        )
+                        if frame is not None:
+                            self.components_layout.removeWidget(frame)
+                            frame.deleteLater()
+                        elif hasattr(comp, 'ui_elements'):
+                            comp_layout = comp.ui_elements.get('comp_layout')
+                            if comp_layout is not None:
+                                while comp_layout.count():
+                                    item = comp_layout.takeAt(0)
+                                    if item.widget():
+                                        item.widget().deleteLater()
+                                self.components_layout.removeItem(comp_layout)
 
                     self.components.pop()
 
@@ -1387,8 +1610,11 @@ class ComponentsWidget(QWidget):
                 self.draw_line_between_components()
 
             self._update_button_states()
-
             self._update_component_visibility()
+            self._update_all_row_coords_labels()
+            self._update_component_numbering()
+            if self.components:
+                self._select_component_item(0)
 
         except Exception as e:  # noqa: BLE001
             show_error(
@@ -1464,13 +1690,20 @@ class ComponentsWidget(QWidget):
                             comp.text.remove()
                             comp.text = None
 
-                        if hasattr(comp, 'ui_elements'):
-                            comp_layout = comp.ui_elements['comp_layout']
-                            while comp_layout.count():
-                                item = comp_layout.takeAt(0)
-                                if item.widget():
-                                    item.widget().deleteLater()
-                            self.components_layout.removeItem(comp_layout)
+                        frame = getattr(comp, 'card_frame', None) or getattr(
+                            comp, 'row_frame', None
+                        )
+                        if frame is not None:
+                            self.components_layout.removeWidget(frame)
+                            frame.deleteLater()
+                        elif hasattr(comp, 'ui_elements'):
+                            comp_layout = comp.ui_elements.get('comp_layout')
+                            if comp_layout is not None:
+                                while comp_layout.count():
+                                    item = comp_layout.takeAt(0)
+                                    if item.widget():
+                                        item.widget().deleteLater()
+                                self.components_layout.removeItem(comp_layout)
 
                     self.components.pop()
 
@@ -1567,8 +1800,11 @@ class ComponentsWidget(QWidget):
                     self.draw_line_between_components()
 
             self._update_button_states()
-
             self._update_component_visibility()
+            self._update_all_row_coords_labels()
+            self._update_component_numbering()
+            if self.components:
+                self._select_component_item(0)
 
         except Exception as e:  # noqa: BLE001
             show_error(
@@ -2121,6 +2357,7 @@ class ComponentsWidget(QWidget):
 
         self.draw_line_between_components()
         self._update_component_colors()
+        self._update_all_row_coords_labels()
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
@@ -2910,6 +3147,10 @@ class ComponentsWidget(QWidget):
         """Handle changes to component name."""
         comp = self.components[idx]
         name = comp.name_edit.text().strip()
+
+        if getattr(comp, 'name_label', None) is not None:
+            comp.name_label.setText(name if name else f"Component {idx + 1}")
+        self._refresh_editor_title()
 
         old_name = None
         if not self._updating_settings and self.current_image_layer_name:
@@ -4303,6 +4544,7 @@ class ComponentsWidget(QWidget):
                             event
                         )
                 self.parent_widget.canvas_widget._on_escape(None)
+                self._select_component_item(comp.idx)
                 self.dragging_label_idx = comp.idx
                 return
         for comp in self.components:
@@ -4321,6 +4563,7 @@ class ComponentsWidget(QWidget):
                             event
                         )
                 self.parent_widget.canvas_widget._on_escape(None)
+                self._select_component_item(comp.idx)
                 self.dragging_component_idx = comp.idx
                 return
 
@@ -4369,6 +4612,7 @@ class ComponentsWidget(QWidget):
         if comp.text is not None:
             ox, oy = comp.text_offset
             comp.text.set_position((x + ox, y + oy))
+        self._update_row_coords_label(self.dragging_component_idx)
         self.draw_line_between_components()
 
     def _on_release(self, event):

@@ -4385,3 +4385,118 @@ def test_component_fit_for_layer_bails_out_when_preparation_fails(
     comp_widget._run_component_fit_for_layer(layer, active, 2, 7, 1)
 
     assert layer.metadata["settings"]["component_analysis"] == before
+
+
+def test_components_inline_card_selection(make_viewer_model, qtbot):
+    """Component cards can be clicked to highlight the active component."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    assert len(comp.components) == 2
+    assert comp._selected_component is comp.components[0]
+    assert comp.components[0].card_frame.property("selected")
+    assert not comp.components[1].card_frame.property("selected")
+
+    # Click second component's card frame
+    qtbot.mouseClick(comp.components[1].card_frame, Qt.LeftButton)
+    assert comp._selected_component is comp.components[1]
+    assert not comp.components[0].card_frame.property("selected")
+    assert comp.components[1].card_frame.property("selected")
+
+
+def test_components_inline_card_inputs_structure(make_viewer_model, qtbot):
+    """Each component card embeds inputs directly in two rows."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    c0 = comp.components[0]
+    # Check top row controls
+    assert c0.number_label.text() == "1."
+    assert c0.name_edit is not None
+    assert c0.select_button is not None
+    assert c0.remove_button is not None
+
+    # Check bottom row controls
+    assert c0.g_edit is not None
+    assert c0.s_edit is not None
+    assert c0.lifetime_edit is not None
+
+    # Typing name updates the component's name
+    c0.name_edit.setText("Donor Fluorophore")
+    assert c0.name_edit.text() == "Donor Fluorophore"
+
+    # Updating G and S updates coordinates
+    c0.g_edit.setText("0.600")
+    c0.s_edit.setText("0.400")
+    comp._on_component_coords_changed(0)
+    assert c0.g_edit.text() == "0.600"
+    assert c0.s_edit.text() == "0.400"
+
+    # Updating lifetime
+    c0.lifetime_edit.setText("2.500")
+    comp._update_component_from_lifetime(0)
+    assert c0.lifetime_edit.text() == "2.500"
+
+
+def test_components_remove_specific_button(make_viewer_model, qtbot):
+    """Clicking the remove button on a specific component removes it and renumbers remaining."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    comp._add_component()
+    assert len(comp.components) == 3
+
+    comp.components[0].name_edit.setText("Comp A")
+    comp.components[1].name_edit.setText("Comp B")
+    comp.components[2].name_edit.setText("Comp C")
+
+    # All 3 have remove buttons enabled because count > 2
+    for c in comp.components:
+        assert c.remove_button.isEnabled()
+
+    # Remove the middle component (Comp B)
+    comp.components[1].remove_button.click()
+
+    assert len(comp.components) == 2
+    assert comp.components[0].name_edit.text() == "Comp A"
+    assert comp.components[0].idx == 0
+    assert comp.components[0].number_label.text() == "1."
+
+    assert comp.components[1].name_edit.text() == "Comp C"
+    assert comp.components[1].idx == 1
+    assert comp.components[1].number_label.text() == "2."
+
+    # Now remove buttons should be disabled because count == 2
+    assert not comp.components[0].remove_button.isEnabled()
+    assert not comp.components[1].remove_button.isEnabled()
+    assert not comp.remove_component_btn.isEnabled()
+
+
+def test_components_canvas_interaction_selects_component(
+    make_viewer_model, qtbot
+):
+    """Clicking a component dot on the canvas selects its card in the list."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    # Set up coordinates so dots are created on canvas
+    comp.components[0].g_edit.setText("0.2")
+    comp.components[0].s_edit.setText("0.1")
+    comp._on_component_coords_changed(0)
+
+    comp.components[1].g_edit.setText("0.8")
+    comp.components[1].s_edit.setText("0.5")
+    comp._on_component_coords_changed(1)
+
+    # Select component 0
+    comp._select_component_item(0)
+    assert comp._selected_component is comp.components[0]
+    assert comp.components[0].card_frame.property("selected")
+
+    # Simulate canvas press event on component 1 dot
+    mock_event = MagicMock()
+    mock_event.inaxes = parent.canvas_widget.axes
+    with patch.object(
+        comp.components[1].dot, "contains", return_value=(True, {})
+    ):
+        comp._on_press(mock_event)
+
+    assert comp._selected_component is comp.components[1]
+    assert comp.components[1].card_frame.property("selected")
+    assert not comp.components[0].card_frame.property("selected")
