@@ -1891,8 +1891,18 @@ def test_color_settings_and_signal_teardown(
         "getColor",
         lambda *args, **kwargs: mock_color,
     )
+    scatter = plotter.canvas_widget.artists['SCATTER']
+    scatter.data = np.array([[0.5, 0.5], [0.6, 0.6]])
     plotter._on_marker_color_clicked()
     assert plotter._marker_color == "#ff0000"
+    assert scatter.color == "#ff0000"
+    sc = scatter._mpl_artists.get("scatter")
+    assert sc is not None
+    np.testing.assert_allclose(
+        sc.get_facecolors()[0][:3], [1.0, 0.0, 0.0], atol=1e-3
+    )
+    assert len(sc.get_edgecolors()) == 0
+    assert sc.get_linewidths()[0] == 0
 
     # The 'Select color...' sentinel switches the histogram style to solid.
     plotter.plotter_inputs_widget.colormap_combobox.setCurrentText(

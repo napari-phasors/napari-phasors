@@ -754,12 +754,14 @@ class Scatter:
         ax: plt.Axes,
         size: float = 20.0,
         alpha: float = 1.0,
+        color: Any = "#1f77b4",
         overlay_colormap: Any = default_overlay_cmap,
     ):
         self.ax = ax
         self._data: np.ndarray | None = None
         self._size = size
         self._alpha = alpha
+        self._color = color
         self._overlay_colormap = overlay_colormap
         self._color_indices: np.ndarray | None = None
         self._visible = True
@@ -802,6 +804,17 @@ class Scatter:
             scatter.set_alpha(self._alpha)
             if self.ax.figure and self.ax.figure.canvas:
                 self.ax.figure.canvas.draw_idle()
+
+    @property
+    def color(self) -> Any:
+        return self._color
+
+    @color.setter
+    def color(self, value: Any):
+        self._color = value
+        self._colorize(self._color_indices)
+        if self.ax.figure and self.ax.figure.canvas:
+            self.ax.figure.canvas.draw_idle()
 
     @property
     def overlay_colormap(self) -> Any:
@@ -858,6 +871,9 @@ class Scatter:
                 self._data[:, 1],
                 s=self._size,
                 alpha=self._alpha,
+                c=[self._color],
+                edgecolors="none",
+                linewidths=0,
                 zorder=1,
                 visible=self._visible,
             )
@@ -865,26 +881,28 @@ class Scatter:
             scatter.set_offsets(self._data)
             scatter.set_visible(self._visible)
 
-        if self._color_indices is not None:
-            self._colorize(self._color_indices)
+        self._colorize(self._color_indices)
 
     def _colorize(self, indices: np.ndarray | None):
         scatter = self._mpl_artists.get("scatter")
         if scatter is None or self._data is None:
             return
 
+        scatter.set_edgecolor("none")
+        scatter.set_linewidth(0)
+
         if indices is None:
-            scatter.set_color("#1f77b4")
+            scatter.set_facecolor(self._color)
             return
 
         indices = np.asarray(indices)
         if indices.ndim == 0:
             if indices == 0:
-                scatter.set_color("#1f77b4")
+                scatter.set_facecolor(self._color)
                 return
             indices = np.full(len(self._data), indices, dtype=np.int32)
         elif len(indices) != len(self._data):
-            scatter.set_color("#1f77b4")
+            scatter.set_facecolor(self._color)
             return
 
         cmap = (
@@ -894,12 +912,27 @@ class Scatter:
         )
         if isinstance(cmap, mcolors.ListedColormap):
             clipped = np.clip(indices, 0, cmap.N - 1)
-            colors = cmap(clipped)
+            colors = np.array(cmap(clipped))
         else:
             max_idx = max(int(np.nanmax(indices)), 1)
             norm = Normalize(vmin=0, vmax=max_idx)
-            colors = cmap(norm(indices))
-        scatter.set_color(colors)
+            colors = np.array(cmap(norm(indices)))
+
+        zero_mask = indices == 0
+        if np.any(zero_mask):
+            base_rgba = mcolors.to_rgba(self._color)
+            if colors.ndim > 1 and colors.shape[1] == 4:
+                sample_zero = (
+                    cmap(0)
+                    if isinstance(cmap, mcolors.ListedColormap)
+                    else colors[zero_mask][0]
+                )
+                if sample_zero[3] == 0 or np.all(zero_mask):
+                    colors[zero_mask] = base_rgba
+
+        scatter.set_facecolor(colors)
+        scatter.set_edgecolor("none")
+        scatter.set_linewidth(0)
 
 
 ScatterArtist = Scatter

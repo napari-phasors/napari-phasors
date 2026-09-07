@@ -166,6 +166,20 @@ def test_scatter_artist(make_viewer_model):
     scatter_artist.visible = False
     assert scatter_artist.visible is False
 
+    # Color property and no outline
+    scatter_artist.visible = True
+    scatter_artist.color_indices = None
+    mpl_sc = scatter_artist._mpl_artists["scatter"]
+    assert len(mpl_sc.get_edgecolors()) == 0
+    assert mpl_sc.get_linewidths()[0] == 0
+
+    scatter_artist.color = "#ff0000"
+    assert scatter_artist.color == "#ff0000"
+    facecolors = mpl_sc.get_facecolors()
+    np.testing.assert_allclose(facecolors[0][:3], [1.0, 0.0, 0.0], atol=1e-3)
+    assert len(mpl_sc.get_edgecolors()) == 0
+    assert mpl_sc.get_linewidths()[0] == 0
+
 
 def test_selector_activation_and_geometry(make_viewer_model):
     viewer = make_viewer_model()
@@ -735,8 +749,87 @@ def test_contour_artist(make_viewer_model):
     assert contour.visible is False
     assert canvas.artists["HISTOGRAM2D"].visible is True
 
-    # Test remove artists
     contour._remove_artists()
     assert len(contour._contour_collections) == 0
     assert contour.histogram is None
     assert canvas.axes.get_legend() is None
+
+
+def test_contour_artist_edge_cases(make_viewer_model):
+    """Test edge cases and branches in Contour artist."""
+    viewer = make_viewer_model()
+    canvas = PhasorCanvasWidget(viewer)
+    contour = canvas.artists["CONTOUR"]
+
+    # __eq__ with non-string
+    assert (contour == 123) is False
+    assert (contour == contour) is True
+
+    # setting data to None and empty array
+    contour.data = None
+    assert contour.data is None
+    assert len(contour._contour_collections) == 0
+
+    contour.data = np.empty((0, 2))
+    assert len(contour._contour_collections) == 0
+
+    # Custom bins with ndarray edges
+    rng = np.random.default_rng(42)
+    pts = rng.normal(loc=0.5, scale=0.1, size=(50, 2))
+    contour.bins = (np.linspace(0, 1, 20), np.linspace(0, 1, 20))
+    contour.data = pts
+    assert contour.histogram is not None
+
+    # Aspect <= 1 in _compute_grid
+    canvas.axes.set_xlim(0, 1)
+    canvas.axes.set_ylim(0, 5)
+    contour.bins = 30
+    contour._refresh()
+
+    # Explicit levels sequence
+    contour.levels = [2.0, 5.0, 10.0]
+    contour._refresh()
+    assert list(contour.levels) == [2.0, 5.0, 10.0]
+
+    # _compute_clean_levels edge cases (vmax <= 0, vmax <= 1)
+    contour.levels = 5
+    assert contour._compute_clean_levels(np.zeros((10, 10))) is None
+    low_counts = np.zeros((10, 10))
+    low_counts[0, 0] = 1.0
+    levs = contour._compute_clean_levels(low_counts)
+    assert np.array_equal(levs, np.array([1.0]))
+
+    # _refresh when data is None or levels is None
+    contour._data = None
+    contour._refresh()
+    contour._data = np.zeros(
+        (5, 2)
+    )  # all same points, clean levels will be None
+    contour.levels = 5
+    contour._refresh()
+
+    # set_grouped_data edge cases
+    # 1. empty dict
+    contour.set_grouped_data({})
+    assert contour._grouped_data is None
+
+    # 2. all empty groups
+    contour.set_grouped_data({1: (np.array([]), np.array([]))})
+    assert len(contour._contour_collections) == 0
+
+    # 3. group where levels is None, colormap fallback, solid fallback
+    pts1 = rng.normal(loc=0.5, scale=0.1, size=(50, 2))
+    grouped = {
+        1: (pts1[:, 0], pts1[:, 1]),
+        2: (np.array([0.5]), np.array([0.5])),
+    }
+    styles = {
+        1: {"mode": "colormap", "colormap": "nonexistent_cmap_xyz"},
+        2: {"mode": "solid"},
+    }
+    contour.set_grouped_data(
+        grouped_dict=grouped,
+        styles_dict=styles,
+        show_legend=True,
+    )
+    assert len(contour._contour_collections) >= 1

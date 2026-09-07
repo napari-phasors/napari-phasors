@@ -5363,6 +5363,7 @@ class PlotterWidget(QWidget):
         widget.marker_color_button = QPushButton()
         widget.marker_color_button.setMinimumSize(20, 20)
         widget.marker_color_button.setMaximumSize(20, 20)
+        widget.marker_color_button.setStyleSheet("background-color: #1f77b4;")
 
         widget.label_marker_alpha = QLabel("Alpha:")
         widget.marker_alpha_spinbox = QDoubleSpinBox()
@@ -5567,11 +5568,27 @@ class PlotterWidget(QWidget):
 
         new_cmap = ListedColormap([current_color])
 
-        self.canvas_widget.artists['SCATTER'].overlay_colormap = new_cmap
-        self.canvas_widget.artists['SCATTER']._colorize(
-            self.canvas_widget.artists['SCATTER'].color_indices
-        )
-        self.canvas_widget.figure.canvas.draw_idle()
+        if hasattr(self, 'canvas_widget') and self.canvas_widget is not None:
+            scatter_artist = self.canvas_widget.artists.get('SCATTER')
+            if scatter_artist is not None:
+                scatter_artist.color = current_color
+                if (
+                    not hasattr(self, '_last_scatter_color_indices')
+                    or self._last_scatter_color_indices is None
+                    or (
+                        isinstance(
+                            self._last_scatter_color_indices,
+                            (int, np.integer),
+                        )
+                        and self._last_scatter_color_indices == 0
+                    )
+                ):
+                    scatter_artist.overlay_colormap = new_cmap
+                scatter_artist._colorize(scatter_artist.color_indices)
+            if hasattr(self.canvas_widget, 'figure') and hasattr(
+                self.canvas_widget.figure, 'canvas'
+            ):
+                self.canvas_widget.figure.canvas.draw_idle()
 
     def _on_colormap_changed(self):
         """Callback for colormap change."""
@@ -8590,12 +8607,15 @@ class PlotterWidget(QWidget):
         self.canvas_widget.artists['SCATTER'].data = plot_data
 
         # Setting data causes biaplotter to reset size and alpha to default values
-        # Re-apply the user's chosen size and alpha
+        # Re-apply the user's chosen size, alpha, and color
         self.canvas_widget.artists['SCATTER'].size = (
             self.plotter_inputs_widget.marker_size_spinbox.value()
         )
         self.canvas_widget.artists['SCATTER'].alpha = (
             self.plotter_inputs_widget.marker_alpha_spinbox.value()
+        )
+        self.canvas_widget.artists['SCATTER'].color = getattr(
+            self, '_marker_color', '#1f77b4'
         )
 
         # Only update color_indices if changed
@@ -9311,44 +9331,54 @@ class PlotterWidget(QWidget):
         """Set the active artist and update only the relevant plot."""
         if len(x_data) == 0 or len(y_data) == 0:
             return
-        if plot_type != self.plot_type:
-            self.plotter_inputs_widget.plot_type_combobox.blockSignals(True)
-            display_name = self.PLOT_TYPE_DISPLAY_NAMES.get(
-                plot_type, plot_type
-            )
-            self.plotter_inputs_widget.plot_type_combobox.setCurrentText(
-                display_name
-            )
-            self.plotter_inputs_widget.plot_type_combobox.blockSignals(False)
-            self._connect_active_artist_signals()
 
-        current_active = getattr(self.canvas_widget, 'active_artist', None)
+        old_updating = getattr(self, '_updating_plot', False)
+        self._updating_plot = True
+        try:
+            if plot_type != self.plot_type:
+                self.plotter_inputs_widget.plot_type_combobox.blockSignals(
+                    True
+                )
+                display_name = self.PLOT_TYPE_DISPLAY_NAMES.get(
+                    plot_type, plot_type
+                )
+                self.plotter_inputs_widget.plot_type_combobox.setCurrentText(
+                    display_name
+                )
+                self.plotter_inputs_widget.plot_type_combobox.blockSignals(
+                    False
+                )
+                self._connect_active_artist_signals()
 
-        if plot_type != 'CONTOUR':
-            # Hide contour items when switching away (including to NONE)
-            self._clear_contour_plot()
-            self.canvas_widget.figure.canvas.draw_idle()
+            current_active = getattr(self.canvas_widget, 'active_artist', None)
 
-        if plot_type == 'HISTOGRAM2D':
-            self._update_histogram_plot(x_data, y_data, selection_id_data)
-        elif plot_type == 'SCATTER':
-            self._remove_colorbar()
-            self._update_scatter_plot(x_data, y_data, selection_id_data)
-        elif plot_type == 'CONTOUR':
-            self._update_contour_plot(x_data, y_data, selection_id_data)
-        elif plot_type == 'NONE':
-            self._remove_colorbar()
+            if plot_type != 'CONTOUR':
+                # Hide contour items when switching away (including to NONE)
+                self._clear_contour_plot()
+                self.canvas_widget.figure.canvas.draw_idle()
 
-        if plot_type in getattr(self.canvas_widget, 'artists', {}):
-            if current_active != plot_type:
-                self.canvas_widget.active_artist = plot_type
-        else:
-            self.canvas_widget.active_artist = None
+            if plot_type == 'HISTOGRAM2D':
+                self._update_histogram_plot(x_data, y_data, selection_id_data)
+            elif plot_type == 'SCATTER':
+                self._remove_colorbar()
+                self._update_scatter_plot(x_data, y_data, selection_id_data)
+            elif plot_type == 'CONTOUR':
+                self._update_contour_plot(x_data, y_data, selection_id_data)
+            elif plot_type == 'NONE':
+                self._remove_colorbar()
 
-        if plot_type not in getattr(self.canvas_widget, 'artists', {}):
-            return
+            if plot_type in getattr(self.canvas_widget, 'artists', {}):
+                if current_active != plot_type:
+                    self.canvas_widget.active_artist = plot_type
+            else:
+                self.canvas_widget.active_artist = None
 
-        self._update_plot_elements()
+            if plot_type not in getattr(self.canvas_widget, 'artists', {}):
+                return
+
+            self._update_plot_elements()
+        finally:
+            self._updating_plot = old_updating
 
     def set_colorbar_style(self, color="white", label=None, is_mapping=False):
         """Set the colorbar style in the canvas widget."""
