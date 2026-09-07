@@ -1,8 +1,7 @@
 """Native Matplotlib canvas and interactive selection tools for napari-phasors.
 
-Replaces the unmaintained ``biaplotter`` and ``nap-plot-tools`` packages with a
-clean, high-performance, and maintainable implementation tailored to phasor
-analysis.
+The architecture is adapted from `biaplotter` and `nap-plot-tools`, licensed
+under BSD-3-Clause.
 """
 
 from __future__ import annotations
@@ -45,68 +44,29 @@ if TYPE_CHECKING:
     import napari
 
 
-# ---------------------------------------------------------------------------
-# Default Categorical Colormaps (replaces nap-plot-tools dependency)
-# ---------------------------------------------------------------------------
-
-CAT10_MOD_HEX_COLORS = [
-    "#e6e6fa",  # First color (e.g. background / class 0)
-    "#ff7f0e",
-    "#1f77b4",
-    "#2ca02c",
-    "#9400d3",
-    "#afeeee",
-    "#8c564b",
-    "#e377c2",
-    "#7f7f7f",
-    "#bcbd22",
-    "#17becf",
-    "#ccebc5",
-    "#ffed6f",
-    "#0054b6",
-    "#6aa866",
-    "#ffbfff",
-    "#8d472a",
-    "#417239",
-    "#d48fd0",
-    "#8b7e32",
-    "#7989dc",
-    "#f1d200",
-    "#a1e9f6",
-    "#924c28",
-    "#dc797e",
-    "#b86e85",
-    "#79ea30",
-    "#4723b9",
-    "#3de658",
-    "#de3ce7",
-]
-
-
-def _build_cat10_mod_colormaps() -> tuple[ListedColormap, ListedColormap]:
-    """Create opaque and first-color-transparent versions of categorical colormap."""
-    rgba_colors = [to_rgba(c) for c in CAT10_MOD_HEX_COLORS]
-    opaque_cmap = ListedColormap(rgba_colors, name="cat10_modified")
-
-    trans_colors = list(rgba_colors)
-    trans_colors[0] = (
-        rgba_colors[0][0],
-        rgba_colors[0][1],
-        rgba_colors[0][2],
-        0.0,
+def _build_default_overlay_colormaps() -> (
+    tuple[ListedColormap, ListedColormap]
+):
+    """Create default categorical colormaps based on Matplotlib's tab10."""
+    tab10_colors = [to_rgba(c) for c in plt.get_cmap("tab10").colors]
+    opaque_cmap = ListedColormap(
+        [to_rgba("#e6e6fa")] + tab10_colors, name="tab10_opaque"
     )
+
+    trans_colors = [(0.0, 0.0, 0.0, 0.0)] + tab10_colors
     first_trans_cmap = ListedColormap(
-        trans_colors, name="cat10_modified_first_transparent"
+        trans_colors, name="tab10_first_transparent"
     )
     return opaque_cmap, first_trans_cmap
 
 
-cat10_mod_cmap, cat10_mod_cmap_first_transparent = _build_cat10_mod_colormaps()
+default_overlay_cmap, default_overlay_cmap_first_transparent = (
+    _build_default_overlay_colormaps()
+)
 
-
-# ---------------------------------------------------------------------------
-# Selection Geometry
-# ---------------------------------------------------------------------------
+# Backward-compatibility aliases
+cat10_mod_cmap = default_overlay_cmap
+cat10_mod_cmap_first_transparent = default_overlay_cmap_first_transparent
 
 
 class SelectionGeometry:
@@ -146,11 +106,6 @@ class SelectionGeometry:
             return path.contains_points(points)
 
         return np.zeros(len(points), dtype=bool)
-
-
-# ---------------------------------------------------------------------------
-# Selection Toolbar Icons (Vector rendering with QPainter)
-# ---------------------------------------------------------------------------
 
 
 def _render_selector_pixmap(shape: str, color: str, size: int = 24) -> QPixmap:
@@ -214,11 +169,6 @@ def _make_selector_icon(
     icon.addPixmap(pixmap_off, QIcon.Mode.Normal, QIcon.State.Off)
     icon.addPixmap(pixmap_on, QIcon.Mode.Normal, QIcon.State.On)
     return icon
-
-
-# ---------------------------------------------------------------------------
-# Interactive Selectors
-# ---------------------------------------------------------------------------
 
 
 class BaseInteractiveSelector:
@@ -459,11 +409,6 @@ class InteractiveLassoSelector(BaseInteractiveSelector):
         return self._selected_indices
 
 
-# ---------------------------------------------------------------------------
-# Artists
-# ---------------------------------------------------------------------------
-
-
 class Histogram2D:
     """High-performance 2D Histogram artist with fast vectorized overlay coloring."""
 
@@ -482,7 +427,7 @@ class Histogram2D:
         ax: plt.Axes,
         bins: Union[int, tuple[int, int]] = 100,
         histogram_colormap: Any = plt.cm.magma,
-        overlay_colormap: Any = cat10_mod_cmap_first_transparent,
+        overlay_colormap: Any = default_overlay_cmap_first_transparent,
         cmin: int = 1,
     ):
         self.ax = ax
@@ -809,7 +754,7 @@ class Scatter:
         ax: plt.Axes,
         size: float = 20.0,
         alpha: float = 1.0,
-        overlay_colormap: Any = cat10_mod_cmap,
+        overlay_colormap: Any = default_overlay_cmap,
     ):
         self.ax = ax
         self._data: np.ndarray | None = None
@@ -960,9 +905,471 @@ class Scatter:
 ScatterArtist = Scatter
 
 
-# ---------------------------------------------------------------------------
-# Navigation Toolbar with Signals
-# ---------------------------------------------------------------------------
+class Contour:
+    """Contour plot artist for phasor space with single and multi-group support."""
+
+    data_changed_signal: Signal = Signal(np.ndarray)
+    color_indices_changed_signal: Signal = Signal(object)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, str):
+            return other.upper() in ("CONTOUR", "CONTOUR_PLOT", "CONTOURPLOT")
+        return super().__eq__(other)
+
+    __hash__ = object.__hash__
+
+    def __init__(
+        self,
+        ax: plt.Axes,
+        bins: Union[int, tuple[int, int]] = 150,
+        levels: Union[int, list[float], np.ndarray] = 5,
+        linewidths: float = 1.5,
+        colormap: Any = "jet",
+        log_norm: bool = True,
+    ):
+        self.ax = ax
+        self._data: np.ndarray | None = None
+        self._bins = bins
+        self._levels = levels
+        self._linewidths = linewidths
+        self._colormap = colormap
+        self._log_norm = log_norm
+        self._visible = True
+
+        self._contour_collections: list[Any] = []
+        self._histogram: tuple[np.ndarray, np.ndarray, np.ndarray] | None = (
+            None
+        )
+
+        # Multi-group / multi-layer support
+        self._grouped_data: dict[Any, tuple[np.ndarray, np.ndarray]] | None = (
+            None
+        )
+        self._group_styles: dict[Any, dict[str, Any]] | None = None
+        self._group_names: dict[Any, str] | None = None
+        self._show_legend: bool = True
+
+    @property
+    def data(self) -> np.ndarray | None:
+        return self._data
+
+    @data.setter
+    def data(self, value: np.ndarray | None):
+        self._data = value
+        self._grouped_data = None
+        if value is not None and len(value) > 0:
+            self.data_changed_signal.emit(value)
+            self._refresh(force_redraw=False)
+        else:
+            self._remove_artists()
+
+    @property
+    def bins(self) -> Union[int, tuple[int, int]]:
+        return self._bins
+
+    @bins.setter
+    def bins(self, value: Union[int, tuple[int, int]]):
+        self._bins = value
+        if (
+            self._data is not None and len(self._data) > 0
+        ) or self._grouped_data:
+            self._refresh(force_redraw=False)
+
+    @property
+    def levels(self) -> Union[int, list[float], np.ndarray]:
+        return self._levels
+
+    @levels.setter
+    def levels(self, value: Union[int, list[float], np.ndarray]):
+        self._levels = value
+        if (
+            self._data is not None and len(self._data) > 0
+        ) or self._grouped_data:
+            self._refresh(force_redraw=False)
+
+    @property
+    def linewidths(self) -> float:
+        return self._linewidths
+
+    @linewidths.setter
+    def linewidths(self, value: float):
+        self._linewidths = float(value)
+        if (
+            self._data is not None and len(self._data) > 0
+        ) or self._grouped_data:
+            self._refresh(force_redraw=False)
+
+    @property
+    def colormap(self) -> Any:
+        return self._colormap
+
+    @colormap.setter
+    def colormap(self, value: Any):
+        self._colormap = value
+        if (
+            self._data is not None and len(self._data) > 0
+        ) or self._grouped_data:
+            self._refresh(force_redraw=False)
+
+    @property
+    def log_norm(self) -> bool:
+        return self._log_norm
+
+    @log_norm.setter
+    def log_norm(self, value: bool):
+        self._log_norm = bool(value)
+        if (
+            self._data is not None and len(self._data) > 0
+        ) or self._grouped_data:
+            self._refresh(force_redraw=False)
+
+    @property
+    def visible(self) -> bool:
+        return self._visible
+
+    @visible.setter
+    def visible(self, value: bool):
+        self._visible = bool(value)
+        for cs in self._contour_collections:
+            with contextlib.suppress(Exception):
+                cs.set_visible(self._visible)
+            if hasattr(cs, "collections"):
+                for col in cs.collections:
+                    with contextlib.suppress(Exception):
+                        col.set_visible(self._visible)
+        legend = self.ax.get_legend()
+        if legend is not None:
+            with contextlib.suppress(Exception):
+                legend.set_visible(self._visible)
+        if self.ax.figure and self.ax.figure.canvas:
+            self.ax.figure.canvas.draw_idle()
+
+    @property
+    def color_indices(self) -> np.ndarray | None:
+        return None
+
+    @color_indices.setter
+    def color_indices(self, value: Any):
+        pass
+
+    @property
+    def overlay_colormap(self) -> Any:
+        return None
+
+    @overlay_colormap.setter
+    def overlay_colormap(self, value: Any):
+        pass
+
+    @property
+    def histogram(self) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+        return self._histogram
+
+    def _tag_contour_set(self, cs_obj: Any, label: str | None = None):
+        with contextlib.suppress(Exception):
+            if hasattr(cs_obj, "collections"):
+                for col in cs_obj.collections:
+                    col.set_label("contour_plot_element")
+            else:
+                cs_obj.set_label("contour_plot_element")
+            if label and hasattr(cs_obj, "collections") and cs_obj.collections:
+                cs_obj.collections[0].set_label(label)
+
+    def _remove_artists(self, keys: list[str] | None = None):
+        for cs in self._contour_collections:
+            with contextlib.suppress(Exception):
+                cs.remove()
+            if hasattr(cs, "collections"):
+                for col in cs.collections:
+                    with contextlib.suppress(Exception):
+                        col.remove()
+        self._contour_collections.clear()
+
+        # Clean up any lingering tagged contour collections on axes
+        for artist in list(self.ax.collections):
+            if artist.get_label() == "contour_plot_element":
+                with contextlib.suppress(Exception):
+                    artist.remove()
+
+        legend = self.ax.get_legend()
+        if legend is not None:
+            with contextlib.suppress(Exception):
+                legend.remove()
+
+        self._histogram = None
+
+    def _compute_grid(self, x_all: np.ndarray, y_all: np.ndarray):
+        """Compute the 2D bin edges and centers once on the pooled dataset."""
+        xlim = self.ax.get_xlim()
+        ylim = self.ax.get_ylim()
+        if (xlim[0] == 0.0 and xlim[1] == 1.0) and (
+            ylim[0] == 0.0 and ylim[1] == 1.0
+        ):
+            xlim = (-0.1, 1.1)
+            ylim = (-0.1, 0.7)
+
+        if len(x_all) > 0 and len(y_all) > 0:
+            xlim = (
+                min(float(xlim[0]), float(np.amin(x_all))),
+                max(float(xlim[1]), float(np.amax(x_all))),
+            )
+            ylim = (
+                min(float(ylim[0]), float(np.amin(y_all))),
+                max(float(ylim[1]), float(np.amax(y_all))),
+            )
+
+        if (
+            isinstance(self._bins, (tuple, list))
+            and len(self._bins) == 2
+            and isinstance(self._bins[0], np.ndarray)
+        ):
+            h_total, xedges, yedges = np.histogram2d(
+                x_all, y_all, bins=self._bins
+            )
+            xcenters = xedges[:-1] + ((xedges[1:] - xedges[:-1]) / 2.0)
+            ycenters = yedges[:-1] + ((yedges[1:] - yedges[:-1]) / 2.0)
+            return h_total, xedges, yedges, xcenters, ycenters
+
+        aspect = (xlim[1] - xlim[0]) / max(ylim[1] - ylim[0], 1e-6)
+        if isinstance(self._bins, (tuple, list)):
+            bins_xy = (int(self._bins[0]), int(self._bins[1]))
+        elif aspect > 1:
+            bins_xy = (int(self._bins), max(int(self._bins / aspect), 1))
+        else:
+            bins_xy = (max(int(self._bins * aspect), 1), int(self._bins))
+
+        h_total, xedges, yedges = np.histogram2d(
+            x_all, y_all, bins=bins_xy, range=[xlim, ylim]
+        )
+        xcenters = xedges[:-1] + ((xedges[1:] - xedges[:-1]) / 2.0)
+        ycenters = yedges[:-1] + ((yedges[1:] - yedges[:-1]) / 2.0)
+        return h_total, xedges, yedges, xcenters, ycenters
+
+    def _compute_clean_levels(
+        self, h_grid: np.ndarray, vmax: float | None = None
+    ) -> Any:
+        if isinstance(self._levels, (list, tuple, np.ndarray)):
+            return self._levels
+
+        vmax = vmax if vmax is not None else np.nanmax(h_grid)
+        if np.isnan(vmax) or vmax <= 0:
+            return None
+        if vmax <= 1:
+            return np.array([1.0])
+
+        # Clean noise: discard sparse 1-count Poisson noise by starting at max(2.0, vmax * 0.05)
+        vmin = max(2.0, float(vmax) * 0.05)
+        if vmax <= vmin:
+            vmin = max(1.0, float(vmax) * 0.5)
+
+        n_levels = max(int(self._levels), 2)
+        if self._log_norm:
+            levs = np.logspace(np.log10(vmin), np.log10(vmax), n_levels)
+        else:
+            levs = np.linspace(vmin, vmax, n_levels)
+        return np.unique(levs)
+
+    def _refresh(self, force_redraw: bool = True):
+        self._remove_artists()
+        if self._grouped_data:
+            self._render_grouped_data()
+            return
+
+        if self._data is None or len(self._data) == 0:
+            return
+
+        x = self._data[:, 0]
+        y = self._data[:, 1]
+        h_total, xedges, yedges, xcenters, ycenters = self._compute_grid(x, y)
+        self._histogram = (h_total, xedges, yedges)
+
+        h_draw = h_total.astype(float)
+        h_draw[h_draw <= 0] = np.nan
+
+        levels = self._compute_clean_levels(h_draw)
+        if levels is None:
+            return
+
+        if isinstance(self._colormap, mcolors.Colormap):
+            cmap = self._colormap
+        else:
+            from ._utils import resolve_colormap_by_name
+
+            cmap = resolve_colormap_by_name(self._colormap) or plt.get_cmap(
+                self._colormap
+            )
+
+        cs = self.ax.contour(
+            xcenters,
+            ycenters,
+            h_draw.T,
+            levels=levels,
+            linewidths=self._linewidths,
+            cmap=cmap,
+            norm="log" if self._log_norm else None,
+        )
+        self._tag_contour_set(cs, None)
+        with contextlib.suppress(Exception):
+            cs.set_visible(self._visible)
+        self._contour_collections.append(cs)
+
+        if self.ax.figure and self.ax.figure.canvas:
+            self.ax.figure.canvas.draw_idle()
+
+    def set_grouped_data(
+        self,
+        grouped_dict: dict[Any, tuple[np.ndarray, np.ndarray]],
+        styles_dict: dict[Any, dict[str, Any]] | None = None,
+        group_names: dict[Any, str] | None = None,
+        show_legend: bool = True,
+    ):
+        """Render multi-group / multi-layer contours on a shared, pooled bin grid."""
+        self._remove_artists()
+        self._data = None
+        if not grouped_dict:
+            self._grouped_data = None
+            return
+
+        self._grouped_data = grouped_dict
+        self._group_styles = styles_dict or {}
+        self._group_names = group_names or {}
+        self._show_legend = show_legend
+        self._render_grouped_data()
+
+    def _render_grouped_data(self):
+        if not self._grouped_data:
+            return
+
+        valid_groups = {
+            k: (np.asarray(gx), np.asarray(gy))
+            for k, (gx, gy) in self._grouped_data.items()
+            if len(gx) > 0 and len(gy) > 0
+        }
+        if not valid_groups:
+            return
+
+        # 1. Pool all points together to determine the common grid
+        all_x = np.concatenate([gx for gx, _ in valid_groups.values()])
+        all_y = np.concatenate([gy for _, gy in valid_groups.values()])
+        h_total, xedges, yedges, xcenters, ycenters = self._compute_grid(
+            all_x, all_y
+        )
+        self._histogram = (h_total, xedges, yedges)
+
+        from ._utils import (
+            ColormapLegendHandler,
+            ColormapLegendProxy,
+            make_solid_contour_cmap,
+            normalize_rgb,
+            resolve_colormap_by_name,
+        )
+
+        legend_handles = []
+        legend_labels = []
+
+        default_cmap = (
+            self._colormap
+            if isinstance(self._colormap, mcolors.Colormap)
+            else resolve_colormap_by_name(self._colormap)
+            or plt.get_cmap("jet")
+        )
+
+        group_keys = sorted(
+            valid_groups.keys(), key=lambda k: (isinstance(k, str), k)
+        )
+        for idx, gid in enumerate(group_keys):
+            gx, gy = valid_groups[gid]
+            # 2. Bin each group onto the shared common grid
+            h_g, _, _ = np.histogram2d(gx, gy, bins=[xedges, yedges])
+            h_draw = h_g.astype(float)
+            h_draw[h_draw <= 0] = np.nan
+
+            vmax = np.nanmax(h_draw)
+            levels = self._compute_clean_levels(h_draw, vmax)
+            if levels is None:
+                continue
+
+            style = (self._group_styles or {}).get(gid, {})
+            style_mode = style.get("mode", "colormap")
+
+            if style_mode == "colormap":
+                cmap_name = style.get("colormap")
+                cmap = (
+                    resolve_colormap_by_name(cmap_name)
+                    if cmap_name
+                    else default_cmap
+                )
+                if cmap is None:
+                    cmap = default_cmap
+                legend_handle = ColormapLegendProxy(
+                    cmap,
+                    self._linewidths,
+                    style="categorical",
+                    n_colors=max(
+                        int(
+                            self._levels
+                            if isinstance(self._levels, int)
+                            else len(self._levels)
+                        ),
+                        2,
+                    ),
+                )
+            else:
+                color = style.get("color")
+                if color is None:
+                    tab10 = plt.cm.tab10.colors
+                    color = tab10[idx % len(tab10)]
+                norm_color = normalize_rgb(color)
+                cmap = make_solid_contour_cmap(f"solid_{gid}", norm_color)
+                legend_handle = ColormapLegendProxy(
+                    cmap,
+                    self._linewidths,
+                    style="categorical",
+                    n_colors=max(
+                        int(
+                            self._levels
+                            if isinstance(self._levels, int)
+                            else len(self._levels)
+                        ),
+                        2,
+                    ),
+                )
+
+            cs = self.ax.contour(
+                xcenters,
+                ycenters,
+                h_draw.T,
+                levels=levels,
+                linewidths=self._linewidths,
+                cmap=cmap,
+                norm="log" if self._log_norm else None,
+            )
+            label = (self._group_names or {}).get(gid, str(gid))
+            self._tag_contour_set(cs, label)
+            with contextlib.suppress(Exception):
+                cs.set_visible(self._visible)
+            self._contour_collections.append(cs)
+
+            legend_handles.append(legend_handle)
+            legend_labels.append(label)
+
+        if self._show_legend and legend_handles:
+            self.ax.legend(
+                handles=legend_handles,
+                labels=legend_labels,
+                loc="upper right",
+                frameon=False,
+                handler_map={ColormapLegendProxy: ColormapLegendHandler()},
+            )
+            legend = self.ax.get_legend()
+            if legend is not None:
+                with contextlib.suppress(Exception):
+                    legend.set_visible(self._visible)
+
+        if self.ax.figure and self.ax.figure.canvas:
+            self.ax.figure.canvas.draw_idle()
+
+
+ContourArtist = Contour
 
 
 class PhasorNavigationToolbar(NavigationToolbar2QT):
@@ -1068,11 +1475,6 @@ class PhasorNavigationToolbar(NavigationToolbar2QT):
         self.pan_toggled_signal.emit(self.mode == "pan/zoom")
 
 
-# ---------------------------------------------------------------------------
-# Selection Toolbar Widget
-# ---------------------------------------------------------------------------
-
-
 class SelectionToolbarWidget(QWidget):
     """Toolbar holding exclusive selection tool buttons (Lasso, Ellipse, Rectangle)."""
 
@@ -1131,16 +1533,10 @@ class SelectionToolbarWidget(QWidget):
                 )
 
 
-# ---------------------------------------------------------------------------
-# Phasor Canvas Widget
-# ---------------------------------------------------------------------------
-
-
 class PhasorCanvasWidget(QWidget):
     """Main plotting canvas and selector container widget for napari-phasors.
 
-    Provides a 100% compatible API surface for the previous `biaplotter.plotter.CanvasWidget`,
-    while eliminating all upstream monkey patches, memory leaks, and performance bottlenecks.
+    Provides a 100% compatible API surface for the previous `biaplotter.plotter.CanvasWidget`.
     """
 
     artist_changed_signal: Signal = Signal(str)
@@ -1200,6 +1596,7 @@ class PhasorCanvasWidget(QWidget):
         self.artists: dict[str, Any] = {
             "HISTOGRAM2D": Histogram2DArtist(self.axes),
             "SCATTER": ScatterArtist(self.axes),
+            "CONTOUR": ContourArtist(self.axes),
         }
         self._active_artist_name: str = "HISTOGRAM2D"
 

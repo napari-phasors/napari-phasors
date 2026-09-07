@@ -8,6 +8,7 @@ import numpy as np
 from matplotlib.path import Path as mplPath
 
 from napari_phasors._canvas import (
+    Contour,
     Histogram2D,
     Histogram2DArtist,
     InteractiveEllipseSelector,
@@ -636,3 +637,106 @@ def test_canvas_widget_methods_and_theme_handling():
         "napari.utils.theme.get_theme", side_effect=RuntimeError("theme error")
     ):
         assert canvas.toolbar._napari_theme_has_light_bg() is False
+
+
+def test_contour_artist(make_viewer_model):
+    """Test Contour artist initialization, properties, setters, and grouped mode."""
+    viewer = make_viewer_model()
+    canvas = PhasorCanvasWidget(viewer)
+
+    assert "CONTOUR" in canvas.artists
+    contour = canvas.artists["CONTOUR"]
+    assert isinstance(contour, Contour)
+    assert contour == "CONTOUR"
+    assert contour == "contour_plot"
+    assert contour.color_indices is None
+    contour.color_indices = [1, 2]  # Should be no-op
+    assert contour.overlay_colormap is None
+    contour.overlay_colormap = "jet"  # Should be no-op
+
+    assert contour.bins == 150
+    assert contour.levels == 5
+    assert contour.linewidths == 1.5
+    assert contour.colormap == "jet"
+    assert contour.log_norm is True
+    assert contour.visible is True
+    assert contour.histogram is None
+
+    # Setting data
+    rng = np.random.default_rng(42)
+    pts = rng.normal(loc=0.5, scale=0.1, size=(200, 2))
+    contour.data = pts
+    assert contour.data is not None
+    assert len(contour.data) == 200
+    assert contour.histogram is not None
+    assert len(contour._contour_collections) > 0
+
+    # Test property setters triggering refresh
+    contour.bins = 50
+    assert contour.bins == 50
+    assert contour.histogram[0].shape[0] == 50
+
+    contour.bins = (40, 40)
+    assert contour.bins == (40, 40)
+    assert contour.histogram[0].shape == (40, 40)
+
+    contour.levels = 3
+    assert contour.levels == 3
+
+    contour.linewidths = 2.0
+    assert contour.linewidths == 2.0
+
+    contour.colormap = "viridis"
+    assert contour.colormap == "viridis"
+
+    contour.log_norm = False
+    assert contour.log_norm is False
+
+    # Test visibility toggle
+    contour.visible = False
+    assert contour.visible is False
+    for cs in contour._contour_collections:
+        if hasattr(cs, "collections"):
+            for col in cs.collections:
+                assert col.get_visible() is False
+
+    contour.visible = True
+    assert contour.visible is True
+
+    # Test grouped mode rendering on pooled grid
+    grp1 = rng.normal(loc=0.3, scale=0.05, size=(100, 2))
+    grp2 = rng.normal(loc=0.7, scale=0.05, size=(100, 2))
+    grouped_data = {1: (grp1[:, 0], grp1[:, 1]), 2: (grp2[:, 0], grp2[:, 1])}
+    styles = {
+        1: {"mode": "colormap", "colormap": "magma"},
+        2: {"mode": "solid", "color": (0.0, 1.0, 0.0)},
+    }
+    names = {1: "Cluster A", 2: "Cluster B"}
+
+    contour.set_grouped_data(
+        grouped_dict=grouped_data,
+        styles_dict=styles,
+        group_names=names,
+        show_legend=True,
+    )
+    assert len(contour._contour_collections) == 2
+    assert contour.histogram is not None
+    assert canvas.axes.get_legend() is not None
+
+    # Test active_artist switching
+    canvas.active_artist = "CONTOUR"
+    assert canvas.active_artist == "CONTOUR"
+    assert contour.visible is True
+    assert canvas.artists["HISTOGRAM2D"].visible is False
+    assert canvas.artists["SCATTER"].visible is False
+
+    canvas.active_artist = "HISTOGRAM2D"
+    assert canvas.active_artist == "HISTOGRAM2D"
+    assert contour.visible is False
+    assert canvas.artists["HISTOGRAM2D"].visible is True
+
+    # Test remove artists
+    contour._remove_artists()
+    assert len(contour._contour_collections) == 0
+    assert contour.histogram is None
+    assert canvas.axes.get_legend() is None

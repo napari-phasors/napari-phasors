@@ -3,6 +3,7 @@ import copy
 import math
 import warnings
 from pathlib import Path
+from typing import Any
 
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
@@ -60,8 +61,6 @@ from ._update_check import maybe_check_for_update
 from ._utils import (
     CheckableComboBox,
     CollapsibleSection,
-    ColormapLegendHandler,
-    ColormapLegendProxy,
     ExclusiveGroupRowsMixin,
     HistogramDockWidget,
     HistogramWidget,
@@ -6268,9 +6267,27 @@ class PlotterWidget(QWidget):
             return
 
         circle_plot_limits = [-1, 1, -1, 1]  # xmin, xmax, ymin, ymax
-        if self.canvas_widget.artists['HISTOGRAM2D'].histogram is not None:
-            x_edges = self.canvas_widget.artists['HISTOGRAM2D'].histogram[1]
-            y_edges = self.canvas_widget.artists['HISTOGRAM2D'].histogram[2]
+        active_hist = None
+        if (
+            self.plot_type == 'CONTOUR'
+            and 'CONTOUR' in self.canvas_widget.artists
+            and self.canvas_widget.artists['CONTOUR'].histogram is not None
+        ):
+            active_hist = self.canvas_widget.artists['CONTOUR'].histogram
+        elif (
+            'HISTOGRAM2D' in self.canvas_widget.artists
+            and self.canvas_widget.artists['HISTOGRAM2D'].histogram is not None
+        ):
+            active_hist = self.canvas_widget.artists['HISTOGRAM2D'].histogram
+        elif (
+            'CONTOUR' in self.canvas_widget.artists
+            and self.canvas_widget.artists['CONTOUR'].histogram is not None
+        ):
+            active_hist = self.canvas_widget.artists['CONTOUR'].histogram
+
+        if active_hist is not None:
+            x_edges = active_hist[1]
+            y_edges = active_hist[2]
             plotted_data_limits = [
                 x_edges[0],
                 x_edges[-1],
@@ -6441,6 +6458,25 @@ class PlotterWidget(QWidget):
         """Sets the histogram log scale from the histogram log scale checkbox."""
         self.plotter_inputs_widget.log_scale_checkbox.setChecked(value)
 
+    @property
+    def _contour_collections(self) -> list[Any]:
+        """Return active contour collections, delegating to CONTOUR artist if present."""
+        contour_artist = getattr(
+            getattr(self, "canvas_widget", None), "artists", {}
+        ).get("CONTOUR")
+        if contour_artist is not None:
+            return contour_artist._contour_collections
+        return getattr(self, "_contour_collections_storage", [])
+
+    @_contour_collections.setter
+    def _contour_collections(self, value: list[Any]):
+        self._contour_collections_storage = value
+        contour_artist = getattr(
+            getattr(self, "canvas_widget", None), "artists", {}
+        ).get("CONTOUR")
+        if contour_artist is not None and not value:
+            contour_artist._contour_collections.clear()
+
     def _enforce_axes_aspect(self):
         """Ensure the axes aspect is set to 'box' after artist redraws."""
         self._redefine_axes_limits()
@@ -6461,6 +6497,8 @@ class PlotterWidget(QWidget):
             self._last_histogram_color_indices = color_indices
         elif self.plot_type == 'SCATTER':
             self._last_scatter_color_indices = color_indices
+        elif self.plot_type == 'CONTOUR':
+            self._last_contour_color_indices = color_indices
         self._enforce_axes_aspect()
 
     def _connect_active_artist_signals(self):
@@ -6479,22 +6517,27 @@ class PlotterWidget(QWidget):
             ].color_indices_changed_signal.connect(
                 self.selection_tab.manual_selection_changed
             )
+        elif (
+            self.plot_type == 'CONTOUR'
+            and 'CONTOUR' in self.canvas_widget.artists
+        ):
+            self.canvas_widget.artists[
+                'CONTOUR'
+            ].color_indices_changed_signal.connect(
+                self.selection_tab.manual_selection_changed
+            )
 
     def _disconnect_all_artist_signals(self):
         """Disconnect all artist signals to prevent conflicts."""
-        with contextlib.suppress(TypeError, AttributeError):
-            self.canvas_widget.artists[
-                'SCATTER'
-            ].color_indices_changed_signal.disconnect(
-                self.selection_tab.manual_selection_changed
-            )
-
-        with contextlib.suppress(TypeError, AttributeError):
-            self.canvas_widget.artists[
-                'HISTOGRAM2D'
-            ].color_indices_changed_signal.disconnect(
-                self.selection_tab.manual_selection_changed
-            )
+        for key in ('SCATTER', 'HISTOGRAM2D', 'CONTOUR'):
+            artist = getattr(
+                getattr(self, 'canvas_widget', None), 'artists', {}
+            ).get(key)
+            if artist is not None:
+                with contextlib.suppress(TypeError, AttributeError):
+                    artist.color_indices_changed_signal.disconnect(
+                        self.selection_tab.manual_selection_changed
+                    )
 
     def _notify_tabs_of_renamed_layers(self, renamed_images: dict):
         """Notify all tabs and histogram widgets that image layers were renamed."""
@@ -8348,7 +8391,7 @@ class PlotterWidget(QWidget):
         """
         saved = {"axes": [], "colorbar": None}
 
-        for key in ("HISTOGRAM2D", "SCATTER"):
+        for key in ("HISTOGRAM2D", "SCATTER", "CONTOUR"):
             artist = self.canvas_widget.artists.get(key)
             if artist is None:
                 continue
@@ -8410,7 +8453,7 @@ class PlotterWidget(QWidget):
 
     def _apply_plot_colors(self, color):
         """Set spines, labels, ticks, and colorbar elements to *color*."""
-        for key in ("HISTOGRAM2D", "SCATTER"):
+        for key in ("HISTOGRAM2D", "SCATTER", "CONTOUR"):
             artist = self.canvas_widget.artists.get(key)
             if artist is None:
                 continue
@@ -8715,29 +8758,32 @@ class PlotterWidget(QWidget):
 
     def _clear_contour_plot(self):
         """Clear all contour collections from the plot."""
-        # Clear tracked collections
-        for c in getattr(self, '_contour_collections', []):
-            with contextlib.suppress(Exception):
-                c.remove()
-                # Fallback for older Matplotlib versions if remove fails
-            with contextlib.suppress(Exception):
-                if hasattr(c, 'collections'):
-                    for col in c.collections:
-                        col.remove()
-        self._contour_collections = []
-
-        # Cleanup ANY lingering contour elements in the axes using labels
-        ax = self.canvas_widget.axes
-        for artist in list(ax.collections):
-            if artist.get_label() == 'contour_plot_element':
+        contour_artist = getattr(
+            getattr(self, "canvas_widget", None), "artists", {}
+        ).get("CONTOUR")
+        if contour_artist is not None:
+            contour_artist._remove_artists()
+        else:
+            # Fallback cleanup for older or mock contexts
+            for c in getattr(self, "_contour_collections", []):
                 with contextlib.suppress(Exception):
-                    artist.remove()
+                    c.remove()
+                with contextlib.suppress(Exception):
+                    if hasattr(c, "collections"):
+                        for col in c.collections:
+                            col.remove()
+            ax = getattr(getattr(self, "canvas_widget", None), "axes", None)
+            if ax is not None:
+                for artist in list(ax.collections):
+                    if artist.get_label() == "contour_plot_element":
+                        with contextlib.suppress(Exception):
+                            artist.remove()
+                legend = ax.get_legend()
+                if legend is not None:
+                    with contextlib.suppress(Exception):
+                        legend.remove()
 
-        legend = ax.get_legend()
-        if legend is not None:
-            with contextlib.suppress(Exception):
-                legend.remove()
-
+        self._contour_collections = []
         self._remove_colorbar()
 
     def _resolve_contour_colormap(self):
@@ -8844,8 +8890,11 @@ class PlotterWidget(QWidget):
 
     def _update_contour_plot(self, x_data, y_data, selection_id_data=None):
         """Update or create the contour plot."""
-        ax = self.canvas_widget.axes
-        self._clear_contour_plot()
+        contour_artist = getattr(
+            getattr(self, "canvas_widget", None), "artists", {}
+        ).get("CONTOUR")
+        if contour_artist is None:
+            return
 
         levels = self.plotter_inputs_widget.contour_levels_spinbox.value()
         linewidths = (
@@ -8858,17 +8907,22 @@ class PlotterWidget(QWidget):
 
         bins = self.plotter_inputs_widget.number_of_bins_spinbox.value()
 
-        range_xlim = ax.get_xlim()
-        range_ylim = ax.get_ylim()
+        range_xlim = self.canvas_widget.axes.get_xlim()
+        range_ylim = self.canvas_widget.axes.get_ylim()
 
         # Calculate aspect maintaining bins similar to histogram
-        aspect = (range_xlim[1] - range_xlim[0]) / (
-            range_ylim[1] - range_ylim[0]
+        aspect = (range_xlim[1] - range_xlim[0]) / max(
+            range_ylim[1] - range_ylim[0], 1e-6
         )
         if aspect > 1:
-            bins = (bins, max(int(bins / aspect), 1))
+            bins_xy = (bins, max(int(bins / aspect), 1))
         else:
-            bins = (max(int(bins * aspect), 1), bins)
+            bins_xy = (max(int(bins * aspect), 1), bins)
+
+        contour_artist.bins = bins_xy
+        contour_artist.levels = levels
+        contour_artist.linewidths = linewidths
+        contour_artist.log_norm = use_log_norm
 
         layer_data = self._get_selected_layer_feature_map()
         has_multiple_layers = len(layer_data) > 1
@@ -8876,24 +8930,10 @@ class PlotterWidget(QWidget):
             self._contour_display_mode if has_multiple_layers else "Merged"
         )
 
-        def _tag_contour_set(cs_obj, label):
-            with contextlib.suppress(Exception):
-                if hasattr(cs_obj, 'collections'):
-                    for col in cs_obj.collections:
-                        col.set_label('contour_plot_element')
-                else:
-                    cs_obj.set_label('contour_plot_element')
-                if label:
-                    cs_obj.collections[0].set_label(label)
-
         if display_mode == "Merged" or not has_multiple_layers:
-            h, xedges, yedges = self._compute_contour_histogram(
-                x_data, y_data, bins, range_xlim, range_ylim
-            )
-
             merged_cmap = cmap
             if has_multiple_layers:
-                if self._contour_merged_style == 'solid':
+                if self._contour_merged_style == "solid":
                     merged_cmap = self._make_solid_contour_cmap(
                         "merged_solid",
                         self._contour_merged_color,
@@ -8905,7 +8945,7 @@ class PlotterWidget(QWidget):
                     if resolved is not None:
                         merged_cmap = resolved
             else:
-                if self._single_contour_style == 'solid':
+                if self._single_contour_style == "solid":
                     merged_cmap = self._make_solid_contour_cmap(
                         "single_solid",
                         self._single_contour_color,
@@ -8919,110 +8959,63 @@ class PlotterWidget(QWidget):
                     if resolved is not None:
                         merged_cmap = resolved
 
-            cs = ax.contour(
-                xedges,
-                yedges,
-                h.T,
-                levels=levels,
-                linewidths=linewidths,
-                cmap=merged_cmap,
-                norm='log' if use_log_norm else None,
+            contour_artist.colormap = merged_cmap
+            plot_data = np.column_stack((x_data, y_data))
+            contour_artist.data = plot_data
+            self._contour_collections = list(
+                contour_artist._contour_collections
             )
-            _tag_contour_set(cs, None)
-            self._contour_collections.append(cs)
-            legend = ax.get_legend()
+            legend = self.canvas_widget.axes.get_legend()
             if legend is not None:
                 with contextlib.suppress(Exception):
                     legend.remove()
             return
 
-        # No colorbar for multi-series rendering; use legend instead.
+        # Multi-series (Individual layers or Grouped): remove colorbar
         self._remove_colorbar()
 
         if display_mode == "Individual layers":
             items = list(layer_data.items())
             default_colors = self._sample_colors_from_cmap(cmap, len(items))
-            legend_handles = []
-            legend_labels = []
-
+            grouped_dict = {}
+            styles_dict = {}
+            group_names = {}
             for idx, (name, (lx, ly)) in enumerate(items):
-                h, xedges, yedges = self._compute_contour_histogram(
-                    lx, ly, bins, range_xlim, range_ylim
-                )
-
-                style = self._contour_layer_styles.get(name, {})
+                grouped_dict[name] = (lx, ly)
+                group_names[name] = name
+                style = dict(self._contour_layer_styles.get(name, {}))
                 style_mode = style.get("mode")
                 if style_mode not in ("colormap", "solid"):
                     style_mode = "colormap"
-
                 if style_mode == "colormap":
                     style_cmap_name = style.get(
                         "colormap", self._contour_multi_layer_colormap
                     )
-                    style_cmap = resolve_colormap_by_name(style_cmap_name)
-                    if style_cmap is None:
-                        style_cmap = cmap
-                    cs = ax.contour(
-                        xedges,
-                        yedges,
-                        h.T,
-                        levels=levels,
-                        linewidths=linewidths,
-                        cmap=style_cmap,
-                        norm='log' if use_log_norm else None,
-                    )
-                    legend_handles.append(
-                        ColormapLegendProxy(
-                            style_cmap,
-                            linewidths,
-                            style="categorical",
-                            n_colors=max(int(levels), 2),
-                        )
-                    )
+                    styles_dict[name] = {
+                        "mode": "colormap",
+                        "colormap": style_cmap_name,
+                    }
                 else:
                     custom = style.get(
                         "color", self._contour_layer_colors.get(name)
                     )
                     if custom is None:
                         custom = default_colors[idx]
-                    color = self._normalize_rgb(custom)
-                    solid_cmap = self._make_solid_contour_cmap(
-                        f"solid_{name}", color
-                    )
-                    cs = ax.contour(
-                        xedges,
-                        yedges,
-                        h.T,
-                        levels=levels,
-                        linewidths=linewidths,
-                        cmap=solid_cmap,
-                        norm='log' if use_log_norm else None,
-                    )
-                    legend_handles.append(
-                        ColormapLegendProxy(
-                            solid_cmap,
-                            linewidths,
-                            style="categorical",
-                            n_colors=max(int(levels), 2),
-                        )
-                    )
+                    styles_dict[name] = {"mode": "solid", "color": custom}
 
-                _tag_contour_set(cs, name)
-                self._contour_collections.append(cs)
-                legend_labels.append(name)
-
-            if self._contour_show_legend and legend_handles:
-                ax.legend(
-                    handles=legend_handles,
-                    labels=legend_labels,
-                    loc='upper right',
-                    frameon=False,
-                    handler_map={ColormapLegendProxy: ColormapLegendHandler()},
-                )
+            contour_artist.colormap = cmap
+            contour_artist.set_grouped_data(
+                grouped_dict=grouped_dict,
+                styles_dict=styles_dict,
+                group_names=group_names,
+                show_legend=self._contour_show_legend,
+            )
+            self._contour_collections = list(
+                contour_artist._contour_collections
+            )
             return
 
-        # Grouped mode. Layers with no assignment are drawn in no group
-        # rather than being folded into the first one.
+        # Grouped mode
         grouped_items, unassigned = split_items_by_group(
             layer_data, self._contour_group_assignments
         )
@@ -9031,96 +9024,48 @@ class PlotterWidget(QWidget):
             for gid, members in grouped_items.items()
         }
         self._warn_unassigned_layers("contour plot", unassigned)
-
         group_ids = sorted(grouped_data)
         default_colors = self._sample_colors_from_cmap(cmap, len(group_ids))
-        legend_handles = []
-        legend_labels = []
-
+        grouped_dict = {}
+        styles_dict = {}
+        group_names = {}
         for idx, gid in enumerate(group_ids):
-            group_label = self._contour_group_names.get(gid, f"Group {gid}")
-            style = self._contour_group_styles.get(gid, {})
+            members = grouped_data[gid]
+            if not members:
+                continue
+            gx_all = np.concatenate([gx for _, gx, _ in members])
+            gy_all = np.concatenate([gy for _, _, gy in members])
+            grouped_dict[int(gid)] = (gx_all, gy_all)
+            label = self._contour_group_names.get(int(gid), f"Group {gid}")
+            group_names[int(gid)] = label
+            style = dict(self._contour_group_styles.get(int(gid), {}))
             style_mode = style.get("mode")
             if style_mode not in ("colormap", "solid"):
                 style_mode = "colormap"
-
-            style_cmap = None
-            color = None
             if style_mode == "colormap":
                 style_cmap_name = style.get(
                     "colormap", self._contour_multi_layer_colormap
                 )
-                style_cmap = resolve_colormap_by_name(style_cmap_name)
-                if style_cmap is None:
-                    style_cmap = cmap
-                legend_handles.append(
-                    ColormapLegendProxy(
-                        style_cmap,
-                        linewidths,
-                        style="categorical",
-                        n_colors=max(int(levels), 2),
-                    )
-                )
+                styles_dict[int(gid)] = {
+                    "mode": "colormap",
+                    "colormap": style_cmap_name,
+                }
             else:
                 custom = style.get(
-                    "color", self._contour_group_colors.get(gid)
+                    "color", self._contour_group_colors.get(int(gid))
                 )
                 if custom is None:
                     custom = default_colors[idx]
-                color = self._normalize_rgb(custom)
-                solid_cmap = self._make_solid_contour_cmap(
-                    f"solid_group_{gid}", color
-                )
-                legend_handles.append(
-                    ColormapLegendProxy(
-                        solid_cmap,
-                        linewidths,
-                        style="categorical",
-                        n_colors=max(int(levels), 2),
-                    )
-                )
+                styles_dict[int(gid)] = {"mode": "solid", "color": custom}
 
-            gx_all = np.concatenate([gx for _, gx, _ in grouped_data[gid]])
-            gy_all = np.concatenate([gy for _, _, gy in grouped_data[gid]])
-
-            h, xedges, yedges = self._compute_contour_histogram(
-                gx_all, gy_all, bins, range_xlim, range_ylim
-            )
-
-            if style_mode == "colormap":
-                cs = ax.contour(
-                    xedges,
-                    yedges,
-                    h.T,
-                    levels=levels,
-                    linewidths=linewidths,
-                    cmap=style_cmap,
-                    norm='log' if use_log_norm else None,
-                )
-            else:
-                cs = ax.contour(
-                    xedges,
-                    yedges,
-                    h.T,
-                    levels=levels,
-                    linewidths=linewidths,
-                    cmap=solid_cmap,
-                    norm='log' if use_log_norm else None,
-                )
-
-            _tag_contour_set(cs, group_label)
-            self._contour_collections.append(cs)
-
-            legend_labels.append(group_label)
-
-        if self._contour_show_legend and legend_handles:
-            ax.legend(
-                handles=legend_handles,
-                labels=legend_labels,
-                loc='upper right',
-                frameon=False,
-                handler_map={ColormapLegendProxy: ColormapLegendHandler()},
-            )
+        contour_artist.colormap = cmap
+        contour_artist.set_grouped_data(
+            grouped_dict=grouped_dict,
+            styles_dict=styles_dict,
+            group_names=group_names,
+            show_legend=self._contour_show_legend,
+        )
+        self._contour_collections = list(contour_artist._contour_collections)
 
     def _update_colorbar(self, colormap=None, mappable=None, label=None):
         """Update or create colorbar for the current plot."""
@@ -9377,16 +9322,7 @@ class PlotterWidget(QWidget):
             self.plotter_inputs_widget.plot_type_combobox.blockSignals(False)
             self._connect_active_artist_signals()
 
-        # Make sure biaplotter artists are hidden if switching to CONTOUR or NONE
         current_active = getattr(self.canvas_widget, 'active_artist', None)
-
-        if plot_type in ('CONTOUR', 'NONE'):
-            for _name, artist in getattr(
-                self.canvas_widget, 'artists', {}
-            ).items():
-                if hasattr(artist, 'visible'):
-                    artist.visible = False
-            self.canvas_widget.active_artist = None
 
         if plot_type != 'CONTOUR':
             # Hide contour items when switching away (including to NONE)
@@ -9409,10 +9345,7 @@ class PlotterWidget(QWidget):
         else:
             self.canvas_widget.active_artist = None
 
-        if (
-            plot_type not in getattr(self.canvas_widget, 'artists', {})
-            and plot_type != 'CONTOUR'
-        ):
+        if plot_type not in getattr(self.canvas_widget, 'artists', {}):
             return
 
         self._update_plot_elements()
