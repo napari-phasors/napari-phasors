@@ -30,8 +30,7 @@ classifiers = [
 dependencies = [
     "phasorpy>=0.10",
     "qtpy",
-    "biaplotter>=0.4.2",
-    "fbdfile",
+    "fbdfile==2026.8.30",
     "sdtfile",
     "ptufile",
     "tifffile",
@@ -54,7 +53,6 @@ testing = [
     "napari",
     "qtpy",
     "scikit-image",
-    "biaplotter>=0.4.2",
     "pyqt6",
     "pandas",
     "black",
@@ -63,7 +61,7 @@ testing = [
     "pre-commit",
     "phasorpy>=0.10",
     "tifffile",
-    "fbdfile",
+    "fbdfile==2026.8.30",
     "sdtfile",
     "ptufile",
     "pawflim",
@@ -133,7 +131,7 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-"*" = ["*.yaml"]
+"*" = ["*.yaml", "icons/**/*.png"]
 
 [tool.setuptools_scm]
 write_to = "src/napari_phasors/_version.py"

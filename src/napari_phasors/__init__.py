@@ -8,6 +8,7 @@ from ._reader import napari_get_reader
 from ._sample_data import (
     convallaria_FLIM_sample_data,
     embryo_FLIM_sample_data,
+    fret_FLIM_sample_data,
     paramecium_HSI_sample_data,
 )
 from ._utils import reference_lifetimes, register_extra_colormaps
@@ -25,6 +26,7 @@ __all__ = (
     "convallaria_FLIM_sample_data",
     "embryo_FLIM_sample_data",
     "paramecium_HSI_sample_data",
+    "fret_FLIM_sample_data",
     "PhasorTransform",
     "PlotterWidget",
     "WriterWidget",

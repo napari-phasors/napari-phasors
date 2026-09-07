@@ -2760,7 +2760,10 @@ def test_fbd_preview_defaults_and_signature(make_viewer_model, qtbot):
     baseline = widget._preview_signature()
     widget.laser_factor.setText("0.00022")
     assert widget._preview_signature() != baseline
-    assert widget._extra_preview_signature() == ("laser_factor", "0.00022")
+    assert widget._extra_preview_signature()[:2] == (
+        "laser_factor",
+        "0.00022",
+    )
 
 
 def test_sdt_preview_signature(make_viewer_model, qtbot):

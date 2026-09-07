@@ -1422,6 +1422,152 @@ def test_contour_layer_settings_clicked(make_viewer_model, monkeypatch):
     assert plotter._contour_layer_colors == {"Layer1": (1, 0, 0, 1)}
 
 
+def _plotter_with_grouped_centers(make_viewer_model, assignments):
+    """Return a plotter showing grouped phasor centers for three layers."""
+    from napari_phasors._tests.test_plotter import (
+        create_image_layer_with_phasors,
+    )
+    from napari_phasors.plotter import PlotterWidget
+
+    viewer = make_viewer_model()
+    for index in range(3):
+        layer = create_image_layer_with_phasors()
+        layer.name = f"img{index}"
+        viewer.add_layer(layer)
+
+    plotter = PlotterWidget(viewer)
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        ["img0", "img1", "img2"]
+    )
+    plotter.image_layers_checkable_combobox.setPrimaryLayer("img0")
+    plotter._layer_selection_timer.stop()
+    plotter._process_layer_selection_change()
+
+    plotter._phasor_center_display_mode = "Grouped"
+    plotter._phasor_center_group_assignments = dict(assignments)
+    plotter._phasor_center_group_names = {1: "A", 2: "B"}
+    for key in (
+        "phasor_center_display_mode",
+        "phasor_center_group_assignments",
+        "phasor_center_group_names",
+    ):
+        plotter._update_setting_in_metadata(key, getattr(plotter, f"_{key}"))
+    plotter._on_phasor_center_toggled(True)
+    return plotter
+
+
+def _reselect(plotter, names):
+    """Check *names* and run the debounced selection handler immediately."""
+    plotter.image_layers_checkable_combobox.setCheckedItems(names)
+    plotter._layer_selection_timer.stop()
+    plotter._process_layer_selection_change()
+
+
+def test_phasor_center_group_dot_drops_when_its_layers_are_unchecked(
+    make_viewer_model,
+):
+    """A group with no selected layer left loses its center dot."""
+    plotter = _plotter_with_grouped_centers(
+        make_viewer_model, {"img0": 2, "img1": 1, "img2": 1}
+    )
+    assert len(plotter._phasor_center_artists) == 2
+
+    # Uncheck both layers of group A; the primary (group B) stays selected.
+    _reselect(plotter, ["img0"])
+
+    assert plotter._phasor_center_enabled is True
+    assert len(plotter._phasor_center_artists) == 1
+
+    _reselect(plotter, ["img0", "img1", "img2"])
+    assert len(plotter._phasor_center_artists) == 2
+
+    plotter.deleteLater()
+
+
+def test_phasor_center_dots_cleared_when_selection_change_disables_them(
+    make_viewer_model,
+):
+    """Dots never outlive the selection that produced them.
+
+    Unchecking the primary layer restores the settings of the new primary,
+    which may have phasor centers switched off. The dots drawn for the old
+    selection have to go with them.
+    """
+    plotter = _plotter_with_grouped_centers(
+        make_viewer_model, {"img0": 1, "img1": 1, "img2": 2}
+    )
+    assert len(plotter._phasor_center_artists) == 2
+
+    # Group A holds the primary layer, so unchecking it swaps the primary.
+    _reselect(plotter, ["img2"])
+    assert plotter._phasor_center_artists == []
+
+    # And unchecking everything leaves nothing behind either.
+    _reselect(plotter, [])
+    assert plotter._phasor_center_artists == []
+
+    plotter.deleteLater()
+
+
+def test_contour_dialog_uses_shared_group_metadata(
+    make_viewer_model, monkeypatch
+):
+    """Grouping stored on the layers wins over the plotter's stale copy.
+
+    Groups are shared with the histogram tabs through each layer's
+    ``settings['group']`` entry, so a grouping made there must be what the
+    contour dialog opens with.
+    """
+    from qtpy.QtWidgets import QDialog
+
+    from napari_phasors._tests.test_plotter import (
+        create_image_layer_with_phasors,
+    )
+    from napari_phasors.plotter import PlotterWidget
+
+    viewer = make_viewer_model()
+    layer1 = create_image_layer_with_phasors()
+    layer2 = create_image_layer_with_phasors()
+    viewer.add_layer(layer1)
+    viewer.add_layer(layer2)
+    plotter = PlotterWidget(viewer)
+    plotter.get_selected_layer_names = lambda: [layer1.name, layer2.name]
+
+    for layer, group_name in ((layer1, "Ctrl"), (layer2, "Trt")):
+        layer.metadata.setdefault('settings', {})['group'] = {
+            'name': group_name,
+            'color': [1.0, 0.0, 0.0],
+        }
+
+    # A stale grouping from before the layers were tagged.
+    plotter._contour_group_assignments = {layer1.name: 1, layer2.name: 1}
+    plotter._contour_group_names = {1: "Everything"}
+
+    captured = {}
+
+    class MockDialog:
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+
+        def exec(self):
+            return QDialog.Rejected
+
+    import napari_phasors.plotter
+
+    monkeypatch.setattr(
+        napari_phasors.plotter, "ContourLayerSettingsDialog", MockDialog
+    )
+
+    plotter._on_contour_layer_settings_clicked()
+
+    assignments = captured["group_assignments"]
+    names = captured["group_names"]
+    assert names[assignments[layer1.name]] == "Ctrl"
+    assert names[assignments[layer2.name]] == "Trt"
+
+    plotter.deleteLater()
+
+
 def test_phasor_center_settings_clicked(make_viewer_model, monkeypatch):
     """Test _on_phasor_center_settings_clicked callback."""
     from qtpy.QtWidgets import QDialog
@@ -1623,6 +1769,30 @@ def test_get_masked_gs(make_viewer_model):
     assert res == (None, None)
 
 
+def test_get_masked_gs_single_harmonic_layer(make_viewer_model):
+    """A layer with a single harmonic (no leading harmonic axis in G/S)
+    should return G/S as-is, and its spatial shape should match the image,
+    not be trimmed as if a harmonic axis existed."""
+    from napari_phasors.plotter import PlotterWidget
+
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+
+    layer = create_image_layer_with_phasors(harmonic=1)
+    assert layer.metadata["G"].ndim == layer.data.ndim
+    viewer.add_layer(layer)
+    plotter.image_layers_checkable_combobox.setCheckedItems([layer.name])
+    plotter._process_layer_selection_change()
+
+    assert plotter.get_phasor_spatial_shape() == layer.data.shape
+
+    g, s = plotter.get_masked_gs()
+    assert g.shape == layer.data.shape
+    assert s.shape == layer.data.shape
+    np.testing.assert_array_equal(g, layer.metadata["G"])
+    np.testing.assert_array_equal(s, layer.metadata["S"])
+
+
 def test_plot_colors_save_restore(make_viewer_model, qtbot, monkeypatch):
     """Saving, overriding and restoring plot colors round-trips."""
     viewer = make_viewer_model()
@@ -1721,8 +1891,18 @@ def test_color_settings_and_signal_teardown(
         "getColor",
         lambda *args, **kwargs: mock_color,
     )
+    scatter = plotter.canvas_widget.artists['SCATTER']
+    scatter.data = np.array([[0.5, 0.5], [0.6, 0.6]])
     plotter._on_marker_color_clicked()
     assert plotter._marker_color == "#ff0000"
+    assert scatter.color == "#ff0000"
+    sc = scatter._mpl_artists.get("scatter")
+    assert sc is not None
+    np.testing.assert_allclose(
+        sc.get_facecolors()[0][:3], [1.0, 0.0, 0.0], atol=1e-3
+    )
+    assert len(sc.get_edgecolors()) == 0
+    assert sc.get_linewidths()[0] == 0
 
     # The 'Select color...' sentinel switches the histogram style to solid.
     plotter.plotter_inputs_widget.colormap_combobox.setCurrentText(
@@ -1843,6 +2023,157 @@ def test_show_analysis_dock_readds_to_right_area(make_napari_viewer, qtbot):
     )
 
 
+def test_removing_plotter_dock_closes_associated_docks(
+    make_napari_viewer, qtbot
+):
+    """Removing the plotter's dock closes all associated window widgets."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    qtbot.addWidget(plotter)
+    plotter._analysis_dock_init_timer.stop()
+
+    viewer.window.add_dock_widget(plotter, name="Phasor Plot", area="right")
+    plotter._add_analysis_dock_widget()
+
+    assert plotter._analysis_dock is not None
+    assert plotter._histogram_dock is not None
+    assert plotter._statistics_dock is not None
+
+    viewer.window.remove_dock_widget(plotter)
+
+    assert plotter._is_closing is True
+    assert plotter._analysis_dock is None
+    assert plotter._histogram_dock is None
+    assert plotter._statistics_dock is None
+    assert viewer.window._wrapped_dock_widgets == {}
+
+
+def test_hiding_plotter_dock_keeps_associated_docks(make_napari_viewer, qtbot):
+    """napari's 'hide' button only hides the panel; nothing is closed.
+
+    The title bar's hide button is wired to ``QDockWidget.close()``, which
+    hides a dock rather than destroying it — the panel stays re-openable
+    with its state, so the plotter must survive it.
+    """
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    qtbot.addWidget(plotter)
+    plotter._analysis_dock_init_timer.stop()
+
+    dock = viewer.window.add_dock_widget(
+        plotter, name="Phasor Plot", area="right"
+    )
+    plotter._add_analysis_dock_widget()
+
+    dock.title.hide_button.click()
+
+    assert dock.isHidden()
+    assert plotter._is_closing is False
+    assert plotter._analysis_dock is not None
+    assert plotter._histogram_dock is not None
+    assert plotter._statistics_dock is not None
+    assert "Phasor Plot" in viewer.window._wrapped_dock_widgets
+
+
+def test_floating_plotter_dock_keeps_associated_docks(
+    make_napari_viewer, qtbot
+):
+    """Undocking and re-docking the plotter must not close anything."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    qtbot.addWidget(plotter)
+    plotter._analysis_dock_init_timer.stop()
+
+    dock = viewer.window.add_dock_widget(
+        plotter, name="Phasor Plot", area="right"
+    )
+    plotter._add_analysis_dock_widget()
+
+    dock.setFloating(True)
+    dock.setFloating(False)
+
+    assert plotter._is_closing is False
+    assert plotter._analysis_dock is not None
+    assert plotter._plotter_dock_ref is dock
+
+
+def test_closing_associated_dock_first_shows_reopen_button_and_closing_plotter_closes_remaining(
+    make_napari_viewer, qtbot
+):
+    """Closing an associated dock before the plotter preserves the re-open button,
+    and subsequently closing the plotter closes the remaining associated docks.
+    """
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    qtbot.addWidget(plotter)
+    plotter._analysis_dock_init_timer.stop()
+
+    dock = viewer.window.add_dock_widget(
+        plotter, name="Phasor Plot", area="right"
+    )
+    plotter._add_analysis_dock_widget()
+
+    # 1. Close histogram dock first
+    plotter._histogram_dock.close()
+    plotter._check_dock_visibility()
+
+    assert not plotter.show_histogram_button.isHidden()
+    assert not plotter._dock_buttons_widget.isHidden()
+    assert plotter._is_closing is False
+
+    # 2. Close main plotter dock with its title-bar close button
+    dock.title.close_button.click()
+
+    assert plotter._is_closing is True
+    assert plotter._analysis_dock is None
+    assert plotter._histogram_dock is None
+    assert plotter._statistics_dock is None
+
+
+def test_plotter_close_method_closes_associated_and_plotter_dock(
+    make_napari_viewer, qtbot
+):
+    """Calling plotter.close() closes and cleans up all associated docks."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    qtbot.addWidget(plotter)
+    plotter._analysis_dock_init_timer.stop()
+
+    viewer.window.add_dock_widget(plotter, name="Phasor Plot", area="right")
+    plotter._add_analysis_dock_widget()
+
+    plotter.close()
+
+    assert plotter._is_closing is True
+    assert plotter._analysis_dock is None
+    assert plotter._histogram_dock is None
+    assert plotter._statistics_dock is None
+    # The plotter's own dock goes too, so no empty panel is left behind.
+    assert viewer.window._wrapped_dock_widgets == {}
+
+
+def test_destroying_plotter_dock_closes_associated_docks(
+    make_napari_viewer, qtbot
+):
+    """Clicking close 'X' on napari title bar calls destroyOnClose, closing associated docks."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    qtbot.addWidget(plotter)
+    plotter._analysis_dock_init_timer.stop()
+
+    dock = viewer.window.add_dock_widget(
+        plotter, name="Phasor Plot", area="right"
+    )
+    plotter._add_analysis_dock_widget()
+
+    dock.title.close_button.click()
+
+    assert plotter._is_closing is True
+    assert plotter._analysis_dock is None
+    assert plotter._histogram_dock is None
+    assert plotter._statistics_dock is None
+
+
 def test_dock_helpers_are_safe_without_window(make_viewer_model):
     """The corner/split helpers no-op safely when there is no Qt main window."""
     viewer = make_viewer_model()
@@ -1929,3 +2260,313 @@ def test_resize_canvas_to_available_space_sets_fixed_size(
 
     assert 0 < plotter.canvas_widget.width() <= 500
     assert 0 < plotter.canvas_widget.height() <= 400
+
+
+def test_phasor_center_grouped_skips_unassigned_layer(
+    make_viewer_model, monkeypatch
+):
+    """An unassigned layer must not be pooled into the first group's center."""
+    from napari.utils import notifications
+
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+
+    layer1 = create_image_layer_with_phasors(harmonic=[1])
+    layer2 = create_image_layer_with_phasors(harmonic=[1])
+    viewer.add_layer(layer1)
+    viewer.add_layer(layer2)
+
+    shape = layer1.data.shape
+    _set_layer_harmonic0_samples(
+        layer1,
+        np.zeros(shape, dtype=float),
+        np.zeros(shape, dtype=float),
+        np.ones(shape, dtype=float),
+    )
+    _set_layer_harmonic0_samples(
+        layer2,
+        np.full(shape, 0.9, dtype=float),
+        np.full(shape, 0.3, dtype=float),
+        np.ones(shape, dtype=float),
+    )
+
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [layer1.name, layer2.name]
+    )
+    plotter._process_layer_selection_change()
+
+    warnings = []
+    monkeypatch.setattr(
+        notifications, "show_warning", lambda msg: warnings.append(msg)
+    )
+
+    plotter._phasor_center_display_mode = "Grouped"
+    # layer2 belongs to no group.
+    plotter._phasor_center_group_assignments = {layer1.name: 1}
+    plotter._phasor_center_group_names = {1: "Only group"}
+
+    plotter.plotter_inputs_widget.phasor_center_checkbox.setChecked(True)
+    plotter._update_phasor_centers()
+
+    group_rows = _table_rows_by_name(
+        plotter._phasor_center_stats_widget._group_table
+    )
+    assert set(group_rows) == {"Only group"}
+    assert len(plotter._phasor_center_artists) == 1
+
+    # The group centre is layer1's own centre, untouched by layer2.
+    c1 = plotter._compute_single_center(layer1)
+    assert c1 is not None
+    np.testing.assert_allclose(group_rows["Only group"][:2], c1, atol=1e-6)
+
+    assert len(warnings) == 1
+    assert layer2.name in warnings[0]
+
+    plotter.deleteLater()
+
+
+def _grouped_dialog_rows(dialog):
+    """Return ``{group_name: [checked layer, ...]}`` from a settings dialog."""
+    return {
+        row["name_edit"].text(): list(row["layer_combo"].checkedItems())
+        for row in dialog._group_row_data
+    }
+
+
+def test_phasor_center_dialog_does_not_autocheck_unassigned(qtbot):
+    """Opening the dialog must not tick an unassigned layer into group 1."""
+    dialog = PhasorCenterLayerSettingsDialog(
+        display_mode="Grouped",
+        layer_labels=["A", "B"],
+        group_assignments={"A": 1},
+        group_names={1: "G1"},
+    )
+    qtbot.addWidget(dialog)
+
+    assert _grouped_dialog_rows(dialog) == {"G1": ["A"]}
+    assert dialog.get_group_assignments() == {"A": 1}
+    assert dialog.get_unassigned_layers() == ["B"]
+
+
+def test_contour_dialog_does_not_autocheck_unassigned(qtbot):
+    """The contour dialog leaves unassigned layers unchecked as well."""
+    from napari_phasors.plotter import ContourLayerSettingsDialog
+
+    dialog = ContourLayerSettingsDialog(
+        display_mode="Grouped",
+        layer_labels=["A", "B", "C"],
+        group_assignments={"A": 1, "C": 2},
+        group_names={1: "G1", 2: "G2"},
+    )
+    qtbot.addWidget(dialog)
+
+    assert _grouped_dialog_rows(dialog) == {"G1": ["A"], "G2": ["C"]}
+    assert dialog.get_unassigned_layers() == ["B"]
+
+
+def test_grouping_dialogs_warn_about_unassigned_layers(qtbot, monkeypatch):
+    """Both grouping dialogs prompt before excluding unticked layers."""
+    from qtpy.QtWidgets import QDialog, QMessageBox
+
+    from napari_phasors.plotter import ContourLayerSettingsDialog
+
+    def make_exec(role):
+        def fake_exec(self):
+            self._clicked = next(
+                btn for btn in self.buttons() if self.buttonRole(btn) == role
+            )
+
+        return fake_exec
+
+    monkeypatch.setattr(
+        QMessageBox, "clickedButton", lambda self: self._clicked
+    )
+
+    for factory in (
+        PhasorCenterLayerSettingsDialog,
+        ContourLayerSettingsDialog,
+    ):
+        dialog = factory(
+            display_mode="Grouped",
+            layer_labels=["A", "B"],
+            group_assignments={"A": 1},
+            group_names={1: "G1"},
+        )
+        qtbot.addWidget(dialog)
+
+        # "Go back" keeps the dialog open.
+        monkeypatch.setattr(
+            QMessageBox, "exec", make_exec(QMessageBox.RejectRole)
+        )
+        dialog.accept()
+        assert dialog.result() != QDialog.Accepted
+
+        # "Exclude them" confirms.
+        monkeypatch.setattr(
+            QMessageBox, "exec", make_exec(QMessageBox.AcceptRole)
+        )
+        dialog.accept()
+        assert dialog.result() == QDialog.Accepted
+
+
+def test_grouping_dialogs_no_warning_when_all_assigned(qtbot, monkeypatch):
+    """No prompt when every layer belongs to a group."""
+    from qtpy.QtWidgets import QDialog, QMessageBox
+
+    from napari_phasors.plotter import ContourLayerSettingsDialog
+
+    def fail_exec(self):
+        raise AssertionError("no warning expected")
+
+    monkeypatch.setattr(QMessageBox, "exec", fail_exec)
+
+    for factory in (
+        PhasorCenterLayerSettingsDialog,
+        ContourLayerSettingsDialog,
+    ):
+        dialog = factory(
+            display_mode="Grouped",
+            layer_labels=["A", "B"],
+            group_assignments={"A": 1, "B": 2},
+            group_names={1: "G1", 2: "G2"},
+        )
+        qtbot.addWidget(dialog)
+        dialog.accept()
+        assert dialog.result() == QDialog.Accepted
+
+
+def test_grouping_dialogs_enforce_one_group_per_layer(qtbot):
+    """Contour and phasor-center rows offer each layer to one group only."""
+    from napari_phasors.plotter import ContourLayerSettingsDialog
+
+    for factory in (
+        PhasorCenterLayerSettingsDialog,
+        ContourLayerSettingsDialog,
+    ):
+        dialog = factory(
+            display_mode="Grouped",
+            layer_labels=["A", "B", "C"],
+            group_assignments={"A": 1, "B": 2},
+            group_names={1: "G1", 2: "G2"},
+        )
+        qtbot.addWidget(dialog)
+
+        row1, row2 = dialog._group_row_data
+        assert row1["layer_combo"].visibleItems() == ["A", "C"]
+        assert row2["layer_combo"].visibleItems() == ["B", "C"]
+
+        # Claiming the free layer removes it from the other row.
+        row1["layer_combo"].setCheckedItems(["A", "C"])
+        assert row2["layer_combo"].visibleItems() == ["B"]
+        assert dialog.get_group_assignments() == {"A": 1, "C": 1, "B": 2}
+        assert dialog.get_unassigned_layers() == []
+
+        # Removing a group frees its layers for the remaining one.
+        dialog._on_remove_group(row2["container"])
+        assert row1["layer_combo"].visibleItems() == ["A", "B", "C"]
+        assert dialog.get_group_assignments() == {"A": 1, "C": 1}
+
+
+def test_analysis_tab_pages_use_compact_margins(make_viewer_model):
+    """Tab pages drop the platform's wide default margins.
+
+    Stacked default margins (the dock wrapper, the page's own style margins
+    and any container around a tab's scroll area) cost over 100 px of the
+    dock's height, which made tabs scroll while the dock still had room.
+    """
+    plotter = PlotterWidget(make_viewer_model())
+
+    margin = PlotterWidget._TAB_PAGE_MARGIN
+    for index in range(plotter.tab_widget.count()):
+        page = plotter.tab_widget.widget(index)
+        assert page.layout().contentsMargins().top() == margin
+        assert page.layout().contentsMargins().bottom() == margin
+        assert page.layout().contentsMargins().left() == margin
+
+    # The dock wrapper and the Plot Settings scroll-area container add none,
+    # bar the thin strip that keeps the tab bar from being clipped on top.
+    analysis_margins = plotter.analysis_widget.layout().contentsMargins()
+    assert analysis_margins.top() == PlotterWidget._TAB_BAR_TOP_MARGIN
+    assert analysis_margins.bottom() == 0
+    assert analysis_margins.left() == 0
+    assert plotter.plotter_inputs_widget.layout().contentsMargins().top() == 0
+
+
+def test_restore_expanding_dock_policies_undoes_napari_maximum(
+    make_viewer_model,
+):
+    """napari's forced ``Maximum`` vertical policy is set back to Expanding.
+
+    ``QtViewerDockWidget`` (napari >= 0.9) overwrites the vertical size policy
+    of every docked widget with ``QSizePolicy.Maximum``, which has no grow
+    flag, so Qt froze the plotter and the analysis tabs at their size hint.
+    """
+    from qtpy.QtWidgets import QSizePolicy
+
+    plotter = PlotterWidget(make_viewer_model())
+    widgets = (
+        plotter,
+        plotter.analysis_widget,
+        plotter.histogram_container,
+        plotter.statistics_container,
+    )
+    for widget in widgets:
+        widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+
+    plotter._restore_expanding_dock_policies()
+
+    for widget in widgets:
+        assert (
+            widget.sizePolicy().verticalPolicy() == QSizePolicy.Expanding
+        ), widget
+
+
+def test_useful_height_limit_is_released_without_an_analysis_dock(
+    make_viewer_model,
+):
+    """With nowhere to hand spare height, the widget stays free to grow."""
+    plotter = PlotterWidget(make_viewer_model())
+
+    assert plotter._spare_height_can_be_reused() is False
+
+    plotter.setMaximumHeight(500)
+    plotter._update_useful_height_limit(plotter.canvas_container.width())
+
+    assert plotter.maximumHeight() == PlotterWidget._NO_HEIGHT_LIMIT
+    # Nothing to re-split, so the deferred claim is a no-op.
+    plotter._claim_useful_height()
+
+
+def test_useful_height_limit_caps_plotter_and_tracks_width(
+    make_napari_viewer, qtbot
+):
+    """Docked, the plotter claims only the height its aspect-locked plot uses.
+
+    The canvas keeps the plot's ratio, so height beyond that is a blank band;
+    capping it hands the space to the analysis tabs below. The cap follows the
+    panel width, and is lifted again once the tabs can no longer take it.
+    """
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    qtbot.addWidget(plotter)
+    viewer.window.add_dock_widget(plotter, name="Phasor Plot", area="right")
+    plotter._analysis_dock_init_timer.stop()
+    plotter._add_analysis_dock_widget()
+
+    assert plotter._spare_height_can_be_reused() is True
+
+    plotter._resize_canvas_to_available_space()
+    narrow_limit = plotter.maximumHeight()
+    assert narrow_limit < PlotterWidget._NO_HEIGHT_LIMIT
+    assert narrow_limit >= plotter.minimumHeight()
+
+    # A wider panel fits a taller plot at the same aspect ratio.
+    plotter._update_useful_height_limit(plotter.canvas_container.width() * 2)
+    assert plotter.maximumHeight() > narrow_limit
+    # ...and the widened limit schedules the deferred re-split.
+    assert plotter._claim_height_timer.isActive()
+
+    # Closing the tabs leaves nobody to take the spare height.
+    plotter._analysis_dock.hide()
+    plotter._update_useful_height_limit(plotter.canvas_container.width())
+    assert plotter.maximumHeight() == PlotterWidget._NO_HEIGHT_LIMIT

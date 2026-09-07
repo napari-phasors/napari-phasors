@@ -27,6 +27,10 @@ parts:
   - file: guides/large_images
   - file: guides/exporting
   - file: guides/batch_analysis
+- caption: Performance
+  chapters:
+  - file: guides/performance
+  - file: guides/benchmarks
 - caption: API Reference
   chapters:
   - file: api/index
