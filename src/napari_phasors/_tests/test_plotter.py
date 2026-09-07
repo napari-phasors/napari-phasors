@@ -4,7 +4,6 @@ from unittest.mock import patch
 
 import numpy as np
 import pytest
-from biaplotter.plotter import CanvasWidget
 from napari.layers import Image
 from qtpy.QtCore import QEvent
 from qtpy.QtWidgets import (
@@ -23,6 +22,7 @@ from napari_phasors.components_tab import ComponentsWidget
 from napari_phasors.filter_tab import FilterWidget
 from napari_phasors.fret_tab import FretWidget
 from napari_phasors.plotter import (
+    CanvasWidget,
     PlotterWidget,
 )
 from napari_phasors.selection_tab import SelectionWidget
@@ -36,210 +36,6 @@ def create_image_layer_with_phasors(harmonic=None):
     raw_flim_data = make_raw_flim_data(time_constants=time_constants)
     harmonic = harmonic
     return make_intensity_layer_with_phasors(raw_flim_data, harmonic=harmonic)
-
-
-def test_nap_plot_tools_safe_disconnect_patch_is_applied_and_idempotent():
-    """The runtime patch should be installed once and remain safe to re-run."""
-    pytest.importorskip("nap_plot_tools")
-
-    from nap_plot_tools.tools import CustomToolbarWidget
-
-    from napari_phasors import plotter as plotter_module
-
-    assert getattr(
-        CustomToolbarWidget,
-        '_napari_phasors_safe_disconnect_patch',
-        False,
-    )
-
-    # Reapplying should be a no-op (idempotent guard path).
-    plotter_module._patch_nap_plot_tools_safe_disconnect()
-    plotter_module._patch_nap_plot_tools_safe_disconnect()
-
-    assert getattr(
-        CustomToolbarWidget,
-        '_napari_phasors_safe_disconnect_patch',
-        False,
-    )
-
-
-def test_nap_plot_tools_safe_disconnect_rewires_callbacks_without_warning(
-    qtbot,
-):
-    """Rewiring toolbar callbacks should not emit Qt disconnect RuntimeWarning."""
-    pytest.importorskip("nap_plot_tools")
-
-    from nap_plot_tools.tools import CustomToolbarWidget
-
-    toolbar = CustomToolbarWidget()
-    qtbot.addWidget(toolbar)
-
-    toggle_calls = []
-    click_calls = []
-
-    def toggle_cb_1(checked):
-        toggle_calls.append(('toggle_cb_1', bool(checked)))
-
-    def toggle_cb_2(checked):
-        toggle_calls.append(('toggle_cb_2', bool(checked)))
-
-    def click_cb_1():
-        click_calls.append('click_cb_1')
-
-    def click_cb_2():
-        click_calls.append('click_cb_2')
-
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter('always')
-
-        # Checkable path (toggled signal).
-        toolbar.add_custom_button(
-            name='SEL',
-            default_icon_path='dummy_default.png',
-            checked_icon_path='dummy_checked.png',
-            callback=toggle_cb_1,
-        )
-        toolbar.buttons['SEL'].setChecked(True)
-        toolbar.connect_button_callback('SEL', toggle_cb_2)
-        toolbar.buttons['SEL'].setChecked(False)
-        toolbar.connect_button_callback('SEL', None)
-        toolbar.buttons['SEL'].setChecked(True)
-
-        # Non-checkable path (clicked signal).
-        toolbar.add_custom_button(
-            name='ACT',
-            default_icon_path='dummy_action.png',
-            callback=click_cb_1,
-        )
-        toolbar.buttons['ACT'].click()
-        toolbar.connect_button_callback('ACT', click_cb_2)
-        toolbar.buttons['ACT'].click()
-        toolbar.connect_button_callback('ACT', None)
-        toolbar.buttons['ACT'].click()
-
-        # Unknown button name should be safely ignored.
-        toolbar.connect_button_callback('MISSING', toggle_cb_1)
-
-    assert ('toggle_cb_1', True) in toggle_calls
-    assert ('toggle_cb_2', False) in toggle_calls
-    assert all(name != 'toggle_cb_1' for name, _ in toggle_calls[1:])
-
-    assert click_calls[:2] == ['click_cb_1', 'click_cb_2']
-    assert click_calls.count('click_cb_1') == 1
-    assert click_calls.count('click_cb_2') == 1
-
-    disconnect_warnings = [
-        w
-        for w in caught
-        if 'Failed to disconnect' in str(w.message)
-        and 'toggled(bool)' in str(w.message)
-    ]
-    assert not disconnect_warnings
-
-
-def test_biaplotter_toggle_callback_handles_missing_sender(
-    make_viewer_model,
-):
-    """Pan/zoom toggles emitted via non-Qt signals must not rely on sender()."""
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
-    canvas = plotter.canvas_widget
-
-    canvas.toolbar.mode = 'pan/zoom'
-
-    with (
-        patch.object(
-            canvas, '_deactivate_and_remove_all_selectors'
-        ) as mock_deactivate,
-        patch.object(CanvasWidget, 'sender', return_value=None),
-    ):
-        canvas._on_toggle_button(True)
-
-    mock_deactivate.assert_called_once()
-
-
-def test_biaplotter_pan_toggle_deactivates_active_selector_without_sender(
-    make_viewer_model,
-):
-    """A sender-less pan toggle should clear the current selector tool."""
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
-    canvas = plotter.canvas_widget
-
-    with patch.object(CanvasWidget, 'sender', return_value=None):
-        canvas.selection_toolbar.buttons['LASSO'].click()
-
-    canvas.toolbar.mode = 'pan/zoom'
-
-    with patch.object(CanvasWidget, 'sender', return_value=None):
-        canvas._on_toggle_button(True)
-
-    assert canvas.active_selector is None
-    assert all(
-        not button.isChecked()
-        for button in canvas.selection_toolbar.buttons.values()
-    )
-
-
-def test_biaplotter_selector_toggle_handles_missing_sender(
-    make_viewer_model,
-):
-    """Selector buttons should still activate when sender() is unavailable."""
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
-    canvas = plotter.canvas_widget
-
-    with patch.object(CanvasWidget, 'sender', return_value=None):
-        canvas.selection_toolbar.buttons['LASSO'].click()
-
-    assert canvas.active_selector is not None
-    assert (
-        canvas.active_selector.__class__.__name__ == 'InteractiveLassoSelector'
-    )
-
-
-def test_biaplotter_selector_toggle_is_exclusive_without_sender(
-    make_viewer_model,
-):
-    """Switching selector tools without sender() should deactivate the previous tool."""
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
-    canvas = plotter.canvas_widget
-
-    with patch.object(CanvasWidget, 'sender', return_value=None):
-        canvas.selection_toolbar.buttons['LASSO'].click()
-        canvas.selection_toolbar.buttons['ELLIPSE'].click()
-
-    assert canvas.selection_toolbar.buttons['LASSO'].isChecked() is False
-    assert canvas.selection_toolbar.buttons['ELLIPSE'].isChecked() is True
-    assert canvas.active_selector is not None
-    assert (
-        canvas.active_selector.__class__.__name__
-        == 'InteractiveEllipseSelector'
-    )
-
-
-def test_biaplotter_zoom_toggle_deactivates_active_selector_without_sender(
-    make_viewer_model,
-):
-    """A sender-less zoom toggle should clear the current selector tool."""
-    viewer = make_viewer_model()
-    plotter = PlotterWidget(viewer)
-    canvas = plotter.canvas_widget
-
-    with patch.object(CanvasWidget, 'sender', return_value=None):
-        canvas.selection_toolbar.buttons['RECTANGLE'].click()
-
-    canvas.toolbar.mode = 'zoom rect'
-
-    with patch.object(CanvasWidget, 'sender', return_value=None):
-        canvas._on_toggle_button(True)
-
-    assert canvas.active_selector is None
-    assert all(
-        not button.isChecked()
-        for button in canvas.selection_toolbar.buttons.values()
-    )
 
 
 def test_phasor_plotter_initialization_values(make_viewer_model):
@@ -1646,3 +1442,316 @@ def test_phasor_precision_leaves_integers_and_smaller_floats_alone():
         assert nothing is None
     finally:
         _utils.set_phasor_storage_dtype(previous)
+
+
+def test_contour_grouped_mode_skips_unassigned_layer(
+    make_viewer_model, monkeypatch
+):
+    """A layer in no group draws no contour instead of joining group 1."""
+    from napari.utils import notifications
+
+    viewer = make_viewer_model()
+    layer1 = create_image_layer_with_phasors()
+    layer2 = create_image_layer_with_phasors()
+    viewer.add_layer(layer1)
+    viewer.add_layer(layer2)
+    plotter = PlotterWidget(viewer)
+
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [layer1.name, layer2.name]
+    )
+    plotter._process_layer_selection_change()
+
+    warnings = []
+    monkeypatch.setattr(
+        notifications, "show_warning", lambda msg: warnings.append(msg)
+    )
+
+    plotter.plot_type = 'CONTOUR'
+    plotter._contour_display_mode = "Grouped"
+    # layer2 is deliberately left out of every group.
+    plotter._contour_group_assignments = {layer1.name: 1}
+    plotter._contour_group_names = {1: "Group 1"}
+
+    plotter.plot()
+
+    assert len(plotter._contour_collections) == 1
+    assert len(warnings) == 1
+    assert layer2.name in warnings[0]
+
+    # Redrawing the same selection does not repeat the warning.
+    plotter.plot()
+    assert len(warnings) == 1
+
+    # Assigning the missing layer clears the warned state.
+    plotter._contour_group_assignments[layer2.name] = 1
+    plotter.plot()
+    assert len(warnings) == 1
+    assert plotter._warned_unassigned.get("contour plot") is None
+
+    plotter.deleteLater()
+
+
+def test_switch_from_scatter_to_histogram2d_with_manual_selection(
+    make_viewer_model,
+):
+    """Test switching from Scatter to Histogram 2D after making a manual selection."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    plotter = PlotterWidget(viewer)
+
+    plotter.plot_type = 'SCATTER'
+
+    # Make a manual selection in scatter mode
+    plotter.selection_tab.selection_mode_combobox.setCurrentText(
+        'Manual Selection'
+    )
+    selector = plotter.canvas_widget.selectors['RECTANGLE']
+    selector.create_selector()
+
+    class Event:
+        def __init__(self, x, y):
+            self.xdata = x
+            self.ydata = y
+
+    selector.on_select(Event(0.1, 0.1), Event(0.9, 0.9))
+    selector.apply_selection()
+
+    assert plotter.selection_tab.selection_id is not None
+    assert plotter.selection_tab.selection_id != "None"
+
+    # Switching to Histogram 2D should not raise TypeError
+    sel_id = plotter.selection_tab.selection_id
+    plotter.plotter_inputs_widget.plot_type_combobox.setCurrentText(
+        "Density Plot (2D Histogram)"
+    )
+    assert plotter.plot_type == 'HISTOGRAM2D'
+    assert plotter.selection_tab.selection_id == sel_id
+    # Selection in layer metadata is preserved
+    assert (
+        sel_id in layer.metadata["settings"]["selections"]["manual_selections"]
+    )
+    hist_artist = plotter.canvas_widget.artists['HISTOGRAM2D']
+    assert hist_artist.color_indices is not None
+    assert np.any(hist_artist.color_indices > 0)
+
+    # Switching back to Scatter also preserves selection
+    plotter.plotter_inputs_widget.plot_type_combobox.setCurrentText(
+        "Dot Plot (Scatter)"
+    )
+    assert plotter.plot_type == 'SCATTER'
+    assert plotter.selection_tab.selection_id == sel_id
+    scatter_artist = plotter.canvas_widget.artists['SCATTER']
+    assert scatter_artist.color_indices is not None
+    assert np.any(scatter_artist.color_indices > 0)
+
+    plotter.deleteLater()
+
+
+def test_contour_display_mode_individual_layers(make_viewer_model):
+    """Test Contour plot with display mode 'Individual layers' in colormap and solid styles."""
+    viewer = make_viewer_model()
+    layer1 = create_image_layer_with_phasors()
+    layer2 = create_image_layer_with_phasors()
+    layer1.name = "Layer 1"
+    layer2.name = "Layer 2"
+    viewer.add_layer(layer1)
+    viewer.add_layer(layer2)
+    plotter = PlotterWidget(viewer)
+
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [layer1.name, layer2.name]
+    )
+    plotter._process_layer_selection_change()
+
+    plotter.plot_type = 'CONTOUR'
+    plotter._contour_show_legend = True
+    plotter._contour_display_mode = "Individual layers"
+    plotter._contour_layer_styles = {
+        layer1.name: {"mode": "colormap", "colormap": "viridis"},
+        layer2.name: {"mode": "solid", "color": (1.0, 0.0, 0.0)},
+    }
+
+    plotter.plot()
+
+    contour_artist = plotter.canvas_widget.artists['CONTOUR']
+    assert len(contour_artist._contour_collections) == 2
+    assert plotter.canvas_widget.axes.get_legend() is not None
+
+    # Test individual layers with solid style without explicit color (fallback)
+    plotter._contour_layer_styles = {
+        layer1.name: {"mode": "solid"},
+        layer2.name: {"mode": "solid"},
+    }
+    plotter.plot()
+    assert len(contour_artist._contour_collections) == 2
+
+    plotter.deleteLater()
+
+
+def test_contour_display_mode_grouped_empty_group_and_solid_color(
+    make_viewer_model,
+):
+    """Test Grouped mode with empty group member lists and solid group color."""
+    viewer = make_viewer_model()
+    layer1 = create_image_layer_with_phasors()
+    viewer.add_layer(layer1)
+    plotter = PlotterWidget(viewer)
+
+    plotter.plot_type = 'CONTOUR'
+    plotter._contour_display_mode = "Grouped"
+    plotter._contour_group_assignments = {layer1.name: 1}
+    plotter._contour_group_names = {1: "Group 1", 2: "Empty Group 2"}
+    plotter._contour_group_styles = {
+        1: {"mode": "solid", "color": (0.0, 0.5, 1.0)},
+        2: {"mode": "solid"},
+    }
+
+    plotter.plot()
+
+    contour_artist = plotter.canvas_widget.artists['CONTOUR']
+    assert len(contour_artist._contour_collections) == 1
+
+    # Test grouped mode solid style without explicit color and clear default dict
+    plotter._contour_group_colors.clear()
+    plotter._contour_group_styles = {
+        1: {"mode": "solid"},
+    }
+    plotter.plot()
+    assert len(contour_artist._contour_collections) == 1
+
+    plotter.deleteLater()
+
+
+def test_contour_plotter_axes_limits_and_aspect(make_viewer_model):
+    """Test contour default axes limits calculation and tall aspect ratio bins."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    plotter = PlotterWidget(viewer)
+
+    plotter.plot_type = 'CONTOUR'
+    plotter.plot()
+
+    # Call _redefine_axes_limits when in CONTOUR mode and semi-circle off
+    plotter.toggle_semi_circle = False
+    plotter._redefine_axes_limits()
+    xlim = plotter.canvas_widget.axes.get_xlim()
+    ylim = plotter.canvas_widget.axes.get_ylim()
+    assert xlim[0] < xlim[1]
+    assert ylim[0] < ylim[1]
+
+    # Test _redefine_axes_limits in SCATTER mode with HISTOGRAM2D data available
+    plotter.plot_type = 'SCATTER'
+    plotter._redefine_axes_limits()
+
+    # Test aspect <= 1 branch in _update_contour_plot
+    plotter.plot_type = 'CONTOUR'
+    plotter.canvas_widget.axes.set_xlim(0, 1)
+    plotter.canvas_widget.axes.set_ylim(-5, 5)  # aspect = 1 / 10 <= 1
+    features = plotter.get_features()
+    assert features is not None
+    x, y = features
+    plotter._update_contour_plot(x, y)
+    contour_artist = plotter.canvas_widget.artists['CONTOUR']
+    assert contour_artist.bins is not None
+
+    plotter.deleteLater()
+
+
+def test_contour_plotter_selector_applied_and_clear_fallback(
+    make_viewer_model,
+):
+    """Test _on_selector_applied in CONTOUR mode and _clear_contour_plot fallback."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+
+    plotter.plot_type = 'CONTOUR'
+    plotter._on_selector_applied(np.array([1, 0, 1]))
+    assert plotter._last_contour_color_indices is not None
+
+    # Test _clear_contour_plot fallback when CONTOUR artist is removed/missing
+    contour_artist = plotter.canvas_widget.artists.pop('CONTOUR')
+    try:
+        # Mock a collection object with sub-collections on plotter
+        class MockSubCol:
+            def __init__(self):
+                self.removed = False
+
+            def remove(self):
+                self.removed = True
+
+        class MockCollection:
+            def __init__(self):
+                self.removed = False
+                self.collections = [MockSubCol()]
+
+            def remove(self):
+                self.removed = True
+
+        mock_c = MockCollection()
+        plotter._contour_collections = [mock_c]
+
+        # Add a dummy artist with "contour_plot_element" label and a legend to axes
+        plotter.canvas_widget.axes.plot(
+            [0, 1], [0, 1], label="contour_plot_element"
+        )
+        plotter.canvas_widget.axes.legend()
+
+        plotter._clear_contour_plot()
+        assert len(plotter._contour_collections) == 0
+
+        # Test _update_contour_plot returns early when artist is missing
+        assert plotter._update_contour_plot([0.5], [0.5]) is None
+    finally:
+        plotter.canvas_widget.artists['CONTOUR'] = contour_artist
+
+    plotter.deleteLater()
+
+
+def test_set_active_artist_and_plot_branches(make_viewer_model):
+    """Test _set_active_artist_and_plot branches: combobox update, NONE, and invalid artist."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    plotter = PlotterWidget(viewer)
+
+    features = plotter.get_features()
+    assert features is not None
+    x, y = features
+
+    # 1. Calling _set_active_artist_and_plot when plot_type differs from combobox
+    plotter.plot_type = 'HISTOGRAM2D'
+    plotter._set_active_artist_and_plot('SCATTER', x, y)
+    assert plotter.plot_type == 'SCATTER'
+
+    # 2. Calling with 'NONE'
+    plotter._set_active_artist_and_plot('NONE', x, y)
+    assert plotter.canvas_widget.active_artist is None
+
+    # 3. Calling with an unregistered artist name
+    plotter._set_active_artist_and_plot('UNKNOWN_TYPE', x, y)
+    assert plotter.canvas_widget.active_artist is None
+
+    plotter.deleteLater()
+
+
+def test_capture_and_apply_plot_colors_in_contour_mode(make_viewer_model):
+    """Test color snapshot and color application in CONTOUR mode."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    plotter = PlotterWidget(viewer)
+
+    plotter.plot_type = 'CONTOUR'
+    plotter.plot()
+
+    saved_colors = plotter._capture_plot_colors()
+    assert len(saved_colors["axes"]) >= 1
+
+    plotter._apply_plot_colors("black")
+    ax = plotter.canvas_widget.artists['CONTOUR'].ax
+    assert ax.xaxis.label.get_color() == "black"
+
+    plotter.deleteLater()

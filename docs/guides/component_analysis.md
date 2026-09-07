@@ -110,6 +110,34 @@ analyzed quantitatively in the **Histogram and Statistics Table** widget.
 - Compare layers as merged, individual, or grouped data
 - Export summary statistics to CSV
 
+The **Component** selector above the histogram and the statistics table is
+checkable: check several components to draw their fraction distributions in
+the same plot. In *Merged* mode each component keeps its own curve, pooling
+its own layers, so components are never averaged together; *Individual layers*
+splits them further, one curve per component and image. The fraction range
+slider spans every checked component and layer, and each component's curve is
+drawn in the colormap of its own fraction layer, following it live when that
+colormap, its contrast limits or its gamma change. The exception is a Linear
+Projection pair: the second component's colormap is the first one reversed, so
+two mirrored gradients would only confuse — both components are drawn in solid
+colours instead. Either way, **Curve colours** in the Histogram Settings dialog
+switches between the layer colormap and solid colours and lets you pick a
+colour per component. When distributions have very different
+pixel counts, enable **Normalize to maximum** in the Histogram Settings dialog
+so each curve reaches 1.
+
+Component names can be edited at any time: renaming one updates its curve, its
+statistics columns and its fraction layers for every analysed image, and keeps
+it checked in the selector.
+
+Grouping still works on the analysed phasor layers: the group rows in the
+Histogram Settings dialog list those layers, never one entry per component, and
+a layer's group applies to every component curve derived from it.
+
+The fraction image layers follow that selection: checking a component shows its
+fraction layers in the viewer and hides the ones whose component is unchecked,
+so the image on screen always matches the distributions being plotted.
+
 The histogram and statistics table always reflect the layers currently checked
 in **Phasor Layers**. Checking or unchecking a layer updates them immediately,
 and the fraction image layers of unchecked layers are hidden rather than

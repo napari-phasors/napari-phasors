@@ -903,13 +903,14 @@ def test_statistics_table_lists_every_frame(make_viewer_model):
         plotter.frame_context.mode = CURRENT
 
         assert table.rowCount() == N_FRAMES
+        # The statistic columns name the quantity they summarise.
         assert _table_column_names(table) == [
             "Frame",
             "Name",
-            "Center of Mass",
-            "Mean",
-            "Median",
-            "Std Dev",
+            "Lifetime (ns) Center of Mass",
+            "Lifetime (ns) Mean",
+            "Lifetime (ns) Median",
+            "Lifetime (ns) Std Dev",
         ]
         assert [row[0] for row in _table_rows(table)] == [
             str(frame) for frame in range(N_FRAMES)
@@ -1012,7 +1013,7 @@ def test_statistics_dock_exports_per_timepoint(make_viewer_model, tmp_path):
             str(per_frame_path), "per_frame"
         )
         lines = per_frame_path.read_text().strip().splitlines()
-        assert lines[0].startswith("Frame,Name,Center of Mass")
+        assert lines[0].startswith("Frame,Name,Lifetime (ns) Center of Mass")
         assert len(lines) == N_FRAMES + 1
 
         pooled_path = tmp_path / "pooled.csv"

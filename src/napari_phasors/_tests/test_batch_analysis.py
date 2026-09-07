@@ -1421,6 +1421,51 @@ def test_group_for_modes(qtbot, make_viewer_model):
     }
     assert widget._group_for("a.ome.tif") == (1, "Ctrl", "#ff0000")
     assert widget._group_for("b.ome.tif") == (2, "Treated", "#0000ff")
+    # A file assigned to no group joins none, rather than falling into
+    # group 1 and corrupting its combined output.
+    assert widget._group_for("c.ome.tif") == (None, None, None)
+
+
+def test_warn_unassigned_files_before_grouped_run(
+    qtbot, make_viewer_model, monkeypatch
+):
+    """A grouped run names the scanned files that belong to no group."""
+    import napari_phasors._batch_analysis as batch_mod
+
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+
+    warnings = []
+    monkeypatch.setattr(
+        batch_mod, "show_warning", lambda msg: warnings.append(msg)
+    )
+
+    files = ["/data/a.ome.tif", "/data/b.ome.tif", "/data/new.ome.tif"]
+
+    # Merged mode says nothing.
+    widget._group_config = {"mode": "Merged"}
+    widget._warn_unassigned_files(files)
+    assert warnings == []
+
+    widget._group_config = {
+        "mode": "Grouped",
+        "assignments": {"a.ome.tif": 1, "b.ome.tif": 2},
+    }
+    widget._warn_unassigned_files(files)
+    assert len(warnings) == 1
+    assert "new.ome.tif" in warnings[0]
+
+    # Nothing to report once every file has a group.
+    warnings.clear()
+    widget._group_config["assignments"]["new.ome.tif"] = 1
+    widget._warn_unassigned_files(files)
+    assert warnings == []
+
+    # Grouped mode with nothing assigned at all names every file.
+    widget._group_config = {"mode": "Grouped", "assignments": {}}
+    widget._warn_unassigned_files(files)
+    assert len(warnings) == 1
+    assert "a.ome.tif" in warnings[0]
 
 
 def test_contour_key_styles_grouped(qtbot, make_viewer_model):

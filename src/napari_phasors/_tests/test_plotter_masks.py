@@ -406,6 +406,117 @@ def test_mask_assignment_dialog_apply_all_differing_masks_ignores_stale_choice(
     dialog.close()
 
 
+def test_mask_assignment_dialog_auto_assign_button_state():
+    """Test that Auto-assign button enablement depends on available masks."""
+    from napari_phasors.plotter import MaskAssignmentDialog
+
+    # No masks available
+    dialog_empty = MaskAssignmentDialog(
+        image_layer_names=["layer_A", "layer_B"],
+        mask_layer_names=[],
+        parent=None,
+    )
+    assert hasattr(dialog_empty, "auto_assign_button")
+    assert not dialog_empty.auto_assign_button.isEnabled()
+    dialog_empty.close()
+
+    # Masks available
+    dialog_with_masks = MaskAssignmentDialog(
+        image_layer_names=["layer_A", "layer_B"],
+        mask_layer_names=["mask_A", "mask_B"],
+        parent=None,
+    )
+    assert dialog_with_masks.auto_assign_button.isEnabled()
+    dialog_with_masks.close()
+
+
+def test_mask_assignment_dialog_auto_assign_action():
+    """Test clicking Auto-assign matches each layer to the best mask."""
+    from napari_phasors.plotter import MaskAssignmentDialog
+
+    images = [
+        "embryo_1.ptu Intensity Image",
+        "embryo_2.ptu Intensity Image",
+        "unmatched_image.ptu Intensity Image",
+    ]
+    masks = ["embryo_2_segmentation", "embryo_1", "random_mask"]
+
+    dialog = MaskAssignmentDialog(
+        image_layer_names=images,
+        mask_layer_names=masks,
+        parent=None,
+    )
+
+    # Initial state is "None" for all
+    for combo in dialog._combos.values():
+        assert combo.currentText() == "None"
+
+    # Click auto-assign
+    dialog.auto_assign_button.click()
+
+    assignments = dialog.get_assignments()
+    assert assignments[images[0]] == "embryo_1"
+    assert assignments[images[1]] == "embryo_2_segmentation"
+    # No name match: left alone rather than given a near-miss mask.
+    assert assignments[images[2]] == "None"
+
+    dialog.close()
+
+
+def test_mask_assignment_dialog_auto_assign_keeps_near_misses_unassigned():
+    """A layer whose only sibling mask belongs to another image stays None."""
+    from napari_phasors.plotter import MaskAssignmentDialog
+
+    dialog = MaskAssignmentDialog(
+        image_layer_names=["2026-05-03_control.lsm Intensity Image"],
+        mask_layer_names=["2026-05-03_treated_mask"],
+        parent=None,
+    )
+    dialog.auto_assign_button.click()
+
+    assert dialog.get_assignments() == {
+        "2026-05-03_control.lsm Intensity Image": "None"
+    }
+    dialog.close()
+
+
+def test_mask_assignment_dialog_auto_assign_updates_dependent_widgets():
+    """Auto-assign goes through the combo, so the row's widgets follow."""
+    from napari_phasors.plotter import MaskAssignmentDialog
+
+    dialog = MaskAssignmentDialog(
+        image_layer_names=["sample.tif Intensity Image"],
+        mask_layer_names=["sample_mask"],
+        parent=None,
+    )
+    invert = dialog._invert_checks["sample.tif Intensity Image"]
+    assert not invert.isEnabled()
+
+    dialog.auto_assign_button.click()
+
+    assert dialog.get_assignments() == {
+        "sample.tif Intensity Image": "sample_mask"
+    }
+    # The Invert checkbox is only meaningful once a mask is assigned.
+    assert invert.isEnabled()
+    dialog.close()
+
+
+def test_mask_assignment_dialog_auto_assign_without_masks_is_a_no_op():
+    """The guard holds even if the disabled button is bypassed."""
+    from napari_phasors.plotter import MaskAssignmentDialog
+
+    dialog = MaskAssignmentDialog(
+        image_layer_names=["layer_A"],
+        mask_layer_names=[],
+        parent=None,
+    )
+    dialog._on_auto_assign()
+
+    assert dialog.get_assignments() == {"layer_A": "None"}
+    dialog.close()
+
+
 def test_apply_mask_assignments_different_masks_per_layer(make_viewer_model):
     """Test that _apply_mask_assignments applies distinct masks to each layer."""
     viewer = make_viewer_model()
@@ -1147,6 +1258,35 @@ def test_extract_phasor_arrays_with_mask_all_labels(make_viewer_model):
     # Background (0) pixels → NaN; label pixels → valid
     expected_nan = mask_data <= 0
     np.testing.assert_array_equal(np.isnan(real[0]), expected_nan)
+
+
+def test_extract_phasor_arrays_with_mask_single_harmonic_layer(
+    make_viewer_model,
+):
+    """A layer with a single harmonic (no leading harmonic axis in G/S)
+    should have the mask applied directly, not per-row as if a harmonic
+    axis existed."""
+    from napari_phasors._utils import _extract_phasor_arrays_from_layer
+
+    image_layer = create_image_layer_with_phasors(harmonic=1)
+    viewer = make_viewer_model()
+    viewer.add_layer(image_layer)
+
+    G = image_layer.metadata["G"]
+    assert G.ndim == image_layer.data.ndim
+    mask_data = np.zeros(G.shape, dtype=int)
+    mask_data[:, : G.shape[1] // 2] = 1  # left half label 1
+    mask_data[:, G.shape[1] // 2 :] = 2  # right half label 2
+
+    image_layer.metadata["mask"] = mask_data
+    image_layer.metadata["mask_labels"] = None  # all labels valid
+    image_layer.metadata["mask_invert"] = False
+
+    mean, real, imag, _ = _extract_phasor_arrays_from_layer(image_layer)
+    assert real.shape == G.shape
+    assert imag.shape == G.shape
+    expected_nan = mask_data <= 0
+    np.testing.assert_array_equal(np.isnan(real), expected_nan)
 
 
 def test_extract_phasor_arrays_with_mask_no_labels(make_viewer_model):

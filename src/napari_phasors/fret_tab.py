@@ -1760,15 +1760,19 @@ class FretWidget(QWidget):
         self, *, update_bounds=True, preserve_range=False
     ):
         """Update the FRET efficiency histogram from all selected FRET layers."""
-        selected_layers = list(
-            self._fret_output_layers(selected_only=True).values()
-        )
+        output_layers = self._fret_output_layers(selected_only=True)
+        selected_layers = list(output_layers.values())
         if not selected_layers:
             self.histogram_widget.clear()
             self.histogram_widget.hide()
             return
 
         per_layer = {layer.name: layer.data for layer in selected_layers}
+        # Groups live on the analysed image layer, not on the derived FRET
+        # layer, so every tab sees the same grouping.
+        self.histogram_widget.set_dataset_sources(
+            {layer.name: source for source, layer in output_layers.items()}
+        )
         original_arrays = [
             np.asarray(
                 layer.metadata.get('fret_data_original', layer.data)
@@ -2086,7 +2090,7 @@ class FretWidget(QWidget):
             if g_array is None or s_array is None:
                 return None
 
-            if harmonics is not None:
+            if harmonics is not None and g_array.ndim > layer.data.ndim:
                 try:
                     harmonics_array = np.atleast_1d(harmonics)
                     harmonic_index = np.where(harmonics_array == harmonic)[0][

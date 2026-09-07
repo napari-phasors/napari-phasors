@@ -3,11 +3,11 @@ import copy
 import math
 import warnings
 from pathlib import Path
+from typing import Any
 
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import numpy as np
-from biaplotter.plotter import CanvasWidget
 from matplotlib.colorbar import Colorbar
 from matplotlib.colors import LogNorm
 from matplotlib.lines import Line2D
@@ -18,7 +18,7 @@ from phasorpy.lifetime import phasor_from_lifetime
 from phasorpy.phasor import phasor_center as _phasor_center
 from phasorpy.phasor import phasor_to_polar
 from qtpy.QtCore import QEvent, Qt, QTimer
-from qtpy.QtGui import QColor, QCursor
+from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -46,6 +46,7 @@ from qtpy.QtWidgets import (
 )
 from superqt import QToggleSwitch
 
+from ._canvas import PhasorCanvasWidget as CanvasWidget
 from ._parallel import (
     available_memory,
     default_workers,
@@ -68,8 +69,7 @@ from ._update_check import maybe_check_for_update
 from ._utils import (
     CheckableComboBox,
     CollapsibleSection,
-    ColormapLegendHandler,
-    ColormapLegendProxy,
+    ExclusiveGroupRowsMixin,
     HistogramDockWidget,
     HistogramWidget,
     StatisticsDockWidget,
@@ -79,17 +79,19 @@ from ._utils import (
     available_colormap_names,
     build_group_styles_from_layer_metadata,
     build_groups_from_layer_metadata,
+    confirm_unassigned_layers,
     make_section,
     make_solid_contour_cmap,
     normalize_rgb,
-    patch_biaplotter_capture_selection_geometry,
-    patch_biaplotter_fixed_histogram_range,
     phasor_storage_dtype,
     populate_colormap_combobox,
+    rank_mask_candidates,
     read_ome_tiff_settings,
     resolve_colormap_by_name,
     save_groups_to_layer_metadata,
     set_phasor_storage_dtype,
+    split_items_by_group,
+    unassigned_layer_labels,
     update_frequency_in_metadata,
     write_rows_to_csv,
 )
@@ -99,176 +101,6 @@ from .filter_tab import FilterWidget
 from .fret_tab import FretWidget
 from .phasor_mapping_tab import PhasorMappingWidget
 from .selection_tab import SelectionWidget
-
-
-def _patch_nap_plot_tools_safe_disconnect():
-    """Patch nap_plot_tools toolbar callback wiring to avoid warning spam.
-
-    nap_plot_tools currently calls ``button.toggled.disconnect()`` for
-    checkable buttons. Under PySide/Qt this can emit a RuntimeWarning when no
-    callback is connected. We patch it to disconnect only the previously
-    connected callback we track locally.
-    """
-    try:
-        from nap_plot_tools.tools import CustomToolbarWidget
-    except ImportError:
-        return
-
-    if getattr(
-        CustomToolbarWidget, "_napari_phasors_safe_disconnect_patch", False
-    ):
-        return
-
-    def _connect_button_callback_safe(self, name, callback):
-        if name not in self.buttons:
-            return
-
-        button = self.buttons[name]
-        signal = button.toggled if button.isCheckable() else button.clicked
-
-        connected = getattr(self, "_napari_phasors_connected_callbacks", {})
-        previous = connected.get(name)
-        if previous is not None:
-            with contextlib.suppress(TypeError, RuntimeError):
-                signal.disconnect(previous)
-
-        if callback:
-            if button.isCheckable():
-                to_connect = callback
-            else:
-
-                def _clicked_callback(checked=False, cb=callback):
-                    cb()
-
-                to_connect = _clicked_callback
-            signal.connect(to_connect)
-            connected[name] = to_connect
-        else:
-            connected.pop(name, None)
-
-        self._napari_phasors_connected_callbacks = connected
-
-    CustomToolbarWidget.connect_button_callback = _connect_button_callback_safe
-    CustomToolbarWidget._napari_phasors_safe_disconnect_patch = True
-
-
-def _patch_biaplotter_safe_toggle_sender():
-    """Patch biaplotter toggle callback to tolerate missing Qt sender.
-
-    biaplotter wires ``pan_toggled_signal`` and ``zoom_toggled_signal``
-    (non-Qt signals) to ``CanvasWidget._on_toggle_button``. In that path,
-    ``self.sender()`` can be ``None``, which raises an AttributeError when the
-    callback unconditionally accesses ``.text()``.
-    """
-    if getattr(
-        CanvasWidget, "_napari_phasors_safe_toggle_sender_patch", False
-    ):
-        return
-
-    def _on_toggle_button_safe(self, checked: bool):
-        sender_obj = self.sender()
-        sender_name = None
-        active_button_name = None
-
-        active_selector = getattr(self, 'active_selector', None)
-        if active_selector is not None:
-            for name, selector in getattr(self, 'selectors', {}).items():
-                if selector is active_selector:
-                    active_button_name = name
-                    break
-
-        if sender_obj is not None:
-            with contextlib.suppress(AttributeError, RuntimeError, TypeError):
-                sender_name = sender_obj.text()
-
-        # Non-Qt pan/zoom signals do not carry a sender, but they should still
-        # deactivate any active selector before we try to infer a toolbar button.
-        if (
-            sender_name is None
-            and checked
-            and self.toolbar.mode in {'pan/zoom', 'zoom rect'}
-        ):
-            self._deactivate_and_remove_all_selectors()
-            return
-
-        if sender_name is None and hasattr(self, 'selection_toolbar'):
-            checked_selector_names = [
-                name
-                for name, button in self.selection_toolbar.buttons.items()
-                if button.isCheckable() and button.isChecked()
-            ]
-
-            if checked:
-                if len(checked_selector_names) == 1:
-                    sender_name = checked_selector_names[0]
-                elif (
-                    active_button_name is not None
-                    and active_button_name in checked_selector_names
-                ):
-                    candidates = [
-                        name
-                        for name in checked_selector_names
-                        if name != active_button_name
-                    ]
-                    if len(candidates) == 1:
-                        sender_name = candidates[0]
-            else:
-                if (
-                    len(checked_selector_names) == 1
-                    and checked_selector_names[0] != active_button_name
-                ):
-                    sender_name = checked_selector_names[0]
-                elif not checked_selector_names and active_button_name:
-                    sender_name = active_button_name
-
-        # Non-Qt emitters (psygnal) can call this with sender=None.
-        # Preserve expected behavior for toolbar pan/zoom toggles.
-        if sender_name is None:
-            if checked and self.toolbar.mode in {'pan/zoom', 'zoom rect'}:
-                self._deactivate_and_remove_all_selectors()
-            return
-
-        # Reproduce the original biaplotter behavior using the resolved sender.
-        if sender_name in self.selection_toolbar.buttons:
-            if checked:
-                if self.toolbar.mode == 'zoom rect':
-                    with self.toolbar.zoom_toggled_signal.blocked():
-                        self.toolbar.zoom()
-                elif self.toolbar.mode == 'pan/zoom':
-                    with self.toolbar.pan_toggled_signal.blocked():
-                        self.toolbar.pan()
-                self._deactivate_and_remove_all_selectors(
-                    except_this_button_name=sender_name
-                )
-                self.active_selector = sender_name
-            else:
-                checked_selector_names = [
-                    name
-                    for name, button in self.selection_toolbar.buttons.items()
-                    if button.isCheckable() and button.isChecked()
-                ]
-                if (
-                    len(checked_selector_names) == 1
-                    and checked_selector_names[0] != sender_name
-                ):
-                    self._deactivate_and_remove_all_selectors(
-                        except_this_button_name=checked_selector_names[0]
-                    )
-                    self.active_selector = checked_selector_names[0]
-                else:
-                    self._remove_all_selectors()
-                    self.canvas.setCursor(QCursor(Qt.ArrowCursor))
-        elif sender_name in ['Pan', 'Zoom'] and checked:
-            self._deactivate_and_remove_all_selectors()
-
-    CanvasWidget._on_toggle_button = _on_toggle_button_safe
-    CanvasWidget._napari_phasors_safe_toggle_sender_patch = True
-
-
-_patch_nap_plot_tools_safe_disconnect()
-_patch_biaplotter_safe_toggle_sender()
-patch_biaplotter_capture_selection_geometry()
-patch_biaplotter_fixed_histogram_range()
 
 
 def _apply_label_colors_to_combo(combo, labels_layer, unique_labels):
@@ -499,6 +331,14 @@ class MaskAssignmentDialog(QDialog):
             self._on_apply_all_changed
         )
         apply_all_layout.addWidget(self._apply_all_combo, 1)
+
+        self.auto_assign_button = QPushButton("Auto-assign")
+        self.auto_assign_button.setToolTip(
+            "Automatically match mask layers to image layers by name."
+        )
+        self.auto_assign_button.setEnabled(bool(self._mask_layers))
+        self.auto_assign_button.clicked.connect(self._on_auto_assign)
+        apply_all_layout.addWidget(self.auto_assign_button)
         layout.addLayout(apply_all_layout)
 
         # OK / Cancel
@@ -508,6 +348,25 @@ class MaskAssignmentDialog(QDialog):
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
+
+    def _on_auto_assign(self):
+        """Pair each image layer with the best matching mask layer by name.
+
+        Layers with no name match are left untouched rather than given a
+        near-miss mask, and the result is reported so a partial match is
+        not mistaken for a complete one.
+        """
+        if not self._mask_layers:
+            return
+        mask_names = list(self._mask_layers.keys())
+        assigned = 0
+        for image_name, combo in self._combos.items():
+            candidates = rank_mask_candidates(
+                image_name, mask_names, strip_directory=False
+            )
+            if candidates:
+                combo.setCurrentText(candidates[0])
+                assigned += 1
 
     def _on_apply_all_changed(self, text):
         """Auto-set all per-layer combos when a mask is selected."""
@@ -608,7 +467,7 @@ class _ListWidgetCompatWrapper:
         return self._plotter.image_layers_checkable_combobox.selectionChanged
 
 
-class ContourLayerSettingsDialog(QDialog):
+class ContourLayerSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
     """Dialog for contour multi-layer display and grouping settings."""
 
     DISPLAY_MODES = ("Merged", "Individual layers", "Grouped")
@@ -774,17 +633,28 @@ class ContourLayerSettingsDialog(QDialog):
         group_layout.addWidget(self._group_rows_widget)
 
         if group_assignments and self._layer_labels:
+            # Only layers with an explicit assignment are pre-checked; a
+            # layer missing from ``group_assignments`` belongs to no group
+            # and must not be silently ticked into the first one.
             grouped = {}
             for name in self._layer_labels:
-                gid = int(group_assignments.get(name, 1))
-                grouped.setdefault(gid, []).append(name)
-            for gid in sorted(grouped):
+                gid = group_assignments.get(name)
+                if gid is None:
+                    continue
+                grouped.setdefault(int(gid), []).append(name)
+            # Keep rows for groups configured by name/colour/style even when
+            # they currently hold no layer.
+            configured = set(grouped)
+            configured.update(int(g) for g in (group_names or {}))
+            configured.update(int(g) for g in (group_colors or {}))
+            configured.update(int(g) for g in (group_styles or {}))
+            for gid in sorted(configured):
                 self._add_group_row(
                     name=group_names.get(gid, f"Group {gid}"),
                     color=group_colors.get(
                         gid, default_tab10[(gid - 1) % len(default_tab10)]
                     ),
-                    checked_layers=grouped[gid],
+                    checked_layers=grouped.get(gid, []),
                     style=group_styles.get(gid, {}).get(
                         "mode",
                         (
@@ -808,6 +678,10 @@ class ContourLayerSettingsDialog(QDialog):
                 ),
                 colormap_name=merged_colormap,
             )
+
+        # A layer belongs to at most one group, so hide the ones already
+        # claimed from every other row's dropdown.
+        self._sync_group_exclusivity()
 
         add_group_btn = QPushButton("+ Add Group")
         add_group_btn.setMaximumWidth(120)
@@ -985,6 +859,7 @@ class ContourLayerSettingsDialog(QDialog):
         else:
             # Explicitly call _update_display_text to show placeholder
             layer_combo._update_display_text()
+        layer_combo.selectionChanged.connect(self._sync_group_exclusivity)
         row_layout.addWidget(layer_combo, 1)
 
         remove_btn = QPushButton("-")
@@ -1010,6 +885,7 @@ class ContourLayerSettingsDialog(QDialog):
         if len(self._group_row_data) >= self.MAX_GROUPS:
             return
         self._add_group_row(name=f"Group {len(self._group_row_data) + 1}")
+        self._sync_group_exclusivity()
 
     def _on_remove_group(self, row_widget):
         """Remove *row_widget*'s group, keeping at least one group present."""
@@ -1024,6 +900,8 @@ class ContourLayerSettingsDialog(QDialog):
             return
         row = self._group_row_data.pop(idx)
         row["container"].setParent(None)
+        # Its layers are free again for the remaining groups.
+        self._sync_group_exclusivity()
 
     def get_display_mode(self):
         """Return the selected display mode name."""
@@ -1089,12 +967,37 @@ class ContourLayerSettingsDialog(QDialog):
         }
 
     def get_group_assignments(self):
-        """Return ``{layer_name: group_id}`` for every grouped layer."""
+        """Return ``{layer_name: group_id}`` for every grouped layer.
+
+        Only layers actually checked in a group row appear here; an
+        unchecked layer is left out entirely (see
+        :meth:`get_unassigned_layers`) instead of falling back to group 1.
+        """
         assignments = {}
         for gid, row in enumerate(self._group_row_data, start=1):
             for layer_name in row["layer_combo"].checkedItems():
                 assignments[layer_name] = gid
         return assignments
+
+    def get_unassigned_layers(self):
+        """Return the layers not checked in any group row."""
+        return unassigned_layer_labels(
+            self._layer_labels, self.get_group_assignments()
+        )
+
+    def accept(self):
+        """Confirm the dialog, warning about layers left out of every group.
+
+        A layer the user forgot to tick belongs to no group and draws no
+        contour, so ask before closing rather than dropping it unnoticed.
+        """
+        if self.mode_combo.currentText() == "Grouped" and (
+            not confirm_unassigned_layers(
+                self, self.get_unassigned_layers(), "contour plot"
+            )
+        ):
+            return
+        super().accept()
 
     def get_group_names(self):
         """Return ``{group_id: name}``, falling back to "Group N" if unnamed."""
@@ -1112,7 +1015,7 @@ class ContourLayerSettingsDialog(QDialog):
         }
 
 
-class PhasorCenterLayerSettingsDialog(QDialog):
+class PhasorCenterLayerSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
     """Dialog for phasor center multi-layer display and grouping settings.
 
     Similar to ContourLayerSettingsDialog but uses only solid color pickers
@@ -1285,23 +1188,37 @@ class PhasorCenterLayerSettingsDialog(QDialog):
         group_layout.addWidget(self._group_rows_widget)
 
         if group_assignments and self._layer_labels:
+            # Only layers with an explicit assignment are pre-checked; a
+            # layer missing from ``group_assignments`` belongs to no group
+            # and must not be silently ticked into the first one.
             grouped = {}
             for name in self._layer_labels:
-                gid = int(group_assignments.get(name, 1))
-                grouped.setdefault(gid, []).append(name)
-            for gid in sorted(grouped):
+                gid = group_assignments.get(name)
+                if gid is None:
+                    continue
+                grouped.setdefault(int(gid), []).append(name)
+            # Keep rows for groups configured by name/colour even when they
+            # currently hold no layer.
+            configured = set(grouped)
+            configured.update(int(g) for g in (group_names or {}))
+            configured.update(int(g) for g in (group_colors or {}))
+            for gid in sorted(configured):
                 self._add_group_row(
                     name=group_names.get(gid, f"Group {gid}"),
                     color=group_colors.get(
                         gid, default_tab10[(gid - 1) % len(default_tab10)]
                     ),
-                    checked_layers=grouped[gid],
+                    checked_layers=grouped.get(gid, []),
                 )
         elif self._layer_labels:
             self._add_group_row(
                 name="Group 1",
                 checked_layers=list(self._layer_labels),
             )
+
+        # A layer belongs to at most one group, so hide the ones already
+        # claimed from every other row's dropdown.
+        self._sync_group_exclusivity()
 
         add_group_btn = QPushButton("+ Add Group")
         add_group_btn.setMaximumWidth(120)
@@ -1383,6 +1300,7 @@ class PhasorCenterLayerSettingsDialog(QDialog):
             layer_combo.setCheckedItems(checked_layers)
         else:
             layer_combo._update_display_text()
+        layer_combo.selectionChanged.connect(self._sync_group_exclusivity)
         row_layout.addWidget(layer_combo, 1)
 
         remove_btn = QPushButton("-")
@@ -1406,6 +1324,7 @@ class PhasorCenterLayerSettingsDialog(QDialog):
         if len(self._group_row_data) >= self.MAX_GROUPS:
             return
         self._add_group_row(name=f"Group {len(self._group_row_data) + 1}")
+        self._sync_group_exclusivity()
 
     def _on_remove_group(self, row_widget):
         """Remove *row_widget*'s group, keeping at least one group present."""
@@ -1420,6 +1339,8 @@ class PhasorCenterLayerSettingsDialog(QDialog):
             return
         row = self._group_row_data.pop(idx)
         row["container"].setParent(None)
+        # Its layers are free again for the remaining groups.
+        self._sync_group_exclusivity()
 
     def get_display_mode(self):
         """Return the selected display mode name."""
@@ -1448,12 +1369,37 @@ class PhasorCenterLayerSettingsDialog(QDialog):
         }
 
     def get_group_assignments(self):
-        """Return ``{layer_name: group_id}`` for every grouped layer."""
+        """Return ``{layer_name: group_id}`` for every grouped layer.
+
+        Only layers actually checked in a group row appear here; an
+        unchecked layer is left out entirely (see
+        :meth:`get_unassigned_layers`) instead of falling back to group 1.
+        """
         assignments = {}
         for gid, row in enumerate(self._group_row_data, start=1):
             for layer_name in row["layer_combo"].checkedItems():
                 assignments[layer_name] = gid
         return assignments
+
+    def get_unassigned_layers(self):
+        """Return the layers not checked in any group row."""
+        return unassigned_layer_labels(
+            self._layer_labels, self.get_group_assignments()
+        )
+
+    def accept(self):
+        """Confirm the dialog, warning about layers left out of every group.
+
+        An unticked layer contributes to no pooled centre, so ask before
+        closing rather than dropping it from the plot unnoticed.
+        """
+        if self.mode_combo.currentText() == "Grouped" and (
+            not confirm_unassigned_layers(
+                self, self.get_unassigned_layers(), "phasor centers"
+            )
+        ):
+            return
+        super().accept()
 
     def get_group_names(self):
         """Return ``{group_id: name}``, falling back to "Group N" if unnamed."""
@@ -1640,10 +1586,28 @@ class PlotterWidget(QWidget):
     _CANVAS_H_OVERHEAD = 150
     _CANVAS_V_OVERHEAD = 55
 
+    #: Stand-in for "unlimited" height when asking for the canvas size a
+    #: given width allows, ignoring the height currently available.
+    _UNBOUNDED_HEIGHT = 1_000_000
+
+    #: Qt's ``QWIDGETSIZE_MAX``, i.e. "no maximum height set".
+    _NO_HEIGHT_LIMIT = 16_777_215
+
+    #: Uniform margin (px) around the content of every analysis tab page.
+    _TAB_PAGE_MARGIN = 6
+
+    #: Strip (px) kept above the analysis tab bar. napari's stylesheet draws
+    #: tabs with a 1 px border and rounded top corners that ``QTabBar`` does
+    #: not reserve room for in its height hint, so a bar sitting flush under
+    #: the dock title bar renders visibly clipped along its top edge.
+    _TAB_BAR_TOP_MARGIN = 4
+
     def __init__(self, napari_viewer):
         """Initialize the PlotterWidget."""
         super().__init__()
         self._is_closing = False
+        #: Last QDockWidget seen hosting this widget (see ``changeEvent``).
+        self._plotter_dock_ref = None
         self.viewer = napari_viewer
 
         # Unobtrusive, throttled check for a newer release (see module docs).
@@ -1664,6 +1628,7 @@ class PlotterWidget(QWidget):
         self._g_original_array = None
         self._s_original_array = None
         self._harmonics_array = None
+        self._phasor_layer_ndim = None
 
         # Cache for histogram properties to avoid redundant updates
         self._last_histogram_bins = None
@@ -1705,17 +1670,6 @@ class PlotterWidget(QWidget):
         )
         self.set_axes_labels()
         self.canvas_container.layout().addWidget(self.canvas_widget)
-
-        # Monkey-patch biaplotter's _is_click_inside_axes to handle None xdata/ydata
-        # This fixes a bug where clicking outside the axes causes a TypeError
-        original_is_click_inside = self.canvas_widget._is_click_inside_axes
-
-        def _is_click_inside_axes_fixed(event):
-            if event.xdata is None or event.ydata is None:
-                return False
-            return original_is_click_inside(event)
-
-        self.canvas_widget._is_click_inside_axes = _is_click_inside_axes_fixed
 
         # Monkey-patch toolbar save_figure to export with black text/spines
         self._patch_toolbar_save()
@@ -1979,9 +1933,15 @@ class PlotterWidget(QWidget):
         # Create tab widget
         self.tab_widget = QTabWidget()
 
-        # Create a separate widget for the tabs to allow independent docking
+        # Create a separate widget for the tabs to allow independent docking.
+        # No side or bottom margin, so every pixel of the dock goes to the
+        # tabs (see ``_compact_analysis_tab_margins``); only a thin strip on
+        # top for the tab bar (see ``_TAB_BAR_TOP_MARGIN``).
         self.analysis_widget = QWidget()
         self.analysis_widget.setLayout(QVBoxLayout())
+        self.analysis_widget.layout().setContentsMargins(
+            0, self._TAB_BAR_TOP_MARGIN, 0, 0
+        )
         self.analysis_widget.layout().addWidget(self.tab_widget)
 
         # Create a shared histogram container using a QStackedWidget.
@@ -2081,6 +2041,14 @@ class PlotterWidget(QWidget):
             self._resize_canvas_to_available_space
         )
 
+        # Last height limit handed to Qt, and a deferred re-split so the dock
+        # heights follow a change to it (see _claim_useful_height).
+        self._last_height_limit_state = None
+        self._claim_height_timer = QTimer(self)
+        self._claim_height_timer.setSingleShot(True)
+        self._claim_height_timer.setInterval(0)
+        self._claim_height_timer.timeout.connect(self._claim_useful_height)
+
         # Create Settings tab
         self.settings_tab = QWidget()
         self.settings_tab.setLayout(QVBoxLayout())
@@ -2129,6 +2097,7 @@ class PlotterWidget(QWidget):
         self._create_components_tab()
         self._create_phasor_mapping_tab()
         self._create_fret_tab()
+        self._compact_analysis_tab_margins()
 
         # Connect napari signals when new layer is inseted or removed
         self.viewer.layers.events.inserted.connect(self.reset_layer_choices)
@@ -2381,6 +2350,10 @@ class PlotterWidget(QWidget):
         self._phasor_center_group_names = {}
         self._phasor_center_artists = []
 
+        # Last set of layers each grouped plot warned about, so a redraw of
+        # the same selection does not repeat the notification.
+        self._warned_unassigned = {}
+
         self.toggle_semi_circle = (
             True  # default: semicircle shown (toggle OFF)
         )
@@ -2433,6 +2406,50 @@ class PlotterWidget(QWidget):
         # Initialize phasor center UI visibility
         self._update_phasor_center_controls_visibility()
 
+    def _compact_analysis_tab_margins(self):
+        """Trim the stacked layout margins around the analysis tab pages.
+
+        Each tab page gets its top-level layout margins from the platform
+        style (20 px left/right and bottom on macOS), and those stack with the
+        margins of the dock's own wrapper widget and of any container the tab
+        puts around its scroll area. Together they ate well over 100 px of the
+        dock's height and width, so tabs scrolled while the dock still had
+        room to show everything. Replace them with one small uniform margin so
+        the tab content uses the full height available.
+        """
+        margin = self._TAB_PAGE_MARGIN
+        for index in range(self.tab_widget.count()):
+            page = self.tab_widget.widget(index)
+            layout = page.layout() if page is not None else None
+            if layout is not None:
+                layout.setContentsMargins(margin, margin, margin, margin)
+
+    def _restore_expanding_dock_policies(self):
+        """Re-assert vertical growth on the widgets napari puts in docks.
+
+        ``QtViewerDockWidget`` (napari >= 0.9) overwrites the vertical size
+        policy of every widget handed to ``add_dock_widget`` with
+        ``QSizePolicy.Maximum``. That policy has no *grow* flag, so Qt caps
+        the dock at the widget's size hint: the plotter and the analysis
+        tabs froze at their initial height and neither the window nor the
+        dock separators could make them any taller. Setting the policy back
+        to ``Expanding`` lets them use the height the viewer gives them.
+        Cheap and idempotent - ``setSizePolicy`` is a no-op when unchanged -
+        so it is safe to call again whenever a dock is re-added.
+        """
+        for widget in (
+            self,
+            getattr(self, 'analysis_widget', None),
+            getattr(self, 'histogram_container', None),
+            getattr(self, 'statistics_container', None),
+        ):
+            if widget is None:
+                continue
+            with contextlib.suppress(RuntimeError):
+                widget.setSizePolicy(
+                    QSizePolicy.Preferred, QSizePolicy.Expanding
+                )
+
     def _add_analysis_dock_widget(self):
         """Add the analysis widget and histogram container to the viewer.
 
@@ -2469,6 +2486,7 @@ class PlotterWidget(QWidget):
             )
             self._docks_initialized = True
 
+            self._restore_expanding_dock_policies()
             self._enforce_bottom_dock_layout()
 
             # Defer resizeDocks so it runs after Qt has applied the splits.
@@ -2520,6 +2538,43 @@ class PlotterWidget(QWidget):
                 return parent
             widget = parent
         return None
+
+    def _track_plotter_dock(self):
+        """Remember the hosting dock, so its removal can be recognised.
+
+        Returns the dock currently hosting this widget (``None`` when it is
+        not docked). ``_plotter_dock_ref`` keeps the *last* dock seen, which
+        is what tells :meth:`changeEvent` that a widget which is suddenly
+        unparented used to be docked.
+        """
+        dock = self._find_plotter_dock()
+        if dock is not None:
+            self._plotter_dock_ref = dock
+        return dock
+
+    def changeEvent(self, event):
+        """Close this widget when napari removes it from its dock.
+
+        Every destructive path — the dock's 'close X' button (napari wires
+        it to ``destroyOnClose``) and any direct
+        ``window.remove_dock_widget`` call — reparents this widget out of
+        its dock, so a ``ParentChange`` with no dock left above us means the
+        plotter is being closed and its companion docks should go with it.
+
+        The dock's *hide* button is deliberately not covered: napari wires
+        that to ``QDockWidget.close()``, which only hides the panel (it stays
+        re-openable, with its state, from the Plugins menu), so treating it
+        as a close would throw the user's cursors and settings away.
+        """
+        if event.type() == QEvent.ParentChange:
+            docked = self._track_plotter_dock()
+            if (
+                docked is None
+                and self._plotter_dock_ref is not None
+                and not self._is_closing
+            ):
+                self.close()
+        super().changeEvent(event)
 
     def _split_analysis_below_plotter(self):
         """Stack the analysis dock directly beneath the plotter dock."""
@@ -2651,6 +2706,104 @@ class PlotterWidget(QWidget):
             self.canvas_widget.setFixedSize(target_w, target_h)
 
         self._update_text_sizes_for_canvas(min(target_w, target_h))
+        self._update_useful_height_limit(available_w)
+
+    def _spare_height_can_be_reused(self):
+        """Return whether another dock can take the height we cannot use.
+
+        Only the analysis tabs stacked under a docked plotter can absorb it.
+        When the plotter floats, or the tabs are closed or moved elsewhere,
+        keep the widget free to grow so its window stays resizable.
+        """
+        analysis_dock = getattr(self, '_analysis_dock', None)
+        plotter_dock = self._find_plotter_dock()
+        if analysis_dock is None or plotter_dock is None:
+            return False
+        try:
+            if plotter_dock.isFloating() or analysis_dock.isFloating():
+                return False
+            # ``isHidden`` rather than ``isVisible``: it is true only when
+            # the dock itself was closed, not merely because the viewer
+            # window has not been shown yet (as in tests).
+            if analysis_dock.isHidden():
+                return False
+            qt_window = self.viewer.window._qt_window
+            area = qt_window.dockWidgetArea(plotter_dock)
+            return area == qt_window.dockWidgetArea(
+                analysis_dock
+            ) and area in (
+                Qt.LeftDockWidgetArea,
+                Qt.RightDockWidgetArea,
+            )
+        except (AttributeError, RuntimeError):
+            return False
+
+    def _update_useful_height_limit(self, available_w):
+        """Cap our height at the tallest the plot can actually use.
+
+        The canvas keeps the plot's aspect ratio, so once it is as wide as
+        the panel allows, extra height cannot make the plot any bigger - it
+        only adds a blank band. Reporting the useful height as our maximum
+        hands that space to the analysis tabs below instead. The limit
+        tracks the width, so widening the panel immediately allows a taller
+        plot again.
+        """
+        if not self._spare_height_can_be_reused():
+            self._last_height_limit_state = None
+            if self.maximumHeight() != self._NO_HEIGHT_LIMIT:
+                self.setMaximumHeight(self._NO_HEIGHT_LIMIT)
+            return
+
+        _natural_w, natural_h = self._canvas_size_for_ratio(
+            self._get_canvas_target_ratio(),
+            available_w,
+            self._UNBOUNDED_HEIGHT,
+        )
+        margins = self.layout().contentsMargins()
+        chrome = (
+            self.controls_container.sizeHint().height()
+            + max(self.layout().spacing(), 0)
+            + margins.top()
+            + margins.bottom()
+        )
+        limit = max(int(round(natural_h)) + chrome, self.minimumHeight())
+        if self.maximumHeight() != limit:
+            self.setMaximumHeight(limit)
+
+        # The limit depends only on the panel width and the plot's aspect
+        # ratio, never on the height we happen to have. So a change to it -
+        # a resized column, a semicircle/full-plot switch, a zoom - is the
+        # one moment the plot may be entitled to more height than it has.
+        # Claim it then, and only then, so a separator the user dragged
+        # themselves is never pushed back.
+        if limit != self._last_height_limit_state:
+            self._last_height_limit_state = limit
+            self._claim_height_timer.start()
+
+    def _claim_useful_height(self):
+        """Take the height the plot can use, leaving the rest to the tabs.
+
+        Called when the useful height changed - a resized column, a
+        semicircle/full-plot switch, a zoom. The plot may now be entitled to
+        more height than the current split gives it, and Qt will not grow a
+        dock on its own. The maximum set by
+        :meth:`_update_useful_height_limit` keeps it from taking more.
+        """
+        if not self._spare_height_can_be_reused():
+            return
+        plotter_dock = self._find_plotter_dock()
+        with contextlib.suppress(AttributeError, RuntimeError):
+            # Height the dock needs to give the widget its full limit.
+            dock_chrome = max(plotter_dock.height() - self.height(), 0)
+            wanted = self.maximumHeight() + dock_chrome
+            if wanted <= plotter_dock.height():
+                return  # Already as tall as the plot can use.
+            shared = plotter_dock.height() + self._analysis_dock.height()
+            self.viewer.window._qt_window.resizeDocks(
+                [plotter_dock, self._analysis_dock],
+                [wanted, max(shared - wanted, 1)],
+                Qt.Vertical,
+            )
 
     def _canvas_size_for_ratio(self, ratio, available_w, available_h):
         """Return the (width, height) for the canvas widget.
@@ -3825,6 +3978,7 @@ class PlotterWidget(QWidget):
             if hasattr(self, 'canvas_widget'):
                 self.canvas_widget._on_escape(None)
             self.selection_tab.clear_artists()
+            self._clear_manual_selection_coloring()
         if hasattr(self, 'components_tab'):
             self.components_tab.clear_artists()
         if hasattr(self, 'fret_tab'):
@@ -3841,23 +3995,49 @@ class PlotterWidget(QWidget):
             if hasattr(self.selection_tab, 'is_manual_selection_mode'):
                 is_manual = self.selection_tab.is_manual_selection_mode()
                 self._set_selection_visibility(is_manual)
-                self._set_selection_cursors_visibility(True)
             else:
                 self._set_selection_visibility(True)
+            self._set_selection_cursors_visibility(True)
         elif current_tab == getattr(self, 'components_tab', None):
             self._set_components_visibility(True)
         elif current_tab == getattr(self, 'fret_tab', None):
             self._set_fret_visibility(True)
 
+    def _clear_manual_selection_coloring(self):
+        """Remove manual selection coloring from the phasor plot."""
+        if hasattr(self, 'canvas_widget'):
+            cw = self.canvas_widget
+            old_updating = getattr(self, '_updating_plot', False)
+            self._updating_plot = True
+            try:
+                for artist in getattr(cw, 'artists', {}).values():
+                    if hasattr(artist, 'color_indices'):
+                        current_ci = getattr(artist, '_color_indices', None)
+                        if current_ci is not None:
+                            if isinstance(current_ci, (int, np.integer)):
+                                if current_ci != 0:
+                                    artist.color_indices = 0
+                            else:
+                                artist.color_indices = 0
+                self._last_histogram_color_indices = None
+                self._last_scatter_color_indices = None
+            finally:
+                self._updating_plot = old_updating
+            if hasattr(cw, 'figure') and hasattr(cw.figure, 'canvas'):
+                cw.figure.canvas.draw_idle()
+
     def _set_selection_visibility(self, visible):
         """Set visibility of selection toolbar."""
         if hasattr(self, 'selection_tab'):
-            layout = self.canvas_widget.selection_tools_layout
-            for i in range(layout.count()):
-                item = layout.itemAt(i)
-                widget = item.widget()
-                if widget is not None:
-                    widget.setVisible(visible)
+            layout = getattr(
+                self.canvas_widget, 'selection_tools_layout', None
+            )
+            if layout is not None:
+                for i in range(layout.count()):
+                    item = layout.itemAt(i)
+                    widget = item.widget()
+                    if widget is not None:
+                        widget.setVisible(visible)
 
     def _set_selection_cursors_visibility(self, visible):
         """Set visibility of cursor patches based on current selection mode."""
@@ -3874,15 +4054,15 @@ class PlotterWidget(QWidget):
                 elif mode_idx == 1:
                     w_auto.redraw_all_patches()
                 elif mode_idx == 2:
+                    if hasattr(self.selection_tab, '_update_manual_colormaps'):
+                        self.selection_tab._update_manual_colormaps()
                     self.selection_tab.update_phasor_plot_with_selection_id(
                         self.selection_tab.selection_id
                     )
             else:
                 w_cursor.clear_all_patches()
                 w_auto.clear_all_patches()
-                # Clear manual selection from plot when not visible
-                if mode_idx == 2:
-                    self.plot(selection_id_data=None)
+                self._clear_manual_selection_coloring()
 
     def _set_components_visibility(self, visible):
         """Set visibility of components tab artists."""
@@ -3947,6 +4127,9 @@ class PlotterWidget(QWidget):
         'hide' button (which emits visibilityChanged) and the 'close X'
         button (which destroys the dock without emitting any signal).
         """
+        if self._plotter_dock_ref is None:
+            self._track_plotter_dock()
+
         if not getattr(self, '_docks_initialized', False):
             return
 
@@ -3955,6 +4138,10 @@ class PlotterWidget(QWidget):
                 return not getattr(self, attr).isVisible()
             except (AttributeError, RuntimeError):
                 return True
+
+        # napari re-applies its Maximum vertical policy every time a widget
+        # is docked, so re-assert ours here (no-op when already correct).
+        self._restore_expanding_dock_policies()
 
         analysis_hidden = _is_hidden('_analysis_dock')
         histogram_hidden = _is_hidden('_histogram_dock')
@@ -4333,8 +4520,10 @@ class PlotterWidget(QWidget):
             for k, v in (self._contour_group_styles or {}).items()
         }
 
-        # Fall back to per-layer group metadata when no assignments exist yet
-        if not current_assignments and selected_names:
+        # Per-layer group metadata is the shared source of truth: a grouping
+        # made in a histogram tab (or restored from a saved file) shows up
+        # here, and vice versa.
+        if selected_names:
             meta_a, meta_n, meta_c, meta_s = (
                 build_group_styles_from_layer_metadata(
                     self.viewer, selected_names
@@ -4484,8 +4673,10 @@ class PlotterWidget(QWidget):
             for k, v in (self._phasor_center_group_names or {}).items()
         }
 
-        # Fall back to per-layer group metadata when no assignments exist yet
-        if not current_assignments and selected_names:
+        # Per-layer group metadata is the shared source of truth: a grouping
+        # made in a histogram tab (or in the contour dialog) shows up here,
+        # and vice versa.
+        if selected_names:
             meta_a, meta_n, meta_c = build_groups_from_layer_metadata(
                 self.viewer, selected_names
             )
@@ -4554,6 +4745,20 @@ class PlotterWidget(QWidget):
         """Show/hide configure button based on toggle state."""
         enabled = self._phasor_center_enabled
         self.plotter_inputs_widget.pc_configure_button.setVisible(enabled)
+
+    def _clear_phasor_center_statistics(self):
+        """Empty the phasor center statistics tables and redraw the canvas.
+
+        Tolerates being called before the statistics dock exists, which
+        happens while the widget is still being built.
+        """
+        stats_widget = getattr(self, '_phasor_center_stats_widget', None)
+        if stats_widget is not None:
+            with contextlib.suppress(RuntimeError):
+                stats_widget.update_centers({})
+                stats_widget.update_group_centers({})
+        with contextlib.suppress(AttributeError, RuntimeError):
+            self.canvas_widget.figure.canvas.draw_idle()
 
     def _clear_phasor_center_artists(self):
         """Remove all phasor center artists from the axes."""
@@ -4752,16 +4957,51 @@ class PlotterWidget(QWidget):
         write_rows_to_csv(file_path, rows)
         notifications.show_info(f"Phasor centers saved to {file_path}")
 
+    def _warn_unassigned_layers(self, what, unassigned):
+        """Notify once about layers excluded from *what* for having no group.
+
+        Grouped plots skip layers with no group assignment instead of
+        silently folding them into the first group, so the user is told
+        which layers dropped out. The warning is repeated only when the set
+        of excluded layers changes, since plots redraw constantly.
+
+        Parameters
+        ----------
+        what : str
+            Name of the grouped output, e.g. ``"contour plot"``.
+        unassigned : list of str
+            Layer names left out of every group.
+        """
+        key = tuple(sorted(unassigned))
+        if not key:
+            self._warned_unassigned.pop(what, None)
+            return
+        if self._warned_unassigned.get(what) == key:
+            return
+        self._warned_unassigned[what] = key
+        notifications.show_warning(
+            f"Not assigned to any group, excluded from the {what}: "
+            + ", ".join(key)
+        )
+
     def _update_phasor_centers(self):
-        """Calculate and plot phasor center dots on the axes."""
+        """Recompute the phasor center dots for the current selection.
+
+        Called on every plot refresh — including when centers are disabled or
+        nothing is selected — so a dot never outlives the layers it was
+        computed from. A group whose layers have all been unchecked in
+        *Phasor Layers* therefore loses its dot and its statistics row.
+        """
         self._clear_phasor_center_artists()
 
         if not self._phasor_center_enabled or not self.has_phasor_data():
+            self._clear_phasor_center_statistics()
             return
 
         ax = self.canvas_widget.axes
         selected_layers = self.get_selected_layers()
         if not selected_layers:
+            self._clear_phasor_center_statistics()
             return
 
         has_multiple = len(selected_layers) > 1
@@ -4784,9 +5024,7 @@ class PlotterWidget(QWidget):
                 layer_centers[layer.name] = result
 
         if not layer_centers:
-            self._phasor_center_stats_widget.update_centers({})
-            self._phasor_center_stats_widget.update_group_centers({})
-            self.canvas_widget.figure.canvas.draw_idle()
+            self._clear_phasor_center_statistics()
             return
 
         default_tab10 = plt.cm.tab10.colors
@@ -4866,10 +5104,16 @@ class PlotterWidget(QWidget):
                 )
 
         elif display_mode == "Grouped":
-            grouped = {}
-            for name in layer_centers:
-                gid = int(self._phasor_center_group_assignments.get(name, 1))
-                grouped.setdefault(gid, []).append(name)
+            # Layers with no assignment take part in no group: pooling them
+            # into group 1 would silently shift its centre.
+            grouped_items, unassigned = split_items_by_group(
+                layer_centers, self._phasor_center_group_assignments
+            )
+            grouped = {
+                int(gid): [name for name, _ in members]
+                for gid, members in grouped_items.items()
+            }
+            self._warn_unassigned_layers("phasor centers", unassigned)
 
             for gid in sorted(grouped):
                 group_label = self._phasor_center_group_names.get(
@@ -5078,6 +5322,9 @@ class PlotterWidget(QWidget):
         """
         widget = QWidget()
         outer = QGridLayout(widget)
+        # The tab page already provides the margin; a second one here would
+        # only shrink the scroll area (see ``_compact_analysis_tab_margins``).
+        outer.setContentsMargins(0, 0, 0, 0)
 
         scroll_area = QScrollArea()
         scroll_area.setMinimumHeight(120)
@@ -5126,6 +5373,7 @@ class PlotterWidget(QWidget):
         widget.marker_color_button = QPushButton()
         widget.marker_color_button.setMinimumSize(20, 20)
         widget.marker_color_button.setMaximumSize(20, 20)
+        widget.marker_color_button.setStyleSheet("background-color: #1f77b4;")
 
         widget.label_marker_alpha = QLabel("Alpha:")
         widget.marker_alpha_spinbox = QDoubleSpinBox()
@@ -5480,11 +5728,27 @@ class PlotterWidget(QWidget):
 
         new_cmap = ListedColormap([current_color])
 
-        self.canvas_widget.artists['SCATTER'].overlay_colormap = new_cmap
-        self.canvas_widget.artists['SCATTER']._colorize(
-            self.canvas_widget.artists['SCATTER'].color_indices
-        )
-        self.canvas_widget.figure.canvas.draw_idle()
+        if hasattr(self, 'canvas_widget') and self.canvas_widget is not None:
+            scatter_artist = self.canvas_widget.artists.get('SCATTER')
+            if scatter_artist is not None:
+                scatter_artist.color = current_color
+                if (
+                    not hasattr(self, '_last_scatter_color_indices')
+                    or self._last_scatter_color_indices is None
+                    or (
+                        isinstance(
+                            self._last_scatter_color_indices,
+                            (int, np.integer),
+                        )
+                        and self._last_scatter_color_indices == 0
+                    )
+                ):
+                    scatter_artist.overlay_colormap = new_cmap
+                scatter_artist._colorize(scatter_artist.color_indices)
+            if hasattr(self.canvas_widget, 'figure') and hasattr(
+                self.canvas_widget.figure, 'canvas'
+            ):
+                self.canvas_widget.figure.canvas.draw_idle()
 
     def _on_colormap_changed(self):
         """Callback for colormap change."""
@@ -6180,9 +6444,27 @@ class PlotterWidget(QWidget):
             return
 
         circle_plot_limits = [-1, 1, -1, 1]  # xmin, xmax, ymin, ymax
-        if self.canvas_widget.artists['HISTOGRAM2D'].histogram is not None:
-            x_edges = self.canvas_widget.artists['HISTOGRAM2D'].histogram[1]
-            y_edges = self.canvas_widget.artists['HISTOGRAM2D'].histogram[2]
+        active_hist = None
+        if (
+            self.plot_type == 'CONTOUR'
+            and 'CONTOUR' in self.canvas_widget.artists
+            and self.canvas_widget.artists['CONTOUR'].histogram is not None
+        ):
+            active_hist = self.canvas_widget.artists['CONTOUR'].histogram
+        elif (
+            'HISTOGRAM2D' in self.canvas_widget.artists
+            and self.canvas_widget.artists['HISTOGRAM2D'].histogram is not None
+        ):
+            active_hist = self.canvas_widget.artists['HISTOGRAM2D'].histogram
+        elif (
+            'CONTOUR' in self.canvas_widget.artists
+            and self.canvas_widget.artists['CONTOUR'].histogram is not None
+        ):
+            active_hist = self.canvas_widget.artists['CONTOUR'].histogram
+
+        if active_hist is not None:
+            x_edges = active_hist[1]
+            y_edges = active_hist[2]
             plotted_data_limits = [
                 x_edges[0],
                 x_edges[-1],
@@ -6353,6 +6635,25 @@ class PlotterWidget(QWidget):
         """Sets the histogram log scale from the histogram log scale checkbox."""
         self.plotter_inputs_widget.log_scale_checkbox.setChecked(value)
 
+    @property
+    def _contour_collections(self) -> list[Any]:
+        """Return active contour collections, delegating to CONTOUR artist if present."""
+        contour_artist = getattr(
+            getattr(self, "canvas_widget", None), "artists", {}
+        ).get("CONTOUR")
+        if contour_artist is not None:
+            return contour_artist._contour_collections
+        return getattr(self, "_contour_collections_storage", [])
+
+    @_contour_collections.setter
+    def _contour_collections(self, value: list[Any]):
+        self._contour_collections_storage = value
+        contour_artist = getattr(
+            getattr(self, "canvas_widget", None), "artists", {}
+        ).get("CONTOUR")
+        if contour_artist is not None and not value:
+            contour_artist._contour_collections.clear()
+
     def _enforce_axes_aspect(self):
         """Ensure the axes aspect is set to 'box' after artist redraws."""
         self._redefine_axes_limits()
@@ -6361,11 +6662,21 @@ class PlotterWidget(QWidget):
         self.canvas_widget.figure.canvas.draw_idle()
 
     def _connect_selector_signals(self):
-        """Connect selection applied signal from all selectors to enforce axes aspect."""
+        """Connect selection applied signal from all selectors to enforce axes aspect and track selection."""
         for selector in self.canvas_widget.selectors.values():
             selector.selection_applied_signal.connect(
-                self._enforce_axes_aspect
+                self._on_selector_applied
             )
+
+    def _on_selector_applied(self, color_indices):
+        """Track color indices applied by canvas selectors and enforce aspect."""
+        if self.plot_type == 'HISTOGRAM2D':
+            self._last_histogram_color_indices = color_indices
+        elif self.plot_type == 'SCATTER':
+            self._last_scatter_color_indices = color_indices
+        elif self.plot_type == 'CONTOUR':
+            self._last_contour_color_indices = color_indices
+        self._enforce_axes_aspect()
 
     def _connect_active_artist_signals(self):
         """Connect signals for the currently active artist only."""
@@ -6383,22 +6694,27 @@ class PlotterWidget(QWidget):
             ].color_indices_changed_signal.connect(
                 self.selection_tab.manual_selection_changed
             )
+        elif (
+            self.plot_type == 'CONTOUR'
+            and 'CONTOUR' in self.canvas_widget.artists
+        ):
+            self.canvas_widget.artists[
+                'CONTOUR'
+            ].color_indices_changed_signal.connect(
+                self.selection_tab.manual_selection_changed
+            )
 
     def _disconnect_all_artist_signals(self):
         """Disconnect all artist signals to prevent conflicts."""
-        with contextlib.suppress(TypeError, AttributeError):
-            self.canvas_widget.artists[
-                'SCATTER'
-            ].color_indices_changed_signal.disconnect(
-                self.selection_tab.manual_selection_changed
-            )
-
-        with contextlib.suppress(TypeError, AttributeError):
-            self.canvas_widget.artists[
-                'HISTOGRAM2D'
-            ].color_indices_changed_signal.disconnect(
-                self.selection_tab.manual_selection_changed
-            )
+        for key in ('SCATTER', 'HISTOGRAM2D', 'CONTOUR'):
+            artist = getattr(
+                getattr(self, 'canvas_widget', None), 'artists', {}
+            ).get(key)
+            if artist is not None:
+                with contextlib.suppress(TypeError, AttributeError):
+                    artist.color_indices_changed_signal.disconnect(
+                        self.selection_tab.manual_selection_changed
+                    )
 
     def _notify_tabs_of_renamed_layers(self, renamed_images: dict):
         """Notify all tabs and histogram widgets that image layers were renamed."""
@@ -6783,6 +7099,7 @@ class PlotterWidget(QWidget):
             self._g_original_array = None
             self._s_original_array = None
             self._harmonics_array = None
+            self._phasor_layer_ndim = None
             self._refresh_timelapse_controls()
             for artist in self.canvas_widget.artists.values():
                 artist._remove_artists()
@@ -6828,6 +7145,7 @@ class PlotterWidget(QWidget):
         self._g_original_array = layer_metadata.get("G_original")
         self._s_original_array = layer_metadata.get("S_original")
         self._harmonics_array = layer_metadata.get("harmonics")
+        self._phasor_layer_ndim = layer.data.ndim
 
         self._update_harmonic_bounds(selected_layers)
 
@@ -6939,6 +7257,9 @@ class PlotterWidget(QWidget):
                 if self.plot_type == 'CONTOUR':
                     self._clear_contour_plot()
                     self.canvas_widget.figure.canvas.draw_idle()
+                # No layer is selected, so no center can be: drop the dots
+                # instead of returning before the plot would refresh them.
+                self._update_phasor_centers()
                 return
 
             self._update_harmonic_bounds(selected_layers)
@@ -7738,6 +8059,7 @@ class PlotterWidget(QWidget):
         self._g_original_array = layer_metadata.get("G_original")
         self._s_original_array = layer_metadata.get("S_original")
         self._harmonics_array = layer_metadata.get("harmonics")
+        self._phasor_layer_ndim = layer.data.ndim
 
         if self._harmonics_array is not None:
             self._harmonics_array = np.atleast_1d(self._harmonics_array)
@@ -7822,7 +8144,10 @@ class PlotterWidget(QWidget):
             return None
 
         shape = self._g_array.shape
-        if self._harmonics_array is not None:
+        if (
+            self._harmonics_array is not None
+            and self._g_array.ndim > self._phasor_layer_ndim
+        ):
             return shape[1:]
         return shape
 
@@ -7863,7 +8188,10 @@ class PlotterWidget(QWidget):
                 return None, None, None
             return None, None
 
-        if self._harmonics_array is not None:
+        if (
+            self._harmonics_array is not None
+            and self._g_array.ndim > self._phasor_layer_ndim
+        ):
             g = self._g_array[harmonic_idx]
             s = self._s_array[harmonic_idx]
         else:
@@ -8240,7 +8568,7 @@ class PlotterWidget(QWidget):
         """
         saved = {"axes": [], "colorbar": None}
 
-        for key in ("HISTOGRAM2D", "SCATTER"):
+        for key in ("HISTOGRAM2D", "SCATTER", "CONTOUR"):
             artist = self.canvas_widget.artists.get(key)
             if artist is None:
                 continue
@@ -8302,7 +8630,7 @@ class PlotterWidget(QWidget):
 
     def _apply_plot_colors(self, color):
         """Set spines, labels, ticks, and colorbar elements to *color*."""
-        for key in ("HISTOGRAM2D", "SCATTER"):
+        for key in ("HISTOGRAM2D", "SCATTER", "CONTOUR"):
             artist = self.canvas_widget.artists.get(key)
             if artist is None:
                 continue
@@ -8439,12 +8767,15 @@ class PlotterWidget(QWidget):
         self.canvas_widget.artists['SCATTER'].data = plot_data
 
         # Setting data causes biaplotter to reset size and alpha to default values
-        # Re-apply the user's chosen size and alpha
+        # Re-apply the user's chosen size, alpha, and color
         self.canvas_widget.artists['SCATTER'].size = (
             self.plotter_inputs_widget.marker_size_spinbox.value()
         )
         self.canvas_widget.artists['SCATTER'].alpha = (
             self.plotter_inputs_widget.marker_alpha_spinbox.value()
+        )
+        self.canvas_widget.artists['SCATTER'].color = getattr(
+            self, '_marker_color', '#1f77b4'
         )
 
         # Only update color_indices if changed
@@ -8607,29 +8938,32 @@ class PlotterWidget(QWidget):
 
     def _clear_contour_plot(self):
         """Clear all contour collections from the plot."""
-        # Clear tracked collections
-        for c in getattr(self, '_contour_collections', []):
-            with contextlib.suppress(Exception):
-                c.remove()
-                # Fallback for older Matplotlib versions if remove fails
-            with contextlib.suppress(Exception):
-                if hasattr(c, 'collections'):
-                    for col in c.collections:
-                        col.remove()
-        self._contour_collections = []
-
-        # Cleanup ANY lingering contour elements in the axes using labels
-        ax = self.canvas_widget.axes
-        for artist in list(ax.collections):
-            if artist.get_label() == 'contour_plot_element':
+        contour_artist = getattr(
+            getattr(self, "canvas_widget", None), "artists", {}
+        ).get("CONTOUR")
+        if contour_artist is not None:
+            contour_artist._remove_artists()
+        else:
+            # Fallback cleanup for older or mock contexts
+            for c in getattr(self, "_contour_collections", []):
                 with contextlib.suppress(Exception):
-                    artist.remove()
+                    c.remove()
+                with contextlib.suppress(Exception):
+                    if hasattr(c, "collections"):
+                        for col in c.collections:
+                            col.remove()
+            ax = getattr(getattr(self, "canvas_widget", None), "axes", None)
+            if ax is not None:
+                for artist in list(ax.collections):
+                    if artist.get_label() == "contour_plot_element":
+                        with contextlib.suppress(Exception):
+                            artist.remove()
+                legend = ax.get_legend()
+                if legend is not None:
+                    with contextlib.suppress(Exception):
+                        legend.remove()
 
-        legend = ax.get_legend()
-        if legend is not None:
-            with contextlib.suppress(Exception):
-                legend.remove()
-
+        self._contour_collections = []
         self._remove_colorbar()
 
     def _resolve_contour_colormap(self):
@@ -8736,8 +9070,11 @@ class PlotterWidget(QWidget):
 
     def _update_contour_plot(self, x_data, y_data, selection_id_data=None):
         """Update or create the contour plot."""
-        ax = self.canvas_widget.axes
-        self._clear_contour_plot()
+        contour_artist = getattr(
+            getattr(self, "canvas_widget", None), "artists", {}
+        ).get("CONTOUR")
+        if contour_artist is None:
+            return
 
         levels = self.plotter_inputs_widget.contour_levels_spinbox.value()
         linewidths = (
@@ -8750,17 +9087,22 @@ class PlotterWidget(QWidget):
 
         bins = self.plotter_inputs_widget.number_of_bins_spinbox.value()
 
-        range_xlim = ax.get_xlim()
-        range_ylim = ax.get_ylim()
+        range_xlim = self.canvas_widget.axes.get_xlim()
+        range_ylim = self.canvas_widget.axes.get_ylim()
 
         # Calculate aspect maintaining bins similar to histogram
-        aspect = (range_xlim[1] - range_xlim[0]) / (
-            range_ylim[1] - range_ylim[0]
+        aspect = (range_xlim[1] - range_xlim[0]) / max(
+            range_ylim[1] - range_ylim[0], 1e-6
         )
         if aspect > 1:
-            bins = (bins, max(int(bins / aspect), 1))
+            bins_xy = (bins, max(int(bins / aspect), 1))
         else:
-            bins = (max(int(bins * aspect), 1), bins)
+            bins_xy = (max(int(bins * aspect), 1), bins)
+
+        contour_artist.bins = bins_xy
+        contour_artist.levels = levels
+        contour_artist.linewidths = linewidths
+        contour_artist.log_norm = use_log_norm
 
         layer_data = self._get_selected_layer_feature_map()
         has_multiple_layers = len(layer_data) > 1
@@ -8768,24 +9110,10 @@ class PlotterWidget(QWidget):
             self._contour_display_mode if has_multiple_layers else "Merged"
         )
 
-        def _tag_contour_set(cs_obj, label):
-            with contextlib.suppress(Exception):
-                if hasattr(cs_obj, 'collections'):
-                    for col in cs_obj.collections:
-                        col.set_label('contour_plot_element')
-                else:
-                    cs_obj.set_label('contour_plot_element')
-                if label:
-                    cs_obj.collections[0].set_label(label)
-
         if display_mode == "Merged" or not has_multiple_layers:
-            h, xedges, yedges = self._compute_contour_histogram(
-                x_data, y_data, bins, range_xlim, range_ylim
-            )
-
             merged_cmap = cmap
             if has_multiple_layers:
-                if self._contour_merged_style == 'solid':
+                if self._contour_merged_style == "solid":
                     merged_cmap = self._make_solid_contour_cmap(
                         "merged_solid",
                         self._contour_merged_color,
@@ -8797,7 +9125,7 @@ class PlotterWidget(QWidget):
                     if resolved is not None:
                         merged_cmap = resolved
             else:
-                if self._single_contour_style == 'solid':
+                if self._single_contour_style == "solid":
                     merged_cmap = self._make_solid_contour_cmap(
                         "single_solid",
                         self._single_contour_color,
@@ -8811,203 +9139,113 @@ class PlotterWidget(QWidget):
                     if resolved is not None:
                         merged_cmap = resolved
 
-            cs = ax.contour(
-                xedges,
-                yedges,
-                h.T,
-                levels=levels,
-                linewidths=linewidths,
-                cmap=merged_cmap,
-                norm='log' if use_log_norm else None,
+            contour_artist.colormap = merged_cmap
+            plot_data = np.column_stack((x_data, y_data))
+            contour_artist.data = plot_data
+            self._contour_collections = list(
+                contour_artist._contour_collections
             )
-            _tag_contour_set(cs, None)
-            self._contour_collections.append(cs)
-            legend = ax.get_legend()
+            legend = self.canvas_widget.axes.get_legend()
             if legend is not None:
                 with contextlib.suppress(Exception):
                     legend.remove()
             return
 
-        # No colorbar for multi-series rendering; use legend instead.
+        # Multi-series (Individual layers or Grouped): remove colorbar
         self._remove_colorbar()
 
         if display_mode == "Individual layers":
             items = list(layer_data.items())
             default_colors = self._sample_colors_from_cmap(cmap, len(items))
-            legend_handles = []
-            legend_labels = []
-
+            grouped_dict = {}
+            styles_dict = {}
+            group_names = {}
             for idx, (name, (lx, ly)) in enumerate(items):
-                h, xedges, yedges = self._compute_contour_histogram(
-                    lx, ly, bins, range_xlim, range_ylim
-                )
-
-                style = self._contour_layer_styles.get(name, {})
+                grouped_dict[name] = (lx, ly)
+                group_names[name] = name
+                style = dict(self._contour_layer_styles.get(name, {}))
                 style_mode = style.get("mode")
                 if style_mode not in ("colormap", "solid"):
                     style_mode = "colormap"
-
                 if style_mode == "colormap":
                     style_cmap_name = style.get(
                         "colormap", self._contour_multi_layer_colormap
                     )
-                    style_cmap = resolve_colormap_by_name(style_cmap_name)
-                    if style_cmap is None:
-                        style_cmap = cmap
-                    cs = ax.contour(
-                        xedges,
-                        yedges,
-                        h.T,
-                        levels=levels,
-                        linewidths=linewidths,
-                        cmap=style_cmap,
-                        norm='log' if use_log_norm else None,
-                    )
-                    legend_handles.append(
-                        ColormapLegendProxy(
-                            style_cmap,
-                            linewidths,
-                            style="categorical",
-                            n_colors=max(int(levels), 2),
-                        )
-                    )
+                    styles_dict[name] = {
+                        "mode": "colormap",
+                        "colormap": style_cmap_name,
+                    }
                 else:
                     custom = style.get(
                         "color", self._contour_layer_colors.get(name)
                     )
                     if custom is None:
                         custom = default_colors[idx]
-                    color = self._normalize_rgb(custom)
-                    solid_cmap = self._make_solid_contour_cmap(
-                        f"solid_{name}", color
-                    )
-                    cs = ax.contour(
-                        xedges,
-                        yedges,
-                        h.T,
-                        levels=levels,
-                        linewidths=linewidths,
-                        cmap=solid_cmap,
-                        norm='log' if use_log_norm else None,
-                    )
-                    legend_handles.append(
-                        ColormapLegendProxy(
-                            solid_cmap,
-                            linewidths,
-                            style="categorical",
-                            n_colors=max(int(levels), 2),
-                        )
-                    )
+                    styles_dict[name] = {"mode": "solid", "color": custom}
 
-                _tag_contour_set(cs, name)
-                self._contour_collections.append(cs)
-                legend_labels.append(name)
-
-            if self._contour_show_legend and legend_handles:
-                ax.legend(
-                    handles=legend_handles,
-                    labels=legend_labels,
-                    loc='upper right',
-                    frameon=False,
-                    handler_map={ColormapLegendProxy: ColormapLegendHandler()},
-                )
+            contour_artist.colormap = cmap
+            contour_artist.set_grouped_data(
+                grouped_dict=grouped_dict,
+                styles_dict=styles_dict,
+                group_names=group_names,
+                show_legend=self._contour_show_legend,
+            )
+            self._contour_collections = list(
+                contour_artist._contour_collections
+            )
             return
 
         # Grouped mode
-        grouped_data = {}
-        for layer_name, (lx, ly) in layer_data.items():
-            gid = int(self._contour_group_assignments.get(layer_name, 1))
-            grouped_data.setdefault(gid, []).append((layer_name, lx, ly))
-
+        grouped_items, unassigned = split_items_by_group(
+            layer_data, self._contour_group_assignments
+        )
+        grouped_data = {
+            int(gid): [(name, lx, ly) for name, (lx, ly) in members]
+            for gid, members in grouped_items.items()
+        }
+        self._warn_unassigned_layers("contour plot", unassigned)
         group_ids = sorted(grouped_data)
         default_colors = self._sample_colors_from_cmap(cmap, len(group_ids))
-        legend_handles = []
-        legend_labels = []
-
+        grouped_dict = {}
+        styles_dict = {}
+        group_names = {}
         for idx, gid in enumerate(group_ids):
-            group_label = self._contour_group_names.get(gid, f"Group {gid}")
-            style = self._contour_group_styles.get(gid, {})
+            members = grouped_data[gid]
+            if not members:
+                continue
+            gx_all = np.concatenate([gx for _, gx, _ in members])
+            gy_all = np.concatenate([gy for _, _, gy in members])
+            grouped_dict[int(gid)] = (gx_all, gy_all)
+            label = self._contour_group_names.get(int(gid), f"Group {gid}")
+            group_names[int(gid)] = label
+            style = dict(self._contour_group_styles.get(int(gid), {}))
             style_mode = style.get("mode")
             if style_mode not in ("colormap", "solid"):
                 style_mode = "colormap"
-
-            style_cmap = None
-            color = None
             if style_mode == "colormap":
                 style_cmap_name = style.get(
                     "colormap", self._contour_multi_layer_colormap
                 )
-                style_cmap = resolve_colormap_by_name(style_cmap_name)
-                if style_cmap is None:
-                    style_cmap = cmap
-                legend_handles.append(
-                    ColormapLegendProxy(
-                        style_cmap,
-                        linewidths,
-                        style="categorical",
-                        n_colors=max(int(levels), 2),
-                    )
-                )
+                styles_dict[int(gid)] = {
+                    "mode": "colormap",
+                    "colormap": style_cmap_name,
+                }
             else:
                 custom = style.get(
-                    "color", self._contour_group_colors.get(gid)
+                    "color", self._contour_group_colors.get(int(gid))
                 )
                 if custom is None:
                     custom = default_colors[idx]
-                color = self._normalize_rgb(custom)
-                solid_cmap = self._make_solid_contour_cmap(
-                    f"solid_group_{gid}", color
-                )
-                legend_handles.append(
-                    ColormapLegendProxy(
-                        solid_cmap,
-                        linewidths,
-                        style="categorical",
-                        n_colors=max(int(levels), 2),
-                    )
-                )
+                styles_dict[int(gid)] = {"mode": "solid", "color": custom}
 
-            gx_all = np.concatenate([gx for _, gx, _ in grouped_data[gid]])
-            gy_all = np.concatenate([gy for _, _, gy in grouped_data[gid]])
-
-            h, xedges, yedges = self._compute_contour_histogram(
-                gx_all, gy_all, bins, range_xlim, range_ylim
-            )
-
-            if style_mode == "colormap":
-                cs = ax.contour(
-                    xedges,
-                    yedges,
-                    h.T,
-                    levels=levels,
-                    linewidths=linewidths,
-                    cmap=style_cmap,
-                    norm='log' if use_log_norm else None,
-                )
-            else:
-                cs = ax.contour(
-                    xedges,
-                    yedges,
-                    h.T,
-                    levels=levels,
-                    linewidths=linewidths,
-                    cmap=solid_cmap,
-                    norm='log' if use_log_norm else None,
-                )
-
-            _tag_contour_set(cs, group_label)
-            self._contour_collections.append(cs)
-
-            legend_labels.append(group_label)
-
-        if self._contour_show_legend and legend_handles:
-            ax.legend(
-                handles=legend_handles,
-                labels=legend_labels,
-                loc='upper right',
-                frameon=False,
-                handler_map={ColormapLegendProxy: ColormapLegendHandler()},
-            )
+        contour_artist.colormap = cmap
+        contour_artist.set_grouped_data(
+            grouped_dict=grouped_dict,
+            styles_dict=styles_dict,
+            group_names=group_names,
+            show_legend=self._contour_show_legend,
+        )
+        self._contour_collections = list(contour_artist._contour_collections)
 
     def _update_colorbar(self, colormap=None, mappable=None, label=None):
         """Update or create colorbar for the current plot."""
@@ -9146,9 +9384,11 @@ class PlotterWidget(QWidget):
         self._enforce_axes_aspect()
         self._update_plot_bg_color()
 
-        # Update phasor center dots if enabled
-        if self._phasor_center_enabled:
-            self._update_phasor_centers()
+        # Always refresh the phasor centers, even when they are switched off:
+        # the dots drawn for a previous selection have to be cleared, not left
+        # behind. ``_update_phasor_centers`` no-ops beyond that clean-up when
+        # centers are disabled.
+        self._update_phasor_centers()
 
     def plot(self, x_data=None, y_data=None, selection_id_data=None):
         """Plot the selected phasor features efficiently."""
@@ -9251,60 +9491,54 @@ class PlotterWidget(QWidget):
         """Set the active artist and update only the relevant plot."""
         if len(x_data) == 0 or len(y_data) == 0:
             return
-        if plot_type != self.plot_type:
-            self.plotter_inputs_widget.plot_type_combobox.blockSignals(True)
-            display_name = self.PLOT_TYPE_DISPLAY_NAMES.get(
-                plot_type, plot_type
-            )
-            self.plotter_inputs_widget.plot_type_combobox.setCurrentText(
-                display_name
-            )
-            self.plotter_inputs_widget.plot_type_combobox.blockSignals(False)
-            self._connect_active_artist_signals()
 
-        # Make sure biaplotter artists are hidden if switching to CONTOUR or NONE
-        current_active = getattr(self.canvas_widget, 'active_artist', None)
+        old_updating = getattr(self, '_updating_plot', False)
+        self._updating_plot = True
+        try:
+            if plot_type != self.plot_type:
+                self.plotter_inputs_widget.plot_type_combobox.blockSignals(
+                    True
+                )
+                display_name = self.PLOT_TYPE_DISPLAY_NAMES.get(
+                    plot_type, plot_type
+                )
+                self.plotter_inputs_widget.plot_type_combobox.setCurrentText(
+                    display_name
+                )
+                self.plotter_inputs_widget.plot_type_combobox.blockSignals(
+                    False
+                )
+                self._connect_active_artist_signals()
 
-        if plot_type in ('CONTOUR', 'NONE'):
-            for _name, artist in getattr(
-                self.canvas_widget, 'artists', {}
-            ).items():
-                if hasattr(artist, 'visible'):
-                    artist.visible = False
-            with contextlib.suppress(AttributeError, TypeError):
-                # Fallback for biaplotter < 0.4.2 which doesn't support None
+            current_active = getattr(self.canvas_widget, 'active_artist', None)
+
+            if plot_type != 'CONTOUR':
+                # Hide contour items when switching away (including to NONE)
+                self._clear_contour_plot()
+                self.canvas_widget.figure.canvas.draw_idle()
+
+            if plot_type == 'HISTOGRAM2D':
+                self._update_histogram_plot(x_data, y_data, selection_id_data)
+            elif plot_type == 'SCATTER':
+                self._remove_colorbar()
+                self._update_scatter_plot(x_data, y_data, selection_id_data)
+            elif plot_type == 'CONTOUR':
+                self._update_contour_plot(x_data, y_data, selection_id_data)
+            elif plot_type == 'NONE':
+                self._remove_colorbar()
+
+            if plot_type in getattr(self.canvas_widget, 'artists', {}):
+                if current_active != plot_type:
+                    self.canvas_widget.active_artist = plot_type
+            else:
                 self.canvas_widget.active_artist = None
 
-        if plot_type != 'CONTOUR':
-            # Hide contour items when switching away (including to NONE)
-            self._clear_contour_plot()
-            self.canvas_widget.figure.canvas.draw_idle()
+            if plot_type not in getattr(self.canvas_widget, 'artists', {}):
+                return
 
-        if plot_type == 'HISTOGRAM2D':
-            self._update_histogram_plot(x_data, y_data, selection_id_data)
-        elif plot_type == 'SCATTER':
-            self._remove_colorbar()
-            self._update_scatter_plot(x_data, y_data, selection_id_data)
-        elif plot_type == 'CONTOUR':
-            self._update_contour_plot(x_data, y_data, selection_id_data)
-        elif plot_type == 'NONE':
-            self._remove_colorbar()
-
-        if plot_type in getattr(self.canvas_widget, 'artists', {}):
-            if current_active != plot_type:
-                self.canvas_widget.active_artist = plot_type
-        else:
-            # For CONTOUR or NONE, we might want to unset active_artist in biaplotter
-            with contextlib.suppress(AttributeError, TypeError):
-                self.canvas_widget.active_artist = None
-
-        if (
-            plot_type not in getattr(self.canvas_widget, 'artists', {})
-            and plot_type != 'CONTOUR'
-        ):
-            return
-
-        self._update_plot_elements()
+            self._update_plot_elements()
+        finally:
+            self._updating_plot = old_updating
 
     def set_colorbar_style(self, color="white", label=None, is_mapping=False):
         """Set the colorbar style in the canvas widget."""
@@ -9359,6 +9593,8 @@ class PlotterWidget(QWidget):
             self._bins_timer.stop()
         with contextlib.suppress(AttributeError):
             self._resize_canvas_timer.stop()
+        with contextlib.suppress(AttributeError):
+            self._claim_height_timer.stop()
         with contextlib.suppress(AttributeError, RuntimeError):
             self.frame_context.disconnect_viewer()
 
@@ -9381,6 +9617,10 @@ class PlotterWidget(QWidget):
             )
         with contextlib.suppress(TypeError, ValueError, AttributeError):
             self._bins_timer.timeout.disconnect(self._process_bins_change)
+        with contextlib.suppress(TypeError, ValueError, AttributeError):
+            self._claim_height_timer.timeout.disconnect(
+                self._claim_useful_height
+            )
 
         # Disconnect viewer layer events owned by this widget.
         with contextlib.suppress(TypeError, ValueError, AttributeError):
@@ -9466,18 +9706,41 @@ class PlotterWidget(QWidget):
         # inner widget has already been reparented/deleted, which double-frees
         # under PySide6 and segfaults the xdist worker at end-of-file teardown.
         window = getattr(self.viewer, 'window', None)
-        if window is not None:
-            for dock_attr in (
-                '_analysis_dock',
-                '_histogram_dock',
-                '_statistics_dock',
-            ):
-                dock = getattr(self, dock_attr, None)
-                if dock is not None:
+        for dock_attr in (
+            '_analysis_dock',
+            '_histogram_dock',
+            '_statistics_dock',
+        ):
+            dock = getattr(self, dock_attr, None)
+            if dock is not None:
+                with contextlib.suppress(
+                    Exception  # noqa: BLE001 - teardown best-effort
+                ):
+                    dock.close()
+                if window is not None:
                     with contextlib.suppress(
                         Exception  # noqa: BLE001 - teardown best-effort
                     ):
                         window.remove_dock_widget(dock)
-                    setattr(self, dock_attr, None)
+                setattr(self, dock_attr, None)
+
+        # Take the dock down too, so closing the plotter widget itself (not
+        # just its dock) leaves no empty panel behind. Deliberately resolved
+        # from the live parent chain rather than ``_plotter_dock_ref``: when
+        # this close came from ``changeEvent`` the widget is already
+        # unparented, meaning napari is mid-``remove_dock_widget`` and
+        # calling it again here would re-enter its teardown.
+        plotter_dock = self._find_plotter_dock()
+        if plotter_dock is not None:
+            with contextlib.suppress(
+                Exception  # noqa: BLE001 - teardown best-effort
+            ):
+                plotter_dock.close()
+            if window is not None:
+                with contextlib.suppress(
+                    Exception  # noqa: BLE001 - teardown best-effort
+                ):
+                    window.remove_dock_widget(plotter_dock)
+        self._plotter_dock_ref = None
 
         super().closeEvent(event)

@@ -24,6 +24,7 @@ from napari.utils.notifications import show_error, show_info
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QDoubleValidator, QIntValidator
 from qtpy.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QCompleter,
@@ -40,6 +41,13 @@ from qtpy.QtWidgets import (
 )
 from superqt import QRangeSlider
 
+from ._fbd import (
+    DEFAULT_CANDIDATES,
+    IOTECH,
+    find_reference_file,
+    match_reference_settings,
+    signal_from_fbd,
+)
 from ._reader import (
     _get_filename_extension,
     iter_index_mapping,
@@ -53,6 +61,7 @@ from ._utils import (
     FileOrderDialog,
     PopoutWindowMixin,
     natural_sort_key,
+    show_activity_progress,
 )
 from ._writer import export_layer_as_csv, export_layer_as_image, write_ome_tiff
 
@@ -1521,6 +1530,23 @@ def _try_get_z_spacing_from_ome_tiff(path):
         return None
 
 
+def _parse_optional(text, cast):
+    """Return `text` converted with `cast`, or None if it is not a value.
+
+    Option line edits are optional and validated as-you-type, so they can
+    hold an empty string or a partial number (``"-"``, ``"1e"``) when read.
+    """
+    if text is None:
+        return None
+    text = text.strip()
+    if not text:
+        return None
+    try:
+        return cast(text)
+    except (TypeError, ValueError):
+        return None
+
+
 def _default_axis_labels(ndim):
     """Return default axis labels for a given dimensionality."""
     if ndim == 2:
@@ -1745,6 +1771,11 @@ def _estimate_output_shape_from_options(
 class FbdWidget(AdvancedOptionsWidget):
     """Widget for FLIMbox FBD files."""
 
+    #: ``refine`` combobox indices mapped to the reader's ``refine`` value.
+    #: Index 0 ("Auto") is absent on purpose: leaving ``refine`` unset lets
+    #: the reader skip refining whenever an explicit laser factor is given.
+    REFINE_MODES = {1: True, 2: None, 3: False}
+
     def __init__(self, viewer, path):
         """Initialize the widget."""
         from fbdfile import FbdFile
@@ -1796,6 +1827,71 @@ class FbdWidget(AdvancedOptionsWidget):
         laser_layout.addStretch()
         self.mainLayout.addLayout(laser_layout)
 
+        iotech_layout = QHBoxLayout()
+        self.iotech_laser_factor = QCheckBox(
+            "Derive laser factor for SimFCS (IOTech)"
+        )
+        self.iotech_laser_factor.setToolTip(
+            "Compute the laser factor that reproduces SimFCS from the file "
+            "header, instead of using the number above. The correct number "
+            "differs between fbdfile releases, so prefer this."
+        )
+        self.iotech_laser_factor.toggled.connect(self._on_iotech_toggled)
+        iotech_layout.addWidget(self.iotech_laser_factor)
+        iotech_layout.addStretch()
+        self.mainLayout.addLayout(iotech_layout)
+
+        line_start_layout = QHBoxLayout()
+        line_start_layout.addWidget(QLabel("Line Start (optional): "))
+        self.scanner_line_start = QLineEdit()
+        self.scanner_line_start.setPlaceholderText("from header")
+        self.scanner_line_start.setToolTip(
+            "First valid pixel of the scan line. Leave empty to use the "
+            "header's x_starting_pixel. Files recorded with an IOTech "
+            "scanner card need an explicit value, because the header omits "
+            "the hardware trigger latency that SimFCS applies internally."
+        )
+        self.scanner_line_start.setValidator(
+            QIntValidator(0, 65535, self.scanner_line_start)
+        )
+        self.scanner_line_start.editingFinished.connect(
+            lambda: self._update_signal_plot()
+        )
+        line_start_layout.addWidget(self.scanner_line_start)
+        line_start_layout.addStretch()
+        self.mainLayout.addLayout(line_start_layout)
+
+        refine_layout = QHBoxLayout()
+        refine_layout.addWidget(QLabel("Refine settings: "))
+        self.refine = QComboBox()
+        self.refine.addItems(["Auto", "Always", "If needed", "Never"])
+        self.refine.setToolTip(
+            "Recompute pixel dwell time and laser factor from the detected "
+            "frame durations. Refining overwrites the laser factor above, so "
+            "'Auto' refines only when no laser factor is given."
+        )
+        self.refine.currentIndexChanged.connect(
+            lambda _: self._update_signal_plot()
+        )
+        refine_layout.addWidget(self.refine)
+        refine_layout.addStretch()
+        self.mainLayout.addLayout(refine_layout)
+
+        match_layout = QHBoxLayout()
+        self.match_reference_btn = QPushButton("Match SimFCS reference...")
+        self.match_reference_btn.setToolTip(
+            "Select the SimFCS R64/REF file exported for this acquisition "
+            "and search the laser factor and line start whose "
+            "reconstruction correlates best with it."
+        )
+        self.match_reference_btn.clicked.connect(self._on_match_reference)
+        match_layout.addWidget(self.match_reference_btn)
+        self.match_reference_label = QLabel("")
+        self.match_reference_label.setWordWrap(True)
+        match_layout.addWidget(self.match_reference_label)
+        match_layout.addStretch()
+        self.mainLayout.addLayout(match_layout)
+
         self._kwargs_widget()
 
         self.btn = QPushButton("Phasor Transform")
@@ -1808,14 +1904,138 @@ class FbdWidget(AdvancedOptionsWidget):
 
         self._update_signal_plot()
 
+    def _on_iotech_toggled(self, checked):
+        """Grey out the manual laser factor while it is derived."""
+        self.laser_factor.setEnabled(not checked)
+        self._update_signal_plot()
+
+    def _on_match_reference(self):
+        """Derive the reconstruction settings from a SimFCS reference file."""
+        companion = find_reference_file(self.path)
+        start_dir = companion or os.path.dirname(self.path)
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select the SimFCS reference file recorded for this FBD file",
+            start_dir,
+            "SimFCS referenced (*.r64 *.ref *.R64 *.REF);;All files (*)",
+        )
+        if not path:
+            return
+        settings = self._matched_settings(path)
+        if settings is not None:
+            self._apply_matched_settings(settings)
+
+    def _matched_settings(self, reference_path):
+        """Return settings matching `reference_path`, or None if it failed."""
+        progress = show_activity_progress(
+            "Matching FBD reconstruction to reference..."
+        )
+        self.match_reference_btn.setEnabled(False)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                return match_reference_settings(
+                    self.path,
+                    reference_path,
+                    channel=self._match_channel(),
+                    frame=self.reader_options.get("frame", -1),
+                    progress=lambda done, total: self._report_match_progress(
+                        progress, done, total
+                    ),
+                )
+        except Exception as exc:  # noqa: BLE001
+            show_error(f"Could not match the reference file: {exc}")
+            return None
+        finally:
+            self.match_reference_btn.setEnabled(True)
+            progress.close()
+
+    def _match_channel(self):
+        """Return the channel to match, defaulting to the first one.
+
+        A SimFCS reference file holds a single detector channel, so the
+        "All channels" selection cannot be matched as such.
+        """
+        channel = self.reader_options.get("channel")
+        return 0 if channel is None else channel
+
+    @staticmethod
+    def _report_match_progress(progress, done, total):
+        """Show how many candidate settings have been evaluated."""
+        progress.set_description(
+            f"Matching FBD reconstruction to reference ({done}/{total})"
+        )
+        app = QApplication.instance()
+        if app is not None:
+            app.processEvents()
+
+    def _apply_matched_settings(self, settings):
+        """Fill the option fields with `settings` and refresh the preview."""
+        derived = settings.laser_factor == IOTECH
+        widgets = (
+            self.iotech_laser_factor,
+            self.laser_factor,
+            self.scanner_line_start,
+            self.refine,
+        )
+        for widget in widgets:
+            widget.blockSignals(True)
+        try:
+            self.iotech_laser_factor.setChecked(derived)
+            self.laser_factor.setEnabled(not derived)
+            if not derived:
+                self.laser_factor.setText(f"{settings.laser_factor:g}")
+            self.scanner_line_start.setText(str(settings.scanner_line_start))
+            self.refine.setCurrentIndex(
+                next(
+                    (
+                        index
+                        for index, value in self.REFINE_MODES.items()
+                        if value is settings.refine
+                    ),
+                    0,  # a value with no entry falls back to "Auto"
+                )
+            )
+        finally:
+            for widget in widgets:
+                widget.blockSignals(False)
+
+        summary = (
+            f"line start {settings.scanner_line_start}, laser factor "
+            f"{settings.laser_factor_value:.6f} "
+            f"(r = {settings.correlation:.4f})"
+        )
+        self.match_reference_label.setText(summary)
+        self.match_reference_label.setToolTip(
+            f"Best of {len(DEFAULT_CANDIDATES)} candidate reconstructions: "
+            f"{summary}"
+        )
+        self._update_signal_plot()
+
+    def _apply_fbd_options(self, options):
+        """Add the FBD-specific fields to `options`.
+
+        Applied before :meth:`_apply_kwargs` so a name typed in the
+        "Additional kwargs" section still wins.
+        """
+        if self.iotech_laser_factor.isChecked():
+            options["laser_factor"] = IOTECH
+        else:
+            laser_factor = _parse_optional(self.laser_factor.text(), float)
+            if laser_factor is not None:
+                options["laser_factor"] = laser_factor
+        line_start = _parse_optional(self.scanner_line_start.text(), int)
+        if line_start is not None:
+            options["scanner_line_start"] = line_start
+        refine_index = self.refine.currentIndex()
+        if refine_index in self.REFINE_MODES:
+            options["refine"] = self.REFINE_MODES[refine_index]
+        self._apply_kwargs(options)
+
     def _get_signal_data(self):
         """Get signal data for FBD files."""
-        from phasorpy.io import signal_from_fbd
-
         options = self.reader_options.copy()
-        if self.laser_factor.text():
-            options["laser_factor"] = float(self.laser_factor.text())
-        self._apply_kwargs(options)
+        self._apply_fbd_options(options)
 
         try:
             with warnings.catch_warnings():
@@ -1827,8 +2047,17 @@ class FbdWidget(AdvancedOptionsWidget):
             return None
 
     def _extra_preview_signature(self):
-        """Include ``laser_factor`` so the preview cache tracks it."""
-        return ("laser_factor", self.laser_factor.text())
+        """Include the FBD fields so the preview cache tracks them."""
+        return (
+            "laser_factor",
+            self.laser_factor.text(),
+            "iotech_laser_factor",
+            self.iotech_laser_factor.isChecked(),
+            "scanner_line_start",
+            self.scanner_line_start.text(),
+            "refine",
+            self.refine.currentIndex(),
+        )
 
     def _on_frames_combobox_changed(self, index):
         """Callback whenever the frames combobox changes."""
@@ -1842,9 +2071,7 @@ class FbdWidget(AdvancedOptionsWidget):
 
     def _on_click(self, path, reader_options, harmonics):
         """Callback whenever the calculate phasor button is clicked."""
-        if self.laser_factor.text():
-            reader_options["laser_factor"] = float(self.laser_factor.text())
-        self._apply_kwargs(reader_options)
+        self._apply_fbd_options(reader_options)
         super()._on_click(path, reader_options, harmonics)
 
 
