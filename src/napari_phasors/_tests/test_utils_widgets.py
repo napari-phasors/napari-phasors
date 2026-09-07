@@ -2890,6 +2890,41 @@ def _positions_dialog(qtbot, n_rows=3, n_cols=3, tile=(64, 64), step=None):
     return dialog, positions
 
 
+def test_tile_layout_dialog_marks_stitching_experimental(qtbot):
+    """The dialog carries the same experimental marker as the plot settings.
+
+    Stitching is unproven enough that the warning has to be on the dialog
+    itself, not only in the docs -- and it must be napari's own triangle, so
+    it reads as an experimental control rather than as decoration.
+    """
+    from qtpy.QtWidgets import QLabel
+
+    dialog, _ = _positions_dialog(qtbot)
+
+    icons = [
+        label
+        for label in dialog.findChildren(QLabel)
+        if label.objectName() == "error_label"
+    ]
+    assert len(icons) == 1
+    icon = icons[0]
+
+    texts = [
+        label.text()
+        for label in dialog.findChildren(QLabel)
+        if label.text() == "Experimental"
+    ]
+    assert texts == ["Experimental"]
+
+    assert "report it" in icon.toolTip()
+
+    # A modal dialog of our own is never reached by napari's stylesheet, so
+    # the triangle has to be rendered directly rather than left to the
+    # ``error_label`` object name.
+    pixmap = icon.pixmap()
+    assert pixmap is not None and not pixmap.isNull()
+
+
 def test_tile_layout_dialog_uses_recorded_positions(qtbot):
     """Recorded positions are offered first and drive the built geometry."""
     dialog, positions = _positions_dialog(qtbot)

@@ -182,6 +182,109 @@ def make_section(title):
     return box, layout
 
 
+#: Fallback for :func:`theme_warning_color`, matching the amber napari's own
+#: themes use, so the text next to the warning triangle stays legible even if
+#: the theme cannot be resolved.
+_FALLBACK_WARNING_COLOR = "#e3b617"
+
+
+def theme_warning_color():
+    """Return the current napari theme's warning colour as a hex string.
+
+    Read from the theme rather than hard-coded so the "Experimental" text
+    matches the triangle beside it, which napari's stylesheet recolours with
+    this same value.
+    """
+    try:
+        from napari.settings import get_settings
+        from napari.utils.theme import get_theme
+
+        return get_theme(get_settings().appearance.theme).warning.as_hex()
+    except Exception:  # noqa: BLE001 - a missing/renamed theme must not
+        # take the widget that asked down with it.
+        return _FALLBACK_WARNING_COLOR
+
+
+def warning_pixmap(widget, size=16):
+    """Return napari's warning triangle as a pixmap, or ``None``.
+
+    Rendered from napari's own ``warning.svg`` in the theme's warning colour,
+    which is exactly what napari's stylesheet does for the ``error_label``
+    object name -- so the two agree pixel for pixel and the marker is the one
+    napari uses for its own experimental controls.
+    """
+    try:
+        from napari._qt.qt_resources import QColoredSVGIcon
+
+        icon = QColoredSVGIcon.from_resources("warning").colored(
+            theme_warning_color()
+        )
+    except Exception:  # noqa: BLE001 - a missing resource must not take the
+        # widget that asked down with it; the label just stays empty.
+        return None
+    ratio = widget.devicePixelRatioF() if widget is not None else 1.0
+    pixmap = icon.pixmap(round(size * ratio), round(size * ratio))
+    pixmap.setDevicePixelRatio(ratio)
+    return pixmap
+
+
+def make_experimental_warning(tooltip, parent=None):
+    """Return an "Experimental" banner row marking a feature as unproven.
+
+    The marker is napari's own: ``warning.svg`` -- the triangle with the
+    exclamation mark -- in the current theme's warning colour, which is what
+    napari puts on its own experimental controls. The icon label carries the
+    ``error_label`` object name napari's stylesheet targets *and* renders
+    that same resource itself, so it looks right whether or not the
+    stylesheet reaches this widget. Reusing napari's icon rather than
+    shipping our own keeps every banner identical in every theme.
+
+    Parameters
+    ----------
+    tooltip : str
+        Shown on both the triangle and the text. Say what is unproven and
+        what to do about it, not just that the feature is new.
+    parent : QWidget, optional
+        Parent widget.
+
+    Returns
+    -------
+    QWidget
+        A row holding the triangle and the word "Experimental", left
+        aligned. The two labels are exposed as ``icon_label`` and
+        ``text_label`` so a caller can keep its own references to them.
+    """
+    widget = QWidget(parent)
+    row = QHBoxLayout(widget)
+    row.setContentsMargins(0, 0, 0, 0)
+    row.setSpacing(4)
+
+    icon_label = QLabel()
+    icon_label.setObjectName("error_label")
+    icon_label.setToolTip(tooltip)
+    # The object name alone only paints the icon where napari's stylesheet
+    # reaches this widget, which depends on where it ends up -- and never
+    # inside a modal dialog of our own. Rendering the same resource
+    # ourselves makes the marker unconditional; the stylesheet's ``image``
+    # wins where it applies, and it draws the identical SVG in the identical
+    # colour.
+    pixmap = warning_pixmap(icon_label)
+    if pixmap is not None:
+        icon_label.setPixmap(pixmap)
+
+    text_label = QLabel("Experimental")
+    text_label.setToolTip(tooltip)
+    text_label.setStyleSheet(f"color: {theme_warning_color()};")
+
+    row.addWidget(icon_label)
+    row.addWidget(text_label)
+    row.addStretch(1)
+
+    widget.icon_label = icon_label
+    widget.text_label = text_label
+    return widget
+
+
 class CurrentPageStackedWidget(QStackedWidget):
     """A ``QStackedWidget`` that sizes itself to the visible page only.
 
@@ -6190,6 +6293,14 @@ class TileLayoutDialog(QDialog):
         self._geometry = None
 
         layout = QVBoxLayout(self)
+
+        layout.addWidget(
+            make_experimental_warning(
+                "Tiled mosaic stitching is new. Check the arrangement in the "
+                "preview before stitching, and if a mosaic comes out "
+                "misaligned, blended wrongly or runs out of memory, report it."
+            )
+        )
 
         info = QLabel(
             f"{len(self._paths)} file(s) selected. Describe how they tile "
