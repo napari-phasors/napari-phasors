@@ -7,7 +7,6 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import numpy as np
-from biaplotter.plotter import CanvasWidget
 from matplotlib.colorbar import Colorbar
 from matplotlib.colors import LogNorm
 from matplotlib.lines import Line2D
@@ -18,7 +17,7 @@ from phasorpy.lifetime import phasor_from_lifetime
 from phasorpy.phasor import phasor_center as _phasor_center
 from phasorpy.phasor import phasor_to_polar
 from qtpy.QtCore import QEvent, Qt, QTimer
-from qtpy.QtGui import QColor, QCursor
+from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -46,6 +45,7 @@ from qtpy.QtWidgets import (
 )
 from superqt import QToggleSwitch
 
+from ._canvas import PhasorCanvasWidget as CanvasWidget
 from ._timelapse import CURRENT as FRAME_MODE_CURRENT
 from ._timelapse import POOLED as FRAME_MODE_POOLED
 from ._timelapse import (
@@ -76,8 +76,6 @@ from ._utils import (
     make_section,
     make_solid_contour_cmap,
     normalize_rgb,
-    patch_biaplotter_capture_selection_geometry,
-    patch_biaplotter_fixed_histogram_range,
     populate_colormap_combobox,
     rank_mask_candidates,
     read_ome_tiff_settings,
@@ -94,176 +92,6 @@ from .filter_tab import FilterWidget
 from .fret_tab import FretWidget
 from .phasor_mapping_tab import PhasorMappingWidget
 from .selection_tab import SelectionWidget
-
-
-def _patch_nap_plot_tools_safe_disconnect():
-    """Patch nap_plot_tools toolbar callback wiring to avoid warning spam.
-
-    nap_plot_tools currently calls ``button.toggled.disconnect()`` for
-    checkable buttons. Under PySide/Qt this can emit a RuntimeWarning when no
-    callback is connected. We patch it to disconnect only the previously
-    connected callback we track locally.
-    """
-    try:
-        from nap_plot_tools.tools import CustomToolbarWidget
-    except ImportError:
-        return
-
-    if getattr(
-        CustomToolbarWidget, "_napari_phasors_safe_disconnect_patch", False
-    ):
-        return
-
-    def _connect_button_callback_safe(self, name, callback):
-        if name not in self.buttons:
-            return
-
-        button = self.buttons[name]
-        signal = button.toggled if button.isCheckable() else button.clicked
-
-        connected = getattr(self, "_napari_phasors_connected_callbacks", {})
-        previous = connected.get(name)
-        if previous is not None:
-            with contextlib.suppress(TypeError, RuntimeError):
-                signal.disconnect(previous)
-
-        if callback:
-            if button.isCheckable():
-                to_connect = callback
-            else:
-
-                def _clicked_callback(checked=False, cb=callback):
-                    cb()
-
-                to_connect = _clicked_callback
-            signal.connect(to_connect)
-            connected[name] = to_connect
-        else:
-            connected.pop(name, None)
-
-        self._napari_phasors_connected_callbacks = connected
-
-    CustomToolbarWidget.connect_button_callback = _connect_button_callback_safe
-    CustomToolbarWidget._napari_phasors_safe_disconnect_patch = True
-
-
-def _patch_biaplotter_safe_toggle_sender():
-    """Patch biaplotter toggle callback to tolerate missing Qt sender.
-
-    biaplotter wires ``pan_toggled_signal`` and ``zoom_toggled_signal``
-    (non-Qt signals) to ``CanvasWidget._on_toggle_button``. In that path,
-    ``self.sender()`` can be ``None``, which raises an AttributeError when the
-    callback unconditionally accesses ``.text()``.
-    """
-    if getattr(
-        CanvasWidget, "_napari_phasors_safe_toggle_sender_patch", False
-    ):
-        return
-
-    def _on_toggle_button_safe(self, checked: bool):
-        sender_obj = self.sender()
-        sender_name = None
-        active_button_name = None
-
-        active_selector = getattr(self, 'active_selector', None)
-        if active_selector is not None:
-            for name, selector in getattr(self, 'selectors', {}).items():
-                if selector is active_selector:
-                    active_button_name = name
-                    break
-
-        if sender_obj is not None:
-            with contextlib.suppress(AttributeError, RuntimeError, TypeError):
-                sender_name = sender_obj.text()
-
-        # Non-Qt pan/zoom signals do not carry a sender, but they should still
-        # deactivate any active selector before we try to infer a toolbar button.
-        if (
-            sender_name is None
-            and checked
-            and self.toolbar.mode in {'pan/zoom', 'zoom rect'}
-        ):
-            self._deactivate_and_remove_all_selectors()
-            return
-
-        if sender_name is None and hasattr(self, 'selection_toolbar'):
-            checked_selector_names = [
-                name
-                for name, button in self.selection_toolbar.buttons.items()
-                if button.isCheckable() and button.isChecked()
-            ]
-
-            if checked:
-                if len(checked_selector_names) == 1:
-                    sender_name = checked_selector_names[0]
-                elif (
-                    active_button_name is not None
-                    and active_button_name in checked_selector_names
-                ):
-                    candidates = [
-                        name
-                        for name in checked_selector_names
-                        if name != active_button_name
-                    ]
-                    if len(candidates) == 1:
-                        sender_name = candidates[0]
-            else:
-                if (
-                    len(checked_selector_names) == 1
-                    and checked_selector_names[0] != active_button_name
-                ):
-                    sender_name = checked_selector_names[0]
-                elif not checked_selector_names and active_button_name:
-                    sender_name = active_button_name
-
-        # Non-Qt emitters (psygnal) can call this with sender=None.
-        # Preserve expected behavior for toolbar pan/zoom toggles.
-        if sender_name is None:
-            if checked and self.toolbar.mode in {'pan/zoom', 'zoom rect'}:
-                self._deactivate_and_remove_all_selectors()
-            return
-
-        # Reproduce the original biaplotter behavior using the resolved sender.
-        if sender_name in self.selection_toolbar.buttons:
-            if checked:
-                if self.toolbar.mode == 'zoom rect':
-                    with self.toolbar.zoom_toggled_signal.blocked():
-                        self.toolbar.zoom()
-                elif self.toolbar.mode == 'pan/zoom':
-                    with self.toolbar.pan_toggled_signal.blocked():
-                        self.toolbar.pan()
-                self._deactivate_and_remove_all_selectors(
-                    except_this_button_name=sender_name
-                )
-                self.active_selector = sender_name
-            else:
-                checked_selector_names = [
-                    name
-                    for name, button in self.selection_toolbar.buttons.items()
-                    if button.isCheckable() and button.isChecked()
-                ]
-                if (
-                    len(checked_selector_names) == 1
-                    and checked_selector_names[0] != sender_name
-                ):
-                    self._deactivate_and_remove_all_selectors(
-                        except_this_button_name=checked_selector_names[0]
-                    )
-                    self.active_selector = checked_selector_names[0]
-                else:
-                    self._remove_all_selectors()
-                    self.canvas.setCursor(QCursor(Qt.ArrowCursor))
-        elif sender_name in ['Pan', 'Zoom'] and checked:
-            self._deactivate_and_remove_all_selectors()
-
-    CanvasWidget._on_toggle_button = _on_toggle_button_safe
-    CanvasWidget._napari_phasors_safe_toggle_sender_patch = True
-
-
-_patch_nap_plot_tools_safe_disconnect()
-_patch_biaplotter_safe_toggle_sender()
-patch_biaplotter_capture_selection_geometry()
-patch_biaplotter_fixed_histogram_range()
 
 
 def _apply_label_colors_to_combo(combo, labels_layer, unique_labels):
@@ -1833,17 +1661,6 @@ class PlotterWidget(QWidget):
         )
         self.set_axes_labels()
         self.canvas_container.layout().addWidget(self.canvas_widget)
-
-        # Monkey-patch biaplotter's _is_click_inside_axes to handle None xdata/ydata
-        # This fixes a bug where clicking outside the axes causes a TypeError
-        original_is_click_inside = self.canvas_widget._is_click_inside_axes
-
-        def _is_click_inside_axes_fixed(event):
-            if event.xdata is None or event.ydata is None:
-                return False
-            return original_is_click_inside(event)
-
-        self.canvas_widget._is_click_inside_axes = _is_click_inside_axes_fixed
 
         # Monkey-patch toolbar save_figure to export with black text/spines
         self._patch_toolbar_save()
@@ -4152,6 +3969,7 @@ class PlotterWidget(QWidget):
             if hasattr(self, 'canvas_widget'):
                 self.canvas_widget._on_escape(None)
             self.selection_tab.clear_artists()
+            self._clear_manual_selection_coloring()
         if hasattr(self, 'components_tab'):
             self.components_tab.clear_artists()
         if hasattr(self, 'fret_tab'):
@@ -4168,23 +3986,49 @@ class PlotterWidget(QWidget):
             if hasattr(self.selection_tab, 'is_manual_selection_mode'):
                 is_manual = self.selection_tab.is_manual_selection_mode()
                 self._set_selection_visibility(is_manual)
-                self._set_selection_cursors_visibility(True)
             else:
                 self._set_selection_visibility(True)
+            self._set_selection_cursors_visibility(True)
         elif current_tab == getattr(self, 'components_tab', None):
             self._set_components_visibility(True)
         elif current_tab == getattr(self, 'fret_tab', None):
             self._set_fret_visibility(True)
 
+    def _clear_manual_selection_coloring(self):
+        """Remove manual selection coloring from the phasor plot."""
+        if hasattr(self, 'canvas_widget'):
+            cw = self.canvas_widget
+            old_updating = getattr(self, '_updating_plot', False)
+            self._updating_plot = True
+            try:
+                for artist in getattr(cw, 'artists', {}).values():
+                    if hasattr(artist, 'color_indices'):
+                        current_ci = getattr(artist, '_color_indices', None)
+                        if current_ci is not None:
+                            if isinstance(current_ci, (int, np.integer)):
+                                if current_ci != 0:
+                                    artist.color_indices = 0
+                            else:
+                                artist.color_indices = 0
+                self._last_histogram_color_indices = None
+                self._last_scatter_color_indices = None
+            finally:
+                self._updating_plot = old_updating
+            if hasattr(cw, 'figure') and hasattr(cw.figure, 'canvas'):
+                cw.figure.canvas.draw_idle()
+
     def _set_selection_visibility(self, visible):
         """Set visibility of selection toolbar."""
         if hasattr(self, 'selection_tab'):
-            layout = self.canvas_widget.selection_tools_layout
-            for i in range(layout.count()):
-                item = layout.itemAt(i)
-                widget = item.widget()
-                if widget is not None:
-                    widget.setVisible(visible)
+            layout = getattr(
+                self.canvas_widget, 'selection_tools_layout', None
+            )
+            if layout is not None:
+                for i in range(layout.count()):
+                    item = layout.itemAt(i)
+                    widget = item.widget()
+                    if widget is not None:
+                        widget.setVisible(visible)
 
     def _set_selection_cursors_visibility(self, visible):
         """Set visibility of cursor patches based on current selection mode."""
@@ -4201,15 +4045,15 @@ class PlotterWidget(QWidget):
                 elif mode_idx == 1:
                     w_auto.redraw_all_patches()
                 elif mode_idx == 2:
+                    if hasattr(self.selection_tab, '_update_manual_colormaps'):
+                        self.selection_tab._update_manual_colormaps()
                     self.selection_tab.update_phasor_plot_with_selection_id(
                         self.selection_tab.selection_id
                     )
             else:
                 w_cursor.clear_all_patches()
                 w_auto.clear_all_patches()
-                # Clear manual selection from plot when not visible
-                if mode_idx == 2:
-                    self.plot(selection_id_data=None)
+                self._clear_manual_selection_coloring()
 
     def _set_components_visibility(self, visible):
         """Set visibility of components tab artists."""
@@ -6605,11 +6449,19 @@ class PlotterWidget(QWidget):
         self.canvas_widget.figure.canvas.draw_idle()
 
     def _connect_selector_signals(self):
-        """Connect selection applied signal from all selectors to enforce axes aspect."""
+        """Connect selection applied signal from all selectors to enforce axes aspect and track selection."""
         for selector in self.canvas_widget.selectors.values():
             selector.selection_applied_signal.connect(
-                self._enforce_axes_aspect
+                self._on_selector_applied
             )
+
+    def _on_selector_applied(self, color_indices):
+        """Track color indices applied by canvas selectors and enforce aspect."""
+        if self.plot_type == 'HISTOGRAM2D':
+            self._last_histogram_color_indices = color_indices
+        elif self.plot_type == 'SCATTER':
+            self._last_scatter_color_indices = color_indices
+        self._enforce_axes_aspect()
 
     def _connect_active_artist_signals(self):
         """Connect signals for the currently active artist only."""
@@ -9534,9 +9386,7 @@ class PlotterWidget(QWidget):
             ).items():
                 if hasattr(artist, 'visible'):
                     artist.visible = False
-            with contextlib.suppress(AttributeError, TypeError):
-                # Fallback for biaplotter < 0.4.2 which doesn't support None
-                self.canvas_widget.active_artist = None
+            self.canvas_widget.active_artist = None
 
         if plot_type != 'CONTOUR':
             # Hide contour items when switching away (including to NONE)
@@ -9557,9 +9407,7 @@ class PlotterWidget(QWidget):
             if current_active != plot_type:
                 self.canvas_widget.active_artist = plot_type
         else:
-            # For CONTOUR or NONE, we might want to unset active_artist in biaplotter
-            with contextlib.suppress(AttributeError, TypeError):
-                self.canvas_widget.active_artist = None
+            self.canvas_widget.active_artist = None
 
         if (
             plot_type not in getattr(self.canvas_widget, 'artists', {})
