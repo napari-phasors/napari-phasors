@@ -252,6 +252,29 @@ def test_no_selection_processing_during_plot_update(make_viewer_model, qtbot):
     assert widget.update_phasor_plot_with_selection_id("test") is None
 
 
+def test_manual_selection_changed_handles_scalar_or_invalid_input(
+    make_viewer_model, qtbot
+):
+    """Test that manual_selection_changed handles scalar 0, None, or non-sequences safely."""
+    viewer = make_viewer_model()
+    intensity_image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(intensity_image_layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+
+    widget.selection_mode_combobox.setCurrentText("Manual Selection")
+    # First apply a valid selection
+    manual_selection = np.array([1, 0, 1, 0, 1, 0, 0, 0, 0, 0])
+    widget.manual_selection_changed(manual_selection)
+    assert widget.selection_id is not None
+
+    # Passing scalar 0, None, or non-sequences should return None safely without raising TypeError
+    assert widget.manual_selection_changed(0) is None
+    assert widget.manual_selection_changed(None) is None
+    assert widget.manual_selection_changed(1.5) is None
+    assert widget.manual_selection_changed("invalid") is None
+
+
 def test_selection_mode_switching(make_viewer_model, qtbot):
     """Test switching between cursor, clustering and manual modes."""
     viewer = make_viewer_model()
@@ -2494,6 +2517,84 @@ def test_labels_layer_visibility_on_tab_toggle(make_viewer_model, qtbot):
     widget._set_labels_layer_visibility(True)
     assert viewer.layers[man_layer_name].visible is False
     assert viewer.layers[cursor_layer_name].visible is True
+
+
+def test_labels_layer_visibility_multi_layer_on_tab_toggle(
+    make_viewer_model, qtbot
+):
+    """All selection layers across multiple layers are hidden when selection tab is hidden."""
+    viewer = make_viewer_model()
+    layer1 = create_image_layer_with_phasors()
+    layer1.name = "Layer 1"
+    layer2 = create_image_layer_with_phasors()
+    layer2.name = "Layer 2"
+    viewer.add_layer(layer1)
+    viewer.add_layer(layer2)
+    parent = PlotterWidget(viewer)
+    parent.image_layers_checkable_combobox.setCheckedItems(
+        [layer1.name, layer2.name]
+    )
+    parent._process_layer_selection_change()
+    widget = parent.selection_tab
+
+    widget.cursor_selection_widget._add_cursor()
+    widget.cursor_selection_widget._apply_selection()
+
+    cursor1_name = f"Cursor Selection: {layer1.name}"
+    cursor2_name = f"Cursor Selection: {layer2.name}"
+    assert cursor1_name in viewer.layers
+    assert cursor2_name in viewer.layers
+    assert viewer.layers[cursor1_name].visible is True
+    assert viewer.layers[cursor2_name].visible is True
+
+    widget._set_labels_layer_visibility(False)
+    assert viewer.layers[cursor1_name].visible is False
+    assert viewer.layers[cursor2_name].visible is False
+
+    widget._set_labels_layer_visibility(True)
+    assert viewer.layers[cursor1_name].visible is True
+    assert viewer.layers[cursor2_name].visible is True
+
+    # Now test manual selection mode with multiple layers
+    widget.selection_mode_combobox.setCurrentText("Manual Selection")
+    widget.manual_selection_changed(np.array([1, 0] * 10))
+
+    man1_name = f"MANUAL SELECTION #1: {layer1.name}"
+    man2_name = f"MANUAL SELECTION #1: {layer2.name}"
+    assert man1_name in viewer.layers
+    assert man2_name in viewer.layers
+    assert viewer.layers[man1_name].visible is True
+    assert viewer.layers[man2_name].visible is True
+    assert viewer.layers[cursor1_name].visible is False
+    assert viewer.layers[cursor2_name].visible is False
+
+    widget._set_labels_layer_visibility(False)
+    assert viewer.layers[man1_name].visible is False
+    assert viewer.layers[man2_name].visible is False
+    assert viewer.layers[cursor1_name].visible is False
+    assert viewer.layers[cursor2_name].visible is False
+
+    widget._set_labels_layer_visibility(True)
+    assert viewer.layers[man1_name].visible is True
+    assert viewer.layers[man2_name].visible is True
+    assert viewer.layers[cursor1_name].visible is False
+    assert viewer.layers[cursor2_name].visible is False
+
+    # Switch back to cursor selection
+    widget.selection_mode_combobox.setCurrentText("Cursor Selection")
+    widget._set_labels_layer_visibility(True)
+    assert viewer.layers[man1_name].visible is False
+    assert viewer.layers[man2_name].visible is False
+    assert viewer.layers[cursor1_name].visible is True
+    assert viewer.layers[cursor2_name].visible is True
+
+    # Test via PlotterWidget tab transition methods
+    parent._hide_all_tab_artists()
+    assert viewer.layers[cursor1_name].visible is False
+    assert viewer.layers[cursor2_name].visible is False
+    parent._show_tab_artists(widget)
+    assert viewer.layers[cursor1_name].visible is True
+    assert viewer.layers[cursor2_name].visible is True
 
 
 def test_selection_widget_image_layer_and_selection_id(

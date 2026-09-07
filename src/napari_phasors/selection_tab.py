@@ -874,9 +874,14 @@ class SelectionWidget(QWidget):
             If True, show manual selection layers and hide circular cursor layer.
             If False, show circular cursor layer and hide manual selection layers.
         """
-        layer = self._get_current_layer()
-        if layer is None:
+        selected_layers = self._get_selected_layers()
+        if not selected_layers:
+            layer = self._get_current_layer()
+            selected_layers = [layer] if layer is not None else []
+        if not selected_layers:
             return
+
+        selected_layer_names = {lyr.name for lyr in selected_layers}
 
         for viewer_layer in self.viewer.layers:
             if not isinstance(viewer_layer, Labels):
@@ -893,33 +898,41 @@ class SelectionWidget(QWidget):
                     "napari_phasors_source_layer"
                 )
 
-                # Only manage layers belonging to the current image layer
-                if source_layer == layer.name:
+                # Only manage layers belonging to the selected image layers
+                if source_layer in selected_layer_names:
                     if (
                         selection_type == "cursor_selection"
                         or selection_type == "automatic_clustering"
                     ):
                         viewer_layer.visible = not show_manual
                     elif selection_type == "manual":
-                        viewer_layer.visible = show_manual
+                        if show_manual:
+                            if (
+                                self.selection_id
+                                and self.selection_id != "None"
+                            ):
+                                viewer_layer.visible = (
+                                    viewer_layer.name.startswith(
+                                        f"{self.selection_id}: "
+                                    )
+                                )
+                            else:
+                                viewer_layer.visible = True
+                        else:
+                            viewer_layer.visible = False
+                else:
+                    viewer_layer.visible = False
 
     def _set_labels_layer_visibility(self, visible):
         """Toggle the visibility of all selection layers for the active tab."""
         if not visible:
-            layer = self._get_current_layer()
-            if layer is None:
-                return
             for viewer_layer in self.viewer.layers:
                 if not isinstance(viewer_layer, Labels) or not hasattr(
                     viewer_layer, "metadata"
                 ):
                     continue
                 if "napari_phasors_selection_type" in viewer_layer.metadata:
-                    source_layer = viewer_layer.metadata.get(
-                        "napari_phasors_source_layer"
-                    )
-                    if source_layer == layer.name:
-                        viewer_layer.visible = False
+                    viewer_layer.visible = False
         else:
             self._manage_labels_layer_visibility(
                 show_manual=self.is_manual_selection_mode()
@@ -1340,6 +1353,13 @@ class SelectionWidget(QWidget):
         if getattr(self, "_switching_selection_id", False):
             return
 
+        if (
+            manual_selection is None
+            or np.isscalar(manual_selection)
+            or not isinstance(manual_selection, (np.ndarray, list, tuple))
+        ):
+            return
+
         current_combobox_text = (
             self.selection_input_widget.phasor_selection_id_combobox.currentText()
         )
@@ -1367,7 +1387,11 @@ class SelectionWidget(QWidget):
 
         # The manual_selection array corresponds to merged/concatenated data from all layers
         # We need to split it back to individual layers based on valid pixel counts
-        if selection_to_use is not None:
+        if (
+            selection_to_use is not None
+            and not np.isscalar(selection_to_use)
+            and isinstance(selection_to_use, (np.ndarray, list, tuple))
+        ):
             # Calculate how many valid pixels each layer contributes
             layer_valid_counts = []
             for layer in selected_layers:

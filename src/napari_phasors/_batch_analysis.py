@@ -1893,15 +1893,19 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 return True, ""
             return (
                 False,
-                "These OME-TIFF files do not contain a stored signal (they "
-                "were not written by napari-phasors), so the signal cannot be "
-                "reconstructed. Signal export is unavailable for this format.",
+                (
+                    "These OME-TIFF files do not contain a stored signal (they "
+                    "were not written by napari-phasors), so the signal cannot be "
+                    "reconstructed. Signal export is unavailable for this format."
+                ),
             )
         return (
             False,
-            "This processed format stores only phasor coordinates, not the "
-            "original signal, so signal export is unavailable. Use the raw "
-            "files or napari-phasors OME-TIFFs instead.",
+            (
+                "This processed format stores only phasor coordinates, not the "
+                "original signal, so signal export is unavailable. Use the raw "
+                "files or napari-phasors OME-TIFFs instead."
+            ),
         )
 
     def _refresh_signal_availability(self):
@@ -7341,6 +7345,7 @@ def _save_phasor_plot_png(
                 fmt="o",
                 markersize=display.get("marker_size", 5),
                 color=display.get("marker_color") or None,
+                markeredgewidth=0,
                 alpha=display.get("marker_alpha", 0.3),
                 zorder=5,
             )
@@ -7629,6 +7634,8 @@ def _color_plot_by_metric(
             vmax=vmax,
             s=display.get("marker_size", 5),
             alpha=display.get("marker_alpha", 0.6),
+            edgecolors="none",
+            linewidths=0,
             zorder=5,
         )
         return
@@ -7783,7 +7790,14 @@ def _save_grouped_overlay_plot(
         name = group_meta.get(key, (str(key), None))[0]
         color = colors.get(key)
         plot.ax.scatter(
-            real, imag, s=marker_size, color=color, alpha=alpha, zorder=5
+            real,
+            imag,
+            s=marker_size,
+            color=color,
+            alpha=alpha,
+            edgecolors="none",
+            linewidths=0,
+            zorder=5,
         )
         handles.append(
             Line2D([0], [0], marker="o", linestyle="", color=color, label=name)
