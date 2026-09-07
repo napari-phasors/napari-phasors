@@ -9,7 +9,11 @@ from qtpy.QtWidgets import QApplication, QComboBox, QDoubleSpinBox, QLabel
 
 from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
 from napari_phasors.plotter import PlotterWidget
-from napari_phasors.selection_tab import MixedValueSpinBox
+from napari_phasors.selection_tab import (
+    ClickableFrame,
+    ColorButton,
+    MixedValueSpinBox,
+)
 
 
 def _visible_rows(cw):
@@ -3121,3 +3125,309 @@ def test_manual_selection_coloring_removed_on_tab_change(
     widget.selection_mode_combobox.setCurrentText("Cursor Selection")
     assert "overlay_histogram_image" not in hist._mpl_artists
     assert hist.color_indices == 0
+
+
+def test_color_button_and_clickable_frame(qtbot):
+    """Test ColorButton clicking, color setting, and ClickableFrame."""
+    btn = ColorButton(QColor(255, 0, 0))
+    btn.set_color(QColor(0, 255, 0))
+    assert btn.color() == QColor(0, 255, 0)
+
+    with patch(
+        "qtpy.QtWidgets.QColorDialog.getColor", return_value=QColor(0, 0, 255)
+    ):
+        with qtbot.waitSignal(btn.color_changed):
+            btn._on_clicked()
+        assert btn.color() == QColor(0, 0, 255)
+
+    with patch(
+        "qtpy.QtWidgets.QColorDialog.getColor", return_value=QColor()
+    ):  # invalid
+        btn._on_clicked()
+        assert btn.color() == QColor(0, 0, 255)
+
+    frame = ClickableFrame()
+    with qtbot.waitSignal(frame.clicked):
+        qtbot.mouseClick(frame, Qt.LeftButton)
+
+
+def test_manual_selection_tool_buttons_and_parent_edge_cases(
+    make_viewer_model, qtbot
+):
+    """Test manual selection tool button toggle off, null parent, and invalid row selection."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+    cw = parent.canvas_widget
+
+    # Unchecking tool button deactivates active selector
+    btn = widget.selection_tool_buttons["RECTANGLE"]
+    btn.click()
+    assert btn.isChecked()
+    assert cw.active_selector is not None
+
+    btn.click()  # Click again to uncheck
+    assert not btn.isChecked()
+    assert cw.active_selector is None
+
+    # Null parent edge cases
+    widget.parent_widget = None
+    widget._on_tool_btn_clicked("RECTANGLE")
+    widget.parent_widget = parent
+
+    # Selecting a row that is not in _manual_selections
+    widget._select_manual_row({"class_id": 999})
+    assert widget._selected_class_id != 999
+
+    # Calling _update_manual_colormaps with empty selections
+    saved_sels = widget._manual_selections
+    widget._manual_selections = []
+    widget._update_manual_colormaps()
+    widget._manual_selections = saved_sels
+
+
+def test_manual_selection_removal_and_layer_sync(make_viewer_model, qtbot):
+    """Test removing active selection, emptying list, and syncing from layer metadata."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+
+    widget.selection_mode_combobox.setCurrentText("Manual Selection")
+    widget.selection_id = "MANUAL SELECTION #1"
+
+    # Add selections 2 and 3
+    sel2 = widget._add_manual_selection(class_id=2)
+    sel3 = widget._add_manual_selection(class_id=3)
+    assert len(widget._manual_selections) == 3
+
+    # Select sel1 then remove sel1 -> should select first remaining (sel2)
+    sel1 = widget._manual_selections[0]
+    widget._select_manual_row(sel1)
+    assert widget._selected_class_id == 1
+    widget._remove_manual_selection(sel1)
+    assert widget._selected_class_id == 2
+
+    # Remove until empty -> auto recreates Selection 1
+    widget._remove_manual_selection(sel2)
+    widget._remove_manual_selection(sel3)
+    assert len(widget._manual_selections) == 1
+    assert widget._manual_selections[0]["class_id"] == 1
+
+    # Metadata sync with layer having classes 1 and 4
+    s_map = np.zeros_like(layer.data, dtype=np.uint32)
+    s_map.flat[0] = 1
+    s_map.flat[1] = 4
+    layer.metadata.setdefault("settings", {}).setdefault(
+        "selections", {}
+    ).setdefault("manual_selections", {})["MANUAL SELECTION #1"] = s_map
+
+    widget._sync_manual_selections_from_layer()
+    class_ids = {s["class_id"] for s in widget._manual_selections}
+    assert 4 in class_ids
+
+    # Change selection ID with _processing_initial_selection = False
+    widget._current_selection_id = "MANUAL SELECTION #1"
+    widget._processing_initial_selection = False
+    widget.selection_input_widget.phasor_selection_id_combobox.addItem(
+        "MANUAL SELECTION #2"
+    )
+    widget.selection_input_widget.phasor_selection_id_combobox.setCurrentText(
+        "MANUAL SELECTION #2"
+    )
+    widget.on_selection_id_changed()
+    assert widget._current_selection_id == "MANUAL SELECTION #2"
+
+
+def test_manual_selection_statistics_and_labels_edge_cases(
+    make_viewer_model, qtbot
+):
+    """Test manual selection statistics edge cases and hidden layer colormap."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+
+    widget.selection_mode_combobox.setCurrentText("Manual Selection")
+    widget.selection_id = "MANUAL SELECTION #1"
+
+    # Test layer without G/S metadata (line 752)
+    layer_no_phasors = layer.data.copy()
+    no_phasors_layer = viewer.add_image(layer_no_phasors, name="no_phasors")
+    widget._update_manual_selection_statistics()
+    viewer.layers.remove(no_phasors_layer)
+
+    # Test total_valid_pixels == 0
+    layer.metadata["G"] = np.full_like(layer.data, np.nan, dtype=float)
+    layer.metadata["S"] = np.full_like(layer.data, np.nan, dtype=float)
+    widget._update_manual_selection_statistics()
+    for sel in widget._manual_selections:
+        assert sel["count_label"].text() == "-"
+        assert sel["percentage_label"].text() == "-"
+
+    # Restore finite data
+    layer.metadata["G"] = np.zeros_like(layer.data, dtype=float)
+    layer.metadata["S"] = np.zeros_like(layer.data, dtype=float)
+
+    # Test layer with non-matching harmonic
+    layer.metadata["harmonics"] = np.array([99])
+    parent.harmonic = 1
+    widget._update_manual_selection_statistics()
+
+    # Test layer without harmonics array (2D G/S)
+    del layer.metadata["harmonics"]
+    widget._update_manual_selection_statistics()
+
+    # Test parent._colormap branch in create_phasors_selected_layer and recreate
+    import matplotlib.pyplot as plt
+
+    parent._colormap = plt.get_cmap("viridis")
+
+    # Test hidden selection row color in create_phasors_selected_layer and recreate
+    sel1 = widget._manual_selections[0]
+    sel1["visible"] = False
+    widget.create_phasors_selected_layer()
+    label_layer = viewer.layers[f"MANUAL SELECTION #1: {layer.name}"]
+    assert label_layer.colormap.color_dict[1][3] == 0.0
+
+    # Recreate manual selection layer with hidden selection and parent colormap
+    viewer.layers.remove(label_layer)
+    widget._recreate_manual_selection_layer(
+        "MANUAL SELECTION #1", np.zeros_like(layer.data, dtype=np.uint32)
+    )
+    recreated = viewer.layers[f"MANUAL SELECTION #1: {layer.name}"]
+    assert recreated.colormap.color_dict[1][3] == 0.0
+
+
+def test_cursor_selection_widget_edge_cases_and_interactions(
+    make_viewer_model, qtbot
+):
+    """Test cursor selection drag modes, hover cursor, and polar edge dragging."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+    w_cursor = widget.cursor_selection_widget
+
+    # Add circular, elliptic, and polar cursors first
+    w_cursor._add_cursor(
+        cursor_type="circular",
+        g=0.5,
+        s=0.5,
+        radius=0.1,
+        color=QColor(255, 0, 0),
+    )
+    w_cursor._add_cursor(
+        cursor_type="elliptic",
+        g=0.5,
+        s=0.5,
+        radius=0.1,
+        radius_minor=0.05,
+        angle=30.0,
+        color=QColor(0, 255, 0),
+    )
+    w_cursor._add_cursor(
+        cursor_type="polar",
+        phase_min=10.0,
+        phase_max=50.0,
+        modulation_min=0.2,
+        modulation_max=0.8,
+        color=QColor(0, 0, 255),
+    )
+
+    # 1. Total valid pixels == 0 in cursor statistics with cursors present
+    layer.metadata["G"] = np.full_like(layer.data, np.nan, dtype=float)
+    layer.metadata["S"] = np.full_like(layer.data, np.nan, dtype=float)
+    w_cursor._update_cursor_statistics()
+    for cursor in w_cursor._cursors:
+        assert cursor["count_label"].text() == "-"
+        assert cursor["percentage_label"].text() == "-"
+
+    # Restore finite data
+    layer.metadata["G"] = np.zeros_like(layer.data, dtype=float)
+    layer.metadata["S"] = np.zeros_like(layer.data, dtype=float)
+
+    # 2. Test redraw_all_patches
+    w_cursor.redraw_all_patches()
+
+    # 3. Test draw_selection_overlay standalone function for polar cursor
+    from napari_phasors.selection_tab import draw_selection_overlay
+
+    draw_selection_overlay(
+        parent.canvas_widget.axes,
+        [
+            {
+                "type": "polar",
+                "modulation_max": 0.8,
+                "modulation_min": 0.2,
+                "phase_min": 10.0,
+                "phase_max": 45.0,
+                "color": "#00ff00",
+            }
+        ],
+        mode="cursor",
+    )
+
+    # 4. Test _on_image_layer_changed cleans up existing patches
+    w_cursor._on_image_layer_changed()
+
+    # Re-add cursors
+    w_cursor._add_cursor(
+        cursor_type="elliptic",
+        g=0.5,
+        s=0.5,
+        radius=0.1,
+        radius_minor=0.05,
+        angle=30.0,
+        color=QColor(0, 255, 0),
+    )
+    w_cursor._add_cursor(
+        cursor_type="polar",
+        phase_min=10.0,
+        phase_max=50.0,
+        modulation_min=0.2,
+        modulation_max=0.8,
+        color=QColor(0, 0, 255),
+    )
+    w_cursor.redraw_all_patches()
+
+    # 5. Elliptic cursor shift-drag (rotate) and hover
+    elliptic_cursor = [
+        c for c in w_cursor._cursors if c["type"] == "elliptic"
+    ][0]
+    polar_cursor = [c for c in w_cursor._cursors if c["type"] == "polar"][0]
+
+    class MockPickEvent:
+        def __init__(self, artist, x, y):
+            self.artist = artist
+            self.mouseevent = Mock(xdata=x, ydata=y)
+
+    # Pick with shift modifier
+    with patch(
+        "qtpy.QtWidgets.QApplication.keyboardModifiers",
+        return_value=Qt.ShiftModifier,
+    ):
+        w_cursor._on_pick(MockPickEvent(elliptic_cursor["patch"], 0.6, 0.6))
+        assert w_cursor._drag_mode == "rotate"
+
+        # Hover with shift modifier (reset dragging_cursor first)
+        w_cursor._dragging_cursor = None
+        mock_hover_event = Mock(
+            inaxes=parent.canvas_widget.axes, xdata=0.5, ydata=0.5
+        )
+        with patch.object(
+            elliptic_cursor["patch"], "contains", return_value=(True, {})
+        ):
+            w_cursor._update_hover_cursor(mock_hover_event)
+
+    # 6. Polar cursor edge drag for phase_min and modulation_min
+    w_cursor._polar_edge = "phase_min"
+    w_cursor._drag_polar_edge(polar_cursor, 0.5, 0.2)
+    assert polar_cursor["phase_min"] != 10.0
+
+    w_cursor._polar_edge = "modulation_min"
+    w_cursor._drag_polar_edge(polar_cursor, 0.3, 0.3)
+    assert polar_cursor["modulation_min"] != 0.2

@@ -903,9 +903,11 @@ class Scatter:
             self._remove_artists()
             return
 
+        saved_indices = self._color_indices
         scatter = self._mpl_artists.get("scatter")
         if scatter is None or scatter.axes != self.ax or force_redraw:
             self._remove_artists()
+            self._color_indices = saved_indices
             self._mpl_artists["scatter"] = self.ax.scatter(
                 self._data[:, 0],
                 self._data[:, 1],
@@ -1374,7 +1376,13 @@ class PhasorCanvasWidget(QWidget):
             theme = get_theme(getattr(self.viewer, "theme", "dark"))
             bg_color = theme.canvas.as_hex()
             text_color = theme.text.as_hex()
-        except (AttributeError, KeyError, RuntimeError, TypeError):
+        except (
+            AttributeError,
+            KeyError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ):
             bg_color = "#262930"
             text_color = "white"
 
