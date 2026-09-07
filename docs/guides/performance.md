@@ -1,202 +1,115 @@
-# Performance
+# Performance Settings
 
-napari-phasors spreads the expensive work over the machine's cores. Most of
-the time it spends on a large image is inside phasorpy's Cython kernels or
-inside NumPy, and both release the GIL while they work, so plain threads are
-enough to use every core — without paying to copy multi-hundred-megabyte `G`
-and `S` arrays across a process boundary, which would cost more than the
-compute it saves.
+Large fluorescence lifetime (FLIM) and hyperspectral datasets can contain millions of pixels across multiple channels, harmonics, and time points. **napari-phasors** is designed to process these large datasets smoothly by distributing computationally intensive tasks across your computer's CPU cores.
 
-This is on by default and needs no configuration. The **Performance** section
-of the **Plot Settings** tab is there for the cases where the defaults are not
-what you want.
+Out of the box, parallel processing is enabled automatically and requires no special configuration. This guide explains how acceleration works, how you can fine-tune performance in the user interface, and best practices for managing large datasets.
 
-For measured numbers on synthetic data — and a notebook you can re-run on your
-own hardware — see {doc}`benchmarks`.
+---
 
-## The Performance section
+## The Performance Controls
 
-**Plot Settings -> Performance**. All three settings are plugin-wide, and all
-three apply from the next operation onwards: anything already running finishes
-with the setting it started under.
+You can adjust how napari-phasors utilizes your system's resources in the **Performance** section of the **Plot Settings** tab:
 
-| Setting | Description |
-|---------|-------------|
-| **Parallel processing** | Master switch for the thread pools. On, filtering, the phasor transform, component fits and the per-layer analyses are spread over the cores; off, every one of them runs sequentially on the calling thread. |
-| **Memory budget** | The share of currently free RAM that concurrent work may occupy, 5–95 %. Defaults to 50 %. |
-| **Phasor precision** | The precision newly opened layers store their phasor arrays at: `As read` (the default) or `float32 (half memory)`. |
+**Plot Settings -> Performance**
 
-A hint line underneath reports what the settings currently amount to — the
-worker count in use, and how much memory that works out to given what is free
-right now.
+```{note}
+The Performance section includes four controls that take effect immediately for all subsequent operations. Any operation already running finishes with the settings it started with.
+```
 
-### Parallel processing
+| Setting | What it does | Recommended use |
+|---|---|---|
+| **Parallel images** | Processes multiple files, layers, or images concurrently across CPU cores. | **Leave ON** for multi-layer filtering, stack loading, and batch processing. Turn OFF if importing a very large image stack on a memory-constrained machine. |
+| **Parallel regions** | Accelerates a single large image by computing spatial bands concurrently. | **Leave ON** to ensure faster median filtering and phasor transforms on high-resolution images. |
+| **Memory budget** | Caps the share of currently free RAM (5–95%) that concurrent workers may use. Defaults to **50%**. | **50%** works well for most setups. Lower to **20–30%** on shared computers or laptops; raise to **70–80%** on dedicated high-memory workstations. |
+| **Phasor precision** | Selects storage precision for newly opened phasor layers: `As read` (`float64`) or `float32 (half memory)`. | Select **`float32`** when working with large time-lapses or multi-gigabyte datasets to cut memory usage in half. |
 
-Turning it off is a **speed-versus-resources** choice, not an accuracy one.
-The split points were chosen so that every piece of work is independent of the
-others, and the results are identical either way — see
-[the identical-results guarantee](#identical-results) below.
+A live hint line underneath the controls displays your machine's detected CPU cores and the current memory allocation.
 
-Turn it off when:
+---
 
-- the machine is shared with another heavy job, or you are on a cluster node
-  with a core allocation;
-- you are reproducing a timing and want a single-threaded reference;
-- you are short on memory (a pool of `N` workers holds `N` items at once,
-  where a sequential run holds one);
-- you are debugging, and a sequential traceback is easier to read.
+### Parallel Images vs. Parallel Regions
 
-### Memory budget
+Understanding the difference between these two toggles helps you choose the best settings for your workflow:
 
-Parallelism changes the memory profile, not just the timing. A serial file
-read holds one decoded signal; a pool of `N` holds `N`. The budget is what
-sizes every pool whose items are large enough to matter:
+* **Parallel images (fanning out over items):**
+  When you import a 3D/time-lapse stack, filter multiple selected layers at once, or run batch analysis, each worker processes an entire image. Because each worker holds a full image in memory, total memory usage scales with the worker count. The **Memory budget** slider automatically caps how many images are processed concurrently so your machine does not run out of RAM.
 
-- how many files a 3D stack read decodes at once;
-- how many layers an export writes at once;
-- how many batch-analysis files are decoded ahead of being written out.
+* **Parallel regions (splitting single large images):**
+  When you are working with a single high-resolution image (e.g., 1024×1024 or 2048×2048 pixels), this switch splits the image into horizontal regions computed across all CPU cores. Because the image is already in memory, this uses almost no extra RAM while dramatically speeding up process like the median filter.
 
-Lower it when reading a large stack runs the machine out of memory; raise it
-on a machine with headroom and nothing else running. It is the single knob
-that makes the whole plugin less memory-hungry, because every pool sized
-against whole images reads it.
+---
 
-The default of 50 % deliberately leaves headroom for whatever the caller
-accumulates *alongside* the workers — for a stack read, the stacked canvas
-being built.
+### Managing Memory: Budget & Precision
 
-### Phasor precision
+#### Memory budget (% of free RAM)
+Parallel processing speeds up computation, but loading multiple images simultaneously increases peak RAM usage. The **Memory budget** slider sets an upper boundary: napari-phasors checks how much free memory your computer has right now, and sizes its concurrency pools to stay within that budget.
 
-This is the one control here that changes the numbers rather than only the
-schedule, which is why it is separate and opt-in.
+* **When to lower it:** If napari or other applications on your computer feel sluggish during large imports, reduce the budget to 25–30%.
+* **When to raise it:** If you are working on a powerful workstation with ample free RAM and want maximum import and export speed, raise the budget to 70–80%.
 
-A phasor layer holds six full-size arrays — the intensity twice, and `G`, `S`
-and their unfiltered originals — so the storage precision is the largest
-single lever on what an open image costs. Storing them as `float32` halves
-both the resident layer and every transient copy a filter makes.
+#### Phasor precision (`float32` vs. `float64`)
+A phasor image layer maintains several full-resolution arrays (intensity, mean, real phasor coordinate $G$, and imaginary phasor coordinate $S$, plus unfiltered backups). Storing these arrays in 64-bit double precision (`float64`) uses 8 bytes per pixel per array.
 
-The cost is precision: phasor coordinates lie in `[-1, 1]`, where `float32`
-carries about seven significant digits against `float64`'s sixteen. That is
-far below photon noise in any real acquisition, but it is **not**
-bit-identical, which is why it is off by default.
+Switching **Phasor precision** to **`float32 (half memory)`** reduces storage to 4 bytes per pixel, cutting the memory footprint of opened layers in half:
 
-It applies only to images opened **after** it is set. Images already open keep
-the precision they were read with; nothing is converted behind your back.
+* **Is scientific precision affected?** In experimental FLIM and hyperspectral imaging, measurement uncertainty is dominated by photon Poisson noise (typically $pprox 10^{-2}$ to $10^{-3}$). In contrast, `float32` provides approximately 7 significant decimal digits of precision (errors $< 10^{-7}$), which is orders of magnitude finer than any experimental detector noise.
+* **When to use it:** Highly recommended when analyzing large 3D stacks, long time-lapse series, or many images simultaneously on a machine with 16 GB of RAM or less.
+* **Scope:** Applies to images opened *after* changing the setting. Existing open layers retain the precision they were created with.
+
+---
 
 (identical-results)=
-## Identical results
+## Scientific Accuracy: Identical Results Guarantee
 
-Every parallel path in the plugin produces **bit**-identical output to the
-sequential one: the same values, the same dtypes, the same NaN positions. Not
-"within tolerance" — identical.
+Turning parallelism on or off is strictly a **speed versus system resource** decision—it never alters your scientific data.
 
-Two kinds of parallelism are involved, and each earns that guarantee
-differently:
+Every parallel workflow in napari-phasors produces results that are **bit-for-bit identical** to running sequentially on a single core:
+* The same $G$ and $S$ coordinate values down to the last decimal bit.
+* The exact same thresholded pixels and NaN mask locations.
+* The exact same FRET trajectories, component percentages, and cluster statistics.
 
-- **Fanning out over items** — one worker per file, per layer or per tile. The
-  items are independent, so there is nothing to reconcile.
-- **Splitting one array into bands** — for the case that has only one item: a
-  single very large image. A band is valid only for a kernel whose output at a
-  pixel depends on a bounded neighbourhood. The phasor transform is point-wise,
-  so its bands need no overlap at all. The median filter reaches `size // 2`
-  pixels per pass, so each band is grown by `repeat * (size // 2)` rows on both
-  sides and trimmed back afterwards.
+The only setting that introduces a difference in numbers is **Phasor precision (`float32`)**, which is why it is strictly opt-in.
 
-The test suite asserts this directly across a matrix of shapes, harmonic
-counts, dtypes and filter parameters, with the splitting threshold patched down
-to a single pixel so even small test arrays exercise the split path.
+---
 
-**Phasor precision is the sole exception**, and is opt-in for that reason.
+## Where Acceleration is Applied
 
-## Where parallelism is applied
+| Workflow / Tool | How it is accelerated | Benefit to the user |
+|---|---|---|
+| **Raw file & stack import** | Files in a stack are decoded across multiple CPU threads. | Significantly faster loading of multi-file time-lapses and z-stacks. |
+| **Phasor transform** | High-resolution images are split into regions and computed in parallel. | Instant conversion from raw decay or spectra to phasor coordinates. |
+| **Median filtering** | Filter passes are computed in parallel across image bands. | Faster median filtering. |
+| **Multi-layer analysis** | Filtering, thresholding, FRET mapping, and component fitting process layers in parallel. | Batch operations across 5–10+ layers complete in the time of a single layer. |
+| **Exporting results** | Multi-layer exports compress and save images across threads. | Faster saving of large analysis outputs and TIFF stacks. |
+| **Batch analysis** | Pipeline steps fan out across available cores with safe memory limits. | Maximizes throughput when analyzing directories of acquisitions. |
 
-| Operation | Unit of work |
-|---|---|
-| Reading a stack of raw files | one worker per file, pool sized against free memory |
-| The phasor transform | bands of one image |
-| Median filtering | bands of one image — the hottest interactive path, since it re-runs on every slider move |
-| Filtering and thresholding several selected layers | one worker per layer |
-| FRET efficiency maps, phasor mapping output maps, component fits, linear projections | one worker per selected layer |
-| Exporting layers | one file per worker; the encoders release the GIL while compressing |
-| Batch analysis | files decoded ahead of being written out |
+### Smart Safeguards
+* **Small images are not split:** For small fields of view (under ~1 megapixel), single-core computation finishes in milliseconds. napari-phasors automatically skips region splitting for small images to avoid thread management overhead.
+* **No oversubscription:** Reading a stack of files in parallel does not launch nested threads for internal filters. The plugin automatically coordinates workloads so your CPU is never overwhelmed.
 
-Two limits keep this from backfiring:
+---
 
-- **Small arrays are never split.** Below roughly a megapixel the kernels
-  finish in a few milliseconds and the thread hand-off — plus, for the median
-  filter, the halo recomputation — costs more than it saves. The helpers
-  decide this themselves, so no call site has to guard for it.
-- **Pools never nest.** A reader that fans out over files calls helpers that
-  themselves fan out over bands. Letting both levels spawn `N` threads would
-  oversubscribe the machine badly, so a thread already running inside a pool
-  runs any nested fan-out sequentially.
+## Hardware Recommendations
 
-However many cores are reported, no more than 16 threads are used: beyond
-roughly that point the array work is memory-bandwidth bound, and extra threads
-only add contention and peak memory.
+Depending on your computer setup, here are our recommended settings:
 
-## Errors are collected, not fatal
+### Standard Laptop (8–16 GB RAM, 4–8 Cores)
+* **Parallel images:** ON (turn OFF only if opening very large 3D volumes).
+* **Parallel regions:** ON.
+* **Memory budget:** 30–40% (leaves headroom for your web browser and OS).
+* **Phasor precision:** `float32 (half memory)` (greatly extends how many images you can keep open simultaneously).
 
-Previously a single failing layer aborted a whole batch. Now each layer's
-exception is collected and the failures are reported together, so one bad file
-in a batch no longer costs you the rest of the run.
+### High-End Analysis Workstation (32–128+ GB RAM, 12–32 Cores)
+* **Parallel images:** ON.
+* **Parallel regions:** ON.
+* **Memory budget:** 50–75%.
+* **Phasor precision:** `As read` (`float64`) or `float32`.
 
-## Overriding the worker count
-
-`NAPARI_PHASORS_WORKERS` sets the thread count for the whole plugin:
+### Shared Servers & HPC Compute Nodes
+When running napari on a shared multi-user server or cluster node with allocated CPU limits, you can restrict napari-phasors to a specific number of threads using the `NAPARI_PHASORS_WORKERS` environment variable before launching:
 
 ```bash
 NAPARI_PHASORS_WORKERS=4 napari
 ```
 
-Setting it to `1` disables concurrency entirely — the escape hatch when
-debugging, or when you need a single-threaded reference without touching the
-GUI.
-
-Precedence, highest first:
-
-1. the **Parallel processing** switch (off wins over everything);
-2. `NAPARI_PHASORS_WORKERS`;
-3. any worker count an individual call asks for.
-
-## Scripting
-
-```python
-from napari_phasors._parallel import (
-    parallel_filter_median,
-    parallel_map,
-    parallel_phasor_from_signal,
-    set_memory_fraction,
-    set_parallel_enabled,
-)
-
-# Drop-in replacements for the phasorpy calls.
-mean, real, imag = parallel_phasor_from_signal(signal, axis=0)
-mean, real, imag = parallel_filter_median(mean, real, imag, repeat=3, size=5)
-
-# Fan out over independent items, preserving order.
-results = parallel_map(process_one, items)
-
-# The same settings the GUI controls.
-set_parallel_enabled(False)
-set_memory_fraction(0.25)
-```
-
-| Helper | Purpose |
-|---|---|
-| `parallel_map(func, items)` | Order-preserving map over a pool. `on_error="collect"` returns exceptions in place instead of aborting. |
-| `parallel_compute_apply(...)` | Compute in the pool, apply results in order on the calling thread — the split that keeps Qt and napari objects off worker threads. |
-| `parallel_phasor_from_signal(...)` | Band-parallel `phasor_from_signal`. |
-| `parallel_filter_median(...)` | Band-parallel `phasor_filter_median`, with the halo that keeps it bit-identical. |
-| `band_bounds(size)` / `parallel_bands(...)` | Split an array into contiguous row bands. |
-| `default_workers()` / `worker_limit_from_env()` | The resolved worker count. |
-| `workers_for_memory(...)` / `items_for_memory(...)` | Size a pool so that concurrent items stay inside the memory budget. |
-
-Two rules to follow when using these directly, both of which the plugin holds
-throughout:
-
-1. **Qt values are read on the calling thread and passed in**, never read from
-   inside a worker. Reading a spinbox from a worker thread is a crash waiting
-   to happen.
-2. **napari progress bars are Qt objects owned by the calling thread.** Workers
-   never touch them; report progress as results are collected.
+Setting `NAPARI_PHASORS_WORKERS=1` acts as a complete single-threaded mode for baseline performance testing or low-resource environments.

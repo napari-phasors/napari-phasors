@@ -1717,7 +1717,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         self.threads_spin.setToolTip(
             "Read and compute files concurrently (1 = single-threaded). "
             "File writing and plot rendering stay on the main thread. "
-            "Ignored while 'Parallel processing' is off in Plot Settings."
+            "Ignored while 'Parallel images' is off in Plot Settings."
         )
         workers_row.addWidget(self.threads_spin)
         workers_row.addStretch()
@@ -5212,8 +5212,9 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         preserve = self.preserve_paths_checkbox.isChecked()
         load_into_viewer = self.load_into_viewer_checkbox.isChecked()
         # The batch tab has its own worker spinbox, but the plugin-wide
-        # "Parallel processing" switch outranks it: turning parallelism off
-        # has to mean off everywhere, not everywhere except here.
+        # "Parallel images" switch outranks it: a batch fans out over whole
+        # files, so turning that scope off has to mean off everywhere, not
+        # everywhere except here.
         workers = default_workers(len(files), self.threads_spin.value())
         masks_enabled = self.masks_group.isChecked()
         self._auto_tabs = self._auto_contrast_tabs()

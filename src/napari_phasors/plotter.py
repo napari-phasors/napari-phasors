@@ -48,12 +48,16 @@ from superqt import QToggleSwitch
 
 from ._canvas import PhasorCanvasWidget as CanvasWidget
 from ._parallel import (
+    BANDS,
+    ITEMS,
     available_memory,
     default_workers,
     memory_fraction,
-    parallel_enabled,
+    parallel_bands_enabled,
+    parallel_items_enabled,
     set_memory_fraction,
-    set_parallel_enabled,
+    set_parallel_bands_enabled,
+    set_parallel_items_enabled,
 )
 from ._timelapse import CURRENT as FRAME_MODE_CURRENT
 from ._timelapse import POOLED as FRAME_MODE_POOLED
@@ -101,6 +105,51 @@ from .filter_tab import FilterWidget
 from .fret_tab import FretWidget
 from .phasor_mapping_tab import PhasorMappingWidget
 from .selection_tab import SelectionWidget
+
+#: Fallback for :func:`_theme_warning_color`, matching the amber napari's own
+#: themes use, so the text next to the warning triangle stays legible even if
+#: the theme cannot be resolved.
+_FALLBACK_WARNING_COLOR = "#e3b617"
+
+
+def _theme_warning_color():
+    """Return the current napari theme's warning colour as a hex string.
+
+    Read from the theme rather than hard-coded so the "Experimental" text
+    matches the triangle beside it, which napari's stylesheet recolours with
+    this same value.
+    """
+    try:
+        from napari.settings import get_settings
+        from napari.utils.theme import get_theme
+
+        return get_theme(get_settings().appearance.theme).warning.as_hex()
+    except Exception:  # noqa: BLE001 - a missing/renamed theme must not
+        # take the settings tab down with it.
+        return _FALLBACK_WARNING_COLOR
+
+
+def _warning_pixmap(widget, size=16):
+    """Return napari's warning triangle as a pixmap, or ``None``.
+
+    Rendered from napari's own ``warning.svg`` in the theme's warning colour,
+    which is exactly what napari's stylesheet does for the ``error_label``
+    object name -- so the two agree pixel for pixel and the marker is the one
+    napari uses for its own experimental controls.
+    """
+    try:
+        from napari._qt.qt_resources import QColoredSVGIcon
+
+        icon = QColoredSVGIcon.from_resources("warning").colored(
+            _theme_warning_color()
+        )
+    except Exception:  # noqa: BLE001 - a missing resource must not take the
+        # settings tab down with it; the label just stays empty.
+        return None
+    ratio = widget.devicePixelRatioF() if widget is not None else 1.0
+    pixmap = icon.pixmap(round(size * ratio), round(size * ratio))
+    pixmap.setDevicePixelRatio(ratio)
+    return pixmap
 
 
 def _apply_label_colors_to_combo(combo, labels_layer, unique_labels):
@@ -5495,18 +5544,29 @@ class PlotterWidget(QWidget):
     def _build_performance_section(self):
         """Return the "Performance" section box for the Plot Settings tab.
 
-        Two controls, both plugin-wide and both applying from the next
-        operation onwards.
+        Every control here is plugin-wide and applies from the next operation
+        onwards; anything already running finishes under the setting it
+        started with. The whole section is marked experimental, with the same
+        warning triangle napari puts on its own experimental controls.
 
-        *Parallel processing* turns the thread pools on and off. With it on,
-        filtering, the phasor transform, component fits and the per-layer
-        analyses are spread over the machine's cores; with it off every one
-        of them runs sequentially on the calling thread. The results are the
-        same either way -- the split points were chosen so that each piece of
-        work is independent of the others -- so this is a
-        speed-versus-resources choice, not an accuracy one. Turn it off when
-        the machine is shared with another heavy job, or to reproduce a
-        timing.
+        The two parallelism switches cover the two different shapes the work
+        comes in, and they are separate because they cost different things.
+
+        *Parallel images* fans out over whole items: the files of a stack
+        being read, the layers of a multi-layer filter or export, the images
+        of a batch run. Each worker holds one whole item, so this is the
+        switch that multiplies peak memory by the worker count. Turn it off
+        when a stack read runs the machine out of RAM.
+
+        *Parallel regions* splits a *single* image into horizontal bands and
+        gives each band its own thread. The array is resident either way and
+        only the halo rows are recomputed, so memory barely moves -- but it
+        is the only thing that speeds up the case of one very large image.
+        Turn it off to reproduce a single-threaded timing.
+
+        Neither changes the numbers: the split points were chosen so each
+        piece of work is independent of the others, and the banded results
+        are bit-identical to the unsplit call.
 
         *Memory budget* is the share of currently free RAM that concurrent
         work is allowed to occupy. It is what sizes the pools that hold whole
@@ -5525,17 +5585,38 @@ class PlotterWidget(QWidget):
         """
         box, layout = make_section("Performance")
 
+        layout.addWidget(self._build_experimental_warning())
+
         grid = QGridLayout()
         layout.addLayout(grid)
 
-        self.parallel_processing_label = QLabel("Parallel processing:")
-        self.parallel_processing_checkbox = QToggleSwitch()
-        self.parallel_processing_checkbox.setChecked(parallel_enabled())
-        self.parallel_processing_checkbox.toggled.connect(
-            self._on_parallel_processing_toggled
+        self.parallel_items_label = QLabel("Parallel images:")
+        self.parallel_items_checkbox = QToggleSwitch()
+        self.parallel_items_checkbox.setChecked(parallel_items_enabled())
+        self.parallel_items_checkbox.setToolTip(
+            "Process several layers, files or images at the same time. Each "
+            "worker holds one whole image, so this is what multiplies peak "
+            "memory; turn it off if a large stack runs out of RAM."
         )
-        grid.addWidget(self.parallel_processing_label, 0, 0)
-        grid.addWidget(self.parallel_processing_checkbox, 0, 1)
+        self.parallel_items_checkbox.toggled.connect(
+            self._on_parallel_items_toggled
+        )
+        grid.addWidget(self.parallel_items_label, 0, 0)
+        grid.addWidget(self.parallel_items_checkbox, 0, 1)
+
+        self.parallel_bands_label = QLabel("Parallel regions:")
+        self.parallel_bands_checkbox = QToggleSwitch()
+        self.parallel_bands_checkbox.setChecked(parallel_bands_enabled())
+        self.parallel_bands_checkbox.setToolTip(
+            "Split one large image into horizontal bands and process them at "
+            "the same time. Costs almost no extra memory, and is the only "
+            "thing that speeds up a single very large image."
+        )
+        self.parallel_bands_checkbox.toggled.connect(
+            self._on_parallel_bands_toggled
+        )
+        grid.addWidget(self.parallel_bands_label, 1, 0)
+        grid.addWidget(self.parallel_bands_checkbox, 1, 1)
 
         self.memory_budget_label = QLabel("Memory budget:")
         self.memory_budget_spinbox = QSpinBox()
@@ -5549,8 +5630,8 @@ class PlotterWidget(QWidget):
         self.memory_budget_spinbox.valueChanged.connect(
             self._on_memory_budget_changed
         )
-        grid.addWidget(self.memory_budget_label, 1, 0)
-        grid.addWidget(self.memory_budget_spinbox, 1, 1)
+        grid.addWidget(self.memory_budget_label, 2, 0)
+        grid.addWidget(self.memory_budget_spinbox, 2, 1)
 
         self.phasor_precision_label = QLabel("Phasor precision:")
         self.phasor_precision_combobox = QComboBox()
@@ -5570,8 +5651,8 @@ class PlotterWidget(QWidget):
         self.phasor_precision_combobox.currentIndexChanged.connect(
             self._on_phasor_precision_changed
         )
-        grid.addWidget(self.phasor_precision_label, 2, 0)
-        grid.addWidget(self.phasor_precision_combobox, 2, 1)
+        grid.addWidget(self.phasor_precision_label, 3, 0)
+        grid.addWidget(self.phasor_precision_combobox, 3, 1)
 
         self.parallel_processing_hint = QLabel()
         self.parallel_processing_hint.setWordWrap(True)
@@ -5581,13 +5662,67 @@ class PlotterWidget(QWidget):
         self._update_parallel_processing_hint()
         return box
 
-    def _on_parallel_processing_toggled(self, checked):
-        """Switch the plugin's thread pools on or off.
+    def _build_experimental_warning(self):
+        """Return the "Experimental" banner for the Performance section.
+
+        The marker is napari's own: ``warning.svg`` -- the triangle with the
+        exclamation mark -- in the current theme's warning colour, which is
+        what napari puts on its own experimental controls. The label carries
+        the ``error_label`` object name napari's stylesheet targets *and*
+        renders that same resource itself, so it looks right whether or not
+        the stylesheet reaches this widget. Reusing napari's icon rather than
+        shipping our own keeps the two identical in every theme.
+        """
+        widget = QWidget()
+        row = QHBoxLayout(widget)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(4)
+
+        tooltip = (
+            "Parallel processing is new. Results are identical to running "
+            "sequentially, but if you hit a crash, a hang or an out-of-memory "
+            "error, switch these off and report it."
+        )
+
+        self.experimental_warning_icon = QLabel()
+        self.experimental_warning_icon.setObjectName("error_label")
+        self.experimental_warning_icon.setToolTip(tooltip)
+        # The object name alone only paints the icon where napari's
+        # stylesheet reaches this widget, which depends on where the dock
+        # ends up. Rendering the same resource ourselves makes the marker
+        # unconditional; the stylesheet's ``image`` wins where it applies,
+        # and it draws the identical SVG in the identical colour.
+        pixmap = _warning_pixmap(self.experimental_warning_icon)
+        if pixmap is not None:
+            self.experimental_warning_icon.setPixmap(pixmap)
+
+        self.experimental_warning_label = QLabel("Experimental")
+        self.experimental_warning_label.setToolTip(tooltip)
+        self.experimental_warning_label.setStyleSheet(
+            f"color: {_theme_warning_color()};"
+        )
+
+        row.addWidget(self.experimental_warning_icon)
+        row.addWidget(self.experimental_warning_label)
+        row.addStretch(1)
+        return widget
+
+    def _on_parallel_items_toggled(self, checked):
+        """Switch fan-out over separate layers, files and images on or off.
 
         Applies from the next operation onwards; anything already running
         finishes with the setting it started under.
         """
-        set_parallel_enabled(checked)
+        set_parallel_items_enabled(checked)
+        self._update_parallel_processing_hint()
+
+    def _on_parallel_bands_toggled(self, checked):
+        """Switch splitting a single image across threads on or off.
+
+        Applies from the next operation onwards; anything already running
+        finishes with the setting it started under.
+        """
+        set_parallel_bands_enabled(checked)
         self._update_parallel_processing_hint()
 
     def _on_memory_budget_changed(self, percent):
@@ -5607,37 +5742,62 @@ class PlotterWidget(QWidget):
         self._update_parallel_processing_hint()
 
     def _update_parallel_processing_hint(self):
-        """Describe what the performance controls are currently doing."""
+        """Describe what the performance controls are currently doing.
+
+        Each switch gets its own clause, because "off" means something
+        different for each: with images off the memory budget stops mattering
+        (nothing holds more than one image at a time), while with regions off
+        a single large image simply takes as long as it takes.
+        """
         hint = getattr(self, 'parallel_processing_hint', None)
         if hint is None:
             return
-        if not parallel_enabled():
-            hint.setText(
-                "Everything runs sequentially on one thread. Slower on large "
-                "images, but uses the least memory and leaves the rest of "
-                "the machine free."
-            )
-            return
 
-        workers = default_workers()
-        free = available_memory()
-        budget = (
-            f"{free * memory_fraction() / 2 ** 30:.1f} GB of the "
-            f"{free / 2 ** 30:.1f} GB free right now"
-            if free
-            else f"{round(memory_fraction() * 100)}% of free memory"
-        )
+        items_on = parallel_items_enabled()
+        bands_on = parallel_bands_enabled()
         precision = (
             " New images are stored as float32, halving what each one costs."
             if phasor_storage_dtype() == "float32"
             else ""
         )
-        hint.setText(
-            f"Filtering, the phasor transform and the per-layer analyses run "
-            f"on up to {workers} threads, and work that holds whole images "
-            f"is sized to fit {budget}. Results are identical to running "
-            f"sequentially.{precision}"
-        )
+
+        if not items_on and not bands_on:
+            hint.setText(
+                "Everything runs sequentially on one thread. Slower on large "
+                "images, but uses the least memory and leaves the rest of "
+                "the machine free." + precision
+            )
+            return
+
+        parts = []
+        if items_on:
+            free = available_memory()
+            budget = (
+                f"{free * memory_fraction() / 2 ** 30:.1f} GB of the "
+                f"{free / 2 ** 30:.1f} GB free right now"
+                if free
+                else f"{round(memory_fraction() * 100)}% of free memory"
+            )
+            parts.append(
+                f"Up to {default_workers(scope=ITEMS)} layers, files or "
+                f"images are processed at once, sized to fit {budget}."
+            )
+        else:
+            parts.append(
+                "Layers, files and images are processed one at a time, which "
+                "uses the least memory."
+            )
+        if bands_on:
+            parts.append(
+                f"A single large image is split across up to "
+                f"{default_workers(scope=BANDS)} threads."
+            )
+        else:
+            parts.append(
+                "A single image is processed in one piece, on one thread."
+            )
+        parts.append("Results are identical to running sequentially.")
+        hint.setText(" ".join(parts) + precision)
 
     def _reflow_plot_settings_rows(self, show_multi_layer_contour_controls):
         """Reposition rows to avoid empty spacing when contour row is hidden."""

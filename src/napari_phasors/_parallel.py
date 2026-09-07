@@ -1,42 +1,4 @@
-"""Helpers for running per-item work concurrently.
-
-Nearly all of the time napari-phasors spends on a large image is inside
-phasorpy's Cython kernels (``phasor_from_signal``, ``phasor_filter_median``,
-``phasor_component_fit``) or inside NumPy. Both release the GIL while they
-work, so a plain :class:`~concurrent.futures.ThreadPoolExecutor` gives close
-to linear speedups on the array work. Threads are also the only sane choice
-here: results stay in the same address space, so the multi-hundred-megabyte
-``G``/``S`` arrays are never pickled the way a process pool would require.
-
-Two rules shape every helper below.
-
-**Qt and napari objects stay on the calling thread.** Layer creation, layer
-mutation and any widget access must not happen in a worker. The helpers
-therefore split work into a *compute* callable (pure array work, run in the
-pool) and an *apply* callable (run in order on the calling thread), which is
-what :func:`parallel_compute_apply` exists for.
-
-**Pools never nest.** A reader that fans out over files calls helpers that
-themselves fan out over tiles. Letting both layers spawn ``N`` threads would
-oversubscribe the machine badly, so :func:`parallel_map` marks the current
-thread while a pool is active and any nested call runs sequentially instead.
-
-Fanning out over *items* only helps when there are several of them, and the
-case that hurts most is the opposite one: a single very large image. The
-band helpers (:func:`parallel_bands` and the kernel wrappers built on it)
-cover that by splitting one array into horizontal bands of rows and handing
-each band to a worker. phasorpy's ``num_threads`` argument does not help here
--- measured on phasorpy 0.12 it has no effect at the shapes this plugin sees
--- but band-splitting scales close to linearly, because the same Cython
-kernels release the GIL either way.
-
-Splitting is only valid for a kernel whose output at a pixel depends on a
-bounded neighbourhood. Point-wise kernels need no overlap at all; the median
-filter reaches ``size // 2`` pixels per pass, so a band must be grown by
-``repeat * (size // 2)`` rows on each side and trimmed back afterwards. With
-that halo the result is bit-identical to the unsplit call, which the tests
-assert directly rather than with a tolerance.
-"""
+"""Helpers for running per-item work concurrently."""
 
 import os
 import threading
@@ -46,9 +8,16 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 
 __all__ = [
+    "ITEMS",
+    "BANDS",
+    "scope_enabled",
     "default_workers",
     "parallel_enabled",
     "set_parallel_enabled",
+    "parallel_items_enabled",
+    "set_parallel_items_enabled",
+    "parallel_bands_enabled",
+    "set_parallel_bands_enabled",
     "memory_fraction",
     "set_memory_fraction",
     "parallel_map",
@@ -88,17 +57,26 @@ BAND_HALO_RATIO = 8
 # fan-outs degrade to sequential instead of multiplying thread counts.
 _local = threading.local()
 
-# Master switch, driven by the "Parallel processing" toggle in Plot Settings.
-# Turning it off collapses every helper here to the plain sequential call,
-# which is what a user wants when they are comparing against a single-threaded
-# reference, running on a shared machine, or short on memory.
-_parallel_enabled = True
+# The two switches driven by the Performance section of Plot Settings.
+#
+# ``_parallel_items_enabled`` covers fan-out over *items* -- the files of a
+# stack, the layers of a multi-layer operation, the images of a batch. Each
+# worker holds a whole item, so this is the switch that multiplies peak
+# memory, and the one to turn off on a machine that is short on RAM.
+#
+# ``_parallel_bands_enabled`` covers splitting *one* image into horizontal
+# bands. Peak memory barely moves -- the array is already resident and only
+# the halo rows are duplicated -- but it is the only thing that speeds up the
+# single-large-image case.
 
-#: Default share of *free* memory that concurrent work may occupy. Every pool
-#: whose items are large enough to matter is sized against this, so lowering
-#: it is the one knob that makes the whole plugin less memory-hungry. The
-#: default leaves half the headroom for whatever the caller accumulates
-#: alongside the workers -- for a stack read, the stacked canvas being built.
+_parallel_items_enabled = True
+_parallel_bands_enabled = True
+
+#: The two scopes :func:`default_workers` and friends accept.
+ITEMS = "items"
+BANDS = "bands"
+
+#: Default share of *free* memory that concurrent work may occupy.
 DEFAULT_MEMORY_FRACTION = 0.5
 
 _memory_fraction = DEFAULT_MEMORY_FRACTION
@@ -124,27 +102,75 @@ def set_memory_fraction(fraction):
     _memory_fraction = min(0.95, max(0.05, float(fraction)))
 
 
-def parallel_enabled():
-    """Return whether the helpers in this module may use a thread pool."""
-    return _parallel_enabled
+def parallel_items_enabled():
+    """Return whether work may be fanned out over separate items.
+
+    Items are whole files, layers or images: what :func:`parallel_map`,
+    :func:`parallel_stream` and :func:`parallel_compute_apply` iterate over.
+    """
+    return _parallel_items_enabled
 
 
-def set_parallel_enabled(enabled):
-    """Enable or disable every thread pool in the plugin.
+def set_parallel_items_enabled(enabled):
+    """Enable or disable fan-out over separate layers, files and images.
 
-    The switch is read through :func:`default_workers`, which every helper
-    here funnels through, so turning it off makes ``parallel_map`` run inline
-    and stops :func:`parallel_filter_median` and friends from band-splitting.
-    Work already in flight is unaffected; the next call picks up the change.
+    Read through ``default_workers(..., scope=ITEMS)``, which every item-level
+    helper funnels through, so turning it off makes :func:`parallel_map` and
+    :func:`parallel_stream` run inline. Band splitting inside a single image
+    is a separate switch and is left alone. Work already in flight is
+    unaffected; the next call picks up the change.
 
     Parameters
     ----------
     enabled : bool
-        ``True`` to fan out over threads, ``False`` to run everything
-        sequentially on the calling thread.
+        ``True`` to process several items at once, ``False`` to process them
+        one after another on the calling thread.
     """
-    global _parallel_enabled
-    _parallel_enabled = bool(enabled)
+    global _parallel_items_enabled
+    _parallel_items_enabled = bool(enabled)
+
+
+def parallel_bands_enabled():
+    """Return whether a single image may be split into bands across threads."""
+    return _parallel_bands_enabled
+
+
+def set_parallel_bands_enabled(enabled):
+    """Enable or disable splitting one image across threads.
+
+    Parameters
+    ----------
+    enabled : bool
+        ``True`` to split a large array into bands, ``False`` to process it
+        in one piece.
+    """
+    global _parallel_bands_enabled
+    _parallel_bands_enabled = bool(enabled)
+
+
+def parallel_enabled():
+    """Return whether *either* scope may use a thread pool."""
+    return _parallel_items_enabled or _parallel_bands_enabled
+
+
+def set_parallel_enabled(enabled):
+    """Set both parallelism switches at once.
+
+    Parameters
+    ----------
+    enabled : bool
+        ``True`` to fan out over threads in both scopes, ``False`` to run
+        everything sequentially on the calling thread.
+    """
+    set_parallel_items_enabled(enabled)
+    set_parallel_bands_enabled(enabled)
+
+
+def scope_enabled(scope):
+    """Return whether *scope* (:data:`ITEMS` or :data:`BANDS`) is switched on."""
+    if scope == BANDS:
+        return _parallel_bands_enabled
+    return _parallel_items_enabled
 
 
 def worker_limit_from_env():
@@ -167,7 +193,7 @@ def worker_limit_from_env():
     return value if value > 0 else None
 
 
-def default_workers(n_items=None, workers=None):
+def default_workers(n_items=None, workers=None, scope=ITEMS):
     """Return how many threads to use for *n_items* pieces of work.
 
     Parameters
@@ -177,15 +203,20 @@ def default_workers(n_items=None, workers=None):
         idle threads only cost memory.
     workers : int, optional
         Explicit request. Still clamped to :data:`MAX_WORKERS` and to
-        *n_items*. The environment override wins over this, and
-        :func:`set_parallel_enabled` wins over both.
+        *n_items*. The environment override wins over this, and the scope's
+        switch wins over both.
+    scope : {'items', 'bands'}, optional
+        Which switch to consult: :data:`ITEMS` for fan-out over separate
+        layers, files and images, :data:`BANDS` for splitting one image.
+        Defaults to :data:`ITEMS`.
 
     Returns
     -------
     int
-        At least ``1``, and exactly ``1`` while parallelism is switched off.
+        At least ``1``, and exactly ``1`` while *scope*'s parallelism is
+        switched off.
     """
-    if not _parallel_enabled:
+    if not scope_enabled(scope):
         # The UI toggle is the most explicit statement of intent there is, so
         # it wins over both the environment override and any explicit request.
         return 1
@@ -211,23 +242,9 @@ def parallel_stream(
     workers=None,
     max_in_flight=None,
     on_error="raise",
+    scope=ITEMS,
 ):
     """Yield ``(index, item, result)`` in input order, a few items at a time.
-
-    The streaming counterpart to :func:`parallel_map`. Where ``parallel_map``
-    submits every item at once and returns one list holding every result,
-    this keeps at most *max_in_flight* items submitted and hands each result
-    to the caller as soon as its turn comes, so a consumer that writes each
-    result out and drops it never accumulates more than that many.
-
-    That distinction is the whole point for batch work: mapping over five
-    hundred files with a consumer slower than the workers lets every decoded
-    file pile up in memory, because nothing throttles the pool. Streaming
-    bounds it.
-
-    Results are yielded strictly in input order, and each one is released as
-    soon as the caller's loop moves on, so a caller that keeps no reference
-    holds at most ``max_in_flight + 1`` results at a time.
 
     Parameters
     ----------
@@ -248,6 +265,9 @@ def parallel_stream(
         ``'raise'`` propagates the first failure immediately, cancelling
         whatever has not started. ``'collect'`` yields the exception in that
         item's slot and carries on.
+    scope : {'items', 'bands'}, optional
+        Which parallelism switch governs this pool. Bands of one image pass
+        :data:`BANDS`; everything else leaves the :data:`ITEMS` default.
 
     Yields
     ------
@@ -260,7 +280,7 @@ def parallel_stream(
     if not items:
         return
 
-    n_workers = default_workers(len(items), workers)
+    n_workers = default_workers(len(items), workers, scope=scope)
 
     # A single worker, a single item, or an already-parallel caller all run
     # inline: no pool, no thread hand-off, and nothing is ever in flight.
@@ -323,6 +343,7 @@ def parallel_map(
     workers=None,
     progress=None,
     on_error="raise",
+    scope=ITEMS,
 ):
     """Apply *func* to every item, concurrently, preserving input order.
 
@@ -348,6 +369,9 @@ def parallel_map(
         given a chance to finish. ``'collect'`` returns the exception object
         in that item's slot instead, leaving the caller to sort out partial
         results.
+    scope : {'items', 'bands'}, optional
+        Which parallelism switch governs this pool. Forwarded to
+        :func:`parallel_stream`.
 
     Returns
     -------
@@ -365,15 +389,14 @@ def parallel_map(
 
     results = [None] * len(items)
     first_error = None
-    # Every item is submitted up front, matching this function's contract
-    # that the whole list comes back; the error is re-raised only once every
-    # item has had its turn.
+
     for index, _item, result in parallel_stream(
         func,
         items,
         workers=workers,
         max_in_flight=len(items),
         on_error="collect",
+        scope=scope,
     ):
         results[index] = result
         if first_error is None and isinstance(result, BaseException):
@@ -395,11 +418,6 @@ def parallel_compute_apply(
     on_error="raise",
 ):
     """Compute in a pool, then apply the results in order on this thread.
-
-    This is the pattern every multi-layer operation in the plugin follows:
-    the expensive part is pure array work and parallelizes, while writing the
-    answer back into a napari layer must happen on the main thread, one layer
-    at a time, in a predictable order.
 
     Parameters
     ----------
@@ -576,7 +594,7 @@ def band_bounds(size, workers=None, halo=0, min_band=1, max_band=None):
     min_band = max(1, int(min_band), BAND_HALO_RATIO * int(halo))
     allowed = max(1, size // min_band)
 
-    n_bands = default_workers(allowed, workers)
+    n_bands = default_workers(allowed, workers, scope=BANDS)
     if max_band:
         n_bands = max(n_bands, -(-size // max(1, int(max_band))))
     n_bands = max(1, min(n_bands, allowed, size))
@@ -633,7 +651,9 @@ def parallel_bands(
     )
     if len(bounds) <= 1:
         return [func(start, stop) for start, stop in bounds]
-    return parallel_map(lambda b: func(b[0], b[1]), bounds, workers=workers)
+    return parallel_map(
+        lambda b: func(b[0], b[1]), bounds, workers=workers, scope=BANDS
+    )
 
 
 def _row_axis_size(array):
@@ -646,7 +666,7 @@ def _should_split(array, workers=None):
     """Return whether *array* is big enough to be worth banding."""
     if in_worker_thread():
         return False
-    if default_workers(workers=workers) <= 1:
+    if default_workers(workers=workers, scope=BANDS) <= 1:
         return False
     shape = np.shape(array)
     if len(shape) < 2:
@@ -709,12 +729,6 @@ def parallel_filter_median(
     if len(bounds) <= 1:
         return run(mean, real, imag)
 
-    # phasorpy picks each output's dtype from its own input -- ``mean`` comes
-    # back untouched while ``real``/``imag`` are promoted to float32 or
-    # float64 -- so the three have to be probed separately. Probing on a
-    # throwaway array the size of one filter footprint is far cheaper than
-    # concatenating the band results afterwards, and lets every worker write
-    # straight into its slice of the final arrays.
     probe_shape = (2 * size + 1, 2 * size + 1)
     probe_out = phasor_filter_median(
         np.zeros(probe_shape, dtype=mean.dtype),
@@ -750,9 +764,6 @@ def parallel_phasor_from_signal(
 ):
     """Band-parallel :func:`phasorpy.phasor.phasor_from_signal`.
 
-    The transform is point-wise across space -- every pixel's phasor depends
-    only on its own histogram -- so bands need no halo and the result is
-    identical to the unsplit call.
 
     Parameters
     ----------
@@ -779,25 +790,20 @@ def parallel_phasor_from_signal(
     def run(data):
         return phasor_from_signal(data, axis=axis, harmonic=harmonic, **kwargs)
 
-    # A DataArray or a named axis carries coordinate metadata that slicing
-    # here would have to reproduce; leave those to phasorpy untouched.
     if not isinstance(signal, np.ndarray) or not isinstance(axis, int):
         return run(signal)
 
     if signal.ndim < 3 or in_worker_thread():
         return run(signal)
-    if default_workers(workers=workers) <= 1:
+    if default_workers(workers=workers, scope=BANDS) <= 1:
         return run(signal)
 
-    # The work scales with the whole signal, not just the pixels that come
-    # out of it: every one of the K histogram samples is touched per pixel.
     if signal.size < MIN_PARALLEL_PIXELS:
         return run(signal)
 
     hist_axis = axis % signal.ndim
     spatial = [i for i in range(signal.ndim) if i != hist_axis]
-    # Split the longest spatial axis: it gives the most even bands and keeps
-    # each worker's slice contiguous for the common trailing-axis layouts.
+
     split_axis = max(spatial, key=lambda i: signal.shape[i])
     rows = signal.shape[split_axis]
 
@@ -826,9 +832,6 @@ def parallel_phasor_from_signal(
 def parallel_rowwise(func, *arrays, workers=None):
     """Apply a point-wise array kernel band by band over the row axis.
 
-    For kernels whose output pixel depends only on the matching input pixel
-    -- component fitting, lifetime conversion -- banding needs no halo and
-    costs nothing but the split.
 
     Parameters
     ----------

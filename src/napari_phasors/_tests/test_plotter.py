@@ -1326,28 +1326,81 @@ def test_harmonic_bounds_ignore_empty_or_missing_harmonics(
     plotter._update_harmonic_bounds([layer])
 
 
-def test_parallel_processing_toggle_switches_the_thread_pools(
+def test_parallel_processing_toggles_switch_the_thread_pools(
     make_viewer_model, qtbot
 ):
-    """The Plot Settings switch drives the plugin-wide worker count."""
+    """The two Plot Settings switches drive their own scope, independently."""
     from napari_phasors import _parallel
 
-    previous = _parallel.parallel_enabled()
+    previous_items = _parallel.parallel_items_enabled()
+    previous_bands = _parallel.parallel_bands_enabled()
     viewer = make_viewer_model()
     plotter = PlotterWidget(viewer)
     try:
-        assert plotter.parallel_processing_checkbox.isChecked() is True
+        assert plotter.parallel_items_checkbox.isChecked() is True
+        assert plotter.parallel_bands_checkbox.isChecked() is True
 
-        plotter.parallel_processing_checkbox.setChecked(False)
-        assert _parallel.parallel_enabled() is False
-        assert _parallel.default_workers(n_items=8, workers=8) == 1
-        assert "sequentially" in plotter.parallel_processing_hint.text()
+        # Captured while both are on, so the comparison below survives a
+        # single-core runner or a NAPARI_PHASORS_WORKERS override.
+        bands_baseline = _parallel.default_workers(
+            n_items=8, workers=8, scope=_parallel.BANDS
+        )
 
-        plotter.parallel_processing_checkbox.setChecked(True)
-        assert _parallel.parallel_enabled() is True
-        assert "threads" in plotter.parallel_processing_hint.text()
+        # Turning images off must leave band splitting alone, and vice versa.
+        plotter.parallel_items_checkbox.setChecked(False)
+        assert _parallel.parallel_items_enabled() is False
+        assert _parallel.parallel_bands_enabled() is True
+        assert (
+            _parallel.default_workers(
+                n_items=8, workers=8, scope=_parallel.ITEMS
+            )
+            == 1
+        )
+        assert (
+            _parallel.default_workers(
+                n_items=8, workers=8, scope=_parallel.BANDS
+            )
+            == bands_baseline
+        )
+        assert "one at a time" in plotter.parallel_processing_hint.text()
+
+        plotter.parallel_items_checkbox.setChecked(True)
+        plotter.parallel_bands_checkbox.setChecked(False)
+        assert _parallel.parallel_items_enabled() is True
+        assert _parallel.parallel_bands_enabled() is False
+        assert (
+            _parallel.default_workers(
+                n_items=8, workers=8, scope=_parallel.BANDS
+            )
+            == 1
+        )
+        assert "in one piece" in plotter.parallel_processing_hint.text()
+
+        # Both off is the fully sequential plugin.
+        plotter.parallel_items_checkbox.setChecked(False)
+        assert "sequentially on one thread" in (
+            plotter.parallel_processing_hint.text()
+        )
     finally:
-        _parallel.set_parallel_enabled(previous)
+        _parallel.set_parallel_items_enabled(previous_items)
+        _parallel.set_parallel_bands_enabled(previous_bands)
+
+
+def test_performance_section_is_marked_experimental(make_viewer_model, qtbot):
+    """The section carries napari's own experimental warning marker."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+
+    # ``error_label`` is the object name napari's stylesheet paints with the
+    # warning triangle; borrowing it is what keeps the icon theme-correct.
+    assert plotter.experimental_warning_icon.objectName() == "error_label"
+    assert plotter.experimental_warning_label.text() == "Experimental"
+    assert "report it" in plotter.experimental_warning_icon.toolTip()
+
+    # The stylesheet only reaches the label where napari's theme is applied,
+    # so the triangle is also rendered directly and must be there regardless.
+    pixmap = plotter.experimental_warning_icon.pixmap()
+    assert pixmap is not None and not pixmap.isNull()
 
 
 def test_memory_budget_spinbox_sizes_the_pools(make_viewer_model, qtbot):
