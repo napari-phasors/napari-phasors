@@ -1,3 +1,8 @@
+import functools
+import hashlib
+import pathlib
+import tempfile
+
 import pytest
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import QDialog, QWidget
@@ -44,6 +49,86 @@ def configure_phasorpy_retries():
 
 
 configure_phasorpy_retries()
+
+
+# Under ``-n auto --dist loadfile`` different test files run in separate
+# processes sharing one download cache, and several of them ask for the same
+# dataset (e.g. ``test_reader.py`` and ``test_widget.py`` both fetch
+# "simfcs.b&h", which pooch unzips into that shared cache). Two workers doing
+# that at once race on the same cache entry, seen on Windows CI as
+# ``zipfile.BadZipFile: Bad CRC-32 for file 'simfcs.b&h'``. Locking per target
+# file makes the second worker wait and then hit the cache, while different
+# datasets still download in parallel. ``pooch.Pooch.fetch`` is the single
+# choke point for every download in the suite, so patching it covers phasorpy's
+# ``fetch``, ``test_data_utils`` and the sample-data loaders alike.
+
+# Seconds to wait for another worker's download of the same file to finish.
+_FETCH_LOCK_TIMEOUT = 600
+
+
+def _fetch_lock_dir():
+    """Directory holding the per-file lock files, shared by all workers."""
+    return pathlib.Path(tempfile.gettempdir()) / "napari-phasors-fetch-locks"
+
+
+def _fetch_lock_path(pooch_instance, fname):
+    """Lock file for ``fname`` in ``pooch_instance``'s cache.
+
+    Keyed by a hash of the absolute target path: the same dataset locks the
+    same file across workers, distinct datasets never block each other, and
+    names containing ``&`` or path separators stay filesystem-safe.
+    """
+    try:
+        target = str(pathlib.Path(pooch_instance.abspath) / fname)
+    except (AttributeError, TypeError):  # not a Pooch-shaped object
+        target = str(fname)
+    digest = hashlib.sha256(target.encode("utf-8")).hexdigest()[:16]
+    return _fetch_lock_dir() / f"{digest}.lock"
+
+
+def make_locked_fetch(fetch_function):
+    """Wrap ``fetch_function`` so one file is fetched by one process at a time."""
+    from filelock import FileLock, Timeout
+
+    @functools.wraps(fetch_function)
+    def locked_fetch(self, fname, *args, **kwargs):
+        lock_path = _fetch_lock_path(self, fname)
+        try:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            lock = FileLock(str(lock_path), timeout=_FETCH_LOCK_TIMEOUT)
+            lock.acquire()
+        except (Timeout, OSError):
+            # Never let the lock itself break a test: if it cannot be taken
+            # (read-only temp dir, or a worker died holding it), fall back to
+            # the unserialised fetch we had before.
+            return fetch_function(self, fname, *args, **kwargs)
+        try:
+            return fetch_function(self, fname, *args, **kwargs)
+        finally:
+            lock.release()
+
+    locked_fetch.__wrapped_by_napari_phasors__ = True
+    return locked_fetch
+
+
+def serialize_pooch_downloads():
+    """Make every ``pooch.Pooch.fetch`` in this process take a per-file lock.
+
+    Silently does nothing if pooch/filelock are unavailable or the patch is
+    already installed.
+    """
+    try:
+        import pooch
+        from filelock import FileLock  # noqa: F401 - checked before patching
+
+        if getattr(pooch.Pooch.fetch, "__wrapped_by_napari_phasors__", False):
+            return
+        pooch.Pooch.fetch = make_locked_fetch(pooch.Pooch.fetch)
+    except (AttributeError, ImportError, TypeError):
+        pass
+
+
+serialize_pooch_downloads()
 
 
 # --- Transient network failures become skips, not failures ------------------

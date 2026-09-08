@@ -7,10 +7,13 @@ import pytest
 import requests
 
 from napari_phasors._tests.conftest import (
+    _fetch_lock_path,
     configure_phasorpy_retries,
+    make_locked_fetch,
     network_flake_reason,
     pytest_runtest_call,
     pytest_runtest_setup,
+    serialize_pooch_downloads,
     skip_if_network_flake,
 )
 
@@ -142,3 +145,118 @@ def test_hooks_are_transparent_when_nothing_raises(hook):
     with pytest.raises(StopIteration) as excinfo:
         wrapper.send("hook result")
     assert excinfo.value.value == "hook result"
+
+
+class _FakePooch:
+    """Minimal stand-in for ``pooch.Pooch`` (only ``abspath`` is used)."""
+
+    def __init__(self, path):
+        self.abspath = path
+
+
+def test_serialize_pooch_downloads_patches_pooch_fetch():
+    """Importing the conftest wraps ``pooch.Pooch.fetch`` exactly once."""
+    import pooch
+
+    assert pooch.Pooch.fetch.__wrapped_by_napari_phasors__ is True
+
+    already_patched = pooch.Pooch.fetch
+    serialize_pooch_downloads()  # must not wrap a second time
+    assert pooch.Pooch.fetch is already_patched
+
+
+def test_serialize_pooch_downloads_swallows_import_error():
+    """A missing filelock must not break test collection."""
+    with patch.dict(sys.modules, {"filelock": None}):
+        serialize_pooch_downloads()  # must not raise
+
+
+def test_fetch_lock_path_is_per_target_file(tmp_path):
+    """The same target file locks the same path; different files do not."""
+    pooch_a = _FakePooch(tmp_path)
+    pooch_b = _FakePooch(tmp_path / "other")
+
+    # Names with characters that are not path-safe (``&``) must still work.
+    assert _fetch_lock_path(pooch_a, "simfcs.b&h.zip") == _fetch_lock_path(
+        _FakePooch(tmp_path), "simfcs.b&h.zip"
+    )
+    assert _fetch_lock_path(pooch_a, "simfcs.b&h.zip") != _fetch_lock_path(
+        pooch_a, "simfcs.r64"
+    )
+    assert _fetch_lock_path(pooch_a, "simfcs.r64") != _fetch_lock_path(
+        pooch_b, "simfcs.r64"
+    )
+    assert _fetch_lock_path(pooch_a, "simfcs.r64").suffix == ".lock"
+
+
+def test_locked_fetch_returns_the_wrapped_result(tmp_path):
+    """The wrapper is transparent: same arguments in, same result out."""
+    calls = []
+
+    def fake_fetch(self, fname, *args, **kwargs):
+        calls.append((fname, args, kwargs))
+        return f"/cache/{fname}"
+
+    locked = make_locked_fetch(fake_fetch)
+    result = locked(_FakePooch(tmp_path), "simfcs.r64", progressbar=True)
+
+    assert result == "/cache/simfcs.r64"
+    assert calls == [("simfcs.r64", (), {"progressbar": True})]
+
+
+def test_locked_fetch_releases_the_lock_on_failure(tmp_path):
+    """A failed download must not leave the lock held for other workers."""
+
+    def boom(self, fname, *args, **kwargs):
+        raise RuntimeError("download failed")
+
+    locked = make_locked_fetch(boom)
+    pooch_instance = _FakePooch(tmp_path)
+
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="download failed"):
+            locked(pooch_instance, "simfcs.r64")
+
+    # The lock is free, so an unrelated call can still take it.
+    assert (
+        make_locked_fetch(lambda self, fname: "ok")(
+            pooch_instance, "simfcs.r64"
+        )
+        == "ok"
+    )
+
+
+def test_locked_fetch_serialises_concurrent_fetches_of_one_file(tmp_path):
+    """Two workers fetching the same file never overlap."""
+    import threading
+    import time
+
+    in_flight = 0
+    overlapped = False
+    started = threading.Event()
+
+    def slow_fetch(self, fname, *args, **kwargs):
+        nonlocal in_flight, overlapped
+        in_flight += 1
+        overlapped = overlapped or in_flight > 1
+        started.set()
+        time.sleep(0.2)
+        in_flight -= 1
+        return fname
+
+    locked = make_locked_fetch(slow_fetch)
+    pooch_instance = _FakePooch(tmp_path)
+
+    first = threading.Thread(
+        target=locked, args=(pooch_instance, "simfcs.b&h.zip")
+    )
+    first.start()
+    assert started.wait(timeout=5)
+    second = threading.Thread(
+        target=locked, args=(pooch_instance, "simfcs.b&h.zip")
+    )
+    second.start()
+    first.join(timeout=10)
+    second.join(timeout=10)
+
+    assert not overlapped
