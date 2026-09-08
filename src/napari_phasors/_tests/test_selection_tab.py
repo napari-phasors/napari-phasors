@@ -2964,6 +2964,8 @@ def test_manual_selection_ui_init(make_viewer_model, qtbot):
         "LASSO",
         "ELLIPSE",
         "RECTANGLE",
+        "BRUSH",
+        "ERASER",
     }
     for btn in widget.selection_tool_buttons.values():
         assert not btn.isChecked()
@@ -3532,3 +3534,131 @@ def test_cursor_selection_widget_edge_cases_and_interactions(
     w_cursor._polar_edge = "modulation_min"
     w_cursor._drag_polar_edge(polar_cursor, 0.3, 0.3)
     assert polar_cursor["modulation_min"] != 0.2
+
+
+class _BrushEvent:
+    """Minimal stand-in for a Matplotlib mouse event."""
+
+    def __init__(self, x, y, inaxes, button=1):
+        self.xdata = x
+        self.ydata = y
+        self.inaxes = inaxes
+        self.button = button
+
+
+def _brush_stroke(selector, axes, points):
+    """Press, drag through ``points`` and release on the last one."""
+    selector._on_press(_BrushEvent(points[0][0], points[0][1], axes))
+    for x, y in points[1:]:
+        selector._on_motion(_BrushEvent(x, y, axes))
+    selector._on_release(_BrushEvent(points[-1][0], points[-1][1], axes))
+
+
+def test_manual_selection_brush_size_slider(make_viewer_model, qtbot):
+    """The size slider appears only for the painting tools and drives them."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+    cw = parent.canvas_widget
+
+    assert widget.brush_size_row.isHidden()
+
+    widget.selection_tool_buttons["BRUSH"].click()
+    assert cw.active_selector.name == "Interactive Brush Selector"
+    assert not widget.brush_size_row.isHidden()
+
+    widget.brush_size_slider.setValue(25)
+    assert cw.brush_size == 25
+    assert cw.selectors["ERASER"].size_px == 25
+    assert widget.brush_size_value_label.text() == "25 px"
+
+    # The eraser shares the slider, the marquee tools hide it again
+    widget.selection_tool_buttons["ERASER"].click()
+    assert cw.active_selector.name == "Interactive Eraser Selector"
+    assert not widget.brush_size_row.isHidden()
+
+    widget.selection_tool_buttons["LASSO"].click()
+    assert widget.brush_size_row.isHidden()
+
+    # Unchecking the brush hides the slider too
+    widget.selection_tool_buttons["BRUSH"].click()
+    assert not widget.brush_size_row.isHidden()
+    widget.selection_tool_buttons["BRUSH"].click()
+    assert cw.active_selector is None
+    assert widget.brush_size_row.isHidden()
+
+
+def test_manual_selection_brush_size_slider_without_canvas(
+    make_viewer_model, qtbot
+):
+    """The slider stays usable when no canvas is attached."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+
+    widget.parent_widget = None
+    widget._on_tool_btn_clicked("BRUSH")
+    widget.brush_size_slider.setValue(40)
+    assert widget.brush_size_value_label.text() == "40 px"
+    widget.parent_widget = parent
+
+
+def test_manual_selection_brush_and_eraser_update_layer(
+    make_viewer_model, qtbot
+):
+    """Painting writes the class into the layer, erasing takes it back out."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+    widget.selection_mode_combobox.setCurrentText("Manual Selection")
+
+    axes = parent.canvas_widget.axes
+    data = parent.canvas_widget.active_artist_object.data
+    x, y = float(data[0, 0]), float(data[0, 1])
+
+    widget.selection_tool_buttons["BRUSH"].click()
+    widget.brush_size_slider.setValue(20)
+    _brush_stroke(parent.canvas_widget.active_selector, axes, [(x, y)])
+
+    selections = layer.metadata["settings"]["selections"]["manual_selections"]
+    painted = selections[widget.selection_id]
+    assert np.count_nonzero(painted) > 0
+    assert set(np.unique(painted)) <= {0, widget._selected_class_id}
+
+    widget.selection_tool_buttons["ERASER"].click()
+    widget.brush_size_slider.setValue(64)
+    _brush_stroke(parent.canvas_widget.active_selector, axes, [(x, y)])
+
+    selections = layer.metadata["settings"]["selections"]["manual_selections"]
+    assert np.count_nonzero(selections[widget.selection_id]) == 0
+
+
+def test_manual_selection_brush_uses_selected_class(make_viewer_model, qtbot):
+    """The brush paints whichever selection row is currently highlighted."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+    widget.selection_mode_combobox.setCurrentText("Manual Selection")
+
+    widget._add_manual_selection()  # Selection 2, selected on creation
+    assert widget._selected_class_id == 2
+    assert parent.canvas_widget.selectors["BRUSH"].paint_value == 2
+    # The eraser always clears, whatever class is selected
+    assert parent.canvas_widget.selectors["ERASER"].paint_value == 0
+
+    axes = parent.canvas_widget.axes
+    data = parent.canvas_widget.active_artist_object.data
+    widget.selection_tool_buttons["BRUSH"].click()
+    widget.brush_size_slider.setValue(20)
+    _brush_stroke(
+        parent.canvas_widget.active_selector,
+        axes,
+        [(float(data[0, 0]), float(data[0, 1]))],
+    )
+
+    selections = layer.metadata["settings"]["selections"]["manual_selections"]
+    assert 2 in np.unique(selections[widget.selection_id])

@@ -85,6 +85,8 @@ Use the top toolbar tools (from matplotlib) to draw circular, square, or freehan
 
 For circular and square selectors, once the shape is drawn, right-click to accept and apply the selection. You can use different manual selection IDs to compare multiple selections. Each selection creates a labels layer with the selected regions.
 
+The **Drawing Tools** row of the Manual Selection panel also offers a **brush** and an **eraser**. Both paint continuously while you drag across the phasor plot: the brush assigns the currently selected class, the eraser clears whatever class is under the cursor. Selecting either one reveals a **Size** slider that sets the diameter of both tools in screen pixels, and the mouse cursor shows that footprint as you move over the plot. What gets painted follows the plot type: in histogram plots whole bins are painted, so the overlay always matches the bin under the cursor, while scatter plots are painted point by point. The layers and statistics are updated once you release the mouse button, so a long stroke stays responsive.
+
 <video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/manual%20selections.gif">
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/manual%20selections.mp4" type="video/mp4">
 </video>
