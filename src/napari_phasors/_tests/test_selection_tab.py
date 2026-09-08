@@ -3662,3 +3662,152 @@ def test_manual_selection_brush_uses_selected_class(make_viewer_model, qtbot):
 
     selections = layer.metadata["settings"]["selections"]["manual_selections"]
     assert 2 in np.unique(selections[widget.selection_id])
+
+
+def test_manual_selection_brush_cursor_color_sync(make_viewer_model, qtbot):
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+    widget.selection_mode_combobox.setCurrentText("Manual Selection")
+
+    cw = parent.canvas_widget
+    brush = cw.selectors["BRUSH"]
+
+    # Initial selection 1 default color
+    sel1 = widget._manual_selections[0]
+    assert brush.color == sel1["color"]
+
+    # Add selection 2 (becomes active)
+    sel2 = widget._add_manual_selection()
+    assert widget._selected_class_id == sel2["class_id"]
+    assert brush.color == sel2["color"]
+
+    # Switch back to selection 1
+    widget._select_manual_row(sel1)
+    assert widget._selected_class_id == sel1["class_id"]
+    assert brush.color == sel1["color"]
+
+    # Changing color of selection 1 updates brush.color
+    from qtpy.QtGui import QColor
+
+    new_color = QColor("#00ff00")
+    widget._on_manual_color_changed(sel1, new_color)
+    assert brush.color == new_color
+
+    # Activate brush tool button
+    widget.selection_tool_buttons["BRUSH"].click()
+    assert cw.active_selector is brush
+    # Cursor has the new color with 0.5 transparency
+    img = brush.cursor().pixmap().toImage()
+    c = img.pixelColor(img.width() // 2, img.height() // 2)
+    assert 115 <= c.alpha() <= 140
+    assert c.green() > 200
+
+
+def test_manual_selection_hover_cursor_persists_during_mouse_motion(
+    make_viewer_model, qtbot
+):
+    """Verify brush and eraser cursors persist while moving mouse over canvas."""
+    from matplotlib.backend_bases import MouseEvent
+
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+    widget.selection_mode_combobox.setCurrentText("Manual Selection")
+
+    cw = parent.canvas_widget
+
+    # Activate Brush
+    widget.selection_tool_buttons["BRUSH"].click()
+    assert not cw.canvas.cursor().pixmap().isNull()
+
+    # Move mouse across canvas - cursor must not revert to arrow
+    event = MouseEvent("motion_notify_event", cw.canvas, 100, 100)
+    cw.canvas.callbacks.process("motion_notify_event", event)
+    assert not cw.canvas.cursor().pixmap().isNull()
+
+    # Activate Eraser
+    widget.selection_tool_buttons["ERASER"].click()
+    assert not cw.canvas.cursor().pixmap().isNull()
+
+    event2 = MouseEvent("motion_notify_event", cw.canvas, 120, 120)
+    cw.canvas.callbacks.process("motion_notify_event", event2)
+    assert not cw.canvas.cursor().pixmap().isNull()
+
+
+def test_manual_selection_brush_and_eraser_cursor_persists_after_painting(
+    make_viewer_model, qtbot
+):
+    """Verify brush and eraser cursors persist after a painting stroke."""
+    from qtpy.QtCore import QEvent, QPointF, Qt
+    from qtpy.QtGui import QMouseEvent
+
+    viewer = make_viewer_model()
+    data = np.random.rand(10, 10)
+    layer = viewer.add_image(data, name="test")
+    layer.metadata["G"] = np.random.rand(10, 10) * 0.5 + 0.2
+    layer.metadata["S"] = np.random.rand(10, 10) * 0.5 + 0.1
+    layer.metadata["harmonics"] = 1
+
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+    widget.selection_mode_combobox.setCurrentText("Manual Selection")
+
+    cw = parent.canvas_widget
+    bbox = cw.axes.bbox
+    px = (bbox.x0 + bbox.x1) / 2.0
+    py = (bbox.y0 + bbox.y1) / 2.0
+    pt = QPointF(px, cw.canvas.height() - py)
+
+    for tool_name in ("BRUSH", "ERASER"):
+        widget.selection_tool_buttons[tool_name].click()
+        assert cw.canvas.cursor().shape() == Qt.CursorShape.BitmapCursor
+
+        # Paint stroke
+        cw.canvas.mousePressEvent(
+            QMouseEvent(
+                QEvent.MouseButtonPress,
+                pt,
+                Qt.LeftButton,
+                Qt.LeftButton,
+                Qt.NoModifier,
+            )
+        )
+        pt2 = QPointF(pt.x() + 5, pt.y() + 5)
+        cw.canvas.mouseMoveEvent(
+            QMouseEvent(
+                QEvent.MouseMove,
+                pt2,
+                Qt.LeftButton,
+                Qt.LeftButton,
+                Qt.NoModifier,
+            )
+        )
+        cw.canvas.mouseReleaseEvent(
+            QMouseEvent(
+                QEvent.MouseButtonRelease,
+                pt2,
+                Qt.LeftButton,
+                Qt.NoButton,
+                Qt.NoModifier,
+            )
+        )
+
+        from qtpy.QtWidgets import QApplication
+
+        QApplication.processEvents()
+
+        # Cursor after stroke release must still be the bitmap cursor
+        assert cw.canvas.cursor().shape() == Qt.CursorShape.BitmapCursor
+        assert not cw.canvas.cursor().pixmap().isNull()
+
+        # Hover move after stroke
+        pt3 = QPointF(pt.x() + 10, pt.y() + 10)
+        cw.canvas.mouseMoveEvent(
+            QMouseEvent(
+                QEvent.MouseMove, pt3, Qt.NoButton, Qt.NoButton, Qt.NoModifier
+            )
+        )
+        QApplication.processEvents()
+        assert cw.canvas.cursor().shape() == Qt.CursorShape.BitmapCursor
+        assert not cw.canvas.cursor().pixmap().isNull()

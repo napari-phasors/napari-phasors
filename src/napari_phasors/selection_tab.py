@@ -45,7 +45,11 @@ from qtpy.QtWidgets import (
 )
 from superqt import QToggleSwitch
 
-from ._canvas import DEFAULT_BRUSH_SIZE_PX, _make_selector_icon
+from ._canvas import (
+    DEFAULT_BRUSH_SIZE_PX,
+    DEFAULT_MANUAL_COLORS,
+    _make_selector_icon,
+)
 from ._utils import (
     CurrentPageStackedWidget,
     active_selection_region,
@@ -103,19 +107,6 @@ ROW_STYLE = (
     "  background-color: rgba(108, 158, 217, 0.12);"
     "}"
 )
-
-DEFAULT_MANUAL_COLORS = [
-    QColor("#ff7f0e"),  # Orange
-    QColor("#1f77b4"),  # Blue
-    QColor("#2ca02c"),  # Green
-    QColor("#9400d3"),  # Purple
-    QColor("#e377c2"),  # Pink
-    QColor("#8c564b"),  # Brown
-    QColor("#bcbd22"),  # Olive / Yellow-green
-    QColor("#17becf"),  # Cyan
-    QColor("#e41a1c"),  # Red
-    QColor("#ffd700"),  # Gold
-]
 
 
 class ColorButton(QPushButton):
@@ -521,6 +512,19 @@ class SelectionWidget(QWidget):
         ):
             return
         cw = self.parent_widget.canvas_widget
+        if checked and name.upper() == "BRUSH":
+            brush = cw.selectors.get("BRUSH")
+            if brush is not None and hasattr(brush, "color"):
+                curr_sel = next(
+                    (
+                        s
+                        for s in self._manual_selections
+                        if s.get("class_id") == self._selected_class_id
+                    ),
+                    None,
+                )
+                if curr_sel and "color" in curr_sel:
+                    brush.color = curr_sel["color"]
         cw.active_selector = name if checked else None
 
     def _update_brush_size_visibility(self, active_name: str):
@@ -546,6 +550,21 @@ class SelectionWidget(QWidget):
                 btn.setChecked(is_active)
                 btn.blockSignals(False)
         self._update_brush_size_visibility(active_upper)
+        if active_upper == "BRUSH":
+            cw = getattr(self.parent_widget, "canvas_widget", None)
+            if cw is not None:
+                brush = cw.selectors.get("BRUSH")
+                if brush is not None and hasattr(brush, "color"):
+                    curr_sel = next(
+                        (
+                            s
+                            for s in self._manual_selections
+                            if s.get("class_id") == self._selected_class_id
+                        ),
+                        None,
+                    )
+                    if curr_sel and "color" in curr_sel:
+                        brush.color = curr_sel["color"]
 
     def _add_manual_selection(self, class_id=None, color=None, visible=True):
         """Add a new manual selection class row."""
@@ -678,6 +697,11 @@ class SelectionWidget(QWidget):
             cw = self.parent_widget.canvas_widget
             for sel in cw.selectors.values():
                 sel.class_value = self._selected_class_id
+            brush = cw.selectors.get("BRUSH")
+            if brush is not None and hasattr(brush, "color"):
+                color = selection.get("color") if selection else None
+                if color is not None:
+                    brush.color = color
             if hasattr(cw, "class_spinbox"):
                 cw.class_spinbox.value = self._selected_class_id
 
@@ -685,6 +709,16 @@ class SelectionWidget(QWidget):
         """Handle color change from ColorButton."""
         selection["color"] = new_color
         self._update_manual_colormaps()
+        if (
+            selection.get("class_id") == self._selected_class_id
+            and self.parent_widget is not None
+            and hasattr(self.parent_widget, "canvas_widget")
+            and self.parent_widget.canvas_widget is not None
+        ):
+            cw = self.parent_widget.canvas_widget
+            brush = cw.selectors.get("BRUSH")
+            if brush is not None and hasattr(brush, "color"):
+                brush.color = new_color
 
     def _toggle_manual_visibility(self, selection):
         """Toggle show/hide state of a manual selection class."""
@@ -4304,7 +4338,17 @@ class CursorSelectionWidget(QWidget):
         """Change the mouse cursor based on hover/interaction."""
         if self._dragging_cursor is not None:
             return
-        if self.parent_widget is None:
+        tab = getattr(self.parent_widget, "selection_tab", None)
+        if (
+            tab is not None
+            and hasattr(tab, "selection_mode_combobox")
+            and tab.selection_mode_combobox.currentIndex() != 0
+        ):
+            return
+        cw = getattr(self.parent_widget, "canvas_widget", None)
+        if cw is not None and getattr(cw, "active_selector", None) is not None:
+            return
+        if hasattr(self, "isVisible") and not self.isVisible():
             return
         canvas = self.parent_widget.canvas_widget.canvas
         is_hovering = False
@@ -4413,9 +4457,14 @@ class CursorSelectionWidget(QWidget):
             self._drag_mode = None
             self._drag_offset = (0, 0)
             if self.parent_widget is not None:
-                self.parent_widget.canvas_widget.canvas.setCursor(
-                    Qt.ArrowCursor
-                )
+                cw = getattr(self.parent_widget, "canvas_widget", None)
+                if (
+                    cw is not None
+                    and getattr(cw, "active_selector", None) is not None
+                ):
+                    cw.canvas.setCursor(cw.active_selector.cursor())
+                elif cw is not None:
+                    cw.canvas.setCursor(Qt.ArrowCursor)
 
     def closeEvent(self, event):
         """Clean up signal connections before closing."""

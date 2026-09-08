@@ -20,6 +20,7 @@ from napari_phasors._canvas import (
     Scatter,
     ScatterArtist,
     SelectionGeometry,
+    _make_selector_icon,
 )
 
 
@@ -1063,3 +1064,130 @@ def test_brush_deactivation_disconnects_callbacks(make_viewer_model):
     process("button_release_event", _BrushEvent(0.6, 0.5, canvas.axes))
     assert brush._painting is False
     assert _nothing_painted(canvas.artists["HISTOGRAM2D"])
+
+
+def test_make_selector_icon_brush_and_eraser():
+    """Verify vector QIcon creation for brush and eraser shapes."""
+    brush_icon = _make_selector_icon("brush")
+    eraser_icon = _make_selector_icon("eraser")
+    assert not brush_icon.isNull()
+    assert not eraser_icon.isNull()
+
+
+def test_brush_cursor_color_and_transparency(make_viewer_model):
+    """Verify brush cursor has 0.5 transparency fill in the active color."""
+    canvas = PhasorCanvasWidget(make_viewer_model())
+    brush = canvas.selectors["BRUSH"]
+    brush.size_px = 30
+    brush.color = "#ff7f0e"
+
+    cur = brush.cursor()
+    img = cur.pixmap().toImage()
+    assert not img.isNull()
+
+    # The center of the circle must have ~0.5 transparency (alpha ~ 128)
+    center_color = img.pixelColor(img.width() // 2, img.height() // 2)
+    assert 115 <= center_color.alpha() <= 140
+    # And must match the brush color (orange)
+    assert center_color.red() > 200
+    assert center_color.blue() < 50
+
+    # Changing color updates the cursor
+    brush.color = "#00c18c"
+    img2 = brush.cursor().pixmap().toImage()
+    c2 = img2.pixelColor(img2.width() // 2, img2.height() // 2)
+    assert 115 <= c2.alpha() <= 140
+    assert c2.green() > 150
+
+
+def test_eraser_cursor_black_outline_no_fill(make_viewer_model):
+    """Verify eraser cursor has no fill and black outline."""
+    canvas = PhasorCanvasWidget(make_viewer_model())
+    eraser = canvas.selectors["ERASER"]
+    eraser.size_px = 30
+
+    cur = eraser.cursor()
+    img = cur.pixmap().toImage()
+    assert not img.isNull()
+
+    # Center must have no fill (alpha == 0)
+    center_color = img.pixelColor(img.width() // 2, img.height() // 2)
+    assert center_color.alpha() == 0
+
+    # Outline must contain dark / black pixels
+    dark_pixels = [
+        img.pixelColor(x, y)
+        for y in range(img.height())
+        for x in range(img.width())
+        if img.pixelColor(x, y).alpha() > 200
+        and img.pixelColor(x, y).red() < 20
+        and img.pixelColor(x, y).green() < 20
+        and img.pixelColor(x, y).blue() < 20
+    ]
+    assert len(dark_pixels) > 0
+
+
+def test_brush_canvas_color_sync(make_viewer_model):
+    """Verify canvas.brush_color syncs with brush selector."""
+    canvas = PhasorCanvasWidget(make_viewer_model())
+    canvas.brush_color = "#9400d3"
+    assert canvas.brush_color == "#9400d3"
+    assert canvas.selectors["BRUSH"].color == "#9400d3"
+
+
+def test_brush_and_eraser_cursor_persists_after_stroke(make_viewer_model):
+    """Verify brush and eraser cursors persist after stroke and during draw."""
+    from qtpy.QtCore import Qt
+
+    cw = PhasorCanvasWidget(make_viewer_model())
+    for tool_name in ("BRUSH", "ERASER"):
+        cw.active_selector = tool_name
+        assert cw.canvas.cursor().shape() == Qt.CursorShape.BitmapCursor
+
+        # Verify toolbar set_cursor or draw wait cursor doesn't reset it
+        cw.toolbar.set_cursor(1)  # Cursors.POINTER
+        assert cw.canvas.cursor().shape() == Qt.CursorShape.BitmapCursor
+
+        with cw.toolbar._wait_cursor_for_draw_cm():
+            pass
+        assert cw.canvas.cursor().shape() == Qt.CursorShape.BitmapCursor
+
+        # Trigger draw() directly
+        cw.canvas.draw()
+        assert cw.canvas.cursor().shape() == Qt.CursorShape.BitmapCursor
+
+        # Simulate stroke
+        selector = cw.active_selector
+        axes = cw.axes
+        event_press = type(
+            "Event",
+            (),
+            {"button": 1, "inaxes": axes, "xdata": 0.5, "ydata": 0.2},
+        )()
+        selector._on_press(event_press)
+
+        event_motion = type(
+            "Event",
+            (),
+            {"button": 1, "inaxes": axes, "xdata": 0.51, "ydata": 0.21},
+        )()
+        selector._on_motion(event_motion)
+
+        event_release = type(
+            "Event",
+            (),
+            {"button": 1, "inaxes": axes, "xdata": 0.51, "ydata": 0.21},
+        )()
+        selector._on_release(event_release)
+
+        # After release, cursor must still be BitmapCursor
+        assert cw.canvas.cursor().shape() == Qt.CursorShape.BitmapCursor
+
+        # When hovering over axes, motion event keeps cursor BitmapCursor
+        event_hover = type(
+            "Event",
+            (),
+            {"button": None, "inaxes": axes, "xdata": 0.55, "ydata": 0.25},
+        )()
+        selector._on_motion(event_hover)
+        assert cw.canvas.cursor().shape() == Qt.CursorShape.BitmapCursor

@@ -33,6 +33,7 @@ from matplotlib.widgets import (
 from psygnal import Signal
 from qtpy.QtCore import QPointF, QRectF, QSize, Qt
 from qtpy.QtGui import (
+    QBrush,
     QColor,
     QCursor,
     QIcon,
@@ -78,6 +79,20 @@ cat10_mod_cmap_first_transparent = default_overlay_cmap_first_transparent
 
 #: Default diameter, in screen pixels, of the brush and eraser tools.
 DEFAULT_BRUSH_SIZE_PX = 14.0
+
+#: Default class palette used across the manual selection tools.
+DEFAULT_MANUAL_COLORS = [
+    QColor("#ff7f0e"),  # Orange
+    QColor("#1f77b4"),  # Blue
+    QColor("#2ca02c"),  # Green
+    QColor("#9400d3"),  # Purple
+    QColor("#e377c2"),  # Pink
+    QColor("#8c564b"),  # Brown
+    QColor("#bcbd22"),  # Olive / Yellow-green
+    QColor("#17becf"),  # Cyan
+    QColor("#e41a1c"),  # Red
+    QColor("#ffd700"),  # Gold
+]
 
 
 def _capsule_mask(
@@ -242,30 +257,51 @@ def _render_selector_pixmap(shape: str, color: str, size: int = 24) -> QPixmap:
         )
         path.lineTo(margin, size - margin + 1)
         painter.drawPath(path)
-    elif shape == "brush":
-        scale = size / 24.0
+    elif shape in ("brush", "eraser"):
+        rendered_svg = False
+        icon_name = "paint" if shape == "brush" else "erase"
+        try:
+            from napari.resources import ICONS, get_colorized_svg
+            from qtpy.QtCore import QByteArray
+            from qtpy.QtSvg import QSvgRenderer
 
-        def pt(x, y):
-            return QPointF(x * scale, y * scale)
+            if icon_name in ICONS:
+                color_str = (
+                    color.name() if hasattr(color, "name") else str(color)
+                )
+                svg_data = get_colorized_svg(ICONS[icon_name], color_str)
+                renderer = QSvgRenderer(QByteArray(svg_data.encode("utf-8")))
+                renderer.render(painter, rect)
+                rendered_svg = True
+        except Exception:  # noqa: BLE001
+            pass
 
-        painter.drawLine(pt(20.5, 3.5), pt(13.0, 11.0))  # handle
-        painter.drawLine(pt(10.0, 9.5), pt(14.5, 14.0))  # ferrule
-        bristles = QPolygonF([pt(10.0, 11.0), pt(13.0, 14.0), pt(5.0, 19.0)])
-        painter.setBrush(QColor(color))
-        painter.drawPolygon(bristles)
-        painter.setBrush(Qt.NoBrush)
-    elif shape == "eraser":
-        scale = size / 24.0
+        if not rendered_svg:
+            scale = size / 24.0
 
-        def pt(x, y):
-            return QPointF(x * scale, y * scale)
+            def pt(x, y):
+                return QPointF(x * scale, y * scale)
 
-        body = QPolygonF(
-            [pt(4.0, 15.5), pt(11.5, 5.0), pt(20.0, 5.0), pt(12.5, 15.5)]
-        )
-        painter.drawPolygon(body)
-        painter.drawLine(pt(7.75, 10.25), pt(16.25, 10.25))  # rubber band
-        painter.drawLine(pt(3.0, 19.5), pt(21.0, 19.5))  # erased line
+            if shape == "brush":
+                painter.drawLine(pt(20.5, 3.5), pt(13.0, 11.0))
+                painter.drawLine(pt(10.0, 9.5), pt(14.5, 14.0))
+                bristles = QPolygonF(
+                    [pt(10.0, 11.0), pt(13.0, 14.0), pt(5.0, 19.0)]
+                )
+                painter.setBrush(QColor(color))
+                painter.drawPolygon(bristles)
+                painter.setBrush(Qt.NoBrush)
+            else:
+                body = QPolygonF(
+                    [
+                        pt(4.0, 15.5),
+                        pt(11.5, 5.0),
+                        pt(20.0, 5.0),
+                        pt(12.5, 15.5),
+                    ]
+                )
+                painter.drawPolygon(body)
+                painter.drawLine(pt(7.75, 10.25), pt(16.25, 10.25))
 
     painter.end()
     return pixmap
@@ -291,12 +327,27 @@ def _make_selector_icon(
 
 
 def _make_brush_cursor(
-    size_px: float, color: str, widget: QWidget | None = None
+    size_px: float,
+    color: str | QColor,
+    widget: QWidget | None = None,
+    filled: bool = True,
+    fill_alpha: float = 0.5,
 ) -> QCursor:
-    """Return a circular outline cursor matching the brush footprint.
+    """Return a circular cursor matching the brush or eraser footprint.
 
-    Drawing the brush outline into the mouse cursor rather than into the
-    figure keeps hovering free: no Matplotlib redraw is needed to move it.
+    Parameters
+    ----------
+    size_px : float
+        Diameter of the circle in screen pixels.
+    color : str or QColor
+        Color of the brush circle (or outline).
+    widget : QWidget, optional
+        Widget used to obtain device pixel ratio for crisp rendering on HiDPI.
+    filled : bool, default True
+        If True (brush mode), the circle is filled with `fill_alpha` transparency.
+        If False (eraser mode), only an outline of the circle in black is drawn with no fill.
+    fill_alpha : float, default 0.5
+        Fill transparency between 0.0 and 1.0 (0.5 = 50% opacity).
     """
     ratio = 1.0
     if widget is not None:
@@ -305,44 +356,46 @@ def _make_brush_cursor(
     if not np.isfinite(ratio) or ratio <= 0:
         ratio = 1.0
 
-    diameter = float(np.clip(size_px, 4.0, 96.0))
+    diameter = float(np.clip(size_px, 1.0, 96.0))
     total = int(np.ceil(diameter)) + 6
+    if total % 2 != 0:
+        total += 1
+
     pixmap = QPixmap(int(round(total * ratio)), int(round(total * ratio)))
     pixmap.setDevicePixelRatio(ratio)
     pixmap.fill(Qt.transparent)
 
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.Antialiasing)
-    painter.setBrush(Qt.NoBrush)
     offset = (total - diameter) / 2.0
     rect = QRectF(offset, offset, diameter, diameter)
 
-    # A dark halo underneath keeps the outline readable on any background.
-    halo = QPen(QColor(0, 0, 0, 170))
-    halo.setWidthF(2.6)
-    painter.setPen(halo)
-    painter.drawEllipse(rect)
+    if filled:
+        c = QColor(color)
+        fill_col = QColor(c)
+        fill_col.setAlphaF(fill_alpha)
+        painter.setBrush(QBrush(fill_col))
+        pen = QPen(fill_col)
+        pen.setWidthF(1.0)
+        painter.setPen(pen)
+        painter.drawEllipse(rect)
+    else:
+        painter.setBrush(Qt.NoBrush)
+        # A light halo underneath keeps the outline readable on dark backgrounds
+        halo = QPen(QColor(255, 255, 255, 150))
+        halo.setWidthF(2.4)
+        painter.setPen(halo)
+        painter.drawEllipse(rect)
 
-    pen = QPen(QColor(color))
-    pen.setWidthF(1.2)
-    painter.setPen(pen)
-    painter.drawEllipse(rect)
+        pen = QPen(QColor(0, 0, 0))
+        pen.setWidthF(1.2)
+        painter.setPen(pen)
+        painter.drawEllipse(rect)
 
-    # A small crosshair marks the exact spot the stroke is centred on; it
-    # shrinks with the brush so it never outgrows a small circle.
-    center = total / 2.0
-    tick = min(2.5, diameter / 4.0)
-    painter.drawLine(
-        QPointF(center - tick, center), QPointF(center + tick, center)
-    )
-    painter.drawLine(
-        QPointF(center, center - tick), QPointF(center, center + tick)
-    )
     painter.end()
 
-    # With a device pixel ratio set, Qt expects the hot spot in
-    # device-independent pixels.
-    return QCursor(pixmap, total // 2, total // 2)
+    hotspot = total // 2
+    return QCursor(pixmap, hotspot, hotspot)
 
 
 class BaseInteractiveSelector:
@@ -636,6 +689,7 @@ class InteractiveBrushSelector(BaseInteractiveSelector):
         )
         self.erase = bool(erase)
         self._size_px = float(DEFAULT_BRUSH_SIZE_PX)
+        self._color: str | QColor | None = None
         self._painting = False
         self._last_point: tuple[float, float] | None = None
         self._artist: Any | None = None
@@ -657,6 +711,30 @@ class InteractiveBrushSelector(BaseInteractiveSelector):
             self.canvas_widget.canvas.setCursor(self.cursor())
 
     @property
+    def color(self) -> str | QColor:
+        """Current paint color for the brush."""
+        if self._color is not None:
+            return self._color
+        idx = max(0, int(self._class_value) - 1) % len(DEFAULT_MANUAL_COLORS)
+        return DEFAULT_MANUAL_COLORS[idx]
+
+    @color.setter
+    def color(self, value: str | QColor | None):
+        self._color = value
+        if self.canvas_widget.active_selector is self:
+            self.canvas_widget.canvas.setCursor(self.cursor())
+
+    @property
+    def class_value(self) -> int:
+        return self._class_value
+
+    @class_value.setter
+    def class_value(self, value: int):
+        self._class_value = int(value)
+        if self.canvas_widget.active_selector is self:
+            self.canvas_widget.canvas.setCursor(self.cursor())
+
+    @property
     def is_eraser(self) -> bool:
         """True when this tool clears the selection instead of painting it."""
         return self.erase
@@ -667,9 +745,19 @@ class InteractiveBrushSelector(BaseInteractiveSelector):
         return 0 if self.erase else int(self._class_value)
 
     def cursor(self) -> QCursor:
-        color = self.ERASER_COLOR if self.erase else self.BRUSH_COLOR
+        if self.erase:
+            return _make_brush_cursor(
+                self._size_px,
+                color="#000000",
+                widget=self.canvas_widget.canvas,
+                filled=False,
+            )
         return _make_brush_cursor(
-            self._size_px, color, self.canvas_widget.canvas
+            self._size_px,
+            color=self.color,
+            widget=self.canvas_widget.canvas,
+            filled=True,
+            fill_alpha=0.5,
         )
 
     def create_selector(self):
@@ -721,6 +809,11 @@ class InteractiveBrushSelector(BaseInteractiveSelector):
 
     def _on_motion(self, event):
         if not self._painting:
+            if (
+                event.inaxes is self.ax
+                and self.canvas_widget.active_selector is self
+            ):
+                self.canvas_widget.canvas.setCursor(self.cursor())
             return
         if event.xdata is None or event.ydata is None:
             return
@@ -738,6 +831,8 @@ class InteractiveBrushSelector(BaseInteractiveSelector):
         self._painting = False
         self._last_point = None
         self._finish_stroke()
+        if self.canvas_widget.active_selector is self:
+            self.canvas_widget.canvas.setCursor(self.cursor())
 
     def _begin_stroke(self, artist: Any, points: np.ndarray):
         """Snapshot the current selection so the stroke can extend it."""
@@ -2025,6 +2120,27 @@ class PhasorNavigationToolbar(NavigationToolbar2QT):
         super().pan(*args)
         self.pan_toggled_signal.emit(self.mode == "pan/zoom")
 
+    def _wait_cursor_for_draw_cm(self):
+        """Do not show wait cursor during draw if an active selector is controlling cursor."""
+        cw = self.parentWidget()
+        if cw is not None and getattr(cw, "active_selector", None) is not None:
+            return contextlib.nullcontext()
+        return super()._wait_cursor_for_draw_cm()
+
+    def set_cursor(self, cursor):
+        """Prevent toolbar from resetting canvas cursor when a selector is active."""
+        cw = self.parentWidget()
+        if cw is not None and getattr(cw, "active_selector", None) is not None:
+            return
+        super().set_cursor(cursor)
+
+    def _update_cursor(self, event):
+        """Prevent toolbar from overriding canvas cursor when a selector is active."""
+        cw = self.parentWidget()
+        if cw is not None and getattr(cw, "active_selector", None) is not None:
+            return
+        super()._update_cursor(event)
+
 
 class SelectionToolbarWidget(QWidget):
     """Toolbar holding the exclusive selection tool buttons."""
@@ -2237,6 +2353,18 @@ class PhasorCanvasWidget(QWidget):
             selector = self.selectors.get(name)
             if selector is not None:
                 selector.size_px = value
+
+    @property
+    def brush_color(self) -> str | QColor:
+        """Paint color for the brush selector."""
+        brush = self.selectors.get("BRUSH")
+        return brush.color if brush is not None else DEFAULT_MANUAL_COLORS[0]
+
+    @brush_color.setter
+    def brush_color(self, value: str | QColor):
+        brush = self.selectors.get("BRUSH")
+        if brush is not None:
+            brush.color = value
 
     @property
     def active_selector(self) -> Any | None:
