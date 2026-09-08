@@ -50,6 +50,7 @@ testing = [
     "pytest-qt",  # https://pytest-qt.readthedocs.io/en/latest/
     "pytest-xdist",  # https://pytest-xdist.readthedocs.io/ (parallel test runs)
     "pytest-timeout",  # https://pypi.org/project/pytest-timeout/ (kills hung Qt workers)
+    "filelock",  # cross-worker lock so xdist workers do not race on one download
     "napari",
     "qtpy",
     "scikit-image",
