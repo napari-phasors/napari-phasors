@@ -63,7 +63,7 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from superqt import QRangeSlider
+from superqt import QRangeSlider, QToggleSwitch
 
 from ._parallel import parallel_filter_median
 
@@ -286,6 +286,88 @@ def setup_primary_button(button, validator, run_callback, ready_tooltip=""):
     button.clicked.connect(_on_clicked)
     refresh()
     return refresh
+
+
+class AutoUpdateMixin:
+    """Adds an "Autoupdate" toggle that re-runs a tab's analysis on change.
+
+    Analysis tabs normally recompute only when their primary button is
+    clicked. A tab mixing this in calls :meth:`_build_autoupdate_toggle` to
+    create the switch, and then :meth:`request_autoupdate` from every place
+    that changes something the result depends on -- its own inputs, and the
+    external events the parent plotter forwards (a filter or calibration that
+    rewrote the phasor data, a new harmonic, a different layer selection).
+
+    The analysis only re-runs while the toggle is on *and* the tab's validator
+    reports that the inputs are complete, so a half-filled form never triggers
+    a run. Re-entrancy is blocked: an analysis writes layers and metadata,
+    which fires the very signals that requested it.
+    """
+
+    #: Class-level defaults so ``request_autoupdate`` is safe to call on a tab
+    #: that has not built its toggle yet (e.g. during ``__init__``).
+    _autoupdate_enabled = False
+    _autoupdate_running = False
+    _autoupdate_validator = None
+    _autoupdate_action = None
+    _autoupdate_run_button = None
+
+    def _build_autoupdate_toggle(self, run_button, validator, action, tooltip):
+        """Create the "Autoupdate" switch and return the widget holding it.
+
+        ``run_button`` is the tab's primary button; it is disabled while
+        autoupdate is on, since the analysis then runs on its own.
+        """
+        self._autoupdate_validator = validator
+        self._autoupdate_action = action
+        self._autoupdate_run_button = run_button
+
+        container = QWidget()
+        row = QHBoxLayout(container)
+        row.setContentsMargins(0, 0, 0, 0)
+        self.autoupdate_check = QToggleSwitch("Autoupdate")
+        self.autoupdate_check.onColor = QColor("#27ae60")  # Nice Green
+        self.autoupdate_check.setChecked(False)
+        self.autoupdate_check.setToolTip(tooltip)
+        self.autoupdate_check.toggled.connect(self._on_autoupdate_toggled)
+        row.addWidget(self.autoupdate_check)
+        self.autoupdate_container = container
+        return container
+
+    def _on_autoupdate_toggled(self, checked):
+        """Handle the Autoupdate switch changing state."""
+        self._autoupdate_enabled = bool(checked)
+        if self._autoupdate_run_button is not None:
+            self._autoupdate_run_button.setEnabled(
+                not self._autoupdate_enabled
+            )
+        if self._autoupdate_enabled:
+            self.request_autoupdate()
+
+    def autoupdate_enabled(self):
+        """Return whether the tab re-runs its analysis automatically."""
+        return bool(self._autoupdate_enabled)
+
+    def request_autoupdate(self):
+        """Re-run the analysis if autoupdate is on and the inputs are valid.
+
+        Returns ``True`` when the analysis actually ran.
+        """
+        if not self._autoupdate_enabled or self._autoupdate_running:
+            return False
+        if self._autoupdate_action is None:
+            return False
+        if (
+            self._autoupdate_validator is not None
+            and self._autoupdate_validator() is not None
+        ):
+            return False
+        self._autoupdate_running = True
+        try:
+            self._autoupdate_action()
+        finally:
+            self._autoupdate_running = False
+        return True
 
 
 def _check_state_value(state):

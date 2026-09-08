@@ -31,8 +31,16 @@ from matplotlib.widgets import (
     RectangleSelector,
 )
 from psygnal import Signal
-from qtpy.QtCore import QRectF, QSize, Qt
-from qtpy.QtGui import QColor, QCursor, QIcon, QPainter, QPen, QPixmap
+from qtpy.QtCore import QRect, QRectF, QSize, Qt
+from qtpy.QtGui import (
+    QColor,
+    QCursor,
+    QIcon,
+    QImage,
+    QPainter,
+    QPen,
+    QPixmap,
+)
 from qtpy.QtWidgets import (
     QHBoxLayout,
     QToolButton,
@@ -1405,6 +1413,96 @@ class Contour:
 ContourArtist = Contour
 
 
+#: Empty border, in source-image pixels, every toolbar glyph must keep inside
+#: its own canvas. ``Pan`` and ``Zoom`` -- the drag and zoom tools -- were
+#: drawn edge to edge: the pan arrows span rows 2 to 47 of a 48 px image (the
+#: bottom tip is even truncated by the canvas) and the magnifier's crown sits
+#: on row 3. Scaled into a toolbar button, those tips land on the icon-box
+#: boundary and read as cut off, while ``Home``, ``Back``, ``Forward`` and
+#: ``Save`` all clear three pixels or more and look correct.
+TOOLBAR_ICON_MARGIN = 3
+
+#: Processed icon images, keyed by file path. The images are plain ``QImage``
+#: values (no window-system resources), so caching them across widgets is safe.
+_TOOLBAR_ICON_CACHE: dict[str, QImage] = {}
+
+
+def _opaque_bounds(image: QImage) -> tuple[int, int, int, int] | None:
+    """Return the inclusive ``(left, top, right, bottom)`` box of visible pixels.
+
+    ``None`` is returned for a fully transparent image.
+    """
+    left, top = image.width(), image.height()
+    right = bottom = -1
+    for y in range(image.height()):
+        for x in range(image.width()):
+            if image.pixelColor(x, y).alpha() == 0:
+                continue
+            left = min(left, x)
+            right = max(right, x)
+            top = min(top, y)
+            bottom = max(bottom, y)
+    if right < 0:
+        return None
+    return left, top, right, bottom
+
+
+def _inset_icon_image(image: QImage) -> QImage:
+    """Return *image* with its glyph inset by ``TOOLBAR_ICON_MARGIN``.
+
+    Images whose glyph already clears the margin on every side are returned
+    unchanged; the rest are scaled down (keeping their aspect ratio) and
+    re-centred, so no glyph ever touches the edge of its icon box.
+    """
+    bounds = _opaque_bounds(image)
+    if bounds is None:
+        return image
+    left, top, right, bottom = bounds
+    width, height = image.width(), image.height()
+    clearance = min(left, top, width - 1 - right, height - 1 - bottom)
+    if clearance >= TOOLBAR_ICON_MARGIN:
+        return image
+
+    safe_w = width - 2 * TOOLBAR_ICON_MARGIN
+    safe_h = height - 2 * TOOLBAR_ICON_MARGIN
+    if safe_w <= 0 or safe_h <= 0:
+        return image
+
+    glyph = image.copy(
+        QRect(left, top, right - left + 1, bottom - top + 1)
+    ).scaled(
+        safe_w,
+        safe_h,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    inset = QImage(width, height, QImage.Format.Format_ARGB32)
+    inset.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(inset)
+    painter.drawImage(
+        (width - glyph.width()) // 2,
+        (height - glyph.height()) // 2,
+        glyph,
+    )
+    painter.end()
+    return inset
+
+
+def load_toolbar_icon(path: Path | str) -> QIcon:
+    """Return the toolbar icon at *path*, inset so its glyph is never clipped."""
+    key = str(path)
+    image = _TOOLBAR_ICON_CACHE.get(key)
+    if image is None:
+        image = QImage(key)
+        if image.isNull():
+            return QIcon()
+        image = _inset_icon_image(
+            image.convertToFormat(QImage.Format.Format_ARGB32)
+        )
+        _TOOLBAR_ICON_CACHE[key] = image
+    return QIcon(QPixmap.fromImage(image))
+
+
 class PhasorNavigationToolbar(NavigationToolbar2QT):
     """Custom navigation toolbar emitting Qt signals when Pan or Zoom are toggled."""
 
@@ -1470,7 +1568,7 @@ class PhasorNavigationToolbar(NavigationToolbar2QT):
             if len(text) > 0:
                 icon_path = icon_dir / f"{text}.png"
                 if icon_path.exists():
-                    action.setIcon(QIcon(str(icon_path)))
+                    action.setIcon(load_toolbar_icon(icon_path))
 
     def _update_buttons_checked(self) -> None:
         """Update toggle tool icons when selected/unselected."""
@@ -1482,22 +1580,22 @@ class PhasorNavigationToolbar(NavigationToolbar2QT):
             if pan_action.isChecked():
                 checked_path = icon_dir / "Pan_checked.png"
                 if checked_path.exists():
-                    pan_action.setIcon(QIcon(str(checked_path)))
+                    pan_action.setIcon(load_toolbar_icon(checked_path))
             else:
                 normal_path = icon_dir / "Pan.png"
                 if normal_path.exists():
-                    pan_action.setIcon(QIcon(str(normal_path)))
+                    pan_action.setIcon(load_toolbar_icon(normal_path))
 
         if "zoom" in self._actions:
             zoom_action = self._actions["zoom"]
             if zoom_action.isChecked():
                 checked_path = icon_dir / "Zoom_checked.png"
                 if checked_path.exists():
-                    zoom_action.setIcon(QIcon(str(checked_path)))
+                    zoom_action.setIcon(load_toolbar_icon(checked_path))
             else:
                 normal_path = icon_dir / "Zoom.png"
                 if normal_path.exists():
-                    zoom_action.setIcon(QIcon(str(normal_path)))
+                    zoom_action.setIcon(load_toolbar_icon(normal_path))
 
     def zoom(self, *args):
         super().zoom(*args)

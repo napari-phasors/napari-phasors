@@ -32,6 +32,7 @@ from superqt import QToggleSwitch
 from ._parallel import parallel_map
 from ._timelapse import slice_datasets
 from ._utils import (
+    AutoUpdateMixin,
     CheckableComboBox,
     CurrentPageStackedWidget,
     HistogramWidget,
@@ -44,7 +45,7 @@ from ._utils import (
 _FRET_OUTPUT_METADATA_KEY = 'phasor_fret_output'
 
 
-class FretWidget(QWidget):
+class FretWidget(AutoUpdateMixin, QWidget):
     """Widget to perform FLIM FRET analysis."""
 
     def __init__(self, viewer, parent=None):
@@ -366,12 +367,44 @@ class FretWidget(QWidget):
         )
         layout.addWidget(self.calculate_fret_efficiency_button)
 
+        layout.addWidget(
+            self._build_autoupdate_toggle(
+                self.calculate_fret_efficiency_button,
+                self._fret_validation,
+                self.calculate_fret_efficiency,
+                "Recalculate the FRET efficiency automatically whenever the "
+                "donor lifetime, frequency, background, fretting proportion, "
+                "layer selection, or filtered/calibrated phasor data change.",
+            )
+        )
+
         # Re-evaluate the button whenever a required input changes.
         self.frequency_input.textChanged.connect(
             lambda _=None: self._refresh_calculate_button()
         )
         self.donor_line_edit.textChanged.connect(
             lambda _=None: self._refresh_calculate_button()
+        )
+        # Autoupdate follows *committed* values -- a released slider, or a
+        # text field the user left -- so a drag or a half-typed number does
+        # not trigger one full recalculation per intermediate value.
+        self.frequency_input.editingFinished.connect(self.request_autoupdate)
+        self.donor_line_edit.editingFinished.connect(self.request_autoupdate)
+        self.background_real_edit.editingFinished.connect(
+            self.request_autoupdate
+        )
+        self.background_imag_edit.editingFinished.connect(
+            self.request_autoupdate
+        )
+        self.background_slider.sliderReleased.connect(self.request_autoupdate)
+        self.fretting_slider.sliderReleased.connect(self.request_autoupdate)
+        # Deriving the donor lifetime / background from layers fills the text
+        # fields programmatically, which emits no ``editingFinished``.
+        self.donor_lifetime_combobox.selectionChanged.connect(
+            self.request_autoupdate
+        )
+        self.background_image_combobox.selectionChanged.connect(
+            self.request_autoupdate
         )
 
         # NOTE: The widget is created here but NOT added to this tab's layout.

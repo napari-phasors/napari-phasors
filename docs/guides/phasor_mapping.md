@@ -73,6 +73,13 @@ Click **Calculate Output** to compute the selected metric for all currently
 selected layers. A new napari image layer is created (or updated if it
 already exists) with the selected colormap applied.
 
+> [!TIP]
+> Enable the **Autoupdate** toggle below the button to recompute the output
+> automatically. While it is on, the button is disabled and the analysis is
+> re-run whenever the tab's own inputs change, the harmonic or the layer
+> selection changes, or the **Filter** or **Calibration** tab rewrites the
+> phasor data.
+
 After the first successful calculation, changing **Parameter to Analyze** or
 the lifetime type automatically recalculates the new output for the currently
 selected layers. Before the first calculation, these controls only configure

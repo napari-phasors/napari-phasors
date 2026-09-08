@@ -2,6 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import matplotlib.colors as mcolors
 import numpy as np
+import pytest
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from napari.layers import Image
@@ -1853,7 +1854,7 @@ def test_mesh_overlay_independent_from_apply_colormap_toggle(
 
 
 def test_mesh_settings_persist_across_layer_switches(make_viewer_model, qtbot):
-    """Mesh toggle, alpha, and ranges should restore per layer."""
+    """Mesh toggle, transparency, and ranges should restore per layer."""
     viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     mapping_widget = parent.phasor_mapping_tab
@@ -1872,7 +1873,7 @@ def test_mesh_settings_persist_across_layer_switches(make_viewer_model, qtbot):
     mapping_widget._on_calculate_lifetime_clicked()
 
     mapping_widget.mesh_overlay_checkbox.setChecked(True)
-    mapping_widget.mesh_alpha_spinbox.setValue(0.62)
+    mapping_widget.mesh_transparency_spinbox.setValue(0.62)
     mapping_widget.phase_range_slider.setValue((25, 120))
     mapping_widget.modulation_range_slider.setValue((10, 70))
 
@@ -1887,7 +1888,7 @@ def test_mesh_settings_persist_across_layer_switches(make_viewer_model, qtbot):
     parent.on_image_layer_changed()
 
     assert mapping_widget.mesh_overlay_checkbox.isChecked()
-    assert abs(mapping_widget.mesh_alpha_spinbox.value() - 0.62) < 1e-6
+    assert abs(mapping_widget.mesh_transparency_spinbox.value() - 0.62) < 1e-6
     assert mapping_widget.phase_range_slider.value() == (25, 120)
     assert mapping_widget.modulation_range_slider.value() == (10, 70)
 
@@ -1948,8 +1949,10 @@ def test_mesh_redraw_is_debounced_on_axes_limit_changes(
         mock_apply.assert_called_once_with("Phase")
 
 
-def test_mesh_overlay_colorbar_and_alpha_updates(make_viewer_model, qtbot):
-    """Mesh colorbar toggle and alpha updates should reflect dynamically."""
+def test_mesh_overlay_colorbar_and_transparency_updates(
+    make_viewer_model, qtbot
+):
+    """Mesh colorbar and transparency updates should reflect dynamically."""
     viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     mapping_widget = parent.phasor_mapping_tab
@@ -1972,11 +1975,11 @@ def test_mesh_overlay_colorbar_and_alpha_updates(make_viewer_model, qtbot):
     assert parent.mapping_colorbar is not None
     assert parent.mapping_cax is not None
 
-    # Test setting alpha instantly triggers map redraw
+    # Test setting transparency instantly triggers map redraw
     with patch.object(
         mapping_widget, '_apply_histogram_coloring'
     ) as mock_apply:
-        mapping_widget.mesh_alpha_spinbox.setValue(0.73)
+        mapping_widget.mesh_transparency_spinbox.setValue(0.73)
         mock_apply.assert_called_once_with("Phase")
 
     # Disable colorbar
@@ -2984,3 +2987,31 @@ def test_mapping_reports_a_failing_layer(
     assert any("boom" in message for message in errors)
     assert any("map_layer" in message for message in errors)
     assert len(viewer.layers) == before
+
+
+def test_mesh_transparency_is_stored_as_alpha(make_viewer_model, qtbot):
+    """The mesh control is transparency; the setting stays matplotlib alpha."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    parent.on_image_layer_changed()
+
+    mapping_widget.output_mode_combobox.setCurrentText("Phase")
+    mapping_widget._on_calculate_lifetime_clicked()
+
+    mapping_widget.mesh_transparency_spinbox.setValue(0.3)
+    assert mapping_widget._mesh_alpha() == pytest.approx(0.7)
+
+    settings = layer.metadata['settings']['phasor_mapping']
+    assert settings['mesh_alpha'] == pytest.approx(0.7)
+
+    # Restoring the stored alpha shows its complement in the control.
+    settings['mesh_alpha'] = 0.25
+    mapping_widget._restore_lifetime_settings_from_metadata()
+    assert mapping_widget.mesh_transparency_spinbox.value() == pytest.approx(
+        0.75
+    )
