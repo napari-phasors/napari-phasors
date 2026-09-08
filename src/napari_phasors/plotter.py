@@ -1665,6 +1665,15 @@ class PlotterWidget(QWidget):
     #: the dock title bar renders visibly clipped along its top edge.
     _TAB_BAR_TOP_MARGIN = 4
 
+    #: Fallback strip (px) kept above the plotter's own content when the
+    #: hosting dock's title bar cannot be measured. napari's
+    #: ``QtCustomTitleBar.sizeHint`` hard-codes a height of 20 px while the
+    #: bar actually lays out taller, and ``QDockWidget`` puts the content at
+    #: the size-hint height -- so the bar you drag the panel by is painted
+    #: over the first few rows of whatever sits flush at the top. Here that
+    #: is the matplotlib toolbar, whose pan and zoom glyphs lost their tops.
+    _TITLE_BAR_OVERLAP_FALLBACK = 6
+
     #: Analysis tabs that own an "Autoupdate" toggle.
     _AUTOUPDATE_TABS = ('phasor_mapping_tab', 'components_tab', 'fret_tab')
 
@@ -2526,6 +2535,48 @@ class PlotterWidget(QWidget):
                     QSizePolicy.Preferred, QSizePolicy.Expanding
                 )
 
+    def _title_bar_overlap(self):
+        """Return how far the hosting dock's title bar reaches into content.
+
+        ``QDockWidget`` lays the content out below the title bar's *size
+        hint*, but napari's title bar reports a hard-coded 20 px while
+        rendering as tall as its buttons and margins need. The difference is
+        painted over the top of the content, so it is the strip that has to
+        be kept clear. Returns 0 when the plotter is not docked (a floating
+        or bare widget has no bar over it).
+        """
+        dock = self._find_plotter_dock()
+        if dock is None:
+            return 0
+        title_bar = dock.titleBarWidget()
+        if title_bar is None:
+            return 0
+        try:
+            hinted = title_bar.sizeHint().height()
+            actual = title_bar.height()
+        except RuntimeError:
+            return self._TITLE_BAR_OVERLAP_FALLBACK
+        if hinted <= 0 or actual <= 0:
+            return self._TITLE_BAR_OVERLAP_FALLBACK
+        return max(0, actual - hinted)
+
+    def _reserve_title_bar_overlap(self):
+        """Keep the dock's title bar from covering the top of the toolbar.
+
+        Idempotent, and re-applied whenever the dock state is refreshed: the
+        overlap changes when the panel floats, is re-docked, or the theme
+        changes the title bar's button metrics.
+        """
+        layout = self.layout()
+        if layout is None:
+            return
+        overlap = self._title_bar_overlap()
+        margins = layout.contentsMargins()
+        if margins.top() != overlap:
+            layout.setContentsMargins(
+                margins.left(), overlap, margins.right(), margins.bottom()
+            )
+
     def _add_analysis_dock_widget(self):
         """Add the analysis widget and histogram container to the viewer.
 
@@ -2563,6 +2614,7 @@ class PlotterWidget(QWidget):
             self._docks_initialized = True
 
             self._restore_expanding_dock_policies()
+            self._reserve_title_bar_overlap()
             self._enforce_bottom_dock_layout()
 
             # Defer resizeDocks so it runs after Qt has applied the splits.
@@ -2650,6 +2702,10 @@ class PlotterWidget(QWidget):
                 and not self._is_closing
             ):
                 self.close()
+            elif docked is not None:
+                # Newly docked: reserve the strip the title bar draws over
+                # straight away rather than waiting for the visibility poll.
+                self._reserve_title_bar_overlap()
         super().changeEvent(event)
 
     def _split_analysis_below_plotter(self):
@@ -4220,6 +4276,9 @@ class PlotterWidget(QWidget):
         # napari re-applies its Maximum vertical policy every time a widget
         # is docked, so re-assert ours here (no-op when already correct).
         self._restore_expanding_dock_policies()
+        # The title bar's reach over the content changes with float/dock and
+        # with the theme, so the strip reserved for it is re-measured too.
+        self._reserve_title_bar_overlap()
 
         analysis_hidden = _is_hidden('_analysis_dock')
         histogram_hidden = _is_hidden('_histogram_dock')
