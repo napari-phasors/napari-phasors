@@ -1,11 +1,55 @@
 import numpy as np
+import pooch
+import pytest
 
 from napari_phasors._sample_data import (
+    DOWNLOAD_RETRIES,
     convallaria_FLIM_sample_data,
     embryo_FLIM_sample_data,
     fret_FLIM_sample_data,
     paramecium_HSI_sample_data,
 )
+
+
+@pytest.mark.parametrize(
+    "sample_data_function",
+    [
+        convallaria_FLIM_sample_data,
+        embryo_FLIM_sample_data,
+        paramecium_HSI_sample_data,
+        fret_FLIM_sample_data,
+    ],
+)
+def test_sample_data_downloaders_retry_transient_failures(
+    sample_data_function, monkeypatch
+):
+    """Every loader asks pooch to retry a failed download before giving up.
+
+    Without ``retry_if_failed`` a single read timeout against GitHub/Zenodo
+    aborts the whole sample-data command (and, on CI, the test).
+    """
+    created_kwargs = []
+    real_create = pooch.create
+
+    def spy_create(*args, **kwargs):
+        created_kwargs.append(kwargs)
+        return real_create(*args, **kwargs)
+
+    class _StopHere(Exception):
+        """Sentinel: stop before any actual download happens."""
+
+    def no_download(self, *args, **kwargs):
+        raise _StopHere
+
+    monkeypatch.setattr(pooch, "create", spy_create)
+    monkeypatch.setattr(pooch.Pooch, "fetch", no_download)
+
+    with pytest.raises(_StopHere):
+        sample_data_function()
+
+    assert created_kwargs
+    for kwargs in created_kwargs:
+        assert kwargs["retry_if_failed"] == DOWNLOAD_RETRIES
 
 
 def test_convallaria_FLIM_sample_data(make_viewer_model, qtbot):
