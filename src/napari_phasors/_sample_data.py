@@ -24,9 +24,7 @@ from napari_phasors._reader import napari_get_reader
 from napari_phasors._utils import show_activity_progress
 
 # Number of times pooch re-attempts a download that failed with a connection
-# error (which includes read timeouts against GitHub/Zenodo). Sample files are
-# tens of megabytes, so a single transient network hiccup should not abort the
-# whole sample-data command.
+# error (which includes read timeouts against GitHub/Zenodo).
 DOWNLOAD_RETRIES = 3
 
 

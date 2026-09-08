@@ -51,9 +51,6 @@ def test_configure_phasorpy_retries_swallows_attribute_error():
         configure_phasorpy_retries()  # must not raise
 
 
-# --- network-flake detection ----------------------------------------------
-
-
 @pytest.mark.parametrize(
     "exc",
     [
@@ -107,9 +104,6 @@ def test_network_flake_reason_survives_a_self_referencing_chain():
     exc = ValueError("boom")
     exc.__context__ = exc
     assert network_flake_reason(exc) is None
-
-
-# --- skip conversion -------------------------------------------------------
 
 
 def test_skip_if_network_flake_skips_on_timeout():
