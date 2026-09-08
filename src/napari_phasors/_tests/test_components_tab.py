@@ -4501,3 +4501,259 @@ def test_components_canvas_interaction_selects_component(
     assert comp._selected_component is comp.components[1]
     assert comp.components[1].card_frame.property("selected")
     assert not comp.components[0].card_frame.property("selected")
+
+
+def test_components_input_focus_updates_selection(make_viewer_model, qtbot):
+    """Focusing or moving the cursor in any input field of a card selects that card."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    comp._select_component_item(0)
+    assert comp._selected_component is comp.components[0]
+    assert comp.components[0].card_frame.property("selected")
+
+    # Name edit cursor position change selects component 1
+    comp.components[1].name_edit.cursorPositionChanged.emit(0, 1)
+    assert comp._selected_component is comp.components[1]
+    assert comp.components[1].card_frame.property("selected")
+
+    # G edit cursor position change selects component 0
+    comp.components[0].g_edit.cursorPositionChanged.emit(0, 1)
+    assert comp._selected_component is comp.components[0]
+
+    # S edit cursor position change selects component 1
+    comp.components[1].s_edit.cursorPositionChanged.emit(0, 1)
+    assert comp._selected_component is comp.components[1]
+
+    # Lifetime edit cursor position change selects component 0
+    comp.components[0].lifetime_edit.cursorPositionChanged.emit(0, 1)
+    assert comp._selected_component is comp.components[0]
+
+
+def test_components_select_component_item_edge_cases(make_viewer_model):
+    """Test _select_component_item with invalid index, foreign component, and component instance."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    # Invalid negative index deselects
+    comp._select_component_item(-1)
+    assert comp._selected_component is None
+    for c in comp.components:
+        assert not c.card_frame.property("selected")
+
+    # Invalid out-of-bounds index deselects
+    comp._select_component_item(999)
+    assert comp._selected_component is None
+
+    # Passing valid ComponentState instance selects it
+    comp._select_component_item(comp.components[1])
+    assert comp._selected_component is comp.components[1]
+    assert comp.components[1].card_frame.property("selected")
+
+    # Passing foreign component not in self.components is safely ignored
+    foreign_comp = MagicMock()
+    comp._select_component_item(foreign_comp)
+    assert comp._selected_component is comp.components[1]
+
+
+def test_components_backward_compatibility_stubs(make_viewer_model):
+    """Backward compatibility stubs should execute without raising errors."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    comp._refresh_editor_title()
+    comp._update_row_coords_label(0)
+    comp._update_all_row_coords_labels()
+
+
+def test_components_remove_component_branches_and_edge_cases(
+    make_viewer_model,
+):
+    """Test all branches of _remove_component: count <= 2, invalid index, ComponentState arg, unselected removal, and last index removal."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    # Cannot remove when count <= 2
+    assert len(comp.components) == 2
+    comp._remove_component()
+    assert len(comp.components) == 2
+
+    # Add components up to 4
+    comp._add_component()
+    comp._add_component()
+    assert len(comp.components) == 4
+
+    # Remove with invalid indices (no-ops)
+    comp._remove_component(-1)
+    comp._remove_component(100)
+    assert len(comp.components) == 4
+
+    # Select component 0, remove component 2 (was_selected is False)
+    comp._select_component_item(0)
+    comp._remove_component(2)
+    assert len(comp.components) == 3
+    assert comp._selected_component is comp.components[0]
+    assert comp.components[0].card_frame.property("selected")
+
+    # Remove passing ComponentState instance
+    comp_to_remove = comp.components[2]
+    comp._remove_component(comp_to_remove)
+    assert len(comp.components) == 2
+
+    # Add back to 3 and remove with idx=None (removes last component)
+    comp._add_component()
+    assert len(comp.components) == 3
+    comp._select_component_item(2)  # last component selected
+    comp._remove_component(None)
+    assert len(comp.components) == 2
+    # Since was_selected was True on index 2, new selection is min(2, len-1) = 1
+    assert comp._selected_component is comp.components[1]
+    assert comp.components[1].card_frame.property("selected")
+
+
+def test_components_remove_component_from_settings(make_viewer_model):
+    """Test _remove_component_from_settings re-indexing and removing specific/last component."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    # Populate metadata settings with 3 components
+    comp._add_component()
+    layer.metadata.setdefault("settings", {})["component_analysis"] = {
+        "components": {
+            "0": {"name": "Comp 0", "gs_harmonics": {}},
+            "1": {"name": "Comp 1", "gs_harmonics": {}},
+            "2": {"name": "Comp 2", "gs_harmonics": {}},
+        }
+    }
+
+    # Remove index 1 from settings: old '2' should become new '1'
+    comp._remove_component_from_settings(1)
+    settings = layer.metadata["settings"]["component_analysis"]["components"]
+    assert "0" in settings and settings["0"]["name"] == "Comp 0"
+    assert "1" in settings and settings["1"]["name"] == "Comp 2"
+    assert "2" not in settings
+
+    # Remove with idx=None removes the last component
+    comp._remove_last_component_from_settings()
+    settings = layer.metadata["settings"]["component_analysis"]["components"]
+    assert len(settings) == 1
+    assert "0" in settings
+
+    # Calling with empty or missing components setting does nothing
+    layer.metadata["settings"]["component_analysis"]["components"] = {}
+    comp._remove_component_from_settings(0)
+
+
+def test_components_canvas_label_drag_interaction_selects_component(
+    make_viewer_model,
+):
+    """Clicking a component's text label on the canvas selects its card."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    # Set up coordinates and name so dots and text labels are created on canvas
+    comp.components[0].g_edit.setText("0.3")
+    comp.components[0].s_edit.setText("0.2")
+    comp._on_component_coords_changed(0)
+
+    comp.components[1].name_edit.setText("Comp 2")
+    comp.components[1].g_edit.setText("0.7")
+    comp.components[1].s_edit.setText("0.4")
+    comp._on_component_coords_changed(1)
+
+    assert comp.components[1].text is not None
+
+    comp._select_component_item(0)
+    assert comp._selected_component is comp.components[0]
+
+    # Simulate canvas press on component 1's text label
+    mock_event = MagicMock()
+    mock_event.inaxes = parent.canvas_widget.axes
+    with patch.object(
+        comp.components[1].text, "contains", return_value=(True, {})
+    ):
+        comp._on_press(mock_event)
+
+    assert comp._selected_component is comp.components[1]
+    assert comp.components[1].card_frame.property("selected")
+    assert comp.dragging_label_idx == 1
+
+
+def test_components_restore_metadata_removes_extra_components(
+    make_viewer_model,
+):
+    """Restoring metadata with fewer components trims extra component cards."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    # Add up to 4 components
+    comp._add_component()
+    comp._add_component()
+    assert len(comp.components) == 4
+
+    # Settings only specify 2 components (indices 0 and 1)
+    layer.metadata.setdefault("settings", {})["component_analysis"] = {
+        "analysis_type": "Linear Projection",
+        "components": {
+            "0": {"name": "A", "gs_harmonics": {"1": {"g": 0.2, "s": 0.1}}},
+            "1": {"name": "B", "gs_harmonics": {"1": {"g": 0.8, "s": 0.5}}},
+        },
+    }
+
+    comp._restore_components_ui_only_from_metadata()
+    # Should have shrunk from 4 down to 2 components
+    assert len(comp.components) == 2
+    assert comp.components[0].name_edit.text() == "A"
+    assert comp.components[1].name_edit.text() == "B"
+    assert comp._selected_component is comp.components[0]
+
+
+def test_components_clear_components_labels_and_numbering(make_viewer_model):
+    """Clearing components clears fields and updates labels."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    comp.components[0].name_edit.setText("MyComp")
+    comp.components[0].g_edit.setText("0.4")
+    comp.components[0].s_edit.setText("0.3")
+
+    # Give component mock labels to test label updates
+    comp.components[0].coords_label = MagicMock()
+    comp.components[0].name_label = MagicMock()
+
+    comp._clear_components()
+    comp.components[0].coords_label.setText.assert_called_with("G: -, S: -")
+    comp.components[0].name_label.setText.assert_called_with("Component 1")
+    assert comp.components[0].name_edit.text() == ""
+
+
+def test_components_on_component_name_changed_label_update(make_viewer_model):
+    """Component name changes update name_label if present."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    comp.components[0].name_label = MagicMock()
+    comp.components[0].name_edit.setText("NewName")
+    comp.components[0].name_label.setText.assert_called_with("NewName")
+
+    comp.components[0].name_edit.setText("")
+    comp.components[0].name_label.setText.assert_called_with("Component 1")
+
+
+def test_components_restore_and_recreate_metadata_removes_extra_components(
+    make_viewer_model,
+):
+    """Restoring full metadata with fewer components trims extra component cards."""
+    viewer, layer, parent, comp = _setup_components(make_viewer_model)
+
+    # Add up to 4 components
+    comp._add_component()
+    comp._add_component()
+    assert len(comp.components) == 4
+
+    # Settings only specify 2 components (indices 0 and 1)
+    layer.metadata.setdefault("settings", {})["component_analysis"] = {
+        "analysis_type": "Linear Projection",
+        "components": {
+            "0": {"name": "A", "gs_harmonics": {"1": {"g": 0.2, "s": 0.1}}},
+            "1": {"name": "B", "gs_harmonics": {"1": {"g": 0.8, "s": 0.5}}},
+        },
+    }
+
+    comp._restore_and_recreate_components_from_metadata()
+    # Should have shrunk from 4 down to 2 components
+    assert len(comp.components) == 2
+    assert comp.components[0].name_edit.text() == "A"
+    assert comp.components[1].name_edit.text() == "B"
+    assert comp._selected_component is comp.components[0]
