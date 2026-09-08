@@ -75,8 +75,9 @@ COMPONENT_CARD_STYLE = (
     "  border: 1px solid rgba(128, 128, 128, 0.55);"
     "}"
     'QFrame#componentCard[selected="true"], QFrame#componentRow[selected="true"] {'
-    "  border: 1px solid rgba(0, 193, 140, 0.85);"
-    "  background-color: rgba(0, 193, 140, 0.06);"
+    # dodgerblue, matching the component markers drawn on the phasor plot.
+    "  border: 1px solid rgba(30, 144, 255, 0.85);"
+    "  background-color: rgba(30, 144, 255, 0.06);"
     "}"
     "QPushButton#componentRemoveBtn {"
     "  background: transparent;"
@@ -96,6 +97,16 @@ COMPONENT_CARD_STYLE = (
     "}"
 )
 COMPONENT_ROW_STYLE = COMPONENT_CARD_STYLE
+
+# Tooltips for the per-card "Show in histogram and statistics" toggle.
+HISTOGRAM_TOGGLE_TOOLTIP = (
+    "Show this component's fraction data in the histogram and statistics "
+    "docks. Check several components to compare them in one plot."
+)
+HISTOGRAM_TOGGLE_DISABLED_TOOLTIP = (
+    "Run a component analysis to plot this component's fraction data in "
+    "the histogram and statistics docks."
+)
 
 
 def _fit_components(mean, real, imag, component_g, component_s):
@@ -136,51 +147,8 @@ class ComponentState:
     coords_label: QLabel | None = None
     remove_button: QPushButton | None = None
     detail_widget: QWidget | None = None
+    histogram_checkbox: QCheckBox | None = None
     ui_elements: dict = field(default_factory=dict)
-
-
-class ComponentSelectorComboBox(CheckableComboBox):
-    """Component selector allowing one or several components at once.
-
-    Several component distributions can be compared side by side in the
-    histogram, so the selector is checkable. It keeps the single-selection
-    ``QComboBox`` API (:meth:`currentText` / :meth:`setCurrentText`) working
-    on the first checked entry, which is the one whose colormap drives the
-    plot's gradient and the range slider.
-
-    Parameters
-    ----------
-    tooltip : str, optional
-        Tooltip shown on the closed combobox.
-    parent : QWidget, optional
-        Parent widget.
-    """
-
-    def __init__(self, tooltip: str = "", parent=None):
-        """Build a checkable selector labelled in components, not layers."""
-        super().__init__(
-            parent=parent,
-            enable_primary_layer=False,
-            placeholder="Select components...",
-            unit="components",
-            no_selection_text="No component",
-            show_checked_list=True,
-        )
-        if tooltip:
-            self.setToolTip(tooltip)
-
-    def currentText(self) -> str:
-        """Return the first checked component, or ``""`` when none is."""
-        checked = self.checkedItems()
-        return checked[0] if checked else ""
-
-    def setCurrentText(self, text: str) -> None:
-        """Check *text* alone, leaving the selection unchanged if absent."""
-        if self.findText(text) < 0:
-            return
-        # ``setCheckedItems`` emits ``selectionChanged`` itself unless the
-        # caller blocked signals, which is exactly the wanted behaviour.
-        self.setCheckedItems([text])
 
 
 class ColorActionWidget(QLabel):
@@ -475,9 +443,16 @@ class ComponentsWidget(QWidget):
         self._needs_update = False  # Deferred update flag
         # Guard against recursion while mirroring slider <-> spinbox pairs.
         self._syncing_slider_spin = False
-        # Guard to avoid recursion while mirroring the component selection
-        # between the histogram and statistics comboboxes.
-        self._syncing_component_comboboxes = False
+        # Component names whose fraction distribution is shown in the
+        # histogram and statistics docks, in the order they were checked. The
+        # first one drives the plot gradient and the range slider.
+        self._histogram_components = []
+        # Component names that currently have fraction data to show, i.e. the
+        # ones whose card toggle is enabled.
+        self._available_histogram_components = []
+        # Guard to avoid recursion while pushing the selection back onto the
+        # per-card toggles.
+        self._syncing_component_toggles = False
 
         # Flag to track if analysis was attempted
         self._analysis_attempted = False
@@ -633,27 +608,6 @@ class ComponentsWidget(QWidget):
         display_box_layout.addLayout(buttons_row)
         layout.addWidget(display_box)
 
-        # Component selector combobox (will be inserted into the histogram dock
-        # widget). Several components can be checked at once so their fraction
-        # distributions are compared in the same plot.
-        self.histogram_component_combobox = ComponentSelectorComboBox(
-            tooltip="Select which components' fraction data to display in "
-            "the histogram. Check several to compare them in one plot."
-        )
-        self.histogram_component_combobox.selectionChanged.connect(
-            self._on_histogram_component_changed
-        )
-
-        # Mirror of the selector shown in the statistics dock so the component
-        # can be changed there too. Kept in sync with the histogram combobox.
-        self.stats_component_combobox = ComponentSelectorComboBox(
-            tooltip="Select which components' fraction data to display in "
-            "the histogram and statistics."
-        )
-        self.stats_component_combobox.selectionChanged.connect(
-            self._on_stats_component_changed
-        )
-
         # NOTE: The widget is created here but NOT added to this tab's layout.
         # PlotterWidget wraps it in a HistogramDockWidget and docks it separately.
         self.histogram_widget = HistogramWidget(
@@ -799,6 +753,19 @@ class ComponentsWidget(QWidget):
 
         card_layout.addLayout(row2)
 
+        # 3. Histogram / statistics toggle row
+        row3 = QHBoxLayout()
+        row3.setContentsMargins(0, 0, 0, 0)
+        row3.setSpacing(6)
+
+        histogram_checkbox = QCheckBox("Show in histogram and statistics")
+        histogram_checkbox.setEnabled(False)
+        histogram_checkbox.setToolTip(HISTOGRAM_TOGGLE_DISABLED_TOOLTIP)
+        row3.addWidget(histogram_checkbox)
+        row3.addStretch()
+
+        card_layout.addLayout(row3)
+
         self.components_layout.addWidget(card_frame)
 
         # 3. Component state
@@ -815,10 +782,12 @@ class ComponentsWidget(QWidget):
             card_frame=card_frame,
             row_frame=card_frame,
             remove_button=remove_button,
+            histogram_checkbox=histogram_checkbox,
             ui_elements={
                 'comp_layout': row2,
                 'card_layout': card_layout,
                 'lifetime_label': lifetime_label,
+                'histogram_layout': row3,
             },
         )
 
@@ -836,8 +805,14 @@ class ComponentsWidget(QWidget):
         remove_button.clicked.connect(
             lambda _, c=comp: self._remove_component(c.idx)
         )
+        # Only the card's own labels follow every keystroke; renaming layers,
+        # metadata and the histogram is deferred to Enter / focus-out so a
+        # rename does not re-render the plot once per typed letter.
         name_edit.textChanged.connect(
-            lambda _, c=comp: self._on_component_name_changed(c.idx)
+            lambda _, c=comp: self._on_component_name_edited(c.idx)
+        )
+        name_edit.editingFinished.connect(
+            lambda c=comp: self._on_component_name_changed(c.idx)
         )
         name_edit.cursorPositionChanged.connect(
             lambda *_, c=comp: self._select_component_item(c)
@@ -872,6 +847,13 @@ class ComponentsWidget(QWidget):
         lifetime_edit.cursorPositionChanged.connect(
             lambda *_, c=comp: self._select_component_item(c)
         )
+        histogram_checkbox.toggled.connect(
+            lambda checked, c=comp: self._on_component_histogram_toggled(
+                c.idx, checked
+            )
+        )
+
+        self._sync_component_histogram_toggles()
 
     def _auto_place_second_component(self):
         """Auto-place Component 2 on the universal circle based on Component 1 and the data center."""
@@ -1349,6 +1331,9 @@ class ComponentsWidget(QWidget):
                     )
                 if getattr(comp, 'remove_button', None) is not None:
                     comp.remove_button.setToolTip(f"Remove Component {i + 1}.")
+        # Renumbering changes the default display names, so the card toggles
+        # have to be re-matched against the components that have data.
+        self._sync_component_histogram_toggles()
         self._refresh_editor_title()
 
     def _get_default_components_settings(self):
@@ -3125,14 +3110,27 @@ class ComponentsWidget(QWidget):
         else:
             self._create_component_at_coordinates(idx, x, y)
 
-    def _on_component_name_changed(self, idx: int):
-        """Handle changes to component name."""
+    def _on_component_name_edited(self, idx: int):
+        """Follow every keystroke in the name field, cheaply.
+
+        Only this card's own labels are updated. Everything a rename implies
+        for the rest of the plugin — layer names, metadata, the phasor plot
+        label and the histogram/statistics series — waits for the edit to be
+        committed in :meth:`_on_component_name_changed`, so typing a name does
+        not trigger a full re-render per letter.
+        """
         comp = self.components[idx]
         name = comp.name_edit.text().strip()
-
         if getattr(comp, 'name_label', None) is not None:
             comp.name_label.setText(name if name else f"Component {idx + 1}")
         self._refresh_editor_title()
+
+    def _on_component_name_changed(self, idx: int):
+        """Apply a committed component name (Enter pressed or focus lost)."""
+        comp = self.components[idx]
+        name = comp.name_edit.text().strip()
+
+        self._on_component_name_edited(idx)
 
         old_name = None
         if not self._updating_settings and self.current_image_layer_name:
@@ -3256,14 +3254,16 @@ class ComponentsWidget(QWidget):
         (carrying the checked components across the new name), redraw the
         curves and relabel the columns.
         """
-        if not hasattr(self, 'histogram_component_combobox'):
+        if not hasattr(self, '_histogram_components'):
             return
         old_display = old_name or f"Component {idx + 1}"
         new_display = new_name or f"Component {idx + 1}"
         if old_display == new_display:
             return
 
-        self._update_histogram_combobox(renamed={old_display: new_display})
+        self._update_histogram_component_toggles(
+            renamed={old_display: new_display}
+        )
         self._sync_fraction_layer_visibility()
         self.update_component_histogram()
 
@@ -4216,11 +4216,7 @@ class ComponentsWidget(QWidget):
         self.draw_line_between_components()
 
         # Refresh histogram if the changed layer is the currently displayed one
-        selected_component = ""
-        if hasattr(self, 'histogram_component_combobox'):
-            selected_component = (
-                self.histogram_component_combobox.currentText().strip()
-            )
+        selected_component = self._primary_histogram_component()
 
         comp = self.components[comp_idx]
         changed_component = (
@@ -4313,11 +4309,7 @@ class ComponentsWidget(QWidget):
 
         # Refresh histogram only when the changed layer belongs to the
         # currently selected histogram component.
-        selected_component = ""
-        if hasattr(self, 'histogram_component_combobox'):
-            selected_component = (
-                self.histogram_component_combobox.currentText().strip()
-            )
+        selected_component = self._primary_histogram_component()
 
         comp = self.components[comp_idx]
         changed_component = (
@@ -5849,7 +5841,7 @@ class ComponentsWidget(QWidget):
         # Refresh the histogram/statistics component selectors so a renamed
         # fraction layer keeps its component listed (discovery is metadata
         # aware). The current selection is preserved by name.
-        self._update_histogram_combobox()
+        self._update_histogram_component_toggles()
 
     def _component_display_name_from_tag(self, tag):
         """Return a component's display name from its fraction-layer tag.
@@ -6289,14 +6281,31 @@ class ComponentsWidget(QWidget):
             label, data = next(iter(per_layer.items()))
             self.histogram_widget.update_data(data, label=label)
 
-    def _update_histogram_combobox(self, renamed=None):
-        """Populate the component selector comboboxes with fraction layers.
+    def _component_display_name(self, idx: int) -> str:
+        """Return the display name of the component card at *idx*.
 
-        The histogram and statistics docks each show a combobox; both are
-        populated with the same entries and kept in sync. The components the
-        user had checked stay checked as long as they still exist; when none
-        of them do, the first entry is checked so the histogram is never
-        left blank.
+        This is the user-entered name when there is one, and the default
+        ``"Component <n>"`` label otherwise. It is the name fraction layers,
+        histogram series and statistics columns are keyed by.
+        """
+        if idx < 0 or idx >= len(self.components):
+            return ""
+        comp = self.components[idx]
+        if comp is None:
+            return ""
+        name = comp.name_edit.text().strip() if comp.name_edit else ""
+        return name or f"Component {idx + 1}"
+
+    def _update_histogram_component_toggles(self, renamed=None):
+        """Refresh which component cards can be shown, and which are.
+
+        Each component card carries a "Show in histogram and statistics"
+        toggle. It is enabled only for components that actually have fraction
+        data, and the checked ones are plotted together in the histogram and
+        listed in the statistics table. The components the user had checked
+        stay checked as long as they still exist; when none of them do, the
+        first available component is checked so the histogram is never left
+        blank.
 
         Parameters
         ----------
@@ -6304,7 +6313,7 @@ class ComponentsWidget(QWidget):
             ``{old_name: new_name}`` applied to the checked components, so a
             component renamed in the tab keeps its place in the selection.
         """
-        checked = self.histogram_component_combobox.checkedItems()
+        checked = list(self._histogram_components)
         if renamed:
             checked = [renamed.get(name, name) for name in checked]
 
@@ -6324,52 +6333,83 @@ class ComponentsWidget(QWidget):
         if not still_checked and comp_names:
             still_checked = comp_names[:1]
 
-        for combobox in (
-            self.histogram_component_combobox,
-            self.stats_component_combobox,
-        ):
-            combobox.blockSignals(True)
-            combobox.clear()
-            for comp_name in comp_names:
-                combobox.addItem(comp_name)
-            combobox.setCheckedItems(still_checked)
-            combobox.blockSignals(False)
+        self._available_histogram_components = comp_names
+        self._histogram_components = still_checked
+        self._sync_component_histogram_toggles()
+
+    def _sync_component_histogram_toggles(self):
+        """Push the current selection back onto the component card toggles.
+
+        A card whose component has no fraction data yet keeps a disabled,
+        unchecked toggle. Signals are suppressed so the programmatic update
+        does not look like a user click.
+        """
+        if getattr(self, '_syncing_component_toggles', False):
+            return
+        self._syncing_component_toggles = True
+        try:
+            for idx, comp in enumerate(self.components):
+                checkbox = (
+                    getattr(comp, 'histogram_checkbox', None)
+                    if comp is not None
+                    else None
+                )
+                if checkbox is None:
+                    continue
+                name = self._component_display_name(idx)
+                available = name in self._available_histogram_components
+                checkbox.setEnabled(available)
+                checkbox.setChecked(
+                    available and name in self._histogram_components
+                )
+                checkbox.setToolTip(
+                    HISTOGRAM_TOGGLE_TOOLTIP
+                    if available
+                    else HISTOGRAM_TOGGLE_DISABLED_TOOLTIP
+                )
+        finally:
+            self._syncing_component_toggles = False
+
+    def _on_component_histogram_toggled(self, idx: int, checked: bool):
+        """Add or drop the component at *idx* from the plotted selection."""
+        if self._syncing_component_toggles:
+            return
+        name = self._component_display_name(idx)
+        # A component with no fraction data has nothing to plot: its toggle is
+        # disabled, so only a programmatic call can land here.
+        if not name or name not in self._available_histogram_components:
+            return
+        selected = list(self._histogram_components)
+        if checked:
+            if name in selected:
+                return
+            selected.append(name)
+        else:
+            if name not in selected:
+                return
+            selected = [other for other in selected if other != name]
+        self._histogram_components = selected
+        self._on_histogram_component_changed()
 
     def _on_histogram_component_changed(self):
-        """Handle a change of the checked components in the histogram combobox."""
-        self._mirror_component_selection(
-            self.histogram_component_combobox, self.stats_component_combobox
-        )
+        """Handle a change of the components checked for the histogram."""
         # Show the fraction layers of the components now plotted, hide the rest.
         self._sync_fraction_layer_visibility()
         self.update_component_histogram()
 
-    def _on_stats_component_changed(self):
-        """Handle a change of the checked components in the statistics combobox.
-
-        Mirrors the choice onto the histogram combobox, which is the canonical
-        selector and refreshes the histogram/statistics via its own signal.
-        """
-        self._mirror_component_selection(
-            self.stats_component_combobox, self.histogram_component_combobox
-        )
-
-    def _mirror_component_selection(self, source, target):
-        """Copy the checked components from ``source`` to ``target`` combobox."""
-        if self._syncing_component_comboboxes:
-            return
-        checked = source.checkedItems()
-        if target.checkedItems() == checked:
-            return
-        self._syncing_component_comboboxes = True
-        try:
-            target.setCheckedItems(checked)
-        finally:
-            self._syncing_component_comboboxes = False
-
     def _selected_histogram_components(self):
-        """Return the component names checked in the histogram selector."""
-        return self.histogram_component_combobox.checkedItems()
+        """Return the component names checked for histogram/statistics."""
+        return list(self._histogram_components)
+
+    def _primary_histogram_component(self):
+        """Return the first checked component, or ``""`` when none is.
+
+        This is the component whose colormap drives the histogram gradient
+        and the range slider.
+        """
+        if not self._histogram_components:
+            return ""
+        return self._histogram_components[0]
 
     def _sync_fraction_layer_visibility(self):
         """Match fraction layer visibility to what the histogram is showing.
@@ -6418,7 +6458,7 @@ class ComponentsWidget(QWidget):
         unchecked, so the histogram, statistics and fraction layer visibility
         always follow the current selection.
         """
-        self._update_histogram_combobox()
+        self._update_histogram_component_toggles()
         self._sync_fraction_layer_visibility()
         self.update_component_histogram()
 
@@ -6617,8 +6657,11 @@ class ComponentsWidget(QWidget):
         """
         resolved = self._resolve_selected_components()
         if not resolved:
+            # Keep the empty axes on screen — spines, labels and all — the way
+            # every other tab's histogram looks before an analysis has run,
+            # rather than collapsing the dock to nothing.
             self.histogram_widget.clear()
-            self.histogram_widget.hide()
+            self.histogram_widget.show()
             return
 
         primary_name, primary_layers, primary_invert = resolved[0]
@@ -6723,7 +6766,7 @@ class ComponentsWidget(QWidget):
 
     def refresh_for_frame_change(self):
         """Re-feed the histogram after the displayed frame changed."""
-        if not self.histogram_component_combobox.currentText():
+        if not self._primary_histogram_component():
             return
         self.update_component_histogram()
 

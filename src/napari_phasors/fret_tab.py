@@ -1763,8 +1763,11 @@ class FretWidget(QWidget):
         output_layers = self._fret_output_layers(selected_only=True)
         selected_layers = list(output_layers.values())
         if not selected_layers:
+            # Keep the empty axes on screen — spines, labels and all — the way
+            # every other tab's histogram looks before an analysis has run,
+            # rather than collapsing the dock to nothing.
             self.histogram_widget.clear()
-            self.histogram_widget.hide()
+            self.histogram_widget.show()
             return
 
         per_layer = {layer.name: layer.data for layer in selected_layers}
