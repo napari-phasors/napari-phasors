@@ -3150,3 +3150,314 @@ def test_checkable_combobox_clear_drops_hidden_rows(qtbot):
     assert combo.hiddenItems() == set()
     assert combo.visibleItems() == ["X", "Y"]
     assert not combo.view().isRowHidden(0)
+
+
+def _masked_setup(viewer, mask=None, labels=None, invert=False, data=None):
+    """Add a labels mask plus a masked image layer and return their data.
+
+    Mirrors what the mask controls of the Phasor Plot widget leave behind:
+    the mask array, its invert flag and the selected labels stored on the
+    analysed image layer's metadata.
+    """
+    if mask is None:
+        mask = np.zeros((6, 6), dtype=int)
+        mask[:3, :] = 1
+        mask[3:, :3] = 2
+    viewer.add_labels(mask, name="mask")
+    if data is None:
+        data = np.arange(mask.size, dtype=float).reshape(mask.shape)
+    image = viewer.add_image(data, name="img")
+    image.metadata['mask'] = mask
+    image.metadata['mask_invert'] = invert
+    if labels is not None:
+        image.metadata['mask_labels'] = labels
+    return mask, data
+
+
+def test_mask_label_values_reads_the_layer_metadata(make_viewer_model):
+    """The labels a masked layer is analysed with come from its metadata."""
+    from napari_phasors._utils import mask_label_values
+
+    viewer = make_viewer_model()
+    mask, _data = _masked_setup(viewer)
+    image = viewer.layers["img"]
+
+    # No explicit selection means every label of the mask.
+    assert mask_label_values(image.metadata) == [1, 2]
+
+    image.metadata['mask_labels'] = [2]
+    assert mask_label_values(image.metadata) == [2]
+
+    # No label selected is treated as no masking at all.
+    image.metadata['mask_labels'] = []
+    assert mask_label_values(image.metadata) == []
+
+    # An inverted mask analyses the complement of the labels, which is one
+    # region however many labels it was built from.
+    image.metadata['mask_labels'] = None
+    image.metadata['mask_invert'] = True
+    assert mask_label_values(image.metadata) == []
+
+    assert mask_label_values({}) == []
+
+
+def test_split_data_by_mask_labels_extracts_each_region():
+    """Splitting keeps every label's pixels and drops the rest."""
+    from napari_phasors._utils import split_data_by_mask_labels
+
+    mask = np.array([[0, 1], [2, 2]])
+    data = np.array([[10.0, 11.0], [12.0, 13.0]])
+
+    parts = split_data_by_mask_labels(data, mask, [1, 2])
+    assert set(parts) == {1, 2}
+    np.testing.assert_array_equal(parts[1], [11.0])
+    np.testing.assert_array_equal(parts[2], [12.0, 13.0])
+
+    # Labels with no pixel are left out entirely.
+    assert split_data_by_mask_labels(data, mask, [3]) == {}
+
+    # keep_shape keeps the layer's geometry for callers that slice frames.
+    shaped = split_data_by_mask_labels(data, mask, [1], keep_shape=True)
+    assert shaped[1].shape == data.shape
+    assert np.isnan(shaped[1]).sum() == 3
+
+    # A mask that does not line up with the data cannot split it.
+    assert split_data_by_mask_labels(data, mask[:1], [1]) == {}
+
+
+def test_histogram_widget_splits_one_layer_per_mask_label(
+    make_viewer_model, qtbot
+):
+    """Separating mask labels turns one layer into one dataset per label."""
+    viewer = make_viewer_model()
+    mask, data = _masked_setup(viewer)
+    widget = HistogramWidget(bins=8, viewer=viewer)
+    qtbot.addWidget(widget)
+    widget.set_dataset_sources({"Lifetime: img": "img"})
+    widget.update_data(data, label="Lifetime: img")
+
+    assert widget.mask_label_split_available()
+    assert not widget.mask_label_split_active()
+    assert list(widget._datasets) == ["Lifetime: img"]
+
+    widget.split_by_mask_labels = True
+
+    assert widget.mask_label_split_active()
+    assert list(widget._datasets) == [
+        "Lifetime: img – label 1",
+        "Lifetime: img – label 2",
+    ]
+    # Every masked pixel is accounted for exactly once.
+    assert sum(len(v) for v in widget._datasets.values()) == int(
+        (mask > 0).sum()
+    )
+    np.testing.assert_array_equal(
+        widget._datasets["Lifetime: img – label 2"],
+        np.sort(data[mask == 2]),
+    )
+    # Grouping still sees the analysed layer behind both curves.
+    assert widget._group_source_names() == ["img"]
+    # The curves take the colours napari paints the labels with.
+    assert set(widget._mask_label_colors) == set(widget._datasets)
+
+    widget.split_by_mask_labels = False
+    assert list(widget._datasets) == ["Lifetime: img"]
+    assert not widget.mask_label_split_active()
+
+
+def test_histogram_widget_split_needs_several_selected_labels(
+    make_viewer_model, qtbot
+):
+    """One selected label, an inverted mask or no mask offer no split."""
+    viewer = make_viewer_model()
+    _mask, data = _masked_setup(viewer, labels=[2])
+    widget = HistogramWidget(bins=8, viewer=viewer)
+    qtbot.addWidget(widget)
+    widget.set_dataset_sources({"Lifetime: img": "img"})
+    widget.update_data(data, label="Lifetime: img")
+
+    assert not widget.mask_label_split_available()
+
+    widget.split_by_mask_labels = True
+    assert list(widget._datasets) == ["Lifetime: img"]
+    assert not widget.mask_label_split_active()
+
+    # Selecting both labels makes it available without re-feeding the data.
+    viewer.layers["img"].metadata['mask_labels'] = [1, 2]
+    assert widget.mask_label_split_available()
+
+
+def test_histogram_widget_split_leaves_unmasked_layers_whole(
+    make_viewer_model, qtbot
+):
+    """A selection mixing masked and unmasked layers keeps them all."""
+    viewer = make_viewer_model()
+    _mask, data = _masked_setup(viewer)
+    plain = np.linspace(0.0, 1.0, 36).reshape(6, 6)
+    viewer.add_image(plain, name="plain")
+
+    widget = HistogramWidget(bins=8, viewer=viewer)
+    qtbot.addWidget(widget)
+    widget.set_dataset_sources({"A": "img", "B": "plain"})
+    widget.split_by_mask_labels = True
+    widget.update_multi_data({"A": data, "B": plain})
+
+    assert list(widget._datasets) == [
+        "A – label 1",
+        "A – label 2",
+        "B",
+    ]
+
+
+def test_histogram_widget_split_survives_a_rename(make_viewer_model, qtbot):
+    """Renaming the analysed dataset renames its per-label curves too."""
+    viewer = make_viewer_model()
+    _mask, data = _masked_setup(viewer)
+    widget = HistogramWidget(bins=8, viewer=viewer)
+    qtbot.addWidget(widget)
+    widget.set_dataset_sources({"Lifetime: img": "img"})
+    widget.update_data(data, label="Lifetime: img")
+    widget.split_by_mask_labels = True
+    widget._layer_colors["Lifetime: img – label 1"] = (1.0, 0.0, 0.0)
+
+    widget.rename_dataset("Lifetime: img", "Phase: img")
+
+    assert list(widget._datasets) == [
+        "Phase: img – label 1",
+        "Phase: img – label 2",
+    ]
+    assert widget._layer_colors["Phase: img – label 1"] == (1.0, 0.0, 0.0)
+    assert widget._dataset_sources["Phase: img – label 2"] == "img"
+
+
+def test_histogram_settings_dialog_offers_the_split(qtbot):
+    """The checkbox only shows when it applies, and picks a useful mode."""
+    dlg = HistogramSettingsDialog(layer_labels=["A"])
+    qtbot.addWidget(dlg)
+    assert not dlg.split_labels_checkbox.isVisible()
+
+    dlg = HistogramSettingsDialog(
+        layer_labels=["A"], split_mask_labels_available=True
+    )
+    qtbot.addWidget(dlg)
+    dlg.show()
+    assert dlg.split_labels_checkbox.isVisible()
+    assert dlg.mode_combo.currentText() == "Merged"
+
+    # Merged cannot tell the labels apart, so enabling the split moves to
+    # the mode that draws one outline each.
+    dlg.split_labels_checkbox.setChecked(True)
+    assert dlg.mode_combo.currentText() == "Individual layers"
+
+    # An explicit mode choice is never overridden.
+    dlg.mode_combo.setCurrentText("Grouped")
+    dlg.split_labels_checkbox.setChecked(False)
+    dlg.split_labels_checkbox.setChecked(True)
+    assert dlg.mode_combo.currentText() == "Grouped"
+
+
+def test_histogram_settings_dialog_applies_the_split(
+    make_viewer_model, qtbot, monkeypatch
+):
+    """Accepting the dialog with the box ticked re-splits the datasets."""
+    viewer = make_viewer_model()
+    _mask, data = _masked_setup(viewer)
+    widget = HistogramWidget(bins=8, viewer=viewer)
+    qtbot.addWidget(widget)
+    widget.set_dataset_sources({"Lifetime: img": "img"})
+    widget.update_data(data, label="Lifetime: img")
+
+    def _accept(self):
+        self.split_labels_checkbox.setChecked(True)
+        return QDialog.Accepted
+
+    monkeypatch.setattr(HistogramSettingsDialog, "exec", _accept)
+    widget._open_settings_dialog()
+
+    assert widget.split_by_mask_labels
+    assert widget.display_mode == "Individual layers"
+    assert list(widget._datasets) == [
+        "Lifetime: img – label 1",
+        "Lifetime: img – label 2",
+    ]
+
+
+def test_statistics_table_shows_a_row_per_mask_label(make_viewer_model, qtbot):
+    """The statistics dock follows the histogram into per-label rows."""
+    viewer = make_viewer_model()
+    _mask, data = _masked_setup(viewer)
+    widget = HistogramWidget(bins=8, viewer=viewer)
+    qtbot.addWidget(widget)
+    dock = StatisticsDockWidget(widget)
+    qtbot.addWidget(dock)
+    widget.set_dataset_sources({"Lifetime: img": "img"})
+    widget.update_data(data, label="Lifetime: img")
+
+    assert dock.layer_stats_table.rowCount() == 1
+
+    widget.split_by_mask_labels = True
+
+    table = dock.layer_stats_table
+    assert table.rowCount() == 2
+    assert [table.item(row, 0).text() for row in range(2)] == [
+        "Lifetime: img – label 1",
+        "Lifetime: img – label 2",
+    ]
+    assert dock.layer_stats_section._title == "Label Statistics"
+    # Each row summarises only its own label.
+    assert float(table.item(0, 2).text()) == np.mean(data[_mask == 1])
+
+
+def test_statistics_rows_per_mask_label_with_several_quantities(
+    make_viewer_model, qtbot
+):
+    """Two quantities of one layer keep one row per label, not per curve."""
+    viewer = make_viewer_model()
+    mask, data = _masked_setup(viewer)
+    widget = HistogramWidget(bins=8, viewer=viewer)
+    qtbot.addWidget(widget)
+    widget.set_dataset_sources({"C1: img": "img", "C2: img": "img"})
+    widget.set_dataset_series({"C1: img": "C1", "C2: img": "C2"})
+    widget.split_by_mask_labels = True
+    widget.update_multi_data({"C1: img": data, "C2: img": data * 2})
+
+    rows, names = widget.series_statistics_datasets()
+
+    assert names == ["C1", "C2"]
+    assert list(rows) == ["img – label 1", "img – label 2"]
+    assert set(rows["img – label 1"]) == {"C1", "C2"}
+    np.testing.assert_array_equal(
+        np.sort(rows["img – label 2"]["C2"]),
+        np.sort(data[mask == 2] * 2),
+    )
+
+
+def test_statistics_dock_offers_the_split(make_viewer_model, qtbot):
+    """The table's own checkbox drives (and follows) the histogram."""
+    viewer = make_viewer_model()
+    _mask, data = _masked_setup(viewer)
+    widget = HistogramWidget(bins=8, viewer=viewer)
+    qtbot.addWidget(widget)
+    dock = StatisticsDockWidget(widget)
+    qtbot.addWidget(dock)
+    dock.show()
+
+    widget.set_dataset_sources({"Lifetime: img": "img"})
+    widget.update_data(data, label="Lifetime: img")
+    assert dock.split_labels_checkbox.isVisible()
+
+    dock.split_labels_checkbox.setChecked(True)
+    assert widget.split_by_mask_labels
+    assert dock.layer_stats_table.rowCount() == 2
+
+    # Switching it off in the histogram is reflected back in the table.
+    widget.split_by_mask_labels = False
+    assert not dock.split_labels_checkbox.isChecked()
+    assert dock.layer_stats_table.rowCount() == 1
+
+    # An unmasked layer has nothing to separate, so nothing is offered.
+    plain = np.linspace(0.0, 1.0, 36).reshape(6, 6)
+    viewer.add_image(plain, name="plain")
+    widget.set_dataset_sources({"Lifetime: plain": "plain"})
+    widget.update_data(plain, label="Lifetime: plain")
+    assert not dock.split_labels_checkbox.isVisible()

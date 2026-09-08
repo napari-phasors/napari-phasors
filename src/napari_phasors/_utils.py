@@ -16,7 +16,7 @@ from matplotlib.colors import LinearSegmentedColormap, PowerNorm
 from matplotlib.figure import Figure
 from matplotlib.legend_handler import HandlerBase
 from matplotlib.patches import Polygon as MplPolygon
-from napari.layers import Image
+from napari.layers import Image, Labels
 from napari.utils import progress as _napari_progress
 from phasorpy.filter import phasor_filter_pawflim, phasor_threshold
 from qtpy.QtCore import QEvent, QRect, QSize, Qt, QThread, QTimer, Signal
@@ -1830,6 +1830,102 @@ def unassigned_layer_labels(layer_labels, group_assignments):
     return [label for label in layer_labels if label not in group_assignments]
 
 
+#: Joins a dataset name and the mask label it was split into, giving names
+#: like ``"Lifetime: cells.tif - label 3"``.
+MASK_LABEL_SEPARATOR = " \u2013 "
+
+
+def mask_label_split_name(label, value):
+    """Return the dataset name for mask label *value* of *label*."""
+    return f"{label}{MASK_LABEL_SEPARATOR}label {value}"
+
+
+def mask_label_values(metadata):
+    """Return the mask label values a masked layer is analysed with.
+
+    Parameters
+    ----------
+    metadata : dict
+        ``metadata`` of an analysed image layer, as written by the mask
+        controls of the Phasor Plot widget.
+
+    Returns
+    -------
+    list of int
+        The positive label values the mask restricts the analysis to, in
+        ascending order. Empty when the layer carries no mask that describes
+        one region per label: no mask at all, an inverted one (whose analysed
+        pixels are the complement of the labels, not one region each), or one
+        with no label selected, which the plugin treats as no masking.
+    """
+    mask = metadata.get('mask') if metadata else None
+    if mask is None or metadata.get('mask_invert', False):
+        return []
+    selected = metadata.get('mask_labels')
+    # ``None`` means every label of the mask is analysed; the plugin
+    # normalises "all ticked" to it (see PlotterWidget._on_mask_layer_changed).
+    values = (
+        np.unique(np.asarray(mask))
+        if selected is None
+        else np.atleast_1d(np.asarray(list(selected)))
+    )
+    return sorted({int(value) for value in values.ravel() if value > 0})
+
+
+def find_labels_layer_for_mask(viewer, mask):
+    """Return the Labels layer whose data is *mask*, or None.
+
+    A layer stores the mask it was analysed with as a plain array; matching
+    it back to a layer is what lets the per-label curves be drawn in the
+    colours napari paints those labels with.
+    """
+    mask = np.asarray(mask)
+    for layer in getattr(viewer, "layers", []):
+        if not isinstance(layer, Labels):
+            continue
+        data = np.asarray(layer.data)
+        if data.shape == mask.shape and np.array_equal(data, mask):
+            return layer
+    return None
+
+
+def split_data_by_mask_labels(data, mask, values, keep_shape=False):
+    """Split *data* into the pixels of each mask label.
+
+    Parameters
+    ----------
+    data : np.ndarray
+        Array shaped like the analysed layer.
+    mask : np.ndarray
+        Label array of the same shape, as stored in the layer metadata.
+    values : iterable of int
+        Label values to extract; empty ones are skipped.
+    keep_shape : bool, optional
+        Return arrays shaped like *data* with every other label set to NaN,
+        instead of a flat array of the label's pixels. Needed by callers
+        that go on to slice the result along a frame axis.
+
+    Returns
+    -------
+    dict
+        ``{label_value: np.ndarray}``, empty when *mask* does not line up
+        with *data*.
+    """
+    data = np.asarray(data)
+    mask = np.asarray(mask)
+    if mask.shape != data.shape:
+        return {}
+    parts = {}
+    for value in values:
+        selected = mask == value
+        if not selected.any():
+            continue
+        parts[value] = (
+            np.where(selected, data, np.nan) if keep_shape else data[selected]
+        )
+    return parts
+
+
 class _ColormapDelegate(QStyledItemDelegate):
     """Custom delegate to ensure colormap icons have vertical spacing in dropdowns."""
 
@@ -2579,6 +2675,7 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
 
     Provides controls for:
     - Display mode: Merged / Individual layers / Grouped.
+    - Splitting the masked layers into one curve per mask label.
     - Toggling SD shading (for Merged and Grouped modes).
     - Normalising every curve to its own maximum.
     - Central-tendency vertical line (Mean / Median / Center of mass).
@@ -2600,6 +2697,11 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         Initial central-tendency line selection.
     show_legend : bool
         Initial state of the *Show legend* checkbox.
+    split_mask_labels : bool, optional
+        Initial state of the *Separate mask labels* checkbox.
+    split_mask_labels_available : bool, optional
+        Whether that checkbox is shown at all. It only means something when
+        the analysed layers are masked with several labels.
     layer_labels : list of str, optional
         Dataset names offered per-curve colours in *Individual layers* mode.
     group_labels : list of str, optional
@@ -2643,6 +2745,8 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         central_tendency: str = "None",
         show_legend: bool = False,
         aspect_ratio: str = "auto",
+        split_mask_labels: bool = False,
+        split_mask_labels_available: bool = False,
         layer_labels: list = None,
         group_labels: list = None,
         group_assignments: dict = None,
@@ -2669,6 +2773,21 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         self.mode_combo.setCurrentText(display_mode)
         mode_layout.addWidget(self.mode_combo)
         layout.addLayout(mode_layout)
+
+        # --- Separate mask labels ---
+        self.split_labels_checkbox = QCheckBox("Separate mask labels")
+        self.split_labels_checkbox.setToolTip(
+            "Analyse each label of the mask on its own: one curve per label "
+            "in the histogram and one row per label in the statistics table, "
+            "instead of one per layer. Shown when the analysed layers are "
+            "masked with more than one label."
+        )
+        self.split_labels_checkbox.setChecked(split_mask_labels)
+        self.split_labels_checkbox.setVisible(split_mask_labels_available)
+        self.split_labels_checkbox.toggled.connect(
+            self._on_split_labels_toggled
+        )
+        layout.addWidget(self.split_labels_checkbox)
 
         # --- Show SD ---
         self.sd_checkbox = QCheckBox("Show standard deviation")
@@ -2904,6 +3023,16 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         if chosen.isValid():
             rgb = (chosen.redF(), chosen.greenF(), chosen.blueF())
             self._set_btn_color(btn, rgb)
+
+    def _on_split_labels_toggled(self, checked: bool) -> None:
+        """Move to *Individual layers* when the per-label split is enabled.
+
+        Separating the labels exists to tell them apart, which one merged
+        curve cannot show. The mode stays a free choice; this only picks the
+        useful default when the split is switched on from *Merged*.
+        """
+        if checked and self.mode_combo.currentText() == "Merged":
+            self.mode_combo.setCurrentText("Individual layers")
 
     def _update_ui_for_mode(self, mode: str) -> None:
         """Show/hide controls depending on the selected mode."""
@@ -3206,6 +3335,18 @@ class HistogramWidget(QWidget):
             0  # Track transitions for auto-enabling SD
         )
 
+        # The datasets exactly as the analysis tab handed them over, kept so
+        # the per-mask-label split can be re-applied when the user toggles it
+        # without the tab having to feed the data again.
+        self._input_datasets = {}
+        self._input_single = False
+        # Mask-label split: whether it is on, {split label: (source dataset,
+        # mask label value)} for what is currently drawn, and the colour
+        # napari paints each of those labels with.
+        self._split_by_mask_labels = False
+        self._split_labels = {}
+        self._mask_label_colors = {}
+
         # Colormap state (set externally)
         self.colormap_colors = None  # Nx4 array of RGBA colors
         self.contrast_limits = None  # [vmin, vmax]
@@ -3220,6 +3361,8 @@ class HistogramWidget(QWidget):
         # statistics, never to render.
         self._frame_context = None
         self._frame_source_datasets = {}
+        # Lazily computed split of the above; see :meth:`frame_source_datasets`.
+        self._frame_source_split = None
 
         # Display settings
         self._display_mode = (
@@ -3901,6 +4044,12 @@ class HistogramWidget(QWidget):
     def _open_settings_dialog(self):
         """Open the histogram settings dialog."""
         layer_labels = list(self._datasets.keys()) if self._datasets else None
+        # Offer every drawn curve its current colour, so a mask label starts
+        # from the colour napari gives it rather than the default cycle.
+        layer_colors = {
+            label: self._dataset_color(label, index)
+            for index, label in enumerate(layer_labels or [])
+        }
         # Curves get their own colours, but groups are assigned to the layers
         # behind them: with several components on screen the group rows still
         # list the analysed layers, not one entry per component.
@@ -3922,13 +4071,15 @@ class HistogramWidget(QWidget):
             normalize=self._normalize,
             central_tendency=self._central_tendency,
             show_legend=self._show_legend,
+            split_mask_labels=self._split_by_mask_labels,
+            split_mask_labels_available=self.mask_label_split_available(),
             layer_labels=layer_labels,
             group_labels=group_labels,
             series_labels=series_labels if len(series_labels) > 1 else None,
             series_colors=series_colors,
             series_style=self._series_style,
             group_assignments=group_assignments,
-            layer_colors=self._layer_colors,
+            layer_colors=layer_colors,
             group_colors=group_colors,
             group_names=group_names,
             aspect_ratio=self._aspect_ratio,
@@ -3938,6 +4089,11 @@ class HistogramWidget(QWidget):
         dlg.smooth_checkbox.setChecked(self._smooth_curves)
 
         if dlg.exec() == QDialog.Accepted:
+            split_changed = (
+                dlg.split_labels_checkbox.isChecked()
+                != self._split_by_mask_labels
+            )
+            self._split_by_mask_labels = dlg.split_labels_checkbox.isChecked()
             self._display_mode = dlg.mode_combo.currentText()
             self._show_sd = dlg.sd_checkbox.isChecked()
             self._normalize = dlg.normalize_checkbox.isChecked()
@@ -3957,9 +4113,204 @@ class HistogramWidget(QWidget):
                 self._series_color_overrides = dlg.get_series_colors()
                 self._series_style = dlg.get_series_style()
                 self._series_style_explicit = True
+            if split_changed:
+                # Splitting changes which datasets exist, so the histogram
+                # has to be recomputed rather than only re-drawn.
+                self._ingest(auto_sd=False)
+                return
             if self.counts is not None:
                 self._render()
             self.dataChanged.emit()
+
+    # ------------------------------------------------------------------
+    # Mask-label split
+    # ------------------------------------------------------------------
+
+    @property
+    def split_by_mask_labels(self) -> bool:
+        """Whether each mask label is analysed as its own dataset."""
+        return self._split_by_mask_labels
+
+    @split_by_mask_labels.setter
+    def split_by_mask_labels(self, value: bool):
+        """Toggle the per-label split and re-histogram the stored data."""
+        value = bool(value)
+        if value == self._split_by_mask_labels:
+            return
+        self._split_by_mask_labels = value
+        if self._input_datasets:
+            self._ingest(auto_sd=False)
+
+    def mask_label_split_available(self) -> bool:
+        """True when the analysed layers carry a mask with several labels.
+
+        The split is only offered then: with one label (or none) it would
+        just rename the layer's own curve.
+        """
+        if self._viewer is None or not self._input_datasets:
+            return False
+        sources = {self._source_for(label) for label in self._input_datasets}
+        return any(
+            len(self._mask_split_values(source)) > 1 for source in sources
+        )
+
+    def mask_label_split_active(self) -> bool:
+        """True when the drawn datasets are one per mask label."""
+        return bool(self._split_labels)
+
+    def _source_metadata(self, source):
+        """Return the metadata of the analysed layer *source*, or ``{}``."""
+        if self._viewer is None:
+            return {}
+        try:
+            layer = self._viewer.layers[source]
+        except (
+            AttributeError,
+            IndexError,
+            KeyError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ):
+            return {}
+        return getattr(layer, "metadata", None) or {}
+
+    def _mask_split_values(self, source):
+        """Return the mask labels *source* is analysed with.
+
+        Cheap enough to call on every update: it only reads the metadata the
+        mask controls left on the layer.
+        """
+        return mask_label_values(self._source_metadata(source))
+
+    def _mask_split_info(self, source):
+        """Return ``(mask, values, colors)`` for *source*, or None.
+
+        None means the layer is not masked in a way that describes one
+        region per label (see :func:`mask_label_values`).
+        """
+        metadata = self._source_metadata(source)
+        values = mask_label_values(metadata)
+        if len(values) < 2:
+            return None
+        mask = np.asarray(metadata['mask'])
+        mask_layer = find_labels_layer_for_mask(self._viewer, mask)
+        colors = {}
+        if mask_layer is not None:
+            for value in values:
+                rgba = mask_layer.get_color(value)
+                if rgba is not None:
+                    colors[value] = tuple(float(c) for c in rgba[:3])
+        return mask, values, colors
+
+    def _align_mask(self, mask, shape):
+        """Return *mask* matching *shape*, or None when it cannot.
+
+        In per-frame time-lapse mode the tabs feed one frame at a time while
+        the mask always covers the whole layer, so it is sliced the same way
+        before the two are compared pixel by pixel.
+        """
+        mask = np.asarray(mask)
+        shape = tuple(shape)
+        if mask.shape == shape:
+            return mask
+        context = self._frame_context
+        if context is not None and context.is_per_frame:
+            sliced = np.asarray(context.slice_array(mask))
+            if sliced.shape == shape:
+                return sliced
+        return None
+
+    def _forget_split_labels(self) -> None:
+        """Drop the bookkeeping left by the previous split."""
+        for name in self._split_labels:
+            self._dataset_sources.pop(name, None)
+            self._dataset_series.pop(name, None)
+            self._mask_label_colors.pop(name, None)
+        self._split_labels = {}
+        self._frame_source_split = None
+
+    def _split_datasets(self, datasets, *, keep_shape=False, record=False):
+        """Return *datasets* expanded into one entry per mask label.
+
+        A dataset whose source layer carries no per-label mask — or whose
+        array does not line up with that mask — is passed through whole, so
+        a selection mixing masked and unmasked layers keeps them all.
+
+        Parameters
+        ----------
+        datasets : dict
+            ``{label: np.ndarray}`` as handed over by the analysis tab.
+        keep_shape : bool, optional
+            Return arrays shaped like the layer, with the pixels of the
+            other labels set to NaN, instead of the label's pixels alone.
+        record : bool, optional
+            Remember what each split came from, and mirror the split onto
+            the dataset sources, series and label colours so that grouping,
+            per-quantity series and colouring follow the new names.
+
+        Returns
+        -------
+        dict
+            ``{label: np.ndarray}`` with one entry per mask label of every
+            dataset that could be split.
+        """
+        if record:
+            self._forget_split_labels()
+        if not self._split_by_mask_labels:
+            return dict(datasets)
+
+        expanded = {}
+        split_labels = {}
+        info_cache = {}
+        for label, data in datasets.items():
+            source = self._source_for(label)
+            if source not in info_cache:
+                info_cache[source] = self._mask_split_info(source)
+            info = info_cache[source]
+            parts = {}
+            if info is not None:
+                mask = self._align_mask(info[0], np.shape(data))
+                if mask is not None:
+                    parts = split_data_by_mask_labels(
+                        data, mask, info[1], keep_shape=keep_shape
+                    )
+            if not parts:
+                expanded[label] = data
+                continue
+            for value, part in parts.items():
+                name = mask_label_split_name(label, value)
+                expanded[name] = part
+                split_labels[name] = (label, value)
+                if not record:
+                    continue
+                self._dataset_sources[name] = source
+                if label in self._dataset_series:
+                    self._dataset_series[name] = self._dataset_series[label]
+                if value in info[2]:
+                    self._mask_label_colors[name] = info[2][value]
+        if record:
+            self._split_labels = split_labels
+        return expanded
+
+    def frame_source_datasets(self) -> dict:
+        """Return the un-sliced arrays behind the plot, one per drawn curve.
+
+        Mirrors what is on screen: with the mask labels separated, each
+        layer's array is split into one array per label so the per-timepoint
+        statistics and their CSV list the same rows as the histogram. Those
+        arrays keep the layer's shape — the other labels are NaN — because
+        the caller slices them frame by frame. They are computed on demand
+        and cached, since a stack split many ways is a lot of memory to hold
+        for a table that may never be opened.
+        """
+        if not self._split_labels or not self._frame_source_datasets:
+            return self._frame_source_datasets
+        if self._frame_source_split is None:
+            self._frame_source_split = self._split_datasets(
+                self._frame_source_datasets, keep_shape=True
+            )
+        return self._frame_source_split
 
     def set_frame_source(self, frame_context, datasets) -> None:
         """Record the un-sliced per-layer arrays behind the displayed data.
@@ -3978,6 +4329,7 @@ class HistogramWidget(QWidget):
         """
         self._frame_context = frame_context
         self._frame_source_datasets = dict(datasets or {})
+        self._frame_source_split = None
 
     def has_frame_source(self) -> bool:
         """Return True when per-timepoint statistics can be exported."""
@@ -3992,7 +4344,9 @@ class HistogramWidget(QWidget):
         NaN/Inf values are always excluded. Non-positive values are
         excluded only when ``exclude_nonpositive=True`` was passed to
         the constructor. This is the single-dataset entry point;
-        multi-layer features are disabled.
+        multi-layer features are disabled — unless the layer is masked and
+        its labels are being separated, which turns the one dataset into one
+        per label and takes the multi-layer route.
 
         Parameters
         ----------
@@ -4003,6 +4357,51 @@ class HistogramWidget(QWidget):
             column). Defaults to ``"Layer"``; callers should pass the
             analyzed image layer's name so it matches the multi-layer view.
         """
+        self._input_datasets = {label: data}
+        self._input_single = True
+        self._ingest()
+
+    def update_multi_data(self, datasets: dict) -> None:
+        """Compute histograms from multiple datasets and render.
+
+        Each dataset (one per layer) is stored individually so that
+        *Individual layers*, *Grouped*, and *Merged + SD* display modes
+        can operate on per-layer counts.
+
+        Parameters
+        ----------
+        datasets : dict
+            ``{label: np.ndarray}`` mapping layer names to their scalar
+            data arrays.  Arrays will be flattened and filtered.
+        """
+        self._input_datasets = dict(datasets)
+        self._input_single = False
+        self._ingest()
+
+    def _ingest(self, *, auto_sd: bool = True) -> None:
+        """Histogram the stored datasets, separating mask labels first.
+
+        Both entry points funnel through here so a single layer split into
+        several mask labels is drawn exactly like several layers, and so
+        toggling the split re-runs the computation without the analysis tab
+        having to feed the data again.
+
+        Parameters
+        ----------
+        auto_sd : bool, optional
+            Whether going from one curve to several may switch SD shading
+            on. False when re-running after a settings change, where the
+            user has just said what they want.
+        """
+        datasets = self._split_datasets(self._input_datasets, record=True)
+        if self._input_single and len(datasets) <= 1:
+            label, data = next(iter(datasets.items()), ("Layer", np.array([])))
+            self._ingest_single(data, label)
+        else:
+            self._ingest_multi(datasets, auto_sd=auto_sd)
+
+    def _ingest_single(self, data: np.ndarray, label: str) -> None:
+        """Histogram one dataset, with the multi-layer features disabled."""
         valid = self._filter_valid_values(data)
 
         if len(valid) == 0:
@@ -4028,19 +4427,8 @@ class HistogramWidget(QWidget):
         self.show()
         self.dataChanged.emit()
 
-    def update_multi_data(self, datasets: dict) -> None:
-        """Compute histograms from multiple datasets and render.
-
-        Each dataset (one per layer) is stored individually so that
-        *Individual layers*, *Grouped*, and *Merged + SD* display modes
-        can operate on per-layer counts.
-
-        Parameters
-        ----------
-        datasets : dict
-            ``{label: np.ndarray}`` mapping layer names to their scalar
-            data arrays.  Arrays will be flattened and filtered.
-        """
+    def _ingest_multi(self, datasets: dict, *, auto_sd: bool = True) -> None:
+        """Histogram several datasets on one set of common bins."""
         self._datasets = {}
         for label, data in datasets.items():
             valid = self._filter_valid_values(data)
@@ -4066,7 +4454,7 @@ class HistogramWidget(QWidget):
             self._counts_per_dataset[label] = counts
 
         current_count = len(self._datasets)
-        if current_count > 1 and self._previous_dataset_count <= 1:
+        if auto_sd and current_count > 1 and self._previous_dataset_count <= 1:
             self._show_sd = True
         self._previous_dataset_count = current_count
 
@@ -4078,6 +4466,23 @@ class HistogramWidget(QWidget):
 
     def rename_dataset(self, old_name: str, new_name: str) -> None:
         """Handle renaming of a dataset to preserve colors and groupings."""
+        if old_name in self._input_datasets:
+            self._input_datasets = {
+                (new_name if key == old_name else key): value
+                for key, value in self._input_datasets.items()
+            }
+        split_renames = {
+            name: mask_label_split_name(new_name, value)
+            for name, (base, value) in self._split_labels.items()
+            if base == old_name
+        }
+        if split_renames:
+            # The per-label names embed the dataset name, so they all move
+            # with it; re-splitting under the new one keeps the colours and
+            # groups the remap has just carried over.
+            self.remap_dataset_keys({old_name: new_name, **split_renames})
+            self._ingest(auto_sd=False)
+            return
         if old_name in self._datasets:
             self._datasets[new_name] = self._datasets.pop(old_name)
         if old_name in self._counts_per_dataset:
@@ -4191,6 +4596,8 @@ class HistogramWidget(QWidget):
         self._counts_per_dataset = {}
         self._raw_valid_data = None
         self._previous_dataset_count = 0
+        self._input_datasets = {}
+        self._forget_split_labels()
         if clear_frame_source:
             self._frame_context = None
             self._frame_source_datasets = {}
@@ -4428,13 +4835,11 @@ class HistogramWidget(QWidget):
         if choice == "None":
             return
 
-        default_colors = plt.cm.tab10.colors
         n_datasets = len(self._counts_per_dataset)
 
         if n_datasets > 1 and self._display_mode == "Individual layers":
             for idx, (label, valid) in enumerate(self._datasets.items()):
-                default_c = default_colors[idx % len(default_colors)][:3]
-                color = self._layer_colors.get(label, default_c)
+                color = self._dataset_color(label, idx)
                 val = self._compute_central_tendency(
                     valid, choice, self.bin_centers, self.bin_edges
                 )
@@ -4653,6 +5058,20 @@ class HistogramWidget(QWidget):
             return None
         return self.xlabel or None
 
+    def statistics_row_name(self, label):
+        """Return the statistics row *label* belongs to.
+
+        Rows are the analysed layers, so the curves of several quantities
+        derived from one layer share a row. Separated mask labels are the
+        exception: they are different regions of the layer, so each keeps
+        its own row.
+        """
+        source = self._source_for(label)
+        split = self._split_labels.get(label)
+        if split is None:
+            return source
+        return mask_label_split_name(source, split[1])
+
     def series_statistics_datasets(self):
         """Return ``({layer: {series: values}}, series_names)`` for the table.
 
@@ -4666,8 +5085,7 @@ class HistogramWidget(QWidget):
             return None, []
         rows = {}
         for label, values in self._datasets.items():
-            source = self._source_for(label)
-            rows.setdefault(source, {})[
+            rows.setdefault(self.statistics_row_name(label), {})[
                 self._dataset_series.get(label)
             ] = values
         return rows, names
@@ -4705,6 +5123,20 @@ class HistogramWidget(QWidget):
             )
             pooled[label] = np.concatenate([values for _, values in members])
         return pooled
+
+    def _dataset_color(self, label, index):
+        """Return the colour of one dataset's curve.
+
+        A colour picked in the settings dialog wins; a dataset that is one
+        label of a mask otherwise takes the colour napari paints that label
+        with, so the curves and the labels layer read as the same thing.
+        Everything else falls back to the default colour cycle.
+        """
+        default_colors = plt.cm.tab10.colors
+        fallback = self._mask_label_colors.get(
+            label, default_colors[index % len(default_colors)][:3]
+        )
+        return self._layer_colors.get(label, fallback)
 
     def _group_color(self, group_id):
         """Return the color of *group_id*, falling back to the cycle."""
@@ -4866,12 +5298,10 @@ class HistogramWidget(QWidget):
 
     def _render_individual(self) -> None:
         """Render each dataset as a smooth outline."""
-        default_colors = plt.cm.tab10.colors
         for idx, (label, counts) in enumerate(
             self._counts_per_dataset.items()
         ):
-            default_c = default_colors[idx % len(default_colors)][:3]
-            color = self._layer_colors.get(label, default_c)
+            color = self._dataset_color(label, idx)
             x_fine, y_fine = self._smooth_curve(counts)
             y_fine = y_fine * self._display_scale(y_fine)
             self.ax.plot(
@@ -5651,6 +6081,22 @@ class StatisticsDockWidget(QWidget):
         main_layout.addWidget(self.group_stats_section)
         self.group_stats_section.setVisible(False)
 
+        # Mirror of the histogram's per-label split. The table is where one
+        # row per masked region is most often wanted, so the option is
+        # offered here as well as in the histogram settings; both drive the
+        # same state on the histogram widget.
+        self.split_labels_checkbox = QCheckBox("Separate mask labels")
+        self.split_labels_checkbox.setToolTip(
+            "Show one row per label of the mask instead of one per layer. "
+            "Shown when the analysed layers are masked with more than one "
+            "label. The histogram follows, drawing one curve per label."
+        )
+        self.split_labels_checkbox.setVisible(False)
+        self.split_labels_checkbox.toggled.connect(
+            self._on_split_labels_toggled
+        )
+        main_layout.addWidget(self.split_labels_checkbox)
+
         self.export_csv_button = QPushButton("Export Table as CSV")
         self.export_csv_button.setMinimumWidth(140)
         self.export_csv_button.setEnabled(False)
@@ -5660,6 +6106,19 @@ class StatisticsDockWidget(QWidget):
         main_layout.addStretch()
 
         histogram_widget.dataChanged.connect(self._update_statistics)
+
+    def _on_split_labels_toggled(self, checked):
+        """Separate the mask labels in the histogram that drives the table."""
+        self.histogram_widget.split_by_mask_labels = checked
+
+    def _sync_split_labels_checkbox(self):
+        """Offer the split only while the analysed layers are masked."""
+        hw = self.histogram_widget
+        self.split_labels_checkbox.setVisible(hw.mask_label_split_available())
+        if self.split_labels_checkbox.isChecked() != hw.split_by_mask_labels:
+            self.split_labels_checkbox.blockSignals(True)
+            self.split_labels_checkbox.setChecked(hw.split_by_mask_labels)
+            self.split_labels_checkbox.blockSignals(False)
 
     def _shows_per_frame_rows(self):
         """True when the table should list one row per time-lapse frame."""
@@ -5676,7 +6135,7 @@ class StatisticsDockWidget(QWidget):
         hw = self.histogram_widget
         hist_range = hw.get_range() if hw._range_slider_enabled else None
         return pooled_histogram_bins(
-            hw._frame_source_datasets, hw.bins, hist_range
+            hw.frame_source_datasets(), hw.bins, hist_range
         )
 
     def _frame_statistics_rows(self):
@@ -5686,7 +6145,7 @@ class StatisticsDockWidget(QWidget):
         hw = self.histogram_widget
         bin_centers, bin_edges = self._pooled_bins()
         rows = build_frame_statistics_rows(
-            hw._frame_source_datasets,
+            hw.frame_source_datasets(),
             hw._frame_context,
             bin_edges,
             bin_centers,
@@ -5696,6 +6155,7 @@ class StatisticsDockWidget(QWidget):
     def _update_statistics(self):
         """Recompute the statistics tables from the histogram's data."""
         hw = self.histogram_widget
+        self._sync_split_labels_checkbox()
 
         # Say what was measured in the column headers rather than leaving a
         # bare "Mean" that could be a lifetime, a fraction or an efficiency.
@@ -5716,7 +6176,13 @@ class StatisticsDockWidget(QWidget):
                 self.export_csv_button.setEnabled(True)
                 return
 
-        self.layer_stats_section.set_title("Layer Statistics")
+        # With the mask labels separated the rows are regions of a layer,
+        # not the layers themselves.
+        self.layer_stats_section.set_title(
+            "Label Statistics"
+            if hw.mask_label_split_active()
+            else "Layer Statistics"
+        )
 
         has_multi = bool(hw._datasets)
         has_single = (
@@ -5835,7 +6301,7 @@ class StatisticsDockWidget(QWidget):
             or to emit one row per timepoint per layer.
         """
         hw = self.histogram_widget
-        datasets = hw._frame_source_datasets
+        datasets = hw.frame_source_datasets()
         # Bin over the whole acquisition so every frame's centre of mass is
         # computed on the same bins, matching the on-screen per-frame table.
         bin_centers, bin_edges = self._pooled_bins()

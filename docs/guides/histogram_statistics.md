@@ -70,6 +70,35 @@ ramp generated from that colour. Picking a new solid colour for a group that had
 a colormap replaces the colormap with a ramp from the new colour; leaving the
 colour alone keeps the colormap.
 
+### Separating mask labels
+
+When the analysed layers are masked with a labels layer (see {doc}`mask`) and
+more than one label is selected, each label can be analysed on its own instead
+of all of them together. Tick **Separate mask labels**, either in the
+**Histogram Settings** dialog or below the statistics table — both drive the
+same setting — and every masked layer contributes one dataset per label:
+
+- the histogram draws a separate outline for each label, exactly as
+  *Individual layers* does for whole layers (switching the option on from
+  *Merged* selects that mode for you, since one merged curve cannot tell the
+  labels apart);
+- the statistics table shows one row per label, named
+  `<layer> – label <n>`, and its header changes to *Label Statistics*;
+- each curve is drawn in the colour napari paints that label with, so the
+  plot and the labels layer read as the same thing. The colour can still be
+  overridden per curve in the settings dialog.
+
+The option only appears when it applies: a layer with a single label selected,
+an inverted mask (whose analysed region is the complement of the labels, not
+one region per label) or no mask at all has nothing to separate. Layers in the
+selection that are not masked keep their single curve alongside the per-label
+ones.
+
+Grouping is unaffected: groups belong to the analysed layer, so every label of
+a layer stays in that layer's group. Exports follow the display — the histogram
+CSV writes one column of counts per label, and the statistics CSV one row per
+label, including the per-timepoint rows of a time-lapse.
+
 ### Histogram features
 
 - **Range slider**: Drag the handles to clip the display/contrast limits of the colormapped image in real time.
@@ -100,7 +129,7 @@ The **Statistics** dock panel, linked to the histogram, displays per-layer (and 
 
 | Column | Description |
 |--------|-------------|
-| Name | Layer or group name |
+| Name | Layer, mask label or group name |
 | Center of Mass | Histogram-weighted center |
 | Mean | Arithmetic mean |
 | Median | 50th percentile |
