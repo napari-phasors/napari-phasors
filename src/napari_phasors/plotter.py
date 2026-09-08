@@ -84,6 +84,7 @@ from ._utils import (
     build_group_styles_from_layer_metadata,
     build_groups_from_layer_metadata,
     confirm_unassigned_layers,
+    make_experimental_warning,
     make_section,
     make_solid_contour_cmap,
     normalize_rgb,
@@ -105,61 +106,6 @@ from .filter_tab import FilterWidget
 from .fret_tab import FretWidget
 from .phasor_mapping_tab import PhasorMappingWidget
 from .selection_tab import SelectionWidget
-
-#: Fallback for :func:`_theme_warning_color`, matching the amber napari's own
-#: themes use, so the text next to the warning triangle stays legible even if
-#: the theme cannot be resolved.
-_FALLBACK_WARNING_COLOR = "#e3b617"
-
-#: Logical size, in pixels, to render the "Experimental" warning triangle at.
-#: napari's stylesheet pins ``#error_label`` to an 18 px box with 2 px of
-#: padding, so 14 px is the content area the label actually has. Drawing
-#: larger than this is what clipped the triangle into an unrecognisable
-#: wedge, because the pixmap is painted inside that content rect.
-_WARNING_ICON_SIZE = 14
-
-
-def _theme_warning_color():
-    """Return the current napari theme's warning colour as a hex string.
-
-    Read from the theme rather than hard-coded so the "Experimental" text
-    matches the triangle beside it, which napari's stylesheet recolours with
-    this same value.
-    """
-    try:
-        from napari.settings import get_settings
-        from napari.utils.theme import get_theme
-
-        return get_theme(get_settings().appearance.theme).warning.as_hex()
-    except Exception:  # noqa: BLE001 - a missing/renamed theme must not
-        # take the settings tab down with it.
-        return _FALLBACK_WARNING_COLOR
-
-
-def _warning_pixmap(size=_WARNING_ICON_SIZE):
-    """Return napari's warning triangle as a pixmap, or ``None``.
-
-    Rendered from napari's own ``warning.svg`` in the theme's warning colour,
-    which is exactly what napari's stylesheet does for the ``error_label``
-    object name -- so the two agree pixel for pixel and the marker is the one
-    napari uses for its own experimental controls.
-
-    ``size`` is a *logical* size. ``QIcon.pixmap`` already does the high-DPI
-    work: it renders denser pixels and tags the result with their device
-    pixel ratio, so the pixmap keeps the requested logical size. Pre-scaling
-    the request, or re-stamping the ratio afterwards, doubles the triangle on
-    a HiDPI screen and it then overflows the row it sits in.
-    """
-    try:
-        from napari._qt.qt_resources import QColoredSVGIcon
-
-        icon = QColoredSVGIcon.from_resources("warning").colored(
-            _theme_warning_color()
-        )
-    except Exception:  # noqa: BLE001 - a missing resource must not take the
-        # settings tab down with it; the label just stays empty.
-        return None
-    return icon.pixmap(size, size)
 
 
 def _apply_label_colors_to_combo(combo, labels_layer, unique_labels):
@@ -5774,48 +5720,19 @@ class PlotterWidget(QWidget):
     def _build_experimental_warning(self):
         """Return the "Experimental" banner for the Performance section.
 
-        The marker is napari's own: ``warning.svg`` -- the triangle with the
-        exclamation mark -- in the current theme's warning colour, which is
-        what napari puts on its own experimental controls. The label carries
-        the ``error_label`` object name napari's stylesheet targets *and*
-        renders that same resource itself, so it looks right whether or not
-        the stylesheet reaches this widget. Reusing napari's icon rather than
-        shipping our own keeps the two identical in every theme.
+        Built by :func:`~napari_phasors._utils.make_experimental_warning` so
+        this banner and the one on the tile layout dialog are the same
+        marker, in the same theme colour, drawn from napari's own
+        ``warning.svg``.
         """
-        widget = QWidget()
-        row = QHBoxLayout(widget)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(4)
-
-        tooltip = (
+        banner = make_experimental_warning(
             "Parallel processing is new. Results are identical to running "
             "sequentially, but if you hit a crash, a hang or an out-of-memory "
             "error, switch these off and report it."
         )
-
-        self.experimental_warning_icon = QLabel()
-        self.experimental_warning_icon.setObjectName("error_label")
-        self.experimental_warning_icon.setToolTip(tooltip)
-        # The object name alone only paints the icon where napari's
-        # stylesheet reaches this widget, which depends on where the dock
-        # ends up. Rendering the same resource ourselves makes the marker
-        # unconditional; the stylesheet's ``image`` wins where it applies,
-        # and it draws the identical SVG in the identical colour.
-        pixmap = _warning_pixmap()
-        if pixmap is not None:
-            self.experimental_warning_icon.setPixmap(pixmap)
-        self.experimental_warning_icon.setAlignment(Qt.AlignCenter)
-
-        self.experimental_warning_label = QLabel("Experimental")
-        self.experimental_warning_label.setToolTip(tooltip)
-        self.experimental_warning_label.setStyleSheet(
-            f"color: {_theme_warning_color()};"
-        )
-
-        row.addWidget(self.experimental_warning_icon)
-        row.addWidget(self.experimental_warning_label)
-        row.addStretch(1)
-        return widget
+        self.experimental_warning_icon = banner.icon_label
+        self.experimental_warning_label = banner.text_label
+        return banner
 
     def _on_parallel_items_toggled(self, checked):
         """Switch fan-out over separate layers, files and images on or off.

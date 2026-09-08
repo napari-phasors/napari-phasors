@@ -2588,8 +2588,10 @@ def test_toolbar_clears_the_dock_title_bar(make_napari_viewer, qtbot):
     )
     qt_window = viewer.window._qt_window
     qt_window.resize(1200, 900)
+    # The overlap can only be measured once Qt has laid the dock out.
+    qt_window.show()
     plotter._reserve_title_bar_overlap()
-    qtbot.waitUntil(lambda: plotter.canvas_widget.toolbar.height() > 0)
+    qt_window.layout().activate()
 
     title_bar = dock.titleBarWidget()
     assert title_bar is not None
@@ -2600,8 +2602,9 @@ def test_toolbar_clears_the_dock_title_bar(make_napari_viewer, qtbot):
     def _top(widget):
         return widget.mapTo(qt_window, widget.rect().topLeft()).y()
 
-    toolbar_top = _top(plotter.canvas_widget.toolbar)
-    assert toolbar_top >= _bottom(title_bar)
+    qtbot.waitUntil(
+        lambda: _top(plotter.canvas_widget.toolbar) >= _bottom(title_bar)
+    )
 
 
 def test_title_bar_overlap_is_measured_from_the_bar(make_napari_viewer, qtbot):

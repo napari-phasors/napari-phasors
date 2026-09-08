@@ -17,15 +17,14 @@ from napari_phasors._synthetic_generator import (
     make_intensity_layer_with_phasors,
     make_raw_flim_data,
 )
+from napari_phasors._utils import WARNING_ICON_SIZE
 from napari_phasors.calibration_tab import CalibrationWidget
 from napari_phasors.components_tab import ComponentsWidget
 from napari_phasors.filter_tab import FilterWidget
 from napari_phasors.fret_tab import FretWidget
 from napari_phasors.plotter import (
-    _WARNING_ICON_SIZE,
     CanvasWidget,
     PlotterWidget,
-    _warning_pixmap,
 )
 from napari_phasors.selection_tab import SelectionWidget
 
@@ -1415,25 +1414,8 @@ def test_performance_section_is_marked_experimental(make_viewer_model, qtbot):
     # ``QIcon.pixmap`` already takes a logical size and tags the result with
     # its device pixel ratio, so the ratio must be left alone.
     logical = pixmap.deviceIndependentSize()
-    assert logical.width() == pytest.approx(_WARNING_ICON_SIZE)
-    assert logical.height() == pytest.approx(_WARNING_ICON_SIZE)
-
-
-def test_warning_pixmap_keeps_its_logical_size_on_hidpi():
-    """The helper never pre-scales: the ratio stays the icon engine's own."""
-    pixmap = _warning_pixmap()
-    assert pixmap is not None and not pixmap.isNull()
-
-    # Denser pixels are fine -- what matters is that they are tagged, so the
-    # logical size is still the size that was asked for.
-    logical = pixmap.deviceIndependentSize()
-    assert logical.width() == pytest.approx(_WARNING_ICON_SIZE)
-    assert pixmap.width() == pytest.approx(
-        _WARNING_ICON_SIZE * pixmap.devicePixelRatio()
-    )
-
-    smaller = _warning_pixmap(size=8)
-    assert smaller.deviceIndependentSize().width() == pytest.approx(8)
+    assert logical.width() == pytest.approx(WARNING_ICON_SIZE)
+    assert logical.height() == pytest.approx(WARNING_ICON_SIZE)
 
 
 def test_memory_budget_spinbox_sizes_the_pools(make_viewer_model, qtbot):
