@@ -6024,30 +6024,8 @@ class PlotterWidget(QWidget):
             title="Components Histogram & Statistics",
         )
 
-        # Insert component selector combobox at the top of the dock widget
-        dock_layout = self.components_histogram_dock_widget.layout()
-        component_selector = QWidget()
-        selector_layout = QHBoxLayout(component_selector)
-        selector_layout.setContentsMargins(4, 4, 4, 0)
-        selector_layout.addWidget(QLabel("Component:"))
-        selector_layout.addWidget(
-            self.components_tab.histogram_component_combobox, 1
-        )
-        dock_layout.insertWidget(0, component_selector)
-
-        # The docked histogram area is clamped to its minimum height
-        # (see ``_resize_initial_docks``). This dock uniquely carries the
-        # "Component:" selector row above the plot, so grow its minimum by that
-        # row's height; otherwise the extra row eats into the histogram canvas
-        # and the bottom of the plot is clipped in the Components tab.
-        selector_extra = (
-            component_selector.sizeHint().height() + dock_layout.spacing()
-        )
-        self.components_histogram_dock_widget.setMinimumHeight(
-            self.components_histogram_dock_widget.minimumHeight()
-            + selector_extra
-        )
-
+        # Which components are plotted is chosen with the "Show in histogram
+        # and statistics" toggle on each component card in the Components tab.
         self._components_hist_page_idx = self._histogram_stack.addWidget(
             self.components_histogram_dock_widget
         )
@@ -6057,18 +6035,6 @@ class PlotterWidget(QWidget):
             self.components_tab.histogram_widget,
             title="Components Statistics",
         )
-
-        # Mirror the component selector at the top of the statistics dock so
-        # the component can be changed without opening the histogram dock.
-        stats_dock_layout = self.components_statistics_dock_widget.layout()
-        stats_component_selector = QWidget()
-        stats_selector_layout = QHBoxLayout(stats_component_selector)
-        stats_selector_layout.setContentsMargins(4, 4, 4, 0)
-        stats_selector_layout.addWidget(QLabel("Component:"))
-        stats_selector_layout.addWidget(
-            self.components_tab.stats_component_combobox, 1
-        )
-        stats_dock_layout.insertWidget(0, stats_component_selector)
 
         self._components_stats_page_idx = self._statistics_stack.addWidget(
             self.components_statistics_dock_widget
