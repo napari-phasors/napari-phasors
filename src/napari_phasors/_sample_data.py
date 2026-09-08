@@ -23,11 +23,18 @@ import pooch
 from napari_phasors._reader import napari_get_reader
 from napari_phasors._utils import show_activity_progress
 
+# Number of times pooch re-attempts a download that failed with a connection
+# error (which includes read timeouts against GitHub/Zenodo). Sample files are
+# tens of megabytes, so a single transient network hiccup should not abort the
+# whole sample-data command.
+DOWNLOAD_RETRIES = 3
+
 
 def convallaria_FLIM_sample_data():
     """Fetch Convallaria image and Calibration"""
     downloader = pooch.create(
         path=pooch.os_cache("napari-phasors"),
+        retry_if_failed=DOWNLOAD_RETRIES,
         base_url="https://github.com/napari-phasors/napari-phasors-data/raw/main/sample_data/",
         registry={
             'Convallaria_$EI0S.fbd': (
@@ -71,6 +78,7 @@ def embryo_FLIM_sample_data():
     """Fetch FLUTE's FLIM Embryo image and Calibration"""
     downloader = pooch.create(
         path=pooch.os_cache("napari-phasors"),
+        retry_if_failed=DOWNLOAD_RETRIES,
         base_url="https://github.com/napari-phasors/napari-phasors-data/raw/main/sample_data/",
         registry={
             'Embryo.tif': (
@@ -112,6 +120,7 @@ def paramecium_HSI_sample_data():
     """Fetch Paramecium Hyperspectral image"""
     downloader = pooch.create(
         path=pooch.os_cache("napari-phasors"),
+        retry_if_failed=DOWNLOAD_RETRIES,
         base_url="https://github.com/phasorpy/phasorpy-data/raw/main/tests",
         registry={
             'paramecium.lsm': (
@@ -147,6 +156,7 @@ def fret_FLIM_sample_data():
     ]
     downloader = pooch.create(
         path=pooch.os_cache("napari-phasors"),
+        retry_if_failed=DOWNLOAD_RETRIES,
         base_url="https://zenodo.org/records/22261325/files/",
         registry={
             'Donor_Only.ome.tif': (

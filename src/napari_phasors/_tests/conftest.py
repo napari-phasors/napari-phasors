@@ -46,6 +46,132 @@ def configure_phasorpy_retries():
 configure_phasorpy_retries()
 
 
+# --- Transient network failures become skips, not failures ------------------
+#
+# Tests that exercise the sample-data loaders and the file readers download
+# tens of megabytes from GitHub/Zenodo through pooch. Pooch already retries
+# connection errors (``retry_if_failed``, set on the sample-data downloaders,
+# on ``test_data_utils.test_data_downloader`` and on phasorpy's repositories
+# above), but when a host stays slow or unreachable for longer than the
+# retries cover, the exception still surfaces and reads as a test failure --
+# e.g. ``requests.exceptions.ReadTimeout: HTTPSConnectionPool(host=
+# 'zenodo.org', port=443): Read timed out. (read timeout=30)``. That says
+# nothing about the code under test, so once the retries are exhausted we turn
+# such a failure into a skip.
+#
+# Only transport-level errors and retryable HTTP statuses (429 and 5xx) count.
+# A 404 -- a wrong URL or a stale registry entry -- is a real bug and still
+# fails, and so does every non-network error.
+
+_TRANSIENT_HTTP_STATUSES = frozenset({429})
+
+
+def _http_status(exc):
+    """Return the HTTP status carried by ``exc``, or None if it carries none.
+
+    ``urllib.error.HTTPError`` exposes ``.code``; ``requests``' ``HTTPError``
+    exposes ``.response.status_code`` (other ``requests`` exceptions have a
+    ``.response`` attribute too, but it is ``None``).
+    """
+    status = getattr(exc, "code", None)
+    if status is None:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+    return status if isinstance(status, int) else None
+
+
+def _transient_network_error_types():
+    """Exception classes that mean "the network flaked", not "bad code"."""
+    import http.client
+    import socket
+    import urllib.error
+
+    types = [
+        ConnectionError,  # builtin: reset/aborted/refused connections
+        socket.gaierror,  # DNS resolution failure
+        http.client.RemoteDisconnected,
+        http.client.IncompleteRead,
+        urllib.error.URLError,
+    ]
+
+    try:
+        import requests.exceptions as requests_exc
+
+        types += [
+            requests_exc.ConnectionError,
+            requests_exc.Timeout,  # includes ReadTimeout / ConnectTimeout
+            requests_exc.ChunkedEncodingError,
+        ]
+    except ImportError:  # pragma: no cover - requests ships with pooch
+        pass
+
+    try:
+        import urllib3.exceptions as urllib3_exc
+
+        types += [
+            urllib3_exc.TimeoutError,
+            urllib3_exc.ProtocolError,
+            urllib3_exc.NewConnectionError,
+            urllib3_exc.MaxRetryError,
+        ]
+    except ImportError:  # pragma: no cover - urllib3 ships with requests
+        pass
+
+    return tuple(types)
+
+
+def _iter_exception_chain(exc):
+    """Yield ``exc`` and every exception it was raised from/during."""
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        yield exc
+        exc = exc.__cause__ or exc.__context__
+
+
+def network_flake_reason(exc):
+    """Describe ``exc`` as a transient network failure, or return None.
+
+    Walks the exception chain, so a download error wrapped by pooch (or by a
+    reader) is still recognised.
+    """
+    transient_types = _transient_network_error_types()
+    for err in _iter_exception_chain(exc):
+        status = _http_status(err)
+        if status is not None:
+            # A response did come back: only server-side and rate-limit
+            # statuses are worth retrying, anything else is a real failure.
+            if status in _TRANSIENT_HTTP_STATUSES or 500 <= status < 600:
+                return f"HTTP {status} ({type(err).__name__}): {err}"
+            continue
+        if isinstance(err, transient_types):
+            return f"{type(err).__name__}: {err}"
+    return None
+
+
+def skip_if_network_flake(exc):
+    """Skip the running test if ``exc`` is a network flake, else re-raise."""
+    reason = network_flake_reason(exc)
+    if reason is None:
+        raise exc
+    pytest.skip(f"transient network failure after retries - {reason}")
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_setup(item):
+    try:
+        return (yield)
+    except Exception as exc:  # noqa: BLE001 - re-raised unless it is a flake
+        skip_if_network_flake(exc)
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_call(item):
+    try:
+        return (yield)
+    except Exception as exc:  # noqa: BLE001 - re-raised unless it is a flake
+        skip_if_network_flake(exc)
+
+
 # Harden superqt's SliderLabel against the same PySide6 + Python 3.14 shiboken
 # wrapper-corruption bug: under address reuse, `widget.style()` can return a
 # transient QWidgetItem instead of a QStyle, so `_get_size()` raises
