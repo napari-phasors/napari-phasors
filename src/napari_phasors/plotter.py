@@ -6025,8 +6025,7 @@ class PlotterWidget(QWidget):
         )
 
         # Which components are plotted is chosen with the "Show in histogram
-        # and statistics" toggle on each component card in the Components tab,
-        # so the dock carries no selector row of its own.
+        # and statistics" toggle on each component card in the Components tab.
         self._components_hist_page_idx = self._histogram_stack.addWidget(
             self.components_histogram_dock_widget
         )

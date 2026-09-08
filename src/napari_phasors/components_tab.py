@@ -75,7 +75,6 @@ COMPONENT_CARD_STYLE = (
     "  border: 1px solid rgba(128, 128, 128, 0.55);"
     "}"
     'QFrame#componentCard[selected="true"], QFrame#componentRow[selected="true"] {'
-    # dodgerblue, matching the component markers drawn on the phasor plot.
     "  border: 1px solid rgba(30, 144, 255, 0.85);"
     "  background-color: rgba(30, 144, 255, 0.06);"
     "}"
@@ -267,10 +266,6 @@ class CenterFillSlider(QSlider):
             QStyle.CC_Slider, opt, QStyle.SC_SliderHandle, self
         )
 
-        # Map the zero value to a pixel the same way Qt positions the handle:
-        # the handle centre only travels within the groove inset by half its
-        # width. Using the naive groove-width mapping instead would drift the
-        # fill origin away from the handle at value 0.
         handle_w = handle.width()
         available = groove.width() - handle_w
         zero_pos = self.style().sliderPositionFromValue(
@@ -279,11 +274,6 @@ class CenterFillSlider(QSlider):
         zero_x = groove.x() + handle_w / 2.0 + zero_pos
         handle_x = handle.center().x()
 
-        # Overlay the fill exactly on the grey groove line. The stylesheet
-        # draws the track 4px tall, centred on the groove rect; mirror that
-        # here using the float centre so the blue band shares the light-grey
-        # track's centre and thickness (QRect.center() floors for even
-        # heights, which shifted the band up by a pixel).
         groove_thickness = 4.0
         center_y = groove.y() + groove.height() / 2.0
         left = min(zero_x, handle_x)
@@ -333,9 +323,6 @@ class PhasorCenterSelectionDialog(QDialog):
         )
         self.layer_combo.addItems(layers)
 
-        # Pre-select only the layers that were previously used to compute the
-        # phasor center for this component. By default (no prior selection)
-        # nothing is checked.
         if preselected:
             checked = [name for name in preselected if name in layers]
             if checked:
@@ -343,7 +330,6 @@ class PhasorCenterSelectionDialog(QDialog):
 
         layout.addWidget(self.layer_combo)
 
-        # Spacer
         layout.addSpacing(4)
 
         button_box = QDialogButtonBox(
