@@ -1879,3 +1879,76 @@ def test_plot_blanks_when_features_are_unavailable(make_viewer_model):
         assert plotter._frame_plot_blanked is True
     finally:
         plotter.close()
+
+
+def _mask_stack_layer(viewer, layer):
+    """Mask *layer* with a two-label mask covering the whole stack."""
+    mask = np.zeros(layer.data.shape, dtype=int)
+    mask[..., :3] = 1
+    mask[..., 3:] = 2
+    viewer.add_labels(mask, name="mask")
+    layer.metadata['mask'] = mask
+    layer.metadata['mask_invert'] = False
+    return mask
+
+
+def test_mask_labels_split_follows_the_displayed_frame(make_viewer_model):
+    """Per-label curves are sliced with the same frame as the data."""
+    viewer = make_viewer_model()
+    layer = create_stack_layer()
+    mask = _mask_stack_layer(viewer, layer)
+    plotter = make_plotter_with_layer(viewer, layer)
+    try:
+        mapping_tab = _run_mapping_analysis(plotter)
+        histogram = mapping_tab.histogram_widget
+        histogram.split_by_mask_labels = True
+
+        assert histogram.mask_label_split_active()
+        pooled = {
+            name: len(values) for name, values in histogram._datasets.items()
+        }
+        assert len(pooled) == 2
+
+        # In per-frame mode each label keeps only that frame's pixels: the
+        # whole-layer mask has to be sliced the same way as the data.
+        plotter.frame_context.mode = CURRENT
+        mapping_tab.refresh_for_frame_change()
+
+        per_frame = {
+            name: len(values) for name, values in histogram._datasets.items()
+        }
+        assert set(per_frame) == set(pooled)
+        for name, count in per_frame.items():
+            assert count == pytest.approx(pooled[name] / N_FRAMES, rel=0.5)
+            assert count > 0
+        assert sum(per_frame.values()) <= int((mask[0] > 0).sum())
+    finally:
+        plotter.close()
+
+
+def test_per_frame_statistics_list_every_mask_label(make_viewer_model):
+    """Per-timepoint rows are per label once the labels are separated."""
+    viewer = make_viewer_model()
+    layer = create_stack_layer()
+    _mask_stack_layer(viewer, layer)
+    plotter = make_plotter_with_layer(viewer, layer)
+    try:
+        mapping_tab = _run_mapping_analysis(plotter)
+        histogram = mapping_tab.histogram_widget
+        table = _mapping_stats_dock(plotter).layer_stats_table
+
+        plotter.frame_context.mode = CURRENT
+        assert table.rowCount() == N_FRAMES
+
+        histogram.split_by_mask_labels = True
+
+        # The un-sliced source arrays keep the stack axis so they can still
+        # be sliced frame by frame after the split.
+        for data in histogram.frame_source_datasets().values():
+            assert np.asarray(data).shape == STACK_SHAPE
+        assert table.rowCount() == 2 * N_FRAMES
+        names = {row[1] for row in _table_rows(table)}
+        assert len(names) == 2
+        assert all("label" in name for name in names)
+    finally:
+        plotter.close()

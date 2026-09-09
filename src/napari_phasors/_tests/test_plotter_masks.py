@@ -2169,3 +2169,59 @@ def test_find_mask_layer_for_skips_empty_shapes_layer(make_viewer_model):
     assert result is None
 
     plotter.deleteLater()
+
+
+def test_mask_labels_split_histogram_and_statistics(make_viewer_model, qtbot):
+    """Masking with several labels lets each label be analysed on its own."""
+    viewer = make_viewer_model()
+    image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(image_layer)
+    plotter = PlotterWidget(viewer)
+    try:
+        mask_data = np.zeros(image_layer.data.shape, dtype=int)
+        mask_data[: mask_data.shape[0] // 2, :] = 1
+        mask_data[mask_data.shape[0] // 2 :, :] = 2
+        viewer.add_labels(mask_data, name="two_labels")
+
+        plotter.image_layers_checkable_combobox.setCheckedItems(
+            [image_layer.name]
+        )
+        plotter._process_layer_selection_change()
+        # Assign the mask through the UI so the metadata is written by the
+        # same code path the user goes through.
+        plotter.mask_layer_combobox.setCurrentText("two_labels")
+        # Every label ticked is stored as "no label filter" at all.
+        assert 'mask_labels' not in image_layer.metadata
+
+        mapping_tab = plotter.phasor_mapping_tab
+        mapping_tab.frequency_input.setText("80.0")
+        mapping_tab._on_calculate_lifetime_clicked()
+
+        histogram = mapping_tab.histogram_widget
+        stats = plotter._statistics_stack.widget(
+            plotter._phasor_map_stats_page_idx
+        )
+        assert histogram.mask_label_split_available()
+        assert stats.layer_stats_table.rowCount() == 1
+
+        histogram.split_by_mask_labels = True
+
+        names = list(histogram._datasets)
+        assert len(names) == 2
+        assert all("label" in name for name in names)
+        # Both curves come from the analysed image layer, so grouping and
+        # every other per-layer feature still sees one layer.
+        assert histogram._group_source_names() == [image_layer.name]
+        table = stats.layer_stats_table
+        assert table.rowCount() == 2
+        assert [table.item(row, 0).text() for row in range(2)] == names
+
+        # Deselecting a label leaves nothing to separate.
+        plotter.mask_labels_combobox.setCheckedItems(["1"])
+        plotter._on_mask_labels_changed()
+        mapping_tab._on_calculate_lifetime_clicked()
+        assert not histogram.mask_label_split_available()
+        assert not histogram.mask_label_split_active()
+        assert len(histogram._datasets) == 1
+    finally:
+        plotter.close()
