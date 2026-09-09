@@ -2347,3 +2347,126 @@ def _dialog_text(dialog):
     from qtpy.QtWidgets import QLabel
 
     return " ".join(label.text() for label in dialog.findChildren(QLabel))
+
+
+def test_multichannel_single_layer_single_harmonic(monkeypatch):
+    """A single harmonic keeps its axis: (1, C, Y, X)."""
+    data = xr.DataArray(
+        np.ones((2, 2, 3, 4), dtype=np.uint16),
+        dims=("Y", "X", "C", "H"),
+        coords={"Y": [0, 1], "X": [0, 1], "C": [0, 1, 2], "H": [0, 1, 2, 3]},
+    )
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".ptu",
+        lambda path, reader_options: data,
+    )
+
+    layers = reader_module.raw_file_reader(
+        "test.ptu",
+        reader_options={"single_layer": True, "from_custom_import": True},
+        harmonics=[1],
+    )
+    assert len(layers) == 1
+    stacked, add_kwargs = layers[0]
+    assert stacked.shape == (3, 2, 2)
+    metadata = add_kwargs["metadata"]
+    assert metadata["G"].shape == (1, 3, 2, 2)
+    assert metadata["S"].shape == (1, 3, 2, 2)
+    assert metadata["G_original"].shape == (1, 3, 2, 2)
+    assert list(metadata["harmonics"]) == [1]
+    assert add_kwargs["name"] == "test Intensity [Phasor]"
+
+
+def test_multichannel_single_layer_keeps_signal(monkeypatch):
+    """``_keep_signal`` stacks each channel's signal alongside the phasors."""
+    data = xr.DataArray(
+        np.ones((2, 2, 3, 4), dtype=np.uint16),
+        dims=("Y", "X", "C", "H"),
+        coords={"Y": [0, 1], "X": [0, 1], "C": [0, 1, 2], "H": [0, 1, 2, 3]},
+    )
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".ptu",
+        lambda path, reader_options: data,
+    )
+
+    layers = reader_module.raw_file_reader(
+        "test.ptu",
+        reader_options={
+            "single_layer": True,
+            "from_custom_import": True,
+            "_keep_signal": True,
+        },
+        harmonics=[1],
+    )
+    metadata = layers[0][1]["metadata"]
+    assert metadata["signal_full"].shape == (3, 2, 2, 4)
+    assert "signal_axis" in metadata
+
+
+def test_multichannel_no_channel_selected_returns_no_layers(monkeypatch):
+    """Asking for none of the channels reads nothing."""
+    data = xr.DataArray(
+        np.ones((2, 2, 3, 4), dtype=np.uint16),
+        dims=("Y", "X", "C", "H"),
+        coords={"Y": [0, 1], "X": [0, 1], "C": [0, 1, 2], "H": [0, 1, 2, 3]},
+    )
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".ptu",
+        lambda path, reader_options: data,
+    )
+
+    layers = reader_module.raw_file_reader(
+        "test.ptu",
+        reader_options={"channels": [], "from_custom_import": True},
+    )
+    assert layers == []
+
+
+def test_napari_main_window_lookup(monkeypatch):
+    """The dialog parent is napari's main window, when there is one."""
+    import napari
+
+    sentinel = object()
+
+    class _Window:
+        _qt_window = sentinel
+
+    class _Viewer:
+        window = _Window()
+
+    monkeypatch.setattr(napari, "current_viewer", lambda: _Viewer())
+    assert reader_module._napari_main_window() is sentinel
+
+    # A viewer without a Qt window (headless ViewerModel) has no parent.
+    monkeypatch.setattr(napari, "current_viewer", lambda: object())
+    assert reader_module._napari_main_window() is None
+
+    # Neither does a napari that cannot be queried at all.
+    def _raise():
+        raise RuntimeError("no Qt")
+
+    monkeypatch.setattr(napari, "current_viewer", _raise)
+    assert reader_module._napari_main_window() is None
+
+
+def test_channel_dialog_theme_fallback(monkeypatch, qtbot):
+    """An unparented dialog styles itself, and survives a napari without Qt."""
+    from napari_phasors._channel_dialog import ChannelSelectionDialog
+
+    parentless = ChannelSelectionDialog([0, 1])
+    qtbot.addWidget(parentless)
+    assert parentless.styleSheet() != ""
+    assert len(parentless.checkboxes) == 2
+
+    import napari.qt
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("no stylesheet")
+
+    monkeypatch.setattr(napari.qt, "get_stylesheet", _raise)
+    unstyled = ChannelSelectionDialog([0, 1])
+    qtbot.addWidget(unstyled)
+    assert unstyled.styleSheet() == ""

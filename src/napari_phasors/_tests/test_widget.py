@@ -3898,3 +3898,32 @@ def test_custom_import_single_layer_checkbox_absent_for_one_channel(
     assert widget.all_channels == 1
     assert widget.single_layer_checkbox is None
     assert "single_layer" not in widget.reader_options
+
+
+def test_custom_import_single_layer_checkbox_rebuilt(make_viewer_model, qtbot):
+    """Rebuilding the channels row replaces the checkbox instead of stacking."""
+    viewer = make_viewer_model()
+    widget = FbdWidget(viewer, path=get_test_file_path("test_file$EI0S.fbd"))
+    first = widget.single_layer_checkbox
+    first.setChecked(True)
+
+    widget._update_channels_widget()
+
+    assert widget.single_layer_checkbox is not first
+    assert widget.single_layer_checkbox.isChecked() is False
+    # The old checkbox is detached, the new one is in the row.
+    assert first.parent() is None
+    assert widget.channels_layout.indexOf(widget.single_layer_checkbox) >= 0
+    assert "single_layer" not in widget.reader_options
+
+
+def test_custom_import_single_layer_update_without_checkbox(
+    make_viewer_model, qtbot, caplog
+):
+    """The visibility update is a no-op when there is no checkbox."""
+    viewer = make_viewer_model()
+    caplog.set_level(logging.ERROR, logger="ptufile")
+    widget = PtuWidget(viewer, path=get_test_file_path("test_file.ptu"))
+    assert widget.single_layer_checkbox is None
+    widget._update_single_layer_checkbox()
+    assert "single_layer" not in widget.reader_options
