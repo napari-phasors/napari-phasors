@@ -5,7 +5,6 @@ from typing import Any
 from qtpy.QtWidgets import (
     QCheckBox,
     QDialog,
-    QDialogButtonBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -38,6 +37,11 @@ class ChannelSelectionDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Select Channels to Import")
         self.setMinimumWidth(360)
+        if parent is None:
+            # Without a parent the dialog does not inherit napari's stylesheet
+            # and falls back to the platform palette (a gray window that does
+            # not match the rest of the plugin). Apply the theme explicitly.
+            self._apply_napari_theme()
 
         self._channel_labels = list(channel_labels)
         self._checkboxes: list[tuple[int, Any, QCheckBox]] = []
@@ -92,15 +96,20 @@ class ChannelSelectionDialog(QDialog):
         layout.addWidget(self.single_layer_check)
 
         # OK / Cancel
-        self.button_box = QDialogButtonBox(
-            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
-        )
-        self.ok_btn = self.button_box.button(QDialogButtonBox.Ok)
+        ok_cancel_layout = QHBoxLayout()
+        self.ok_btn = QPushButton("OK")
+        self.cancel_btn = QPushButton("Cancel")
+        self.ok_btn.setDefault(True)
+        self.ok_btn.clicked.connect(self.accept)
+        self.cancel_btn.clicked.connect(self.reject)
+        ok_cancel_layout.addWidget(self.ok_btn)
+        ok_cancel_layout.addWidget(self.cancel_btn)
+        layout.addLayout(ok_cancel_layout)
+
+        # Aliases kept for readability at the call sites.
         self.btn_select_all = self.select_all_btn
         self.btn_deselect_all = self.deselect_all_btn
         self.single_layer_checkbox = self.single_layer_check
-
-        layout.addWidget(self.button_box)
 
         self._update_button_states()
 
@@ -127,8 +136,9 @@ class ChannelSelectionDialog(QDialog):
     def _update_button_states(self):
         """Update Import button state (enabled only when >= 1 channel is selected)."""
         has_selection = any(cb.isChecked() for _, _, cb in self._checkboxes)
-        if self.ok_btn:
-            self.ok_btn.setEnabled(has_selection)
+        ok_btn = getattr(self, "ok_btn", None)
+        if ok_btn is not None:
+            ok_btn.setEnabled(has_selection)
 
     def get_selected_channel_positions(self) -> list[int]:
         """Return indices of selected channels."""
@@ -145,3 +155,13 @@ class ChannelSelectionDialog(QDialog):
     def is_single_layer(self) -> bool:
         """Return True if channels should be imported into a single layer."""
         return self.single_layer_check.isChecked()
+
+    def _apply_napari_theme(self):
+        """Style the dialog with napari's current theme stylesheet."""
+        try:
+            from napari.qt import get_stylesheet
+            from napari.settings import get_settings
+
+            self.setStyleSheet(get_stylesheet(get_settings().appearance.theme))
+        except Exception:  # noqa: BLE001 - napari without Qt, or no settings
+            pass

@@ -297,6 +297,22 @@ def _clamp_harmonics(
     return res
 
 
+def _napari_main_window():
+    """Return napari's main Qt window, or ``None`` outside a running viewer.
+
+    Dialogs parented to it inherit napari's stylesheet, so they follow the
+    active theme instead of rendering with the platform default palette.
+    """
+    try:
+        import napari
+
+        viewer = napari.current_viewer()
+    except Exception:  # noqa: BLE001 - no viewer, or napari without Qt
+        return None
+    window = getattr(viewer, "window", None)
+    return getattr(window, "_qt_window", None)
+
+
 def ambiguous_file_reader(
     path: str,
     reader_options: dict | None = None,
@@ -643,7 +659,9 @@ def _phasor_layers_from_signal(
                     from ._channel_dialog import ChannelSelectionDialog
 
                     dialog = ChannelSelectionDialog(
-                        channel_labels, filename=filename
+                        channel_labels,
+                        filename=filename,
+                        parent=_napari_main_window(),
                     )
                     exec_func = getattr(dialog, "exec", None) or dialog.exec_
                     if exec_func() != QDialog.Accepted:
