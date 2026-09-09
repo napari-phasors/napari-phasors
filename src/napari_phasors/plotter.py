@@ -188,7 +188,19 @@ class MaskAssignmentDialog(QDialog):
             }
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Assign a mask layer to each image layer:"))
+
+        top_header_layout = QHBoxLayout()
+        top_header_layout.addWidget(
+            QLabel("Assign a mask layer to each image layer:")
+        )
+        top_header_layout.addStretch()
+
+        self.invert_all_check = QCheckBox("Invert All")
+        self.invert_all_check.setToolTip("Invert all assigned masks.")
+        self.invert_all_check.clicked.connect(self._on_invert_all_clicked)
+        top_header_layout.addWidget(self.invert_all_check)
+
+        layout.addLayout(top_header_layout)
 
         # Scrollable form for assignments
         scroll = QScrollArea()
@@ -349,10 +361,6 @@ class MaskAssignmentDialog(QDialog):
         self.auto_assign_button.clicked.connect(self._on_auto_assign)
         apply_all_layout.addWidget(self.auto_assign_button)
 
-        self.invert_all_check = QCheckBox("Invert All")
-        self.invert_all_check.setToolTip("Invert all assigned masks.")
-        self.invert_all_check.clicked.connect(self._on_invert_all_clicked)
-        apply_all_layout.addWidget(self.invert_all_check)
         self._sync_invert_all_check()
 
         layout.addLayout(apply_all_layout)
