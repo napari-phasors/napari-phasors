@@ -18,6 +18,8 @@ __all__ = [
     "set_parallel_items_enabled",
     "parallel_bands_enabled",
     "set_parallel_bands_enabled",
+    "memory_budget_enabled",
+    "set_memory_budget_enabled",
     "memory_fraction",
     "set_memory_fraction",
     "parallel_map",
@@ -69,8 +71,9 @@ _local = threading.local()
 # the halo rows are duplicated -- but it is the only thing that speeds up the
 # single-large-image case.
 
-_parallel_items_enabled = True
-_parallel_bands_enabled = True
+_parallel_items_enabled = False
+_parallel_bands_enabled = False
+_memory_budget_enabled = False
 
 #: The two scopes :func:`default_workers` and friends accept.
 ITEMS = "items"
@@ -100,6 +103,24 @@ def set_memory_fraction(fraction):
     """
     global _memory_fraction
     _memory_fraction = min(0.95, max(0.05, float(fraction)))
+
+
+def memory_budget_enabled():
+    """Return whether the memory budget caps concurrent work."""
+    return _memory_budget_enabled
+
+
+def set_memory_budget_enabled(enabled):
+    """Enable or disable memory budget capping.
+
+    Parameters
+    ----------
+    enabled : bool
+        ``True`` to cap concurrent work and workers based on available RAM,
+        ``False`` to allow concurrency without memory budget constraints.
+    """
+    global _memory_budget_enabled
+    _memory_budget_enabled = bool(enabled)
 
 
 def parallel_items_enabled():
@@ -546,6 +567,8 @@ def items_for_memory(item_bytes, fraction=None):
         free memory could not be determined, meaning "no cap".
     """
     if not item_bytes:
+        return None
+    if fraction is None and not memory_budget_enabled():
         return None
     free = available_memory()
     if not free:
