@@ -2,6 +2,8 @@ import numpy as np
 from napari.layers import Image
 from phasorpy.phasor import phasor_from_signal
 
+from ._utils import format_phasor_layer_name
+
 
 def make_raw_flim_data(
     n_time_bins=1000,
@@ -95,7 +97,7 @@ def make_intensity_layer_with_phasors(
 
     mean_intensity_image_layer = Image(
         mean_intensity_image,
-        name=name + " Intensity Image",
+        name=format_phasor_layer_name(name),
         metadata={
             "original_mean": mean_intensity_image.copy(),
             "settings": {},

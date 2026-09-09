@@ -35,7 +35,7 @@ def test_reader_ptu():
     )
     assert layer_data_tuple[0].shape == (256, 256)
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
-    assert layer_data_tuple[1]["name"] == "test_file Intensity Image"
+    assert layer_data_tuple[1]["name"] == "test_file Intensity [Phasor]"
     metadata = layer_data_tuple[1]["metadata"]
     assert "G" in metadata
     assert "S" in metadata
@@ -86,7 +86,10 @@ def test_reader_ptu_nonzero_channel_label(monkeypatch):
     layer_data_list = reader_module.raw_file_reader("example.ptu")
 
     assert len(layer_data_list) == 1
-    assert layer_data_list[0][1]["name"].endswith("Channel 3")
+    assert (
+        layer_data_list[0][1]["name"]
+        == "example Intensity: Channel 3 [Phasor]"
+    )
     assert layer_data_list[0][1]["metadata"]["settings"]["channel"] == 3
 
 
@@ -108,7 +111,10 @@ def test_raw_reader_nonzero_channel_label(monkeypatch, extension):
     layer_data_list = reader_module.raw_file_reader(f"example{extension}")
 
     assert len(layer_data_list) == 1
-    assert layer_data_list[0][1]["name"].endswith("Channel 3")
+    assert (
+        layer_data_list[0][1]["name"]
+        == "example Intensity: Channel 3 [Phasor]"
+    )
     assert layer_data_list[0][1]["metadata"]["settings"]["channel"] == 3
 
 
@@ -129,7 +135,7 @@ def test_reader_fbd():
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert (
         layer_data_tuple[1]["name"]
-        == "test_file$EI0S Intensity Image: Channel 0"
+        == "test_file$EI0S Intensity: Channel 0 [Phasor]"
     )
     metadata = layer_data_tuple[1]["metadata"]
     assert "G" in metadata
@@ -175,7 +181,7 @@ def test_reader_fbd():
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert (
         layer_data_tuple[1]["name"]
-        == "test_file$EI0S Intensity Image: Channel 1"
+        == "test_file$EI0S Intensity: Channel 1 [Phasor]"
     )
     metadata = layer_data_tuple[1]["metadata"]
     assert "G" in metadata
@@ -228,7 +234,7 @@ def test_reader_sdt():
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert (
         layer_data_tuple[1]["name"]
-        == "seminal_receptacle_FLIM_single_image Intensity Image: Channel 0"
+        == "seminal_receptacle_FLIM_single_image Intensity: Channel 0 [Phasor]"
     )
     metadata = layer_data_tuple[1]["metadata"]
     assert "G" in metadata
@@ -275,7 +281,7 @@ def test_reader_lsm():
     )
     assert layer_data_tuple[0].shape == (512, 512)
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
-    assert layer_data_tuple[1]["name"] == "test_file Intensity Image"
+    assert layer_data_tuple[1]["name"] == "test_file Intensity [Phasor]"
     metadata = layer_data_tuple[1]["metadata"]
     assert "G" in metadata
     assert "S" in metadata
@@ -320,7 +326,7 @@ def test_reader_ometif():
     )
     assert layer_data_tuple[0].shape == (512, 512)
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
-    assert layer_data_tuple[1]["name"] == "test_file Intensity Image"
+    assert layer_data_tuple[1]["name"] == "test_file Intensity [Phasor]"
     metadata = layer_data_tuple[1]["metadata"]
     assert "G" in metadata
     assert "S" in metadata
@@ -528,7 +534,7 @@ def test_reader_czi():
         layer_data_tuple[1], dict
     )
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
-    assert layer_data_tuple[1]["name"] == "test_file Intensity Image"
+    assert layer_data_tuple[1]["name"] == "test_file Intensity [Phasor]"
 
     metadata = layer_data_tuple[1]["metadata"]
     assert "G" in metadata
@@ -1001,7 +1007,7 @@ def test_raw_reader_multichannel_insufficient_samples_returns_empty(
 # --------------------------------------------------------------------------
 
 
-def _make_stack_layer(mean, g, s, name="f Intensity Image", summed=None):
+def _make_stack_layer(mean, g, s, name="f Intensity [Phasor]", summed=None):
     meta = {
         "original_mean": mean.copy(),
         "settings": {"channel": 0},
@@ -1069,7 +1075,7 @@ def test_stack_reader_success_2d_phasors(monkeypatch):
     assert meta["G"].shape == (3, 2, 2)
     assert meta["stack_files"] == ["a.lsm", "b.lsm", "c.lsm"]
     assert len(meta["summed_signal"]) == 3
-    assert "Stack Intensity Image" in kwargs["name"]
+    assert "Stack Intensity: Channel 0 [Phasor]" in kwargs["name"]
 
 
 def test_stack_reader_success_3d_phasors_preserves_colormap(monkeypatch):
@@ -1080,7 +1086,7 @@ def test_stack_reader_success_3d_phasors_preserves_colormap(monkeypatch):
         mean = np.ones((2, 2))
         g = np.zeros((2, 2, 2))  # (n_harmonics, Y, X)
         mean_, kwargs = _make_stack_layer(
-            mean, g, g, name="x Intensity Image: Channel 0", summed=None
+            mean, g, g, name="x Intensity: Channel 0 [Phasor]", summed=None
         )
         kwargs["colormap"] = "green"
         kwargs["blending"] = "additive"

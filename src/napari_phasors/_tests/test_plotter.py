@@ -1342,8 +1342,14 @@ def test_parallel_processing_toggles_switch_the_thread_pools(
     viewer = make_viewer_model()
     plotter = PlotterWidget(viewer)
     try:
-        assert plotter.parallel_items_checkbox.isChecked() is True
-        assert plotter.parallel_bands_checkbox.isChecked() is True
+        assert plotter.parallel_items_checkbox.isChecked() is False
+        assert plotter.parallel_bands_checkbox.isChecked() is False
+        assert "sequentially on one thread" in (
+            plotter.parallel_processing_hint.text()
+        )
+
+        plotter.parallel_items_checkbox.setChecked(True)
+        plotter.parallel_bands_checkbox.setChecked(True)
 
         # Captured while both are on, so the comparison below survives a
         # single-core runner or a NAPARI_PHASORS_WORKERS override.
@@ -1423,13 +1429,22 @@ def test_memory_budget_spinbox_sizes_the_pools(make_viewer_model, qtbot):
     """The budget spinbox is what every memory-sized pool is measured against."""
     from napari_phasors import _parallel
 
-    previous = _parallel.memory_fraction()
+    previous_fraction = _parallel.memory_fraction()
+    previous_budget_enabled = _parallel.memory_budget_enabled()
     viewer = make_viewer_model()
     plotter = PlotterWidget(viewer)
     try:
+        assert plotter.memory_budget_checkbox.isChecked() is False
+        assert plotter.memory_budget_spinbox.isEnabled() is False
         assert plotter.memory_budget_spinbox.value() == round(
             _parallel.DEFAULT_MEMORY_FRACTION * 100
         )
+        assert _parallel.items_for_memory(1 << 20) is None
+
+        # Turn on memory budget
+        plotter.memory_budget_checkbox.setChecked(True)
+        assert plotter.memory_budget_spinbox.isEnabled() is True
+        assert _parallel.memory_budget_enabled() is True
 
         plotter.memory_budget_spinbox.setValue(10)
         assert _parallel.memory_fraction() == pytest.approx(0.10)
@@ -1442,8 +1457,15 @@ def test_memory_budget_spinbox_sizes_the_pools(make_viewer_model, qtbot):
         # Only meaningful where free memory could be read at all.
         if tight is not None and roomy is not None:
             assert roomy > tight
+
+        # Turn off memory budget again
+        plotter.memory_budget_checkbox.setChecked(False)
+        assert plotter.memory_budget_spinbox.isEnabled() is False
+        assert _parallel.memory_budget_enabled() is False
+        assert _parallel.items_for_memory(1 << 20) is None
     finally:
-        _parallel.set_memory_fraction(previous)
+        _parallel.set_memory_fraction(previous_fraction)
+        _parallel.set_memory_budget_enabled(previous_budget_enabled)
 
 
 def test_phasor_precision_combobox_sets_the_storage_dtype(

@@ -25,14 +25,16 @@ try:
 except (AttributeError, ImportError, TypeError):
     pass
 
+# Ensure napari writes test settings to a temporary directory rather than
+# user application support, avoiding sandbox PermissionError and race conditions.
 try:
     import napari.settings
 
-    _temp_settings_dir = tempfile.TemporaryDirectory()
+    _test_settings_dir = tempfile.TemporaryDirectory()
     napari.settings.get_settings(
-        path=pathlib.Path(_temp_settings_dir.name) / "settings.yaml"
+        path=pathlib.Path(_test_settings_dir.name) / "settings.yaml"
     )
-except Exception:  # noqa: BLE001
+except (AttributeError, ImportError, OSError, TypeError):
     pass
 
 
