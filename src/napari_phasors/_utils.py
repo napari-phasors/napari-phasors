@@ -1241,8 +1241,49 @@ def validate_harmonics_for_wavelet(harmonics):
     return True
 
 
+def _layer_mask_invalid(layer: Image):
+    """Return the boolean "outside the mask" array for *layer*, or ``None``.
+
+    Honours the label selection (``mask_labels``) and ``mask_invert`` stored
+    alongside the mask. ``None`` means the layer carries no mask.
+    """
+    if 'mask' not in layer.metadata:
+        return None
+    mask = layer.metadata['mask']
+    mask_labels = layer.metadata.get('mask_labels')
+    invert = layer.metadata.get('mask_invert', False)
+    # Build mask_invalid respecting label-specific selection
+    if mask_labels is not None:
+        if len(mask_labels) > 0:
+            # Only the selected labels are valid
+            if invert:
+                return np.isin(mask, mask_labels)
+            return ~np.isin(mask, mask_labels)
+        # No labels selected -> display data as if it was without a mask
+        return np.zeros(mask.shape, dtype=bool)
+    # No label selection: all non-zero pixels are valid
+    return mask <= 0 if not invert else mask > 0
+
+
+def _mask_phasor_arrays(layer: Image, mean, real, imag, harmonics):
+    """Set the pixels outside *layer*'s mask to NaN in the given arrays."""
+    mask_invalid = _layer_mask_invalid(layer)
+    if mask_invalid is None:
+        return mean, real, imag
+
+    mean = np.where(mask_invalid, np.nan, mean)
+    if real.ndim > mean.ndim:
+        for h in range(len(harmonics)):
+            real[h] = np.where(mask_invalid, np.nan, real[h])
+            imag[h] = np.where(mask_invalid, np.nan, imag[h])
+    else:
+        real = np.where(mask_invalid, np.nan, real)
+        imag = np.where(mask_invalid, np.nan, imag)
+    return mean, real, imag
+
+
 def _extract_phasor_arrays_from_layer(
-    layer: Image, harmonics: np.ndarray = None
+    layer: Image, harmonics: np.ndarray = None, apply_mask: bool = True
 ):
     """Extract phasor arrays from layer metadata.
 
@@ -1252,6 +1293,10 @@ def _extract_phasor_arrays_from_layer(
         Napari image layer with phasor features.
     harmonics : np.ndarray, optional
         Harmonic values. If None, will be extracted from layer.
+    apply_mask : bool, optional
+        Whether to NaN out the pixels outside the layer's mask. Pass ``False``
+        to get the unmasked arrays and mask them yourself *after* filtering
+        (see :func:`compute_filter_and_threshold`).
 
     Returns
     -------
@@ -1268,33 +1313,10 @@ def _extract_phasor_arrays_from_layer(
     real = layer.metadata['G_original'].copy()
     imag = layer.metadata['S_original'].copy()
 
-    # Apply mask if present in metadata
-    if 'mask' in layer.metadata:
-        mask = layer.metadata['mask']
-        mask_labels = layer.metadata.get('mask_labels')
-        invert = layer.metadata.get('mask_invert', False)
-        # Build mask_invalid respecting label-specific selection
-        if mask_labels is not None:
-            if len(mask_labels) > 0:
-                # Only the selected labels are valid
-                if invert:
-                    mask_invalid = np.isin(mask, mask_labels)
-                else:
-                    mask_invalid = ~np.isin(mask, mask_labels)
-            else:
-                # No labels selected -> display data as if it was without a mask
-                mask_invalid = np.zeros(mask.shape, dtype=bool)
-        else:
-            # No label selection: all non-zero pixels are valid
-            mask_invalid = mask <= 0 if not invert else mask > 0
-        mean = np.where(mask_invalid, np.nan, mean)
-        if real.ndim > mean.ndim:
-            for h in range(len(harmonics)):
-                real[h] = np.where(mask_invalid, np.nan, real[h])
-                imag[h] = np.where(mask_invalid, np.nan, imag[h])
-        else:
-            real = np.where(mask_invalid, np.nan, real)
-            imag = np.where(mask_invalid, np.nan, imag)
+    if apply_mask:
+        mean, real, imag = _mask_phasor_arrays(
+            layer, mean, real, imag, harmonics
+        )
 
     return mean, real, imag, harmonics
 
@@ -1488,11 +1510,16 @@ def compute_filter_and_threshold(
     tuple
         ``(mean, real, imag)`` arrays.
     """
+    # The mask is applied *after* filtering: a mask restricts which pixels are
+    # shown, it must not change the phasor coordinates of the pixels it keeps.
+    # Masking first would filter every kept pixel against NaN neighbours, which
+    # moves it away from the position it had when it was selected (a phasor
+    # cursor selection is scattered, so nearly all of its pixels border NaN).
     mean, real, imag, harmonics = _extract_phasor_arrays_from_layer(
-        layer, harmonics
+        layer, harmonics, apply_mask=False
     )
 
-    return _apply_filter_and_threshold_to_phasor_arrays(
+    mean, real, imag = _apply_filter_and_threshold_to_phasor_arrays(
         mean,
         real,
         imag,
@@ -1505,6 +1532,8 @@ def compute_filter_and_threshold(
         sigma=sigma,
         levels=levels,
     )
+
+    return _mask_phasor_arrays(layer, mean, real, imag, harmonics)
 
 
 def assign_filter_and_threshold(

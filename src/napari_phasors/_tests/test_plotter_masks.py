@@ -2304,3 +2304,55 @@ def test_filter_without_threshold_survives_mask(make_viewer_model):
         layer.metadata["G_original"][..., inside],
         equal_nan=True,
     )
+
+
+def test_mask_does_not_move_phasor_coordinates(make_viewer_model):
+    """Masking must not change the phasor coordinates of the kept pixels.
+
+    Regression: the mask was applied to the original arrays *before*
+    filtering, so every kept pixel was re-filtered against NaN neighbours and
+    moved. A phasor-cursor selection is scattered across the image, so nearly
+    all of its pixels border NaN and ended up back at their unfiltered
+    positions — visibly outside the cursor that selected them.
+    """
+    rng = np.random.default_rng(0)
+    raw = make_raw_flim_data(
+        shape=(32, 32), time_constants=[0.1, 0.5, 1, 2, 3, 4, 5, 10]
+    )
+    # Poisson noise makes the median filter actually move the coordinates.
+    raw = rng.poisson(raw * 50).astype(float)
+    layer = make_intensity_layer_with_phasors(raw, harmonic=[1, 2])
+
+    viewer = make_viewer_model()
+    viewer.add_layer(layer)
+    plotter = PlotterWidget(viewer)
+
+    filter_tab = plotter.filter_tab
+    filter_tab.filter_method_combobox.setCurrentText("Median")
+    filter_tab.median_filter_spinbox.setValue(3)
+    filter_tab.median_filter_repetition_spinbox.setValue(1)
+    filter_tab.apply_button_clicked()
+
+    # A circular cursor drawn on the filtered cloud, as the selection tab does.
+    g_shown, s_shown = layer.metadata["G"][0], layer.metadata["S"][0]
+    g_c, s_c = np.nanmedian(g_shown), np.nanmedian(s_shown)
+    distances = np.sqrt((g_shown - g_c) ** 2 + (s_shown - s_c) ** 2)
+    # A cursor tight enough that a moved pixel escapes it.
+    radius = float(np.nanpercentile(distances, 25))
+    inside = distances <= radius
+    assert inside.sum() > 10
+
+    viewer.add_labels(inside.astype(int), name="Cursor Selection")
+    plotter.reset_layer_choices()
+    plotter.mask_layer_combobox.setCurrentText("Cursor Selection")
+
+    g_after, s_after = layer.metadata["G"][0], layer.metadata["S"][0]
+    # Exactly the selected pixels survive, at exactly the coordinates the
+    # cursor selected them at — so every plotted point is inside the cursor.
+    assert np.array_equal(~np.isnan(g_after), inside)
+    np.testing.assert_allclose(g_after[inside], g_shown[inside])
+    np.testing.assert_allclose(s_after[inside], s_shown[inside])
+    distance = np.sqrt(
+        (g_after[inside] - g_c) ** 2 + (s_after[inside] - s_c) ** 2
+    )
+    assert distance.max() <= radius
