@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
+import pytest
 from matplotlib.path import Path as mplPath
+from qtpy.QtCore import Qt
+from qtpy.QtGui import QImage, QPainter
 
 from napari_phasors._canvas import (
     DEFAULT_BRUSH_SIZE_PX,
+    TOOLBAR_ICON_MARGIN,
     Contour,
     Histogram2D,
     Histogram2DArtist,
@@ -20,7 +25,10 @@ from napari_phasors._canvas import (
     Scatter,
     ScatterArtist,
     SelectionGeometry,
+    _inset_icon_image,
     _make_selector_icon,
+    _opaque_bounds,
+    load_toolbar_icon,
 )
 
 
@@ -1191,3 +1199,136 @@ def test_brush_and_eraser_cursor_persists_after_stroke(make_viewer_model):
         )()
         selector._on_motion(event_hover)
         assert cw.canvas.cursor().shape() == Qt.CursorShape.BitmapCursor
+
+
+def _icon_paths():
+    """Every packaged toolbar icon, both themes."""
+    root = Path(__file__).parent.parent / "icons"
+    return sorted(root.glob("*/*.png"))
+
+
+def _clearance(image):
+    """Smallest empty border, in pixels, between the glyph and the edges."""
+    bounds = _opaque_bounds(image)
+    assert bounds is not None
+    left, top, right, bottom = bounds
+    return min(
+        left, top, image.width() - 1 - right, image.height() - 1 - bottom
+    )
+
+
+def _solid_image(rect, size=48):
+    """Return a ``size``x``size`` ARGB image with one opaque white ``rect``."""
+    image = QImage(size, size, QImage.Format.Format_ARGB32)
+    image.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(image)
+    painter.fillRect(rect, Qt.GlobalColor.white)
+    painter.end()
+    return image
+
+
+def test_opaque_bounds_finds_the_glyph_box():
+    """The bounds are the inclusive box of the non-transparent pixels."""
+    from qtpy.QtCore import QRect
+
+    image = _solid_image(QRect(4, 6, 10, 20))
+    assert _opaque_bounds(image) == (4, 6, 13, 25)
+
+
+def test_opaque_bounds_of_a_blank_image_is_none():
+    """A fully transparent image has no glyph to bound."""
+    image = QImage(8, 8, QImage.Format.Format_ARGB32)
+    image.fill(Qt.GlobalColor.transparent)
+    assert _opaque_bounds(image) is None
+
+
+def test_inset_icon_image_leaves_a_clear_glyph_untouched():
+    """An icon that already clears the margin is returned unchanged."""
+    from qtpy.QtCore import QRect
+
+    margin = TOOLBAR_ICON_MARGIN
+    image = _solid_image(
+        QRect(margin, margin, 48 - 2 * margin, 48 - 2 * margin)
+    )
+    assert _inset_icon_image(image) is image
+
+
+def test_inset_icon_image_pulls_an_edge_to_edge_glyph_in():
+    """A glyph touching the canvas edge is scaled down and re-centred."""
+    from qtpy.QtCore import QRect
+
+    image = _solid_image(QRect(0, 0, 48, 48))
+    assert _clearance(image) == 0
+
+    inset = _inset_icon_image(image)
+    assert inset is not image
+    assert inset.size() == image.size()
+    assert _clearance(inset) >= TOOLBAR_ICON_MARGIN
+
+
+def test_inset_icon_image_keeps_a_blank_image():
+    """Nothing to inset when the image has no visible pixels."""
+    image = QImage(8, 8, QImage.Format.Format_ARGB32)
+    image.fill(Qt.GlobalColor.transparent)
+    assert _inset_icon_image(image) is image
+
+
+def test_inset_icon_image_skips_images_smaller_than_the_margin():
+    """An image with no room for the margin is left alone."""
+    from qtpy.QtCore import QRect
+
+    image = _solid_image(QRect(0, 0, 4, 4), size=4)
+    assert _inset_icon_image(image) is image
+
+
+def test_load_toolbar_icon_returns_null_icon_for_a_missing_file(tmp_path):
+    """A path that is not a readable image yields an empty icon."""
+    missing = tmp_path / "not-an-icon.png"
+    missing.write_text("not a png")
+    assert load_toolbar_icon(missing).isNull()
+
+
+@pytest.mark.parametrize("icon_path", _icon_paths(), ids=lambda p: p.stem)
+def test_toolbar_icons_are_never_clipped(icon_path):
+    """Every packaged glyph keeps a margin, so none reads as cut off.
+
+    ``Pan`` and ``Zoom`` (the drag and zoom tools) were drawn edge to edge and
+    were the visible symptom: their arrow tips and the magnifier crown landed
+    on the icon-box boundary.
+    """
+    icon = load_toolbar_icon(icon_path)
+    assert not icon.isNull()
+    rendered = icon.pixmap(48, 48).toImage()
+    rendered = rendered.convertToFormat(QImage.Format.Format_ARGB32)
+    assert _clearance(rendered) >= TOOLBAR_ICON_MARGIN
+
+
+def test_toolbar_icons_are_cached_per_path():
+    """Repeated loads reuse the processed image instead of re-scanning it."""
+    from napari_phasors import _canvas
+
+    path = _icon_paths()[0]
+    _canvas._TOOLBAR_ICON_CACHE.pop(str(path), None)
+    load_toolbar_icon(path)
+    assert str(path) in _canvas._TOOLBAR_ICON_CACHE
+
+    with patch.object(_canvas, "_inset_icon_image") as inset:
+        load_toolbar_icon(path)
+    inset.assert_not_called()
+
+
+def test_toolbar_actions_use_the_inset_icons():
+    """The toolbar's Pan/Zoom actions, checked or not, keep their margin."""
+    canvas = PhasorCanvasWidget(None)
+    toolbar = canvas.toolbar
+
+    for name in ("pan", "zoom"):
+        action = toolbar._actions[name]
+        for checked in (False, True):
+            if action.isChecked() != checked:
+                getattr(toolbar, name)()
+            rendered = action.icon().pixmap(48, 48).toImage()
+            rendered = rendered.convertToFormat(QImage.Format.Format_ARGB32)
+            assert _clearance(rendered) >= TOOLBAR_ICON_MARGIN
+        if action.isChecked():
+            getattr(toolbar, name)()

@@ -1036,7 +1036,8 @@ class PhasorCenterLayerSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
     marker_size : int
         Marker size for center dots.
     alpha : float
-        Alpha (opacity) for center dots.
+        Opacity for center dots; shown in the dialog as its complement,
+        transparency.
     merged_color : tuple
         RGB color tuple for merged mode.
     layer_labels : list of str
@@ -1127,15 +1128,15 @@ class PhasorCenterLayerSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         size_layout.addWidget(self._size_spinbox)
         root.addLayout(size_layout)
 
-        # Alpha
-        alpha_layout = QHBoxLayout()
-        alpha_layout.addWidget(QLabel("Alpha:"))
-        self._alpha_spinbox = QDoubleSpinBox()
-        self._alpha_spinbox.setRange(0.01, 1.0)
-        self._alpha_spinbox.setSingleStep(0.1)
-        self._alpha_spinbox.setValue(alpha)
-        alpha_layout.addWidget(self._alpha_spinbox)
-        root.addLayout(alpha_layout)
+        # Transparency (stored as its complement, alpha)
+        transparency_layout = QHBoxLayout()
+        transparency_layout.addWidget(QLabel("Transparency:"))
+        self._transparency_spinbox = QDoubleSpinBox()
+        self._transparency_spinbox.setRange(0.0, 0.99)
+        self._transparency_spinbox.setSingleStep(0.1)
+        self._transparency_spinbox.setValue(1.0 - alpha)
+        transparency_layout.addWidget(self._transparency_spinbox)
+        root.addLayout(transparency_layout)
 
         # Merged mode color (label differs for single vs multi layer)
         merged_color_layout = QHBoxLayout()
@@ -1360,8 +1361,11 @@ class PhasorCenterLayerSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         return self._size_spinbox.value()
 
     def get_alpha(self):
-        """Return the opacity for the phasor center markers."""
-        return self._alpha_spinbox.value()
+        """Return the opacity for the phasor center markers.
+
+        The dialog asks for *transparency*; the plot needs its complement.
+        """
+        return round(1.0 - self._transparency_spinbox.value(), 10)
 
     def get_merged_color(self):
         """Return the solid colour chosen for merged display."""
@@ -1606,6 +1610,18 @@ class PlotterWidget(QWidget):
     #: not reserve room for in its height hint, so a bar sitting flush under
     #: the dock title bar renders visibly clipped along its top edge.
     _TAB_BAR_TOP_MARGIN = 4
+
+    #: Fallback strip (px) kept above the plotter's own content when the
+    #: hosting dock's title bar cannot be measured. napari's
+    #: ``QtCustomTitleBar.sizeHint`` hard-codes a height of 20 px while the
+    #: bar actually lays out taller, and ``QDockWidget`` puts the content at
+    #: the size-hint height -- so the bar you drag the panel by is painted
+    #: over the first few rows of whatever sits flush at the top. Here that
+    #: is the matplotlib toolbar, whose pan and zoom glyphs lost their tops.
+    _TITLE_BAR_OVERLAP_FALLBACK = 6
+
+    #: Analysis tabs that own an "Autoupdate" toggle.
+    _AUTOUPDATE_TABS = ('phasor_mapping_tab', 'components_tab', 'fret_tab')
 
     def __init__(self, napari_viewer):
         """Initialize the PlotterWidget."""
@@ -2104,6 +2120,13 @@ class PlotterWidget(QWidget):
         self._create_fret_tab()
         self._compact_analysis_tab_margins()
 
+        # Connected last, so it runs after every tab has re-read its own
+        # per-harmonic state: an autoupdate must see the new harmonic's
+        # components, not the previous one's.
+        self.harmonic_spinbox.valueChanged.connect(
+            self._on_harmonic_changed_autoupdate
+        )
+
         # Connect napari signals when new layer is inseted or removed
         self.viewer.layers.events.inserted.connect(self.reset_layer_choices)
         self.viewer.layers.events.removed.connect(self.reset_layer_choices)
@@ -2165,8 +2188,11 @@ class PlotterWidget(QWidget):
         self.plotter_inputs_widget.marker_color_button.clicked.connect(
             self._on_marker_color_clicked
         )
-        self.plotter_inputs_widget.marker_alpha_spinbox.valueChanged.connect(
-            self._on_marker_alpha_changed
+        marker_transparency_spinbox = (
+            self.plotter_inputs_widget.marker_transparency_spinbox
+        )
+        marker_transparency_spinbox.valueChanged.connect(
+            self._on_marker_transparency_changed
         )
         self.plotter_inputs_widget.contour_levels_spinbox.valueChanged.connect(
             self._on_contour_levels_changed
@@ -2455,6 +2481,48 @@ class PlotterWidget(QWidget):
                     QSizePolicy.Preferred, QSizePolicy.Expanding
                 )
 
+    def _title_bar_overlap(self):
+        """Return how far the hosting dock's title bar reaches into content.
+
+        ``QDockWidget`` lays the content out below the title bar's *size
+        hint*, but napari's title bar reports a hard-coded 20 px while
+        rendering as tall as its buttons and margins need. The difference is
+        painted over the top of the content, so it is the strip that has to
+        be kept clear. Returns 0 when the plotter is not docked (a floating
+        or bare widget has no bar over it).
+        """
+        dock = self._find_plotter_dock()
+        if dock is None:
+            return 0
+        title_bar = dock.titleBarWidget()
+        if title_bar is None:
+            return 0
+        try:
+            hinted = title_bar.sizeHint().height()
+            actual = title_bar.height()
+        except RuntimeError:
+            return self._TITLE_BAR_OVERLAP_FALLBACK
+        if hinted <= 0 or actual <= 0:
+            return self._TITLE_BAR_OVERLAP_FALLBACK
+        return max(0, actual - hinted)
+
+    def _reserve_title_bar_overlap(self):
+        """Keep the dock's title bar from covering the top of the toolbar.
+
+        Idempotent, and re-applied whenever the dock state is refreshed: the
+        overlap changes when the panel floats, is re-docked, or the theme
+        changes the title bar's button metrics.
+        """
+        layout = self.layout()
+        if layout is None:
+            return
+        overlap = self._title_bar_overlap()
+        margins = layout.contentsMargins()
+        if margins.top() != overlap:
+            layout.setContentsMargins(
+                margins.left(), overlap, margins.right(), margins.bottom()
+            )
+
     def _add_analysis_dock_widget(self):
         """Add the analysis widget and histogram container to the viewer.
 
@@ -2492,6 +2560,7 @@ class PlotterWidget(QWidget):
             self._docks_initialized = True
 
             self._restore_expanding_dock_policies()
+            self._reserve_title_bar_overlap()
             self._enforce_bottom_dock_layout()
 
             # Defer resizeDocks so it runs after Qt has applied the splits.
@@ -2579,6 +2648,10 @@ class PlotterWidget(QWidget):
                 and not self._is_closing
             ):
                 self.close()
+            elif docked is not None:
+                # Newly docked: reserve the strip the title bar draws over
+                # straight away rather than waiting for the visibility poll.
+                self._reserve_title_bar_overlap()
         super().changeEvent(event)
 
     def _split_analysis_below_plotter(self):
@@ -3222,8 +3295,9 @@ class PlotterWidget(QWidget):
                 )
 
             if 'marker_alpha' in settings:
-                self.plotter_inputs_widget.marker_alpha_spinbox.setValue(
-                    settings['marker_alpha']
+                piw = self.plotter_inputs_widget
+                piw.marker_transparency_spinbox.setValue(
+                    1.0 - settings['marker_alpha']
                 )
 
             if 'contour_levels' in settings:
@@ -3961,6 +4035,7 @@ class PlotterWidget(QWidget):
                 else:
                     tab._on_image_layer_changed()
                 tab._needs_update = False
+                self.request_analysis_autoupdates(tabs=[tab])
 
     def _hide_all_tab_artists(self):
         """Hide all tab-specific artists."""
@@ -4147,6 +4222,9 @@ class PlotterWidget(QWidget):
         # napari re-applies its Maximum vertical policy every time a widget
         # is docked, so re-assert ours here (no-op when already correct).
         self._restore_expanding_dock_policies()
+        # The title bar's reach over the content changes with float/dock and
+        # with the theme, so the strip reserved for it is re-measured too.
+        self._reserve_title_bar_overlap()
 
         analysis_hidden = _is_hidden('_analysis_dock')
         histogram_hidden = _is_hidden('_histogram_dock')
@@ -4233,6 +4311,11 @@ class PlotterWidget(QWidget):
             self._update_plot_elements()
         if hasattr(self, 'selection_tab'):
             self.selection_tab.on_harmonic_changed()
+
+    def _on_harmonic_changed_autoupdate(self, _value):
+        """Re-run the analyses that follow the harmonic, once tabs caught up."""
+        if not self._updating_settings:
+            self.request_analysis_autoupdates()
 
     # ------------------------------------------------------------------
     # Time-lapse (frame) handling
@@ -4427,8 +4510,12 @@ class PlotterWidget(QWidget):
         self.plotter_inputs_widget.marker_size_spinbox.setVisible(is_scatter)
         self.plotter_inputs_widget.label_marker_color.setVisible(is_scatter)
         self.plotter_inputs_widget.marker_color_button.setVisible(is_scatter)
-        self.plotter_inputs_widget.label_marker_alpha.setVisible(is_scatter)
-        self.plotter_inputs_widget.marker_alpha_spinbox.setVisible(is_scatter)
+        self.plotter_inputs_widget.label_marker_transparency.setVisible(
+            is_scatter
+        )
+        self.plotter_inputs_widget.marker_transparency_spinbox.setVisible(
+            is_scatter
+        )
 
         # Contour plot elements
         self.plotter_inputs_widget.label_contour_levels.setVisible(is_contour)
@@ -4465,11 +4552,16 @@ class PlotterWidget(QWidget):
             self.canvas_widget.artists['SCATTER'].size = value
             self.canvas_widget.figure.canvas.draw_idle()
 
-    def _on_marker_alpha_changed(self, value):
-        """Callback when the scatter marker opacity spinbox is changed."""
-        self._update_setting_in_metadata('marker_alpha', value)
+    def _on_marker_transparency_changed(self, value):
+        """Callback when the scatter marker transparency spinbox is changed.
+
+        The control is expressed as transparency (0 = opaque) to match the
+        rest of the plugin; the stored setting stays the matplotlib alpha.
+        """
+        alpha = round(1.0 - float(value), 10)
+        self._update_setting_in_metadata('marker_alpha', alpha)
         if not self._updating_settings and self.plot_type == 'SCATTER':
-            self.canvas_widget.artists['SCATTER'].alpha = value
+            self.canvas_widget.artists['SCATTER'].alpha = alpha
             self.canvas_widget.figure.canvas.draw_idle()
 
     def _on_contour_levels_changed(self, value):
@@ -5380,13 +5472,13 @@ class PlotterWidget(QWidget):
         widget.marker_color_button.setMaximumSize(20, 20)
         widget.marker_color_button.setStyleSheet("background-color: #1f77b4;")
 
-        widget.label_marker_alpha = QLabel("Alpha:")
-        widget.marker_alpha_spinbox = QDoubleSpinBox()
-        widget.marker_alpha_spinbox.setMinimum(0.01)
-        widget.marker_alpha_spinbox.setMaximum(1.0)
-        widget.marker_alpha_spinbox.setSingleStep(0.1)
-        widget.marker_alpha_spinbox.setValue(0.5)
-        widget.marker_alpha_spinbox.setKeyboardTracking(False)
+        widget.label_marker_transparency = QLabel("Transparency:")
+        widget.marker_transparency_spinbox = QDoubleSpinBox()
+        widget.marker_transparency_spinbox.setMinimum(0.0)
+        widget.marker_transparency_spinbox.setMaximum(0.99)
+        widget.marker_transparency_spinbox.setSingleStep(0.1)
+        widget.marker_transparency_spinbox.setValue(0.5)
+        widget.marker_transparency_spinbox.setKeyboardTracking(False)
 
         widget.label_contour_levels = QLabel("Levels:")
         widget.contour_levels_spinbox = QSpinBox()
@@ -5410,7 +5502,10 @@ class PlotterWidget(QWidget):
             (widget.label_7, widget.log_scale_checkbox),
             (widget.label_marker_size, widget.marker_size_spinbox),
             (widget.label_marker_color, widget.marker_color_button),
-            (widget.label_marker_alpha, widget.marker_alpha_spinbox),
+            (
+                widget.label_marker_transparency,
+                widget.marker_transparency_spinbox,
+            ),
             (widget.label_contour_levels, widget.contour_levels_spinbox),
             (widget.label_contour_linewidth, widget.contour_linewidth_spinbox),
         ]
@@ -5467,7 +5562,11 @@ class PlotterWidget(QWidget):
             (piw.label_7, piw.log_scale_checkbox, 5),
             (piw.label_marker_size, piw.marker_size_spinbox, 6),
             (piw.label_marker_color, piw.marker_color_button, 7),
-            (piw.label_marker_alpha, piw.marker_alpha_spinbox, 8),
+            (
+                piw.label_marker_transparency,
+                piw.marker_transparency_spinbox,
+                8,
+            ),
             (piw.label_contour_levels, piw.contour_levels_spinbox, 9),
             (piw.label_contour_linewidth, piw.contour_linewidth_spinbox, 10),
         ]
@@ -5773,8 +5872,8 @@ class PlotterWidget(QWidget):
                 7,
             ),
             (
-                self.plotter_inputs_widget.label_marker_alpha,
-                self.plotter_inputs_widget.marker_alpha_spinbox,
+                self.plotter_inputs_widget.label_marker_transparency,
+                self.plotter_inputs_widget.marker_transparency_spinbox,
                 8,
             ),
             (
@@ -7254,6 +7353,12 @@ class PlotterWidget(QWidget):
                 self.fret_tab._needs_update = True
 
         self._notify_analysis_tabs_layer_selection_changed()
+
+        # Only the visible tab was restored above; the others were torn down
+        # and would autoupdate from stale widget state. They catch up from
+        # ``_on_tab_changed`` when the user brings them forward.
+        self.request_analysis_autoupdates(tabs=[current_tab])
+
         self.plot()
 
         current_tab_index = self.tab_widget.currentIndex()
@@ -8141,6 +8246,32 @@ class PlotterWidget(QWidget):
                 elif hasattr(tab, '_needs_update'):
                     tab._needs_update = True
 
+        # The phasor data itself changed (a filter, a threshold, or a
+        # calibration): every tab's inputs are still valid, so any of them
+        # with Autoupdate on recomputes against the new data.
+        self.request_analysis_autoupdates()
+
+    def request_analysis_autoupdates(self, tabs=None):
+        """Re-run the analyses whose Autoupdate toggle is on.
+
+        Called for the events an analysis result depends on but that happen
+        outside its own tab: the filter or calibration tab rewriting the
+        phasor data, a new harmonic, or a different layer selection. ``tabs``
+        restricts the request to specific tab instances; by default every
+        tab holding a toggle is asked.
+
+        Returns the list of tabs that actually recomputed.
+        """
+        updated = []
+        for attr in self._AUTOUPDATE_TABS:
+            tab = getattr(self, attr, None)
+            if tab is None or (tabs is not None and tab not in tabs):
+                continue
+            request = getattr(tab, 'request_autoupdate', None)
+            if request is not None and request():
+                updated.append(tab)
+        return updated
+
     def has_phasor_data(self):
         """Check if valid phasor data is loaded.
 
@@ -8820,13 +8951,13 @@ class PlotterWidget(QWidget):
         plot_data = np.column_stack((x_data, y_data))
         self.canvas_widget.artists['SCATTER'].data = plot_data
 
-        # Setting data causes biaplotter to reset size and alpha to default values
-        # Re-apply the user's chosen size, alpha, and color
+        # Setting data resets size and alpha to their default values, so the
+        # user's chosen size, transparency and color are re-applied here.
         self.canvas_widget.artists['SCATTER'].size = (
             self.plotter_inputs_widget.marker_size_spinbox.value()
         )
-        self.canvas_widget.artists['SCATTER'].alpha = (
-            self.plotter_inputs_widget.marker_alpha_spinbox.value()
+        self.canvas_widget.artists['SCATTER'].alpha = 1.0 - (
+            self.plotter_inputs_widget.marker_transparency_spinbox.value()
         )
         self.canvas_widget.artists['SCATTER'].color = getattr(
             self, '_marker_color', '#1f77b4'

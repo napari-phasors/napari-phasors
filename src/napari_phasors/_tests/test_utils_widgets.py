@@ -3,9 +3,11 @@ from dataclasses import replace
 
 import numpy as np
 import pytest
-from qtpy.QtWidgets import QDialog, QHeaderView
+from qtpy.QtWidgets import QDialog, QHeaderView, QPushButton, QWidget
 
 from napari_phasors._utils import (
+    WARNING_ICON_SIZE,
+    AutoUpdateMixin,
     CurrentPageStackedWidget,
     HistogramDockWidget,
     HistogramSettingsDialog,
@@ -14,8 +16,10 @@ from napari_phasors._utils import (
     StatisticsTableWidget,
     build_group_styles_from_layer_metadata,
     build_groups_from_layer_metadata,
+    make_experimental_warning,
     save_groups_to_layer_metadata,
     split_items_by_group,
+    warning_pixmap,
 )
 
 
@@ -3488,3 +3492,143 @@ def test_checkable_combobox_clear_drops_hidden_rows(qtbot):
     assert combo.hiddenItems() == set()
     assert combo.visibleItems() == ["X", "Y"]
     assert not combo.view().isRowHidden(0)
+
+
+class _AutoUpdateTab(AutoUpdateMixin, QWidget):
+    """Minimal tab exercising the shared Autoupdate behaviour."""
+
+    def __init__(self, reason=None):
+        super().__init__()
+        self.reason = reason
+        self.runs = 0
+        self.button = QPushButton("Run")
+        self._build_autoupdate_toggle(
+            self.button, self._validate, self._run, "tooltip"
+        )
+
+    def _validate(self):
+        return self.reason
+
+    def _run(self):
+        self.runs += 1
+        # An analysis writes layers and metadata, which fires the very
+        # signals that asked for it; the mixin must not recurse.
+        self.request_autoupdate()
+
+
+def test_autoupdate_is_off_until_the_toggle_is_flipped(qtbot):
+    """No automatic run happens while the toggle is off."""
+    tab = _AutoUpdateTab()
+    qtbot.addWidget(tab)
+
+    assert not tab.autoupdate_enabled()
+    assert tab.request_autoupdate() is False
+    assert tab.runs == 0
+    assert tab.button.isEnabled()
+    assert tab.autoupdate_check.toolTip() == "tooltip"
+
+
+def test_autoupdate_runs_on_enable_and_disables_the_run_button(qtbot):
+    """Turning the switch on runs once and hands the button over."""
+    tab = _AutoUpdateTab()
+    qtbot.addWidget(tab)
+
+    tab.autoupdate_check.setChecked(True)
+
+    assert tab.autoupdate_enabled()
+    assert tab.runs == 1
+    assert not tab.button.isEnabled()
+
+    assert tab.request_autoupdate() is True
+    assert tab.runs == 2
+
+
+def test_autoupdate_re_enables_the_run_button_when_switched_off(qtbot):
+    """Switching back off restores manual operation without running."""
+    tab = _AutoUpdateTab()
+    qtbot.addWidget(tab)
+
+    tab.autoupdate_check.setChecked(True)
+    tab.autoupdate_check.setChecked(False)
+
+    assert not tab.autoupdate_enabled()
+    assert tab.button.isEnabled()
+    assert tab.runs == 1
+
+
+def test_autoupdate_skips_incomplete_inputs(qtbot):
+    """A validator complaint blocks the automatic run, unlike a click."""
+    tab = _AutoUpdateTab(reason="Enter a frequency.")
+    qtbot.addWidget(tab)
+
+    tab.autoupdate_check.setChecked(True)
+
+    assert tab.autoupdate_enabled()
+    assert tab.runs == 0
+
+    tab.reason = None
+    assert tab.request_autoupdate() is True
+    assert tab.runs == 1
+
+
+def test_autoupdate_does_not_recurse(qtbot):
+    """A run that requests another autoupdate is ignored while it runs."""
+    tab = _AutoUpdateTab()
+    qtbot.addWidget(tab)
+
+    tab.autoupdate_check.setChecked(True)
+
+    # ``_run`` calls ``request_autoupdate`` itself; only one run happened.
+    assert tab.runs == 1
+
+
+def test_autoupdate_is_inert_before_the_toggle_is_built(qtbot):
+    """A tab that never built the toggle can still be asked to update."""
+
+    class _Bare(AutoUpdateMixin, QWidget):
+        pass
+
+    tab = _Bare()
+    qtbot.addWidget(tab)
+
+    assert tab.request_autoupdate() is False
+    tab._autoupdate_enabled = True
+    assert tab.request_autoupdate() is False
+
+
+def test_warning_pixmap_keeps_its_logical_size_on_hidpi():
+    """The helper never pre-scales: the ratio stays the icon engine's own.
+
+    ``QIcon.pixmap`` takes a *logical* size and tags what it returns with the
+    ratio of the denser pixels it rendered. Pre-scaling the request and then
+    re-stamping the ratio doubles the triangle, which then overflows the
+    content rect napari's stylesheet gives ``#error_label`` and is clipped
+    into an unrecognisable wedge.
+    """
+    pixmap = warning_pixmap()
+    assert pixmap is not None and not pixmap.isNull()
+
+    dpr = pixmap.devicePixelRatio() or 1.0
+    assert (pixmap.width() / dpr) == pytest.approx(WARNING_ICON_SIZE)
+    assert (pixmap.height() / dpr) == pytest.approx(WARNING_ICON_SIZE)
+    assert pixmap.width() == pytest.approx(WARNING_ICON_SIZE * dpr)
+
+    smaller = warning_pixmap(size=8)
+    smaller_dpr = smaller.devicePixelRatio() or 1.0
+    assert (smaller.width() / smaller_dpr) == pytest.approx(8)
+
+
+def test_experimental_banner_icon_fits_its_label(qtbot):
+    """Every banner the factory builds keeps the triangle inside its box."""
+    banner = make_experimental_warning("Unproven; switch it off and report.")
+    qtbot.addWidget(banner)
+
+    assert banner.icon_label.objectName() == "error_label"
+    assert banner.text_label.text() == "Experimental"
+    assert "report" in banner.icon_label.toolTip()
+    assert "image: none" in banner.icon_label.styleSheet()
+
+    pixmap = banner.icon_label.pixmap()
+    assert pixmap is not None and not pixmap.isNull()
+    dpr = pixmap.devicePixelRatio() or 1.0
+    assert (pixmap.width() / dpr) == pytest.approx(WARNING_ICON_SIZE)
