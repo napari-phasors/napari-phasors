@@ -2143,8 +2143,8 @@ def test_multichannel_reader_options_selection(monkeypatch):
         reader_options={"channels": [0, 2], "from_custom_import": True},
     )
     assert len(layers) == 2
-    assert layers[0][1]["name"].endswith("Channel 0")
-    assert layers[1][1]["name"].endswith("Channel 2")
+    assert layers[0][1]["name"].endswith("Channel 0 [Phasor]")
+    assert layers[1][1]["name"].endswith("Channel 2 [Phasor]")
 
     # 2. Import into single 3D layer: single_layer=True
     layers_stacked = reader_module.raw_file_reader(
@@ -2192,7 +2192,7 @@ def test_multichannel_interactive_dialog(monkeypatch):
         reader_options={"interactive": True},
     )
     assert len(layers) == 1
-    assert layers[0][1]["name"].endswith("Channel 1")
+    assert layers[0][1]["name"].endswith("Channel 1 [Phasor]")
 
     # Mock dialog returning Rejected (user clicked Cancel)
     monkeypatch.setattr(
@@ -2206,3 +2206,144 @@ def test_multichannel_interactive_dialog(monkeypatch):
         reader_options={"interactive": True},
     )
     assert layers_cancelled == []
+
+
+class _FakeViewerModel:
+    """Stand-in for napari's ``ViewerModel`` in batch-detection tests."""
+
+    def _add_layers_with_plugins(self, *args, **kwargs):  # pragma: no cover
+        raise NotImplementedError
+
+
+def _open_batch(paths, read):
+    """Mimic ``ViewerModel.open``: one reader call per path, one frame.
+
+    The frame's name and locals are what the reader looks for, so the inner
+    function deliberately mirrors napari's ``ViewerModel.open`` signature.
+    """
+
+    def open(self, paths_):  # noqa: A001 - must match napari's frame name
+        return [read(path) for path in paths_]
+
+    return open(_FakeViewerModel(), list(paths))
+
+
+def test_current_open_batch_outside_napari():
+    """No napari ``open`` on the stack means no batch, so no answer sharing."""
+    assert reader_module._current_open_batch() is None
+    assert reader_module._get_batch_channel_choice(None, ("0", "1")) == (
+        False,
+        None,
+    )
+    # A single-file "batch" is not shared either.
+    assert reader_module._get_batch_channel_choice(["a.ptu"], ("0",)) == (
+        False,
+        None,
+    )
+
+
+def test_multichannel_dialog_shown_once_per_channel_group(monkeypatch):
+    """One dialog per group of files sharing the same channels."""
+    from qtpy.QtWidgets import QDialog
+
+    from napari_phasors._channel_dialog import ChannelSelectionDialog
+
+    def fake_read(path, reader_options=None):
+        # The third file exposes four channels, the others three.
+        n_channels = 4 if path.endswith("c.ptu") else 3
+        return xr.DataArray(
+            np.ones((2, 2, n_channels, 4), dtype=np.uint16),
+            dims=("Y", "X", "C", "H"),
+            coords={
+                "Y": [0, 1],
+                "X": [0, 1],
+                "C": list(range(n_channels)),
+                "H": [0, 1, 2, 3],
+            },
+        )
+
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"], ".ptu", fake_read
+    )
+
+    shown = []
+
+    def mock_exec_accept(self):
+        shown.append(tuple(self._channel_labels))
+        self.btn_deselect_all.click()
+        self.set_channel_checked(0, True)
+        return QDialog.Accepted
+
+    monkeypatch.setattr(ChannelSelectionDialog, "exec", mock_exec_accept)
+    monkeypatch.setattr(ChannelSelectionDialog, "exec_", mock_exec_accept)
+
+    paths = ["a.ptu", "b.ptu", "c.ptu", "d.ptu"]
+    results = _open_batch(
+        paths,
+        lambda path: reader_module.raw_file_reader(
+            path, reader_options={"interactive": True}
+        ),
+    )
+
+    # 'a' and 'c' ask; 'b' reuses a's answer and 'd' reuses it too.
+    assert len(shown) == 2
+    assert [len(labels) for labels in shown] == [3, 4]
+    # Every file honours the single selected channel.
+    assert [len(layers) for layers in results] == [1, 1, 1, 1]
+
+
+def test_multichannel_dialog_cancel_applies_to_batch_group(monkeypatch):
+    """Cancelling skips the rest of the files with those same channels."""
+    from qtpy.QtWidgets import QDialog
+
+    from napari_phasors._channel_dialog import ChannelSelectionDialog
+
+    data = xr.DataArray(
+        np.ones((2, 2, 3, 4), dtype=np.uint16),
+        dims=("Y", "X", "C", "H"),
+        coords={"Y": [0, 1], "X": [0, 1], "C": [0, 1, 2], "H": [0, 1, 2, 3]},
+    )
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".ptu",
+        lambda path, reader_options: data,
+    )
+
+    shown = []
+
+    def mock_exec_reject(self):
+        shown.append(self)
+        return QDialog.Rejected
+
+    monkeypatch.setattr(ChannelSelectionDialog, "exec", mock_exec_reject)
+    monkeypatch.setattr(ChannelSelectionDialog, "exec_", mock_exec_reject)
+
+    results = _open_batch(
+        ["a.ptu", "b.ptu", "c.ptu"],
+        lambda path: reader_module.raw_file_reader(
+            path, reader_options={"interactive": True}
+        ),
+    )
+
+    assert len(shown) == 1
+    assert results == [[], [], []]
+
+
+def test_channel_dialog_batch_note():
+    """The dialog says the choice covers the batch only when it does."""
+    from napari_phasors._channel_dialog import ChannelSelectionDialog
+
+    single = ChannelSelectionDialog([0, 1], filename="a.ptu")
+    assert "applied to" not in _dialog_text(single)
+
+    batched = ChannelSelectionDialog([0, 1], filename="a.ptu", batch_size=4)
+    text = _dialog_text(batched)
+    assert "Opening 4 files" in text
+    assert "same channels" in text
+
+
+def _dialog_text(dialog):
+    """Concatenate the text of every label in a dialog."""
+    from qtpy.QtWidgets import QLabel
+
+    return " ".join(label.text() for label in dialog.findChildren(QLabel))

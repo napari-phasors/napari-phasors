@@ -318,6 +318,76 @@ def _napari_main_window():
     return getattr(window, "_qt_window", None)
 
 
+# Channel selection answered once per batch of files
+#
+# napari opens a multi-file selection (drag-and-drop, or File > Open Files) by
+# calling the reader once per path, so without this cache every file in the
+# batch would pop its own channel dialog. The answer is cached per batch and
+# per channel layout: files that expose the same channels reuse the first
+# answer, and a file with a different channel layout asks again.
+_CHANNEL_BATCH_PATHS: list | None = None
+_CHANNEL_BATCH_CHOICES: dict[tuple, tuple | None] = {}
+
+
+def _current_open_batch() -> list | None:
+    """Return the paths of the ``viewer.open()`` call in progress, if any.
+
+    Identified by duck-typing napari's ``ViewerModel.open`` frame rather than
+    its module path, so a napari that renames the local simply yields ``None``
+    and every file asks on its own, as before.
+    """
+    frame = inspect.currentframe()
+    try:
+        while frame is not None:
+            if frame.f_code.co_name == "open":
+                paths = frame.f_locals.get("paths_")
+                viewer = frame.f_locals.get("self")
+                if isinstance(paths, list) and hasattr(
+                    viewer, "_add_layers_with_plugins"
+                ):
+                    return paths
+            frame = frame.f_back
+    finally:
+        del frame
+    return None
+
+
+def _channel_batch_signature(channel_labels: list) -> tuple:
+    """Return a hashable key identifying a file's channel layout."""
+    return tuple(str(label) for label in channel_labels)
+
+
+def _get_batch_channel_choice(batch: list | None, signature: tuple):
+    """Return ``(found, choice)`` for this batch and channel layout.
+
+    ``choice`` is ``None`` when the user cancelled the dialog for these
+    channels, so the rest of the batch skips those files silently.
+    """
+    global _CHANNEL_BATCH_PATHS, _CHANNEL_BATCH_CHOICES
+
+    if batch is None or len(batch) < 2:
+        return False, None
+    # Compared by identity: the batch list lives for the whole ``open`` call,
+    # and holding a reference to it keeps its ``id`` from being reused.
+    if _CHANNEL_BATCH_PATHS is not batch:
+        _CHANNEL_BATCH_PATHS = batch
+        _CHANNEL_BATCH_CHOICES = {}
+        return False, None
+    if signature not in _CHANNEL_BATCH_CHOICES:
+        return False, None
+    return True, _CHANNEL_BATCH_CHOICES[signature]
+
+
+def _store_batch_channel_choice(
+    batch: list | None, signature: tuple, choice: tuple | None
+):
+    """Remember the answer given for this channel layout within the batch."""
+    if batch is None or len(batch) < 2:
+        return
+    if _CHANNEL_BATCH_PATHS is batch:
+        _CHANNEL_BATCH_CHOICES[signature] = choice
+
+
 def ambiguous_file_reader(
     path: str,
     reader_options: dict | None = None,
@@ -662,21 +732,37 @@ def _phasor_layers_from_signal(
 
                     from ._channel_dialog import ChannelSelectionDialog
 
-                    dialog = ChannelSelectionDialog(
-                        channel_labels,
-                        filename=filename,
-                        parent=_napari_main_window(),
+                    batch = _current_open_batch()
+                    signature = _channel_batch_signature(channel_labels)
+                    answered, choice = _get_batch_channel_choice(
+                        batch, signature
                     )
-                    exec_func = getattr(dialog, "exec", None) or dialog.exec_
-                    if exec_func() != QDialog.Accepted:
+                    if not answered:
+                        dialog = ChannelSelectionDialog(
+                            channel_labels,
+                            filename=filename,
+                            batch_size=len(batch) if batch else 1,
+                            parent=_napari_main_window(),
+                        )
+                        exec_func = (
+                            getattr(dialog, "exec", None) or dialog.exec_
+                        )
+                        if exec_func() == QDialog.Accepted:
+                            choice = (
+                                dialog.get_selected_channel_positions(),
+                                dialog.get_selected_channel_labels(),
+                                dialog.is_single_layer(),
+                            )
+                        else:
+                            choice = None
+                        _store_batch_channel_choice(batch, signature, choice)
+                    if choice is None:
                         return []
-                    selected_positions = (
-                        dialog.get_selected_channel_positions()
-                    )
-                    selected_channel_labels = (
-                        dialog.get_selected_channel_labels()
-                    )
-                    single_layer = dialog.is_single_layer()
+                    (
+                        selected_positions,
+                        selected_channel_labels,
+                        single_layer,
+                    ) = choice
                 else:
                     if reader_options and "channels" in reader_options:
                         req = reader_options["channels"]

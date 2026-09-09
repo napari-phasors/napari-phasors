@@ -24,6 +24,9 @@ class ChannelSelectionDialog(QDialog):
         List of channel labels or indices present in the file.
     filename : str
         The filename of the file being loaded.
+    batch_size : int, optional
+        Number of files being opened together. When more than one, the dialog
+        says the selection is reused for every file with the same channels.
     parent : QWidget, optional
         Parent widget.
     """
@@ -32,6 +35,7 @@ class ChannelSelectionDialog(QDialog):
         self,
         channel_labels: list,
         filename: str = "",
+        batch_size: int = 1,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
@@ -54,6 +58,16 @@ class ChannelSelectionDialog(QDialog):
             else "Select channels to import:"
         )
         layout.addWidget(QLabel(title_text))
+
+        if batch_size > 1:
+            batch_note = QLabel(
+                f"Opening {batch_size} files: this selection is applied to "
+                "every file with the same channels. Files with different "
+                "channels are asked about separately."
+            )
+            batch_note.setWordWrap(True)
+            batch_note.setStyleSheet("color: grey;")
+            layout.addWidget(batch_note)
 
         # Checklist inside a scroll area
         scroll = QScrollArea()
