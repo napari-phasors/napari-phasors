@@ -1961,7 +1961,20 @@ class _PrimaryLayerDelegate(QStyledItemDelegate):
     def sizeHint(self, option, index):
         """Return the item size, heightened to fit the primary-layer action."""
         base = super().sizeHint(option, index)
-        return QSize(base.width(), max(base.height(), 24))
+        width = base.width()
+        is_header = index.data(self.PRIMARY_ROLE + 1) is not None
+        if self._enable_primary_layer and not is_header:
+            fm_primary = QFontMetrics(self._label_font)
+            fm_action = QFontMetrics(self._action_font)
+            extra_label_width = (
+                max(
+                    fm_primary.horizontalAdvance("Primary layer"),
+                    fm_action.horizontalAdvance("Set as primary"),
+                )
+                + 18
+            )
+            width += extra_label_width
+        return QSize(width, max(base.height(), 24))
 
     def paint(self, painter, option, index):
         """Draw the item plus its primary-layer action or indicator."""
@@ -2594,9 +2607,41 @@ class CheckableComboBox(QComboBox):
                 line_edit.setText(f"{len(checked)} {self._unit} selected")
 
     def showPopup(self):
-        """Show the popup and track visibility."""
+        """Show the popup and track visibility.
+
+        Ensures the popup dropdown list is wide enough to display the full
+        width of all items (checkboxes, labels, primary action if enabled,
+        and scrollbars) even when the dock widget or combobox is narrow.
+        """
         self._popup_visible = True
+
+        view = self.view()
+        max_col_w = max(view.sizeHintForColumn(0), 0)
+
+        scrollbar = view.verticalScrollBar()
+        scrollbar_w = (
+            scrollbar.sizeHint().width()
+            if scrollbar is not None and scrollbar.sizeHint().width() > 0
+            else self.style().pixelMetric(
+                QStyle.PM_ScrollBarExtent, None, self
+            )
+        )
+        frame_w = view.frameWidth() * 2
+        content_w = max_col_w + scrollbar_w + frame_w + 10
+
+        min_popup_width = max(self.width(), content_w, 150)
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is not None:
+            min_popup_width = min(
+                min_popup_width, screen.availableGeometry().width()
+            )
+
+        view.setMinimumWidth(min_popup_width)
         super().showPopup()
+
+        popup_win = view.window()
+        if popup_win is not None and popup_win.width() < min_popup_width:
+            popup_win.resize(min_popup_width, popup_win.height())
 
     def hidePopup(self):
         """Hide the popup and clear hover state."""

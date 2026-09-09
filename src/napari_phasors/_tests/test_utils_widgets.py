@@ -3461,3 +3461,71 @@ def test_statistics_dock_offers_the_split(make_viewer_model, qtbot):
     widget.set_dataset_sources({"Lifetime: plain": "plain"})
     widget.update_data(plain, label="Lifetime: plain")
     assert not dock.split_labels_checkbox.isVisible()
+
+
+def test_checkable_combobox_popup_width_independent_of_widget_width(qtbot):
+    """Test that the popup list is wide enough to display items fully,
+    even when the combobox widget itself is extremely narrow (e.g. in a dock).
+    """
+    from qtpy.QtCore import QPointF, Qt
+    from qtpy.QtGui import QMouseEvent
+    from qtpy.QtWidgets import QVBoxLayout, QWidget
+
+    from napari_phasors._utils import CheckableComboBox
+
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    layout = QVBoxLayout(parent)
+    combo = CheckableComboBox(enable_primary_layer=False, unit="labels")
+    combo.addItems([str(i) for i in range(1, 15)])
+    layout.addWidget(combo)
+
+    # Force combobox to be very narrow, simulating narrow dock widget
+    combo.setFixedWidth(35)
+    parent.show()
+
+    combo.showPopup()
+    try:
+        # The popup view width must not be restricted to the 35px combobox width
+        view_width = combo.view().width()
+        assert view_width >= 150
+
+        # Checkboxes are visible and interactive
+        view = combo.view()
+        rect0 = view.visualRect(combo.model().index(0, 0))
+        pt = QPointF(rect0.center())
+        from qtpy.QtCore import QEvent
+
+        press_evt = QMouseEvent(
+            QEvent.MouseButtonPress,
+            pt,
+            Qt.LeftButton,
+            Qt.LeftButton,
+            Qt.NoModifier,
+        )
+        release_evt = QMouseEvent(
+            QEvent.MouseButtonRelease,
+            pt,
+            Qt.LeftButton,
+            Qt.LeftButton,
+            Qt.NoModifier,
+        )
+        combo.eventFilter(view.viewport(), press_evt)
+        combo.eventFilter(view.viewport(), release_evt)
+        assert combo.checkedItems() == ["1"]
+    finally:
+        combo.hidePopup()
+
+    # Test with long label items
+    combo2 = CheckableComboBox(enable_primary_layer=False, unit="labels")
+    qtbot.addWidget(combo2)
+    long_text = "Label 1 - Very Long Label Description That Needs Wide Popup"
+    combo2.addItems([long_text, "2"])
+    combo2.setFixedWidth(30)
+    combo2.show()
+
+    combo2.showPopup()
+    try:
+        assert combo2.view().width() >= 200
+    finally:
+        combo2.hidePopup()
