@@ -7568,6 +7568,38 @@ class PlotterWidget(QWidget):
             int(np.min(harmonics)), int(np.max(harmonics))
         )
 
+    @staticmethod
+    def _has_filter_or_threshold_settings(layer):
+        """Return whether *layer* has a filter or threshold worth reapplying.
+
+        A layer can carry a filter without a threshold (or the other way
+        around), and a threshold can consist of an upper bound only, so every
+        setting has to be checked independently.
+        """
+        settings = layer.metadata.get('settings') or {}
+        filter_settings = settings.get('filter') or {}
+        if filter_settings.get('method') is not None:
+            return True
+        if settings.get('threshold') is not None:
+            return True
+        if settings.get('threshold_upper') is not None:
+            return True
+        threshold_method = settings.get('threshold_method')
+        return threshold_method not in (None, "None")
+
+    def _reapply_filter_and_threshold(self, selected_layers):
+        """Reapply the stored filter/threshold after a mask change.
+
+        Masking restores the original phasor data first, which also undoes any
+        filter and threshold the user had applied, so they have to be applied
+        again on top of the mask.
+        """
+        self.filter_tab._on_image_layer_changed()
+        if not selected_layers:
+            return
+        if self._has_filter_or_threshold_settings(selected_layers[0]):
+            self.filter_tab.apply_button_clicked()
+
     def _restore_original_phasor_data(self, image_layer):
         """Restore original G, S, and image data from backups.
 
@@ -7882,15 +7914,7 @@ class PlotterWidget(QWidget):
                 self._mask_label_assignments[image_layer.name] = labels
 
         if hasattr(self, 'filter_tab'):
-            self.filter_tab._on_image_layer_changed()
-            first_layer = selected_layers[0]
-            if (
-                first_layer.metadata['settings'].get('filter', None)
-                is not None
-                and first_layer.metadata['settings'].get('threshold', None)
-                is not None
-            ):
-                self.filter_tab.apply_button_clicked()
+            self._reapply_filter_and_threshold(selected_layers)
 
         self.plot()
 
@@ -7939,15 +7963,7 @@ class PlotterWidget(QWidget):
             )
 
         if hasattr(self, 'filter_tab'):
-            self.filter_tab._on_image_layer_changed()
-            first_layer = selected_layers[0]
-            if (
-                first_layer.metadata['settings'].get('filter', None)
-                is not None
-                and first_layer.metadata['settings'].get('threshold', None)
-                is not None
-            ):
-                self.filter_tab.apply_button_clicked()
+            self._reapply_filter_and_threshold(selected_layers)
 
         self.refresh_current_plot()
 
@@ -8170,16 +8186,7 @@ class PlotterWidget(QWidget):
                 )
 
         if hasattr(self, 'filter_tab'):
-            self.filter_tab._on_image_layer_changed()
-            if selected_layers:
-                first_layer = selected_layers[0]
-                if (
-                    first_layer.metadata['settings'].get('filter', None)
-                    is not None
-                    and first_layer.metadata['settings'].get('threshold', None)
-                    is not None
-                ):
-                    self.filter_tab.apply_button_clicked()
+            self._reapply_filter_and_threshold(selected_layers)
 
         self._update_mask_assign_button_text()
         self.plot()

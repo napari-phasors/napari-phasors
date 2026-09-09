@@ -9,6 +9,10 @@ from qtpy.QtWidgets import (
     QLabel,
 )
 
+from napari_phasors._synthetic_generator import (
+    make_intensity_layer_with_phasors,
+    make_raw_flim_data,
+)
 from napari_phasors._tests.test_plotter import (  # noqa: E501
     create_image_layer_with_phasors,
 )
@@ -2225,3 +2229,78 @@ def test_mask_labels_split_histogram_and_statistics(make_viewer_model, qtbot):
         assert len(histogram._datasets) == 1
     finally:
         plotter.close()
+
+
+def _layer_with_larger_phasors():
+    """A phasor layer big enough for median filtering to change values."""
+    raw_flim_data = make_raw_flim_data(
+        shape=(16, 16), time_constants=[0.1, 1, 2, 3, 4, 5, 10]
+    )
+    return make_intensity_layer_with_phasors(raw_flim_data, harmonic=[1, 2, 3])
+
+
+def test_threshold_without_filter_survives_mask(make_viewer_model):
+    """Applying a mask must not undo a threshold applied without a filter.
+
+    Regression: the reapply after masking required *both* a filter and a
+    lower threshold in the settings, so a threshold-only layer was left with
+    the restored, unthresholded data.
+    """
+    viewer = make_viewer_model()
+    layer = _layer_with_larger_phasors()
+    viewer.add_layer(layer)
+    plotter = PlotterWidget(viewer)
+
+    shape = _make_mask_shape(layer)
+    mask_data = np.zeros(shape, dtype=int)
+    mask_data[2:12, 2:12] = 1
+    viewer.add_labels(mask_data, name="mask")
+    plotter.reset_layer_choices()
+
+    filter_tab = plotter.filter_tab
+    filter_tab.threshold_method_combobox.setCurrentText("Manual")
+    lower, upper = filter_tab.threshold_slider.value()
+    filter_tab.threshold_slider.setValue((lower + (upper - lower) // 2, upper))
+    filter_tab.apply_button_clicked()
+    assert "filter" not in layer.metadata["settings"]
+    assert layer.metadata["settings"]["threshold"] is not None
+
+    plotter.mask_layer_combobox.setCurrentText("mask")
+
+    # More pixels are dropped than the mask alone would drop, i.e. the
+    # threshold is still in effect on top of the mask.
+    assert np.isnan(layer.data).sum() > int((mask_data <= 0).sum())
+
+
+def test_filter_without_threshold_survives_mask(make_viewer_model):
+    """Applying a mask must not undo a filter applied without a threshold."""
+    viewer = make_viewer_model()
+    layer = _layer_with_larger_phasors()
+    viewer.add_layer(layer)
+    plotter = PlotterWidget(viewer)
+
+    shape = _make_mask_shape(layer)
+    mask_data = np.zeros(shape, dtype=int)
+    mask_data[2:12, 2:12] = 1
+    viewer.add_labels(mask_data, name="mask")
+    plotter.reset_layer_choices()
+
+    filter_tab = plotter.filter_tab
+    filter_tab.filter_method_combobox.setCurrentText("Median")
+    filter_tab.median_filter_spinbox.setValue(3)
+    filter_tab.median_filter_repetition_spinbox.setValue(1)
+    filter_tab.threshold_method_combobox.setCurrentText("None")
+    filter_tab.apply_button_clicked()
+    assert layer.metadata["settings"]["threshold"] is None
+    assert not np.allclose(
+        layer.metadata["G"], layer.metadata["G_original"], equal_nan=True
+    )
+
+    plotter.mask_layer_combobox.setCurrentText("mask")
+
+    inside = mask_data > 0
+    assert not np.allclose(
+        layer.metadata["G"][..., inside],
+        layer.metadata["G_original"][..., inside],
+        equal_nan=True,
+    )
