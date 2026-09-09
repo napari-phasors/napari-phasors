@@ -29,6 +29,15 @@ filled in for you. See
 3. **Configure the frequency**: The laser frequency used in the experiment.
 4. **Visualize the trajectory**: The donor trajectory is drawn on the phasor
    plot showing the path from 0 % to 100 % FRET efficiency.
+5. **Calculate**: Click **Calculate FRET efficiency** to produce the
+   efficiency image for the selected layer(s).
+
+> [!TIP]
+> Enable the **Autoupdate** toggle below the button to recompute the FRET efficiency
+> automatically. While it is on, the button is disabled and the analysis is
+> re-run whenever the tab's own inputs change, the harmonic or the layer
+> selection changes, or the **Filter** or **Calibration** tab rewrites the
+> phasor data.
 
 <video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/fret.gif">
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/fret.mp4" type="video/mp4">

@@ -53,6 +53,7 @@ from qtpy.QtWidgets import (
 from ._parallel import parallel_map, parallel_rowwise
 from ._timelapse import slice_datasets
 from ._utils import (
+    AutoUpdateMixin,
     CheckableComboBox,
     HistogramWidget,
     analysis_section_stylesheet,
@@ -346,7 +347,7 @@ class PhasorCenterSelectionDialog(QDialog):
         return self.layer_combo.checkedItems()
 
 
-class ComponentsWidget(QWidget):
+class ComponentsWidget(AutoUpdateMixin, QWidget):
     """Widget to perform component analysis on phasor coordinates."""
 
     def __init__(self, viewer: "napari.viewer.Viewer", parent=None):
@@ -570,6 +571,17 @@ class ComponentsWidget(QWidget):
             "components.",
         )
         layout.addWidget(self.calculate_button)
+
+        layout.addWidget(
+            self._build_autoupdate_toggle(
+                self.calculate_button,
+                self._components_validation,
+                self._run_analysis,
+                "Re-run the component analysis automatically whenever the "
+                "components, the harmonic, the layer selection, or the "
+                "filtered/calibrated phasor data change.",
+            )
+        )
 
         # Display settings section
         display_box, display_box_layout = make_section("Display settings")
@@ -1063,6 +1075,8 @@ class ComponentsWidget(QWidget):
         if self.parent_widget is not None:
             self._update_lifetime_inputs_visibility()
 
+        self.request_autoupdate()
+
     def _remove_component(self, idx=None):
         """Remove a component (by default, the last one)."""
         if len(self.components) <= 2:
@@ -1152,6 +1166,8 @@ class ComponentsWidget(QWidget):
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
         self._remove_component_from_settings(idx)
+
+        self.request_autoupdate()
 
     def _remove_component_from_settings(self, idx=None):
         """Remove a component from the settings in metadata and reindex."""
@@ -2161,6 +2177,7 @@ class ComponentsWidget(QWidget):
             self.calculate_button.setText("Run Multi-Component Analysis")
 
         self.draw_line_between_components()
+        self.request_autoupdate()
 
     def _on_harmonic_changed(self, new_harmonic):
         """Handle harmonic changes - store current components and restore for new harmonic."""
@@ -3095,6 +3112,8 @@ class ComponentsWidget(QWidget):
             self.draw_line_between_components()
         else:
             self._create_component_at_coordinates(idx, x, y)
+
+        self.request_autoupdate()
 
     def _on_component_name_edited(self, idx: int):
         """Follow every keystroke in the name field, cheaply.
@@ -4577,8 +4596,13 @@ class ComponentsWidget(QWidget):
 
     def _on_release(self, event):
         """Handle release of components and labels."""
+        dragged_component = self.dragging_component_idx is not None
         self.dragging_component_idx = None
         self.dragging_label_idx = None
+        if dragged_component:
+            # Autoupdate waits for the drop: re-running on every mouse-move
+            # would recompute the fractions dozens of times per drag.
+            self.request_autoupdate()
 
     def _redraw(self, force=False):
         """Redraw the canvas. Use force=True to avoid stale blit artifacts."""

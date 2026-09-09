@@ -134,7 +134,7 @@ share the same style controls:
 | **Colormap** | Colormap for the density (Histogram/Contour). |
 | **Histogram bins** | Number of bins per axis for the histogram/contour density. |
 | **Log scale** | Uses a logarithmic color scale for the histogram density (Histogram only). |
-| **Marker size / color / alpha** | Scatter-only: size, color, and opacity of the scatter markers. |
+| **Marker size / color / transparency** | Scatter-only: size, color, and transparency of the scatter markers. |
 | **Contour levels / linewidth** | Contour-only: number of contour lines and their line width. |
 
 The combined plot additionally has:
@@ -292,7 +292,7 @@ per file. See {doc}`phasor_mapping` for the interactive-widget equivalent.
 | **Color phasor by** | Colors the exported phasor plot's points by **None**, **Phase**, or **Modulation**. |
 | **Mesh overlay** | Draws a **Phase mesh** and/or **Modulation mesh** grid over the phasor plot. |
 | **Mesh/color colormap** | Colormap used for the mesh and/or point coloring. |
-| **Mesh alpha** | Opacity of the mesh overlay. |
+| **Mesh transparency** | Transparency of the mesh overlay. |
 | **Clip mesh to semicircle** | Only shows the mesh inside the universal semicircle (semicircle plot geometry only). |
 | **Range** | **Auto (range from all files)** computes a single phase/modulation range pooled across every file at export; uncheck to set fixed ranges manually. |
 | **Phase range (rad)** | Manual minimum/maximum phase for the mesh, when Auto is off. |

@@ -64,7 +64,7 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from superqt import QRangeSlider
+from superqt import QRangeSlider, QToggleSwitch
 
 from ._parallel import parallel_filter_median
 
@@ -205,13 +205,27 @@ def theme_warning_color():
         return _FALLBACK_WARNING_COLOR
 
 
-def warning_pixmap(widget, size=16):
+#: Logical size, in pixels, to render the "Experimental" warning triangle at.
+#: napari's stylesheet pins ``#error_label`` to an 18 px box with 2 px of
+#: padding, so 14 px is the content area the label actually has. Drawing
+#: larger than this clips the triangle into an unrecognisable wedge, because
+#: the pixmap is painted inside that content rect.
+WARNING_ICON_SIZE = 14
+
+
+def warning_pixmap(size=WARNING_ICON_SIZE):
     """Return napari's warning triangle as a pixmap, or ``None``.
 
     Rendered from napari's own ``warning.svg`` in the theme's warning colour,
     which is exactly what napari's stylesheet does for the ``error_label``
     object name -- so the two agree pixel for pixel and the marker is the one
     napari uses for its own experimental controls.
+
+    ``size`` is a *logical* size. ``QIcon.pixmap`` already does the high-DPI
+    work: it renders denser pixels and tags the result with their device
+    pixel ratio, so the pixmap keeps the requested logical size. Pre-scaling
+    the request, or re-stamping the ratio afterwards, doubles the triangle
+    and it then overflows the box the stylesheet gives the label.
     """
     try:
         from napari._qt.qt_resources import QColoredSVGIcon
@@ -222,10 +236,7 @@ def warning_pixmap(widget, size=16):
     except Exception:  # noqa: BLE001 - a missing resource must not take the
         # widget that asked down with it; the label just stays empty.
         return None
-    ratio = widget.devicePixelRatioF() if widget is not None else 1.0
-    pixmap = icon.pixmap(round(size * ratio), round(size * ratio))
-    pixmap.setDevicePixelRatio(ratio)
-    return pixmap
+    return icon.pixmap(size, size)
 
 
 def make_experimental_warning(tooltip, parent=None):
@@ -262,13 +273,17 @@ def make_experimental_warning(tooltip, parent=None):
     icon_label = QLabel()
     icon_label.setObjectName("error_label")
     icon_label.setToolTip(tooltip)
-    # The object name alone only paints the icon where napari's stylesheet
-    # reaches this widget, which depends on where it ends up -- and never
-    # inside a modal dialog of our own. Rendering the same resource
-    # ourselves makes the marker unconditional; the stylesheet's ``image``
-    # wins where it applies, and it draws the identical SVG in the identical
-    # colour.
-    pixmap = warning_pixmap(icon_label)
+    # napari's stylesheet targets ``#error_label`` with ``image: url(...)``,
+    # but Qt paints the stylesheet's ``image`` in addition to any pixmap set
+    # on the QLabel. When both are active, Qt renders two slightly misaligned
+    # triangles, creating a double-triangle visual artifact that fills in the
+    # exclamation mark cutout. Suppressing the stylesheet's duplicate image
+    # allows the single rendered pixmap to display cleanly with its
+    # exclamation mark intact, while retaining the geometry rules of
+    # ``#error_label``.
+    icon_label.setStyleSheet("image: none;")
+    icon_label.setAlignment(Qt.AlignCenter)
+    pixmap = warning_pixmap()
     if pixmap is not None:
         icon_label.setPixmap(pixmap)
 
@@ -390,6 +405,88 @@ def setup_primary_button(button, validator, run_callback, ready_tooltip=""):
     button.clicked.connect(_on_clicked)
     refresh()
     return refresh
+
+
+class AutoUpdateMixin:
+    """Adds an "Autoupdate" toggle that re-runs a tab's analysis on change.
+
+    Analysis tabs normally recompute only when their primary button is
+    clicked. A tab mixing this in calls :meth:`_build_autoupdate_toggle` to
+    create the switch, and then :meth:`request_autoupdate` from every place
+    that changes something the result depends on -- its own inputs, and the
+    external events the parent plotter forwards (a filter or calibration that
+    rewrote the phasor data, a new harmonic, a different layer selection).
+
+    The analysis only re-runs while the toggle is on *and* the tab's validator
+    reports that the inputs are complete, so a half-filled form never triggers
+    a run. Re-entrancy is blocked: an analysis writes layers and metadata,
+    which fires the very signals that requested it.
+    """
+
+    #: Class-level defaults so ``request_autoupdate`` is safe to call on a tab
+    #: that has not built its toggle yet (e.g. during ``__init__``).
+    _autoupdate_enabled = False
+    _autoupdate_running = False
+    _autoupdate_validator = None
+    _autoupdate_action = None
+    _autoupdate_run_button = None
+
+    def _build_autoupdate_toggle(self, run_button, validator, action, tooltip):
+        """Create the "Autoupdate" switch and return the widget holding it.
+
+        ``run_button`` is the tab's primary button; it is disabled while
+        autoupdate is on, since the analysis then runs on its own.
+        """
+        self._autoupdate_validator = validator
+        self._autoupdate_action = action
+        self._autoupdate_run_button = run_button
+
+        container = QWidget()
+        row = QHBoxLayout(container)
+        row.setContentsMargins(0, 0, 0, 0)
+        self.autoupdate_check = QToggleSwitch("Autoupdate")
+        self.autoupdate_check.onColor = QColor("#27ae60")  # Nice Green
+        self.autoupdate_check.setChecked(False)
+        self.autoupdate_check.setToolTip(tooltip)
+        self.autoupdate_check.toggled.connect(self._on_autoupdate_toggled)
+        row.addWidget(self.autoupdate_check)
+        self.autoupdate_container = container
+        return container
+
+    def _on_autoupdate_toggled(self, checked):
+        """Handle the Autoupdate switch changing state."""
+        self._autoupdate_enabled = bool(checked)
+        if self._autoupdate_run_button is not None:
+            self._autoupdate_run_button.setEnabled(
+                not self._autoupdate_enabled
+            )
+        if self._autoupdate_enabled:
+            self.request_autoupdate()
+
+    def autoupdate_enabled(self):
+        """Return whether the tab re-runs its analysis automatically."""
+        return bool(self._autoupdate_enabled)
+
+    def request_autoupdate(self):
+        """Re-run the analysis if autoupdate is on and the inputs are valid.
+
+        Returns ``True`` when the analysis actually ran.
+        """
+        if not self._autoupdate_enabled or self._autoupdate_running:
+            return False
+        if self._autoupdate_action is None:
+            return False
+        if (
+            self._autoupdate_validator is not None
+            and self._autoupdate_validator() is not None
+        ):
+            return False
+        self._autoupdate_running = True
+        try:
+            self._autoupdate_action()
+        finally:
+            self._autoupdate_running = False
+        return True
 
 
 def _check_state_value(state):
