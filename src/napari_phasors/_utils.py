@@ -273,12 +273,16 @@ def make_experimental_warning(tooltip, parent=None):
     icon_label = QLabel()
     icon_label.setObjectName("error_label")
     icon_label.setToolTip(tooltip)
-    # The object name alone only paints the icon where napari's stylesheet
-    # reaches this widget, which depends on where it ends up -- and never
-    # inside a modal dialog of our own. Rendering the same resource
-    # ourselves makes the marker unconditional; the stylesheet's ``image``
-    # wins where it applies, and it draws the identical SVG in the identical
-    # colour.
+    # napari's stylesheet targets ``#error_label`` with ``image: url(...)``,
+    # but Qt paints the stylesheet's ``image`` in addition to any pixmap set
+    # on the QLabel. When both are active, Qt renders two slightly misaligned
+    # triangles, creating a double-triangle visual artifact that fills in the
+    # exclamation mark cutout. Suppressing the stylesheet's duplicate image
+    # allows the single rendered pixmap to display cleanly with its
+    # exclamation mark intact, while retaining the geometry rules of
+    # ``#error_label``.
+    icon_label.setStyleSheet("image: none;")
+    icon_label.setAlignment(Qt.AlignCenter)
     pixmap = warning_pixmap()
     if pixmap is not None:
         icon_label.setPixmap(pixmap)

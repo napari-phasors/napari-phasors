@@ -3608,15 +3608,14 @@ def test_warning_pixmap_keeps_its_logical_size_on_hidpi():
     pixmap = warning_pixmap()
     assert pixmap is not None and not pixmap.isNull()
 
-    logical = pixmap.deviceIndependentSize()
-    assert logical.width() == pytest.approx(WARNING_ICON_SIZE)
-    assert logical.height() == pytest.approx(WARNING_ICON_SIZE)
-    assert pixmap.width() == pytest.approx(
-        WARNING_ICON_SIZE * pixmap.devicePixelRatio()
-    )
+    dpr = pixmap.devicePixelRatio() or 1.0
+    assert (pixmap.width() / dpr) == pytest.approx(WARNING_ICON_SIZE)
+    assert (pixmap.height() / dpr) == pytest.approx(WARNING_ICON_SIZE)
+    assert pixmap.width() == pytest.approx(WARNING_ICON_SIZE * dpr)
 
     smaller = warning_pixmap(size=8)
-    assert smaller.deviceIndependentSize().width() == pytest.approx(8)
+    smaller_dpr = smaller.devicePixelRatio() or 1.0
+    assert (smaller.width() / smaller_dpr) == pytest.approx(8)
 
 
 def test_experimental_banner_icon_fits_its_label(qtbot):
@@ -3627,9 +3626,9 @@ def test_experimental_banner_icon_fits_its_label(qtbot):
     assert banner.icon_label.objectName() == "error_label"
     assert banner.text_label.text() == "Experimental"
     assert "report" in banner.icon_label.toolTip()
+    assert "image: none" in banner.icon_label.styleSheet()
 
     pixmap = banner.icon_label.pixmap()
     assert pixmap is not None and not pixmap.isNull()
-    assert pixmap.deviceIndependentSize().width() == pytest.approx(
-        WARNING_ICON_SIZE
-    )
+    dpr = pixmap.devicePixelRatio() or 1.0
+    assert (pixmap.width() / dpr) == pytest.approx(WARNING_ICON_SIZE)

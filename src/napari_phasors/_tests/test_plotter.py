@@ -1413,9 +1413,10 @@ def test_performance_section_is_marked_experimental(make_viewer_model, qtbot):
     # unrecognisable wedge, which is what a pre-scaled high-DPI pixmap does:
     # ``QIcon.pixmap`` already takes a logical size and tags the result with
     # its device pixel ratio, so the ratio must be left alone.
-    logical = pixmap.deviceIndependentSize()
-    assert logical.width() == pytest.approx(WARNING_ICON_SIZE)
-    assert logical.height() == pytest.approx(WARNING_ICON_SIZE)
+    dpr = pixmap.devicePixelRatio() or 1.0
+    assert (pixmap.width() / dpr) == pytest.approx(WARNING_ICON_SIZE)
+    assert (pixmap.height() / dpr) == pytest.approx(WARNING_ICON_SIZE)
+    assert "image: none" in plotter.experimental_warning_icon.styleSheet()
 
 
 def test_memory_budget_spinbox_sizes_the_pools(make_viewer_model, qtbot):
