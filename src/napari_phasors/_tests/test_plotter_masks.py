@@ -815,6 +815,79 @@ def test_mask_assignment_dialog_has_invert_option(
         assert invert_assignments[name] is False
 
 
+def test_mask_assignment_dialog_invert_all_controls():
+    """Test 'Invert All' checkbox toggles all enabled rows and synchronizes."""
+    dialog = MaskAssignmentDialog(
+        image_layer_names=["img1", "img2"],
+        mask_layer_names=["mask1"],
+        current_assignments={"img1": "mask1", "img2": "mask1"},
+        current_invert_assignments={"img1": False, "img2": False},
+    )
+
+    assert hasattr(dialog, "invert_all_check")
+    assert dialog.invert_all_check.isEnabled()
+    assert not dialog.invert_all_check.isChecked()
+
+    # Click Invert All -> both become checked
+    dialog.invert_all_check.click()
+    assert dialog.invert_all_check.isChecked()
+    assert dialog._invert_checks["img1"].isChecked()
+    assert dialog._invert_checks["img2"].isChecked()
+    assert dialog.get_invert_assignments() == {"img1": True, "img2": True}
+
+    # Uncheck one row -> Invert All becomes unchecked
+    dialog._invert_checks["img1"].setChecked(False)
+    assert not dialog.invert_all_check.isChecked()
+    assert not dialog._invert_checks["img1"].isChecked()
+    assert dialog._invert_checks["img2"].isChecked()
+
+    # Check that row again -> Invert All becomes checked
+    dialog._invert_checks["img1"].setChecked(True)
+    assert dialog.invert_all_check.isChecked()
+
+    # Click Invert All again to uncheck -> both become unchecked
+    dialog.invert_all_check.click()
+    assert not dialog.invert_all_check.isChecked()
+    assert not dialog._invert_checks["img1"].isChecked()
+    assert not dialog._invert_checks["img2"].isChecked()
+
+
+def test_mask_assignment_dialog_invert_all_with_unassigned_rows():
+    """Test 'Invert All' handles rows with 'None' mask correctly."""
+    # When all rows have "None", Invert All should be disabled
+    dialog = MaskAssignmentDialog(
+        image_layer_names=["img1", "img2"],
+        mask_layer_names=["mask1"],
+        current_assignments={"img1": "None", "img2": "None"},
+    )
+    assert not dialog.invert_all_check.isEnabled()
+    assert not dialog.invert_all_check.isChecked()
+
+    # Assign mask to img1 -> Invert All becomes enabled
+    dialog._combos["img1"].setCurrentText("mask1")
+    assert dialog.invert_all_check.isEnabled()
+    assert not dialog.invert_all_check.isChecked()
+
+    # Click Invert All -> only img1 is inverted (img2 is disabled)
+    dialog.invert_all_check.click()
+    assert dialog.invert_all_check.isChecked()
+    assert dialog._invert_checks["img1"].isChecked()
+    assert not dialog._invert_checks["img2"].isChecked()
+    assert not dialog._invert_checks["img2"].isEnabled()
+    assert dialog.get_invert_assignments() == {"img1": True, "img2": False}
+
+    # Now assign mask to img2 as well
+    dialog._combos["img2"].setCurrentText("mask1")
+    # img2 is newly enabled and unchecked, so Invert All should reflect that
+    assert not dialog.invert_all_check.isChecked()
+
+    # Click Invert All -> both are now checked
+    dialog.invert_all_check.click()
+    assert dialog.invert_all_check.isChecked()
+    assert dialog._invert_checks["img1"].isChecked()
+    assert dialog._invert_checks["img2"].isChecked()
+
+
 def test_apply_mask_assignments_with_invert(make_viewer_model):
     """Test per-layer invert via _apply_mask_assignments."""
     viewer = make_viewer_model()

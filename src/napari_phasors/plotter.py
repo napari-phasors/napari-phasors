@@ -271,6 +271,7 @@ class MaskAssignmentDialog(QDialog):
                 current_invert_assignments.get(name, False)
             )
             invert_check.setEnabled(current != "None")
+            invert_check.toggled.connect(self._sync_invert_all_check)
             self._invert_checks[name] = invert_check
             row_layout.addWidget(invert_check)
 
@@ -283,6 +284,8 @@ class MaskAssignmentDialog(QDialog):
                 container=label_container,
             ):
                 cb.setEnabled(text != "None")
+                if text == "None":
+                    cb.setChecked(False)
                 layer = self._mask_layers.get(text)
                 if isinstance(layer, Labels):
                     container.setVisible(True)
@@ -310,6 +313,7 @@ class MaskAssignmentDialog(QDialog):
                 else:
                     container.setVisible(False)
                     lc.setVisible(False)
+                self._sync_invert_all_check()
 
             combo.currentTextChanged.connect(_on_mask_changed)
             combo.currentTextChanged.connect(self._sync_apply_all_combo)
@@ -344,6 +348,13 @@ class MaskAssignmentDialog(QDialog):
         self.auto_assign_button.setEnabled(bool(self._mask_layers))
         self.auto_assign_button.clicked.connect(self._on_auto_assign)
         apply_all_layout.addWidget(self.auto_assign_button)
+
+        self.invert_all_check = QCheckBox("Invert All")
+        self.invert_all_check.setToolTip("Invert all assigned masks.")
+        self.invert_all_check.clicked.connect(self._on_invert_all_clicked)
+        apply_all_layout.addWidget(self.invert_all_check)
+        self._sync_invert_all_check()
+
         layout.addLayout(apply_all_layout)
 
         # OK / Cancel
@@ -393,6 +404,32 @@ class MaskAssignmentDialog(QDialog):
             self._apply_all_combo.blockSignals(True)
             self._apply_all_combo.setCurrentText(common)
             self._apply_all_combo.blockSignals(False)
+
+    def _on_invert_all_clicked(self, checked):
+        """Toggle all enabled per-layer invert checkboxes."""
+        for cb in self._invert_checks.values():
+            if cb.isEnabled():
+                cb.setChecked(checked)
+
+    def _sync_invert_all_check(self, *_):
+        """Update 'Invert All' state based on enabled individual invert checkboxes."""
+        if not hasattr(self, "invert_all_check"):
+            return
+        enabled_cbs = [
+            cb for cb in self._invert_checks.values() if cb.isEnabled()
+        ]
+        if not enabled_cbs:
+            self.invert_all_check.setEnabled(False)
+            self.invert_all_check.blockSignals(True)
+            self.invert_all_check.setChecked(False)
+            self.invert_all_check.blockSignals(False)
+            return
+
+        self.invert_all_check.setEnabled(True)
+        all_checked = all(cb.isChecked() for cb in enabled_cbs)
+        self.invert_all_check.blockSignals(True)
+        self.invert_all_check.setChecked(all_checked)
+        self.invert_all_check.blockSignals(False)
 
     def get_assignments(self):
         """Return the mask assignments as a dict.
