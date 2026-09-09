@@ -94,7 +94,7 @@ def test_build_schema_keys_and_shapes():
     ):
         assert key in payload
 
-    assert payload["name"] == "FLIM data [Phasor] Intensity"
+    assert payload["name"] == "FLIM data Intensity [Phasor]"
     # Phasor arrays are [Harmonics, Y, X].
     assert payload["g"].shape == (2, 4, 5)
     assert payload["s"].shape == (2, 4, 5)

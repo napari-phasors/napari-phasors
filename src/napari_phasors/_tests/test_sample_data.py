@@ -65,7 +65,7 @@ def test_convallaria_FLIM_sample_data(make_viewer_model, qtbot):
     assert layer_data_tuple[0].shape == (256, 256)
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert (
-        layer_data_tuple[1]["name"] == "Convallaria_$EI0S [Phasor] Intensity"
+        layer_data_tuple[1]["name"] == "Convallaria_$EI0S Intensity [Phasor]"
     )
     metadata = layer_data_tuple[1]["metadata"]
     assert "G" in metadata
@@ -91,7 +91,7 @@ def test_convallaria_FLIM_sample_data(make_viewer_model, qtbot):
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert (
         layer_data_tuple[1]["name"]
-        == "Calibration_Rhodamine110_$EI0S [Phasor] Intensity"
+        == "Calibration_Rhodamine110_$EI0S Intensity [Phasor]"
     )
     metadata = layer_data_tuple[1]["metadata"]
     assert "G" in metadata
@@ -121,7 +121,7 @@ def test_embryo_FLIM_sample_data(make_viewer_model, qtbot):
     )
     assert layer_data_tuple[0].shape == (512, 512)
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
-    assert layer_data_tuple[1]["name"] == "Embryo [Phasor] Intensity"
+    assert layer_data_tuple[1]["name"] == "Embryo Intensity [Phasor]"
     metadata = layer_data_tuple[1]["metadata"]
     assert "G" in metadata
     assert "S" in metadata
@@ -145,7 +145,7 @@ def test_embryo_FLIM_sample_data(make_viewer_model, qtbot):
     assert layer_data_tuple[0].shape == (512, 512)
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert (
-        layer_data_tuple[1]["name"] == "Fluorescein_Embryo [Phasor] Intensity"
+        layer_data_tuple[1]["name"] == "Fluorescein_Embryo Intensity [Phasor]"
     )
     metadata = layer_data_tuple[1]["metadata"]
     assert "G" in metadata
@@ -174,7 +174,7 @@ def test_paramecium_HSI_sample_data(make_viewer_model, qtbot):
     )
     assert layer_data_tuple[0].shape == (512, 512)
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
-    assert layer_data_tuple[1]["name"] == "paramecium [Phasor] Intensity"
+    assert layer_data_tuple[1]["name"] == "paramecium Intensity [Phasor]"
     metadata = layer_data_tuple[1]["metadata"]
     assert "G" in metadata
     assert "S" in metadata
@@ -196,10 +196,10 @@ def test_fret_FLIM_sample_data(make_viewer_model, qtbot):
     layer_data_list = fret_FLIM_sample_data()
     assert isinstance(layer_data_list, list) and len(layer_data_list) == 4
     expected_names = [
-        "Donor_Only [Phasor] Intensity",
-        "Background_Autofluorescence [Phasor] Intensity",
-        "FRET_Construct_1 [Phasor] Intensity",
-        "FRET_Construct_2 [Phasor] Intensity",
+        "Donor_Only Intensity [Phasor]",
+        "Background_Autofluorescence Intensity [Phasor]",
+        "FRET_Construct_1 Intensity [Phasor]",
+        "FRET_Construct_2 Intensity [Phasor]",
     ]
     for layer_data_tuple, expected_name in zip(
         layer_data_list, expected_names, strict=True

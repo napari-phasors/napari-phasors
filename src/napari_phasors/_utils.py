@@ -1706,10 +1706,10 @@ def format_phasor_layer_name(
     """Format a consistent napari layer name for phasor intensity images.
 
     Follows the convention:
-    - Single channel: ``'<stem> [Phasor] Intensity'``
-    - Multi-channel: ``'<stem> [Phasor] Intensity: Channel <channel_label>'``
-    - Stack: ``'<stem> Stack [Phasor] Intensity'``
-    - Mosaic: ``'<stem> Mosaic [Phasor] Intensity'``
+    - Single channel: ``'<stem> Intensity [Phasor]'``
+    - Multi-channel: ``'<stem> Intensity: Channel <channel_label> [Phasor]'``
+    - Stack: ``'<stem> Stack Intensity [Phasor]'``
+    - Mosaic: ``'<stem> Mosaic Intensity [Phasor]'``
 
     Parameters
     ----------
@@ -1734,10 +1734,10 @@ def format_phasor_layer_name(
     if is_stack:
         qualifiers.append("Stack")
     qualifier_str = f"{' '.join(qualifiers)} " if qualifiers else ""
-    name = f"{stem} {qualifier_str}[Phasor] Intensity"
+    name = f"{stem} {qualifier_str}Intensity"
     if channel_label is not None and str(channel_label).strip() != "":
         name = f"{name}: Channel {channel_label}"
-    return name
+    return f"{name} [Phasor]"
 
 
 def extract_channel_label(
@@ -1749,7 +1749,7 @@ def extract_channel_label(
     Parameters
     ----------
     layer_name : str, optional
-        Layer name, potentially ending with ``': Channel <label>'``.
+        Layer name, potentially ending with ``': Channel <label> [Phasor]'``.
     metadata : dict, optional
         Layer metadata dict, potentially containing ``settings['channel']``.
 
@@ -1765,7 +1765,10 @@ def extract_channel_label(
             if ch is not None:
                 return str(ch)
     if layer_name:
-        match = re.search(r":\s*Channel\s+([^:]+)$", layer_name)
+        match = re.search(
+            r":\s*Channel\s+([^:\[]+?)(?:\s*\[Phasor\])?(?:\s*\[\d+\])?$",
+            layer_name,
+        )
         if match:
             return match.group(1).strip()
     return None
@@ -1778,7 +1781,10 @@ def extract_channel_suffix(layer_name: str | None) -> str:
     """
     if not layer_name:
         return ""
-    match = re.search(r"(:\s*Channel\s+.*)$", layer_name)
+    match = re.search(
+        r"(:\s*Channel\s+[^:\[]+?)(?:\s*\[Phasor\])?(?:\s*\[\d+\])?$",
+        layer_name,
+    )
     return match.group(1) if match else ""
 
 
@@ -1786,7 +1792,7 @@ def name_match_stem(value, strip_directory=True):
     """Return the comparable stem of a file path or layer name.
 
     Drops any directory part, the extension, and any further compound
-    suffix, so ``"sample.ome.tif"``, ``"sample.tif [Phasor] Intensity"`` and
+    suffix, so ``"sample.ome.tif"``, ``"sample.tif Intensity [Phasor]"`` and
     ``"sample"`` all compare as ``"sample"``.
 
     Parameters
@@ -1806,7 +1812,7 @@ def name_match_stem(value, strip_directory=True):
         value = os.path.basename(value)
     stem = os.path.splitext(value)[0].split(".")[0]
     stem = re.sub(
-        r"\s*(?:\[Phasor\]\s*Intensity|Intensity\s*Image).*$",
+        r"\s*(?:Intensity.*?\[Phasor\]|\[Phasor\]\s*Intensity|Intensity\s*Image).*$",
         "",
         stem,
         flags=re.IGNORECASE,

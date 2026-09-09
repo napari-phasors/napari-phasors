@@ -435,9 +435,9 @@ def test_mask_assignment_dialog_auto_assign_action():
     from napari_phasors.plotter import MaskAssignmentDialog
 
     images = [
-        "embryo_1.ptu [Phasor] Intensity",
-        "embryo_2.ptu [Phasor] Intensity",
-        "unmatched_image.ptu [Phasor] Intensity",
+        "embryo_1.ptu Intensity [Phasor]",
+        "embryo_2.ptu Intensity [Phasor]",
+        "unmatched_image.ptu Intensity [Phasor]",
     ]
     masks = ["embryo_2_segmentation", "embryo_1", "random_mask"]
 
@@ -468,14 +468,14 @@ def test_mask_assignment_dialog_auto_assign_keeps_near_misses_unassigned():
     from napari_phasors.plotter import MaskAssignmentDialog
 
     dialog = MaskAssignmentDialog(
-        image_layer_names=["2026-05-03_control.lsm [Phasor] Intensity"],
+        image_layer_names=["2026-05-03_control.lsm Intensity [Phasor]"],
         mask_layer_names=["2026-05-03_treated_mask"],
         parent=None,
     )
     dialog.auto_assign_button.click()
 
     assert dialog.get_assignments() == {
-        "2026-05-03_control.lsm [Phasor] Intensity": "None"
+        "2026-05-03_control.lsm Intensity [Phasor]": "None"
     }
     dialog.close()
 
@@ -485,17 +485,17 @@ def test_mask_assignment_dialog_auto_assign_updates_dependent_widgets():
     from napari_phasors.plotter import MaskAssignmentDialog
 
     dialog = MaskAssignmentDialog(
-        image_layer_names=["sample.tif [Phasor] Intensity"],
+        image_layer_names=["sample.tif Intensity [Phasor]"],
         mask_layer_names=["sample_mask"],
         parent=None,
     )
-    invert = dialog._invert_checks["sample.tif [Phasor] Intensity"]
+    invert = dialog._invert_checks["sample.tif Intensity [Phasor]"]
     assert not invert.isEnabled()
 
     dialog.auto_assign_button.click()
 
     assert dialog.get_assignments() == {
-        "sample.tif [Phasor] Intensity": "sample_mask"
+        "sample.tif Intensity [Phasor]": "sample_mask"
     }
     # The Invert checkbox is only meaningful once a mask is assigned.
     assert invert.isEnabled()

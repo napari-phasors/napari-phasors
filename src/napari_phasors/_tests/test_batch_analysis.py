@@ -4017,7 +4017,7 @@ def _fake_channel_results(profiles_by_channel):
     for channel, profile in profiles_by_channel:
         layer = Image(
             np.zeros((2, 2)),
-            name=f"f [Phasor] Intensity: Channel {channel}",
+            name=f"f Intensity: Channel {channel} [Phasor]",
             metadata={
                 "settings": {"channel": channel},
                 "_signal_profile": np.asarray(profile, dtype=float),
