@@ -7674,6 +7674,8 @@ class PlotterWidget(QWidget):
             return True
         if settings.get('threshold_upper') is not None:
             return True
+        if settings.get('mapping_filter') is not None:
+            return True
         threshold_method = settings.get('threshold_method')
         return threshold_method not in (None, "None")
 
@@ -7752,6 +7754,17 @@ class PlotterWidget(QWidget):
             )
             notifications.show_error(
                 f"Could not filter {len(failed)} layer(s):\n{details}"
+            )
+
+        if (
+            hasattr(self, 'phasor_mapping_tab')
+            and self.phasor_mapping_tab is not None
+            and hasattr(
+                self.phasor_mapping_tab, '_reapply_mapping_filter_if_present'
+            )
+        ):
+            self.phasor_mapping_tab._reapply_mapping_filter_if_present(
+                selected_layers
             )
 
         self.refresh_phasor_data()

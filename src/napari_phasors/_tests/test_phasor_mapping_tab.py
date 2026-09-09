@@ -3015,3 +3015,220 @@ def test_mesh_transparency_is_stored_as_alpha(make_viewer_model, qtbot):
     assert mapping_widget.mesh_transparency_spinbox.value() == pytest.approx(
         0.75
     )
+
+
+def test_filter_section_initialization(make_viewer_model, qtbot):
+    """Test that the filter section controls are created and initialized properly."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.phasor_mapping_tab
+
+    assert hasattr(widget, 'filter_box')
+    assert hasattr(widget, 'filter_range_label')
+    assert hasattr(widget, 'filter_range_slider')
+    assert hasattr(widget, 'filter_min_edit')
+    assert hasattr(widget, 'filter_max_edit')
+    assert hasattr(widget, 'filter_auto_btn')
+    assert hasattr(widget, 'apply_filter_button')
+    assert hasattr(widget, 'reset_filter_button')
+
+    # Verify filter_box is below calculate button in layout
+    calc_idx = widget.main_layout.indexOf(widget.calculate_lifetime_button)
+    filter_idx = widget.main_layout.indexOf(widget.filter_box)
+    assert filter_idx > calc_idx
+
+    assert widget.filter_range_label.text() == "Filter range (ns):"
+    assert widget.apply_filter_button.text() == "Apply Filter"
+    assert widget.reset_filter_button.text() == "Reset Filter"
+    assert (
+        widget.filter_range_slider.minimum()
+        <= widget.filter_range_slider.maximum()
+    )
+
+
+def test_filter_label_updates_with_output_mode(make_viewer_model, qtbot):
+    """Test that filter range label updates according to the active output mode."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.phasor_mapping_tab
+
+    widget.output_mode_combobox.setCurrentText("Phase")
+    assert widget.filter_range_label.text() == "Filter range (rad):"
+
+    widget.output_mode_combobox.setCurrentText("Modulation")
+    assert widget.filter_range_label.text() == "Filter range:"
+
+    widget.output_mode_combobox.setCurrentText("Lifetime")
+    assert widget.filter_range_label.text() == "Filter range (ns):"
+
+
+def test_apply_and_reset_lifetime_filter(make_viewer_model, qtbot):
+    """Test applying and resetting a Normal Lifetime filter on phasor data."""
+    viewer = make_viewer_model()
+    parent, widget, layer = _ready_mapping_widget(viewer)
+    widget.lifetime_type_combobox.setCurrentText("Normal Lifetime")
+    widget._on_calculate_lifetime_clicked()
+
+    # Verify output layer was created
+    output_layer_name = f"Normal Lifetime: {layer.name}"
+    assert output_layer_name in viewer.layers
+
+    initial_nan_count = np.isnan(layer.metadata['G']).sum()
+
+    # Calculate current lifetime min and max to pick a narrow filter range
+    derived = layer.metadata['derived_data']['Normal Lifetime'][
+        parent.harmonic
+    ]
+    valid_vals = derived[np.isfinite(derived) & ~np.isnan(derived)]
+    median_val = float(np.median(valid_vals))
+
+    # Filter keeping only values around median
+    filt_min = median_val - 0.05
+    filt_max = median_val + 0.05
+    widget.filter_min_edit.setText(f"{filt_min:.2f}")
+    widget._on_filter_min_edit_changed()
+    widget.filter_max_edit.setText(f"{filt_max:.2f}")
+    widget._on_filter_max_edit_changed()
+
+    saved_slider_val = widget.filter_range_slider.value()
+    widget._on_apply_filter_clicked()
+
+    # Slider value must not reset to maximum on apply
+    assert widget.filter_range_slider.value() == saved_slider_val
+    assert widget.filter_range_slider.value() != (
+        widget.filter_range_slider.minimum(),
+        widget.filter_range_slider.maximum(),
+    )
+
+    # Pixels outside the filter range should now be NaN
+    g = layer.metadata['G']
+    s = layer.metadata['S']
+    filtered_nan_count = np.isnan(g).sum()
+    assert filtered_nan_count > initial_nan_count
+    assert np.isnan(s).sum() == filtered_nan_count
+    if g.ndim > layer.data.ndim:
+        assert np.isnan(layer.data).sum() == filtered_nan_count // g.shape[0]
+    else:
+        assert np.isnan(layer.data).sum() == filtered_nan_count
+
+    # Check that settings were stored
+    assert 'mapping_filter' in layer.metadata['settings']
+    assert (
+        layer.metadata['settings']['mapping_filter']['output_type']
+        == "Normal Lifetime"
+    )
+
+    # Check output layer was also masked with NaN
+    out_layer = viewer.layers[output_layer_name]
+    nan_in_out = np.isnan(out_layer.data).sum()
+    assert nan_in_out > 0
+
+    # Changing the lifetime display range slider should not un-mask filtered NaN values
+    widget.lifetime_range_slider.setValue(
+        (
+            widget.lifetime_range_slider.minimum(),
+            widget.lifetime_range_slider.maximum(),
+        )
+    )
+    assert np.isnan(out_layer.data).sum() == nan_in_out
+
+    # Now reset filter
+    widget._on_reset_filter_clicked()
+    assert np.isnan(layer.metadata['G']).sum() == initial_nan_count
+    assert 'mapping_filter' not in layer.metadata['settings']
+
+
+def test_apply_phase_and_modulation_filter(make_viewer_model, qtbot):
+    """Test applying filter in Phase and Modulation modes."""
+    viewer = make_viewer_model()
+    parent, widget, layer = _ready_mapping_widget(viewer)
+
+    # Phase mode
+    widget.output_mode_combobox.setCurrentText("Phase")
+    widget._on_calculate_lifetime_clicked()
+    initial_nan_count = np.isnan(layer.metadata['G']).sum()
+
+    derived_phase = layer.metadata['derived_data']['Phase'][parent.harmonic]
+    med_phase = float(np.nanmedian(derived_phase))
+
+    widget.filter_min_edit.setText(f"{med_phase - 0.02:.2f}")
+    widget._on_filter_min_edit_changed()
+    widget.filter_max_edit.setText(f"{med_phase + 0.02:.2f}")
+    widget._on_filter_max_edit_changed()
+
+    widget._on_apply_filter_clicked()
+    assert np.isnan(layer.metadata['G']).sum() > initial_nan_count
+    assert (
+        layer.metadata['settings']['mapping_filter']['output_type'] == "Phase"
+    )
+
+    # Reset
+    widget._on_reset_filter_clicked()
+    assert np.isnan(layer.metadata['G']).sum() == initial_nan_count
+
+    # Modulation mode
+    widget.output_mode_combobox.setCurrentText("Modulation")
+    widget._on_calculate_lifetime_clicked()
+    derived_mod = layer.metadata['derived_data']['Modulation'][parent.harmonic]
+    med_mod = float(np.nanmedian(derived_mod))
+
+    widget.filter_min_edit.setText(f"{med_mod - 0.02:.2f}")
+    widget._on_filter_min_edit_changed()
+    widget.filter_max_edit.setText(f"{med_mod + 0.02:.2f}")
+    widget._on_filter_max_edit_changed()
+
+    widget._on_apply_filter_clicked()
+    assert np.isnan(layer.metadata['G']).sum() > initial_nan_count
+    assert (
+        layer.metadata['settings']['mapping_filter']['output_type']
+        == "Modulation"
+    )
+
+    widget._on_reset_filter_clicked()
+    assert np.isnan(layer.metadata['G']).sum() == initial_nan_count
+
+
+def test_multi_harmonic_filter(make_viewer_model, qtbot):
+    """Test applying filter on a layer with multiple harmonics."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.phasor_mapping_tab
+
+    mean = np.ones((10, 10), dtype=float)
+    g = np.full((2, 10, 10), 0.5, dtype=float)
+    s = np.full((2, 10, 10), 0.5, dtype=float)
+    layer = Image(
+        mean,
+        name="multi_h",
+        metadata={
+            'G': g.copy(),
+            'S': s.copy(),
+            'G_original': g.copy(),
+            'S_original': s.copy(),
+            'original_mean': mean.copy(),
+            'harmonics': np.array([1, 2]),
+            'frequency': 80.0,
+        },
+    )
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    widget._on_image_layer_changed()
+    widget.frequency_input.setText("80.0")
+    widget.lifetime_type_combobox.setCurrentText("Normal Lifetime")
+    widget._on_calculate_lifetime_clicked()
+
+    # Normal lifetime of (0.5, 0.5) at 80 MHz harmonic 1 is ~1.989 ns.
+    # Filter with [2.5, 3.5] -> all pixels outside range -> all become NaN
+    widget.filter_min_edit.setText("2.50")
+    widget._on_filter_min_edit_changed()
+    widget.filter_max_edit.setText("3.50")
+    widget._on_filter_max_edit_changed()
+
+    widget._on_apply_filter_clicked()
+    assert np.all(np.isnan(layer.metadata['G']))
+    assert np.all(np.isnan(layer.metadata['S']))
+    assert np.all(np.isnan(layer.data))
+
+    widget._on_reset_filter_clicked()
+    assert not np.any(np.isnan(layer.metadata['G']))
+    assert not np.any(np.isnan(layer.metadata['S']))
