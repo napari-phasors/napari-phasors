@@ -3063,3 +3063,84 @@ def test_mapping_lifetime_type_change_drops_armed_refresh(
 
     assert not mapping._output_refresh_timer.isActive()
     assert "Apparent Modulation Lifetime: mapping_a" not in viewer.layers
+
+
+def test_mapping_display_range_is_kept_per_output_type(
+    make_napari_viewer, qtbot
+):
+    """A range chosen for one lifetime must not clip another one's map."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    layer.name = "mapping_source"
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    qtbot.addWidget(parent)
+    mapping = parent.phasor_mapping_tab
+    parent.tab_widget.setCurrentWidget(mapping)
+    mapping.frequency_input.setText("80.0")
+
+    def run(output_type):
+        mapping.lifetime_type_combobox.setCurrentText(output_type)
+        mapping._on_calculate_lifetime_clicked()
+        return np.asarray(
+            viewer.layers[f"{output_type}: mapping_source"].data
+        ).copy()
+
+    phase_full = run("Apparent Phase Lifetime")
+
+    # The user narrows the displayed range while looking at the phase map.
+    factor = mapping.lifetime_range_factor
+    mapping._on_lifetime_range_changed((int(1.0 * factor), int(2.0 * factor)))
+    phase_narrowed = np.asarray(
+        viewer.layers["Apparent Phase Lifetime: mapping_source"].data
+    ).copy()
+    assert np.nanmax(phase_narrowed) <= 2.0
+
+    # The normal lifetime keeps its own full range...
+    normal = run("Normal Lifetime")
+    assert np.nanmax(normal) > 2.0
+    assert not np.allclose(np.nanmax(normal), 2.0)
+
+    # ...and coming back to the phase map restores the phase range, so its
+    # values are the ones that were on screen, not the normal lifetime's.
+    phase_again = run("Apparent Phase Lifetime")
+    assert np.allclose(phase_again, phase_narrowed, equal_nan=True)
+    assert not np.allclose(phase_again, phase_full, equal_nan=True)
+
+    settings = layer.metadata['settings']['phasor_mapping']
+    assert set(settings['output_ranges']) == {
+        "Apparent Phase Lifetime",
+        "Normal Lifetime",
+    }
+    assert settings['output_ranges']["Apparent Phase Lifetime"] == [1.0, 2.0]
+
+
+def test_mapping_legacy_range_without_output_ranges_is_honoured(
+    make_napari_viewer, qtbot
+):
+    """Settings saved before per-output ranges existed still restore."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    layer.name = "mapping_source"
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    qtbot.addWidget(parent)
+    mapping = parent.phasor_mapping_tab
+    parent.tab_widget.setCurrentWidget(mapping)
+    mapping.frequency_input.setText("80.0")
+
+    layer.metadata.setdefault('settings', {})['phasor_mapping'] = {
+        'lifetime_type': "Apparent Phase Lifetime",
+        'output_type': "Apparent Phase Lifetime",
+        'range_min': 1.0,
+        'range_max': 2.0,
+    }
+
+    mapping.lifetime_type_combobox.setCurrentText("Apparent Phase Lifetime")
+    mapping._on_calculate_lifetime_clicked()
+
+    data = np.asarray(
+        viewer.layers["Apparent Phase Lifetime: mapping_source"].data
+    )
+    assert np.nanmin(data) >= 1.0
+    assert np.nanmax(data) <= 2.0
