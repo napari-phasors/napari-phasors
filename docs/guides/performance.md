@@ -2,7 +2,7 @@
 
 Large fluorescence lifetime (FLIM) and hyperspectral datasets can contain millions of pixels across multiple channels, harmonics, and time points. **napari-phasors** is designed to process these large datasets smoothly by distributing computationally intensive tasks across your computer's CPU cores.
 
-Out of the box, parallel processing is enabled automatically and requires no special configuration. This guide explains how acceleration works, how you can fine-tune performance in the user interface, and best practices for managing large datasets.
+Out of the box, parallel processing and memory budget capping are turned off by default to run sequentially with minimal memory footprint. This guide explains how acceleration works, how you can fine-tune performance in the user interface, and best practices for managing large datasets.
 
 ---
 
@@ -13,14 +13,14 @@ You can adjust how napari-phasors utilizes your system's resources in the **Perf
 **Plot Settings -> Performance**
 
 ```{note}
-The Performance section includes four controls that take effect immediately for all subsequent operations. Any operation already running finishes with the settings it started with.
+The Performance section includes controls that take effect immediately for all subsequent operations. Any operation already running finishes with the settings it started with.
 ```
 
 | Setting | What it does | Recommended use |
 |---|---|---|
-| **Parallel images** | Processes multiple files, layers, or images concurrently across CPU cores. | **Leave ON** for multi-layer filtering, stack loading, and batch processing. Turn OFF if importing a very large image stack on a memory-constrained machine. |
-| **Parallel regions** | Accelerates a single large image by computing spatial bands concurrently. | **Leave ON** to ensure faster median filtering and phasor transforms on high-resolution images. |
-| **Memory budget** | Caps the share of currently free RAM (5–95%) that concurrent workers may use. Defaults to **50%**. | **50%** works well for most setups. Lower to **20–30%** on shared computers or laptops; raise to **70–80%** on dedicated high-memory workstations. |
+| **Parallel images** | Processes multiple files, layers, or images concurrently across CPU cores. | Disabled by default. Turn ON for multi-layer filtering, stack loading, and batch processing. Turn OFF if importing a very large image stack on a memory-constrained machine. |
+| **Parallel regions** | Accelerates a single large image by computing spatial bands concurrently. | Disabled by default. Turn ON to ensure faster median filtering and phasor transforms on high-resolution images. |
+| **Memory budget** | Toggle to cap the share of currently free RAM (5–95%) that concurrent workers may use (defaults to **50%** when active). | Disabled by default. When enabled, **50%** works well for most setups. Lower to **20–30%** on shared computers or laptops; raise to **70–80%** on dedicated high-memory workstations. |
 | **Phasor precision** | Selects storage precision for newly opened phasor layers: `As read` (`float64`) or `float32 (half memory)`. | Select **`float32`** when working with large time-lapses or multi-gigabyte datasets to cut memory usage in half. |
 
 A live hint line underneath the controls displays your machine's detected CPU cores and the current memory allocation.
@@ -32,7 +32,7 @@ A live hint line underneath the controls displays your machine's detected CPU co
 Understanding the difference between these two toggles helps you choose the best settings for your workflow:
 
 * **Parallel images (fanning out over items):**
-  When you import a 3D/time-lapse stack, filter multiple selected layers at once, or run batch analysis, each worker processes an entire image. Because each worker holds a full image in memory, total memory usage scales with the worker count. The **Memory budget** slider automatically caps how many images are processed concurrently so your machine does not run out of RAM.
+  When you import a 3D/time-lapse stack, filter multiple selected layers at once, or run batch analysis, each worker processes an entire image. Because each worker holds a full image in memory, total memory usage scales with the worker count. The **Memory budget** toggle and spinbox allow you to automatically cap how many images are processed concurrently so your machine does not run out of RAM.
 
 * **Parallel regions (splitting single large images):**
   When you are working with a single high-resolution image (e.g., 1024×1024 or 2048×2048 pixels), this switch splits the image into horizontal regions computed across all CPU cores. Because the image is already in memory, this uses almost no extra RAM while dramatically speeding up process like the median filter.
@@ -42,8 +42,9 @@ Understanding the difference between these two toggles helps you choose the best
 ### Managing Memory: Budget & Precision
 
 #### Memory budget (% of free RAM)
-Parallel processing speeds up computation, but loading multiple images simultaneously increases peak RAM usage. The **Memory budget** slider sets an upper boundary: napari-phasors checks how much free memory your computer has right now, and sizes its concurrency pools to stay within that budget.
+Parallel processing speeds up computation, but loading multiple images simultaneously increases peak RAM usage. The **Memory budget** switch and spinbox set an upper boundary: when active, napari-phasors checks how much free memory your computer has right now, and sizes its concurrency pools to stay within that budget. When disabled (default), concurrency is not capped by memory budget.
 
+* **When to enable it:** Turn the toggle ON if parallel images is enabled and you want to prevent large batch/stack operations from exhausting system RAM.
 * **When to lower it:** If napari or other applications on your computer feel sluggish during large imports, reduce the budget to 25–30%.
 * **When to raise it:** If you are working on a powerful workstation with ample free RAM and want maximum import and export speed, raise the budget to 70–80%.
 

@@ -52,9 +52,11 @@ from ._parallel import (
     ITEMS,
     available_memory,
     default_workers,
+    memory_budget_enabled,
     memory_fraction,
     parallel_bands_enabled,
     parallel_items_enabled,
+    set_memory_budget_enabled,
     set_memory_fraction,
     set_parallel_bands_enabled,
     set_parallel_items_enabled,
@@ -5674,19 +5676,48 @@ class PlotterWidget(QWidget):
         grid.addWidget(self.parallel_bands_checkbox, 1, 1)
 
         self.memory_budget_label = QLabel("Memory budget:")
+        self.memory_budget_checkbox = QToggleSwitch()
+        self.memory_budget_checkbox.setChecked(memory_budget_enabled())
+        self.memory_budget_checkbox.setToolTip(
+            "Cap concurrent work and workers based on available RAM. "
+            "Disable to process without memory budget limits."
+        )
         self.memory_budget_spinbox = QSpinBox()
         self.memory_budget_spinbox.setRange(5, 95)
         self.memory_budget_spinbox.setSuffix("% of free RAM")
         self.memory_budget_spinbox.setValue(round(memory_fraction() * 100))
+        self.memory_budget_spinbox.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed
+        )
+        self.memory_budget_spinbox.setStyleSheet(
+            "QSpinBox { min-width: 150px; }"
+        )
+        self.memory_budget_spinbox.setMinimumWidth(170)
         self.memory_budget_spinbox.setToolTip(
             "Share of free memory that concurrent work may occupy. Lower "
             "this if reading a large stack runs out of memory."
         )
+        self.memory_budget_spinbox.setEnabled(
+            self.memory_budget_checkbox.isChecked()
+        )
+        self.memory_budget_checkbox.toggled.connect(
+            self._on_memory_budget_toggled
+        )
         self.memory_budget_spinbox.valueChanged.connect(
             self._on_memory_budget_changed
         )
+
+        memory_budget_container = QWidget()
+        memory_budget_container.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed
+        )
+        memory_budget_layout = QHBoxLayout(memory_budget_container)
+        memory_budget_layout.setContentsMargins(0, 0, 0, 0)
+        memory_budget_layout.addWidget(self.memory_budget_checkbox)
+        memory_budget_layout.addWidget(self.memory_budget_spinbox, 1)
+
         grid.addWidget(self.memory_budget_label, 2, 0)
-        grid.addWidget(self.memory_budget_spinbox, 2, 1)
+        grid.addWidget(memory_budget_container, 2, 1)
 
         self.phasor_precision_label = QLabel("Phasor precision:")
         self.phasor_precision_combobox = QComboBox()
@@ -5752,6 +5783,12 @@ class PlotterWidget(QWidget):
         set_parallel_bands_enabled(checked)
         self._update_parallel_processing_hint()
 
+    def _on_memory_budget_toggled(self, checked):
+        """Switch memory budget capping on or off."""
+        set_memory_budget_enabled(checked)
+        self.memory_budget_spinbox.setEnabled(checked)
+        self._update_parallel_processing_hint()
+
     def _on_memory_budget_changed(self, percent):
         """Set the share of free memory concurrent work may occupy."""
         set_memory_fraction(percent / 100.0)
@@ -5798,17 +5835,23 @@ class PlotterWidget(QWidget):
 
         parts = []
         if items_on:
-            free = available_memory()
-            budget = (
-                f"{free * memory_fraction() / 2 ** 30:.1f} GB of the "
-                f"{free / 2 ** 30:.1f} GB free right now"
-                if free
-                else f"{round(memory_fraction() * 100)}% of free memory"
-            )
-            parts.append(
-                f"Up to {default_workers(scope=ITEMS)} layers, files or "
-                f"images are processed at once, sized to fit {budget}."
-            )
+            if memory_budget_enabled():
+                free = available_memory()
+                budget = (
+                    f"{free * memory_fraction() / 2 ** 30:.1f} GB of the "
+                    f"{free / 2 ** 30:.1f} GB free right now"
+                    if free
+                    else f"{round(memory_fraction() * 100)}% of free memory"
+                )
+                parts.append(
+                    f"Up to {default_workers(scope=ITEMS)} layers, files or "
+                    f"images are processed at once, sized to fit {budget}."
+                )
+            else:
+                parts.append(
+                    f"Up to {default_workers(scope=ITEMS)} layers, files or "
+                    f"images are processed at once."
+                )
         else:
             parts.append(
                 "Layers, files and images are processed one at a time, which "
