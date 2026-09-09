@@ -9,9 +9,14 @@ from qtpy.QtWidgets import (
     QLabel,
 )
 
+from napari_phasors._synthetic_generator import (
+    make_intensity_layer_with_phasors,
+    make_raw_flim_data,
+)
 from napari_phasors._tests.test_plotter import (  # noqa: E501
     create_image_layer_with_phasors,
 )
+from napari_phasors._utils import apply_filter_and_threshold
 from napari_phasors.plotter import (
     MaskAssignmentDialog,
     PlotterWidget,
@@ -2225,3 +2230,217 @@ def test_mask_labels_split_histogram_and_statistics(make_viewer_model, qtbot):
         assert len(histogram._datasets) == 1
     finally:
         plotter.close()
+
+
+def _layer_with_larger_phasors():
+    """A phasor layer big enough for median filtering to change values."""
+    raw_flim_data = make_raw_flim_data(
+        shape=(16, 16), time_constants=[0.1, 1, 2, 3, 4, 5, 10]
+    )
+    return make_intensity_layer_with_phasors(raw_flim_data, harmonic=[1, 2, 3])
+
+
+def test_threshold_without_filter_survives_mask(make_viewer_model):
+    """Applying a mask must not undo a threshold applied without a filter.
+
+    Regression: the reapply after masking required *both* a filter and a
+    lower threshold in the settings, so a threshold-only layer was left with
+    the restored, unthresholded data.
+    """
+    viewer = make_viewer_model()
+    layer = _layer_with_larger_phasors()
+    viewer.add_layer(layer)
+    plotter = PlotterWidget(viewer)
+
+    shape = _make_mask_shape(layer)
+    mask_data = np.zeros(shape, dtype=int)
+    mask_data[2:12, 2:12] = 1
+    viewer.add_labels(mask_data, name="mask")
+    plotter.reset_layer_choices()
+
+    filter_tab = plotter.filter_tab
+    filter_tab.threshold_method_combobox.setCurrentText("Manual")
+    lower, upper = filter_tab.threshold_slider.value()
+    filter_tab.threshold_slider.setValue((lower + (upper - lower) // 2, upper))
+    filter_tab.apply_button_clicked()
+    assert "filter" not in layer.metadata["settings"]
+    assert layer.metadata["settings"]["threshold"] is not None
+
+    plotter.mask_layer_combobox.setCurrentText("mask")
+
+    # More pixels are dropped than the mask alone would drop, i.e. the
+    # threshold is still in effect on top of the mask.
+    assert np.isnan(layer.data).sum() > int((mask_data <= 0).sum())
+
+
+def test_filter_without_threshold_survives_mask(make_viewer_model):
+    """Applying a mask must not undo a filter applied without a threshold."""
+    viewer = make_viewer_model()
+    layer = _layer_with_larger_phasors()
+    viewer.add_layer(layer)
+    plotter = PlotterWidget(viewer)
+
+    shape = _make_mask_shape(layer)
+    mask_data = np.zeros(shape, dtype=int)
+    mask_data[2:12, 2:12] = 1
+    viewer.add_labels(mask_data, name="mask")
+    plotter.reset_layer_choices()
+
+    filter_tab = plotter.filter_tab
+    filter_tab.filter_method_combobox.setCurrentText("Median")
+    filter_tab.median_filter_spinbox.setValue(3)
+    filter_tab.median_filter_repetition_spinbox.setValue(1)
+    filter_tab.threshold_method_combobox.setCurrentText("None")
+    filter_tab.apply_button_clicked()
+    assert layer.metadata["settings"]["threshold"] is None
+    assert not np.allclose(
+        layer.metadata["G"], layer.metadata["G_original"], equal_nan=True
+    )
+
+    plotter.mask_layer_combobox.setCurrentText("mask")
+
+    inside = mask_data > 0
+    assert not np.allclose(
+        layer.metadata["G"][..., inside],
+        layer.metadata["G_original"][..., inside],
+        equal_nan=True,
+    )
+
+
+def test_mask_does_not_move_phasor_coordinates(make_viewer_model):
+    """Masking must not change the phasor coordinates of the kept pixels.
+
+    Regression: the mask was applied to the original arrays *before*
+    filtering, so every kept pixel was re-filtered against NaN neighbours and
+    moved. A phasor-cursor selection is scattered across the image, so nearly
+    all of its pixels border NaN and ended up back at their unfiltered
+    positions — visibly outside the cursor that selected them.
+    """
+    rng = np.random.default_rng(0)
+    raw = make_raw_flim_data(
+        shape=(32, 32), time_constants=[0.1, 0.5, 1, 2, 3, 4, 5, 10]
+    )
+    # Poisson noise makes the median filter actually move the coordinates.
+    raw = rng.poisson(raw * 50).astype(float)
+    layer = make_intensity_layer_with_phasors(raw, harmonic=[1, 2])
+
+    viewer = make_viewer_model()
+    viewer.add_layer(layer)
+    plotter = PlotterWidget(viewer)
+
+    filter_tab = plotter.filter_tab
+    filter_tab.filter_method_combobox.setCurrentText("Median")
+    filter_tab.median_filter_spinbox.setValue(3)
+    filter_tab.median_filter_repetition_spinbox.setValue(1)
+    filter_tab.apply_button_clicked()
+
+    # A circular cursor drawn on the filtered cloud, as the selection tab does.
+    g_shown, s_shown = layer.metadata["G"][0], layer.metadata["S"][0]
+    g_c, s_c = np.nanmedian(g_shown), np.nanmedian(s_shown)
+    distances = np.sqrt((g_shown - g_c) ** 2 + (s_shown - s_c) ** 2)
+    # A cursor tight enough that a moved pixel escapes it.
+    radius = float(np.nanpercentile(distances, 25))
+    inside = distances <= radius
+    assert inside.sum() > 10
+
+    viewer.add_labels(inside.astype(int), name="Cursor Selection")
+    plotter.reset_layer_choices()
+    plotter.mask_layer_combobox.setCurrentText("Cursor Selection")
+
+    g_after, s_after = layer.metadata["G"][0], layer.metadata["S"][0]
+    # Exactly the selected pixels survive, at exactly the coordinates the
+    # cursor selected them at — so every plotted point is inside the cursor.
+    assert np.array_equal(~np.isnan(g_after), inside)
+    np.testing.assert_allclose(g_after[inside], g_shown[inside])
+    np.testing.assert_allclose(s_after[inside], s_shown[inside])
+    distance = np.sqrt(
+        (g_after[inside] - g_c) ** 2 + (s_after[inside] - s_c) ** 2
+    )
+    assert distance.max() <= radius
+
+
+def _noisy_phasor_layer(name, seed):
+    """A phasor layer with noise, so filter parameters visibly matter."""
+    rng = np.random.default_rng(seed)
+    raw = make_raw_flim_data(
+        shape=(32, 32), time_constants=[0.1, 0.5, 1, 2, 3, 4, 5, 10]
+    )
+    raw = rng.poisson(raw * 50).astype(float)
+    return make_intensity_layer_with_phasors(raw, harmonic=[1, 2], name=name)
+
+
+def test_multi_layer_masks_reapply_each_layers_own_settings(make_viewer_model):
+    """Masking several layers must not clobber their individual settings.
+
+    Regression: the re-apply after a mask change went through the Filter tab's
+    apply button, which reads the *widgets* — populated from the primary layer
+    only — and wrote those values to every selected layer. Layers filtered
+    differently (e.g. several OME-TIFFs read back with their own stored
+    settings) were re-filtered with the primary layer's parameters, so their
+    phasors moved out of the cursor that had selected them.
+    """
+    viewer = make_viewer_model()
+    layer_a = _noisy_phasor_layer("A", 0)
+    layer_b = _noisy_phasor_layer("B", 1)
+    viewer.add_layer(layer_a)
+    viewer.add_layer(layer_b)
+    plotter = PlotterWidget(viewer)
+
+    # Each layer arrives with its own filter, as when read back from file.
+    apply_filter_and_threshold(
+        layer_a,
+        threshold=0.0,
+        threshold_method="Manual",
+        filter_method="median",
+        size=3,
+        repeat=1,
+    )
+    apply_filter_and_threshold(
+        layer_b,
+        threshold=0.0,
+        threshold_method="Manual",
+        filter_method="median",
+        size=7,
+        repeat=3,
+    )
+
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [layer_a.name, layer_b.name]
+    )
+    plotter._process_layer_selection_change()
+
+    # A circular cursor per layer, drawn on what that layer displays.
+    cursors, selections = {}, {}
+    for layer in (layer_a, layer_b):
+        g, s = layer.metadata["G"][0], layer.metadata["S"][0]
+        g_c, s_c = np.nanmedian(g), np.nanmedian(s)
+        distance = np.sqrt((g - g_c) ** 2 + (s - s_c) ** 2)
+        radius = float(np.nanpercentile(distance, 25))
+        cursors[layer.name] = (g_c, s_c, radius)
+        selections[layer.name] = distance <= radius
+        viewer.add_labels(
+            selections[layer.name].astype(int), name=f"sel {layer.name}"
+        )
+    plotter.reset_layer_choices()
+
+    plotter._apply_mask_assignments(
+        {
+            layer_a.name: f"sel {layer_a.name}",
+            layer_b.name: f"sel {layer_b.name}",
+        }
+    )
+
+    for layer, size, repeat in ((layer_a, 3, 1), (layer_b, 7, 3)):
+        # Each layer kept its own filter parameters ...
+        filter_settings = layer.metadata["settings"]["filter"]
+        assert (filter_settings["size"], filter_settings["repeat"]) == (
+            size,
+            repeat,
+        )
+        # ... so every plotted point is still inside that layer's cursor.
+        g_c, s_c, radius = cursors[layer.name]
+        inside = selections[layer.name]
+        g, s = layer.metadata["G"][0], layer.metadata["S"][0]
+        distance = np.sqrt((g[inside] - g_c) ** 2 + (s[inside] - s_c) ** 2)
+        assert np.array_equal(~np.isnan(g), inside)
+        assert distance.max() <= radius

@@ -82,6 +82,7 @@ from ._utils import (
     StatisticsTableWidget,
     analysis_section_stylesheet,
     apply_filter_and_threshold,
+    apply_filter_and_threshold_to_layers,
     available_colormap_names,
     build_group_styles_from_layer_metadata,
     build_groups_from_layer_metadata,
@@ -100,6 +101,7 @@ from ._utils import (
     split_items_by_group,
     unassigned_layer_labels,
     update_frequency_in_metadata,
+    validate_harmonics_for_wavelet,
     write_rows_to_csv,
 )
 from .calibration_tab import CalibrationWidget
@@ -7611,6 +7613,104 @@ class PlotterWidget(QWidget):
             int(np.min(harmonics)), int(np.max(harmonics))
         )
 
+    @staticmethod
+    def _has_filter_or_threshold_settings(layer):
+        """Return whether *layer* has a filter or threshold worth reapplying.
+
+        A layer can carry a filter without a threshold (or the other way
+        around), and a threshold can consist of an upper bound only, so every
+        setting has to be checked independently.
+        """
+        settings = layer.metadata.get('settings') or {}
+        filter_settings = settings.get('filter') or {}
+        if filter_settings.get('method') is not None:
+            return True
+        if settings.get('threshold') is not None:
+            return True
+        if settings.get('threshold_upper') is not None:
+            return True
+        threshold_method = settings.get('threshold_method')
+        return threshold_method not in (None, "None")
+
+    @staticmethod
+    def _filter_params_from_settings(layer):
+        """Build filter/threshold parameters from *layer*'s own settings.
+
+        The Filter tab widgets only ever hold the primary layer's values, so
+        they cannot be used to restore a selection of layers that were
+        filtered differently (e.g. several files read back from OME-TIFF).
+        """
+        settings = layer.metadata.get('settings') or {}
+        filter_settings = settings.get('filter') or {}
+        method = filter_settings.get('method')
+        size = repeat = sigma = levels = harmonics = None
+
+        if method == 'median':
+            size = int(filter_settings.get('size', 3))
+            repeat = int(filter_settings.get('repeat', 1))
+            if repeat <= 0:
+                method = None
+        elif method == 'wavelet':
+            harmonics = layer.metadata.get('harmonics')
+            if harmonics is not None and validate_harmonics_for_wavelet(
+                harmonics
+            ):
+                sigma = float(filter_settings.get('sigma', 2.0))
+                levels = int(filter_settings.get('levels', 1))
+            else:
+                method = None
+                harmonics = None
+        elif method is not None:
+            method = None
+
+        return {
+            'threshold': settings.get('threshold'),
+            'threshold_upper': settings.get('threshold_upper'),
+            'threshold_method': settings.get('threshold_method'),
+            'filter_method': method,
+            'size': size,
+            'repeat': repeat,
+            'sigma': sigma,
+            'levels': levels,
+            'harmonics': harmonics,
+        }
+
+    def _reapply_filter_and_threshold(self, selected_layers):
+        """Reapply the stored filter/threshold after a mask change.
+
+        Masking restores the original phasor data first, which also undoes any
+        filter and threshold the user had applied, so they have to be applied
+        again on top of the mask. Each layer is restored from its *own*
+        settings, so layers filtered differently keep their own processing.
+        """
+        self.filter_tab._on_image_layer_changed()
+        if not selected_layers:
+            return
+
+        layer_params = [
+            (layer, self._filter_params_from_settings(layer))
+            for layer in selected_layers
+            if self._has_filter_or_threshold_settings(layer)
+        ]
+        if not layer_params:
+            return
+
+        errors = apply_filter_and_threshold_to_layers(layer_params)
+        failed = [
+            (layer.name, error)
+            for (layer, _), error in zip(layer_params, errors, strict=True)
+            if isinstance(error, BaseException)
+        ]
+        if failed:
+            details = "\n".join(
+                f"  \u2022 {name}: {error}" for name, error in failed
+            )
+            notifications.show_error(
+                f"Could not filter {len(failed)} layer(s):\n{details}"
+            )
+
+        self.refresh_phasor_data()
+
     def _restore_original_phasor_data(self, image_layer):
         """Restore original G, S, and image data from backups.
 
@@ -7925,15 +8025,7 @@ class PlotterWidget(QWidget):
                 self._mask_label_assignments[image_layer.name] = labels
 
         if hasattr(self, 'filter_tab'):
-            self.filter_tab._on_image_layer_changed()
-            first_layer = selected_layers[0]
-            if (
-                first_layer.metadata['settings'].get('filter', None)
-                is not None
-                and first_layer.metadata['settings'].get('threshold', None)
-                is not None
-            ):
-                self.filter_tab.apply_button_clicked()
+            self._reapply_filter_and_threshold(selected_layers)
 
         self.plot()
 
@@ -7982,15 +8074,7 @@ class PlotterWidget(QWidget):
             )
 
         if hasattr(self, 'filter_tab'):
-            self.filter_tab._on_image_layer_changed()
-            first_layer = selected_layers[0]
-            if (
-                first_layer.metadata['settings'].get('filter', None)
-                is not None
-                and first_layer.metadata['settings'].get('threshold', None)
-                is not None
-            ):
-                self.filter_tab.apply_button_clicked()
+            self._reapply_filter_and_threshold(selected_layers)
 
         self.refresh_current_plot()
 
@@ -8213,16 +8297,7 @@ class PlotterWidget(QWidget):
                 )
 
         if hasattr(self, 'filter_tab'):
-            self.filter_tab._on_image_layer_changed()
-            if selected_layers:
-                first_layer = selected_layers[0]
-                if (
-                    first_layer.metadata['settings'].get('filter', None)
-                    is not None
-                    and first_layer.metadata['settings'].get('threshold', None)
-                    is not None
-                ):
-                    self.filter_tab.apply_button_clicked()
+            self._reapply_filter_and_threshold(selected_layers)
 
         self._update_mask_assign_button_text()
         self.plot()

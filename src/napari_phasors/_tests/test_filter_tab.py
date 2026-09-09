@@ -1480,3 +1480,45 @@ def test_apply_filter_to_no_layers_is_a_no_op():
     from napari_phasors._utils import apply_filter_and_threshold_to_layers
 
     assert apply_filter_and_threshold_to_layers([]) == []
+
+
+def test_lower_threshold_below_masked_range_is_kept(make_viewer_model, qtbot):
+    """A lower threshold under the masked minimum survives re-applying.
+
+    Regression: masking raised the slider minimum, the restored handle was
+    clamped to it, and applying then stored ``None`` — silently discarding the
+    user's lower threshold once the mask was removed again.
+    """
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    fw = parent.filter_tab
+    fw._on_image_layer_changed()
+
+    om = layer.metadata["original_mean"]
+    # A threshold between the full-data minimum and the masked minimum.
+    bright = om >= np.nanpercentile(om, 70)
+    lower = float(np.nanpercentile(om, 40))
+    fw.threshold_method_combobox.setCurrentText("Manual")
+    fw.min_threshold_edit.setText(f"{lower:.2f}")
+    fw.on_min_threshold_edit_changed()
+    fw.apply_button_clicked()
+    stored = layer.metadata["settings"]["threshold"]
+    assert stored is not None
+    assert stored < om[bright].min()
+
+    # Mask in only the bright pixels, then re-apply as the mask handlers do.
+    layer.metadata["mask"] = bright.astype(int)
+    fw._on_image_layer_changed()
+    assert fw._offscreen_threshold_lower == stored
+    fw.apply_button_clicked()
+    assert layer.metadata["settings"]["threshold"] == stored
+
+    # Moving the handle yourself supersedes the remembered value.
+    fw.threshold_slider.setValue(
+        (fw.threshold_slider.minimum(), fw.threshold_slider.maximum())
+    )
+    assert fw._offscreen_threshold_lower is None
+    fw.apply_button_clicked()
+    assert layer.metadata["settings"]["threshold"] is None
