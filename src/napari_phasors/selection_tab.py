@@ -35,6 +35,7 @@ from qtpy.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
     QSpinBox,
     QStyle,
     QTableWidget,
@@ -44,7 +45,11 @@ from qtpy.QtWidgets import (
 )
 from superqt import QToggleSwitch
 
-from ._canvas import _make_selector_icon
+from ._canvas import (
+    DEFAULT_BRUSH_SIZE_PX,
+    DEFAULT_MANUAL_COLORS,
+    _make_selector_icon,
+)
 from ._utils import (
     CurrentPageStackedWidget,
     active_selection_region,
@@ -102,19 +107,6 @@ ROW_STYLE = (
     "  background-color: rgba(108, 158, 217, 0.12);"
     "}"
 )
-
-DEFAULT_MANUAL_COLORS = [
-    QColor("#ff7f0e"),  # Orange
-    QColor("#1f77b4"),  # Blue
-    QColor("#2ca02c"),  # Green
-    QColor("#9400d3"),  # Purple
-    QColor("#e377c2"),  # Pink
-    QColor("#8c564b"),  # Brown
-    QColor("#bcbd22"),  # Olive / Yellow-green
-    QColor("#17becf"),  # Cyan
-    QColor("#e41a1c"),  # Red
-    QColor("#ffd700"),  # Gold
-]
 
 
 class ColorButton(QPushButton):
@@ -321,7 +313,8 @@ class SelectionWidget(QWidget):
 
         Creates a scroll area with:
           - Phasor Selection ID dropdown and refresh button
-          - Drawing Tools toolbar (Lasso, Ellipse, Rectangle)
+          - Drawing Tools toolbar (Lasso, Ellipse, Rectangle, Brush,
+            Eraser) plus the brush size slider
           - Selections list with color picker, stats, visibility, delete,
             and an "+ Add Selection" button.
         """
@@ -392,6 +385,22 @@ class SelectionWidget(QWidget):
                 "rectangle",
                 "Rectangle selection tool: click & drag rectangle, right-click to apply",
             ),
+            (
+                "BRUSH",
+                "brush",
+                (
+                    "Brush tool: click & drag to paint the selected class "
+                    "onto the phasor plot"
+                ),
+            ),
+            (
+                "ERASER",
+                "eraser",
+                (
+                    "Eraser tool: click & drag to clear the selection "
+                    "under the cursor"
+                ),
+            ),
         ]:
             btn = QToolButton()
             btn.setCheckable(True)
@@ -424,6 +433,35 @@ class SelectionWidget(QWidget):
 
         tools_row.addStretch()
         tools_layout.addLayout(tools_row)
+
+        # Brush size, only meaningful while a painting tool is active.
+        self.brush_size_row = QWidget()
+        brush_row = QHBoxLayout(self.brush_size_row)
+        brush_row.setContentsMargins(0, 0, 0, 0)
+        brush_row.setSpacing(6)
+        brush_row.addWidget(QLabel("Size:"))
+        self.brush_size_slider = QSlider(Qt.Horizontal)
+        self.brush_size_slider.setMinimum(2)
+        self.brush_size_slider.setMaximum(64)
+        self.brush_size_slider.setValue(int(DEFAULT_BRUSH_SIZE_PX))
+        self.brush_size_slider.setToolTip(
+            "Diameter of the brush and eraser, in screen pixels."
+        )
+        self.brush_size_slider.valueChanged.connect(
+            self._on_brush_size_changed
+        )
+        brush_row.addWidget(self.brush_size_slider, 1)
+        self.brush_size_value_label = QLabel(
+            f"{int(DEFAULT_BRUSH_SIZE_PX)} px"
+        )
+        self.brush_size_value_label.setMinimumWidth(38)
+        self.brush_size_value_label.setAlignment(
+            Qt.AlignRight | Qt.AlignVCenter
+        )
+        brush_row.addWidget(self.brush_size_value_label)
+        self.brush_size_row.setVisible(False)
+        tools_layout.addWidget(self.brush_size_row)
+
         layout.addWidget(tools_box)
 
         # 3. Selections section
@@ -449,6 +487,7 @@ class SelectionWidget(QWidget):
         hints = [
             "• Select a drawing tool and draw on the phasor plot.",
             "• Right-click to apply rectangular or elliptical selections.",
+            "• Brush paints and eraser clears while you drag.",
             "• Click a selection row to draw with that class.",
         ]
         hints_label = QLabel("\n".join(hints))
@@ -463,6 +502,9 @@ class SelectionWidget(QWidget):
 
     def _on_tool_btn_clicked(self, name: str):
         """Handle drawing tool button click in the Manual Selection tab."""
+        btn = self.selection_tool_buttons.get(name)
+        checked = btn is not None and btn.isChecked()
+        self._update_brush_size_visibility(name if checked else "")
         if (
             self.parent_widget is None
             or not hasattr(self.parent_widget, "canvas_widget")
@@ -470,11 +512,33 @@ class SelectionWidget(QWidget):
         ):
             return
         cw = self.parent_widget.canvas_widget
-        btn = self.selection_tool_buttons.get(name)
-        if btn is not None and btn.isChecked():
-            cw.active_selector = name
-        else:
-            cw.active_selector = None
+        if checked and name.upper() == "BRUSH":
+            brush = cw.selectors.get("BRUSH")
+            if brush is not None and hasattr(brush, "color"):
+                curr_sel = next(
+                    (
+                        s
+                        for s in self._manual_selections
+                        if s.get("class_id") == self._selected_class_id
+                    ),
+                    None,
+                )
+                if curr_sel and "color" in curr_sel:
+                    brush.color = curr_sel["color"]
+        cw.active_selector = name if checked else None
+
+    def _update_brush_size_visibility(self, active_name: str):
+        """Show the size slider only while a painting tool is active."""
+        row = getattr(self, "brush_size_row", None)
+        if row is not None:
+            row.setVisible((active_name or "").upper() in ("BRUSH", "ERASER"))
+
+    def _on_brush_size_changed(self, value: int):
+        """Propagate the size slider to the canvas brush and eraser."""
+        self.brush_size_value_label.setText(f"{int(value)} px")
+        cw = getattr(self.parent_widget, "canvas_widget", None)
+        if cw is not None and hasattr(cw, "brush_size"):
+            cw.brush_size = float(value)
 
     def _sync_tool_buttons(self, active_name: str):
         """Synchronize tab drawing tool buttons with canvas active selector."""
@@ -485,6 +549,22 @@ class SelectionWidget(QWidget):
                 btn.blockSignals(True)
                 btn.setChecked(is_active)
                 btn.blockSignals(False)
+        self._update_brush_size_visibility(active_upper)
+        if active_upper == "BRUSH":
+            cw = getattr(self.parent_widget, "canvas_widget", None)
+            if cw is not None:
+                brush = cw.selectors.get("BRUSH")
+                if brush is not None and hasattr(brush, "color"):
+                    curr_sel = next(
+                        (
+                            s
+                            for s in self._manual_selections
+                            if s.get("class_id") == self._selected_class_id
+                        ),
+                        None,
+                    )
+                    if curr_sel and "color" in curr_sel:
+                        brush.color = curr_sel["color"]
 
     def _add_manual_selection(self, class_id=None, color=None, visible=True):
         """Add a new manual selection class row."""
@@ -617,6 +697,11 @@ class SelectionWidget(QWidget):
             cw = self.parent_widget.canvas_widget
             for sel in cw.selectors.values():
                 sel.class_value = self._selected_class_id
+            brush = cw.selectors.get("BRUSH")
+            if brush is not None and hasattr(brush, "color"):
+                color = selection.get("color") if selection else None
+                if color is not None:
+                    brush.color = color
             if hasattr(cw, "class_spinbox"):
                 cw.class_spinbox.value = self._selected_class_id
 
@@ -624,6 +709,16 @@ class SelectionWidget(QWidget):
         """Handle color change from ColorButton."""
         selection["color"] = new_color
         self._update_manual_colormaps()
+        if (
+            selection.get("class_id") == self._selected_class_id
+            and self.parent_widget is not None
+            and hasattr(self.parent_widget, "canvas_widget")
+            and self.parent_widget.canvas_widget is not None
+        ):
+            cw = self.parent_widget.canvas_widget
+            brush = cw.selectors.get("BRUSH")
+            if brush is not None and hasattr(brush, "color"):
+                brush.color = new_color
 
     def _toggle_manual_visibility(self, selection):
         """Toggle show/hide state of a manual selection class."""
@@ -1316,7 +1411,16 @@ class SelectionWidget(QWidget):
         frame_context = self._frame_context()
         if frame_context is None or not frame_context.is_per_frame:
             return
-        if layer_selection is None or not np.any(layer_selection):
+        if layer_selection is None:
+            return
+
+        # The eraser writes zeros, so an all-zero selection is a real
+        # edit for it while it means "nothing drawn" for every other tool.
+        selector = getattr(
+            self.parent_widget.canvas_widget, "active_selector", None
+        )
+        erasing = bool(getattr(selector, "is_eraser", False))
+        if not erasing and not np.any(layer_selection):
             return
 
         region_contains = active_selection_region(
@@ -1337,7 +1441,9 @@ class SelectionWidget(QWidget):
         if inside is None or not np.any(inside):
             return
 
-        class_value = int(np.max(layer_selection))
+        class_value = getattr(selector, "paint_value", None)
+        if class_value is None:
+            class_value = int(np.max(layer_selection))
         target = np.flatnonzero(finite)[inside]
         selection_map_flat[target] = class_value
 
@@ -4232,7 +4338,17 @@ class CursorSelectionWidget(QWidget):
         """Change the mouse cursor based on hover/interaction."""
         if self._dragging_cursor is not None:
             return
-        if self.parent_widget is None:
+        tab = getattr(self.parent_widget, "selection_tab", None)
+        if (
+            tab is not None
+            and hasattr(tab, "selection_mode_combobox")
+            and tab.selection_mode_combobox.currentIndex() != 0
+        ):
+            return
+        cw = getattr(self.parent_widget, "canvas_widget", None)
+        if cw is not None and getattr(cw, "active_selector", None) is not None:
+            return
+        if hasattr(self, "isVisible") and not self.isVisible():
             return
         canvas = self.parent_widget.canvas_widget.canvas
         is_hovering = False
@@ -4341,9 +4457,14 @@ class CursorSelectionWidget(QWidget):
             self._drag_mode = None
             self._drag_offset = (0, 0)
             if self.parent_widget is not None:
-                self.parent_widget.canvas_widget.canvas.setCursor(
-                    Qt.ArrowCursor
-                )
+                cw = getattr(self.parent_widget, "canvas_widget", None)
+                if (
+                    cw is not None
+                    and getattr(cw, "active_selector", None) is not None
+                ):
+                    cw.canvas.setCursor(cw.active_selector.cursor())
+                elif cw is not None:
+                    cw.canvas.setCursor(Qt.ArrowCursor)
 
     def closeEvent(self, event):
         """Clean up signal connections before closing."""

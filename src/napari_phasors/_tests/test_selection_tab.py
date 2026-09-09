@@ -2964,6 +2964,8 @@ def test_manual_selection_ui_init(make_viewer_model, qtbot):
         "LASSO",
         "ELLIPSE",
         "RECTANGLE",
+        "BRUSH",
+        "ERASER",
     }
     for btn in widget.selection_tool_buttons.values():
         assert not btn.isChecked()
@@ -3532,3 +3534,280 @@ def test_cursor_selection_widget_edge_cases_and_interactions(
     w_cursor._polar_edge = "modulation_min"
     w_cursor._drag_polar_edge(polar_cursor, 0.3, 0.3)
     assert polar_cursor["modulation_min"] != 0.2
+
+
+class _BrushEvent:
+    """Minimal stand-in for a Matplotlib mouse event."""
+
+    def __init__(self, x, y, inaxes, button=1):
+        self.xdata = x
+        self.ydata = y
+        self.inaxes = inaxes
+        self.button = button
+
+
+def _brush_stroke(selector, axes, points):
+    """Press, drag through ``points`` and release on the last one."""
+    selector._on_press(_BrushEvent(points[0][0], points[0][1], axes))
+    for x, y in points[1:]:
+        selector._on_motion(_BrushEvent(x, y, axes))
+    selector._on_release(_BrushEvent(points[-1][0], points[-1][1], axes))
+
+
+def test_manual_selection_brush_size_slider(make_viewer_model, qtbot):
+    """The size slider appears only for the painting tools and drives them."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+    cw = parent.canvas_widget
+
+    assert widget.brush_size_row.isHidden()
+
+    widget.selection_tool_buttons["BRUSH"].click()
+    assert cw.active_selector.name == "Interactive Brush Selector"
+    assert not widget.brush_size_row.isHidden()
+
+    widget.brush_size_slider.setValue(25)
+    assert cw.brush_size == 25
+    assert cw.selectors["ERASER"].size_px == 25
+    assert widget.brush_size_value_label.text() == "25 px"
+
+    # The eraser shares the slider, the marquee tools hide it again
+    widget.selection_tool_buttons["ERASER"].click()
+    assert cw.active_selector.name == "Interactive Eraser Selector"
+    assert not widget.brush_size_row.isHidden()
+
+    widget.selection_tool_buttons["LASSO"].click()
+    assert widget.brush_size_row.isHidden()
+
+    # Unchecking the brush hides the slider too
+    widget.selection_tool_buttons["BRUSH"].click()
+    assert not widget.brush_size_row.isHidden()
+    widget.selection_tool_buttons["BRUSH"].click()
+    assert cw.active_selector is None
+    assert widget.brush_size_row.isHidden()
+
+
+def test_manual_selection_brush_size_slider_without_canvas(
+    make_viewer_model, qtbot
+):
+    """The slider stays usable when no canvas is attached."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+
+    widget.parent_widget = None
+    widget._on_tool_btn_clicked("BRUSH")
+    widget.brush_size_slider.setValue(40)
+    assert widget.brush_size_value_label.text() == "40 px"
+    widget.parent_widget = parent
+
+
+def test_manual_selection_brush_and_eraser_update_layer(
+    make_viewer_model, qtbot
+):
+    """Painting writes the class into the layer, erasing takes it back out."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+    widget.selection_mode_combobox.setCurrentText("Manual Selection")
+
+    axes = parent.canvas_widget.axes
+    data = parent.canvas_widget.active_artist_object.data
+    x, y = float(data[0, 0]), float(data[0, 1])
+
+    widget.selection_tool_buttons["BRUSH"].click()
+    widget.brush_size_slider.setValue(20)
+    _brush_stroke(parent.canvas_widget.active_selector, axes, [(x, y)])
+
+    selections = layer.metadata["settings"]["selections"]["manual_selections"]
+    painted = selections[widget.selection_id]
+    assert np.count_nonzero(painted) > 0
+    assert set(np.unique(painted)) <= {0, widget._selected_class_id}
+
+    widget.selection_tool_buttons["ERASER"].click()
+    widget.brush_size_slider.setValue(64)
+    _brush_stroke(parent.canvas_widget.active_selector, axes, [(x, y)])
+
+    selections = layer.metadata["settings"]["selections"]["manual_selections"]
+    assert np.count_nonzero(selections[widget.selection_id]) == 0
+
+
+def test_manual_selection_brush_uses_selected_class(make_viewer_model, qtbot):
+    """The brush paints whichever selection row is currently highlighted."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+    widget.selection_mode_combobox.setCurrentText("Manual Selection")
+
+    widget._add_manual_selection()  # Selection 2, selected on creation
+    assert widget._selected_class_id == 2
+    assert parent.canvas_widget.selectors["BRUSH"].paint_value == 2
+    # The eraser always clears, whatever class is selected
+    assert parent.canvas_widget.selectors["ERASER"].paint_value == 0
+
+    axes = parent.canvas_widget.axes
+    data = parent.canvas_widget.active_artist_object.data
+    widget.selection_tool_buttons["BRUSH"].click()
+    widget.brush_size_slider.setValue(20)
+    _brush_stroke(
+        parent.canvas_widget.active_selector,
+        axes,
+        [(float(data[0, 0]), float(data[0, 1]))],
+    )
+
+    selections = layer.metadata["settings"]["selections"]["manual_selections"]
+    assert 2 in np.unique(selections[widget.selection_id])
+
+
+def test_manual_selection_brush_cursor_color_sync(make_viewer_model, qtbot):
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+    widget.selection_mode_combobox.setCurrentText("Manual Selection")
+
+    cw = parent.canvas_widget
+    brush = cw.selectors["BRUSH"]
+
+    # Initial selection 1 default color
+    sel1 = widget._manual_selections[0]
+    assert brush.color == sel1["color"]
+
+    # Add selection 2 (becomes active)
+    sel2 = widget._add_manual_selection()
+    assert widget._selected_class_id == sel2["class_id"]
+    assert brush.color == sel2["color"]
+
+    # Switch back to selection 1
+    widget._select_manual_row(sel1)
+    assert widget._selected_class_id == sel1["class_id"]
+    assert brush.color == sel1["color"]
+
+    # Changing color of selection 1 updates brush.color
+    from qtpy.QtGui import QColor
+
+    new_color = QColor("#00ff00")
+    widget._on_manual_color_changed(sel1, new_color)
+    assert brush.color == new_color
+
+    # Activate brush tool button
+    widget.selection_tool_buttons["BRUSH"].click()
+    assert cw.active_selector is brush
+    # Cursor has the new color with 0.5 transparency
+    img = brush.cursor().pixmap().toImage()
+    c = img.pixelColor(img.width() // 2, img.height() // 2)
+    assert 115 <= c.alpha() <= 140
+    assert c.green() > 200
+
+
+def test_manual_selection_hover_cursor_persists_during_mouse_motion(
+    make_viewer_model, qtbot
+):
+    """Verify brush and eraser cursors persist while moving mouse over canvas."""
+    from matplotlib.backend_bases import MouseEvent
+
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+    widget.selection_mode_combobox.setCurrentText("Manual Selection")
+
+    cw = parent.canvas_widget
+
+    # Activate Brush
+    widget.selection_tool_buttons["BRUSH"].click()
+    assert not cw.canvas.cursor().pixmap().isNull()
+
+    # Move mouse across canvas - cursor must not revert to arrow
+    event = MouseEvent("motion_notify_event", cw.canvas, 100, 100)
+    cw.canvas.callbacks.process("motion_notify_event", event)
+    assert not cw.canvas.cursor().pixmap().isNull()
+
+    # Activate Eraser
+    widget.selection_tool_buttons["ERASER"].click()
+    assert not cw.canvas.cursor().pixmap().isNull()
+
+    event2 = MouseEvent("motion_notify_event", cw.canvas, 120, 120)
+    cw.canvas.callbacks.process("motion_notify_event", event2)
+    assert not cw.canvas.cursor().pixmap().isNull()
+
+
+def test_manual_selection_brush_and_eraser_cursor_persists_after_painting(
+    make_viewer_model, qtbot
+):
+    """Verify brush and eraser cursors persist after a painting stroke."""
+    from qtpy.QtCore import QEvent, QPointF, Qt
+    from qtpy.QtGui import QMouseEvent
+
+    viewer = make_viewer_model()
+    data = np.random.rand(10, 10)
+    layer = viewer.add_image(data, name="test")
+    layer.metadata["G"] = np.random.rand(10, 10) * 0.5 + 0.2
+    layer.metadata["S"] = np.random.rand(10, 10) * 0.5 + 0.1
+    layer.metadata["harmonics"] = 1
+
+    parent = PlotterWidget(viewer)
+    widget = parent.selection_tab
+    widget.selection_mode_combobox.setCurrentText("Manual Selection")
+
+    cw = parent.canvas_widget
+    bbox = cw.axes.bbox
+    px = (bbox.x0 + bbox.x1) / 2.0
+    py = (bbox.y0 + bbox.y1) / 2.0
+    pt = QPointF(px, cw.canvas.height() - py)
+
+    for tool_name in ("BRUSH", "ERASER"):
+        widget.selection_tool_buttons[tool_name].click()
+        assert cw.canvas.cursor().shape() == Qt.CursorShape.BitmapCursor
+
+        # Paint stroke
+        cw.canvas.mousePressEvent(
+            QMouseEvent(
+                QEvent.MouseButtonPress,
+                pt,
+                Qt.LeftButton,
+                Qt.LeftButton,
+                Qt.NoModifier,
+            )
+        )
+        pt2 = QPointF(pt.x() + 5, pt.y() + 5)
+        cw.canvas.mouseMoveEvent(
+            QMouseEvent(
+                QEvent.MouseMove,
+                pt2,
+                Qt.LeftButton,
+                Qt.LeftButton,
+                Qt.NoModifier,
+            )
+        )
+        cw.canvas.mouseReleaseEvent(
+            QMouseEvent(
+                QEvent.MouseButtonRelease,
+                pt2,
+                Qt.LeftButton,
+                Qt.NoButton,
+                Qt.NoModifier,
+            )
+        )
+
+        from qtpy.QtWidgets import QApplication
+
+        QApplication.processEvents()
+
+        # Cursor after stroke release must still be the bitmap cursor
+        assert cw.canvas.cursor().shape() == Qt.CursorShape.BitmapCursor
+        assert not cw.canvas.cursor().pixmap().isNull()
+
+        # Hover move after stroke
+        pt3 = QPointF(pt.x() + 10, pt.y() + 10)
+        cw.canvas.mouseMoveEvent(
+            QMouseEvent(
+                QEvent.MouseMove, pt3, Qt.NoButton, Qt.NoButton, Qt.NoModifier
+            )
+        )
+        QApplication.processEvents()
+        assert cw.canvas.cursor().shape() == Qt.CursorShape.BitmapCursor
+        assert not cw.canvas.cursor().pixmap().isNull()

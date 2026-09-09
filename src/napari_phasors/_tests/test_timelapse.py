@@ -1098,6 +1098,71 @@ def test_manual_selection_applies_to_every_frame(make_viewer_model):
         plotter.close()
 
 
+def test_brush_and_eraser_apply_to_every_frame(make_viewer_model):
+    """A brush stroke drawn on one frame labels matching pixels in all."""
+    viewer = make_viewer_model()
+    plotter = make_plotter_with_layer(viewer, create_stack_layer())
+    try:
+        selection_tab = plotter.selection_tab
+        selection_tab.selection_mode_combobox.setCurrentText(
+            "Manual Selection"
+        )
+
+        plotter.frame_context.mode = CURRENT
+        plotter.frame_context.index = 0
+
+        class _MouseEvent:
+            def __init__(self, x, y, inaxes):
+                self.xdata = x
+                self.ydata = y
+                self.inaxes = inaxes
+                self.button = 1
+
+        def dab(selector, x, y):
+            """Press and release the painting tool on a single spot."""
+            selector._on_press(_MouseEvent(x, y, plotter.canvas_widget.axes))
+            selector._on_release(_MouseEvent(x, y, plotter.canvas_widget.axes))
+
+        canvas = plotter.canvas_widget
+        canvas.brush_size = 64
+        canvas.active_selector = "BRUSH"
+        brush = canvas.active_selector
+
+        layer = plotter.get_selected_layers()[0]
+        g = layer.metadata["G"][0]
+        s = layer.metadata["S"][0]
+
+        # Paint on a phasor coordinate of the displayed frame; the decay
+        # patterns repeat, so later frames hold matching pixels as well.
+        x, y = float(g[0, 0, 0]), float(s[0, 0, 0])
+        dab(brush, x, y)
+
+        assert brush.last_geometry is not None
+        covered = brush.last_geometry.contains_points(
+            np.column_stack((g.ravel(), s.ravel()))
+        ).reshape(g.shape)
+        assert covered.any()
+
+        def current_map():
+            return layer.metadata["settings"]["selections"][
+                "manual_selections"
+            ][selection_tab.selection_id]
+
+        selection_map = current_map()
+        assert selection_map.shape == STACK_SHAPE
+        # Every pixel of the stack whose phasor falls under the stroke is
+        # labelled, not just the ones on the displayed frame.
+        assert np.all(selection_map[covered] > 0)
+        assert covered[1:].any(), "stroke should reach later frames too"
+
+        # The eraser takes exactly those pixels back out again
+        canvas.active_selector = "ERASER"
+        dab(canvas.active_selector, x, y)
+        assert not current_map().any()
+    finally:
+        plotter.close()
+
+
 # ---------------------------------------------------------------------------
 # Animation export
 # ---------------------------------------------------------------------------

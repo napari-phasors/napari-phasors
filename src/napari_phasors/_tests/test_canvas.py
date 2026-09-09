@@ -12,10 +12,12 @@ from qtpy.QtCore import Qt
 from qtpy.QtGui import QImage, QPainter
 
 from napari_phasors._canvas import (
+    DEFAULT_BRUSH_SIZE_PX,
     TOOLBAR_ICON_MARGIN,
     Contour,
     Histogram2D,
     Histogram2DArtist,
+    InteractiveBrushSelector,
     InteractiveEllipseSelector,
     InteractiveLassoSelector,
     InteractiveRectangleSelector,
@@ -24,6 +26,7 @@ from napari_phasors._canvas import (
     ScatterArtist,
     SelectionGeometry,
     _inset_icon_image,
+    _make_selector_icon,
     _opaque_bounds,
     load_toolbar_icon,
 )
@@ -99,6 +102,9 @@ def test_canvas_initialization(make_viewer_model):
     assert "RECTANGLE" in canvas_widget.selectors
     assert "ELLIPSE" in canvas_widget.selectors
     assert "LASSO" in canvas_widget.selectors
+    assert "BRUSH" in canvas_widget.selectors
+    assert "ERASER" in canvas_widget.selectors
+    assert canvas_widget.brush_size == DEFAULT_BRUSH_SIZE_PX
 
     assert canvas_widget._is_click_inside_axes(None) is False
 
@@ -841,6 +847,358 @@ def test_contour_artist_edge_cases(make_viewer_model):
         show_legend=True,
     )
     assert len(contour._contour_collections) >= 1
+
+
+class _BrushEvent:
+    """Minimal stand-in for a Matplotlib mouse event."""
+
+    def __init__(self, x, y, inaxes, button=1):
+        self.xdata = x
+        self.ydata = y
+        self.inaxes = inaxes
+        self.button = button
+
+
+def _stroke(selector, axes, points):
+    """Press, drag through ``points`` and release on the last one."""
+    (x0, y0), rest = points[0], points[1:]
+    selector._on_press(_BrushEvent(x0, y0, axes))
+    for x, y in rest:
+        selector._on_motion(_BrushEvent(x, y, axes))
+    last = points[-1]
+    selector._on_release(_BrushEvent(last[0], last[1], axes))
+
+
+def _nothing_painted(artist):
+    """True when the artist carries no selection at all."""
+    indices = artist.color_indices
+    return indices is None or not np.any(indices)
+
+
+def _brush_canvas(make_viewer_model, artist_name, seed=0):
+    """Canvas with a dense, uniformly spread dataset on one artist."""
+    canvas = PhasorCanvasWidget(make_viewer_model())
+    rng = np.random.default_rng(seed)
+    data = rng.uniform(0.1, 0.9, size=(4000, 2))
+    canvas.artists[artist_name].data = data
+    canvas.active_artist = artist_name
+    canvas.figure.canvas.draw()
+    return canvas, data
+
+
+def test_selection_geometry_brush():
+    # Two segments forming an L, each with a radius of 0.1 in both axes
+    geom = SelectionGeometry(
+        "brush",
+        np.array(
+            [
+                [0.2, 0.2, 0.6, 0.2, 0.1, 0.1],
+                [0.6, 0.2, 0.6, 0.6, 0.1, 0.1],
+            ]
+        ),
+    )
+    pts = np.array(
+        [
+            [0.4, 0.2],  # On the first segment
+            [0.6, 0.5],  # On the second segment
+            [0.2, 0.34],  # Just outside the first segment's radius
+            [0.9, 0.9],  # Far away, rejected by the bounding box
+        ]
+    )
+    assert np.array_equal(
+        geom.contains_points(pts), [True, True, False, False]
+    )
+    assert not np.any(
+        SelectionGeometry("brush", np.empty((0, 6))).contains_points(pts)
+    )
+
+
+def test_brush_paints_scatter_points(make_viewer_model):
+    canvas, data = _brush_canvas(make_viewer_model, "SCATTER")
+    canvas.active_selector = "BRUSH"
+    brush = canvas.active_selector
+    assert brush.name == "Interactive Brush Selector"
+    assert brush.is_eraser is False
+
+    brush.class_value = 3
+    assert brush.paint_value == 3
+    _stroke(brush, canvas.axes, [(0.3, 0.3), (0.4, 0.3), (0.5, 0.3)])
+
+    indices = canvas.artists["SCATTER"].color_indices
+    painted = indices == 3
+    assert np.any(painted)
+    # Everything painted lies within the brush radius of the stroke, and
+    # nothing far from it was touched.
+    rx, ry = brush._radii_data()
+    on_stroke = (data[painted][:, 1] > 0.3 - 2 * ry) & (
+        data[painted][:, 1] < 0.3 + 2 * ry
+    )
+    assert np.all(on_stroke)
+    assert not np.any(indices[data[:, 1] > 0.6])
+
+
+def test_brush_paints_whole_histogram_bins(make_viewer_model):
+    canvas, data = _brush_canvas(make_viewer_model, "HISTOGRAM2D")
+    artist = canvas.artists["HISTOGRAM2D"]
+    canvas.active_selector = "BRUSH"
+    brush = canvas.active_selector
+    brush.class_value = 2
+
+    _stroke(brush, canvas.axes, [(0.4, 0.4), (0.5, 0.5)])
+    indices = artist.color_indices
+    assert np.any(indices == 2)
+
+    # Bins are painted whole: every point sharing a bin with a painted point
+    # carries the same class, so the overlay matches what the user sees.
+    _, x_edges, y_edges = artist.histogram
+    x_bin = np.digitize(data[:, 0], x_edges) - 1
+    y_bin = np.digitize(data[:, 1], y_edges) - 1
+    painted_bins = set(
+        zip(x_bin[indices == 2], y_bin[indices == 2], strict=True)
+    )
+    for bx, by in painted_bins:
+        in_bin = (x_bin == bx) & (y_bin == by)
+        assert np.all(indices[in_bin] == 2)
+
+    assert artist._mpl_artists.get("overlay_histogram_image") is not None
+
+
+def test_eraser_clears_only_what_it_covers(make_viewer_model):
+    canvas, data = _brush_canvas(make_viewer_model, "HISTOGRAM2D")
+    artist = canvas.artists["HISTOGRAM2D"]
+
+    canvas.active_selector = "BRUSH"
+    brush = canvas.active_selector
+    brush.class_value = 1
+    brush.size_px = 40
+    _stroke(brush, canvas.axes, [(0.3, 0.5), (0.7, 0.5)])
+    before = int(np.count_nonzero(artist.color_indices))
+    assert before > 0
+
+    canvas.active_selector = "ERASER"
+    eraser = canvas.active_selector
+    assert eraser.is_eraser is True
+    assert eraser.paint_value == 0
+    eraser.size_px = 20
+    _stroke(eraser, canvas.axes, [(0.7, 0.5)])
+
+    after = int(np.count_nonzero(artist.color_indices))
+    assert 0 < after < before
+    # The erased points sit at the end of the stroke that was rubbed out.
+    erased = data[(artist.color_indices == 0) & (data[:, 1] > 0.45)]
+    assert erased[:, 0].max() > 0.6
+
+
+def test_eraser_removes_overlay_when_selection_is_gone(make_viewer_model):
+    canvas, _ = _brush_canvas(make_viewer_model, "HISTOGRAM2D")
+    artist = canvas.artists["HISTOGRAM2D"]
+
+    canvas.active_selector = "BRUSH"
+    canvas.brush_size = 30
+    _stroke(canvas.active_selector, canvas.axes, [(0.5, 0.5)])
+    assert artist._mpl_artists.get("overlay_histogram_image") is not None
+
+    canvas.active_selector = "ERASER"
+    canvas.brush_size = 60
+    _stroke(canvas.active_selector, canvas.axes, [(0.5, 0.5)])
+    assert not np.any(artist.color_indices)
+    assert artist._mpl_artists.get("overlay_histogram_image") is None
+
+
+def test_brush_stroke_geometry_is_reusable(make_viewer_model):
+    canvas, data = _brush_canvas(make_viewer_model, "SCATTER")
+    canvas.active_selector = "BRUSH"
+    brush = canvas.active_selector
+    brush.class_value = 1
+    _stroke(brush, canvas.axes, [(0.3, 0.4), (0.6, 0.4)])
+
+    region = canvas.active_selection_region()
+    assert region is not None
+    mask = region(data)
+    assert np.any(mask)
+    # The stroke region is a horizontal band, so nothing above it matches.
+    assert data[mask][:, 1].max() < 0.6
+
+
+def test_brush_size_updates_both_painting_tools(make_viewer_model):
+    canvas = PhasorCanvasWidget(make_viewer_model())
+    canvas.brush_size = 33
+    assert canvas.brush_size == 33
+    assert canvas.selectors["ERASER"].size_px == 33
+    # The slider range is clamped so the cursor pixmap stays a sane size.
+    canvas.brush_size = 5000
+    assert canvas.brush_size == 96
+
+
+def test_brush_ignores_events_outside_its_axes(make_viewer_model):
+    canvas, _ = _brush_canvas(make_viewer_model, "HISTOGRAM2D")
+    canvas.active_selector = "BRUSH"
+    brush = canvas.active_selector
+
+    # Press outside the axes, with the wrong button, or while panning
+    brush._on_press(_BrushEvent(0.5, 0.5, None))
+    brush._on_press(_BrushEvent(0.5, 0.5, canvas.axes, button=3))
+    assert brush._painting is False
+    # Motion and release without a press in flight are no-ops
+    brush._on_motion(_BrushEvent(0.5, 0.5, canvas.axes))
+    brush._on_release(_BrushEvent(0.5, 0.5, canvas.axes))
+    assert _nothing_painted(canvas.artists["HISTOGRAM2D"])
+
+
+def test_brush_without_data_does_nothing(make_viewer_model):
+    canvas = PhasorCanvasWidget(make_viewer_model())
+    brush = InteractiveBrushSelector(canvas.axes, canvas)
+    brush.create_selector()
+    brush._on_press(_BrushEvent(0.5, 0.5, canvas.axes))
+    assert brush._painting is False
+    brush.remove()
+    assert brush._cids == []
+
+
+def test_brush_deactivation_disconnects_callbacks(make_viewer_model):
+    canvas, _ = _brush_canvas(make_viewer_model, "HISTOGRAM2D")
+    canvas.active_selector = "BRUSH"
+    brush = canvas.selectors["BRUSH"]
+    assert brush._cids
+
+    canvas._on_escape(None)
+    assert canvas.active_selector is None
+    assert brush._cids == []
+
+    # Mouse events still reaching the canvas must no longer paint
+    process = canvas.canvas.callbacks.process
+    process("button_press_event", _BrushEvent(0.5, 0.5, canvas.axes))
+    process("motion_notify_event", _BrushEvent(0.6, 0.5, canvas.axes))
+    process("button_release_event", _BrushEvent(0.6, 0.5, canvas.axes))
+    assert brush._painting is False
+    assert _nothing_painted(canvas.artists["HISTOGRAM2D"])
+
+
+def test_make_selector_icon_brush_and_eraser():
+    """Verify vector QIcon creation for brush and eraser shapes."""
+    brush_icon = _make_selector_icon("brush")
+    eraser_icon = _make_selector_icon("eraser")
+    assert not brush_icon.isNull()
+    assert not eraser_icon.isNull()
+
+
+def test_brush_cursor_color_and_transparency(make_viewer_model):
+    """Verify brush cursor has 0.5 transparency fill in the active color."""
+    canvas = PhasorCanvasWidget(make_viewer_model())
+    brush = canvas.selectors["BRUSH"]
+    brush.size_px = 30
+    brush.color = "#ff7f0e"
+
+    cur = brush.cursor()
+    img = cur.pixmap().toImage()
+    assert not img.isNull()
+
+    # The center of the circle must have ~0.5 transparency (alpha ~ 128)
+    center_color = img.pixelColor(img.width() // 2, img.height() // 2)
+    assert 115 <= center_color.alpha() <= 140
+    # And must match the brush color (orange)
+    assert center_color.red() > 200
+    assert center_color.blue() < 50
+
+    # Changing color updates the cursor
+    brush.color = "#00c18c"
+    img2 = brush.cursor().pixmap().toImage()
+    c2 = img2.pixelColor(img2.width() // 2, img2.height() // 2)
+    assert 115 <= c2.alpha() <= 140
+    assert c2.green() > 150
+
+
+def test_eraser_cursor_black_outline_no_fill(make_viewer_model):
+    """Verify eraser cursor has no fill and black outline."""
+    canvas = PhasorCanvasWidget(make_viewer_model())
+    eraser = canvas.selectors["ERASER"]
+    eraser.size_px = 30
+
+    cur = eraser.cursor()
+    img = cur.pixmap().toImage()
+    assert not img.isNull()
+
+    # Center must have no fill (alpha == 0)
+    center_color = img.pixelColor(img.width() // 2, img.height() // 2)
+    assert center_color.alpha() == 0
+
+    # Outline must contain dark / black pixels
+    dark_pixels = [
+        img.pixelColor(x, y)
+        for y in range(img.height())
+        for x in range(img.width())
+        if img.pixelColor(x, y).alpha() > 200
+        and img.pixelColor(x, y).red() < 20
+        and img.pixelColor(x, y).green() < 20
+        and img.pixelColor(x, y).blue() < 20
+    ]
+    assert len(dark_pixels) > 0
+
+
+def test_brush_canvas_color_sync(make_viewer_model):
+    """Verify canvas.brush_color syncs with brush selector."""
+    canvas = PhasorCanvasWidget(make_viewer_model())
+    canvas.brush_color = "#9400d3"
+    assert canvas.brush_color == "#9400d3"
+    assert canvas.selectors["BRUSH"].color == "#9400d3"
+
+
+def test_brush_and_eraser_cursor_persists_after_stroke(make_viewer_model):
+    """Verify brush and eraser cursors persist after stroke and during draw."""
+    from qtpy.QtCore import Qt
+
+    cw = PhasorCanvasWidget(make_viewer_model())
+    for tool_name in ("BRUSH", "ERASER"):
+        cw.active_selector = tool_name
+        assert cw.canvas.cursor().shape() == Qt.CursorShape.BitmapCursor
+
+        # Verify toolbar set_cursor or draw wait cursor doesn't reset it
+        cw.toolbar.set_cursor(1)  # Cursors.POINTER
+        assert cw.canvas.cursor().shape() == Qt.CursorShape.BitmapCursor
+
+        with cw.toolbar._wait_cursor_for_draw_cm():
+            pass
+        assert cw.canvas.cursor().shape() == Qt.CursorShape.BitmapCursor
+
+        # Trigger draw() directly
+        cw.canvas.draw()
+        assert cw.canvas.cursor().shape() == Qt.CursorShape.BitmapCursor
+
+        # Simulate stroke
+        selector = cw.active_selector
+        axes = cw.axes
+        event_press = type(
+            "Event",
+            (),
+            {"button": 1, "inaxes": axes, "xdata": 0.5, "ydata": 0.2},
+        )()
+        selector._on_press(event_press)
+
+        event_motion = type(
+            "Event",
+            (),
+            {"button": 1, "inaxes": axes, "xdata": 0.51, "ydata": 0.21},
+        )()
+        selector._on_motion(event_motion)
+
+        event_release = type(
+            "Event",
+            (),
+            {"button": 1, "inaxes": axes, "xdata": 0.51, "ydata": 0.21},
+        )()
+        selector._on_release(event_release)
+
+        # After release, cursor must still be BitmapCursor
+        assert cw.canvas.cursor().shape() == Qt.CursorShape.BitmapCursor
+
+        # When hovering over axes, motion event keeps cursor BitmapCursor
+        event_hover = type(
+            "Event",
+            (),
+            {"button": None, "inaxes": axes, "xdata": 0.55, "ydata": 0.25},
+        )()
+        selector._on_motion(event_hover)
+        assert cw.canvas.cursor().shape() == Qt.CursorShape.BitmapCursor
 
 
 def _icon_paths():
