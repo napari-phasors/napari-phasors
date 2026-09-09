@@ -2083,3 +2083,120 @@ def test_stack_reader_falls_back_to_one_thread_when_parallelism_is_off(
 
     assert layers[0][0].shape == (4, 2, 2)
     assert threads == {threading.current_thread()}
+
+
+def test_channel_selection_dialog(qtbot):
+    """Test ChannelSelectionDialog interactions."""
+    from napari_phasors._channel_dialog import ChannelSelectionDialog
+
+    channels = ["Channel 0", "Channel 1", "Channel 2"]
+    dialog = ChannelSelectionDialog(channels)
+    qtbot.addWidget(dialog)
+
+    # By default, all channels are selected
+    assert dialog.selected_channels() == [0, 1, 2]
+    assert not dialog.is_single_layer()
+    assert dialog.ok_btn.isEnabled()
+
+    # Deselect all
+    dialog.btn_deselect_all.click()
+    assert dialog.selected_channels() == []
+    assert not dialog.ok_btn.isEnabled()
+
+    # Select all
+    dialog.btn_select_all.click()
+    assert dialog.selected_channels() == [0, 1, 2]
+    assert dialog.ok_btn.isEnabled()
+
+    # Uncheck one item
+    dialog.set_channel_checked(1, False)
+    assert dialog.selected_channels() == [0, 2]
+    assert dialog.ok_btn.isEnabled()
+
+    # Check single layer
+    dialog.single_layer_checkbox.setChecked(True)
+    assert dialog.is_single_layer()
+
+
+def test_multichannel_reader_options_selection(monkeypatch):
+    """Test raw_file_reader with channel subset and single_layer options."""
+    data = xr.DataArray(
+        np.ones((2, 2, 3, 4), dtype=np.uint16),
+        dims=("Y", "X", "C", "H"),
+        coords={"Y": [0, 1], "X": [0, 1], "C": [0, 1, 2], "H": [0, 1, 2, 3]},
+    )
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".ptu",
+        lambda path, reader_options: data,
+    )
+
+    # 1. Filter specific channels: channels=[0, 2]
+    layers = reader_module.raw_file_reader(
+        "test.ptu",
+        reader_options={"channels": [0, 2], "from_custom_import": True},
+    )
+    assert len(layers) == 2
+    assert layers[0][1]["name"].endswith("Channel 0")
+    assert layers[1][1]["name"].endswith("Channel 2")
+
+    # 2. Import into single 3D layer: single_layer=True
+    layers_stacked = reader_module.raw_file_reader(
+        "test.ptu",
+        reader_options={"single_layer": True, "from_custom_import": True},
+    )
+    assert len(layers_stacked) == 1
+    stacked_layer = layers_stacked[0]
+    # Data shape should be (C, Y, X) -> (3, 2, 2)
+    assert stacked_layer[0].shape == (3, 2, 2)
+    metadata = stacked_layer[1]["metadata"]
+    # G and S should have shape (harmonics, C, Y, X) -> (2, 3, 2, 2)
+    assert metadata["G"].shape == (2, 3, 2, 2)
+    assert metadata["S"].shape == (2, 3, 2, 2)
+    assert list(metadata["channel_labels"]) == [0, 1, 2]
+
+
+def test_multichannel_interactive_dialog(monkeypatch):
+    """Test interactive dialog popup in raw_file_reader."""
+    from qtpy.QtWidgets import QDialog
+
+    from napari_phasors._channel_dialog import ChannelSelectionDialog
+
+    data = xr.DataArray(
+        np.ones((2, 2, 3, 4), dtype=np.uint16),
+        dims=("Y", "X", "C", "H"),
+        coords={"Y": [0, 1], "X": [0, 1], "C": [0, 1, 2], "H": [0, 1, 2, 3]},
+    )
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".ptu",
+        lambda path, reader_options: data,
+    )
+
+    # Mock dialog returning Accepted with channels=[1]
+    def mock_exec_accept(self):
+        self.btn_deselect_all.click()
+        self.set_channel_checked(1, True)
+        return QDialog.Accepted
+
+    monkeypatch.setattr(ChannelSelectionDialog, "exec", mock_exec_accept)
+    monkeypatch.setattr(ChannelSelectionDialog, "exec_", mock_exec_accept)
+    layers = reader_module.raw_file_reader(
+        "test.ptu",
+        reader_options={"interactive": True},
+    )
+    assert len(layers) == 1
+    assert layers[0][1]["name"].endswith("Channel 1")
+
+    # Mock dialog returning Rejected (user clicked Cancel)
+    monkeypatch.setattr(
+        ChannelSelectionDialog, "exec", lambda self: QDialog.Rejected
+    )
+    monkeypatch.setattr(
+        ChannelSelectionDialog, "exec_", lambda self: QDialog.Rejected
+    )
+    layers_cancelled = reader_module.raw_file_reader(
+        "test.ptu",
+        reader_options={"interactive": True},
+    )
+    assert layers_cancelled == []

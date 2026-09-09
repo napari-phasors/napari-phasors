@@ -25,6 +25,16 @@ try:
 except (AttributeError, ImportError, TypeError):
     pass
 
+try:
+    import napari.settings
+
+    _temp_settings_dir = tempfile.TemporaryDirectory()
+    napari.settings.get_settings(
+        path=pathlib.Path(_temp_settings_dir.name) / "settings.yaml"
+    )
+except Exception:  # noqa: BLE001
+    pass
+
 
 def configure_phasorpy_retries():
     """Opt every phasorpy dataset repository into a few download retries.

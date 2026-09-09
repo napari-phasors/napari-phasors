@@ -1790,6 +1790,11 @@ class AdvancedOptionsWidget(QWidget):
         If ``_multi_file_paths`` is set, all files are stacked into a
         single 3D layer via :func:`raw_file_stack_reader`.
         """
+        reader_options = (
+            dict(reader_options) if reader_options is not None else {}
+        )
+        reader_options["from_custom_import"] = True
+
         if hasattr(self, '_apply_kwargs'):
             self._apply_kwargs(reader_options)
 
@@ -2240,6 +2245,12 @@ def _estimate_output_shape_from_options(
 ):
     """Estimate output shape with current reader options and harmonics."""
     try:
+        reader_options = (
+            dict(reader_options) if reader_options is not None else {}
+        )
+        reader_options["from_custom_import"] = True
+        reader_options["interactive"] = False
+
         _, extension = _get_filename_extension(path)
 
         if extension == ".ptu":
