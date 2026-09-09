@@ -16,6 +16,7 @@ from napari_phasors._synthetic_generator import (
 from napari_phasors._tests.test_plotter import (  # noqa: E501
     create_image_layer_with_phasors,
 )
+from napari_phasors._utils import apply_filter_and_threshold
 from napari_phasors.plotter import (
     MaskAssignmentDialog,
     PlotterWidget,
@@ -2356,3 +2357,90 @@ def test_mask_does_not_move_phasor_coordinates(make_viewer_model):
         (g_after[inside] - g_c) ** 2 + (s_after[inside] - s_c) ** 2
     )
     assert distance.max() <= radius
+
+
+def _noisy_phasor_layer(name, seed):
+    """A phasor layer with noise, so filter parameters visibly matter."""
+    rng = np.random.default_rng(seed)
+    raw = make_raw_flim_data(
+        shape=(32, 32), time_constants=[0.1, 0.5, 1, 2, 3, 4, 5, 10]
+    )
+    raw = rng.poisson(raw * 50).astype(float)
+    return make_intensity_layer_with_phasors(raw, harmonic=[1, 2], name=name)
+
+
+def test_multi_layer_masks_reapply_each_layers_own_settings(make_viewer_model):
+    """Masking several layers must not clobber their individual settings.
+
+    Regression: the re-apply after a mask change went through the Filter tab's
+    apply button, which reads the *widgets* — populated from the primary layer
+    only — and wrote those values to every selected layer. Layers filtered
+    differently (e.g. several OME-TIFFs read back with their own stored
+    settings) were re-filtered with the primary layer's parameters, so their
+    phasors moved out of the cursor that had selected them.
+    """
+    viewer = make_viewer_model()
+    layer_a = _noisy_phasor_layer("A", 0)
+    layer_b = _noisy_phasor_layer("B", 1)
+    viewer.add_layer(layer_a)
+    viewer.add_layer(layer_b)
+    plotter = PlotterWidget(viewer)
+
+    # Each layer arrives with its own filter, as when read back from file.
+    apply_filter_and_threshold(
+        layer_a,
+        threshold=0.0,
+        threshold_method="Manual",
+        filter_method="median",
+        size=3,
+        repeat=1,
+    )
+    apply_filter_and_threshold(
+        layer_b,
+        threshold=0.0,
+        threshold_method="Manual",
+        filter_method="median",
+        size=7,
+        repeat=3,
+    )
+
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [layer_a.name, layer_b.name]
+    )
+    plotter._process_layer_selection_change()
+
+    # A circular cursor per layer, drawn on what that layer displays.
+    cursors, selections = {}, {}
+    for layer in (layer_a, layer_b):
+        g, s = layer.metadata["G"][0], layer.metadata["S"][0]
+        g_c, s_c = np.nanmedian(g), np.nanmedian(s)
+        distance = np.sqrt((g - g_c) ** 2 + (s - s_c) ** 2)
+        radius = float(np.nanpercentile(distance, 25))
+        cursors[layer.name] = (g_c, s_c, radius)
+        selections[layer.name] = distance <= radius
+        viewer.add_labels(
+            selections[layer.name].astype(int), name=f"sel {layer.name}"
+        )
+    plotter.reset_layer_choices()
+
+    plotter._apply_mask_assignments(
+        {
+            layer_a.name: f"sel {layer_a.name}",
+            layer_b.name: f"sel {layer_b.name}",
+        }
+    )
+
+    for layer, size, repeat in ((layer_a, 3, 1), (layer_b, 7, 3)):
+        # Each layer kept its own filter parameters ...
+        filter_settings = layer.metadata["settings"]["filter"]
+        assert (filter_settings["size"], filter_settings["repeat"]) == (
+            size,
+            repeat,
+        )
+        # ... so every plotted point is still inside that layer's cursor.
+        g_c, s_c, radius = cursors[layer.name]
+        inside = selections[layer.name]
+        g, s = layer.metadata["G"][0], layer.metadata["S"][0]
+        distance = np.sqrt((g[inside] - g_c) ** 2 + (s[inside] - s_c) ** 2)
+        assert np.array_equal(~np.isnan(g), inside)
+        assert distance.max() <= radius
