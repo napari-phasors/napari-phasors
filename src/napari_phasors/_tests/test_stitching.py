@@ -637,7 +637,7 @@ def test_stitched_layer_matches_the_plugin_metadata_contract(tile_mosaic):
     assert len(layers) == 1
     data, add_kwargs = layers[0]
     assert data.shape == (120, 120)
-    assert "Mosaic Intensity Image" in add_kwargs["name"]
+    assert "Mosaic Intensity [Phasor]" in add_kwargs["name"]
 
     metadata = add_kwargs["metadata"]
     for key in (
@@ -861,7 +861,7 @@ def test_reading_a_mosaic_held_in_one_file(single_file_mosaic):
     assert data.shape == (120, 120)
     assert add_kwargs["metadata"]["G"].shape == (2, 120, 120)
     # The layer is named after the file, not its folder.
-    assert add_kwargs["name"].startswith("mosaic Mosaic Intensity Image")
+    assert add_kwargs["name"].startswith("mosaic Mosaic Intensity [Phasor]")
     labels = add_kwargs["metadata"]["tile_files"]
     assert labels[0] == "mosaic.tif"
     assert labels[3] == "mosaic.tif [3]"

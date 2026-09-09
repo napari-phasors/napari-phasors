@@ -4,9 +4,10 @@ This module contains utility functions used by other modules.
 """
 
 import os
+import re
 import warnings
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -1695,11 +1696,103 @@ def _get_layer_group_entry(layer):
     return layer.metadata.get('group')
 
 
+def format_phasor_layer_name(
+    stem: str,
+    channel_label: Any = None,
+    *,
+    is_stack: bool = False,
+    is_mosaic: bool = False,
+) -> str:
+    """Format a consistent napari layer name for phasor intensity images.
+
+    Follows the convention:
+    - Single channel: ``'<stem> Intensity [Phasor]'``
+    - Multi-channel: ``'<stem> Intensity: Channel <channel_label> [Phasor]'``
+    - Stack: ``'<stem> Stack Intensity [Phasor]'``
+    - Mosaic: ``'<stem> Mosaic Intensity [Phasor]'``
+
+    Parameters
+    ----------
+    stem : str
+        Base filename or directory stem without extension.
+    channel_label : Any, optional
+        Channel index or label. If provided and non-empty, appends
+        ``': Channel <channel_label>'``.
+    is_stack : bool, optional
+        Whether the layer is a z/t-stack.
+    is_mosaic : bool, optional
+        Whether the layer is a stitched mosaic.
+
+    Returns
+    -------
+    str
+        Formatted layer name.
+    """
+    qualifiers = []
+    if is_mosaic:
+        qualifiers.append("Mosaic")
+    if is_stack:
+        qualifiers.append("Stack")
+    qualifier_str = f"{' '.join(qualifiers)} " if qualifiers else ""
+    name = f"{stem} {qualifier_str}Intensity"
+    if channel_label is not None and str(channel_label).strip() != "":
+        name = f"{name}: Channel {channel_label}"
+    return f"{name} [Phasor]"
+
+
+def extract_channel_label(
+    layer_name: str | None = None,
+    metadata: dict | None = None,
+) -> str | None:
+    """Extract channel label from metadata settings or a layer name.
+
+    Parameters
+    ----------
+    layer_name : str, optional
+        Layer name, potentially ending with ``': Channel <label> [Phasor]'``.
+    metadata : dict, optional
+        Layer metadata dict, potentially containing ``settings['channel']``.
+
+    Returns
+    -------
+    str or None
+        The extracted channel label as a string, or None if not found.
+    """
+    if metadata and isinstance(metadata, dict):
+        settings = metadata.get("settings")
+        if isinstance(settings, dict) and "channel" in settings:
+            ch = settings["channel"]
+            if ch is not None:
+                return str(ch)
+    if layer_name:
+        match = re.search(
+            r":\s*Channel\s+([^:\[]+?)(?:\s*\[Phasor\])?(?:\s*\[\d+\])?$",
+            layer_name,
+        )
+        if match:
+            return match.group(1).strip()
+    return None
+
+
+def extract_channel_suffix(layer_name: str | None) -> str:
+    """Extract channel suffix (e.g. ``': Channel 0'``) from a layer name.
+
+    Returns an empty string if no channel suffix is present.
+    """
+    if not layer_name:
+        return ""
+    match = re.search(
+        r"(:\s*Channel\s+[^:\[]+?)(?:\s*\[Phasor\])?(?:\s*\[\d+\])?$",
+        layer_name,
+    )
+    return match.group(1) if match else ""
+
+
 def name_match_stem(value, strip_directory=True):
     """Return the comparable stem of a file path or layer name.
 
     Drops any directory part, the extension, and any further compound
-    suffix, so ``"sample.ome.tif"``, ``"sample.tif Intensity Image"`` and
+    suffix, so ``"sample.ome.tif"``, ``"sample.tif Intensity [Phasor]"`` and
     ``"sample"`` all compare as ``"sample"``.
 
     Parameters
@@ -1717,7 +1810,14 @@ def name_match_stem(value, strip_directory=True):
     """
     if strip_directory:
         value = os.path.basename(value)
-    return os.path.splitext(value)[0].split(".")[0].lower()
+    stem = os.path.splitext(value)[0].split(".")[0]
+    stem = re.sub(
+        r"\s*(?:Intensity.*?\[Phasor\]|\[Phasor\]\s*Intensity|Intensity\s*Image).*$",
+        "",
+        stem,
+        flags=re.IGNORECASE,
+    )
+    return stem.lower()
 
 
 def rank_mask_candidates(target, candidates, strip_directory=True):

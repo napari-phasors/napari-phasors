@@ -31,7 +31,12 @@ from ._parallel import (
     workers_for_memory,
 )
 from ._stitching import as_tile_sources, blend_phasor_tiles
-from ._utils import cast_phasor_storage, show_activity_progress
+from ._utils import (
+    cast_phasor_storage,
+    extract_channel_label,
+    format_phasor_layer_name,
+    show_activity_progress,
+)
 
 extension_mapping = {
     "raw": {
@@ -598,9 +603,8 @@ def _phasor_layers_from_signal(
                 mean_intensity_image, G_image, S_image
             )
             pbr.update(n_steps)
-            channel_suffix = " Intensity Image"
             add_kwargs = {
-                "name": f"{filename}{channel_suffix}",
+                "name": format_phasor_layer_name(filename),
                 "metadata": {
                     "original_mean": mean_intensity_image,
                     "settings": settings,
@@ -756,7 +760,9 @@ def _phasor_layers_from_signal(
                     mean_intensity_image, G_image, S_image
                 )
                 add_kwargs = {
-                    "name": f"{filename} Intensity Image: Channel {channel_label}",
+                    "name": format_phasor_layer_name(
+                        filename, channel_label=channel_label
+                    ),
                     "metadata": {
                         "original_mean": mean_intensity_image,
                         "settings": channel_settings,
@@ -1097,7 +1103,7 @@ def raw_file_stack_reader(
     for channel in channels:
         first_kwargs = channel["kwargs"]
         first_meta = first_kwargs["metadata"]
-        channel_suffix = first_kwargs["name"].split("Intensity Image")[-1]
+        channel_label = extract_channel_label(first_kwargs["name"], first_meta)
 
         summed_signals = channel["summed_signals"]
         stack_meta = {
@@ -1120,7 +1126,9 @@ def raw_file_stack_reader(
         }
 
         add_kwargs = {
-            "name": f"{dir_name} Stack Intensity Image{channel_suffix}",
+            "name": format_phasor_layer_name(
+                dir_name, channel_label=channel_label, is_stack=True
+            ),
             "metadata": stack_meta,
         }
 
@@ -1963,8 +1971,12 @@ class TileSet:
                 stem = _get_filename_extension(self.paths[0])[0]
             else:
                 stem = os.path.basename(os.path.dirname(self.paths[0]))
-            channel_suffix = template["name"].split("Intensity Image")[-1]
-            name = f"{stem or 'mosaic'} Mosaic Intensity Image{channel_suffix}"
+            channel_label = extract_channel_label(
+                template["name"], template.get("metadata")
+            )
+            name = format_phasor_layer_name(
+                stem or "mosaic", channel_label=channel_label, is_mosaic=True
+            )
 
             add_kwargs = {"name": name, "metadata": metadata}
             for key in ("colormap", "blending"):
@@ -2458,7 +2470,7 @@ def processed_file_reader(
         )
 
         add_kwargs = {
-            "name": filename + " Intensity Image",
+            "name": format_phasor_layer_name(filename),
             "metadata": {
                 "original_mean": original_mean_intensity_image,
                 "settings": settings,

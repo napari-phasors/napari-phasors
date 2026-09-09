@@ -1776,7 +1776,7 @@ def test_deferred_tab_update_skipped_for_a_removed_layer(make_viewer_model):
 
         # The combobox still reports a layer the viewer no longer holds,
         # which is exactly the state a late tab-change event arrives in.
-        plotter.get_primary_layer_name = lambda: "Gone Intensity Image"
+        plotter.get_primary_layer_name = lambda: "Gone Intensity [Phasor]"
         plotter._run_deferred_tab_update(mapping_tab)
         assert restores == []
 
