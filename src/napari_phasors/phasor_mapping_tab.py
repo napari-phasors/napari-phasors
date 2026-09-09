@@ -2417,8 +2417,12 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
     def _on_lifetime_type_changed(self, text):
         """Callback when lifetime type combobox selection changes.
 
-        This only updates the setting in metadata - it does NOT run calculations.
-        User must click "Calculate" button to run lifetime analysis.
+        This only updates the setting in metadata - it does NOT run
+        calculations. Picking another lifetime asks for a different analysis,
+        not a different rendering of the one already on screen, so the user
+        clicks Calculate (or turns Autoupdate on) to run it. A refresh armed
+        by an earlier control change is dropped for the same reason: it would
+        compute the newly picked lifetime nobody asked for yet.
         """
         output_type = self._get_selected_output_type()
         self.current_output_type = output_type
@@ -2433,7 +2437,7 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             self._update_lifetime_setting_in_metadata(
                 'output_type', output_type
             )
-        self._schedule_active_output_refresh()
+        self._output_refresh_timer.stop()
 
     def _restore_lifetime_range_from_metadata(self):
         """Restore lifetime range from metadata after calculation."""

@@ -925,7 +925,7 @@ def _phasor_layers_from_signal(
                     "channel_labels": selected_channel_labels,
                 }
                 single_add_kwargs = {
-                    "name": f"{filename} Intensity Image",
+                    "name": format_phasor_layer_name(filename),
                     "metadata": single_meta,
                 }
                 if keep_signal:

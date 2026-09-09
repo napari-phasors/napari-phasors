@@ -1572,6 +1572,7 @@ class AdvancedOptionsWidget(QWidget):
 
         self.channels = None
         self.channels_single_label = None
+        self.single_layer_checkbox = None
 
         self.mainLayout.addLayout(self.channels_layout)
 
@@ -1589,6 +1590,11 @@ class AdvancedOptionsWidget(QWidget):
             self.channels_single_label.deleteLater()
             self.channels_single_label = None
 
+        if self.single_layer_checkbox is not None:
+            self.single_layer_checkbox.setParent(None)
+            self.single_layer_checkbox.deleteLater()
+            self.single_layer_checkbox = None
+
         if hasattr(self, 'all_channels') and self.all_channels > 1:
             self.channels = QComboBox()
             self.channels.addItems(["All channels"])
@@ -1599,12 +1605,46 @@ class AdvancedOptionsWidget(QWidget):
                 self._on_channels_combobox_changed
             )
             self.channels_layout.addWidget(self.channels)
+
+            # Only meaningful while more than one channel is imported, so it
+            # is hidden as soon as a single channel is picked.
+            self.single_layer_checkbox = QCheckBox(
+                "Import channels in the same layer"
+            )
+            self.single_layer_checkbox.setToolTip(
+                "Stack all imported channels into a single "
+                "multi-dimensional layer\n"
+                "with a channel slider bar in the napari viewer."
+            )
+            self.single_layer_checkbox.toggled.connect(
+                self._on_single_layer_checkbox_changed
+            )
+            self.channels_layout.addWidget(self.single_layer_checkbox)
+            self._update_single_layer_checkbox()
         else:
             self.channels_single_label = QLabel("0")
             self.channels_layout.addWidget(self.channels_single_label)
             self.reader_options["channel"] = 0
 
         self.channels_layout.addStretch()
+
+    def _update_single_layer_checkbox(self):
+        """Show the single-layer checkbox only while all channels are imported."""
+        if self.single_layer_checkbox is None:
+            return
+        importing_all = self.channels is not None and (
+            self.channels.currentIndex() == 0
+        )
+        self.single_layer_checkbox.setVisible(importing_all)
+        if importing_all and self.single_layer_checkbox.isChecked():
+            self.reader_options["single_layer"] = True
+        else:
+            self.reader_options.pop("single_layer", None)
+
+    def _on_single_layer_checkbox_changed(self, checked):
+        """Callback whenever the single-layer checkbox is toggled."""
+        self._update_single_layer_checkbox()
+        self._update_shape_preview()
 
     def _harmonic_widget(self):
         """Add the harmonic widget to main layout."""
@@ -1782,6 +1822,7 @@ class AdvancedOptionsWidget(QWidget):
             self.reader_options["channel"] = None
         else:
             self.reader_options["channel"] = index - 1
+        self._update_single_layer_checkbox()
         self._update_shape_preview()
 
     def _on_click(self, path, reader_options, harmonics):

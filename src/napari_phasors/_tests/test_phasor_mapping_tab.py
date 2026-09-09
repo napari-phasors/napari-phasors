@@ -2512,7 +2512,12 @@ def test_mapping_histogram_follows_real_source_selection(
 def test_mapping_output_controls_refresh_after_first_calculation(
     make_napari_viewer, qtbot
 ):
-    """Parameter and Lifetime Type changes refresh active Mapping output."""
+    """Parameter changes refresh the active Mapping output.
+
+    Picking another lifetime is the exception: it selects a different
+    analysis, so it waits for the button (see
+    ``test_mapping_lifetime_type_change_waits_for_calculate``).
+    """
     viewer, _, mapping, _ = _setup_mapping_selection_workflow(
         make_napari_viewer, qtbot
     )
@@ -2528,6 +2533,7 @@ def test_mapping_output_controls_refresh_after_first_calculation(
         if lifetime_type is not None:
             mapping.lifetime_type_combobox.setCurrentText(lifetime_type)
             output_type = lifetime_type
+            mapping._on_calculate_lifetime_clicked()
         else:
             output_type = mode
 
@@ -3015,3 +3021,45 @@ def test_mesh_transparency_is_stored_as_alpha(make_viewer_model, qtbot):
     assert mapping_widget.mesh_transparency_spinbox.value() == pytest.approx(
         0.75
     )
+
+
+def test_mapping_lifetime_type_change_waits_for_calculate(
+    make_napari_viewer, qtbot
+):
+    """Picking another lifetime does not run the analysis on its own."""
+    viewer, parent, mapping, _ = _setup_mapping_selection_workflow(
+        make_napari_viewer, qtbot
+    )
+    assert mapping._has_calculated_output is True
+    assert "Apparent Phase Lifetime: mapping_a" in viewer.layers
+
+    mapping.lifetime_type_combobox.setCurrentText("Normal Lifetime")
+    qtbot.wait(200)
+
+    # The selection is recorded, but nothing is computed for it until the
+    # button is clicked.
+    assert mapping.current_output_type == "Normal Lifetime"
+    assert "Normal Lifetime: mapping_a" not in viewer.layers
+    assert not mapping._output_refresh_timer.isActive()
+
+    mapping._on_calculate_lifetime_clicked()
+    assert "Normal Lifetime: mapping_a" in viewer.layers
+
+
+def test_mapping_lifetime_type_change_drops_armed_refresh(
+    make_napari_viewer, qtbot
+):
+    """A refresh armed before the switch must not run the new lifetime."""
+    viewer, parent, mapping, _ = _setup_mapping_selection_workflow(
+        make_napari_viewer, qtbot
+    )
+    mapping._schedule_active_output_refresh()
+    assert mapping._output_refresh_timer.isActive()
+
+    mapping.lifetime_type_combobox.setCurrentText(
+        "Apparent Modulation Lifetime"
+    )
+    qtbot.wait(200)
+
+    assert not mapping._output_refresh_timer.isActive()
+    assert "Apparent Modulation Lifetime: mapping_a" not in viewer.layers
