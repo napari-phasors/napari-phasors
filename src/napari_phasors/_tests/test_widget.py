@@ -274,7 +274,7 @@ def test_phasor_transform_fbd_widget(make_viewer_model, qtbot):
     # Click button of phasor transform and check layers
     widget.btn.click()
     assert len(viewer.layers) == 1
-    assert viewer.layers[0].name == "test_file$EI0S Intensity Image"
+    assert viewer.layers[0].name == "test_file$EI0S [Phasor] Intensity"
     assert viewer.layers[0].data.shape == (256, 256)
     # Check phasor data in metadata
     assert "G" in viewer.layers[0].metadata
@@ -287,7 +287,9 @@ def test_phasor_transform_fbd_widget(make_viewer_model, qtbot):
     widget.harmonic_slider.setValue((2, 2))
     widget.btn.click()
     assert len(viewer.layers) == 3
-    assert viewer.layers[2].name == "test_file$EI0S Intensity Image: Channel 1"
+    assert (
+        viewer.layers[2].name == "test_file$EI0S [Phasor] Intensity: Channel 1"
+    )
     assert viewer.layers[2].data.shape == (256, 256)
     assert viewer.layers[2].metadata["G"].shape == (1, 256, 256)
     assert list(viewer.layers[2].metadata["harmonics"]) == [2]
@@ -343,7 +345,7 @@ def test_phasor_transform_ptu_widget(make_viewer_model, qtbot, caplog):
         for record in caplog.records
     )
     assert len(viewer.layers) == 1
-    assert viewer.layers[0].name == "test_file Intensity Image: Channel 0"
+    assert viewer.layers[0].name == "test_file [Phasor] Intensity: Channel 0"
     assert viewer.layers[0].data.shape == (256, 256)
     # Check phasor data in metadata
     assert "G" in viewer.layers[0].metadata
@@ -356,7 +358,9 @@ def test_phasor_transform_ptu_widget(make_viewer_model, qtbot, caplog):
     widget.harmonic_slider.setValue((2, 2))
     widget.btn.click()
     assert len(viewer.layers) == 2
-    assert viewer.layers[1].name == "test_file Intensity Image: Channel 0 [1]"
+    assert (
+        viewer.layers[1].name == "test_file [Phasor] Intensity: Channel 0 [1]"
+    )
     assert viewer.layers[1].data.shape == (256, 256)
     assert viewer.layers[1].metadata["G"].shape == (1, 256, 256)
     assert list(viewer.layers[1].metadata["harmonics"]) == [2]
@@ -391,7 +395,7 @@ def test_phasor_transform_sdt_widget(make_viewer_model, qtbot):
     assert len(viewer.layers) == 1
     assert (
         viewer.layers[0].name
-        == "seminal_receptacle_FLIM_single_image Intensity Image: Channel 0"
+        == "seminal_receptacle_FLIM_single_image [Phasor] Intensity: Channel 0"
     )
     assert viewer.layers[0].data.shape == (512, 512)
     # Check phasor data in metadata
@@ -406,7 +410,7 @@ def test_phasor_transform_sdt_widget(make_viewer_model, qtbot):
     assert len(viewer.layers) == 2
     assert (
         viewer.layers[1].name
-        == "seminal_receptacle_FLIM_single_image Intensity Image: Channel 0 [1]"
+        == "seminal_receptacle_FLIM_single_image [Phasor] Intensity: Channel 0 [1]"
     )
     assert viewer.layers[1].data.shape == (512, 512)
     assert viewer.layers[1].metadata["G"].shape == (1, 512, 512)
@@ -437,7 +441,7 @@ def test_phasor_transform_lsm_widget(make_viewer_model, qtbot):
     # Click button of phasor transform and check layers
     widget.btn.click()
     assert len(viewer.layers) == 1
-    assert viewer.layers[0].name == "test_file Intensity Image"
+    assert viewer.layers[0].name == "test_file [Phasor] Intensity"
     assert viewer.layers[0].data.shape == (512, 512)
     # Check phasor data in metadata
     assert "G" in viewer.layers[0].metadata
@@ -449,7 +453,7 @@ def test_phasor_transform_lsm_widget(make_viewer_model, qtbot):
     widget.harmonic_slider.setValue((2, 2))
     widget.btn.click()
     assert len(viewer.layers) == 2
-    assert viewer.layers[1].name == "test_file Intensity Image [1]"
+    assert viewer.layers[1].name == "test_file [Phasor] Intensity [1]"
     assert viewer.layers[1].data.shape == (512, 512)
     assert viewer.layers[1].metadata["G"].shape == (1, 512, 512)
     assert list(viewer.layers[1].metadata["harmonics"]) == [2]
@@ -550,7 +554,7 @@ def test_phasor_transform_czi_widget(make_viewer_model, qtbot):
         # Click button of phasor transform and check layers
         widget.btn.click()
         assert len(viewer.layers) == 1
-        assert viewer.layers[0].name == "test_file Intensity Image"
+        assert viewer.layers[0].name == "test_file [Phasor] Intensity"
         # Shape after squeeze was (28, 512, 512), so spatial is (512, 512)
         assert viewer.layers[0].data.shape == (512, 512)
         # Check phasor data in metadata
@@ -565,7 +569,7 @@ def test_phasor_transform_czi_widget(make_viewer_model, qtbot):
         widget.harmonic_slider.setValue((2, 3))
         widget.btn.click()
         assert len(viewer.layers) == 2
-        assert viewer.layers[1].name == "test_file Intensity Image [1]"
+        assert viewer.layers[1].name == "test_file [Phasor] Intensity [1]"
         assert viewer.layers[1].data.shape == (512, 512)
         assert viewer.layers[1].metadata["G"].shape == (2, 512, 512)
         assert list(viewer.layers[1].metadata["harmonics"]) == [2, 3]
@@ -600,7 +604,7 @@ def test_phasor_transform_ome_tif_widget(make_viewer_model, qtbot):
     # Click button of phasor transform and check layers
     widget.btn.click()
     assert len(viewer.layers) == 1
-    assert "Intensity Image" in viewer.layers[0].name
+    assert "[Phasor] Intensity" in viewer.layers[0].name
     # Check phasor data in metadata
     assert "G" in viewer.layers[0].metadata
     assert "S" in viewer.layers[0].metadata
@@ -2581,7 +2585,7 @@ def test_tile_mode_stitches_and_restitches(make_viewer_model, qtbot, tmp_path):
     assert len(viewer.layers) == 1
     layer = viewer.layers[0]
     assert layer.data.shape == (120, 120)
-    assert "Mosaic Intensity Image" in layer.name
+    assert "Mosaic [Phasor] Intensity" in layer.name
     assert widget.tile_estimate_btn.isEnabled()
     assert widget._tile_set.n_tiles == 9
 

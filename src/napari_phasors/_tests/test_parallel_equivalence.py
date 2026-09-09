@@ -577,7 +577,7 @@ def test_stack_reader_matrix(force_split, monkeypatch):
             "S_original": imag.copy(),
             "harmonics": [1, 2],
         }
-        return [(mean, {"name": "f Intensity Image", "metadata": meta})]
+        return [(mean, {"name": "f [Phasor] Intensity", "metadata": meta})]
 
     monkeypatch.setattr(reader_module, "raw_file_reader", fake)
     paths = [f"d/{i}.lsm" for i in range(6)]
@@ -639,7 +639,7 @@ def test_stack_reader_rejects_mismatched_files_the_same_way(
                 (
                     mean,
                     {
-                        "name": "f Intensity Image",
+                        "name": "f [Phasor] Intensity",
                         "metadata": {
                             "original_mean": mean.copy(),
                             "settings": {},
