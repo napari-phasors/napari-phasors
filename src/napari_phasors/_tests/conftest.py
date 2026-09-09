@@ -25,6 +25,18 @@ try:
 except (AttributeError, ImportError, TypeError):
     pass
 
+# Ensure napari writes test settings to a temporary directory rather than
+# user application support, avoiding sandbox PermissionError and race conditions.
+try:
+    import napari.settings
+
+    _test_settings_dir = tempfile.TemporaryDirectory()
+    napari.settings.get_settings(
+        path=pathlib.Path(_test_settings_dir.name) / "settings.yaml"
+    )
+except (AttributeError, ImportError, OSError, TypeError):
+    pass
+
 
 def configure_phasorpy_retries():
     """Opt every phasorpy dataset repository into a few download retries.

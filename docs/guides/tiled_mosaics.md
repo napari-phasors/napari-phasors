@@ -169,7 +169,7 @@ Stitching produces one layer per channel, named after the folder the tiles
 came from (or after the file, for a mosaic held in a single file):
 
 ```
-<name> Mosaic Intensity Image: Channel <n>
+<name> Mosaic Intensity: Channel <n> [Phasor]
 ```
 
 Its metadata carries everything the rest of the plugin needs

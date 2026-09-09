@@ -981,7 +981,7 @@ def test_phasor_mapping_widget_calculate_lifetimes_with_real_data(
 
     layer = Image(
         np.ones((2, 2)),
-        name="Test Intensity Image",
+        name="Test Intensity [Phasor]",
         metadata={
             "original_mean": np.ones((2, 2)),
             "settings": {},
@@ -1387,7 +1387,7 @@ def test_phasor_mapping_widget_different_harmonics_and_frequencies(
     for harmonic, base_frequency in test_cases:
         layer = Image(
             np.ones((2, 2)),
-            name="Test Intensity Image",
+            name="Test Intensity [Phasor]",
             metadata={
                 "original_mean": np.ones((2, 2)),
                 "settings": {},
