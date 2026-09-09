@@ -1764,12 +1764,11 @@ class FretWidget(QWidget):
         selected_layers = list(output_layers.values())
         if not selected_layers:
             self.histogram_widget.clear()
-            self.histogram_widget.hide()
+            self.histogram_widget.show()
             return
 
         per_layer = {layer.name: layer.data for layer in selected_layers}
-        # Groups live on the analysed image layer, not on the derived FRET
-        # layer, so every tab sees the same grouping.
+
         self.histogram_widget.set_dataset_sources(
             {layer.name: source for source, layer in output_layers.items()}
         )
@@ -1784,8 +1783,6 @@ class FretWidget(QWidget):
         )
         per_layer = self._slice_datasets_for_frame(per_layer)
 
-        # Bounds always come from original data so selection refresh cannot
-        # permanently collapse an already clipped range.
         original_merged = np.concatenate(original_arrays)
         valid = original_merged[
             ~np.isnan(original_merged) & np.isfinite(original_merged)

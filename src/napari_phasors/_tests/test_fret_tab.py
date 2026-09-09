@@ -2071,6 +2071,50 @@ def test_fret_full_calculation_range_and_histogram(make_viewer_model, qtbot):
     w._update_fret_histogram()
 
 
+def test_fret_histogram_stays_empty_before_any_analysis(
+    make_viewer_model, qtbot
+):
+    """Without FRET layers the histogram keeps its empty axes on screen.
+
+    Every other tab shows a styled, dataless plot before an analysis is run,
+    so the FRET dock must not collapse to nothing either.
+    """
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    w = parent.fret_tab
+    parent.tab_widget.setCurrentWidget(w)
+
+    hw = w.histogram_widget
+    with patch.object(hw, "hide") as mock_hide:
+        w._update_fret_histogram()
+    mock_hide.assert_not_called()
+
+    assert not hw.isHidden()
+    assert hw.counts is None
+    assert hw._datasets == {}
+    # The axes are still drawn: spines, ticks and labels are all in place.
+    assert hw.ax.get_xlabel() == "FRET efficiency"
+    assert hw.ax.get_ylabel() == "Pixel count"
+    assert hw.ax.spines["bottom"].get_visible()
+    assert len(hw.ax.lines) == 0
+
+    # Running an analysis fills the same, still-visible axes.
+    w.donor_line_edit.setText("2.0")
+    w.frequency_input.setText("80")
+    w.calculate_fret_efficiency()
+    assert not hw.isHidden()
+    assert hw.counts is not None
+
+    # Dropping the layers again empties the plot without hiding it.
+    for fret_layer in list(w.fret_layers):
+        viewer.layers.remove(fret_layer)
+    w._update_fret_histogram()
+    assert not hw.isHidden()
+    assert hw.counts is None
+
+
 def test_fret_recreate_restore_and_colormap_from_metadata(
     make_viewer_model, qtbot
 ):
