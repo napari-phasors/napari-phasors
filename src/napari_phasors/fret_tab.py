@@ -32,6 +32,7 @@ from superqt import QToggleSwitch
 from ._parallel import parallel_map
 from ._timelapse import slice_datasets
 from ._utils import (
+    AutoUpdateMixin,
     CheckableComboBox,
     CurrentPageStackedWidget,
     HistogramWidget,
@@ -44,7 +45,7 @@ from ._utils import (
 _FRET_OUTPUT_METADATA_KEY = 'phasor_fret_output'
 
 
-class FretWidget(QWidget):
+class FretWidget(AutoUpdateMixin, QWidget):
     """Widget to perform FLIM FRET analysis."""
 
     def __init__(self, viewer, parent=None):
@@ -366,12 +367,44 @@ class FretWidget(QWidget):
         )
         layout.addWidget(self.calculate_fret_efficiency_button)
 
+        layout.addWidget(
+            self._build_autoupdate_toggle(
+                self.calculate_fret_efficiency_button,
+                self._fret_validation,
+                self.calculate_fret_efficiency,
+                "Recalculate the FRET efficiency automatically whenever the "
+                "donor lifetime, frequency, background, fretting proportion, "
+                "layer selection, or filtered/calibrated phasor data change.",
+            )
+        )
+
         # Re-evaluate the button whenever a required input changes.
         self.frequency_input.textChanged.connect(
             lambda _=None: self._refresh_calculate_button()
         )
         self.donor_line_edit.textChanged.connect(
             lambda _=None: self._refresh_calculate_button()
+        )
+        # Autoupdate follows *committed* values -- a released slider, or a
+        # text field the user left -- so a drag or a half-typed number does
+        # not trigger one full recalculation per intermediate value.
+        self.frequency_input.editingFinished.connect(self.request_autoupdate)
+        self.donor_line_edit.editingFinished.connect(self.request_autoupdate)
+        self.background_real_edit.editingFinished.connect(
+            self.request_autoupdate
+        )
+        self.background_imag_edit.editingFinished.connect(
+            self.request_autoupdate
+        )
+        self.background_slider.sliderReleased.connect(self.request_autoupdate)
+        self.fretting_slider.sliderReleased.connect(self.request_autoupdate)
+        # Deriving the donor lifetime / background from layers fills the text
+        # fields programmatically, which emits no ``editingFinished``.
+        self.donor_lifetime_combobox.selectionChanged.connect(
+            self.request_autoupdate
+        )
+        self.background_image_combobox.selectionChanged.connect(
+            self.request_autoupdate
         )
 
         # NOTE: The widget is created here but NOT added to this tab's layout.
@@ -1764,12 +1797,11 @@ class FretWidget(QWidget):
         selected_layers = list(output_layers.values())
         if not selected_layers:
             self.histogram_widget.clear()
-            self.histogram_widget.hide()
+            self.histogram_widget.show()
             return
 
         per_layer = {layer.name: layer.data for layer in selected_layers}
-        # Groups live on the analysed image layer, not on the derived FRET
-        # layer, so every tab sees the same grouping.
+
         self.histogram_widget.set_dataset_sources(
             {layer.name: source for source, layer in output_layers.items()}
         )
@@ -1784,8 +1816,6 @@ class FretWidget(QWidget):
         )
         per_layer = self._slice_datasets_for_frame(per_layer)
 
-        # Bounds always come from original data so selection refresh cannot
-        # permanently collapse an already clipped range.
         original_merged = np.concatenate(original_arrays)
         valid = original_merged[
             ~np.isnan(original_merged) & np.isfinite(original_merged)

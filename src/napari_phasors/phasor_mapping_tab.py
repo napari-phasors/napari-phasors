@@ -34,6 +34,7 @@ from ._parallel import parallel_map
 from ._timelapse import slice_datasets
 from ._utils import (
     LIFETIME_OUTPUT_TYPES,
+    AutoUpdateMixin,
     HistogramWidget,
     analysis_section_stylesheet,
     create_mpl_colormap_from_qcolor,
@@ -51,6 +52,9 @@ if TYPE_CHECKING:
 
 # Default grid resolution used when a precomputed mesh grid is not supplied.
 _DEFAULT_MESH_RESOLUTION = 300
+# Default opacity of the phase/modulation mesh overlay. The control exposes
+# its complement (transparency), which is how the rest of the plugin words it.
+DEFAULT_MESH_ALPHA = 0.45
 _MAPPING_OUTPUT_METADATA_KEY = 'phasor_mapping_output'
 _MAPPING_OUTPUT_TYPES = (
     "Apparent Phase Lifetime",
@@ -278,7 +282,7 @@ def draw_phasor_mesh(
     return image
 
 
-class PhasorMappingWidget(QWidget):
+class PhasorMappingWidget(AutoUpdateMixin, QWidget):
     """Widget to calculate and display phasor mapping outputs.
 
     Supports lifetime-derived outputs and direct phasor outputs:
@@ -533,22 +537,22 @@ class PhasorMappingWidget(QWidget):
         )
         self.mesh_colorbar_checkbox.setVisible(False)
 
-        # Row for Alpha, Clip Toggle, and Colorbar Toggle
+        # Row for Transparency, Clip Toggle, and Colorbar Toggle
         self.mesh_controls_widget = QWidget()
         mesh_controls_layout = QHBoxLayout(self.mesh_controls_widget)
         mesh_controls_layout.setContentsMargins(0, 0, 0, 0)
 
-        mesh_controls_layout.addWidget(QLabel("Alpha:"))
-        self.mesh_alpha_spinbox = QDoubleSpinBox()
-        self.mesh_alpha_spinbox.setRange(0.01, 1.0)
-        self.mesh_alpha_spinbox.setSingleStep(0.05)
-        self.mesh_alpha_spinbox.setDecimals(2)
-        self.mesh_alpha_spinbox.setValue(0.45)
-        self.mesh_alpha_spinbox.setToolTip(
-            "Opacity of the phase/modulation mesh overlay"
+        mesh_controls_layout.addWidget(QLabel("Transparency:"))
+        self.mesh_transparency_spinbox = QDoubleSpinBox()
+        self.mesh_transparency_spinbox.setRange(0.0, 0.99)
+        self.mesh_transparency_spinbox.setSingleStep(0.05)
+        self.mesh_transparency_spinbox.setDecimals(2)
+        self.mesh_transparency_spinbox.setValue(1.0 - DEFAULT_MESH_ALPHA)
+        self.mesh_transparency_spinbox.setToolTip(
+            "Transparency of the phase/modulation mesh overlay"
         )
-        self.mesh_alpha_spinbox.setFixedWidth(60)
-        mesh_controls_layout.addWidget(self.mesh_alpha_spinbox)
+        self.mesh_transparency_spinbox.setFixedWidth(60)
+        mesh_controls_layout.addWidget(self.mesh_transparency_spinbox)
 
         mesh_controls_layout.addSpacing(10)
         mesh_controls_layout.addWidget(self.mesh_clip_semicircle_checkbox)
@@ -635,6 +639,17 @@ class PhasorMappingWidget(QWidget):
             "selected layers.",
         )
         self.main_layout.addWidget(self.calculate_lifetime_button)
+
+        self.main_layout.addWidget(
+            self._build_autoupdate_toggle(
+                self.calculate_lifetime_button,
+                self._mapping_validation,
+                self._autoupdate_calculate_output,
+                "Recalculate the selected output automatically whenever the "
+                "output type, the frequency, the layer selection, or the "
+                "filtered/calibrated phasor data change.",
+            )
+        )
         self.main_layout.addStretch(1)
 
         # Re-evaluate the button whenever a required input changes.
@@ -642,10 +657,15 @@ class PhasorMappingWidget(QWidget):
             lambda _=None: self._refresh_calculate_button()
         )
         self.output_mode_combobox.currentTextChanged.connect(
-            lambda _=None: self._refresh_calculate_button()
+            lambda _=None: self._on_mapping_input_changed()
         )
         self.lifetime_type_combobox.currentTextChanged.connect(
-            lambda _=None: self._refresh_calculate_button()
+            lambda _=None: self._on_mapping_input_changed()
+        )
+        # Autoupdate follows the *committed* frequency (Enter or focus-out),
+        # not every keystroke: "8" is a valid frequency on the way to "80".
+        self.frequency_input.editingFinished.connect(
+            self._on_mapping_input_changed
         )
 
         # Connect signals for mesh overlay
@@ -676,8 +696,8 @@ class PhasorMappingWidget(QWidget):
         self.modulation_max_edit.editingFinished.connect(
             self._on_modulation_edits_changed
         )
-        self.mesh_alpha_spinbox.valueChanged.connect(
-            self._on_mesh_alpha_changed
+        self.mesh_transparency_spinbox.valueChanged.connect(
+            self._on_mesh_transparency_changed
         )
 
         self._sync_mode_widgets()
@@ -1000,7 +1020,7 @@ class PhasorMappingWidget(QWidget):
             'mesh_overlay_enabled': False,
             'mesh_clip_semicircle_enabled': False,
             'mesh_colorbar_enabled': False,
-            'mesh_alpha': 0.45,
+            'mesh_alpha': DEFAULT_MESH_ALPHA,
             'mesh_phase_min': None,
             'mesh_phase_max': None,
             'mesh_modulation_min': None,
@@ -1535,11 +1555,13 @@ class PhasorMappingWidget(QWidget):
                     self.mesh_overlay_checkbox.setChecked(False)
                 finally:
                     self.mesh_overlay_checkbox.blockSignals(False)
-                self.mesh_alpha_spinbox.blockSignals(True)
+                self.mesh_transparency_spinbox.blockSignals(True)
                 try:
-                    self.mesh_alpha_spinbox.setValue(0.45)
+                    self.mesh_transparency_spinbox.setValue(
+                        1.0 - DEFAULT_MESH_ALPHA
+                    )
                 finally:
-                    self.mesh_alpha_spinbox.blockSignals(False)
+                    self.mesh_transparency_spinbox.blockSignals(False)
                 self._sync_mode_widgets()
                 self._clear_2d_coloring()
                 self.histogram_widget.update_data(np.array([]))
@@ -1571,7 +1593,7 @@ class PhasorMappingWidget(QWidget):
             )
 
             mesh_enabled = bool(settings.get('mesh_overlay_enabled', False))
-            mesh_alpha = float(settings.get('mesh_alpha', 0.45))
+            mesh_alpha = float(settings.get('mesh_alpha', DEFAULT_MESH_ALPHA))
             mesh_alpha = float(np.clip(mesh_alpha, 0.0, 1.0))
 
             self.mesh_overlay_checkbox.blockSignals(True)
@@ -1580,11 +1602,11 @@ class PhasorMappingWidget(QWidget):
             finally:
                 self.mesh_overlay_checkbox.blockSignals(False)
 
-            self.mesh_alpha_spinbox.blockSignals(True)
+            self.mesh_transparency_spinbox.blockSignals(True)
             try:
-                self.mesh_alpha_spinbox.setValue(mesh_alpha)
+                self.mesh_transparency_spinbox.setValue(1.0 - mesh_alpha)
             finally:
-                self.mesh_alpha_spinbox.blockSignals(False)
+                self.mesh_transparency_spinbox.blockSignals(False)
 
             self._update_phase_slider_bounds_from_plot_mode()
             if not self._restore_mesh_ranges_from_settings(settings):
@@ -2274,6 +2296,26 @@ class PhasorMappingWidget(QWidget):
         if hasattr(self, '_refresh_calculate_button'):
             self._refresh_calculate_button()
 
+    def _on_mapping_input_changed(self):
+        """Re-evaluate the Calculate button after an input changed."""
+        self._refresh_calculate_button()
+        self.request_autoupdate()
+
+    def _autoupdate_calculate_output(self):
+        """Recompute the output for an autoupdate, without popping warnings.
+
+        An automatic run is not a user action, so a transiently invalid state
+        (a layer whose data a filter is still rewriting, say) must not raise
+        a dialog the user did not ask for.
+
+        Output-mode changes also arm the debounced refresh timer (which only
+        runs once an output exists); computing here makes that pending tick
+        redundant, so it is dropped rather than repeating the work.
+        """
+        self._output_refresh_timer.stop()
+        if self._calculate_and_display_output(show_warnings=False):
+            self._has_calculated_output = True
+
     def _on_calculate_lifetime_clicked(self):
         """Callback when Calculate button is clicked.
 
@@ -2717,7 +2759,7 @@ class PhasorMappingWidget(QWidget):
             )
 
             extent = mesh_grid['extent']
-            mesh_alpha = float(self.mesh_alpha_spinbox.value())
+            mesh_alpha = self._mesh_alpha()
             alpha_key = (
                 *self._make_mesh_grid_cache_key(ax, resolution),
                 int(phase_min_i),
@@ -3055,11 +3097,15 @@ class PhasorMappingWidget(QWidget):
             elif self.parent_widget is not None:
                 self.parent_widget._remove_mapping_colorbar()
 
-    def _on_mesh_alpha_changed(self, _value):
-        """Refresh mesh overlay when alpha changes."""
+    def _mesh_alpha(self):
+        """Return the mesh opacity from the transparency control."""
+        return round(1.0 - float(self.mesh_transparency_spinbox.value()), 10)
+
+    def _on_mesh_transparency_changed(self, _value):
+        """Refresh mesh overlay when its transparency changes."""
         if not self._updating_settings:
             self._update_lifetime_setting_in_metadata(
-                'mesh_alpha', float(self.mesh_alpha_spinbox.value())
+                'mesh_alpha', self._mesh_alpha()
             )
         self._refresh_mesh_overlay_if_needed()
 

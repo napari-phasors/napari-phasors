@@ -33,6 +33,7 @@ from qtpy.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -52,6 +53,7 @@ from qtpy.QtWidgets import (
 from ._parallel import parallel_map, parallel_rowwise
 from ._timelapse import slice_datasets
 from ._utils import (
+    AutoUpdateMixin,
     CheckableComboBox,
     HistogramWidget,
     analysis_section_stylesheet,
@@ -59,9 +61,52 @@ from ._utils import (
     required_component_harmonics,
     setup_primary_button,
 )
+from .selection_tab import ClickableFrame
 
 if TYPE_CHECKING:
     import napari
+
+COMPONENT_CARD_STYLE = (
+    "QFrame#componentCard, QFrame#componentRow {"
+    "  border: 1px solid rgba(128, 128, 128, 0.3);"
+    "  border-radius: 4px;"
+    "  background-color: rgba(255, 255, 255, 0.02);"
+    "}"
+    "QFrame#componentCard:hover, QFrame#componentRow:hover {"
+    "  border: 1px solid rgba(128, 128, 128, 0.55);"
+    "}"
+    'QFrame#componentCard[selected="true"], QFrame#componentRow[selected="true"] {'
+    "  border: 1px solid rgba(30, 144, 255, 0.85);"
+    "  background-color: rgba(30, 144, 255, 0.06);"
+    "}"
+    "QPushButton#componentRemoveBtn {"
+    "  background: transparent;"
+    "  border: none;"
+    "  color: rgba(200, 200, 200, 0.7);"
+    "  font-size: 15px;"
+    "  font-weight: bold;"
+    "  padding: 0px;"
+    "  border-radius: 3px;"
+    "}"
+    "QPushButton#componentRemoveBtn:hover {"
+    "  color: #ff5555;"
+    "  background: rgba(255, 85, 85, 0.15);"
+    "}"
+    "QPushButton#componentRemoveBtn:disabled {"
+    "  color: rgba(128, 128, 128, 0.25);"
+    "}"
+)
+COMPONENT_ROW_STYLE = COMPONENT_CARD_STYLE
+
+# Tooltips for the per-card "Show in histogram and statistics" toggle.
+HISTOGRAM_TOGGLE_TOOLTIP = (
+    "Show this component's fraction data in the histogram and statistics "
+    "docks. Check several components to compare them in one plot."
+)
+HISTOGRAM_TOGGLE_DISABLED_TOOLTIP = (
+    "Run a component analysis to plot this component's fraction data in "
+    "the histogram and statistics docks."
+)
 
 
 def _fit_components(mean, real, imag, component_g, component_s):
@@ -96,50 +141,14 @@ class ComponentState:
     label: str = "Component"
     # Layer names last used to compute the phasor center for this component.
     phasor_center_layers: list[str] = field(default_factory=list)
-
-
-class ComponentSelectorComboBox(CheckableComboBox):
-    """Component selector allowing one or several components at once.
-
-    Several component distributions can be compared side by side in the
-    histogram, so the selector is checkable. It keeps the single-selection
-    ``QComboBox`` API (:meth:`currentText` / :meth:`setCurrentText`) working
-    on the first checked entry, which is the one whose colormap drives the
-    plot's gradient and the range slider.
-
-    Parameters
-    ----------
-    tooltip : str, optional
-        Tooltip shown on the closed combobox.
-    parent : QWidget, optional
-        Parent widget.
-    """
-
-    def __init__(self, tooltip: str = "", parent=None):
-        """Build a checkable selector labelled in components, not layers."""
-        super().__init__(
-            parent=parent,
-            enable_primary_layer=False,
-            placeholder="Select components...",
-            unit="components",
-            no_selection_text="No component",
-            show_checked_list=True,
-        )
-        if tooltip:
-            self.setToolTip(tooltip)
-
-    def currentText(self) -> str:
-        """Return the first checked component, or ``""`` when none is."""
-        checked = self.checkedItems()
-        return checked[0] if checked else ""
-
-    def setCurrentText(self, text: str) -> None:
-        """Check *text* alone, leaving the selection unchanged if absent."""
-        if self.findText(text) < 0:
-            return
-        # ``setCheckedItems`` emits ``selectionChanged`` itself unless the
-        # caller blocked signals, which is exactly the wanted behaviour.
-        self.setCheckedItems([text])
+    card_frame: any = None
+    row_frame: any = None
+    name_label: QLabel | None = None
+    coords_label: QLabel | None = None
+    remove_button: QPushButton | None = None
+    detail_widget: QWidget | None = None
+    histogram_checkbox: QCheckBox | None = None
+    ui_elements: dict = field(default_factory=dict)
 
 
 class ColorActionWidget(QLabel):
@@ -258,10 +267,6 @@ class CenterFillSlider(QSlider):
             QStyle.CC_Slider, opt, QStyle.SC_SliderHandle, self
         )
 
-        # Map the zero value to a pixel the same way Qt positions the handle:
-        # the handle centre only travels within the groove inset by half its
-        # width. Using the naive groove-width mapping instead would drift the
-        # fill origin away from the handle at value 0.
         handle_w = handle.width()
         available = groove.width() - handle_w
         zero_pos = self.style().sliderPositionFromValue(
@@ -270,11 +275,6 @@ class CenterFillSlider(QSlider):
         zero_x = groove.x() + handle_w / 2.0 + zero_pos
         handle_x = handle.center().x()
 
-        # Overlay the fill exactly on the grey groove line. The stylesheet
-        # draws the track 4px tall, centred on the groove rect; mirror that
-        # here using the float centre so the blue band shares the light-grey
-        # track's centre and thickness (QRect.center() floors for even
-        # heights, which shifted the band up by a pixel).
         groove_thickness = 4.0
         center_y = groove.y() + groove.height() / 2.0
         left = min(zero_x, handle_x)
@@ -324,9 +324,6 @@ class PhasorCenterSelectionDialog(QDialog):
         )
         self.layer_combo.addItems(layers)
 
-        # Pre-select only the layers that were previously used to compute the
-        # phasor center for this component. By default (no prior selection)
-        # nothing is checked.
         if preselected:
             checked = [name for name in preselected if name in layers]
             if checked:
@@ -334,7 +331,6 @@ class PhasorCenterSelectionDialog(QDialog):
 
         layout.addWidget(self.layer_combo)
 
-        # Spacer
         layout.addSpacing(4)
 
         button_box = QDialogButtonBox(
@@ -351,7 +347,7 @@ class PhasorCenterSelectionDialog(QDialog):
         return self.layer_combo.checkedItems()
 
 
-class ComponentsWidget(QWidget):
+class ComponentsWidget(AutoUpdateMixin, QWidget):
     """Widget to perform component analysis on phasor coordinates."""
 
     def __init__(self, viewer: "napari.viewer.Viewer", parent=None):
@@ -434,9 +430,16 @@ class ComponentsWidget(QWidget):
         self._needs_update = False  # Deferred update flag
         # Guard against recursion while mirroring slider <-> spinbox pairs.
         self._syncing_slider_spin = False
-        # Guard to avoid recursion while mirroring the component selection
-        # between the histogram and statistics comboboxes.
-        self._syncing_component_comboboxes = False
+        # Component names whose fraction distribution is shown in the
+        # histogram and statistics docks, in the order they were checked. The
+        # first one drives the plot gradient and the range slider.
+        self._histogram_components = []
+        # Component names that currently have fraction data to show, i.e. the
+        # ones whose card toggle is enabled.
+        self._available_histogram_components = []
+        # Guard to avoid recursion while pushing the selection back onto the
+        # per-card toggles.
+        self._syncing_component_toggles = False
 
         # Flag to track if analysis was attempted
         self._analysis_attempted = False
@@ -456,6 +459,7 @@ class ComponentsWidget(QWidget):
         self._active_select_shortcut = None
         self._active_select_idx = None
         self._active_select_original_text = "Select"
+        self._selected_component = None
 
         self.setup_ui()
         self._update_lifetime_inputs_visibility()
@@ -473,6 +477,7 @@ class ComponentsWidget(QWidget):
         # Scroll area
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.NoFrame)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         root_layout.addWidget(scroll_area)
 
@@ -520,9 +525,30 @@ class ComponentsWidget(QWidget):
         self._refresh_components_info_label()
         components_box_layout.addWidget(self.components_info_label)
 
-        # Components inputs
-        self.components_layout = QVBoxLayout()
-        components_box_layout.addLayout(self.components_layout)
+        # Container holding one QFrame per component row
+        self._rows_container = QWidget()
+        self.components_layout = QVBoxLayout(self._rows_container)
+        self.components_layout.setContentsMargins(0, 0, 0, 0)
+        self.components_layout.setSpacing(6)
+        components_box_layout.addWidget(self._rows_container)
+
+        # "+ Add Component" button, full width
+        self.add_component_btn = QPushButton("+ Add Component")
+        self.add_component_btn.clicked.connect(self._add_component)
+        self.add_component_btn.setToolTip("Add a new component.")
+        components_box_layout.addWidget(self.add_component_btn)
+
+        # Hints
+        hint_label = QLabel(
+            "• Click 'Select' or click and drag component dots on the plot."
+        )
+        hint_label.setWordWrap(True)
+        hint_label.setStyleSheet(
+            "color: rgba(128, 128, 128, 0.7); font-size: 11px;"
+        )
+        components_box_layout.addWidget(hint_label)
+
+        layout.addWidget(components_box)
 
         # Initialize with 2 components
         for i in range(2):
@@ -531,31 +557,12 @@ class ComponentsWidget(QWidget):
         # Move the visibility update to AFTER components are created
         self._update_lifetime_inputs_visibility()
 
-        # Component management section
-        comp_management_layout = QHBoxLayout()
-        self.add_component_btn = QPushButton("Add Component")
-        self.add_component_btn.clicked.connect(self._add_component)
-        self.add_component_btn.setToolTip("Add a new component field.")
-        comp_management_layout.addWidget(self.add_component_btn)
-
-        self.remove_component_btn = QPushButton("Remove Component")
-        self.remove_component_btn.clicked.connect(self._remove_component)
-        self.remove_component_btn.setToolTip(
-            "Remove the last component field."
-        )
-        comp_management_layout.addWidget(self.remove_component_btn)
-
-        self.clear_components_btn = QPushButton("Clear All")
-        self.clear_components_btn.clicked.connect(self._clear_components)
-        self.clear_components_btn.setToolTip("Clear all component values.")
-        comp_management_layout.addWidget(self.clear_components_btn)
-
-        comp_management_layout.addStretch()
-        components_box_layout.addLayout(comp_management_layout)
-        layout.addWidget(components_box)
+        # Select the first component by default
+        self._select_component_item(0)
 
         # Calculate button (validated: greyed out until components are set)
         self.calculate_button = QPushButton("Run Component Analysis")
+        self.calculate_button.setMinimumHeight(34)
         self._refresh_run_button = setup_primary_button(
             self.calculate_button,
             self._components_validation,
@@ -564,6 +571,17 @@ class ComponentsWidget(QWidget):
             "components.",
         )
         layout.addWidget(self.calculate_button)
+
+        layout.addWidget(
+            self._build_autoupdate_toggle(
+                self.calculate_button,
+                self._components_validation,
+                self._run_analysis,
+                "Re-run the component analysis automatically whenever the "
+                "components, the harmonic, the layer selection, or the "
+                "filtered/calibrated phasor data change.",
+            )
+        )
 
         # Display settings section
         display_box, display_box_layout = make_section("Display settings")
@@ -588,27 +606,6 @@ class ComponentsWidget(QWidget):
         display_box_layout.addLayout(buttons_row)
         layout.addWidget(display_box)
 
-        # Component selector combobox (will be inserted into the histogram dock
-        # widget). Several components can be checked at once so their fraction
-        # distributions are compared in the same plot.
-        self.histogram_component_combobox = ComponentSelectorComboBox(
-            tooltip="Select which components' fraction data to display in "
-            "the histogram. Check several to compare them in one plot."
-        )
-        self.histogram_component_combobox.selectionChanged.connect(
-            self._on_histogram_component_changed
-        )
-
-        # Mirror of the selector shown in the statistics dock so the component
-        # can be changed there too. Kept in sync with the histogram combobox.
-        self.stats_component_combobox = ComponentSelectorComboBox(
-            tooltip="Select which components' fraction data to display in "
-            "the histogram and statistics."
-        )
-        self.stats_component_combobox.selectionChanged.connect(
-            self._on_stats_component_changed
-        )
-
         # NOTE: The widget is created here but NOT added to this tab's layout.
         # PlotterWidget wraps it in a HistogramDockWidget and docks it separately.
         self.histogram_widget = HistogramWidget(
@@ -626,6 +623,17 @@ class ComponentsWidget(QWidget):
             self._on_fraction_range_changed
         )
 
+        # Hints matching Selections tab
+        hints = [
+            "• Click a component row or on the plot to select and edit it.",
+            "• Use the Select button to place components from cursors or plot clicks.",
+            "• Drag components directly on the phasor plot to reposition them.",
+        ]
+        hints_label = QLabel("\n".join(hints))
+        hints_label.setStyleSheet("color: gray; font-size: 11px;")
+        hints_label.setWordWrap(True)
+        layout.addWidget(hints_label)
+
         layout.addStretch()
         self.setLayout(root_layout)
 
@@ -633,73 +641,132 @@ class ComponentsWidget(QWidget):
         self._update_component_visibility()
         self._update_button_states()
 
+    def _select_component_item(self, idx_or_comp):
+        """Highlight card for the selected component."""
+        if isinstance(idx_or_comp, int):
+            if idx_or_comp < 0 or idx_or_comp >= len(self.components):
+                comp = None
+            else:
+                comp = self.components[idx_or_comp]
+        else:
+            comp = idx_or_comp
+
+        if comp is not None and comp not in self.components:
+            return
+
+        self._selected_component = comp
+
+        for c in self.components:
+            if c is not None:
+                frame = getattr(c, 'card_frame', None) or getattr(
+                    c, 'row_frame', None
+                )
+                if frame is not None:
+                    selected = c is comp
+                    frame.setProperty("selected", selected)
+                    frame.style().unpolish(frame)
+                    frame.style().polish(frame)
+
+    def _refresh_editor_title(self):
+        """No-op kept for backward compatibility."""
+
+    def _update_row_coords_label(self, idx: int):
+        """No-op kept for backward compatibility."""
+
+    def _update_all_row_coords_labels(self):
+        """No-op kept for backward compatibility."""
+
     def _add_component_ui(self, idx):
-        """Add UI elements for a component."""
-        # Single component layout with all elements in one row
-        comp_layout = QHBoxLayout()
+        """Add inline two-line card UI elements for a component."""
+        card_frame = ClickableFrame(self._rows_container)
+        card_frame.setObjectName("componentCard")
+        card_frame.setStyleSheet(COMPONENT_CARD_STYLE)
+        card_frame.setCursor(Qt.PointingHandCursor)
 
-        # Component number label
+        card_layout = QVBoxLayout(card_frame)
+        card_layout.setContentsMargins(8, 6, 8, 6)
+        card_layout.setSpacing(4)
+
+        # 1. Top row: Number, Name (expanding), Select button, Remove button
+        row1 = QHBoxLayout()
+        row1.setContentsMargins(0, 0, 0, 0)
+        row1.setSpacing(6)
+
         number_label = QLabel(f"{idx + 1}.")
-        number_label.setStyleSheet("font-weight: bold;")
-        number_label.setMinimumWidth(20)
-        comp_layout.addWidget(number_label)
+        number_label.setStyleSheet("font-weight: 600;")
+        number_label.setMinimumWidth(18)
+        row1.addWidget(number_label)
 
-        # Component name
         name_edit = QLineEdit()
         name_edit.setPlaceholderText("Component name (optional)")
-        name_edit.setMaximumWidth(150)
         name_edit.setToolTip("Enter a name for this component (optional).")
-        comp_layout.addWidget(name_edit)
+        row1.addWidget(name_edit, 1)
 
-        # Select button
         select_button = QPushButton("Select")
         select_button.setMaximumWidth(70)
         select_button.setToolTip(
             "Click here to choose how to select the component location (on plot, from cursor, or auto intersect)."
         )
-        comp_layout.addWidget(select_button)
-
-        # Create dynamic menu for the Select button
         menu = QMenu(self)
-        menu.aboutToShow.connect(
-            lambda idx=idx, m=menu: self._populate_select_menu(idx, m)
-        )
         select_button.setMenu(menu)
+        row1.addWidget(select_button)
 
-        # G coordinate
-        comp_layout.addWidget(QLabel("G:"))
+        remove_button = QPushButton("×")
+        remove_button.setObjectName("componentRemoveBtn")
+        remove_button.setFixedSize(22, 22)
+        remove_button.setToolTip(f"Remove Component {idx + 1}.")
+        row1.addWidget(remove_button)
+
+        card_layout.addLayout(row1)
+
+        # 2. Bottom row: G, S, lifetime
+        row2 = QHBoxLayout()
+        row2.setContentsMargins(0, 0, 0, 0)
+        row2.setSpacing(6)
+
+        row2.addWidget(QLabel("G:"))
         g_edit = QLineEdit()
-        g_edit.setPlaceholderText("Real coordinate")
-        g_edit.setMaximumWidth(100)
+        g_edit.setPlaceholderText("Real")
+        g_edit.setMaximumWidth(90)
         g_edit.setToolTip("Edit the G (real) coordinate of the component.")
-        comp_layout.addWidget(g_edit)
+        row2.addWidget(g_edit)
 
-        # S coordinate
-        comp_layout.addWidget(QLabel("S:"))
+        row2.addWidget(QLabel("S:"))
         s_edit = QLineEdit()
-        s_edit.setPlaceholderText("Imaginary coordinate")
-        s_edit.setMaximumWidth(100)
+        s_edit.setPlaceholderText("Imaginary")
+        s_edit.setMaximumWidth(90)
         s_edit.setToolTip(
             "Edit the S (imaginary) coordinate of the component."
         )
-        comp_layout.addWidget(s_edit)
+        row2.addWidget(s_edit)
 
-        # Lifetime input
         lifetime_label = QLabel("τ:")
         lifetime_edit = QLineEdit()
         lifetime_edit.setPlaceholderText("Lifetime (ns)")
-        lifetime_edit.setMaximumWidth(80)
+        lifetime_edit.setMaximumWidth(85)
         lifetime_edit.setToolTip("Edit the lifetime (in ns) of the component.")
-        comp_layout.addWidget(lifetime_label)
-        comp_layout.addWidget(lifetime_edit)
+        row2.addWidget(lifetime_label)
+        row2.addWidget(lifetime_edit)
+        row2.addStretch()
 
-        # Add stretch to push everything to the left
-        comp_layout.addStretch()
+        card_layout.addLayout(row2)
 
-        # Add layout to components section
-        self.components_layout.addLayout(comp_layout)
+        # 3. Histogram / statistics toggle row
+        row3 = QHBoxLayout()
+        row3.setContentsMargins(0, 0, 0, 0)
+        row3.setSpacing(6)
 
-        # Create component state
+        histogram_checkbox = QCheckBox("Show in histogram and statistics")
+        histogram_checkbox.setEnabled(False)
+        histogram_checkbox.setToolTip(HISTOGRAM_TOGGLE_DISABLED_TOOLTIP)
+        row3.addWidget(histogram_checkbox)
+        row3.addStretch()
+
+        card_layout.addLayout(row3)
+
+        self.components_layout.addWidget(card_frame)
+
+        # 3. Component state
         comp = ComponentState(
             idx=idx,
             name_edit=name_edit,
@@ -708,46 +775,83 @@ class ComponentsWidget(QWidget):
             s_edit=s_edit,
             select_button=select_button,
             number_label=number_label,
-            label=f"Component {idx+1}",
+            label=f"Component {idx + 1}",
             text_offset=(0.02, 0.02),
+            card_frame=card_frame,
+            row_frame=card_frame,
+            remove_button=remove_button,
+            histogram_checkbox=histogram_checkbox,
+            ui_elements={
+                'comp_layout': row2,
+                'card_layout': card_layout,
+                'lifetime_label': lifetime_label,
+                'histogram_layout': row3,
+            },
         )
 
-        # Extend components list if needed
         while len(self.components) <= idx:
             self.components.append(None)
         self.components[idx] = comp
 
         # Connect signals
+        menu.aboutToShow.connect(
+            lambda c=comp, m=menu: self._populate_select_menu(c.idx, m)
+        )
+        card_frame.clicked.connect(
+            lambda c=comp: self._select_component_item(c)
+        )
+        remove_button.clicked.connect(
+            lambda _, c=comp: self._remove_component(c.idx)
+        )
+        # Only the card's own labels follow every keystroke; renaming layers,
+        # metadata and the histogram is deferred to Enter / focus-out so a
+        # rename does not re-render the plot once per typed letter.
         name_edit.textChanged.connect(
-            lambda: self._on_component_name_changed(idx)
+            lambda _, c=comp: self._on_component_name_edited(c.idx)
+        )
+        name_edit.editingFinished.connect(
+            lambda c=comp: self._on_component_name_changed(c.idx)
+        )
+        name_edit.cursorPositionChanged.connect(
+            lambda *_, c=comp: self._select_component_item(c)
         )
         g_edit.editingFinished.connect(
-            lambda: self._on_component_coords_changed(idx)
+            lambda c=comp: self._on_component_coords_changed(c.idx)
         )
         g_edit.textChanged.connect(
-            lambda: self._update_component_input_styling(idx)
+            lambda _, c=comp: self._update_component_input_styling(c.idx)
         )
         g_edit.textChanged.connect(
             lambda _=None: self._refresh_run_button_if_ready()
+        )
+        g_edit.cursorPositionChanged.connect(
+            lambda *_, c=comp: self._select_component_item(c)
         )
         s_edit.editingFinished.connect(
-            lambda: self._on_component_coords_changed(idx)
+            lambda c=comp: self._on_component_coords_changed(c.idx)
         )
         s_edit.textChanged.connect(
-            lambda: self._update_component_input_styling(idx)
+            lambda _, c=comp: self._update_component_input_styling(c.idx)
         )
         s_edit.textChanged.connect(
             lambda _=None: self._refresh_run_button_if_ready()
         )
-        lifetime_edit.editingFinished.connect(
-            lambda: self._update_component_from_lifetime(idx)
+        s_edit.cursorPositionChanged.connect(
+            lambda *_, c=comp: self._select_component_item(c)
         )
-        # Select button action is handled by the dynamic QMenu
+        lifetime_edit.editingFinished.connect(
+            lambda c=comp: self._update_component_from_lifetime(c.idx)
+        )
+        lifetime_edit.cursorPositionChanged.connect(
+            lambda *_, c=comp: self._select_component_item(c)
+        )
+        histogram_checkbox.toggled.connect(
+            lambda checked, c=comp: self._on_component_histogram_toggled(
+                c.idx, checked
+            )
+        )
 
-        comp.ui_elements = {
-            'comp_layout': comp_layout,
-            'lifetime_label': lifetime_label,
-        }
+        self._sync_component_histogram_toggles()
 
     def _auto_place_second_component(self):
         """Auto-place Component 2 on the universal circle based on Component 1 and the data center."""
@@ -963,6 +1067,7 @@ class ComponentsWidget(QWidget):
             return
 
         self._add_component_ui(total_count)
+        self._select_component_item(total_count)
         self._update_component_visibility()
         self._update_analysis_options()
         self._update_button_states()
@@ -970,22 +1075,43 @@ class ComponentsWidget(QWidget):
         if self.parent_widget is not None:
             self._update_lifetime_inputs_visibility()
 
-    def _remove_component(self):
-        """Remove the last component."""
+        self.request_autoupdate()
+
+    def _remove_component(self, idx=None):
+        """Remove a component (by default, the last one)."""
         if len(self.components) <= 2:
             self._update_button_states()
             return
 
-        last_idx = len(self.components) - 1
-        comp = self.components[last_idx]
+        if idx is None:
+            idx = len(self.components) - 1
+        elif isinstance(idx, ComponentState):
+            idx = self.components.index(idx)
+
+        if idx < 0 or idx >= len(self.components):
+            return
+
+        comp = self.components[idx]
+        was_selected = self._selected_component is comp
 
         if comp is not None:
             if comp.dot is not None:
-                comp.dot.remove()
+                with contextlib.suppress(ValueError, AttributeError):
+                    comp.dot.remove()
             if comp.text is not None:
-                comp.text.remove()
+                with contextlib.suppress(ValueError, AttributeError):
+                    comp.text.remove()
 
-            if hasattr(comp, 'ui_elements'):
+            frame = getattr(comp, 'card_frame', None) or getattr(
+                comp, 'row_frame', None
+            )
+            if frame is not None:
+                self.components_layout.removeWidget(frame)
+                frame.deleteLater()
+            elif (
+                hasattr(comp, 'ui_elements')
+                and 'comp_layout' in comp.ui_elements
+            ):
                 comp_layout = comp.ui_elements['comp_layout']
                 while comp_layout.count():
                     item = comp_layout.takeAt(0)
@@ -993,9 +1119,15 @@ class ComponentsWidget(QWidget):
                         item.widget().deleteLater()
                 self.components_layout.removeItem(comp_layout)
 
-        self.components.pop()
+        self.components.pop(idx)
 
         self._update_component_numbering()
+
+        if was_selected:
+            new_sel_idx = min(idx, len(self.components) - 1)
+            self._select_component_item(new_sel_idx)
+        else:
+            self._select_component_item(self._selected_component)
 
         if len(self.components) == 2:
             self._update_analysis_options()
@@ -1033,10 +1165,12 @@ class ComponentsWidget(QWidget):
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
-        self._remove_last_component_from_settings()
+        self._remove_component_from_settings(idx)
 
-    def _remove_last_component_from_settings(self):
-        """Remove the last component from the settings in metadata."""
+        self.request_autoupdate()
+
+    def _remove_component_from_settings(self, idx=None):
+        """Remove a component from the settings in metadata and reindex."""
         if self._updating_settings:
             return
 
@@ -1057,8 +1191,24 @@ class ComponentsWidget(QWidget):
         settings = layer.metadata['settings']['component_analysis']
 
         if 'components' in settings and len(settings['components']) > 0:
-            max_idx_str = max(settings['components'].keys(), key=int)
-            del settings['components'][max_idx_str]
+            if idx is None or idx >= len(self.components):
+                max_idx_str = max(settings['components'].keys(), key=int)
+                if max_idx_str in settings['components']:
+                    del settings['components'][max_idx_str]
+            else:
+                old_comps = settings['components']
+                new_comps = {}
+                new_i = 0
+                for i_str in sorted(old_comps.keys(), key=int):
+                    if int(i_str) == idx:
+                        continue
+                    new_comps[str(new_i)] = old_comps[i_str]
+                    new_i += 1
+                settings['components'] = new_comps
+
+    def _remove_last_component_from_settings(self):
+        """Remove the last component from the settings in metadata."""
+        self._remove_component_from_settings(None)
 
     def _get_max_components(self):
         """Get maximum number of components based on available harmonics."""
@@ -1107,7 +1257,20 @@ class ComponentsWidget(QWidget):
 
         self.add_component_btn.setEnabled(total_count < max_components)
 
-        self.remove_component_btn.setEnabled(total_count > 2)
+        for comp in self.components:
+            if (
+                comp is not None
+                and getattr(comp, 'remove_button', None) is not None
+            ):
+                comp.remove_button.setEnabled(total_count > 2)
+                if total_count <= 2:
+                    comp.remove_button.setToolTip(
+                        "At least two components are required."
+                    )
+                else:
+                    comp.remove_button.setToolTip(
+                        f"Remove Component {comp.idx + 1}."
+                    )
 
         self._refresh_run_button_if_ready()
 
@@ -1129,6 +1292,10 @@ class ComponentsWidget(QWidget):
             comp.name_edit.clear()
             if comp.lifetime_edit is not None:
                 comp.lifetime_edit.clear()
+            if getattr(comp, 'coords_label', None) is not None:
+                comp.coords_label.setText("G: -, S: -")
+            if getattr(comp, 'name_label', None) is not None:
+                comp.name_label.setText(f"Component {comp.idx + 1}")
 
         if self.component_line is not None:
             with contextlib.suppress(ValueError, AttributeError):
@@ -1144,14 +1311,32 @@ class ComponentsWidget(QWidget):
 
         self._update_components_setting_in_metadata('components', {})
 
+        self._refresh_editor_title()
+
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
     def _update_component_numbering(self):
         """Update the numbering labels for all components."""
         for i, comp in enumerate(self.components):
-            if comp is not None and comp.number_label is not None:
-                comp.number_label.setText(f"{i + 1}.")
+            if comp is not None:
+                comp.idx = i
+                comp.label = f"Component {i + 1}"
+                if comp.number_label is not None:
+                    comp.number_label.setText(f"{i + 1}.")
+                if getattr(comp, 'name_label', None) is not None:
+                    name = (
+                        comp.name_edit.text().strip() if comp.name_edit else ""
+                    )
+                    comp.name_label.setText(
+                        name if name else f"Component {i + 1}"
+                    )
+                if getattr(comp, 'remove_button', None) is not None:
+                    comp.remove_button.setToolTip(f"Remove Component {i + 1}.")
+        # Renumbering changes the default display names, so the card toggles
+        # have to be re-matched against the components that have data.
+        self._sync_component_histogram_toggles()
+        self._refresh_editor_title()
 
     def _get_default_components_settings(self):
         """Get default settings dictionary for components parameters."""
@@ -1322,13 +1507,20 @@ class ComponentsWidget(QWidget):
                             comp.text.remove()
                             comp.text = None
 
-                        if hasattr(comp, 'ui_elements'):
-                            comp_layout = comp.ui_elements['comp_layout']
-                            while comp_layout.count():
-                                item = comp_layout.takeAt(0)
-                                if item.widget():
-                                    item.widget().deleteLater()
-                            self.components_layout.removeItem(comp_layout)
+                        frame = getattr(comp, 'card_frame', None) or getattr(
+                            comp, 'row_frame', None
+                        )
+                        if frame is not None:
+                            self.components_layout.removeWidget(frame)
+                            frame.deleteLater()
+                        elif hasattr(comp, 'ui_elements'):
+                            comp_layout = comp.ui_elements.get('comp_layout')
+                            if comp_layout is not None:
+                                while comp_layout.count():
+                                    item = comp_layout.takeAt(0)
+                                    if item.widget():
+                                        item.widget().deleteLater()
+                                self.components_layout.removeItem(comp_layout)
 
                     self.components.pop()
 
@@ -1387,8 +1579,11 @@ class ComponentsWidget(QWidget):
                 self.draw_line_between_components()
 
             self._update_button_states()
-
             self._update_component_visibility()
+            self._update_all_row_coords_labels()
+            self._update_component_numbering()
+            if self.components:
+                self._select_component_item(0)
 
         except Exception as e:  # noqa: BLE001
             show_error(
@@ -1464,13 +1659,20 @@ class ComponentsWidget(QWidget):
                             comp.text.remove()
                             comp.text = None
 
-                        if hasattr(comp, 'ui_elements'):
-                            comp_layout = comp.ui_elements['comp_layout']
-                            while comp_layout.count():
-                                item = comp_layout.takeAt(0)
-                                if item.widget():
-                                    item.widget().deleteLater()
-                            self.components_layout.removeItem(comp_layout)
+                        frame = getattr(comp, 'card_frame', None) or getattr(
+                            comp, 'row_frame', None
+                        )
+                        if frame is not None:
+                            self.components_layout.removeWidget(frame)
+                            frame.deleteLater()
+                        elif hasattr(comp, 'ui_elements'):
+                            comp_layout = comp.ui_elements.get('comp_layout')
+                            if comp_layout is not None:
+                                while comp_layout.count():
+                                    item = comp_layout.takeAt(0)
+                                    if item.widget():
+                                        item.widget().deleteLater()
+                                self.components_layout.removeItem(comp_layout)
 
                     self.components.pop()
 
@@ -1567,8 +1769,11 @@ class ComponentsWidget(QWidget):
                     self.draw_line_between_components()
 
             self._update_button_states()
-
             self._update_component_visibility()
+            self._update_all_row_coords_labels()
+            self._update_component_numbering()
+            if self.components:
+                self._select_component_item(0)
 
         except Exception as e:  # noqa: BLE001
             show_error(
@@ -1972,6 +2177,7 @@ class ComponentsWidget(QWidget):
             self.calculate_button.setText("Run Multi-Component Analysis")
 
         self.draw_line_between_components()
+        self.request_autoupdate()
 
     def _on_harmonic_changed(self, new_harmonic):
         """Handle harmonic changes - store current components and restore for new harmonic."""
@@ -2121,6 +2327,7 @@ class ComponentsWidget(QWidget):
 
         self.draw_line_between_components()
         self._update_component_colors()
+        self._update_all_row_coords_labels()
         if self.parent_widget is not None:
             self.parent_widget.canvas_widget.canvas.draw_idle()
 
@@ -2906,10 +3113,29 @@ class ComponentsWidget(QWidget):
         else:
             self._create_component_at_coordinates(idx, x, y)
 
-    def _on_component_name_changed(self, idx: int):
-        """Handle changes to component name."""
+        self.request_autoupdate()
+
+    def _on_component_name_edited(self, idx: int):
+        """Follow every keystroke in the name field, cheaply.
+
+        Only this card's own labels are updated. Everything a rename implies
+        for the rest of the plugin — layer names, metadata, the phasor plot
+        label and the histogram/statistics series — waits for the edit to be
+        committed in :meth:`_on_component_name_changed`, so typing a name does
+        not trigger a full re-render per letter.
+        """
         comp = self.components[idx]
         name = comp.name_edit.text().strip()
+        if getattr(comp, 'name_label', None) is not None:
+            comp.name_label.setText(name if name else f"Component {idx + 1}")
+        self._refresh_editor_title()
+
+    def _on_component_name_changed(self, idx: int):
+        """Apply a committed component name (Enter pressed or focus lost)."""
+        comp = self.components[idx]
+        name = comp.name_edit.text().strip()
+
+        self._on_component_name_edited(idx)
 
         old_name = None
         if not self._updating_settings and self.current_image_layer_name:
@@ -3033,14 +3259,16 @@ class ComponentsWidget(QWidget):
         (carrying the checked components across the new name), redraw the
         curves and relabel the columns.
         """
-        if not hasattr(self, 'histogram_component_combobox'):
+        if not hasattr(self, '_histogram_components'):
             return
         old_display = old_name or f"Component {idx + 1}"
         new_display = new_name or f"Component {idx + 1}"
         if old_display == new_display:
             return
 
-        self._update_histogram_combobox(renamed={old_display: new_display})
+        self._update_histogram_component_toggles(
+            renamed={old_display: new_display}
+        )
         self._sync_fraction_layer_visibility()
         self.update_component_histogram()
 
@@ -3993,11 +4221,7 @@ class ComponentsWidget(QWidget):
         self.draw_line_between_components()
 
         # Refresh histogram if the changed layer is the currently displayed one
-        selected_component = ""
-        if hasattr(self, 'histogram_component_combobox'):
-            selected_component = (
-                self.histogram_component_combobox.currentText().strip()
-            )
+        selected_component = self._primary_histogram_component()
 
         comp = self.components[comp_idx]
         changed_component = (
@@ -4090,11 +4314,7 @@ class ComponentsWidget(QWidget):
 
         # Refresh histogram only when the changed layer belongs to the
         # currently selected histogram component.
-        selected_component = ""
-        if hasattr(self, 'histogram_component_combobox'):
-            selected_component = (
-                self.histogram_component_combobox.currentText().strip()
-            )
+        selected_component = self._primary_histogram_component()
 
         comp = self.components[comp_idx]
         changed_component = (
@@ -4303,6 +4523,7 @@ class ComponentsWidget(QWidget):
                             event
                         )
                 self.parent_widget.canvas_widget._on_escape(None)
+                self._select_component_item(comp.idx)
                 self.dragging_label_idx = comp.idx
                 return
         for comp in self.components:
@@ -4321,6 +4542,7 @@ class ComponentsWidget(QWidget):
                             event
                         )
                 self.parent_widget.canvas_widget._on_escape(None)
+                self._select_component_item(comp.idx)
                 self.dragging_component_idx = comp.idx
                 return
 
@@ -4369,12 +4591,18 @@ class ComponentsWidget(QWidget):
         if comp.text is not None:
             ox, oy = comp.text_offset
             comp.text.set_position((x + ox, y + oy))
+        self._update_row_coords_label(self.dragging_component_idx)
         self.draw_line_between_components()
 
     def _on_release(self, event):
         """Handle release of components and labels."""
+        dragged_component = self.dragging_component_idx is not None
         self.dragging_component_idx = None
         self.dragging_label_idx = None
+        if dragged_component:
+            # Autoupdate waits for the drop: re-running on every mouse-move
+            # would recompute the fractions dozens of times per drag.
+            self.request_autoupdate()
 
     def _redraw(self, force=False):
         """Redraw the canvas. Use force=True to avoid stale blit artifacts."""
@@ -5623,7 +5851,7 @@ class ComponentsWidget(QWidget):
         # Refresh the histogram/statistics component selectors so a renamed
         # fraction layer keeps its component listed (discovery is metadata
         # aware). The current selection is preserved by name.
-        self._update_histogram_combobox()
+        self._update_histogram_component_toggles()
 
     def _component_display_name_from_tag(self, tag):
         """Return a component's display name from its fraction-layer tag.
@@ -6063,14 +6291,31 @@ class ComponentsWidget(QWidget):
             label, data = next(iter(per_layer.items()))
             self.histogram_widget.update_data(data, label=label)
 
-    def _update_histogram_combobox(self, renamed=None):
-        """Populate the component selector comboboxes with fraction layers.
+    def _component_display_name(self, idx: int) -> str:
+        """Return the display name of the component card at *idx*.
 
-        The histogram and statistics docks each show a combobox; both are
-        populated with the same entries and kept in sync. The components the
-        user had checked stay checked as long as they still exist; when none
-        of them do, the first entry is checked so the histogram is never
-        left blank.
+        This is the user-entered name when there is one, and the default
+        ``"Component <n>"`` label otherwise. It is the name fraction layers,
+        histogram series and statistics columns are keyed by.
+        """
+        if idx < 0 or idx >= len(self.components):
+            return ""
+        comp = self.components[idx]
+        if comp is None:
+            return ""
+        name = comp.name_edit.text().strip() if comp.name_edit else ""
+        return name or f"Component {idx + 1}"
+
+    def _update_histogram_component_toggles(self, renamed=None):
+        """Refresh which component cards can be shown, and which are.
+
+        Each component card carries a "Show in histogram and statistics"
+        toggle. It is enabled only for components that actually have fraction
+        data, and the checked ones are plotted together in the histogram and
+        listed in the statistics table. The components the user had checked
+        stay checked as long as they still exist; when none of them do, the
+        first available component is checked so the histogram is never left
+        blank.
 
         Parameters
         ----------
@@ -6078,7 +6323,7 @@ class ComponentsWidget(QWidget):
             ``{old_name: new_name}`` applied to the checked components, so a
             component renamed in the tab keeps its place in the selection.
         """
-        checked = self.histogram_component_combobox.checkedItems()
+        checked = list(self._histogram_components)
         if renamed:
             checked = [renamed.get(name, name) for name in checked]
 
@@ -6098,52 +6343,83 @@ class ComponentsWidget(QWidget):
         if not still_checked and comp_names:
             still_checked = comp_names[:1]
 
-        for combobox in (
-            self.histogram_component_combobox,
-            self.stats_component_combobox,
-        ):
-            combobox.blockSignals(True)
-            combobox.clear()
-            for comp_name in comp_names:
-                combobox.addItem(comp_name)
-            combobox.setCheckedItems(still_checked)
-            combobox.blockSignals(False)
+        self._available_histogram_components = comp_names
+        self._histogram_components = still_checked
+        self._sync_component_histogram_toggles()
+
+    def _sync_component_histogram_toggles(self):
+        """Push the current selection back onto the component card toggles.
+
+        A card whose component has no fraction data yet keeps a disabled,
+        unchecked toggle. Signals are suppressed so the programmatic update
+        does not look like a user click.
+        """
+        if getattr(self, '_syncing_component_toggles', False):
+            return
+        self._syncing_component_toggles = True
+        try:
+            for idx, comp in enumerate(self.components):
+                checkbox = (
+                    getattr(comp, 'histogram_checkbox', None)
+                    if comp is not None
+                    else None
+                )
+                if checkbox is None:
+                    continue
+                name = self._component_display_name(idx)
+                available = name in self._available_histogram_components
+                checkbox.setEnabled(available)
+                checkbox.setChecked(
+                    available and name in self._histogram_components
+                )
+                checkbox.setToolTip(
+                    HISTOGRAM_TOGGLE_TOOLTIP
+                    if available
+                    else HISTOGRAM_TOGGLE_DISABLED_TOOLTIP
+                )
+        finally:
+            self._syncing_component_toggles = False
+
+    def _on_component_histogram_toggled(self, idx: int, checked: bool):
+        """Add or drop the component at *idx* from the plotted selection."""
+        if self._syncing_component_toggles:
+            return
+        name = self._component_display_name(idx)
+        # A component with no fraction data has nothing to plot: its toggle is
+        # disabled, so only a programmatic call can land here.
+        if not name or name not in self._available_histogram_components:
+            return
+        selected = list(self._histogram_components)
+        if checked:
+            if name in selected:
+                return
+            selected.append(name)
+        else:
+            if name not in selected:
+                return
+            selected = [other for other in selected if other != name]
+        self._histogram_components = selected
+        self._on_histogram_component_changed()
 
     def _on_histogram_component_changed(self):
-        """Handle a change of the checked components in the histogram combobox."""
-        self._mirror_component_selection(
-            self.histogram_component_combobox, self.stats_component_combobox
-        )
+        """Handle a change of the components checked for the histogram."""
         # Show the fraction layers of the components now plotted, hide the rest.
         self._sync_fraction_layer_visibility()
         self.update_component_histogram()
 
-    def _on_stats_component_changed(self):
-        """Handle a change of the checked components in the statistics combobox.
-
-        Mirrors the choice onto the histogram combobox, which is the canonical
-        selector and refreshes the histogram/statistics via its own signal.
-        """
-        self._mirror_component_selection(
-            self.stats_component_combobox, self.histogram_component_combobox
-        )
-
-    def _mirror_component_selection(self, source, target):
-        """Copy the checked components from ``source`` to ``target`` combobox."""
-        if self._syncing_component_comboboxes:
-            return
-        checked = source.checkedItems()
-        if target.checkedItems() == checked:
-            return
-        self._syncing_component_comboboxes = True
-        try:
-            target.setCheckedItems(checked)
-        finally:
-            self._syncing_component_comboboxes = False
-
     def _selected_histogram_components(self):
-        """Return the component names checked in the histogram selector."""
-        return self.histogram_component_combobox.checkedItems()
+        """Return the component names checked for histogram/statistics."""
+        return list(self._histogram_components)
+
+    def _primary_histogram_component(self):
+        """Return the first checked component, or ``""`` when none is.
+
+        This is the component whose colormap drives the histogram gradient
+        and the range slider.
+        """
+        if not self._histogram_components:
+            return ""
+        return self._histogram_components[0]
 
     def _sync_fraction_layer_visibility(self):
         """Match fraction layer visibility to what the histogram is showing.
@@ -6192,7 +6468,7 @@ class ComponentsWidget(QWidget):
         unchecked, so the histogram, statistics and fraction layer visibility
         always follow the current selection.
         """
-        self._update_histogram_combobox()
+        self._update_histogram_component_toggles()
         self._sync_fraction_layer_visibility()
         self.update_component_histogram()
 
@@ -6391,8 +6667,11 @@ class ComponentsWidget(QWidget):
         """
         resolved = self._resolve_selected_components()
         if not resolved:
+            # Keep the empty axes on screen — spines, labels and all — the way
+            # every other tab's histogram looks before an analysis has run,
+            # rather than collapsing the dock to nothing.
             self.histogram_widget.clear()
-            self.histogram_widget.hide()
+            self.histogram_widget.show()
             return
 
         primary_name, primary_layers, primary_invert = resolved[0]
@@ -6497,7 +6776,7 @@ class ComponentsWidget(QWidget):
 
     def refresh_for_frame_change(self):
         """Re-feed the histogram after the displayed frame changed."""
-        if not self.histogram_component_combobox.currentText():
+        if not self._primary_histogram_component():
             return
         self.update_component_histogram()
 

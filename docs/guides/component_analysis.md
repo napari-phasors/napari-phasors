@@ -12,7 +12,7 @@ The **Components** tab of the **Phasor Plot** widget lets you decompose phasor d
   - **Auto intersect semicircle**: Place the component at the intersection of the universal semicircle and the line connecting the previous component to the phasor center.
 
 **The line and component locations can be fully customized:**
-- Change the width, offset, alpha (transparency), and color of the line joining the components
+- Change the width, offset, transparency, and color of the line joining the components
 - Overlay a histogram of the first component's fraction along the line (two-component Linear Projection only)
 - Style the text labels for each component (size, bold, italic, color)
 
@@ -68,6 +68,13 @@ components in phasor space.
    pixel value indicates its relative contribution.
 
 This mode is fast and intuitive for mixtures dominated by two endmembers.
+
+> [!TIP]
+> Enable the **Autoupdate** toggle below the button to recompute the fractions
+> automatically. While it is on, the button is disabled and the analysis is
+> re-run whenever the tab's own inputs change, the harmonic or the layer
+> selection changes, or the **Filter** or **Calibration** tab rewrites the
+> phasor data.
 
 <video width="100%" autoplay loop muted playsinline poster="https://github.com/napari-phasors/napari-phasors-data/raw/main/gifs/component%20linear%20analysis.gif">
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/component%20linear%20analysis.mp4" type="video/mp4">

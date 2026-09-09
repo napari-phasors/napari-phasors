@@ -2609,11 +2609,13 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         top_form.addRow(
             "Mesh/color colormap:", self.mapping_mesh_colormap_combo
         )
-        self.mapping_mesh_alpha_spin = QDoubleSpinBox()
-        self.mapping_mesh_alpha_spin.setRange(0.05, 1.0)
-        self.mapping_mesh_alpha_spin.setSingleStep(0.05)
-        self.mapping_mesh_alpha_spin.setValue(0.45)
-        top_form.addRow("Mesh alpha:", self.mapping_mesh_alpha_spin)
+        self.mapping_mesh_transparency_spin = QDoubleSpinBox()
+        self.mapping_mesh_transparency_spin.setRange(0.0, 0.95)
+        self.mapping_mesh_transparency_spin.setSingleStep(0.05)
+        self.mapping_mesh_transparency_spin.setValue(0.55)
+        top_form.addRow(
+            "Mesh transparency:", self.mapping_mesh_transparency_spin
+        )
 
         self.mapping_mesh_clip_checkbox = QCheckBox("Clip mesh to semicircle")
         self.mapping_mesh_clip_checkbox.setChecked(False)
@@ -3494,12 +3496,14 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         marker_color_button = ColorButton(QColor("#1f77b4"))
         marker_color_button.setToolTip("Color of the scatter markers.")
         scatter_form.addRow("Marker color:", marker_color_button)
-        marker_alpha_spin = QDoubleSpinBox()
-        marker_alpha_spin.setRange(0.01, 1.0)
-        marker_alpha_spin.setSingleStep(0.05)
-        marker_alpha_spin.setValue(0.3)
-        marker_alpha_spin.setToolTip("Opacity of the scatter markers.")
-        scatter_form.addRow("Marker alpha:", marker_alpha_spin)
+        marker_transparency_spin = QDoubleSpinBox()
+        marker_transparency_spin.setRange(0.0, 0.99)
+        marker_transparency_spin.setSingleStep(0.05)
+        marker_transparency_spin.setValue(0.7)
+        marker_transparency_spin.setToolTip(
+            "Transparency of the scatter markers."
+        )
+        scatter_form.addRow("Marker transparency:", marker_transparency_spin)
         form.addRow(scatter_widget)
 
         contour_widget = QWidget()
@@ -3547,7 +3551,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "log": log_checkbox,
             "marker_size": marker_size_spin,
             "marker_color": marker_color_button,
-            "marker_alpha": marker_alpha_spin,
+            "marker_transparency": marker_transparency_spin,
             "scatter_widget": scatter_widget,
             "contour_widget": contour_widget,
             "levels": levels_spin,
@@ -4048,12 +4052,12 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         width_spin.setValue(style["line_width"])
         form.addRow("Line width:", width_spin)
 
-        alpha_spin = QDoubleSpinBox()
-        alpha_spin.setRange(0.0, 1.0)
-        alpha_spin.setSingleStep(0.05)
-        alpha_spin.setDecimals(2)
-        alpha_spin.setValue(style["line_alpha"])
-        form.addRow("Line alpha:", alpha_spin)
+        line_transp_spin = QDoubleSpinBox()
+        line_transp_spin.setRange(0.0, 1.0)
+        line_transp_spin.setSingleStep(0.05)
+        line_transp_spin.setDecimals(2)
+        line_transp_spin.setValue(1.0 - style["line_alpha"])
+        form.addRow("Line transparency:", line_transp_spin)
 
         gamma_spin = QDoubleSpinBox()
         gamma_spin.setRange(0.01, 10.0)
@@ -4125,7 +4129,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 "show_component_dots": dots_cb.isChecked(),
                 "line_offset": offset_spin.value(),
                 "line_width": width_spin.value(),
-                "line_alpha": alpha_spin.value(),
+                "line_alpha": 1.0 - line_transp_spin.value(),
                 "colormap_gamma": gamma_spin.value(),
                 "default_component_color": color_button.color().name(),
                 "show_fraction_histogram": hist_cb.isChecked(),
@@ -4818,7 +4822,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "color_by": self.mapping_color_by_combo.currentText(),
             "meshes": meshes,
             "mesh_colormap": self.mapping_mesh_colormap_combo.currentText(),
-            "mesh_alpha": self.mapping_mesh_alpha_spin.value(),
+            "mesh_alpha": 1.0 - self.mapping_mesh_transparency_spin.value(),
             "mesh_phase_range": phase_range,
             "mesh_modulation_range": mod_range,
             "mesh_clip_semicircle": (
@@ -6619,7 +6623,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "contour_linewidth": controls["linewidth"].value(),
             "marker_size": controls["marker_size"].value(),
             "marker_color": controls["marker_color"].color().name(),
-            "marker_alpha": controls["marker_alpha"].value(),
+            "marker_alpha": 1.0 - controls["marker_transparency"].value(),
             "show_center": self.plot_center_checkbox.isChecked(),
             "center_color": self.plot_center_color.color().name(),
             "frequency": float(self.plot_frequency_spin.text() or 0.0),
