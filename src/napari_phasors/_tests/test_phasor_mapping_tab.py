@@ -3058,11 +3058,16 @@ def test_filter_section_is_a_card_list(make_viewer_model, qtbot):
     assert isinstance(widget.filter_list, MappingFilterList)
     assert widget.filter_list.filters() == []
     assert widget.filter_list.empty_label.isVisibleTo(widget.filter_list)
-    assert not widget.filter_list.clear_button.isEnabled()
+    assert not hasattr(widget.filter_list, 'clear_button')
+    layout = widget.filter_list.layout()
+    assert layout.indexOf(widget.filter_list.add_button) == layout.count() - 1
 
+    # Every mapping metric is offered on the card itself.
+    widget.filter_list._on_add_clicked()
+    card = next(iter(widget.filter_list._cards.values()))
     offered = [
-        widget.filter_list.metric_combobox.itemText(i)
-        for i in range(widget.filter_list.metric_combobox.count())
+        card.metric_combobox.itemText(i)
+        for i in range(card.metric_combobox.count())
     ]
     assert offered == list(MAPPING_METRICS)
 
@@ -3109,18 +3114,18 @@ def test_add_filter_is_blocked_until_its_inputs_exist(
 
     widget.frequency_input.setText("")
     widget.filter_list.set_current_metric("Normal Lifetime")
-    widget._on_filter_metric_changed()
+    widget._refresh_filter_add_button()
     assert not widget.filter_list.add_button.isEnabled()
     assert "frequency" in widget.filter_list.add_button.toolTip()
 
     # Phase needs no frequency, so it is available immediately.
     widget.filter_list.set_current_metric("Phase")
-    widget._on_filter_metric_changed()
+    widget._refresh_filter_add_button()
     assert widget.filter_list.add_button.isEnabled()
 
     widget.frequency_input.setText("80.0")
     widget.filter_list.set_current_metric("Normal Lifetime")
-    widget._on_filter_metric_changed()
+    widget._refresh_filter_add_button()
     assert widget.filter_list.add_button.isEnabled()
 
 
@@ -3219,7 +3224,7 @@ def test_two_filters_compose_and_are_independent(make_viewer_model, qtbot):
     assert np.isnan(layer.metadata['G']).sum() == after_first
     assert len(get_filters(layer)) == 1
 
-    widget.filter_list._on_clear_clicked()
+    widget._apply_filter_stack([])
     assert np.isnan(layer.metadata['G']).sum() == baseline
     assert get_filters(layer) == []
 
@@ -3242,7 +3247,7 @@ def test_filter_order_does_not_change_the_result(make_viewer_model, qtbot):
     _add_filter(widget, "Modulation", modulation_mid, modulation_bounds[1])
     forward = np.isnan(layer.metadata['G']).copy()
 
-    widget.filter_list._on_clear_clicked()
+    widget._apply_filter_stack([])
     _add_filter(widget, "Modulation", modulation_mid, modulation_bounds[1])
     _add_filter(
         widget, "Normal Lifetime", lifetime_median - 1.0, lifetime_median + 1.0
@@ -3263,7 +3268,7 @@ def test_exclude_mode_is_the_complement_of_keep(make_viewer_model, qtbot):
     _add_filter(widget, "Modulation", low, middle)
     kept = np.isnan(layer.metadata['G']).copy()
 
-    widget.filter_list._on_clear_clicked()
+    widget._apply_filter_stack([])
     _add_filter(widget, "Modulation", low, middle, mode=EXCLUDE)
     excluded = np.isnan(layer.metadata['G'])
 
@@ -3421,7 +3426,7 @@ def test_filter_on_a_multi_harmonic_layer(make_viewer_model, qtbot):
     assert np.all(np.isnan(layer.metadata['S']))
     assert np.all(np.isnan(layer.data))
 
-    widget.filter_list._on_clear_clicked()
+    widget._apply_filter_stack([])
     assert not np.any(np.isnan(layer.metadata['G']))
     assert not np.any(np.isnan(layer.metadata['S']))
 

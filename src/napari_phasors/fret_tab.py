@@ -36,6 +36,7 @@ from ._mapping_filters import (
     combined_mask,
     get_filters,
     kept_fraction,
+    normalize_filters,
     rebuild_layer_from_filters,
     set_filters,
 )
@@ -365,7 +366,6 @@ class FretWidget(AutoUpdateMixin, QWidget):
         self.colormap_checkbox.toggled.connect(
             self._on_colormap_checkbox_changed
         )
-        layout.addWidget(self.colormap_checkbox)
 
         # Plot button
         self.calculate_fret_efficiency_button = QPushButton(
@@ -390,13 +390,13 @@ class FretWidget(AutoUpdateMixin, QWidget):
                 "layer selection, or filtered/calibrated phasor data change.",
             )
         )
+        layout.addWidget(self.colormap_checkbox)
 
         # Filter section -----------------------------------------------------
-        # The same stack the Phasor Mapping tab edits, filtered down to the
-        # efficiency criteria. Criteria added there are listed here too (and
-        # can be switched off from here) so that pixels missing because of a
-        # lifetime filter are never mistaken for pixels missing because of a
-        # FRET one.
+        # One efficiency criterion, always shown and switched on and off with
+        # its check box. It lives in the same per-layer stack the Phasor
+        # Mapping tab edits, so the two compose; that tab's criteria are left
+        # out of this list but are kept untouched in the stack.
         filter_box, filter_box_layout = make_section("Filter")
         self.filter_box = filter_box
 
@@ -411,10 +411,7 @@ class FretWidget(AutoUpdateMixin, QWidget):
         )
         filter_box_layout.addWidget(self.filter_intro_label)
 
-        self.filter_list = MappingFilterList(
-            [FRET_EFFICIENCY], add_label="Add efficiency filter"
-        )
-        self.filter_list.set_editable_metrics([FRET_EFFICIENCY])
+        self.filter_list = MappingFilterList([FRET_EFFICIENCY], single=True)
         self.filter_list.set_params_provider(self._fret_filter_params)
         self.filter_list.set_harmonic_provider(self._current_harmonic)
         self.filter_list.filtersChanged.connect(self._on_filters_changed)
@@ -429,10 +426,10 @@ class FretWidget(AutoUpdateMixin, QWidget):
             lambda _=None: self._refresh_calculate_button()
         )
         self.frequency_input.textChanged.connect(
-            lambda _=None: self._refresh_filter_add_button()
+            lambda _=None: self._refresh_filter_enable_state()
         )
         self.donor_line_edit.textChanged.connect(
-            lambda _=None: self._refresh_filter_add_button()
+            lambda _=None: self._refresh_filter_enable_state()
         )
         # Autoupdate follows *committed* values -- a released slider, or a
         # text field the user left -- so a drag or a half-typed number does
@@ -1993,8 +1990,8 @@ class FretWidget(AutoUpdateMixin, QWidget):
         """Return the harmonic a new criterion should be measured on."""
         return getattr(self.parent_widget, 'harmonic', 1) or 1
 
-    def _filter_add_blocked_reason(self):
-        """Return why an efficiency filter cannot be added yet, else ``None``."""
+    def _filter_enable_blocked_reason(self):
+        """Return why the efficiency filter cannot be switched on, else ``None``."""
         if not self._filter_layers():
             return "Select at least one image layer with phasor features."
         if not self._fret_filter_params():
@@ -2004,14 +2001,10 @@ class FretWidget(AutoUpdateMixin, QWidget):
             )
         return None
 
-    def _refresh_filter_add_button(self):
-        """Explain on the button itself when a filter cannot be added yet."""
-        reason = self._filter_add_blocked_reason()
-        self.filter_list.add_button.setEnabled(reason is None)
-        self.filter_list.add_button.setToolTip(
-            reason
-            if reason is not None
-            else "Add a filter on the FRET efficiency."
+    def _refresh_filter_enable_state(self):
+        """Explain on the card itself when the filter cannot be switched on."""
+        self.filter_list.set_enable_blocked(
+            self._filter_enable_blocked_reason()
         )
 
     def _filter_layers(self):
@@ -2040,14 +2033,19 @@ class FretWidget(AutoUpdateMixin, QWidget):
         if layer is None:
             self.filter_list.set_filters([])
             self.filter_list.set_filter_stats({}, "")
-            self._refresh_filter_add_button()
+            self._refresh_filter_enable_state()
             return
-        self.filter_list.set_filters(get_filters(layer))
+        self.filter_list.set_filters(self._own_filters(get_filters(layer)))
         self._refresh_filter_stats()
-        self._refresh_filter_add_button()
+        self._refresh_filter_enable_state()
+
+    @staticmethod
+    def _own_filters(filters):
+        """Return the efficiency criteria of *filters*; this tab edits no others."""
+        return [f for f in filters if f['metric'] == FRET_EFFICIENCY]
 
     def _refresh_filter_stats(self):
-        """Report what each criterion, and the stack as a whole, keeps."""
+        """Report what the efficiency criterion keeps."""
         filters = self.filter_list.filters()
         layer = self._primary_filter_layer()
         if layer is None or not filters:
@@ -2065,17 +2063,7 @@ class FretWidget(AutoUpdateMixin, QWidget):
             stats[entry['id']] = (
                 f"{prefix}keeps {kept_fraction(mask, mean):.1%} of the pixels"
             )
-        total_mask = combined_mask(filters, mean, real, imag, harmonics)
-        active = sum(1 for f in filters if f['enabled'])
-        kept = kept_fraction(total_mask, mean)
-        # Kept short so it fits the dock on one line; the sentence it stands
-        # for is the tooltip.
-        summary = f"{active} of {len(filters)} on · {kept:.1%} kept"
-        detail = (
-            f"{active} of {len(filters)} filters are active, and together "
-            f"they keep {kept:.1%} of the measured pixels of {layer.name}."
-        )
-        self.filter_list.set_filter_stats(stats, summary, detail=detail)
+        self.filter_list.set_filter_stats(stats)
 
     def _refresh_fret_filter_params(self, layers=None):
         """Point every efficiency criterion at the current donor trajectory.
@@ -2115,12 +2103,27 @@ class FretWidget(AutoUpdateMixin, QWidget):
             return
         if filters is None:
             filters = self.filter_list.filters()
+        own = self._own_filters(normalize_filters(filters))
+        params = self._fret_filter_params()
+        # A criterion first switched on from the placeholder card carries no
+        # trajectory yet; it takes the tab's current one.
+        own = [
+            f if f['params'] or not params else dict(f, params=dict(params))
+            for f in own
+        ]
 
         problems = []
         self._applying_mapping_filter = True
         try:
             for layer in layers:
-                stored = set_filters(layer, filters)
+                # The Phasor Mapping tab's criteria are not shown here, but
+                # they are part of the same stack and must survive untouched.
+                others = [
+                    f
+                    for f in get_filters(layer)
+                    if f['metric'] != FRET_EFFICIENCY
+                ]
+                stored = set_filters(layer, others + own)
                 rebuild_layer_from_filters(
                     layer,
                     stored,
@@ -2133,7 +2136,7 @@ class FretWidget(AutoUpdateMixin, QWidget):
         finally:
             self._applying_mapping_filter = False
 
-        self._refresh_filter_stats()
+        self._sync_filter_ui()
         for message in dict.fromkeys(problems):
             show_warning(message)
 

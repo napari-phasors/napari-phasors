@@ -2824,44 +2824,65 @@ def _ready_fret_filter_widget(viewer, name="fret_layer"):
     return parent, widget, layer
 
 
-def _add_efficiency_filter(widget, low, high):
-    """Add an efficiency criterion through the card list."""
-    widget.filter_list._on_add_clicked()
-    entry = widget.filter_list.filters()[-1]
-    card = widget.filter_list._cards[entry['id']]
-    card.min_edit.setText(f"{low:.4f}")
-    card.max_edit.setText(f"{high:.4f}")
-    card._on_edits_changed()
+def _efficiency_card(widget):
+    """Return the Fret tab's single efficiency card."""
+    (card,) = widget.filter_list._cards.values()
     return card
 
 
-def test_fret_filter_section_offers_only_the_efficiency(
-    make_viewer_model, qtbot
-):
-    """The Fret tab's list edits one metric, so it hides the selector."""
+def _add_efficiency_filter(widget, low, high):
+    """Set the efficiency card's range and switch it on."""
+    card = _efficiency_card(widget)
+    card.min_edit.setText(f"{low:.4f}")
+    card.max_edit.setText(f"{high:.4f}")
+    card._on_edits_changed()
+    card = _efficiency_card(widget)
+    card.enabled_check.setChecked(True)
+    return _efficiency_card(widget)
+
+
+def test_fret_filter_section_is_a_single_card(make_viewer_model, qtbot):
+    """One efficiency filter: always shown, nothing to add or remove."""
     viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
     assert isinstance(widget.filter_list, MappingFilterList)
-    assert widget.filter_list.current_metric() == FRET_EFFICIENCY
-    assert not widget.filter_list.metric_combobox.isVisibleTo(
-        widget.filter_list
-    )
+    assert not widget.filter_list.add_button.isVisibleTo(widget.filter_list)
+    assert not hasattr(widget.filter_list, 'clear_button')
+    card = _efficiency_card(widget)
+    assert card.metric_label.text() == FRET_EFFICIENCY
+    assert not card.remove_button.isVisibleTo(card)
+    assert not card.entry['enabled']
     assert widget.filter_list.filters() == []
 
 
-def test_fret_filter_add_is_blocked_without_a_trajectory(
+def test_fret_colormap_toggle_sits_below_the_calculate_button(
     make_viewer_model, qtbot
 ):
-    """A criterion is only offered once the efficiency can be computed."""
+    """The trajectory colormap toggle follows the Calculate button."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+    layout = widget.calculate_fret_efficiency_button.parentWidget().layout()
+    button = layout.indexOf(widget.calculate_fret_efficiency_button)
+    toggle = layout.indexOf(widget.colormap_checkbox)
+    assert toggle > button
+    assert layout.indexOf(widget.filter_box) > toggle
+
+
+def test_fret_filter_cannot_be_switched_on_without_a_trajectory(
+    make_viewer_model, qtbot
+):
+    """The card says why it cannot be switched on yet."""
     viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     widget = parent.fret_tab
 
-    widget._refresh_filter_add_button()
-    assert not widget.filter_list.add_button.isEnabled()
-    assert "Select at least one" in widget.filter_list.add_button.toolTip()
+    widget._refresh_filter_enable_state()
+    card = _efficiency_card(widget)
+    assert not card.enabled_check.isEnabled()
+    assert "Select at least one" in card.enabled_check.toolTip()
 
     layer = create_image_layer_with_phasors()
     layer.name = "no_donor"
@@ -2870,13 +2891,14 @@ def test_fret_filter_add_is_blocked_without_a_trajectory(
     widget._on_image_layer_changed()
     widget.donor_line_edit.setText("")
     widget.frequency_input.setText("")
-    widget._refresh_filter_add_button()
-    assert not widget.filter_list.add_button.isEnabled()
-    assert "donor lifetime" in widget.filter_list.add_button.toolTip()
+    widget._refresh_filter_enable_state()
+    card = _efficiency_card(widget)
+    assert not card.enabled_check.isEnabled()
+    assert "donor lifetime" in card.enabled_check.toolTip()
 
     widget.frequency_input.setText("80.0")
     widget.donor_line_edit.setText("4.2")
-    assert widget.filter_list.add_button.isEnabled()
+    assert _efficiency_card(widget).enabled_check.isEnabled()
 
 
 def test_fret_filter_params_are_frozen_from_the_tab(make_viewer_model, qtbot):
@@ -2960,9 +2982,11 @@ def test_fret_filter_is_removable_and_reversible(make_viewer_model, qtbot):
     card.enabled_check.setChecked(True)
     assert np.isnan(layer.metadata['G']).any()
 
-    widget.filter_list._on_clear_clicked()
+    card.enabled_check.setChecked(False)
     np.testing.assert_allclose(layer.metadata['G'], baseline)
-    assert get_filters(layer) == []
+    # Switched off, the criterion is kept (range and all) but hides nothing.
+    (stored,) = get_filters(layer)
+    assert stored['enabled'] is False
 
 
 def test_fret_filter_reports_what_it_keeps(make_viewer_model, qtbot):
@@ -2974,8 +2998,8 @@ def test_fret_filter_reports_what_it_keeps(make_viewer_model, qtbot):
 
     card = _add_efficiency_filter(widget, median, 1.0)
     assert "keeps" in card.stat_label.text()
-    assert widget.filter_list.summary_label.text().startswith("1 of 1 on")
-    assert layer.name in widget.filter_list.summary_label.toolTip()
+    # A single filter needs no stack summary.
+    assert not widget.filter_list.summary_label.isVisibleTo(widget.filter_list)
 
 
 def test_fret_filter_follows_a_changed_donor_trajectory(
@@ -3011,10 +3035,10 @@ def test_fret_filter_params_need_a_complete_trajectory(
     assert widget._refresh_fret_filter_params([]) is False
 
 
-def test_mapping_criteria_are_listed_read_only_in_the_fret_tab(
+def test_mapping_criteria_are_not_shown_but_kept_by_the_fret_tab(
     make_viewer_model, qtbot
 ):
-    """A lifetime filter is visible here too, and can be switched off here."""
+    """Phasor Mapping criteria stay out of this list, and out of its way."""
     viewer = make_viewer_model()
     parent, widget, layer = _ready_fret_filter_widget(viewer)
     set_filters(
@@ -3022,13 +3046,15 @@ def test_mapping_criteria_are_listed_read_only_in_the_fret_tab(
         [new_filter("Normal Lifetime", 0.0, 1.0, params={'frequency': 80.0})],
     )
     widget._sync_filter_ui()
+    assert widget.filter_list.filters() == []
+    assert len(widget.filter_list._cards) == 1
+    assert _efficiency_card(widget).entry['metric'] == FRET_EFFICIENCY
 
-    (shown,) = widget.filter_list.filters()
-    assert shown['metric'] == "Normal Lifetime"
-    card = widget.filter_list._cards[shown['id']]
-    assert not card.range_slider.isEnabled()
-    assert card.enabled_check.isEnabled()
-    assert card.remove_button.isEnabled()
+    _add_efficiency_filter(widget, 0.0, 1.0)
+    assert [f['metric'] for f in get_filters(layer)] == [
+        "Normal Lifetime",
+        FRET_EFFICIENCY,
+    ]
 
 
 def test_fret_filter_stack_without_a_selection_does_nothing(
@@ -3121,8 +3147,10 @@ def test_fret_filter_warns_when_a_criterion_cannot_be_evaluated(
         "napari_phasors.fret_tab.show_warning", warnings.append
     )
 
+    # No donor trajectory to fill in either.
+    widget.donor_line_edit.setText("")
     widget._apply_filter_stack(
         [{'metric': FRET_EFFICIENCY, 'min': 0.2, 'max': 0.8}]
     )
-    assert warnings and FRET_EFFICIENCY in warnings[0]
+    assert any(FRET_EFFICIENCY in message for message in warnings)
     assert not np.isnan(layer.metadata['G']).all()

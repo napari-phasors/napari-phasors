@@ -540,19 +540,26 @@ def test_filter_list_add_edit_and_remove(qtbot):
     widget.filtersChanged.connect(published.append)
 
     assert widget.empty_label.isVisibleTo(widget)
-    assert not widget.clear_button.isEnabled()
 
     widget.set_current_metric(MODULATION)
     widget.set_metric_bounds(MODULATION, 0.0, 1.0)
     widget._on_add_clicked()
 
     assert len(published[-1]) == 1
-    assert widget.clear_button.isEnabled()
+    assert not widget.empty_label.isVisibleTo(widget)
     entry = widget.filters()[0]
     assert entry['metric'] == MODULATION
     assert (entry['min'], entry['max']) == (0.0, 1.0)
 
     card = widget._cards[entry['id']]
+    # The metric is chosen on the card, from every metric the list offers.
+    assert card.metric_combobox.isVisibleTo(card)
+    assert card.metric_combobox.currentText() == MODULATION
+    assert [
+        card.metric_combobox.itemText(i)
+        for i in range(card.metric_combobox.count())
+    ] == list(MAPPING_METRICS)
+
     card.min_edit.setText("0.25")
     card.max_edit.setText("0.75")
     card._on_edits_changed()
@@ -564,21 +571,57 @@ def test_filter_list_add_edit_and_remove(qtbot):
     assert published[-1] == []
 
 
-def test_filter_list_clear_all(qtbot):
-    """Clear all empties the stack once, and does nothing when already empty."""
+def test_add_button_sits_below_the_cards(qtbot):
+    """New filters are added from the bottom of the list; nothing clears all."""
     widget = MappingFilterList(MAPPING_METRICS)
     qtbot.addWidget(widget)
+    layout = widget.layout()
+    assert layout.indexOf(widget.add_button) > layout.indexOf(
+        widget._cards_container
+    )
+    assert layout.indexOf(widget.add_button) == layout.count() - 1
+    assert not hasattr(widget, 'clear_button')
+
+
+def test_card_metric_selector_reseeds_the_criterion(qtbot):
+    """Switching a card's metric restarts its range and parameters."""
+    widget = MappingFilterList(MAPPING_METRICS)
+    qtbot.addWidget(widget)
+    widget.set_bounds_provider({PHASE: (0.1, 1.2)}.get)
+    widget.set_params_provider(
+        lambda metric: (
+            {'frequency': 80.0} if requires_frequency(metric) else {}
+        )
+    )
+    widget.set_current_metric(MODULATION)
     widget._on_add_clicked()
-    widget._on_add_clicked()
+    card = next(iter(widget._cards.values()))
+    filter_id = card.filter_id
     published = []
     widget.filtersChanged.connect(published.append)
 
-    widget._on_clear_clicked()
-    assert widget.filters() == []
-    assert published == [[]]
+    card.metric_combobox.setCurrentText(PHASE)
+    (entry,) = published[-1]
+    assert entry['id'] == filter_id
+    assert entry['metric'] == PHASE
+    assert (entry['min'], entry['max']) == (0.1, 1.2)
+    assert entry['params'] == {}
+    assert card.unit_label.text() == "rad"
+    # The card is updated in place, not rebuilt under the pointer.
+    assert next(iter(widget._cards.values())) is card
 
-    widget._on_clear_clicked()
-    assert published == [[]]
+    # A metric the provider cannot measure starts on its fallback range.
+    card.metric_combobox.setCurrentText(NORMAL_LIFETIME)
+    (entry,) = published[-1]
+    assert (entry['min'], entry['max']) == metric_fallback_range(
+        NORMAL_LIFETIME
+    )
+    assert entry['params'] == {'frequency': 80.0}
+
+    count = len(published)
+    card._on_metric_selected(NORMAL_LIFETIME)
+    widget._on_metric_change("no-such-card", PHASE)
+    assert len(published) == count
 
 
 def test_filter_list_set_filters_does_not_rebuild_an_identical_stack(qtbot):
@@ -640,15 +683,85 @@ def test_filter_list_add_rejects_an_unusable_entry(qtbot):
     assert widget.filters() == []
 
 
-def test_filter_list_single_metric_hides_the_selector(qtbot):
-    """A list with one metric has nothing to choose between."""
-    widget = MappingFilterList([FRET_EFFICIENCY])
+def test_single_mode_shows_one_fixed_card(qtbot):
+    """The Fret tab's list is one always-present card: no add, no remove."""
+    widget = MappingFilterList([FRET_EFFICIENCY], single=True)
     qtbot.addWidget(widget)
-    assert not widget.metric_combobox.isVisibleTo(widget)
+    (card,) = widget._cards.values()
+
+    assert not widget.add_button.isVisibleTo(widget)
+    assert not widget.summary_label.isVisibleTo(widget)
+    assert not widget.empty_label.isVisibleTo(widget)
+    assert not card.remove_button.isVisibleTo(card)
+    assert not card.metric_combobox.isVisibleTo(card)
+    assert card.metric_label.text() == FRET_EFFICIENCY
     assert widget.current_metric() == FRET_EFFICIENCY
     widget.set_current_metric(MODULATION)
     assert widget.current_metric() == FRET_EFFICIENCY
 
+    # Until it is touched the card is a placeholder: the stack is empty.
+    assert card.entry['enabled'] is False
+    assert widget.filters() == []
+    widget.set_filters([])
+    assert next(iter(widget._cards.values())) is card
+
+
+def test_single_mode_placeholder_becomes_a_real_filter(qtbot):
+    """Switching the card on publishes it, with the tab's parameters."""
+    widget = MappingFilterList([FRET_EFFICIENCY], single=True)
+    qtbot.addWidget(widget)
+    widget.set_params_provider(
+        lambda metric: {'frequency': 80.0, 'donor_lifetime': 4.2}
+    )
+    published = []
+    widget.filtersChanged.connect(published.append)
+    card = next(iter(widget._cards.values()))
+
+    card.enabled_check.setChecked(True)
+    (entry,) = published[-1]
+    assert entry['enabled'] is True
+    assert entry['params'] == {'frequency': 80.0, 'donor_lifetime': 4.2}
+
+    # Reading the stored stack back does not rebuild the card.
+    widget.set_filters(published[-1])
+    assert next(iter(widget._cards.values())) is card
+
+    # An emptied stack brings the placeholder back.
+    widget.set_filters([])
+    assert widget.filters() == []
+    assert len(widget._cards) == 1
+
+    # Only one criterion is ever shown.
+    widget.set_filters(
+        [
+            new_filter(FRET_EFFICIENCY, 0.1, 0.5),
+            new_filter(FRET_EFFICIENCY, 0.6, 0.9),
+        ]
+    )
+    assert len(widget._cards) == 1
+    assert widget.filters()[0]['max'] == 0.5
+
+
+def test_enable_blocked_only_prevents_switching_on(qtbot):
+    """A filter can always be switched off, but only on when it can run."""
+    widget = MappingFilterList([FRET_EFFICIENCY], single=True)
+    qtbot.addWidget(widget)
+    widget.set_enable_blocked("Enter a donor lifetime.")
+    card = next(iter(widget._cards.values()))
+    assert not card.enabled_check.isEnabled()
+    assert card.enabled_check.toolTip() == "Enter a donor lifetime."
+
+    widget.set_enable_blocked(None)
+    assert card.enabled_check.isEnabled()
+
+    widget.set_filters([new_filter(FRET_EFFICIENCY, 0.0, 1.0)])
+    widget.set_enable_blocked("Enter a donor lifetime.")
+    card = next(iter(widget._cards.values()))
+    assert card.enabled_check.isEnabled()
+
+
+def test_empty_metric_list_adds_nothing(qtbot):
+    """A list offering no metric has nothing to add."""
     empty = MappingFilterList([])
     qtbot.addWidget(empty)
     assert empty.current_metric() is None

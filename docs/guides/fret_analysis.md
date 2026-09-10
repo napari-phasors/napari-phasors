@@ -69,19 +69,20 @@ frequency described above:
 The **Filter** section discards pixels whose FRET efficiency falls outside a
 range you choose: their phasor coordinates are set to NaN, so they vanish from
 the phasor plot, the efficiency map, the histogram and the statistics table at
-once. Click **+ Add efficiency filter** to add a criterion; each one appears as
-its own card that can be switched off, re-ranged or removed, and reports how
-much of the image it keeps.
+once. There is a single efficiency filter, always shown as one card: switch it
+on with its check box, set the range (or choose **Exclude** to remove the range
+instead), and the card reports how much of the image it keeps. It can be
+switched on once a donor lifetime and a frequency are entered.
 
 The efficiency a criterion tests is recomputed from the donor trajectory rather
 than read off the displayed map, and the trajectory parameters are re-captured
 every time you recalculate — so the range on the card always means the same
 thing as the efficiencies beside it.
 
-This is the same stack the **Phasor Mapping** tab edits. Lifetime, phase and
-modulation criteria are listed here too (greyed out, but still removable), so
-every pixel missing from the efficiency map is accounted for by a visible card.
-See {doc}`phasor_mapping` for how the criteria combine.
+The filter combines with the lifetime, phase and modulation filters of the
+**Phasor Mapping** tab: a pixel is kept only if it passes all of them. Those
+filters are not listed here — they are edited, and shown, in that tab; see
+{doc}`phasor_mapping` for how the criteria combine.
 
 ## Results
 

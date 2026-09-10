@@ -60,14 +60,15 @@ range you choose lose their phasor coordinates (they are set to NaN) and
 disappear from the phasor plot, the output maps, the histogram and the
 statistics table at the same time.
 
-Each criterion is a **card**. Click **+ Add filter** to create one on the
-quantity chosen in the drop-down beside it — which does not have to be the
-quantity currently displayed, so you can filter by lifetime while looking at
-modulation. A card carries:
+Each criterion is a **card**. Click **+ Add filter**, below the list, to create
+one on the quantity currently displayed. The quantity is chosen on the card
+itself and does not have to match the display, so you can filter by lifetime
+while looking at modulation. A card carries:
 
 | Control | Purpose |
 |---|---|
 | Check box | Switch the filter off without deleting it. The pixels it hid come straight back. |
+| Quantity drop-down | The lifetime, phase or modulation the filter tests. Changing it restarts the range at that quantity's full data span. |
 | **Keep** / **Exclude** | Keep only what is inside the range, or remove what is inside it. |
 | Range slider and min/max boxes | The range itself, in the metric's own units. |
 | **×** | Remove the filter for good. |
@@ -93,9 +94,6 @@ phasor data, and is preserved when exporting to OME-TIF. It is shared with the
 **FRET** tab: a FRET-efficiency criterion is listed here too (greyed out, but
 still removable), so a pixel that disappeared is always accounted for by a
 visible card.
-
-> [!TIP]
-> To recover everything at once, click **Clear all**.
 
 ## Arc Overlay Tool
 

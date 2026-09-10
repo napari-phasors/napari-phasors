@@ -652,9 +652,13 @@ FILTER_CARD_STYLE = (
 )
 
 _ADD_TOOLTIP = (
-    "Add a filter on the selected quantity. Pixels outside the range keep no "
-    "phasor coordinates, so they disappear from the plot, the maps, the "
-    "histogram and the statistics at once."
+    "Add a filter. Pixels outside its range keep no phasor coordinates, so "
+    "they disappear from the plot, the maps, the histogram and the "
+    "statistics at once."
+)
+_METRIC_TOOLTIP = (
+    "Quantity this filter is evaluated on. It does not have to be the "
+    "quantity currently displayed."
 )
 _MODE_TOOLTIP = (
     "Keep: only pixels inside the range survive.\n"
@@ -675,7 +679,18 @@ class _FilterCard(QFrame):
     removeRequested = Signal(str)
     """Emitted with this card's filter id when its × is clicked."""
 
-    def __init__(self, entry, *, editable=True, parent=None):
+    metricChangeRequested = Signal(str, str)
+    """Emitted with the filter id and the metric picked in its selector."""
+
+    def __init__(
+        self,
+        entry,
+        *,
+        metrics=None,
+        editable=True,
+        removable=True,
+        parent=None,
+    ):
         super().__init__(parent)
         self.entry = dict(entry)
         self.scale = 1000
@@ -697,10 +712,23 @@ class _FilterCard(QFrame):
         self.enabled_check.setToolTip(_ENABLE_TOOLTIP)
         header.addWidget(self.enabled_check)
 
-        self.title_label = QLabel(self._title_text())
-        self.title_label.setStyleSheet("font-weight: 600;")
-        header.addWidget(self.title_label)
-        header.addStretch(1)
+        # The metric is chosen on the card itself. A card that can only ever
+        # be one metric (the Fret tab's, or another tab's criterion listed
+        # here) shows it as plain text instead of a one-item selector.
+        offered = list(metrics or [])
+        if self.entry['metric'] not in offered:
+            offered = [self.entry['metric']]
+        self.metric_combobox = QComboBox()
+        self.metric_combobox.addItems(offered)
+        self.metric_combobox.setCurrentText(self.entry['metric'])
+        self.metric_combobox.setVisible(len(offered) > 1)
+        header.addWidget(self.metric_combobox, 1)
+
+        self.metric_label = QLabel(self.entry['metric'])
+        self.metric_label.setStyleSheet("font-weight: 600;")
+        self.metric_label.setVisible(len(offered) == 1)
+        header.addWidget(self.metric_label, 1)
+        self._refresh_metric_tooltip()
 
         self.mode_combobox = QComboBox()
         self.mode_combobox.addItems(["Keep", "Exclude"])
@@ -715,6 +743,7 @@ class _FilterCard(QFrame):
         self.remove_button.setObjectName("mappingFilterRemoveBtn")
         self.remove_button.setFixedSize(22, 22)
         self.remove_button.setToolTip("Remove this filter.")
+        self.remove_button.setVisible(removable)
         header.addWidget(self.remove_button)
         layout.addLayout(header)
 
@@ -737,10 +766,9 @@ class _FilterCard(QFrame):
         self.max_edit.setAlignment(Qt.AlignCenter)
         range_row.addWidget(self.max_edit)
 
-        unit = metric_unit(self.entry['metric'])
-        self.unit_label = QLabel(unit)
-        self.unit_label.setVisible(bool(unit))
+        self.unit_label = QLabel()
         range_row.addWidget(self.unit_label)
+        self._refresh_unit()
         layout.addLayout(range_row)
 
         self.stat_label = QLabel("")
@@ -755,6 +783,9 @@ class _FilterCard(QFrame):
         self.setEditable(editable)
 
         self.enabled_check.toggled.connect(self._on_enabled_toggled)
+        self.metric_combobox.currentTextChanged.connect(
+            self._on_metric_selected
+        )
         self.mode_combobox.currentIndexChanged.connect(self._on_mode_changed)
         self.range_slider.valueChanged.connect(self._on_slider_changed)
         self.range_slider.sliderReleased.connect(self._commit)
@@ -777,9 +808,19 @@ class _FilterCard(QFrame):
         """Return the id of the criterion this card edits."""
         return self.entry['id']
 
-    def _title_text(self):
-        """Return the card's heading: the metric and its harmonic."""
-        return f"{self.entry['metric']}  ·  H{self.entry['harmonic']}"
+    def _refresh_metric_tooltip(self):
+        """Say on hover which harmonic the metric is measured on."""
+        tooltip = f"{_METRIC_TOOLTIP}\nMeasured on harmonic {self.entry['harmonic']}."
+        self.metric_combobox.setToolTip(tooltip)
+        self.metric_label.setToolTip(
+            f"Measured on harmonic {self.entry['harmonic']}."
+        )
+
+    def _refresh_unit(self):
+        """Show the current metric's unit after the range, if it has one."""
+        unit = metric_unit(self.entry['metric'])
+        self.unit_label.setText(unit)
+        self.unit_label.setVisible(bool(unit))
 
     def setEditable(self, editable):
         """Show the card read-only, keeping only enable and remove usable.
@@ -794,6 +835,7 @@ class _FilterCard(QFrame):
             self.max_edit,
             self.range_slider,
             self.mode_combobox,
+            self.metric_combobox,
         ):
             widget.setEnabled(self._editable)
         self._refresh_muted()
@@ -811,8 +853,23 @@ class _FilterCard(QFrame):
         self.style().unpolish(self)
         self.style().polish(self)
 
+    def apply_entry(self, entry):
+        """Show *entry* on this card without publishing it back."""
+        self.entry = dict(entry)
+        self._updating = True
+        try:
+            self.metric_combobox.blockSignals(True)
+            self.metric_combobox.setCurrentText(self.entry['metric'])
+            self.metric_combobox.blockSignals(False)
+            self.metric_label.setText(self.entry['metric'])
+        finally:
+            self._updating = False
+        self._refresh_unit()
+        self._refresh_metric_tooltip()
+        self.set_bounds(self.entry['min'], self.entry['max'])
+
     def set_bounds(self, low, high):
-        """Widen the slider so it spans ``[low, high]`` plus the current range."""
+        """Fit the slider to ``[low, high]``, widened to the current range."""
         low = min(float(low), self.entry['min'])
         high = max(float(high), self.entry['max'])
         if not np.isfinite(low) or not np.isfinite(high):
@@ -839,6 +896,16 @@ class _FilterCard(QFrame):
         """Set the small line under the range showing what the filter keeps."""
         self.stat_label.setText(text)
 
+    def set_enable_blocked(self, reason):
+        """Forbid switching the filter *on* while *reason* is set.
+
+        Switching an active filter off stays possible, so a filter can never
+        be stuck hiding pixels.
+        """
+        blocked = bool(reason) and not self.entry['enabled']
+        self.enabled_check.setEnabled(not blocked)
+        self.enabled_check.setToolTip(reason if blocked else _ENABLE_TOOLTIP)
+
     def _refresh_edits(self):
         """Rewrite the two number boxes from the criterion's current range."""
         self.min_edit.setText(f"{self.entry['min']:.2f}")
@@ -850,6 +917,12 @@ class _FilterCard(QFrame):
         self.entry['enabled'] = bool(checked)
         self._refresh_muted()
         self._commit()
+
+    def _on_metric_selected(self, metric):
+        """Ask the list to re-seed this criterion for *metric*."""
+        if self._updating or not metric or metric == self.entry['metric']:
+            return
+        self.metricChangeRequested.emit(self.entry['id'], metric)
 
     def _on_mode_changed(self, index):
         """Record keep/exclude and publish the change immediately."""
@@ -890,47 +963,42 @@ class _FilterCard(QFrame):
 
 
 class MappingFilterList(QWidget):
-    """The filter stack, shown as a list of cards over an "add" row.
+    """The filter stack, shown as a list of cards above an "add" button.
 
     The widget owns no data of its own: it renders whatever stack it is given
     and emits :attr:`filtersChanged` with the edited stack, so the tab that
     owns the layer stays the single writer.
+
+    With ``single=True`` the list holds exactly one criterion on the first
+    metric -- the Fret tab's efficiency filter. There is nothing to add or
+    remove: the card is always shown and its check box turns it on and off.
+    Until the user touches it, that card is a placeholder and the stack it
+    reports is empty.
     """
 
     filtersChanged = Signal(list)
     """Emitted with the full, edited stack whenever the user changes it."""
 
-    def __init__(self, metrics, *, parent=None, add_label="Add filter"):
+    def __init__(
+        self, metrics, *, parent=None, add_label="Add filter", single=False
+    ):
         super().__init__(parent)
         self._metrics = list(metrics)
+        self._single = bool(single)
+        self._placeholder = False
         self._filters = []
         self._cards = {}
         self._bounds = {}
         self._rebuilding = False
         self._params_provider = None
         self._harmonic_provider = None
+        self._bounds_provider = None
+        self._enable_blocked_reason = None
+        self._current_metric = self._metrics[0] if self._metrics else None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
-
-        add_row = QHBoxLayout()
-        add_row.setContentsMargins(0, 0, 0, 0)
-        add_row.setSpacing(6)
-        self.metric_combobox = QComboBox()
-        self.metric_combobox.addItems(self._metrics)
-        self.metric_combobox.setToolTip(
-            "Quantity the new filter is evaluated on. It does not have to be "
-            "the quantity currently displayed."
-        )
-        add_row.addWidget(self.metric_combobox, 1)
-        self.add_button = QPushButton(f"+ {add_label}")
-        self.add_button.setToolTip(_ADD_TOOLTIP)
-        self.add_button.clicked.connect(self._on_add_clicked)
-        add_row.addWidget(self.add_button)
-        layout.addLayout(add_row)
-        # A single-metric list (the Fret tab) has nothing to choose between.
-        self.metric_combobox.setVisible(len(self._metrics) > 1)
 
         self._cards_container = QWidget()
         self._cards_layout = QVBoxLayout(self._cards_container)
@@ -939,33 +1007,35 @@ class MappingFilterList(QWidget):
         layout.addWidget(self._cards_container)
 
         self.empty_label = QLabel(
-            "No filters yet. Add one to hide pixels outside a range of "
-            "values; every filter you add is listed here and can be switched "
-            "off or removed."
+            "No filters yet. Every filter you add is listed here and can be "
+            "switched off or removed."
         )
         self.empty_label.setWordWrap(True)
         self.empty_label.setObjectName("mappingFilterForeign")
         layout.addWidget(self.empty_label)
 
-        footer = QHBoxLayout()
-        footer.setContentsMargins(0, 0, 0, 0)
         self.summary_label = QLabel("")
         self.summary_label.setObjectName("mappingFilterStat")
         self.summary_label.setWordWrap(True)
-        footer.addWidget(self.summary_label, 1)
-        self.clear_button = QPushButton("Clear all")
-        self.clear_button.setToolTip(
-            "Remove every filter and restore all phasor coordinates."
-        )
-        self.clear_button.clicked.connect(self._on_clear_clicked)
-        footer.addWidget(self.clear_button)
-        layout.addLayout(footer)
+        layout.addWidget(self.summary_label)
 
+        self.add_button = QPushButton(f"+ {add_label}")
+        self.add_button.setToolTip(_ADD_TOOLTIP)
+        self.add_button.clicked.connect(self._on_add_clicked)
+        layout.addWidget(self.add_button)
+
+        if self._single:
+            self.add_button.setVisible(False)
+            self.summary_label.setVisible(False)
+            self._set_placeholder()
+            self._rebuild_cards()
         self._refresh_chrome()
 
     # -- public API ------------------------------------------------------
     def filters(self):
         """Return a copy of the stack currently displayed."""
+        if self._placeholder:
+            return []
         return [dict(f) for f in self._filters]
 
     def set_filters(self, filters):
@@ -977,11 +1047,18 @@ class MappingFilterList(QWidget):
         be destroyed and rebuilt under the pointer on every tick.
         """
         normalized = normalize_filters(filters)
-        if normalized == self._filters:
+        if self._single:
+            normalized = normalized[:1]
+            if not normalized and self._placeholder:
+                return
+        if normalized == self._filters and not self._placeholder:
             return
         self._rebuilding = True
         try:
+            self._placeholder = False
             self._filters = normalized
+            if self._single and not self._filters:
+                self._set_placeholder()
             self._rebuild_cards()
         finally:
             self._rebuilding = False
@@ -1019,21 +1096,19 @@ class MappingFilterList(QWidget):
             card.set_stat(text)
         if summary:
             self.summary_label.setText(summary)
-        tooltip = describe_filters(self._filters)
+        tooltip = describe_filters(self.filters())
         self.summary_label.setToolTip(
             f"{detail}\n{tooltip}" if detail else tooltip
         )
 
     def current_metric(self):
-        """Return the metric the "add" row is pointing at."""
-        if not self._metrics:
-            return None
-        return self.metric_combobox.currentText() or self._metrics[0]
+        """Return the metric a new filter starts on."""
+        return self._current_metric
 
     def set_current_metric(self, metric):
-        """Point the "add" row at *metric* if it is one of the offered ones."""
+        """Start new filters on *metric* if it is one of the offered ones."""
         if metric in self._metrics:
-            self.metric_combobox.setCurrentText(metric)
+            self._current_metric = metric
 
     def set_editable_metrics(self, metrics):
         """Restrict full editing to *metrics*; others are shown read-only."""
@@ -1056,6 +1131,21 @@ class MappingFilterList(QWidget):
         """Set the callable returning the harmonic a new criterion applies to."""
         self._harmonic_provider = provider
 
+    def set_bounds_provider(self, provider):
+        """Set the callable measuring a metric's data range.
+
+        Called as ``provider(metric)``; returns ``(low, high)`` or ``None``.
+        Used whenever a criterion is (re)seeded on a metric, so it starts out
+        spanning the data rather than a generic default.
+        """
+        self._bounds_provider = provider
+
+    def set_enable_blocked(self, reason):
+        """Forbid switching a filter on while *reason* is set (``None`` clears)."""
+        self._enable_blocked_reason = reason
+        for card in self._cards.values():
+            card.set_enable_blocked(reason)
+
     def add_filter(self, entry):
         """Append *entry* to the stack and publish the new stack."""
         coerced = _coerce_filter(entry)
@@ -1070,6 +1160,44 @@ class MappingFilterList(QWidget):
     def _ordered_cards(self):
         """Return the cards in stack order."""
         return [self._cards[f['id']] for f in self._filters]
+
+    def _seed_range(self, metric):
+        """Return the range a criterion on *metric* should start with."""
+        if self._bounds_provider is not None:
+            measured = self._bounds_provider(metric)
+            if measured is not None:
+                low, high = measured
+                self._bounds[metric] = (float(low), float(high))
+                return float(low), float(high)
+        return self.bounds_for(metric)
+
+    def _seed_params(self, metric):
+        """Return the frozen parameters for a criterion on *metric*."""
+        if self._params_provider is None:
+            return None
+        return self._params_provider(metric)
+
+    def _new_entry(self, metric, **kwargs):
+        """Return a fresh criterion on *metric* spanning its data."""
+        low, high = self._seed_range(metric)
+        harmonic = (
+            self._harmonic_provider()
+            if self._harmonic_provider is not None
+            else 1
+        )
+        return new_filter(
+            metric,
+            low,
+            high,
+            harmonic or 1,
+            params=self._seed_params(metric),
+            **kwargs,
+        )
+
+    def _set_placeholder(self):
+        """Show the single-mode card, switched off, until it is used."""
+        self._filters = [self._new_entry(self._metrics[0], enabled=False)]
+        self._placeholder = True
 
     def _rebuild_cards(self):
         """Recreate every card so the list matches the stack exactly."""
@@ -1087,60 +1215,79 @@ class MappingFilterList(QWidget):
                 if editable_metrics is None
                 else entry['metric'] in editable_metrics
             )
-            card = _FilterCard(entry, editable=editable)
+            card = _FilterCard(
+                entry,
+                metrics=self._metrics if editable else None,
+                editable=editable,
+                removable=not self._single,
+            )
             low, high = self.bounds_for(entry['metric'])
             card.set_bounds(low, high)
+            card.set_enable_blocked(self._enable_blocked_reason)
             card.changed.connect(self._on_card_changed)
             card.removeRequested.connect(self._on_card_removed)
+            card.metricChangeRequested.connect(self._on_metric_change)
             self._cards_layout.addWidget(card)
             self._cards[entry['id']] = card
         self._refresh_chrome()
 
     def _refresh_chrome(self):
-        """Update the placeholder, the summary line and the clear button."""
+        """Update the placeholder text and the summary line."""
         has_any = bool(self._filters)
-        self.empty_label.setVisible(not has_any)
-        self.clear_button.setEnabled(has_any)
+        self.empty_label.setVisible(not has_any and not self._single)
         if not has_any:
             self.summary_label.setText("")
 
     def _on_add_clicked(self):
-        """Add a filter spanning the current metric's whole data range."""
+        """Add a filter on the displayed metric, spanning its whole data."""
         metric = self.current_metric()
         if metric is None:
             return
-        low, high = self.bounds_for(metric)
-        params = (
-            self._params_provider(metric)
-            if self._params_provider is not None
-            else None
-        )
-        harmonic = (
-            self._harmonic_provider()
-            if self._harmonic_provider is not None
-            else 1
-        )
-        self.add_filter(
-            new_filter(metric, low, high, harmonic or 1, params=params)
-        )
+        self.add_filter(self._new_entry(metric))
 
-    def _on_clear_clicked(self):
-        """Drop every criterion and publish the empty stack."""
-        if not self._filters:
+    def _on_metric_change(self, filter_id, metric):
+        """Re-seed one criterion for a newly chosen metric and publish it.
+
+        The old range means nothing in the new metric's units, so the range
+        restarts at the new metric's full data span.
+        """
+        card = self._cards.get(filter_id)
+        if card is None:
             return
-        self._filters = []
-        self._rebuild_cards()
+        low, high = self._seed_range(metric)
+        entry = dict(
+            card.entry,
+            metric=metric,
+            min=low,
+            max=high,
+            params=dict(self._seed_params(metric) or {}),
+        )
+        card.apply_entry(entry)
+        self._replace(entry)
         self._emit()
+
+    def _replace(self, entry):
+        """Swap the stored copy of *entry* for the edited one."""
+        for index, current in enumerate(self._filters):
+            if current['id'] == entry['id']:
+                self._filters[index] = dict(entry)
+                return
 
     def _on_card_changed(self, filter_id):
         """Copy one card's edited values back into the stack."""
         card = self._cards.get(filter_id)
         if card is None:
             return
-        for index, entry in enumerate(self._filters):
-            if entry['id'] == filter_id:
-                self._filters[index] = dict(card.entry)
-                break
+        # A criterion created before its parameters existed (the Fret tab's
+        # card, shown before a donor lifetime is entered) picks them up on
+        # its first edit. Filling them in here, rather than in the tab, keeps
+        # the stack the tab writes back identical to the one on screen, so
+        # the card being edited is not rebuilt under the pointer.
+        if not card.entry['params']:
+            card.entry['params'] = dict(
+                self._seed_params(card.entry['metric']) or {}
+            )
+        self._replace(card.entry)
         self._emit()
 
     def _on_card_removed(self, filter_id):
@@ -1151,6 +1298,8 @@ class MappingFilterList(QWidget):
 
     def _emit(self):
         """Publish the stack, unless the list is being rebuilt from outside."""
+        # Any user edit turns the single-mode placeholder into a real filter.
+        self._placeholder = False
         self._refresh_chrome()
         if not self._rebuilding:
             self.filtersChanged.emit(self.filters())

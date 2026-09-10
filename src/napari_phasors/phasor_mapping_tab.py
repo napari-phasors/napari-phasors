@@ -454,10 +454,8 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         self.filter_list.set_editable_metrics(MAPPING_METRICS)
         self.filter_list.set_params_provider(self._new_filter_params)
         self.filter_list.set_harmonic_provider(self._current_harmonic)
+        self.filter_list.set_bounds_provider(self._filter_bounds_for)
         self.filter_list.filtersChanged.connect(self._on_filters_changed)
-        self.filter_list.metric_combobox.currentTextChanged.connect(
-            lambda _=None: self._on_filter_metric_changed()
-        )
         filter_box_layout.addWidget(self.filter_list)
 
         # Coloring section ---------------------------------------------------
@@ -1159,18 +1157,31 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         self._refresh_filter_stats()
         self._refresh_filter_add_button()
 
-    def _on_filter_metric_changed(self):
-        """Refresh the offered range after the "add" row's metric changed."""
-        self._refresh_filter_bounds()
-        self._refresh_filter_add_button()
+    def _filter_bounds_for(self, metric, arrays=None):
+        """Return the ``(low, high)`` data range of *metric*, or ``None``.
+
+        Measured on the *unfiltered* baseline of the primary layer, so a
+        filter can never shrink the range the next filter is offered -- the
+        trap that made the old single-range control feel like it was hiding
+        data.
+        """
+        layer = self._primary_filter_layer()
+        if layer is None or metric not in MAPPING_METRICS:
+            return None
+        harmonic = getattr(self.parent_widget, 'harmonic', 1) or 1
+        values = self._compute_metric_for_layer(
+            layer, metric, harmonic, arrays=arrays
+        )
+        if values is None:
+            return None
+        finite = np.asarray(values, dtype=float)
+        finite = finite[np.isfinite(finite)]
+        if finite.size == 0:
+            return None
+        return float(finite.min()), float(finite.max())
 
     def _refresh_filter_bounds(self):
-        """Widen each card's slider to the full data range of its metric.
-
-        The ranges come from the *unfiltered* baseline, so a filter can never
-        shrink the range the next filter is offered -- the trap that made the
-        old single-range control feel like it was hiding data.
-        """
+        """Widen each card's slider to the full data range of its metric."""
         layer = self._primary_filter_layer()
         if layer is None:
             return
@@ -1180,20 +1191,10 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             metrics.add(current)
         metrics &= set(MAPPING_METRICS)
         arrays = self._get_base_phasor_arrays(layer)
-        harmonic = getattr(self.parent_widget, 'harmonic', 1) or 1
         for metric in metrics:
-            values = self._compute_metric_for_layer(
-                layer, metric, harmonic, arrays=arrays
-            )
-            if values is None:
-                continue
-            finite = np.asarray(values, dtype=float)
-            finite = finite[np.isfinite(finite)]
-            if finite.size == 0:
-                continue
-            self.filter_list.set_metric_bounds(
-                metric, float(finite.min()), float(finite.max())
-            )
+            bounds = self._filter_bounds_for(metric, arrays=arrays)
+            if bounds is not None:
+                self.filter_list.set_metric_bounds(metric, *bounds)
 
     def _refresh_filter_stats(self):
         """Report what each criterion, and the stack as a whole, keeps."""
@@ -1265,8 +1266,7 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         finally:
             self._applying_mapping_filter = False
 
-        self._refresh_filter_bounds()
-        self._refresh_filter_stats()
+        self._sync_filter_ui()
         for message in dict.fromkeys(problems):
             show_warning(message)
 
