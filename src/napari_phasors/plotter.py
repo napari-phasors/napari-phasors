@@ -47,6 +47,8 @@ from qtpy.QtWidgets import (
 from superqt import QToggleSwitch
 
 from ._canvas import PhasorCanvasWidget as CanvasWidget
+from ._mapping_filters import get_filters as get_mapping_filters
+from ._mapping_filters import rebuild_layer_from_filters
 from ._parallel import (
     BANDS,
     ITEMS,
@@ -3752,7 +3754,14 @@ class PlotterWidget(QWidget):
                 "threshold_upper",
                 "threshold_method",
             ],
-            "phasor_mapping_tab": ["phasor_mapping", "lifetime"],
+            # The metric filter stack rides with the Phasor Mapping tab: it
+            # is one ordered object, even when some of its criteria are on
+            # the FRET efficiency.
+            "phasor_mapping_tab": [
+                "phasor_mapping",
+                "lifetime",
+                "mapping_filters",
+            ],
             "fret_tab": ["fret"],
             "components_tab": ["component_analysis"],
             "selection_tab": ["selections"],
@@ -3834,6 +3843,15 @@ class PlotterWidget(QWidget):
         if "filter_tab" in selected_tabs:
             for layer in layers:
                 self._apply_imported_filter_if_needed(layer)
+            self.refresh_phasor_data()
+        elif "phasor_mapping_tab" in selected_tabs:
+            # The imported stack still has to reach the arrays; without the
+            # Filter tab in the selection nothing else rebuilds them.
+            for layer in layers:
+                rebuild_layer_from_filters(
+                    layer,
+                    filter_params=self._filter_params_from_settings(layer),
+                )
             self.refresh_phasor_data()
 
     def _import_settings_from_layer(self):
@@ -7674,6 +7692,8 @@ class PlotterWidget(QWidget):
             return True
         if settings.get('threshold_upper') is not None:
             return True
+        if get_mapping_filters(layer):
+            return True
         threshold_method = settings.get('threshold_method')
         return threshold_method not in (None, "None")
 
@@ -7754,6 +7774,11 @@ class PlotterWidget(QWidget):
                 f"Could not filter {len(failed)} layer(s):\n{details}"
             )
 
+        # The metric filter stack is not reapplied here: it is part of
+        # ``compute_filter_and_threshold``, which every layer above just went
+        # through. ``_has_filter_or_threshold_settings`` counts a stack as a
+        # reason to rebuild, so a layer whose only processing is a metric
+        # filter is in the list too.
         self.refresh_phasor_data()
 
     def _restore_original_phasor_data(self, image_layer):
