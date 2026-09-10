@@ -3068,6 +3068,8 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         Initial state of the *Show standard deviation* checkbox.
     normalize : bool
         Initial state of the *Normalize to maximum* checkbox.
+    log_scale : bool, optional
+        Initial state of the *Log scale (y-axis)* checkbox.
     central_tendency : str
         Initial central-tendency line selection.
     show_legend : bool
@@ -3117,6 +3119,7 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         display_mode: str = "Merged",
         show_sd: bool = False,
         normalize: bool = False,
+        log_scale: bool = False,
         central_tendency: str = "None",
         show_legend: bool = False,
         aspect_ratio: str = "auto",
@@ -3178,6 +3181,14 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         )
         self.normalize_checkbox.setChecked(normalize)
         layout.addWidget(self.normalize_checkbox)
+
+        # --- Log scale y-axis ---
+        self.log_scale_checkbox = QCheckBox("Log scale (y-axis)")
+        self.log_scale_checkbox.setToolTip(
+            "Display the histogram with a logarithmic y-axis."
+        )
+        self.log_scale_checkbox.setChecked(log_scale)
+        layout.addWidget(self.log_scale_checkbox)
 
         # --- Central tendency ---
         ct_layout = QHBoxLayout()
@@ -3642,6 +3653,9 @@ class HistogramWidget(QWidget):
         If ``True``, every curve is divided by its own maximum so
         distributions with different pixel counts share one y scale.
         Toggled at runtime from the settings dialog, by default ``False``.
+    log_scale : bool, optional
+        If ``True``, display the histogram with a logarithmic y-axis,
+        by default ``False``.
     viewer : napari.Viewer, optional
         Napari viewer instance used to look up layer metadata for restoring
         group assignments across analyses.  When provided, grouped-mode
@@ -3669,6 +3683,7 @@ class HistogramWidget(QWidget):
         range_factor: int = 1000,
         exclude_nonpositive: bool = False,
         normalize: bool = False,
+        log_scale: bool = False,
         viewer=None,
         parent: QWidget = None,
     ):
@@ -3745,6 +3760,7 @@ class HistogramWidget(QWidget):
         )
         self._show_sd = False
         self._normalize = normalize
+        self._log_scale = log_scale
         # {source layer name: group_int}; a layer's group applies to every
         # dataset derived from it (see :meth:`set_dataset_sources`).
         self._group_assignments = {}
@@ -4444,6 +4460,7 @@ class HistogramWidget(QWidget):
             display_mode=self._display_mode,
             show_sd=self._show_sd,
             normalize=self._normalize,
+            log_scale=self._log_scale,
             central_tendency=self._central_tendency,
             show_legend=self._show_legend,
             split_mask_labels=self._split_by_mask_labels,
@@ -4462,6 +4479,7 @@ class HistogramWidget(QWidget):
         )
         dlg.white_bg_checkbox.setChecked(self._white_background)
         dlg.smooth_checkbox.setChecked(self._smooth_curves)
+        dlg.log_scale_checkbox.setChecked(self._log_scale)
 
         if dlg.exec() == QDialog.Accepted:
             split_changed = (
@@ -4472,6 +4490,7 @@ class HistogramWidget(QWidget):
             self._display_mode = dlg.mode_combo.currentText()
             self._show_sd = dlg.sd_checkbox.isChecked()
             self._normalize = dlg.normalize_checkbox.isChecked()
+            self._log_scale = dlg.log_scale_checkbox.isChecked()
             self._central_tendency = dlg.central_tendency_combo.currentText()
             self._show_legend = dlg.legend_checkbox.isChecked()
             self._white_background = dlg.white_bg_checkbox.isChecked()
@@ -5037,6 +5056,20 @@ class HistogramWidget(QWidget):
             self._render()
         self.dataChanged.emit()
 
+    @property
+    def log_scale(self) -> bool:
+        """Whether log scale on the y-axis is enabled."""
+        return self._log_scale
+
+    @log_scale.setter
+    def log_scale(self, value: bool):
+        """Toggle y-axis log scale, restyle the axes and re-render."""
+        self._log_scale = bool(value)
+        self._style_axes()
+        if self.counts is not None:
+            self._render()
+        self.dataChanged.emit()
+
     def _style_axes(self, export_mode: bool = False) -> None:
         """Apply consistent styling to the axes and figure.
 
@@ -5083,6 +5116,18 @@ class HistogramWidget(QWidget):
             self.ax.set_xlim(
                 float(self.bin_centers[0]), float(self.bin_centers[-1])
             )
+
+        log_scale = getattr(self, "_log_scale", False)
+        self.ax.set_yscale("log" if log_scale else "linear")
+        if log_scale:
+            floor = self._log_scale_floor()
+            cur_ymin, cur_ymax = self.ax.get_ylim()
+            if cur_ymin <= 0 or cur_ymin < floor:
+                cur_ymin = floor
+            if cur_ymax <= cur_ymin:
+                cur_ymax = cur_ymin * 10
+            self.ax.set_ylim(cur_ymin, cur_ymax)
+
         for which in ("major", "minor"):
             self.ax.tick_params(
                 axis="x", which=which, labelsize=7, colors=color
@@ -5170,6 +5215,23 @@ class HistogramWidget(QWidget):
         reference = np.asarray(reference, dtype=float)
         peak = float(np.max(reference)) if reference.size else 0.0
         return 1.0 / peak if peak > 0 else 1.0
+
+    def _log_scale_floor(self) -> float:
+        """Return the lower bound for the y-axis in log scale."""
+        if not self._counts_per_dataset and self.counts is None:
+            return 0.5
+        all_counts = (
+            list(self._counts_per_dataset.values())
+            if self._counts_per_dataset
+            else [self.counts]
+        )
+        max_peak = max(
+            [float(np.max(c)) for c in all_counts if len(c) > 0],
+            default=1.0,
+        )
+        if self._normalize and max_peak > 0:
+            return 0.5 / max_peak
+        return 0.5
 
     @staticmethod
     def _compute_central_tendency(
@@ -5321,10 +5383,21 @@ class HistogramWidget(QWidget):
         if len(x) < 2:
             return
 
-        y_max = float(np.max(y_upper))
-        y_min = float(np.min(y_lower))
-        if y_max <= y_min:
-            y_max = y_min + 1
+        if self._log_scale:
+            floor = self._log_scale_floor()
+            y_upper = np.maximum(y_upper, floor)
+            y_lower = np.maximum(y_lower, floor)
+            y_min = floor
+            y_max = float(np.max(y_upper))
+            if y_max <= y_min:
+                y_max = y_min * 10
+            extent_y_max = y_max * 1.05
+        else:
+            y_max = float(np.max(y_upper))
+            y_min = float(np.min(y_lower))
+            if y_max <= y_min:
+                y_max = y_min + 1
+            extent_y_max = y_max * 1.02
 
         n_pixels = 256
         lo, hi = (
@@ -5333,7 +5406,7 @@ class HistogramWidget(QWidget):
             else (float(self.bin_centers[0]), float(self.bin_centers[-1]))
         )
         gradient_values = np.linspace(lo, hi, n_pixels).reshape(1, -1)
-        extent = [lo, hi, y_min, y_max * 1.02]
+        extent = [lo, hi, y_min, extent_y_max]
 
         im = self.ax.imshow(
             gradient_values,
@@ -5352,7 +5425,10 @@ class HistogramWidget(QWidget):
         clip_poly = MplPolygon(verts, closed=True, transform=self.ax.transData)
         im.set_clip_path(clip_poly)
 
-        self.ax.set_ylim(0, y_max * 1.05)
+        if self._log_scale:
+            self.ax.set_ylim(y_min, y_max * 1.05)
+        else:
+            self.ax.set_ylim(0, y_max * 1.05)
 
     def _draw_gradient_line(
         self,
@@ -5584,7 +5660,11 @@ class HistogramWidget(QWidget):
             y_fine = y_fine * self._display_scale(y_fine)
             self._draw_gradient_line(x_fine, y_fine, cmap, norm, linewidth=2)
             self.ax.set_xlim(float(x_fine[0]), float(x_fine[-1]))
-            self.ax.set_ylim(0, float(np.max(y_fine)) * 1.05)
+            if self._log_scale:
+                floor = self._log_scale_floor()
+                self.ax.set_ylim(floor, float(np.max(y_fine)) * 1.05)
+            else:
+                self.ax.set_ylim(0, float(np.max(y_fine)) * 1.05)
         else:
             if n > 1:
                 all_counts = np.array(
@@ -5659,10 +5739,16 @@ class HistogramWidget(QWidget):
                 upper = mean_counts + std_counts
                 _, lower_fine = self._smooth_curve(lower)
                 _, upper_fine = self._smooth_curve(upper)
+                lower_fine = lower_fine * scale
+                upper_fine = upper_fine * scale
+                if self._log_scale:
+                    floor = self._log_scale_floor()
+                    lower_fine = np.maximum(lower_fine, floor)
+                    upper_fine = np.maximum(upper_fine, floor)
                 self.ax.fill_between(
                     x_fine,
-                    lower_fine * scale,
-                    upper_fine * scale,
+                    lower_fine,
+                    upper_fine,
                     color=color,
                     alpha=0.25,
                     linewidth=0,
@@ -5730,6 +5816,10 @@ class HistogramWidget(QWidget):
                 _, upper_fine = self._smooth_curve(upper)
                 lower_fine = lower_fine * scale
                 upper_fine = upper_fine * scale
+                if self._log_scale:
+                    floor = self._log_scale_floor()
+                    lower_fine = np.maximum(lower_fine, floor)
+                    upper_fine = np.maximum(upper_fine, floor)
                 self.ax.fill_between(
                     x_fine,
                     lower_fine,

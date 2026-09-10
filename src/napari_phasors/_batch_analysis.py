@@ -3651,6 +3651,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             display_mode=self._group_config.get("mode", "Merged"),
             show_sd=self._group_config.get("show_sd", True),
             normalize=self._group_config.get("normalize", False),
+            log_scale=self._group_config.get("log_scale", False),
             central_tendency=self._group_config.get(
                 "central_tendency", "None"
             ),
@@ -3668,6 +3669,9 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         dialog.smooth_checkbox.setChecked(
             self._group_config.get("smooth_curves", True)
         )
+        dialog.log_scale_checkbox.setChecked(
+            self._group_config.get("log_scale", False)
+        )
 
         if dialog.exec() == QDialog.Accepted:
             self._group_config.update(
@@ -3679,6 +3683,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                     "layer_colors": dialog.get_layer_colors(),
                     "show_sd": dialog.sd_checkbox.isChecked(),
                     "normalize": dialog.normalize_checkbox.isChecked(),
+                    "log_scale": dialog.log_scale_checkbox.isChecked(),
                     "central_tendency": (
                         dialog.central_tendency_combo.currentText()
                     ),
@@ -8027,6 +8032,7 @@ def _new_export_histogram(config, label):
     hw.white_background = config.get("white_background", False)
     hw._smooth_curves = config.get("smooth_curves", True)
     hw._normalize = config.get("normalize", False)
+    hw.log_scale = config.get("log_scale", False)
     hw._central_tendency = config.get("central_tendency", "None")
     hw._show_legend = config.get("show_legend", True)
     hw.xlabel = label

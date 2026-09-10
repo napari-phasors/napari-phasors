@@ -4533,3 +4533,32 @@ def test_component_line_transparency_is_stored_as_alpha(
 
     assert pytest.approx(0.6) in seen["values"]
     assert widget._component_line_style["line_alpha"] == pytest.approx(0.4)
+
+
+def test_batch_analysis_group_dialog_and_export_log_scale(
+    qtbot, make_viewer_model, monkeypatch
+):
+    """Test log_scale configuration in _open_group_dialog and _new_export_histogram."""
+    from qtpy.QtWidgets import QDialog
+
+    from napari_phasors._batch_analysis import _new_export_histogram
+    from napari_phasors._utils import HistogramSettingsDialog
+
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+
+    # Initially log_scale is False
+    assert not widget._group_config.get("log_scale", False)
+
+    def fake_exec(dlg):
+        dlg.log_scale_checkbox.setChecked(True)
+        return QDialog.Accepted
+
+    monkeypatch.setattr(HistogramSettingsDialog, "exec", fake_exec)
+    widget._open_group_dialog()
+
+    assert widget._group_config["log_scale"] is True
+
+    # Test _new_export_histogram applies log_scale
+    hw = _new_export_histogram(widget._group_config, "Lifetime")
+    assert hw.log_scale is True

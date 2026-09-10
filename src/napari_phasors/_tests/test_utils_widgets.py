@@ -4011,3 +4011,159 @@ def test_experimental_banner_icon_fits_its_label(qtbot):
     assert pixmap is not None and not pixmap.isNull()
     dpr = pixmap.devicePixelRatio() or 1.0
     assert (pixmap.width() / dpr) == pytest.approx(WARNING_ICON_SIZE)
+
+
+def test_histogram_settings_dialog_log_scale(qtbot):
+    """Test log scale checkbox in HistogramSettingsDialog."""
+    dlg = HistogramSettingsDialog()
+    qtbot.addWidget(dlg)
+    assert not dlg.log_scale_checkbox.isChecked()
+
+    dlg_log = HistogramSettingsDialog(log_scale=True)
+    qtbot.addWidget(dlg_log)
+    assert dlg_log.log_scale_checkbox.isChecked()
+
+    dlg_log.log_scale_checkbox.setChecked(False)
+    assert not dlg_log.log_scale_checkbox.isChecked()
+
+
+def test_histogram_widget_log_scale_init_and_property(qtbot):
+    """Test log_scale parameter and property getter/setter on HistogramWidget."""
+    widget = HistogramWidget(log_scale=True)
+    qtbot.addWidget(widget)
+    assert widget.log_scale is True
+    assert widget.ax.get_yscale() == "log"
+
+    signals = []
+    widget.dataChanged.connect(lambda: signals.append(True))
+
+    widget.log_scale = False
+    assert widget.log_scale is False
+    assert widget.ax.get_yscale() == "linear"
+    assert len(signals) == 1
+
+    # Setting log_scale with loaded data triggers re-render
+    data = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    widget.update_data(data)
+    assert widget.ax.get_yscale() == "linear"
+
+    widget.log_scale = True
+    assert widget.log_scale is True
+    assert widget.ax.get_yscale() == "log"
+    assert len(signals) >= 2
+
+
+def test_histogram_widget_open_settings_dialog_applies_log_scale(
+    qtbot, monkeypatch
+):
+    """Test that toggling log scale in settings dialog updates the widget."""
+    widget = HistogramWidget()
+    qtbot.addWidget(widget)
+    data = np.array([1.0, 2.0, 2.0, 3.0, 5.0])
+    widget.update_data(data)
+    assert not widget.log_scale
+
+    def fake_exec(dlg):
+        dlg.log_scale_checkbox.setChecked(True)
+        return QDialog.Accepted
+
+    monkeypatch.setattr(HistogramSettingsDialog, "exec", fake_exec)
+    widget._open_settings_dialog()
+
+    assert widget.log_scale is True
+    assert widget.ax.get_yscale() == "log"
+
+
+def test_histogram_widget_render_log_scale_modes(qtbot):
+    """Test rendering under various modes with log_scale active."""
+    widget = HistogramWidget(bins=10, log_scale=True)
+    qtbot.addWidget(widget)
+
+    # 1. Single dataset render (bars gradient)
+    data = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 2.0, 2.0])
+    widget.update_data(data)
+    assert widget.ax.get_yscale() == "log"
+    ymin, ymax = widget.ax.get_ylim()
+    assert ymin == pytest.approx(0.5)
+    assert ymax > ymin
+
+    # 2. Merged mode with show_sd=True and n=1
+    widget.show_sd = True
+    widget._render()
+    assert widget.ax.get_yscale() == "log"
+    ymin, ymax = widget.ax.get_ylim()
+    assert ymin == pytest.approx(0.5)
+
+    # 3. Multi-dataset Merged mode with show_sd=True (n > 1)
+    datasets = {
+        "A": np.array([1.0, 2.0, 2.0, 3.0]),
+        "B": np.array([2.0, 3.0, 4.0, 5.0]),
+    }
+    widget.update_multi_data(datasets)
+    assert widget.display_mode == "Merged"
+    assert widget.show_sd is True
+    assert widget.ax.get_yscale() == "log"
+    assert widget.ax.get_ylim()[0] == pytest.approx(0.5)
+
+    # 4. Multi-dataset Merged mode without SD
+    widget.show_sd = False
+    widget._render()
+    assert widget.ax.get_yscale() == "log"
+    assert widget.ax.get_ylim()[0] == pytest.approx(0.5)
+
+    # 5. Merged series (multiple series with and without SD)
+    widget.set_dataset_series({"A": "S1", "B": "S2"})
+    widget.show_sd = True
+    widget._render()
+    assert widget.ax.get_yscale() == "log"
+    widget.show_sd = False
+    widget._render()
+    assert widget.ax.get_yscale() == "log"
+
+    # 6. Individual layers mode
+    widget.display_mode = "Individual layers"
+    assert widget.ax.get_yscale() == "log"
+    assert widget.ax.get_ylim()[0] == pytest.approx(0.5)
+
+    # 7. Grouped mode with and without SD
+    widget._group_assignments = {"A": 1, "B": 2}
+    widget._group_names = {1: "G1", 2: "G2"}
+    widget.display_mode = "Grouped"
+    widget.show_sd = True
+    widget._render()
+    assert widget.ax.get_yscale() == "log"
+    assert widget.ax.get_ylim()[0] == pytest.approx(0.5)
+
+    widget.show_sd = False
+    widget._render()
+    assert widget.ax.get_yscale() == "log"
+
+    # 8. Normalized mode with log scale
+    widget.normalize = True
+    assert widget.ax.get_yscale() == "log"
+    ymin, ymax = widget.ax.get_ylim()
+    assert ymin > 0 and ymin < 1.0
+    assert ymax >= 1.0
+
+
+def test_histogram_widget_log_scale_floor_edge_cases(qtbot):
+    """Test edge cases for _log_scale_floor and styling."""
+    widget = HistogramWidget(log_scale=True)
+    qtbot.addWidget(widget)
+
+    # No data loaded
+    assert widget._log_scale_floor() == 0.5
+
+    # Normalized with no data loaded
+    widget.normalize = True
+    assert widget._log_scale_floor() == 0.5
+
+    # With empty array / zero max_peak
+    widget._counts_per_dataset = {"A": np.array([0, 0, 0])}
+    assert widget._log_scale_floor() == 0.5
+
+    # _style_axes edge case where cur_ymax <= cur_ymin
+    widget.ax.set_yscale("linear")
+    widget.ax.set_ylim(-1.0, 0.2)
+    widget._style_axes()
+    assert widget.ax.get_ylim()[0] == 0.5
