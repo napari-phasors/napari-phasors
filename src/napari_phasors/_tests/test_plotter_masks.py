@@ -9,6 +9,7 @@ from qtpy.QtWidgets import (
     QLabel,
 )
 
+from napari_phasors._mapping_filters import new_filter, set_filters
 from napari_phasors._synthetic_generator import (
     make_intensity_layer_with_phasors,
     make_raw_flim_data,
@@ -2517,3 +2518,156 @@ def test_multi_layer_masks_reapply_each_layers_own_settings(make_viewer_model):
         distance = np.sqrt((g[inside] - g_c) ** 2 + (s[inside] - s_c) ** 2)
         assert np.array_equal(~np.isnan(g), inside)
         assert distance.max() <= radius
+
+
+def test_invert_all_sync_before_the_checkbox_exists():
+    """The row callbacks fire while the dialog is still being built."""
+    dialog = MaskAssignmentDialog(
+        image_layer_names=["img1"],
+        mask_layer_names=["mask1"],
+        current_assignments={"img1": "mask1"},
+    )
+    saved = dialog.invert_all_check
+    del dialog.invert_all_check
+    # Must be a no-op rather than an AttributeError.
+    dialog._sync_invert_all_check()
+    dialog.invert_all_check = saved
+
+
+def test_reapply_filter_and_threshold_skips_layers_with_nothing_to_redo(
+    make_viewer_model,
+):
+    """Layers with no processing of their own are left untouched."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    layer = create_image_layer_with_phasors()
+    layer.name = "plain"
+    viewer.add_layer(layer)
+    plotter.image_layer_with_phasor_features_combobox.setCurrentText("plain")
+
+    before = layer.metadata['G'].copy()
+    plotter._reapply_filter_and_threshold([])
+    plotter._reapply_filter_and_threshold([layer])
+    np.testing.assert_array_equal(layer.metadata['G'], before)
+
+
+def test_reapply_filter_and_threshold_reports_a_failing_layer(
+    make_viewer_model, monkeypatch
+):
+    """A layer whose filtering raises is named in a single error message."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    layer = create_image_layer_with_phasors()
+    layer.name = "explodes"
+    viewer.add_layer(layer)
+    plotter.image_layer_with_phasor_features_combobox.setCurrentText(
+        "explodes"
+    )
+    layer.metadata['settings']['threshold'] = 0.0
+
+    errors = []
+    monkeypatch.setattr(
+        "napari_phasors.plotter.notifications.show_error", errors.append
+    )
+    monkeypatch.setattr(
+        "napari_phasors.plotter.apply_filter_and_threshold_to_layers",
+        lambda pairs, **kwargs: [RuntimeError("boom") for _ in pairs],
+    )
+
+    plotter._reapply_filter_and_threshold([layer])
+    assert errors and "explodes" in errors[0] and "boom" in errors[0]
+
+
+def test_has_filter_or_threshold_settings_counts_every_kind(
+    make_viewer_model,
+):
+    """An upper bound alone, or a metric filter alone, is worth reapplying."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    layer = create_image_layer_with_phasors()
+    layer.metadata['settings'] = {}
+    assert not plotter._has_filter_or_threshold_settings(layer)
+
+    layer.metadata['settings'] = {'threshold_upper': 5.0}
+    assert plotter._has_filter_or_threshold_settings(layer)
+
+    layer.metadata['settings'] = {}
+    set_filters(layer, [new_filter("Modulation", 0.1, 0.9)])
+    assert plotter._has_filter_or_threshold_settings(layer)
+
+
+def test_filter_params_from_settings_reads_each_filter_method(
+    make_viewer_model,
+):
+    """Wavelet, median and an unknown method each yield usable parameters."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    layer = create_image_layer_with_phasors()
+    layer.metadata['harmonics'] = np.array([1, 2])
+
+    layer.metadata['settings']['filter'] = {
+        'method': 'wavelet',
+        'sigma': 3.0,
+        'levels': 2,
+    }
+    params = plotter._filter_params_from_settings(layer)
+    assert params['filter_method'] == 'wavelet'
+    assert params['sigma'] == 3.0
+    assert params['levels'] == 2
+    assert params['harmonics'] is not None
+
+    # Harmonics that wavelet filtering cannot handle drop the method.
+    layer.metadata['harmonics'] = np.array([1, 5])
+    params = plotter._filter_params_from_settings(layer)
+    assert params['filter_method'] is None
+    assert params['harmonics'] is None
+
+    layer.metadata['settings']['filter'] = {'method': 'median', 'repeat': 0}
+    assert plotter._filter_params_from_settings(layer)['filter_method'] is None
+
+    layer.metadata['settings']['filter'] = {'method': 'something else'}
+    assert plotter._filter_params_from_settings(layer)['filter_method'] is None
+
+
+def test_importing_only_the_mapping_tab_still_applies_its_filters(
+    make_viewer_model,
+):
+    """An imported stack reaches the arrays without the Filter tab's help."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    layer = create_image_layer_with_phasors()
+    layer.name = "imported"
+    viewer.add_layer(layer)
+    plotter.image_layer_with_phasor_features_combobox.setCurrentText(
+        "imported"
+    )
+
+    set_filters(layer, [new_filter("Modulation", 0.0, 0.05)])
+    plotter._apply_imported_analyses([layer], ["phasor_mapping_tab"])
+    assert np.isnan(layer.metadata['G']).any()
+
+
+def test_parallel_processing_hint_describes_the_memory_budget(
+    make_viewer_model,
+):
+    """The hint quantifies the budget only while the budget is switched on."""
+    from napari_phasors import _parallel
+
+    previous = _parallel.memory_budget_enabled()
+    previous_items = _parallel.parallel_items_enabled()
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    try:
+        plotter.parallel_items_checkbox.setChecked(True)
+        plotter.memory_budget_checkbox.setChecked(True)
+        plotter._update_parallel_processing_hint()
+        with_budget = plotter.parallel_processing_hint.text()
+        assert "sized to fit" in with_budget
+
+        plotter.memory_budget_checkbox.setChecked(False)
+        plotter._update_parallel_processing_hint()
+        assert "sized to fit" not in plotter.parallel_processing_hint.text()
+        assert "at once" in plotter.parallel_processing_hint.text()
+    finally:
+        _parallel.set_memory_budget_enabled(previous)
+        _parallel.set_parallel_items_enabled(previous_items)

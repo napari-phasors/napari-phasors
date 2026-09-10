@@ -29,6 +29,16 @@ from qtpy.QtWidgets import (
 )
 from superqt import QToggleSwitch
 
+from ._mapping_filters import (
+    FRET_EFFICIENCY,
+    MappingFilterList,
+    baseline_arrays,
+    combined_mask,
+    get_filters,
+    kept_fraction,
+    rebuild_layer_from_filters,
+    set_filters,
+)
 from ._parallel import parallel_map
 from ._timelapse import slice_datasets
 from ._utils import (
@@ -61,6 +71,9 @@ class FretWidget(AutoUpdateMixin, QWidget):
             None  # Reference to first layer for backward compatibility
         )
         self.fret_layers = []  # List of all FRET efficiency layers
+        # Set while this tab rewrites the phasor arrays from the filter
+        # stack, so the refresh it triggers does not recurse back into it.
+        self._applying_mapping_filter = False
         self.colormap_contrast_limits = None
         self.fret_colormap = None
         self.colormap_gamma = 1.0
@@ -378,12 +391,48 @@ class FretWidget(AutoUpdateMixin, QWidget):
             )
         )
 
+        # Filter section -----------------------------------------------------
+        # The same stack the Phasor Mapping tab edits, filtered down to the
+        # efficiency criteria. Criteria added there are listed here too (and
+        # can be switched off from here) so that pixels missing because of a
+        # lifetime filter are never mistaken for pixels missing because of a
+        # FRET one.
+        filter_box, filter_box_layout = make_section("Filter")
+        self.filter_box = filter_box
+
+        self.filter_intro_label = QLabel(
+            "Discard pixels whose FRET efficiency falls outside a range."
+        )
+        self.filter_intro_label.setWordWrap(True)
+        self.filter_intro_label.setToolTip(
+            "The efficiency a filter tests is recomputed from the donor "
+            "trajectory, and re-captured every time you recalculate, so the "
+            "range always means the same thing as the map beside it."
+        )
+        filter_box_layout.addWidget(self.filter_intro_label)
+
+        self.filter_list = MappingFilterList(
+            [FRET_EFFICIENCY], add_label="Add efficiency filter"
+        )
+        self.filter_list.set_editable_metrics([FRET_EFFICIENCY])
+        self.filter_list.set_params_provider(self._fret_filter_params)
+        self.filter_list.set_harmonic_provider(self._current_harmonic)
+        self.filter_list.filtersChanged.connect(self._on_filters_changed)
+        filter_box_layout.addWidget(self.filter_list)
+        layout.addWidget(filter_box)
+
         # Re-evaluate the button whenever a required input changes.
         self.frequency_input.textChanged.connect(
             lambda _=None: self._refresh_calculate_button()
         )
         self.donor_line_edit.textChanged.connect(
             lambda _=None: self._refresh_calculate_button()
+        )
+        self.frequency_input.textChanged.connect(
+            lambda _=None: self._refresh_filter_add_button()
+        )
+        self.donor_line_edit.textChanged.connect(
+            lambda _=None: self._refresh_filter_add_button()
         )
         # Autoupdate follows *committed* values -- a released slider, or a
         # text field the user left -- so a drag or a half-typed number does
@@ -1908,6 +1957,186 @@ class FretWidget(AutoUpdateMixin, QWidget):
 
         self.plot_donor_trajectory()
 
+    def _fret_filter_params(self, metric=None):
+        """Return the donor trajectory a new efficiency criterion should use.
+
+        The parameters are frozen into the criterion so that reloading a
+        saved layer reproduces the same efficiencies, and refreshed from the
+        tab on every recalculation so that a filter never keeps hiding pixels
+        by a trajectory the user has already moved on from.
+        """
+        params = {}
+        frequency = self._positive_float(self.frequency_input.text())
+        donor_lifetime = self._positive_float(self.donor_line_edit.text())
+        if frequency is None or donor_lifetime is None:
+            return params
+        params['frequency'] = frequency
+        params['donor_lifetime'] = donor_lifetime
+        params['donor_background'] = self.donor_background
+        params['background_real'] = self.background_real
+        params['background_imag'] = self.background_imag
+        params['donor_fretting'] = self.donor_fretting_proportion
+        return params
+
+    @staticmethod
+    def _positive_float(text):
+        """Return *text* as a finite positive float, or ``None``."""
+        try:
+            value = float(str(text).strip())
+        except (TypeError, ValueError):
+            return None
+        if not np.isfinite(value) or value <= 0:
+            return None
+        return value
+
+    def _current_harmonic(self):
+        """Return the harmonic a new criterion should be measured on."""
+        return getattr(self.parent_widget, 'harmonic', 1) or 1
+
+    def _filter_add_blocked_reason(self):
+        """Return why an efficiency filter cannot be added yet, else ``None``."""
+        if not self._filter_layers():
+            return "Select at least one image layer with phasor features."
+        if not self._fret_filter_params():
+            return (
+                "Enter the donor lifetime and the frequency (MHz) before "
+                "filtering on FRET efficiency."
+            )
+        return None
+
+    def _refresh_filter_add_button(self):
+        """Explain on the button itself when a filter cannot be added yet."""
+        reason = self._filter_add_blocked_reason()
+        self.filter_list.add_button.setEnabled(reason is None)
+        self.filter_list.add_button.setToolTip(
+            reason
+            if reason is not None
+            else "Add a filter on the FRET efficiency."
+        )
+
+    def _filter_layers(self):
+        """Return the layers the filter stack is written to."""
+        if self.parent_widget is None:
+            return []
+        try:
+            return list(self.parent_widget.get_selected_layers())
+        except (AttributeError, RuntimeError):
+            return []
+
+    def _primary_filter_layer(self):
+        """Return the layer whose stack the cards show, or ``None``."""
+        layers = self._filter_layers()
+        return layers[0] if layers else None
+
+    def _layer_filter_params(self, layer):
+        """Return *layer*'s own intensity filter/threshold parameters."""
+        if self.parent_widget is None:
+            return {}
+        return self.parent_widget._filter_params_from_settings(layer)
+
+    def _sync_filter_ui(self):
+        """Show the stack stored on the primary layer."""
+        layer = self._primary_filter_layer()
+        if layer is None:
+            self.filter_list.set_filters([])
+            self.filter_list.set_filter_stats({}, "")
+            self._refresh_filter_add_button()
+            return
+        self.filter_list.set_filters(get_filters(layer))
+        self._refresh_filter_stats()
+        self._refresh_filter_add_button()
+
+    def _refresh_filter_stats(self):
+        """Report what each criterion, and the stack as a whole, keeps."""
+        filters = self.filter_list.filters()
+        layer = self._primary_filter_layer()
+        if layer is None or not filters:
+            self.filter_list.set_filter_stats({}, "")
+            return
+        mean, real, imag = baseline_arrays(
+            layer, self._layer_filter_params(layer)
+        )
+        harmonics = layer.metadata.get('harmonics')
+        stats = {}
+        for entry in filters:
+            single = dict(entry, enabled=True)
+            mask = combined_mask([single], mean, real, imag, harmonics)
+            prefix = "" if entry['enabled'] else "off · "
+            stats[entry['id']] = (
+                f"{prefix}keeps {kept_fraction(mask, mean):.1%} of the pixels"
+            )
+        total_mask = combined_mask(filters, mean, real, imag, harmonics)
+        active = sum(1 for f in filters if f['enabled'])
+        kept = kept_fraction(total_mask, mean)
+        # Kept short so it fits the dock on one line; the sentence it stands
+        # for is the tooltip.
+        summary = f"{active} of {len(filters)} on · {kept:.1%} kept"
+        detail = (
+            f"{active} of {len(filters)} filters are active, and together "
+            f"they keep {kept:.1%} of the measured pixels of {layer.name}."
+        )
+        self.filter_list.set_filter_stats(stats, summary, detail=detail)
+
+    def _refresh_fret_filter_params(self, layers=None):
+        """Point every efficiency criterion at the current donor trajectory.
+
+        The efficiency map on screen is rebuilt from the tab's live
+        parameters; a criterion left on an older trajectory would hide a
+        different set of pixels than the map it is displayed next to.
+        """
+        params = self._fret_filter_params()
+        if not params:
+            return False
+        changed = False
+        for layer in layers if layers is not None else self._filter_layers():
+            filters = get_filters(layer)
+            updated = []
+            for entry in filters:
+                if entry['metric'] == FRET_EFFICIENCY and (
+                    entry['params'] != params
+                ):
+                    entry = dict(entry, params=dict(params))
+                    changed = True
+                updated.append(entry)
+            if changed:
+                set_filters(layer, updated)
+        return changed
+
+    def _on_filters_changed(self, filters):
+        """Persist the edited stack and rebuild everything downstream of it."""
+        self._apply_filter_stack(filters)
+
+    def _apply_filter_stack(self, filters=None, layers=None):
+        """Write *filters* to *layers* and re-derive their phasor data."""
+        if self.parent_widget is None:
+            return
+        layers = self._filter_layers() if layers is None else list(layers)
+        if not layers:
+            return
+        if filters is None:
+            filters = self.filter_list.filters()
+
+        problems = []
+        self._applying_mapping_filter = True
+        try:
+            for layer in layers:
+                stored = set_filters(layer, filters)
+                rebuild_layer_from_filters(
+                    layer,
+                    stored,
+                    filter_params=self._layer_filter_params(layer),
+                    on_error=problems.append,
+                )
+            self.parent_widget.refresh_phasor_data()
+            if self.fret_layers:
+                self.calculate_fret_efficiency()
+        finally:
+            self._applying_mapping_filter = False
+
+        self._refresh_filter_stats()
+        for message in dict.fromkeys(problems):
+            show_warning(message)
+
     def _fret_validation(self):
         """Return ``None`` if FRET efficiency can run, else the missing msg."""
         if not self.parent_widget.get_selected_layers():
@@ -1976,6 +2205,7 @@ class FretWidget(AutoUpdateMixin, QWidget):
 
         if layer_name:
             self._reconnect_existing_fret_layer(layer_name)
+            self._sync_filter_ui()
 
             self._updating_settings = True
             try:
@@ -2007,6 +2237,7 @@ class FretWidget(AutoUpdateMixin, QWidget):
                 self._updating_settings = False
 
             self._previous_layer_name = None
+            self._sync_filter_ui()
 
     def calculate_fret_efficiency(self):
         """Calculate FRET efficiency based on donor intensities."""
@@ -2031,6 +2262,18 @@ class FretWidget(AutoUpdateMixin, QWidget):
 
         selected_layers = self.parent_widget.get_selected_layers()
         if not selected_layers:
+            return
+
+        # An efficiency filter is only honest while it names the same donor
+        # trajectory the map beside it was computed from, so the stack is
+        # re-pointed at the current parameters before anything is computed.
+        # (Skipped mid-apply: the stack is what asked for this run.)
+        if not self._applying_mapping_filter and (
+            self._refresh_fret_filter_params(selected_layers)
+        ):
+            self._apply_filter_stack(
+                get_filters(selected_layers[0]), layers=selected_layers
+            )
             return
 
         # Clear the active registry and disconnect its events.
@@ -2256,6 +2499,7 @@ class FretWidget(AutoUpdateMixin, QWidget):
 
         self._update_fret_histogram()
         self.plot_donor_trajectory()
+        self._sync_filter_ui()
 
     def closeEvent(self, event):
         """Clean up signal connections before closing."""

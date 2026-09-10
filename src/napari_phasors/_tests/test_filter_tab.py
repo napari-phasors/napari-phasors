@@ -1522,3 +1522,60 @@ def test_lower_threshold_below_masked_range_is_kept(make_viewer_model, qtbot):
     assert fw._offscreen_threshold_lower is None
     fw.apply_button_clicked()
     assert layer.metadata["settings"]["threshold"] is None
+
+
+def test_upper_threshold_above_masked_range_is_kept(make_viewer_model, qtbot):
+    """The upper bound gets the same treatment as the lower one.
+
+    A mask that removes the brightest pixels lowers the slider maximum; the
+    restored upper handle then sits at the extreme, which otherwise reads as
+    "no limit" and would drop the user's upper threshold on the next apply.
+    """
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    fw = parent.filter_tab
+    fw._on_image_layer_changed()
+
+    om = layer.metadata["original_mean"]
+    # Keep only the dimmest pixels, so the slider maximum drops well below
+    # the upper threshold the user set on the full image.
+    dim = om <= np.nanpercentile(om, 30)
+    upper = float(np.nanpercentile(om, 85))
+    fw.threshold_method_combobox.setCurrentText("Manual")
+    # A lower bound too, since the two are restored together.
+    fw.min_threshold_edit.setText("0.01")
+    fw.on_min_threshold_edit_changed()
+    fw.max_threshold_edit.setText(f"{upper:.2f}")
+    fw.on_max_threshold_edit_changed()
+    fw.apply_button_clicked()
+    stored = layer.metadata["settings"]["threshold_upper"]
+    assert stored is not None
+    assert stored > om[dim].max()
+
+    layer.metadata["mask"] = dim.astype(int)
+    fw._on_image_layer_changed()
+    assert fw._offscreen_threshold_upper == stored
+    fw.apply_button_clicked()
+    assert layer.metadata["settings"]["threshold_upper"] == stored
+
+
+def test_layer_without_settings_clears_the_remembered_thresholds(
+    make_viewer_model, qtbot
+):
+    """A layer that carries no settings starts from an unconstrained slider."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    fw = parent.filter_tab
+    fw._offscreen_threshold_lower = 1.0
+    fw._offscreen_threshold_upper = 2.0
+
+    del layer.metadata["settings"]
+    fw._on_image_layer_changed()
+
+    assert fw._offscreen_threshold_lower is None
+    assert fw._offscreen_threshold_upper is None
+    assert fw.threshold_method_combobox.currentText() == "None"

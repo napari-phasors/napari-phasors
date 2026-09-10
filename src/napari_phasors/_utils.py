@@ -67,6 +67,7 @@ from qtpy.QtWidgets import (
 )
 from superqt import QRangeSlider, QToggleSwitch
 
+from ._mapping_filters import apply_layer_filters
 from ._parallel import parallel_filter_median
 
 #: Precisions the phasor arrays may be stored at. ``"native"`` keeps whatever
@@ -1489,6 +1490,7 @@ def compute_filter_and_threshold(
     sigma: float = None,
     levels: int = None,
     harmonics: np.ndarray = None,
+    apply_mapping_filters: bool = True,
 ):
     """Compute a layer's filtered and thresholded phasor arrays.
 
@@ -1505,6 +1507,13 @@ def compute_filter_and_threshold(
         As in :func:`apply_filter_and_threshold`.
     harmonics : np.ndarray, optional
         Harmonic values. Read from the layer when None.
+    apply_mapping_filters : bool, optional
+        Also apply the layer's metric filter stack (see
+        :mod:`napari_phasors._mapping_filters`). On by default so that every
+        path which rebuilds the phasor arrays from the originals -- an
+        intensity threshold, a mask edit, an imported analysis -- reproduces
+        the metric filters instead of dropping them. Pass ``False`` to obtain
+        the unfiltered baseline the metrics themselves are measured on.
 
     Returns
     -------
@@ -1534,7 +1543,14 @@ def compute_filter_and_threshold(
         levels=levels,
     )
 
-    return _mask_phasor_arrays(layer, mean, real, imag, harmonics)
+    mean, real, imag = _mask_phasor_arrays(layer, mean, real, imag, harmonics)
+
+    if apply_mapping_filters:
+        mean, real, imag = apply_layer_filters(
+            layer, (mean, real, imag), harmonics=harmonics
+        )
+
+    return mean, real, imag
 
 
 def assign_filter_and_threshold(

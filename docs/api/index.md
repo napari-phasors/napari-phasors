@@ -26,6 +26,14 @@ This section documents the public Python API of napari-phasors.
    :undoc-members:
 ```
 
+## Metric filters
+
+```{eval-rst}
+.. automodule:: napari_phasors._mapping_filters
+   :members:
+   :undoc-members:
+```
+
 ## Time-lapse
 
 ```{eval-rst}

@@ -30,6 +30,19 @@ from scipy.ndimage import gaussian_filter
 from scipy.stats import binned_statistic_2d
 from superqt import QRangeSlider, QToggleSwitch
 
+from ._mapping_filters import (
+    MAPPING_METRICS,
+    MappingFilterList,
+    baseline_arrays,
+    combined_mask,
+    compute_metric,
+    get_filters,
+    kept_fraction,
+    rebuild_layer_from_filters,
+    requires_frequency,
+    select_harmonic,
+    set_filters,
+)
 from ._parallel import parallel_map
 from ._timelapse import slice_datasets
 from ._utils import (
@@ -37,7 +50,6 @@ from ._utils import (
     AutoUpdateMixin,
     HistogramWidget,
     analysis_section_stylesheet,
-    compute_filter_and_threshold,
     create_mpl_colormap_from_qcolor,
     make_section,
     populate_colormap_combobox,
@@ -343,8 +355,8 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         )
         self.phase_range_factor = 100
         self.modulation_range_factor = 100
-        self.filter_range_factor = 1000
-        self._updating_filter_slider = False
+        # Set while this tab rewrites the phasor arrays from the filter
+        # stack, so the refresh it triggers does not recurse back into it.
         self._applying_mapping_filter = False
         self._axes_limit_callback_cids = []
         self._mesh_axes_update_timer = QTimer(self)
@@ -422,62 +434,31 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         self.main_layout.addWidget(output_box)
 
         # Filter section -----------------------------------------------------
+        # Each criterion is its own card. Chaining "set a range, press apply"
+        # steps made the pixels that vanished between two steps impossible to
+        # account for; a visible list of the criteria currently in force, each
+        # removable on its own, is what makes the result readable.
         filter_box, filter_box_layout = make_section("Filter")
         self.filter_box = filter_box
 
-        filter_row = QHBoxLayout()
-        self.filter_range_label = QLabel("Filter range (ns):")
-        filter_row.addWidget(self.filter_range_label)
+        self.filter_intro_label = QLabel(
+            "Discard pixels whose value falls outside a range."
+        )
+        self.filter_intro_label.setWordWrap(True)
+        self.filter_intro_label.setToolTip(
+            "A pixel is kept only when it satisfies every enabled filter. Each one is measured on the unfiltered data, so the order you add them in does not matter and removing one restores exactly the pixels it hid."
+        )
+        filter_box_layout.addWidget(self.filter_intro_label)
 
-        self.filter_min_edit = QLineEdit("0.00")
-        self.filter_max_edit = QLineEdit("10.00")
-        self.filter_min_edit.setValidator(QDoubleValidator())
-        self.filter_max_edit.setValidator(QDoubleValidator())
-        self.filter_min_edit.setFixedWidth(55)
-        self.filter_max_edit.setFixedWidth(55)
-        self.filter_min_edit.setAlignment(Qt.AlignCenter)
-        self.filter_max_edit.setAlignment(Qt.AlignCenter)
-        filter_row.addWidget(self.filter_min_edit)
-        filter_row.addWidget(QLabel("to"))
-        filter_row.addWidget(self.filter_max_edit)
-
-        self.filter_auto_btn = QPushButton("Auto")
-        self.filter_auto_btn.setToolTip(
-            "Set filter range to span active metric data"
+        self.filter_list = MappingFilterList(MAPPING_METRICS)
+        self.filter_list.set_editable_metrics(MAPPING_METRICS)
+        self.filter_list.set_params_provider(self._new_filter_params)
+        self.filter_list.set_harmonic_provider(self._current_harmonic)
+        self.filter_list.filtersChanged.connect(self._on_filters_changed)
+        self.filter_list.metric_combobox.currentTextChanged.connect(
+            lambda _=None: self._on_filter_metric_changed()
         )
-        self.filter_auto_btn.clicked.connect(
-            self._initialize_filter_range_from_data
-        )
-        filter_row.addWidget(self.filter_auto_btn)
-        filter_row.addStretch(1)
-        filter_box_layout.addLayout(filter_row)
-
-        self.filter_range_slider = QRangeSlider(Qt.Orientation.Horizontal)
-        self.filter_range_slider.setRange(0, 10000)
-        self.filter_range_slider.setValue((0, 10000))
-        filter_box_layout.addWidget(self.filter_range_slider)
-
-        filter_btn_row = QHBoxLayout()
-        self.apply_filter_button = QPushButton("Apply Filter")
-        self.apply_filter_button.setSizePolicy(
-            QSizePolicy.Expanding, QSizePolicy.Fixed
-        )
-        self.apply_filter_button.setToolTip(
-            "Filter out phasor coordinates outside the specified range."
-        )
-        self.apply_filter_button.clicked.connect(self._on_apply_filter_clicked)
-        filter_btn_row.addWidget(self.apply_filter_button)
-
-        self.reset_filter_button = QPushButton("Reset Filter")
-        self.reset_filter_button.setSizePolicy(
-            QSizePolicy.Expanding, QSizePolicy.Fixed
-        )
-        self.reset_filter_button.setToolTip(
-            "Reset mapping filter and restore baseline phasor coordinates."
-        )
-        self.reset_filter_button.clicked.connect(self._on_reset_filter_clicked)
-        filter_btn_row.addWidget(self.reset_filter_button)
-        filter_box_layout.addLayout(filter_btn_row)
+        filter_box_layout.addWidget(self.filter_list)
 
         # Coloring section ---------------------------------------------------
         # Only relevant for Phase/Modulation output; hidden for Lifetime (see
@@ -536,15 +517,6 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         )
         self.frequency_input.editingFinished.connect(
             self._on_frequency_changed
-        )
-        self.filter_range_slider.valueChanged.connect(
-            self._on_filter_slider_changed
-        )
-        self.filter_min_edit.editingFinished.connect(
-            self._on_filter_min_edit_changed
-        )
-        self.filter_max_edit.editingFinished.connect(
-            self._on_filter_max_edit_changed
         )
 
         # NOTE: The widget is created here but NOT added to this tab's layout.
@@ -927,13 +899,11 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             if pw is not None:
                 pw._remove_mapping_colorbar()
 
-        output_mode = self.output_mode_combobox.currentText()
-        if output_mode == "Lifetime":
-            self.filter_range_label.setText("Filter range (ns):")
-        elif output_mode == "Phase":
-            self.filter_range_label.setText("Filter range (rad):")
-        else:
-            self.filter_range_label.setText("Filter range:")
+        # A new filter defaults to the quantity currently on screen, which is
+        # almost always the one the user is reasoning about.
+        output_type = self._get_selected_output_type()
+        if output_type in MAPPING_METRICS:
+            self.filter_list.set_current_metric(output_type)
 
         self._refresh_action_buttons()
 
@@ -1062,479 +1032,263 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             and self._refresh_calculate_button is not None
         ):
             self._refresh_calculate_button()
+        if hasattr(self, 'filter_list'):
+            self._refresh_filter_add_button()
 
-    def _mapping_filter_validation(self):
-        """Return None if filter can be applied, else reason string."""
-        if not self.parent_widget or not self.parent_widget.has_phasor_data():
-            return "Select at least one image layer with phasor features."
-        output_type = self._get_selected_output_type()
-        if self._output_requires_frequency(output_type):
-            frequency_text = self.frequency_input.text().strip()
-            if not frequency_text:
-                return "Enter the frequency (MHz)."
-            if self._parse_positive_frequency(frequency_text) is None:
-                return "Enter a valid positive frequency (MHz)."
+    def _phase_wraps(self) -> bool:
+        """Return whether phase filters are measured on ``[0, 2pi)``."""
+        return not self._is_semicircle_mode()
+
+    def _filter_frequency(self, layer=None):
+        """Return the frequency metric filters should be evaluated at.
+
+        The tab's own input wins; a layer that was analysed earlier keeps the
+        frequency it was analysed with, so a stack restored from metadata
+        still means what it meant when it was created.
+        """
+        frequency = self._parse_positive_frequency(
+            self.frequency_input.text().strip()
+        )
+        if frequency is not None:
+            return frequency
+        if layer is not None:
+            stored = layer.metadata.get('settings', {}).get('frequency')
+            if stored is None:
+                stored = layer.metadata.get('frequency')
+            return self._parse_positive_frequency(stored)
         return None
 
-    def _initialize_filter_range_from_data(self):
-        """Set the filter range slider to span the active metric's data range."""
-        output_type = self._get_selected_output_type()
-        requires_freq = self._output_requires_frequency(output_type)
-
-        data = None
-        if self.current_metric_data_original is not None:
-            data = self.current_metric_data_original
-        elif self.parent_widget is not None:
-            selected_layers = self.parent_widget.get_selected_layers()
-            for layer in selected_layers:
-                derived = layer.metadata.get('derived_data', {}).get(
-                    output_type, {}
-                )
-                harmonic = getattr(self.parent_widget, 'harmonic', 1)
-                if harmonic in derived:
-                    data = derived[harmonic]
-                    break
-
-        if data is not None:
-            flat = np.asarray(data).flatten()
-            valid = flat[np.isfinite(flat) & ~np.isnan(flat)]
-            if requires_freq:
-                valid = valid[valid > 0]
-            if len(valid) > 0:
-                min_val = float(np.min(valid))
-                max_val = float(np.max(valid))
-            else:
-                min_val, max_val = 0.0, 10.0 if requires_freq else 1.0
-        else:
-            if requires_freq:
-                min_val, max_val = 0.0, 10.0
-            elif output_type == "Phase":
-                min_val, max_val = 0.0, 2.0 * np.pi
-            else:
-                min_val, max_val = 0.0, 1.0
-
-        min_slider_i = int(np.floor(min_val * self.filter_range_factor))
-        max_slider_i = int(np.ceil(max_val * self.filter_range_factor))
-        if min_slider_i >= max_slider_i:
-            max_slider_i = min_slider_i + 1000
-
-        self._updating_filter_slider = True
-        try:
-            self.filter_range_slider.setRange(min_slider_i, max_slider_i)
-            self.filter_range_slider.setValue((min_slider_i, max_slider_i))
-            self.filter_min_edit.setText(f"{min_val:.2f}")
-            self.filter_max_edit.setText(f"{max_val:.2f}")
-        finally:
-            self._updating_filter_slider = False
-
-    def _restore_filter_range_from_settings(self, settings=None):
-        """Restore filter range from layer settings if present."""
-        layer = None
-        if self.parent_widget is not None:
-            primary_name = self.parent_widget.get_primary_layer_name()
-            if primary_name and primary_name in self.viewer.layers:
-                layer = self.viewer.layers[primary_name]
-
-        mf = None
-        if settings is not None and isinstance(settings, dict):
-            mf = settings.get('mapping_filter')
-        if not mf and layer is not None:
-            layer_settings = layer.metadata.get('settings', {})
-            mf = layer_settings.get('mapping_filter')
-            if not mf:
-                phasor_map_settings = layer_settings.get('phasor_mapping', {})
-                if isinstance(phasor_map_settings, dict):
-                    mf = phasor_map_settings.get('mapping_filter')
-
-        if not mf:
-            return False
-        if mf.get('output_type') != self._get_selected_output_type():
-            return False
-        min_val = mf.get('min')
-        max_val = mf.get('max')
-        if min_val is None or max_val is None:
-            return False
-        min_i = int(min_val * self.filter_range_factor)
-        max_i = int(max_val * self.filter_range_factor)
-        slider_min = min(min_i, self.filter_range_slider.minimum())
-        slider_max = max(max_i, self.filter_range_slider.maximum())
-        self._updating_filter_slider = True
-        try:
-            self.filter_range_slider.setRange(slider_min, slider_max)
-            self.filter_range_slider.setValue((min_i, max_i))
-            self.filter_min_edit.setText(f"{min_val:.2f}")
-            self.filter_max_edit.setText(f"{max_val:.2f}")
-        finally:
-            self._updating_filter_slider = False
-        return True
-
-    def _on_filter_slider_changed(self, value):
-        """Update min/max text edits when filter range slider moves."""
-        if getattr(self, '_updating_filter_slider', False):
-            return
-        min_i, max_i = value
-        self.filter_min_edit.setText(f"{min_i / self.filter_range_factor:.2f}")
-        self.filter_max_edit.setText(f"{max_i / self.filter_range_factor:.2f}")
-
-    def _on_filter_min_edit_changed(self):
-        """Handle manual changes in filter min edit."""
-        if getattr(self, '_updating_filter_slider', False):
-            return
-        try:
-            val = float(self.filter_min_edit.text())
-        except ValueError:
-            return
-        cur_min_i, cur_max_i = self.filter_range_slider.value()
-        val_i = int(val * self.filter_range_factor)
-        slider_min = min(val_i, self.filter_range_slider.minimum())
-        slider_max = max(cur_max_i, self.filter_range_slider.maximum())
-        if val_i > cur_max_i:
-            val_i = cur_max_i
-        self._updating_filter_slider = True
-        try:
-            self.filter_range_slider.setRange(slider_min, slider_max)
-            self.filter_range_slider.setValue((val_i, cur_max_i))
-        finally:
-            self._updating_filter_slider = False
-
-    def _on_filter_max_edit_changed(self):
-        """Handle manual changes in filter max edit."""
-        if getattr(self, '_updating_filter_slider', False):
-            return
-        try:
-            val = float(self.filter_max_edit.text())
-        except ValueError:
-            return
-        cur_min_i, cur_max_i = self.filter_range_slider.value()
-        val_i = int(val * self.filter_range_factor)
-        slider_min = min(cur_min_i, self.filter_range_slider.minimum())
-        slider_max = max(val_i, self.filter_range_slider.maximum())
-        if val_i < cur_min_i:
-            val_i = cur_min_i
-        self._updating_filter_slider = True
-        try:
-            self.filter_range_slider.setRange(slider_min, slider_max)
-            self.filter_range_slider.setValue((cur_min_i, val_i))
-        finally:
-            self._updating_filter_slider = False
-
     def _get_base_phasor_arrays(self, layer):
-        """Compute base filtered/thresholded/masked phasor arrays for a layer."""
-        if (
-            'G_original' in layer.metadata
-            and 'original_mean' in layer.metadata
-        ):
-            params = (
-                self.parent_widget._filter_params_from_settings(layer)
-                if self.parent_widget is not None
-                else {}
-            )
-            clean_params = dict(params)
-            clean_params.pop('threshold_method', None)
-            return compute_filter_and_threshold(layer, **clean_params)
-        g = layer.metadata.get('G')
-        s = layer.metadata.get('S')
-        return (
-            layer.data.copy() if layer.data is not None else None,
-            g.copy() if g is not None else None,
-            s.copy() if s is not None else None,
+        """Return *layer*'s phasor arrays before any metric filter.
+
+        This is the baseline every criterion is measured against: the
+        intensity threshold, the median/wavelet filter and the mask are all
+        applied, the metric filters are not. Measuring against the filtered
+        arrays instead is what would make a stack order-dependent, since each
+        new criterion would only ever see what the previous ones left.
+        """
+        return baseline_arrays(layer, self._layer_filter_params(layer))
+
+    def _layer_filter_params(self, layer):
+        """Return *layer*'s own intensity filter/threshold parameters."""
+        if self.parent_widget is None:
+            return {}
+        return self.parent_widget._filter_params_from_settings(layer)
+
+    def _compute_metric_for_layer(self, layer, metric, harmonic, arrays=None):
+        """Return *metric* evaluated on *layer*'s unfiltered baseline."""
+        mean, real, imag = (
+            arrays
+            if arrays is not None
+            else self._get_base_phasor_arrays(layer)
+        )
+        if mean is None:
+            return None
+        plane_real, plane_imag = select_harmonic(
+            real, imag, layer.metadata.get('harmonics'), harmonic, mean.ndim
+        )
+        return compute_metric(
+            metric,
+            plane_real,
+            plane_imag,
+            harmonic=harmonic,
+            frequency=self._filter_frequency(layer),
+            wrap_phase=self._phase_wraps(),
         )
 
-    def _compute_metric_for_layer(self, layer, output_type, harmonic):
-        """Compute the metric array for a layer from its baseline phasor data."""
+    def _new_filter_params(self, metric, layer=None):
+        """Return the extra parameters to freeze into a new criterion."""
+        params = {}
+        if requires_frequency(metric):
+            frequency = self._filter_frequency(layer)
+            if frequency is not None:
+                params['frequency'] = frequency
+        return params
+
+    def _current_harmonic(self):
+        """Return the harmonic a new criterion should be measured on."""
+        return getattr(self.parent_widget, 'harmonic', 1) or 1
+
+    def _filter_add_blocked_reason(self):
+        """Return why a filter cannot be added right now, else ``None``."""
+        if not self._filter_layers():
+            return "Select at least one image layer with phasor features."
+        metric = self.filter_list.current_metric()
+        if requires_frequency(metric) and self._filter_frequency() is None:
+            return "Enter the frequency (MHz) before filtering on a lifetime."
+        return None
+
+    def _refresh_filter_add_button(self):
+        """Explain on the button itself when a filter cannot be added yet."""
+        reason = self._filter_add_blocked_reason()
+        self.filter_list.add_button.setEnabled(reason is None)
+        if reason is not None:
+            self.filter_list.add_button.setToolTip(reason)
+        else:
+            self.filter_list.add_button.setToolTip(
+                "Add a filter on the selected quantity."
+            )
+
+    def _filter_layers(self):
+        """Return the layers the filter stack is written to."""
+        if self.parent_widget is None:
+            return []
+        try:
+            return list(self.parent_widget.get_selected_layers())
+        except (AttributeError, RuntimeError):
+            return []
+
+    def _primary_filter_layer(self):
+        """Return the layer whose stack the cards show, or ``None``."""
+        layers = self._filter_layers()
+        return layers[0] if layers else None
+
+    def _sync_filter_ui(self):
+        """Show the stack stored on the primary layer, and refresh its ranges."""
+        layer = self._primary_filter_layer()
+        if layer is None:
+            self.filter_list.set_filters([])
+            self.filter_list.set_filter_stats({}, "")
+            return
+        self.filter_list.set_filters(get_filters(layer))
+        output_type = self._get_selected_output_type()
+        if output_type in MAPPING_METRICS and not self.filter_list.filters():
+            # An empty list should offer the quantity the user is looking at.
+            self.filter_list.set_current_metric(output_type)
+        self._refresh_filter_bounds()
+        self._refresh_filter_stats()
+        self._refresh_filter_add_button()
+
+    def _on_filter_metric_changed(self):
+        """Refresh the offered range after the "add" row's metric changed."""
+        self._refresh_filter_bounds()
+        self._refresh_filter_add_button()
+
+    def _refresh_filter_bounds(self):
+        """Widen each card's slider to the full data range of its metric.
+
+        The ranges come from the *unfiltered* baseline, so a filter can never
+        shrink the range the next filter is offered -- the trap that made the
+        old single-range control feel like it was hiding data.
+        """
+        layer = self._primary_filter_layer()
+        if layer is None:
+            return
+        metrics = {f['metric'] for f in self.filter_list.filters()}
+        current = self.filter_list.current_metric()
+        if current:
+            metrics.add(current)
+        metrics &= set(MAPPING_METRICS)
+        arrays = self._get_base_phasor_arrays(layer)
+        harmonic = getattr(self.parent_widget, 'harmonic', 1) or 1
+        for metric in metrics:
+            values = self._compute_metric_for_layer(
+                layer, metric, harmonic, arrays=arrays
+            )
+            if values is None:
+                continue
+            finite = np.asarray(values, dtype=float)
+            finite = finite[np.isfinite(finite)]
+            if finite.size == 0:
+                continue
+            self.filter_list.set_metric_bounds(
+                metric, float(finite.min()), float(finite.max())
+            )
+
+    def _refresh_filter_stats(self):
+        """Report what each criterion, and the stack as a whole, keeps."""
+        filters = self.filter_list.filters()
+        layer = self._primary_filter_layer()
+        if layer is None or not filters:
+            self.filter_list.set_filter_stats({}, "")
+            return
         mean, real, imag = self._get_base_phasor_arrays(layer)
         harmonics = layer.metadata.get('harmonics')
-        harmonics_array = (
-            np.atleast_1d(harmonics)
-            if harmonics is not None
-            else np.array([1])
+        stats = {}
+        for entry in filters:
+            single = dict(entry, enabled=True)
+            mask = combined_mask([single], mean, real, imag, harmonics)
+            fraction = kept_fraction(mask, mean)
+            prefix = "" if entry['enabled'] else "off · "
+            stats[entry['id']] = f"{prefix}keeps {fraction:.1%} of the pixels"
+        total_mask = combined_mask(filters, mean, real, imag, harmonics)
+        active = sum(1 for f in filters if f['enabled'])
+        kept = kept_fraction(total_mask, mean)
+        # Kept short so it fits the dock on one line; the sentence it stands
+        # for is the tooltip.
+        summary = f"{active} of {len(filters)} on · {kept:.1%} kept"
+        detail = (
+            f"{active} of {len(filters)} filters are active, and together "
+            f"they keep {kept:.1%} of the measured pixels of {layer.name}."
+        )
+        self.filter_list.set_filter_stats(stats, summary, detail=detail)
+
+    def _rebuild_layer_from_filters(self, layer, filters, on_error=None):
+        """Rewrite *layer*'s phasor arrays from its baseline plus *filters*."""
+        rebuild_layer_from_filters(
+            layer,
+            filters,
+            filter_params=self._layer_filter_params(layer),
+            on_error=on_error,
         )
 
-        if real is not None and real.ndim > mean.ndim:
-            try:
-                harmonic_index = int(
-                    np.where(harmonics_array == harmonic)[0][0]
-                )
-                r = real[harmonic_index]
-                i = imag[harmonic_index]
-            except (IndexError, ValueError):
-                r = real[0]
-                i = imag[0]
-        else:
-            r = real
-            i = imag
+    def _on_filters_changed(self, filters):
+        """Persist the edited stack and rebuild everything downstream of it."""
+        self._apply_filter_stack(filters)
 
-        if r is None or i is None:
-            return None
+    def _apply_filter_stack(self, filters=None, layers=None):
+        """Write *filters* to *layers* and re-derive their phasor data.
 
-        requires_freq = self._output_requires_frequency(output_type)
-        if requires_freq:
-            frequency_text = self.frequency_input.text().strip()
-            freq_val = (
-                float(frequency_text)
-                if frequency_text
-                else float(layer.metadata.get('frequency', 80.0))
-            )
-            effective_freq = freq_val * harmonic
-            with np.errstate(divide='ignore', invalid='ignore'):
-                if output_type == "Normal Lifetime":
-                    vals = phasor_to_normal_lifetime(
-                        r, i, frequency=effective_freq
-                    )
-                else:
-                    phase_lt, mod_lt = phasor_to_apparent_lifetime(
-                        r, i, frequency=effective_freq
-                    )
-                    if output_type == "Apparent Phase Lifetime":
-                        vals = np.clip(phase_lt, a_min=0, a_max=None)
-                    else:
-                        vals = np.clip(mod_lt, a_min=0, a_max=None)
-            with np.errstate(invalid='ignore'):
-                vals[vals < 0] = 0
-            return vals
-        else:
-            with np.errstate(divide='ignore', invalid='ignore'):
-                phase_vals, mod_vals = phasor_to_polar(r, i)
-            if output_type == "Phase" and not self._is_semicircle_mode():
-                with np.errstate(invalid='ignore'):
-                    phase_vals = np.mod(phase_vals, 2.0 * np.pi)
-            return phase_vals if output_type == "Phase" else mod_vals
-
-    def _on_apply_filter_clicked(self):
-        """Apply mapping filter to selected layers, replacing out-of-range phasor coords with NaN."""
-        reason = self._mapping_filter_validation()
-        if reason:
-            show_warning(reason)
+        Everything the tab shows -- the phasor plot, the output maps, the
+        histogram and the statistics table -- is derived from the layer's G/S
+        arrays, so rebuilding those from the stack is the only step needed to
+        keep all four in sync.
+        """
+        if self.parent_widget is None:
             return
-
-        output_type = self._get_selected_output_type()
-        harmonic = (
-            self.parent_widget.harmonic
-            if self.parent_widget is not None
-            else 1
-        )
-        selected_layers = (
-            self.parent_widget.get_selected_layers()
-            if self.parent_widget is not None
-            else []
-        )
-        if not selected_layers:
+        layers = self._filter_layers() if layers is None else list(layers)
+        if not layers:
             return
+        if filters is None:
+            filters = self.filter_list.filters()
 
-        try:
-            filter_min = float(self.filter_min_edit.text())
-            filter_max = float(self.filter_max_edit.text())
-        except ValueError:
-            show_error("Invalid filter range values.")
-            return
-
-        if filter_min > filter_max:
-            filter_min, filter_max = filter_max, filter_min
-            self.filter_min_edit.setText(f"{filter_min:.2f}")
-            self.filter_max_edit.setText(f"{filter_max:.2f}")
-
-        output_layers = self._mapping_output_layers(output_type)
-
+        problems = []
         self._applying_mapping_filter = True
         try:
-            for layer in selected_layers:
-                derived = layer.metadata.get('derived_data', {}).get(
-                    output_type, {}
+            for layer in layers:
+                stored = set_filters(layer, filters)
+                self._rebuild_layer_from_filters(
+                    layer, stored, on_error=problems.append
                 )
-                if harmonic in derived:
-                    metric_data = derived[harmonic]
-                else:
-                    metric_data = self._compute_metric_for_layer(
-                        layer, output_type, harmonic
-                    )
-                    if 'derived_data' not in layer.metadata:
-                        layer.metadata['derived_data'] = {}
-                    if output_type not in layer.metadata['derived_data']:
-                        layer.metadata['derived_data'][output_type] = {}
-                    layer.metadata['derived_data'][output_type][
-                        harmonic
-                    ] = metric_data
-
-                if metric_data is None:
-                    continue
-
-                with np.errstate(invalid='ignore'):
-                    mask_invalid = (
-                        np.isnan(metric_data)
-                        | (metric_data < filter_min)
-                        | (metric_data > filter_max)
-                    )
-
-                mean, real, imag = self._get_base_phasor_arrays(layer)
-
-                if real is not None and imag is not None:
-                    if mean is not None and real.ndim > mean.ndim:
-                        mask_expanded = mask_invalid[np.newaxis, ...]
-                        real = np.where(mask_expanded, np.nan, real)
-                        imag = np.where(mask_expanded, np.nan, imag)
-                    else:
-                        real = np.where(mask_invalid, np.nan, real)
-                        imag = np.where(mask_invalid, np.nan, imag)
-                    layer.metadata['G'] = real
-                    layer.metadata['S'] = imag
-
-                if mean is not None:
-                    mean = np.where(mask_invalid, np.nan, mean)
-                    layer.data = mean
-                layer.refresh()
-
-                output_layer = output_layers.get(layer.name)
-                if output_layer is not None:
-                    min_val, max_val = self.lifetime_range_slider.value()
-                    lo = min_val / self.lifetime_range_factor
-                    hi = max_val / self.lifetime_range_factor
-                    cl_max = hi if hi > lo else lo + 1.0
-                    base_output = np.clip(metric_data, lo, cl_max)
-                    output_layer.data = np.where(
-                        mask_invalid, np.nan, base_output
-                    )
-                    output_layer.refresh()
-
-                if 'settings' not in layer.metadata:
-                    layer.metadata['settings'] = {}
-                filter_dict = {
-                    'output_type': output_type,
-                    'min': filter_min,
-                    'max': filter_max,
-                    'harmonic': harmonic,
-                }
-                layer.metadata['settings']['mapping_filter'] = filter_dict
-                mapping_settings = self._get_phasor_mapping_settings(
-                    layer, create=True
-                )
-                mapping_settings['mapping_filter'] = filter_dict
-
-            if self.parent_widget is not None:
-                self.parent_widget.refresh_phasor_data()
-
-            self.plot_lifetime_histogram()
+            self.parent_widget.refresh_phasor_data()
+            self._recalculate_after_filter_change()
         finally:
             self._applying_mapping_filter = False
 
-    def _on_reset_filter_clicked(self):
-        """Reset mapping filter on selected layers back to baseline."""
-        if not self.parent_widget or not self.parent_widget.has_phasor_data():
-            return
-        selected_layers = self.parent_widget.get_selected_layers()
-        if not selected_layers:
-            return
+        self._refresh_filter_bounds()
+        self._refresh_filter_stats()
+        for message in dict.fromkeys(problems):
+            show_warning(message)
 
-        output_type = self._get_selected_output_type()
-        harmonic = (
-            self.parent_widget.harmonic
-            if self.parent_widget is not None
-            else 1
-        )
-        output_layers = self._mapping_output_layers(output_type)
-
-        self._applying_mapping_filter = True
-        try:
-            for layer in selected_layers:
-                mean, real, imag = self._get_base_phasor_arrays(layer)
-
-                if real is not None and imag is not None:
-                    layer.metadata['G'] = real
-                    layer.metadata['S'] = imag
-                if mean is not None:
-                    layer.data = mean
-                layer.refresh()
-
-                output_layer = output_layers.get(layer.name)
-                if output_layer is not None:
-                    derived = layer.metadata.get('derived_data', {}).get(
-                        output_type, {}
-                    )
-                    if harmonic in derived:
-                        orig_val = derived[harmonic]
-                        min_val, max_val = self.lifetime_range_slider.value()
-                        lo = min_val / self.lifetime_range_factor
-                        hi = max_val / self.lifetime_range_factor
-                        cl_max = hi if hi > lo else lo + 1.0
-                        output_layer.data = np.clip(orig_val, lo, cl_max)
-                        output_layer.refresh()
-
-                if 'settings' in layer.metadata:
-                    layer.metadata['settings'].pop('mapping_filter', None)
-                    if 'phasor_mapping' in layer.metadata['settings']:
-                        layer.metadata['settings']['phasor_mapping'].pop(
-                            'mapping_filter', None
-                        )
-
-            self._initialize_filter_range_from_data()
-
-            if self.parent_widget is not None:
-                self.parent_widget.refresh_phasor_data()
-
+    def _recalculate_after_filter_change(self):
+        """Refresh the output maps and the histogram for the new stack."""
+        if self._has_calculated_output:
+            self._calculate_and_display_output(show_warnings=False)
+        else:
             self.plot_lifetime_histogram()
-        finally:
-            self._applying_mapping_filter = False
 
-    def _reapply_mapping_filter_if_present(self, selected_layers):
-        """Reapply mapping filter to layers that have stored mapping_filter settings."""
-        output_type = self._get_selected_output_type()
-        output_layers = self._mapping_output_layers(output_type)
-        for layer in selected_layers:
-            settings = layer.metadata.get('settings', {})
-            mf = settings.get('mapping_filter')
-            if not mf:
-                mf = settings.get('phasor_mapping', {}).get('mapping_filter')
-            if not mf:
-                continue
-            filt_type = mf.get('output_type')
-            harmonic = mf.get(
-                'harmonic',
-                (
-                    getattr(self.parent_widget, 'harmonic', 1)
-                    if self.parent_widget is not None
-                    else 1
-                ),
-            )
-            filter_min = mf.get('min')
-            filter_max = mf.get('max')
-            if filter_min is None or filter_max is None or filt_type is None:
-                continue
+    def _reapply_filter_stack(self, selected_layers):
+        """Re-derive the phasor arrays of layers that carry a filter stack.
 
-            derived = layer.metadata.get('derived_data', {}).get(filt_type, {})
-            if harmonic in derived:
-                metric_data = derived[harmonic]
-            else:
-                metric_data = self._compute_metric_for_layer(
-                    layer, filt_type, harmonic
-                )
-
-            with np.errstate(invalid='ignore'):
-                mask_invalid = (
-                    np.isnan(metric_data)
-                    | (metric_data < filter_min)
-                    | (metric_data > filter_max)
-                )
-            g = layer.metadata.get('G')
-            s = layer.metadata.get('S')
-            if g is None or s is None:
+        Called by the plotter after something else rewrote the arrays from
+        the originals (a mask assignment, an imported analysis), so that the
+        criteria on screen and the pixels on screen still agree.
+        """
+        for layer in selected_layers or []:
+            filters = get_filters(layer)
+            if not filters:
                 continue
-            if g.ndim > layer.data.ndim:
-                mask_expanded = mask_invalid[np.newaxis, ...]
-                layer.metadata['G'] = np.where(mask_expanded, np.nan, g)
-                layer.metadata['S'] = np.where(mask_expanded, np.nan, s)
-            else:
-                layer.metadata['G'] = np.where(mask_invalid, np.nan, g)
-                layer.metadata['S'] = np.where(mask_invalid, np.nan, s)
-            layer.data = np.where(mask_invalid, np.nan, layer.data)
-            layer.refresh()
-            output_layer = output_layers.get(layer.name)
-            if output_layer is not None:
-                min_val, max_val = self.lifetime_range_slider.value()
-                lo = min_val / self.lifetime_range_factor
-                hi = max_val / self.lifetime_range_factor
-                cl_max = hi if hi > lo else lo + 1.0
-                base_output = np.clip(metric_data, lo, cl_max)
-                output_layer.data = np.where(mask_invalid, np.nan, base_output)
-                output_layer.refresh()
+            self._rebuild_layer_from_filters(layer, filters)
 
     def _on_plot_geometry_mode_toggled(self, _checked):
         """Callback when the plot switches between semicircle and full polar."""
@@ -1893,8 +1647,7 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             self._output_requires_frequency(output_type)
         )
         self._configure_histogram_labels_for_output(output_type)
-        if not self._restore_filter_range_from_settings():
-            self._initialize_filter_range_from_data()
+        self._sync_filter_ui()
         self.outputTypeChanged.emit(output_type)
         is_reactive_transition = (
             self._has_calculated_output and not self._updating_settings
@@ -2128,8 +1881,7 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
                 finally:
                     self.mesh_transparency_spinbox.blockSignals(False)
                 self._sync_mode_widgets()
-                if not self._restore_filter_range_from_settings():
-                    self._initialize_filter_range_from_data()
+                self._sync_filter_ui()
                 self._clear_2d_coloring()
                 self.histogram_widget.update_data(np.array([]))
             finally:
@@ -2178,8 +1930,7 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             self._update_phase_slider_bounds_from_plot_mode()
             if not self._restore_mesh_ranges_from_settings(settings):
                 self._initialize_mesh_ranges_from_current_data()
-            if not self._restore_filter_range_from_settings(settings):
-                self._initialize_filter_range_from_data()
+            self._sync_filter_ui()
             self._sync_mode_widgets()
 
         finally:
@@ -2252,28 +2003,9 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
 
                 lifetime_layer = output_layers.get(layer.name)
                 if lifetime_layer is not None:
-                    mf = layer.metadata.get('settings', {}).get(
-                        'mapping_filter'
-                    )
-                    if not mf:
-                        mf = (
-                            layer.metadata.get('settings', {})
-                            .get('phasor_mapping', {})
-                            .get('mapping_filter')
-                        )
-                    if mf and mf.get('output_type') == output_type:
-                        f_min = mf.get('min')
-                        f_max = mf.get('max')
-                        if f_min is not None and f_max is not None:
-                            with np.errstate(invalid='ignore'):
-                                mask = (
-                                    np.isnan(output_values)
-                                    | (output_values < f_min)
-                                    | (output_values > f_max)
-                                )
-                            clipped_lifetime = np.where(
-                                mask, np.nan, clipped_lifetime
-                            )
+                    # Filtered pixels are already NaN in the phasor arrays
+                    # these values were computed from, and np.clip leaves NaN
+                    # alone, so the display range cannot resurrect them.
                     lifetime_layer.data = clipped_lifetime
                     lifetime_layer.contrast_limits = [
                         min_lifetime,
@@ -2721,24 +2453,6 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
                 else min_lifetime + 1.0
             )
             clipped_output = np.clip(output_values, min_lifetime, cl_max)
-            mf = layer.metadata.get('settings', {}).get('mapping_filter')
-            if not mf:
-                mf = (
-                    layer.metadata.get('settings', {})
-                    .get('phasor_mapping', {})
-                    .get('mapping_filter')
-                )
-            if mf and mf.get('output_type') == output_type:
-                f_min = mf.get('min')
-                f_max = mf.get('max')
-                if f_min is not None and f_max is not None:
-                    with np.errstate(invalid='ignore'):
-                        mask = (
-                            np.isnan(output_values)
-                            | (output_values < f_min)
-                            | (output_values > f_max)
-                        )
-                    clipped_output = np.where(mask, np.nan, clipped_output)
 
             output_layer = existing_outputs.get(layer.name)
             output_metadata = {
@@ -2899,8 +2613,7 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         if layer_name:
             self._restore_lifetime_settings_from_metadata()
             self._sync_mode_widgets()
-            if not self._restore_filter_range_from_settings():
-                self._initialize_filter_range_from_data()
+            self._sync_filter_ui()
             self._set_frequency_input_enabled(
                 self._output_requires_frequency(
                     self._get_selected_output_type()
@@ -2994,8 +2707,7 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         if not self._restore_mesh_ranges_from_settings(settings):
             self._initialize_mesh_ranges_from_current_data()
 
-        if not self._restore_filter_range_from_settings(settings):
-            self._initialize_filter_range_from_data()
+        self._sync_filter_ui()
 
         self._restore_lifetime_range_from_metadata()
         self._on_lifetime_range_changed(self.lifetime_range_slider.value())
@@ -3051,8 +2763,9 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             self._output_requires_frequency(output_type)
         )
         self._configure_histogram_labels_for_output(output_type)
-        if not self._restore_filter_range_from_settings():
-            self._initialize_filter_range_from_data()
+        if output_type in MAPPING_METRICS:
+            self.filter_list.set_current_metric(output_type)
+        self._sync_filter_ui()
         self.outputTypeChanged.emit(output_type)
         if not self._updating_settings:
             self._update_lifetime_setting_in_metadata('lifetime_type', text)

@@ -64,6 +64,25 @@ frequency described above:
 | Apparent Modulation Lifetime | Lifetime derived from the modulation of the phasor |
 | Normal Lifetime | Standard lifetime calculation |
 
+## Filtering by FRET efficiency
+
+The **Filter** section discards pixels whose FRET efficiency falls outside a
+range you choose: their phasor coordinates are set to NaN, so they vanish from
+the phasor plot, the efficiency map, the histogram and the statistics table at
+once. Click **+ Add efficiency filter** to add a criterion; each one appears as
+its own card that can be switched off, re-ranged or removed, and reports how
+much of the image it keeps.
+
+The efficiency a criterion tests is recomputed from the donor trajectory rather
+than read off the displayed map, and the trajectory parameters are re-captured
+every time you recalculate — so the range on the card always means the same
+thing as the efficiencies beside it.
+
+This is the same stack the **Phasor Mapping** tab edits. Lifetime, phase and
+modulation criteria are listed here too (greyed out, but still removable), so
+every pixel missing from the efficiency map is accounted for by a visible card.
+See {doc}`phasor_mapping` for how the criteria combine.
+
 ## Results
 
 FRET efficiency values are computed per-pixel and can be visualized as a colormapped image layer. The results can also be explored quantitatively in the **Histogram and Statistics Table** widget, allowing you to analyze the distribution and summary statistics of FRET efficiency across your data. Results can be exported to CSV.
