@@ -3154,3 +3154,42 @@ def test_fret_filter_warns_when_a_criterion_cannot_be_evaluated(
     )
     assert any(FRET_EFFICIENCY in message for message in warnings)
     assert not np.isnan(layer.metadata['G']).all()
+
+
+def test_fret_rerun_keeps_layer_colormap(make_viewer_model, qtbot):
+    """Running FRET again keeps the colormap, limits and gamma of the layer."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.fret_tab
+
+    test_layer = create_image_layer_with_phasors()
+    test_layer.name = "test_layer"
+    viewer.add_layer(test_layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(
+        "test_layer"
+    )
+    widget._on_image_layer_changed()
+
+    widget.donor_line_edit.setText("2.0")
+    widget.frequency_input.setText("80")
+    widget.background_real_edit.setText("0.1")
+    widget.background_imag_edit.setText("0.1")
+    widget.calculate_fret_efficiency()
+    assert widget.fret_layer.colormap.name == 'viridis'
+
+    widget.fret_layer.colormap = 'magma'
+    widget.fret_layer.contrast_limits = (0.1, 0.9)
+    widget.fret_layer.gamma = 0.8
+
+    widget.calculate_fret_efficiency()
+
+    assert widget.fret_layer.colormap.name == 'magma'
+    assert tuple(widget.fret_layer.contrast_limits) == pytest.approx(
+        (0.1, 0.9)
+    )
+    assert widget.fret_layer.gamma == pytest.approx(0.8)
+    colormap_settings = test_layer.metadata['settings']['fret'][
+        'colormap_settings'
+    ]
+    assert colormap_settings['colormap_name'] == 'magma'
+    assert colormap_settings['gamma'] == pytest.approx(0.8)

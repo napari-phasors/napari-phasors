@@ -3809,3 +3809,110 @@ def test_compute_metric_for_a_layer_without_a_mean(make_viewer_model, qtbot):
         )
         is None
     )
+
+
+def _mapping_widget_with_lifetime_setup(make_viewer_model, n_layers=2):
+    """Return ``(parent, mapping_widget, layers)`` ready for Normal Lifetime."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+    layers = [create_image_layer_with_phasors() for _ in range(n_layers)]
+    for layer in layers:
+        viewer.add_layer(layer)
+    mapping_widget.frequency_input.setText("80.0")
+    parent._broadcast_frequency_value_across_tabs("80.0")
+    mapping_widget.lifetime_type_combobox.setCurrentText("Normal Lifetime")
+    return parent, mapping_widget, layers
+
+
+def test_phasor_mapping_rerun_keeps_layer_colormap(make_viewer_model, qtbot):
+    """Running the analysis again keeps the colormap set on the layers."""
+    parent, mapping_widget, layers = _mapping_widget_with_lifetime_setup(
+        make_viewer_model
+    )
+
+    with patch.object(parent, "get_selected_layers", return_value=layers):
+        mapping_widget._on_calculate_lifetime_clicked()
+        first = mapping_widget.metric_layers[0]
+        assert first.colormap.name == "plasma"
+
+        first.colormap = "magma"
+        first.gamma = 0.7
+        mapping_widget._on_calculate_lifetime_clicked()
+
+    assert len(mapping_widget.metric_layers) == 2
+    for output in mapping_widget.metric_layers:
+        assert output.colormap.name == "magma"
+        assert output.gamma == pytest.approx(0.7)
+
+    # The colormap is stored with each analysed layer's settings.
+    for source in layers:
+        entry = source.metadata['settings']['phasor_mapping'][
+            'output_colormaps'
+        ]['Normal Lifetime']
+        assert entry['colormap_name'] == "magma"
+        assert entry['gamma'] == pytest.approx(0.7)
+
+
+def test_phasor_mapping_applies_colormap_copied_with_settings(
+    make_viewer_model, qtbot
+):
+    """A colormap imported with the settings is used by the next run."""
+    from napari.utils.colormaps import Colormap
+
+    parent, mapping_widget, (source, target) = (
+        _mapping_widget_with_lifetime_setup(make_viewer_model)
+    )
+
+    with patch.object(parent, "get_selected_layers", return_value=[source]):
+        mapping_widget._on_calculate_lifetime_clicked()
+        mapping_widget.metric_layers[0].colormap = Colormap(
+            colors=[[0, 0, 0, 1], [0.1, 0.8, 0.3, 1]],
+            name="mapping_test_green",
+        )
+
+    target.metadata['settings'] = parent._merge_imported_settings(
+        target.metadata.get('settings', {}),
+        source.metadata['settings'],
+        ["phasor_mapping_tab"],
+    )
+
+    with patch.object(parent, "get_selected_layers", return_value=[target]):
+        mapping_widget._on_calculate_lifetime_clicked()
+
+    (output,) = mapping_widget.metric_layers
+    np.testing.assert_allclose(
+        output.colormap.colors[-1][:3], [0.1, 0.8, 0.3], atol=1e-6
+    )
+
+
+def test_phasor_mapping_combobox_pick_overrides_kept_colormap(
+    make_viewer_model, qtbot
+):
+    """A colormap picked in the tab wins over the one the layer kept."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+
+    mapping_widget.output_mode_combobox.setCurrentText("Phase")
+    mapping_widget.colormap_combobox.setCurrentText("viridis")
+    mapping_widget._on_calculate_lifetime_clicked()
+    phase_layer = viewer.layers[f"Phase: {layer.name}"]
+    assert phase_layer.colormap.name == "viridis"
+
+    # Changed on the layer: kept by the next run.
+    phase_layer.colormap = "magma"
+    mapping_widget._on_calculate_lifetime_clicked()
+    assert phase_layer.colormap.name == "magma"
+
+    # Picked in the tab afterwards: applied by the next run.
+    mapping_widget.colormap_combobox.setCurrentText("plasma")
+    mapping_widget._on_calculate_lifetime_clicked()
+    assert phase_layer.colormap.name == "plasma"
+    entry = layer.metadata['settings']['phasor_mapping']['output_colormaps'][
+        'Phase'
+    ]
+    assert entry['colormap_name'] == "plasma"

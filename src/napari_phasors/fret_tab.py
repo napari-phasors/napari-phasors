@@ -48,6 +48,7 @@ from ._utils import (
     CurrentPageStackedWidget,
     HistogramWidget,
     analysis_section_stylesheet,
+    layer_colormap_from_settings,
     make_section,
     setup_primary_button,
     update_frequency_in_metadata,
@@ -1339,6 +1340,7 @@ class FretWidget(AutoUpdateMixin, QWidget):
         finally:
             self._updating_linked_layers = False
 
+        self._remember_fret_display(source_layer)
         self.plot_donor_trajectory()
 
     def _on_contrast_limits_changed(self, event):
@@ -1379,7 +1381,35 @@ class FretWidget(AutoUpdateMixin, QWidget):
         finally:
             self._updating_linked_layers = False
 
+        self._remember_fret_display(source_layer)
         self.plot_donor_trajectory()
+
+    def _remember_fret_display(self, layer):
+        """Keep *layer*'s colormap, limits and gamma for the next run.
+
+        The saved display is what a new run applies to the FRET layers. It
+        is otherwise only read from the metadata when the layer selection
+        changes, so without this a run would bring back whatever colormap
+        was saved then, undoing the user's later changes.
+        """
+        colormap = layer.colormap
+        colors = getattr(colormap, 'colors', None)
+        self._saved_colormap_name = getattr(colormap, 'name', 'custom')
+        self._saved_colormap_colors = (
+            None if colors is None else np.asarray(colors).tolist()
+        )
+        self._saved_contrast_limits = [float(v) for v in layer.contrast_limits]
+        self._saved_gamma = layer.gamma
+
+    def _saved_fret_colormap(self):
+        """Return the saved colormap as a layer colormap value."""
+        colormap = layer_colormap_from_settings(
+            {
+                'colormap_name': self._saved_colormap_name,
+                'colormap_colors': self._saved_colormap_colors,
+            }
+        )
+        return colormap if colormap is not None else 'viridis'
 
     def _get_default_fret_settings(self):
         """Get default settings dictionary for FRET parameters."""
@@ -1609,20 +1639,7 @@ class FretWidget(AutoUpdateMixin, QWidget):
                     self._on_colormap_changed
                 )
 
-                if self._saved_colormap_colors is not None:
-                    from napari.utils.colormaps import Colormap
-
-                    if isinstance(self._saved_colormap_colors, list):
-                        saved_colors = np.array(self._saved_colormap_colors)
-                    else:
-                        saved_colors = self._saved_colormap_colors
-
-                    saved_colormap = Colormap(
-                        colors=saved_colors, name="saved_custom"
-                    )
-                    self.fret_layer.colormap = saved_colormap
-                else:
-                    self.fret_layer.colormap = self._saved_colormap_name
+                self.fret_layer.colormap = self._saved_fret_colormap()
 
                 if isinstance(self._saved_contrast_limits, list):
                     saved_limits = tuple(self._saved_contrast_limits)
@@ -2407,48 +2424,42 @@ class FretWidget(AutoUpdateMixin, QWidget):
 
             fret_layer_name = f"FRET efficiency: {layer.name}"
 
-            default_colormap = 'viridis'
-            default_contrast_limits = (0, 1)
+            fret_layer = existing_outputs.get(layer.name)
 
+            # The saved display (kept in step with the user's changes by
+            # ``_remember_fret_display``) wins; without one, a layer that is
+            # already shown keeps its own, and only a new one gets defaults.
+            display_colormap = 'viridis'
+            display_contrast_limits = (0, 1)
+            display_gamma = None
             if (
                 hasattr(self, '_saved_colormap_name')
                 and not self._updating_settings
             ):
-                if self._saved_colormap_colors is not None:
-                    from napari.utils.colormaps import Colormap
+                display_colormap = self._saved_fret_colormap()
+                display_contrast_limits = tuple(self._saved_contrast_limits)
+                display_gamma = getattr(self, '_saved_gamma', None)
+            elif fret_layer is not None:
+                display_colormap = fret_layer.colormap
+                display_contrast_limits = tuple(fret_layer.contrast_limits)
+                display_gamma = fret_layer.gamma
 
-                    if isinstance(self._saved_colormap_colors, list):
-                        saved_colors = np.array(self._saved_colormap_colors)
-                    else:
-                        saved_colors = self._saved_colormap_colors
-                    default_colormap = Colormap(
-                        colors=saved_colors, name="saved_custom"
-                    )
-                else:
-                    default_colormap = self._saved_colormap_name
-
-                if isinstance(self._saved_contrast_limits, list):
-                    default_contrast_limits = tuple(
-                        self._saved_contrast_limits
-                    )
-                else:
-                    default_contrast_limits = self._saved_contrast_limits
-
-            fret_layer = existing_outputs.get(layer.name)
             if fret_layer is None:
                 selected_fret_layer = Image(
                     fret_efficiency,
                     name=fret_layer_name,
                     scale=layer.scale,
-                    colormap=default_colormap,
-                    contrast_limits=default_contrast_limits,
+                    colormap=display_colormap,
+                    contrast_limits=display_contrast_limits,
                 )
                 fret_layer = self.viewer.add_layer(selected_fret_layer)
             else:
                 fret_layer.data = fret_efficiency
                 fret_layer.scale = layer.scale
-                fret_layer.colormap = default_colormap
-                fret_layer.contrast_limits = default_contrast_limits
+                fret_layer.colormap = display_colormap
+                fret_layer.contrast_limits = display_contrast_limits
+            if display_gamma is not None:
+                fret_layer.gamma = display_gamma
 
             fret_layer.metadata['fret_data_original'] = fret_efficiency.copy()
             fret_layer.metadata[_FRET_OUTPUT_METADATA_KEY] = {
@@ -2489,12 +2500,26 @@ class FretWidget(AutoUpdateMixin, QWidget):
                 'colormap_settings.colormap_name',
                 self.fret_layer.colormap.name,
             )
+            # A built-in colormap is restored by name; only a custom one
+            # needs its colours to come back in another session.
+            colormap = self.fret_layer.colormap
+            colors = np.asarray(colormap.colors).tolist()
+            is_builtin = (
+                layer_colormap_from_settings(
+                    {'colormap_name': colormap.name, 'colormap_colors': colors}
+                )
+                == colormap.name
+            )
             self._update_fret_setting_in_metadata(
-                'colormap_settings.colormap_colors', None
+                'colormap_settings.colormap_colors',
+                None if is_builtin else colors,
             )
             self._update_fret_setting_in_metadata(
                 'colormap_settings.contrast_limits',
-                self.fret_layer.contrast_limits,
+                [float(v) for v in self.fret_layer.contrast_limits],
+            )
+            self._update_fret_setting_in_metadata(
+                'colormap_settings.gamma', self.fret_layer.gamma
             )
             self._update_fret_setting_in_metadata(
                 'colormap_settings.colormap_changed', False
