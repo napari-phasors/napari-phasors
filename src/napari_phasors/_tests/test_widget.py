@@ -3855,3 +3855,91 @@ def test_tile_dialog_hands_czi_mosaic_positions_to_the_layout(
 
     assert captured["tile_shape"] == (8, 8)
     assert captured["tile_positions"] == positions
+
+
+def test_custom_import_single_layer_checkbox(
+    make_viewer_model, qtbot, monkeypatch
+):
+    """The custom import widget can stack all channels into one layer."""
+    viewer = make_viewer_model()
+    widget = FbdWidget(viewer, path=get_test_file_path("test_file$EI0S.fbd"))
+    assert widget.all_channels == 2
+
+    # Offered while every channel is imported...
+    assert widget.single_layer_checkbox is not None
+    assert widget.single_layer_checkbox.isChecked() is False
+    assert "single_layer" not in widget.reader_options
+    assert "(256, 256)" in widget.shape_preview_label.text()
+
+    errors = []
+    from napari_phasors import _widget as widget_module
+
+    monkeypatch.setattr(widget_module, "show_error", errors.append)
+
+    # ...and hidden as soon as a single channel is picked, since there is
+    # then nothing to stack.
+    widget.single_layer_checkbox.setChecked(True)
+    assert widget.reader_options["single_layer"] is True
+    assert errors == []
+    assert widget._get_signal_data() is not None
+    assert "(2, 256, 256)" in widget.shape_preview_label.text()
+    assert "(C, Y, X)" in widget.shape_preview_label.text()
+
+    widget.channels.setCurrentIndex(1)
+    assert widget.single_layer_checkbox.isHidden()
+    assert "single_layer" not in widget.reader_options
+    assert "(256, 256)" in widget.shape_preview_label.text()
+
+    widget.channels.setCurrentIndex(0)
+    assert widget.reader_options["single_layer"] is True
+    assert "(2, 256, 256)" in widget.shape_preview_label.text()
+
+    widget.btn.click()
+    assert errors == []
+    assert len(viewer.layers) == 1
+    layer = viewer.layers[0]
+    assert layer.name == "test_file$EI0S Intensity [Phasor]"
+    assert layer.data.shape == (2, 256, 256)
+    assert list(layer.metadata["channel_labels"]) == [0, 1]
+    assert layer.metadata["G"].shape == (2, 2, 256, 256)
+
+
+def test_custom_import_single_layer_checkbox_absent_for_one_channel(
+    make_viewer_model, qtbot, caplog
+):
+    """A single-channel file has nothing to stack, so no checkbox."""
+    viewer = make_viewer_model()
+    caplog.set_level(logging.ERROR, logger="ptufile")
+    widget = PtuWidget(viewer, path=get_test_file_path("test_file.ptu"))
+    assert widget.all_channels == 1
+    assert widget.single_layer_checkbox is None
+    assert "single_layer" not in widget.reader_options
+
+
+def test_custom_import_single_layer_checkbox_rebuilt(make_viewer_model, qtbot):
+    """Rebuilding the channels row replaces the checkbox instead of stacking."""
+    viewer = make_viewer_model()
+    widget = FbdWidget(viewer, path=get_test_file_path("test_file$EI0S.fbd"))
+    first = widget.single_layer_checkbox
+    first.setChecked(True)
+
+    widget._update_channels_widget()
+
+    assert widget.single_layer_checkbox is not first
+    assert widget.single_layer_checkbox.isChecked() is False
+    # The old checkbox is detached, the new one is in the row.
+    assert first.parent() is None
+    assert widget.channels_layout.indexOf(widget.single_layer_checkbox) >= 0
+    assert "single_layer" not in widget.reader_options
+
+
+def test_custom_import_single_layer_update_without_checkbox(
+    make_viewer_model, qtbot, caplog
+):
+    """The visibility update is a no-op when there is no checkbox."""
+    viewer = make_viewer_model()
+    caplog.set_level(logging.ERROR, logger="ptufile")
+    widget = PtuWidget(viewer, path=get_test_file_path("test_file.ptu"))
+    assert widget.single_layer_checkbox is None
+    widget._update_single_layer_checkbox()
+    assert "single_layer" not in widget.reader_options

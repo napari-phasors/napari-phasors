@@ -308,6 +308,18 @@ def signal_from_fbd(
 
     integrate_frames = 0 if frame is None or frame >= 0 else 1
 
+    # Filter out widget-level options that are not valid FbdFile arguments
+    for opt in (
+        "single_layer",
+        "phasor_axis",
+        "_keep_signal",
+        "binning",
+        "from_custom_import",
+        "interactive",
+        "channels",
+    ):
+        kwargs.pop(opt, None)
+
     with fbdfile.FbdFile(
         filename,
         laser_factor=-1.0 if want_iotech else float(laser_factor),

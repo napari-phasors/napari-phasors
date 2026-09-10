@@ -1334,6 +1334,7 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             'output_type': 'Apparent Phase Lifetime',
             'range_min': None,
             'range_max': None,
+            'output_ranges': {},
             'mesh_overlay_enabled': False,
             'mesh_clip_semicircle_enabled': False,
             'mesh_colorbar_enabled': False,
@@ -2024,6 +2025,7 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             self._update_lifetime_setting_in_metadata(
                 'range_max', max_lifetime
             )
+            self._store_output_range(min_lifetime, max_lifetime)
 
         self._apply_lifetime_range_change(min_val, max_val)
 
@@ -2753,8 +2755,12 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
     def _on_lifetime_type_changed(self, text):
         """Callback when lifetime type combobox selection changes.
 
-        This only updates the setting in metadata - it does NOT run calculations.
-        User must click "Calculate" button to run lifetime analysis.
+        This only updates the setting in metadata - it does NOT run
+        calculations. Picking another lifetime asks for a different analysis,
+        not a different rendering of the one already on screen, so the user
+        clicks Calculate (or turns Autoupdate on) to run it. A refresh armed
+        by an earlier control change is dropped for the same reason: it would
+        compute the newly picked lifetime nobody asked for yet.
         """
         output_type = self._get_selected_output_type()
         self.current_output_type = output_type
@@ -2772,7 +2778,55 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             self._update_lifetime_setting_in_metadata(
                 'output_type', output_type
             )
-        self._schedule_active_output_refresh()
+        self._output_refresh_timer.stop()
+
+    def _store_output_range(self, min_value, max_value):
+        """Remember the displayed range of the current output type.
+
+        ``range_min``/``range_max`` are a single slot shared by every output,
+        so on their own they let one output's range clip another's map. The
+        per-output copy kept here is what the restore reads back.
+        """
+        layer_name = self.parent_widget.get_primary_layer_name()
+        if not layer_name or layer_name not in self.viewer.layers:
+            return
+        layer = self.viewer.layers[layer_name]
+        settings = self._get_phasor_mapping_settings(layer, create=True)
+        ranges = settings.get('output_ranges')
+        if not isinstance(ranges, dict):
+            ranges = {}
+            settings['output_ranges'] = ranges
+        ranges[self._get_selected_output_type()] = [
+            float(min_value),
+            float(max_value),
+        ]
+
+    def _saved_range_for_current_output(self, settings):
+        """Return the stored ``(min, max)`` for the current output, or None.
+
+        Falls back to the shared ``range_min``/``range_max`` slot only when no
+        per-output range has ever been stored for this layer, which is how
+        settings written before this key existed (or imported from a settings
+        file) are still honoured.
+        """
+        output_type = self._get_selected_output_type()
+        ranges = settings.get('output_ranges')
+        if isinstance(ranges, dict) and ranges:
+            stored = ranges.get(output_type)
+            if (
+                isinstance(stored, (list, tuple))
+                and len(stored) == 2
+                and stored[0] is not None
+                and stored[1] is not None
+            ):
+                return float(stored[0]), float(stored[1])
+            return None
+
+        min_val = settings.get('range_min', settings.get('lifetime_range_min'))
+        max_val = settings.get('range_max', settings.get('lifetime_range_max'))
+        if min_val is None or max_val is None:
+            return None
+        return float(min_val), float(max_val)
 
     def _restore_lifetime_range_from_metadata(self):
         """Restore lifetime range from metadata after calculation."""
@@ -2782,53 +2836,36 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
 
         layer = self.viewer.layers[layer_name]
         settings = self._get_phasor_mapping_settings(layer, create=False)
-        if settings is not None:
+        if settings is None:
+            return
 
-            min_key = (
-                'range_min'
-                if 'range_min' in settings
-                else 'lifetime_range_min'
-            )
-            max_key = (
-                'range_max'
-                if 'range_max' in settings
-                else 'lifetime_range_max'
-            )
+        saved = self._saved_range_for_current_output(settings)
+        if saved is None:
+            return
+        min_val, max_val = saved
 
-            if (
-                min_key in settings
-                and max_key in settings
-                and settings[min_key] is not None
-                and settings[max_key] is not None
-            ):
+        if (
+            self.min_lifetime is not None
+            and self.max_lifetime is not None
+            and min_val >= self.min_lifetime
+            and max_val <= self.max_lifetime
+        ):
 
-                min_val = settings[min_key]
-                max_val = settings[max_key]
+            min_slider = int(min_val * self.lifetime_range_factor)
+            max_slider = int(max_val * self.lifetime_range_factor)
 
-                if (
-                    self.min_lifetime is not None
-                    and self.max_lifetime is not None
-                    and min_val >= self.min_lifetime
-                    and max_val <= self.max_lifetime
-                ):
+            self._updating_settings = True
+            try:
+                self.lifetime_range_slider.setValue((min_slider, max_slider))
+                self.lifetime_min_edit.setText(f"{min_val:.2f}")
+                self.lifetime_max_edit.setText(f"{max_val:.2f}")
+                self.lifetime_range_label.setText(
+                    f"{self.histogram_widget._range_label_prefix}:"
+                )
+            finally:
+                self._updating_settings = False
 
-                    min_slider = int(min_val * self.lifetime_range_factor)
-                    max_slider = int(max_val * self.lifetime_range_factor)
-
-                    self._updating_settings = True
-                    try:
-                        self.lifetime_range_slider.setValue(
-                            (min_slider, max_slider)
-                        )
-                        self.lifetime_min_edit.setText(f"{min_val:.2f}")
-                        self.lifetime_max_edit.setText(f"{max_val:.2f}")
-                        self.lifetime_range_label.setText(
-                            f"{self.histogram_widget._range_label_prefix}:"
-                        )
-                    finally:
-                        self._updating_settings = False
-
-                    self._apply_lifetime_range_change(min_slider, max_slider)
+            self._apply_lifetime_range_change(min_slider, max_slider)
 
     def _apply_lifetime_range_change(self, min_slider, max_slider):
         """Apply lifetime range change for histogram without updating layers (layers updated in _on_lifetime_range_changed)."""

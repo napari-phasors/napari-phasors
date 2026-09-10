@@ -302,6 +302,21 @@ def test_single_channel_file_drops_channel_axis(fake_fbdfile):
     assert signal.dims == ("Y", "X", "H")
 
 
+def test_signal_from_fbd_ignores_widget_options(fake_fbdfile):
+    """Widget-level options like single_layer or phasor_axis are stripped."""
+    signal = signal_from_fbd(
+        "fake.fbd",
+        frame=-1,
+        channel=0,
+        single_layer=True,
+        phasor_axis=0,
+        binning=2,
+        from_custom_import=True,
+        interactive=False,
+    )
+    assert signal is not None
+
+
 # -- iotech_laser_factor ---------------------------------------------------
 
 
