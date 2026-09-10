@@ -53,6 +53,7 @@ from ._fbd import (
 from ._reader import (
     CziMosaic,
     _get_filename_extension,
+    _split_widget_reader_options,
     czi_mosaic_info,
     describe_file_axes,
     iter_index_mapping,
@@ -761,6 +762,13 @@ class AdvancedOptionsWidget(QWidget):
                     val = val_str
                 options[key] = val
 
+    def _clean_io_options(self, options=None):
+        """Return reader options with widget-only options removed."""
+        if options is None:
+            options = self.reader_options
+        _, _, io_options = _split_widget_reader_options(options)
+        return io_options
+
     def _preview_shape_and_labels(self):
         """Return ``(shape, labels)`` describing the decoded signal axes.
 
@@ -890,9 +898,15 @@ class AdvancedOptionsWidget(QWidget):
             if len(shape) == 2:
                 shape_text += " (Y, X)"
             elif len(shape) == 3:
-                shape_text += " (Z, Y, X)"
+                if self.reader_options.get("single_layer"):
+                    shape_text += " (C, Y, X)"
+                else:
+                    shape_text += " (Z, Y, X)"
             elif len(shape) == 4:
-                shape_text += " (T, Z, Y, X)"
+                if self.reader_options.get("single_layer"):
+                    shape_text += " (C, Z, Y, X)"
+                else:
+                    shape_text += " (T, Z, Y, X)"
 
         self.shape_preview_label.setText(
             f"Estimated output shape: {shape_text}"
@@ -937,13 +951,21 @@ class AdvancedOptionsWidget(QWidget):
         """
         multi = tuple(getattr(self, '_multi_file_paths', None) or ())
         grouped = tuple(getattr(self, '_grouped_file_paths', None) or ())
-        # 'phasor_axis' only affects which axis is transformed, not the decoded
-        # signal, so it is excluded to avoid needless cache invalidation.
+        # Widget-level options like 'phasor_axis' and 'single_layer' only
+        # affect the transformed layers, not the decoded preview signal,
+        # so exclude them to avoid needless cache invalidation.
         opts = tuple(
             sorted(
                 (k, repr(v))
                 for k, v in self.reader_options.items()
-                if k != 'phasor_axis'
+                if k
+                not in (
+                    'phasor_axis',
+                    'single_layer',
+                    'from_custom_import',
+                    'interactive',
+                    '_keep_signal',
+                )
             )
         )
         kwargs = tuple(
@@ -1572,6 +1594,7 @@ class AdvancedOptionsWidget(QWidget):
 
         self.channels = None
         self.channels_single_label = None
+        self.single_layer_checkbox = None
 
         self.mainLayout.addLayout(self.channels_layout)
 
@@ -1589,6 +1612,11 @@ class AdvancedOptionsWidget(QWidget):
             self.channels_single_label.deleteLater()
             self.channels_single_label = None
 
+        if self.single_layer_checkbox is not None:
+            self.single_layer_checkbox.setParent(None)
+            self.single_layer_checkbox.deleteLater()
+            self.single_layer_checkbox = None
+
         if hasattr(self, 'all_channels') and self.all_channels > 1:
             self.channels = QComboBox()
             self.channels.addItems(["All channels"])
@@ -1599,12 +1627,46 @@ class AdvancedOptionsWidget(QWidget):
                 self._on_channels_combobox_changed
             )
             self.channels_layout.addWidget(self.channels)
+
+            # Only meaningful while more than one channel is imported, so it
+            # is hidden as soon as a single channel is picked.
+            self.single_layer_checkbox = QCheckBox(
+                "Import channels in the same layer"
+            )
+            self.single_layer_checkbox.setToolTip(
+                "Stack all imported channels into a single "
+                "multi-dimensional layer\n"
+                "with a channel slider bar in the napari viewer."
+            )
+            self.single_layer_checkbox.toggled.connect(
+                self._on_single_layer_checkbox_changed
+            )
+            self.channels_layout.addWidget(self.single_layer_checkbox)
+            self._update_single_layer_checkbox()
         else:
             self.channels_single_label = QLabel("0")
             self.channels_layout.addWidget(self.channels_single_label)
             self.reader_options["channel"] = 0
 
         self.channels_layout.addStretch()
+
+    def _update_single_layer_checkbox(self):
+        """Show the single-layer checkbox only while all channels are imported."""
+        if self.single_layer_checkbox is None:
+            return
+        importing_all = self.channels is not None and (
+            self.channels.currentIndex() == 0
+        )
+        self.single_layer_checkbox.setVisible(importing_all)
+        if importing_all and self.single_layer_checkbox.isChecked():
+            self.reader_options["single_layer"] = True
+        else:
+            self.reader_options.pop("single_layer", None)
+
+    def _on_single_layer_checkbox_changed(self, checked):
+        """Callback whenever the single-layer checkbox is toggled."""
+        self._update_single_layer_checkbox()
+        self._update_shape_preview()
 
     def _harmonic_widget(self):
         """Add the harmonic widget to main layout."""
@@ -1782,6 +1844,7 @@ class AdvancedOptionsWidget(QWidget):
             self.reader_options["channel"] = None
         else:
             self.reader_options["channel"] = index - 1
+        self._update_single_layer_checkbox()
         self._update_shape_preview()
 
     def _on_click(self, path, reader_options, harmonics):
@@ -1790,6 +1853,11 @@ class AdvancedOptionsWidget(QWidget):
         If ``_multi_file_paths`` is set, all files are stacked into a
         single 3D layer via :func:`raw_file_stack_reader`.
         """
+        reader_options = (
+            dict(reader_options) if reader_options is not None else {}
+        )
+        reader_options["from_custom_import"] = True
+
         if hasattr(self, '_apply_kwargs'):
             self._apply_kwargs(reader_options)
 
@@ -2157,7 +2225,16 @@ def _estimate_ptu_output_shape(path, reader_options):
         drop.update(i for i, d in enumerate(sig_dims) if d == "H")
     drop.update(i for i, d in enumerate(sig_dims) if d == "C")
 
-    return tuple(s for i, s in enumerate(sig_shape) if i not in drop)
+    base = tuple(s for i, s in enumerate(sig_shape) if i not in drop)
+    if (
+        reader_options.get("single_layer")
+        and channel is None
+        and "C" in sig_dims
+    ):
+        c_size = sig_shape[sig_dims.index("C")]
+        if c_size > 1:
+            return (c_size,) + base
+    return base
 
 
 def _phasor_output_shape_from_signal(signal, extension, reader_options):
@@ -2229,7 +2306,16 @@ def _phasor_output_shape_from_signal(signal, extension, reader_options):
         hist_axis = 0
     if not 0 <= hist_axis < len(reduced_shape):
         return None
-    return tuple(s for i, s in enumerate(reduced_shape) if i != hist_axis)
+    layer_shape = tuple(
+        s for i, s in enumerate(reduced_shape) if i != hist_axis
+    )
+    if (
+        reader_options.get("single_layer")
+        and reader_options.get("channel") is None
+        and shape[iter_index] > 1
+    ):
+        return (shape[iter_index],) + layer_shape
+    return layer_shape
 
 
 def _estimate_output_shape_from_options(
@@ -2240,6 +2326,12 @@ def _estimate_output_shape_from_options(
 ):
     """Estimate output shape with current reader options and harmonics."""
     try:
+        reader_options = (
+            dict(reader_options) if reader_options is not None else {}
+        )
+        reader_options["from_custom_import"] = True
+        reader_options["interactive"] = False
+
         _, extension = _get_filename_extension(path)
 
         if extension == ".ptu":
@@ -2537,6 +2629,7 @@ class FbdWidget(AdvancedOptionsWidget):
         """Get signal data for FBD files."""
         options = self.reader_options.copy()
         self._apply_fbd_options(options)
+        options = self._clean_io_options(options)
 
         try:
             with warnings.catch_warnings():
@@ -2644,6 +2737,7 @@ class PtuWidget(AdvancedOptionsWidget):
         if self.dtime.text():
             options["dtime"] = float(self.dtime.text())
         self._apply_kwargs(options)
+        options = self._clean_io_options(options)
 
         try:
             with _silence_ptufile_logger():
@@ -2835,8 +2929,7 @@ class LsmWidget(AdvancedOptionsWidget):
         try:
             options = self.reader_options.copy()
             self._apply_kwargs(options)
-            # Remove keys that shouldn't be passed to io functions
-            options.pop('phasor_axis', None)
+            options = self._clean_io_options(options)
 
             if self._is_lsm:
                 from phasorpy.io import signal_from_lsm
@@ -2975,6 +3068,7 @@ class SdtWidget(AdvancedOptionsWidget):
         options = self.reader_options.copy()
         if self.index.text():
             options["index"] = int(self.index.text())
+        options = self._clean_io_options(options)
 
         try:
             signal = signal_from_sdt(self.path, **options)
@@ -3038,7 +3132,7 @@ class CziWidget(AdvancedOptionsWidget):
 
             from phasorpy.io import signal_from_czi
 
-            options.pop("phasor_axis", None)
+            options = self._clean_io_options(options)
             return signal_from_czi(self.path, **options)
         except Exception as e:  # noqa: BLE001
             show_error(f"Error reading CZI signal: {str(e)}")
@@ -3438,6 +3532,7 @@ class LifWidget(AdvancedOptionsWidget):
                 except Exception:  # noqa: BLE001
                     options["image"] = text
             options["dim"] = dim
+            options = self._clean_io_options(options)
             return signal_from_lif(self.path, **options)
         except Exception as e:  # noqa: BLE001
             show_error(
@@ -3521,6 +3616,7 @@ class JsonWidget(AdvancedOptionsWidget):
             from phasorpy.io import signal_from_flimlabs_json
 
             options = self.reader_options.copy()
+            options = self._clean_io_options(options)
             return signal_from_flimlabs_json(self.path, **options)
         except Exception as e:  # noqa: BLE001
             show_error(

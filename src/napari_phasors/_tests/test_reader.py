@@ -2089,3 +2089,384 @@ def test_stack_reader_falls_back_to_one_thread_when_parallelism_is_off(
 
     assert layers[0][0].shape == (4, 2, 2)
     assert threads == {threading.current_thread()}
+
+
+def test_channel_selection_dialog(qtbot):
+    """Test ChannelSelectionDialog interactions."""
+    from napari_phasors._channel_dialog import ChannelSelectionDialog
+
+    channels = ["Channel 0", "Channel 1", "Channel 2"]
+    dialog = ChannelSelectionDialog(channels)
+    qtbot.addWidget(dialog)
+
+    # By default, all channels are selected
+    assert dialog.selected_channels() == [0, 1, 2]
+    assert not dialog.is_single_layer()
+    assert dialog.ok_btn.isEnabled()
+
+    # Deselect all
+    dialog.btn_deselect_all.click()
+    assert dialog.selected_channels() == []
+    assert not dialog.ok_btn.isEnabled()
+
+    # Select all
+    dialog.btn_select_all.click()
+    assert dialog.selected_channels() == [0, 1, 2]
+    assert dialog.ok_btn.isEnabled()
+
+    # Uncheck one item
+    dialog.set_channel_checked(1, False)
+    assert dialog.selected_channels() == [0, 2]
+    assert dialog.ok_btn.isEnabled()
+
+    # Check single layer
+    dialog.single_layer_checkbox.setChecked(True)
+    assert dialog.is_single_layer()
+
+
+def test_multichannel_reader_options_selection(monkeypatch):
+    """Test raw_file_reader with channel subset and single_layer options."""
+    data = xr.DataArray(
+        np.ones((2, 2, 3, 4), dtype=np.uint16),
+        dims=("Y", "X", "C", "H"),
+        coords={"Y": [0, 1], "X": [0, 1], "C": [0, 1, 2], "H": [0, 1, 2, 3]},
+    )
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".ptu",
+        lambda path, reader_options: data,
+    )
+
+    # 1. Filter specific channels: channels=[0, 2]
+    layers = reader_module.raw_file_reader(
+        "test.ptu",
+        reader_options={"channels": [0, 2], "from_custom_import": True},
+    )
+    assert len(layers) == 2
+    assert layers[0][1]["name"].endswith("Channel 0 [Phasor]")
+    assert layers[1][1]["name"].endswith("Channel 2 [Phasor]")
+
+    # 2. Import into single 3D layer: single_layer=True
+    layers_stacked = reader_module.raw_file_reader(
+        "test.ptu",
+        reader_options={"single_layer": True, "from_custom_import": True},
+    )
+    assert len(layers_stacked) == 1
+    stacked_layer = layers_stacked[0]
+    # Data shape should be (C, Y, X) -> (3, 2, 2)
+    assert stacked_layer[0].shape == (3, 2, 2)
+    metadata = stacked_layer[1]["metadata"]
+    # G and S should have shape (harmonics, C, Y, X) -> (2, 3, 2, 2)
+    assert metadata["G"].shape == (2, 3, 2, 2)
+    assert metadata["S"].shape == (2, 3, 2, 2)
+    assert list(metadata["channel_labels"]) == [0, 1, 2]
+
+
+def test_multichannel_interactive_dialog(monkeypatch):
+    """Test interactive dialog popup in raw_file_reader."""
+    from qtpy.QtWidgets import QDialog
+
+    from napari_phasors._channel_dialog import ChannelSelectionDialog
+
+    data = xr.DataArray(
+        np.ones((2, 2, 3, 4), dtype=np.uint16),
+        dims=("Y", "X", "C", "H"),
+        coords={"Y": [0, 1], "X": [0, 1], "C": [0, 1, 2], "H": [0, 1, 2, 3]},
+    )
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".ptu",
+        lambda path, reader_options: data,
+    )
+
+    # Mock dialog returning Accepted with channels=[1]
+    def mock_exec_accept(self):
+        self.btn_deselect_all.click()
+        self.set_channel_checked(1, True)
+        return QDialog.Accepted
+
+    monkeypatch.setattr(ChannelSelectionDialog, "exec", mock_exec_accept)
+    monkeypatch.setattr(ChannelSelectionDialog, "exec_", mock_exec_accept)
+    layers = reader_module.raw_file_reader(
+        "test.ptu",
+        reader_options={"interactive": True},
+    )
+    assert len(layers) == 1
+    assert layers[0][1]["name"].endswith("Channel 1 [Phasor]")
+
+    # Mock dialog returning Rejected (user clicked Cancel)
+    monkeypatch.setattr(
+        ChannelSelectionDialog, "exec", lambda self: QDialog.Rejected
+    )
+    monkeypatch.setattr(
+        ChannelSelectionDialog, "exec_", lambda self: QDialog.Rejected
+    )
+    layers_cancelled = reader_module.raw_file_reader(
+        "test.ptu",
+        reader_options={"interactive": True},
+    )
+    assert layers_cancelled == []
+
+
+class _FakeViewerModel:
+    """Stand-in for napari's ``ViewerModel`` in batch-detection tests."""
+
+    def _add_layers_with_plugins(self, *args, **kwargs):  # pragma: no cover
+        raise NotImplementedError
+
+
+def _open_batch(paths, read):
+    """Mimic ``ViewerModel.open``: one reader call per path, one frame.
+
+    The frame's name and locals are what the reader looks for, so the inner
+    function deliberately mirrors napari's ``ViewerModel.open`` signature.
+    """
+
+    def open(self, paths_):  # noqa: A001 - must match napari's frame name
+        return [read(path) for path in paths_]
+
+    return open(_FakeViewerModel(), list(paths))
+
+
+def test_current_open_batch_outside_napari():
+    """No napari ``open`` on the stack means no batch, so no answer sharing."""
+    assert reader_module._current_open_batch() is None
+    assert reader_module._get_batch_channel_choice(None, ("0", "1")) == (
+        False,
+        None,
+    )
+    # A single-file "batch" is not shared either.
+    assert reader_module._get_batch_channel_choice(["a.ptu"], ("0",)) == (
+        False,
+        None,
+    )
+
+
+def test_multichannel_dialog_shown_once_per_channel_group(monkeypatch):
+    """One dialog per group of files sharing the same channels."""
+    from qtpy.QtWidgets import QDialog
+
+    from napari_phasors._channel_dialog import ChannelSelectionDialog
+
+    def fake_read(path, reader_options=None):
+        # The third file exposes four channels, the others three.
+        n_channels = 4 if path.endswith("c.ptu") else 3
+        return xr.DataArray(
+            np.ones((2, 2, n_channels, 4), dtype=np.uint16),
+            dims=("Y", "X", "C", "H"),
+            coords={
+                "Y": [0, 1],
+                "X": [0, 1],
+                "C": list(range(n_channels)),
+                "H": [0, 1, 2, 3],
+            },
+        )
+
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"], ".ptu", fake_read
+    )
+
+    shown = []
+
+    def mock_exec_accept(self):
+        shown.append(tuple(self._channel_labels))
+        self.btn_deselect_all.click()
+        self.set_channel_checked(0, True)
+        return QDialog.Accepted
+
+    monkeypatch.setattr(ChannelSelectionDialog, "exec", mock_exec_accept)
+    monkeypatch.setattr(ChannelSelectionDialog, "exec_", mock_exec_accept)
+
+    paths = ["a.ptu", "b.ptu", "c.ptu", "d.ptu"]
+    results = _open_batch(
+        paths,
+        lambda path: reader_module.raw_file_reader(
+            path, reader_options={"interactive": True}
+        ),
+    )
+
+    # 'a' and 'c' ask; 'b' reuses a's answer and 'd' reuses it too.
+    assert len(shown) == 2
+    assert [len(labels) for labels in shown] == [3, 4]
+    # Every file honours the single selected channel.
+    assert [len(layers) for layers in results] == [1, 1, 1, 1]
+
+
+def test_multichannel_dialog_cancel_applies_to_batch_group(monkeypatch):
+    """Cancelling skips the rest of the files with those same channels."""
+    from qtpy.QtWidgets import QDialog
+
+    from napari_phasors._channel_dialog import ChannelSelectionDialog
+
+    data = xr.DataArray(
+        np.ones((2, 2, 3, 4), dtype=np.uint16),
+        dims=("Y", "X", "C", "H"),
+        coords={"Y": [0, 1], "X": [0, 1], "C": [0, 1, 2], "H": [0, 1, 2, 3]},
+    )
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".ptu",
+        lambda path, reader_options: data,
+    )
+
+    shown = []
+
+    def mock_exec_reject(self):
+        shown.append(self)
+        return QDialog.Rejected
+
+    monkeypatch.setattr(ChannelSelectionDialog, "exec", mock_exec_reject)
+    monkeypatch.setattr(ChannelSelectionDialog, "exec_", mock_exec_reject)
+
+    results = _open_batch(
+        ["a.ptu", "b.ptu", "c.ptu"],
+        lambda path: reader_module.raw_file_reader(
+            path, reader_options={"interactive": True}
+        ),
+    )
+
+    assert len(shown) == 1
+    assert results == [[], [], []]
+
+
+def test_channel_dialog_batch_note():
+    """The dialog says the choice covers the batch only when it does."""
+    from napari_phasors._channel_dialog import ChannelSelectionDialog
+
+    single = ChannelSelectionDialog([0, 1], filename="a.ptu")
+    assert "applied to" not in _dialog_text(single)
+
+    batched = ChannelSelectionDialog([0, 1], filename="a.ptu", batch_size=4)
+    text = _dialog_text(batched)
+    assert "Opening 4 files" in text
+    assert "same channels" in text
+
+
+def _dialog_text(dialog):
+    """Concatenate the text of every label in a dialog."""
+    from qtpy.QtWidgets import QLabel
+
+    return " ".join(label.text() for label in dialog.findChildren(QLabel))
+
+
+def test_multichannel_single_layer_single_harmonic(monkeypatch):
+    """A single harmonic keeps its axis: (1, C, Y, X)."""
+    data = xr.DataArray(
+        np.ones((2, 2, 3, 4), dtype=np.uint16),
+        dims=("Y", "X", "C", "H"),
+        coords={"Y": [0, 1], "X": [0, 1], "C": [0, 1, 2], "H": [0, 1, 2, 3]},
+    )
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".ptu",
+        lambda path, reader_options: data,
+    )
+
+    layers = reader_module.raw_file_reader(
+        "test.ptu",
+        reader_options={"single_layer": True, "from_custom_import": True},
+        harmonics=[1],
+    )
+    assert len(layers) == 1
+    stacked, add_kwargs = layers[0]
+    assert stacked.shape == (3, 2, 2)
+    metadata = add_kwargs["metadata"]
+    assert metadata["G"].shape == (1, 3, 2, 2)
+    assert metadata["S"].shape == (1, 3, 2, 2)
+    assert metadata["G_original"].shape == (1, 3, 2, 2)
+    assert list(metadata["harmonics"]) == [1]
+    assert add_kwargs["name"] == "test Intensity [Phasor]"
+
+
+def test_multichannel_single_layer_keeps_signal(monkeypatch):
+    """``_keep_signal`` stacks each channel's signal alongside the phasors."""
+    data = xr.DataArray(
+        np.ones((2, 2, 3, 4), dtype=np.uint16),
+        dims=("Y", "X", "C", "H"),
+        coords={"Y": [0, 1], "X": [0, 1], "C": [0, 1, 2], "H": [0, 1, 2, 3]},
+    )
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".ptu",
+        lambda path, reader_options: data,
+    )
+
+    layers = reader_module.raw_file_reader(
+        "test.ptu",
+        reader_options={
+            "single_layer": True,
+            "from_custom_import": True,
+            "_keep_signal": True,
+        },
+        harmonics=[1],
+    )
+    metadata = layers[0][1]["metadata"]
+    assert metadata["signal_full"].shape == (3, 2, 2, 4)
+    assert "signal_axis" in metadata
+
+
+def test_multichannel_no_channel_selected_returns_no_layers(monkeypatch):
+    """Asking for none of the channels reads nothing."""
+    data = xr.DataArray(
+        np.ones((2, 2, 3, 4), dtype=np.uint16),
+        dims=("Y", "X", "C", "H"),
+        coords={"Y": [0, 1], "X": [0, 1], "C": [0, 1, 2], "H": [0, 1, 2, 3]},
+    )
+    monkeypatch.setitem(
+        reader_module.extension_mapping["raw"],
+        ".ptu",
+        lambda path, reader_options: data,
+    )
+
+    layers = reader_module.raw_file_reader(
+        "test.ptu",
+        reader_options={"channels": [], "from_custom_import": True},
+    )
+    assert layers == []
+
+
+def test_napari_main_window_lookup(monkeypatch):
+    """The dialog parent is napari's main window, when there is one."""
+    import napari
+
+    sentinel = object()
+
+    class _Window:
+        _qt_window = sentinel
+
+    class _Viewer:
+        window = _Window()
+
+    monkeypatch.setattr(napari, "current_viewer", lambda: _Viewer())
+    assert reader_module._napari_main_window() is sentinel
+
+    # A viewer without a Qt window (headless ViewerModel) has no parent.
+    monkeypatch.setattr(napari, "current_viewer", lambda: object())
+    assert reader_module._napari_main_window() is None
+
+    # Neither does a napari that cannot be queried at all.
+    def _raise():
+        raise RuntimeError("no Qt")
+
+    monkeypatch.setattr(napari, "current_viewer", _raise)
+    assert reader_module._napari_main_window() is None
+
+
+def test_channel_dialog_theme_fallback(monkeypatch, qtbot):
+    """An unparented dialog styles itself, and survives a napari without Qt."""
+    from napari_phasors._channel_dialog import ChannelSelectionDialog
+
+    parentless = ChannelSelectionDialog([0, 1])
+    qtbot.addWidget(parentless)
+    assert parentless.styleSheet() != ""
+    assert len(parentless.checkboxes) == 2
+
+    import napari.qt
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("no stylesheet")
+
+    monkeypatch.setattr(napari.qt, "get_stylesheet", _raise)
+    unstyled = ChannelSelectionDialog([0, 1])
+    qtbot.addWidget(unstyled)
+    assert unstyled.styleSheet() == ""

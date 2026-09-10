@@ -302,6 +302,92 @@ def _clamp_harmonics(
     return res
 
 
+def _napari_main_window():
+    """Return napari's main Qt window, or ``None`` outside a running viewer.
+
+    Dialogs parented to it inherit napari's stylesheet, so they follow the
+    active theme instead of rendering with the platform default palette.
+    """
+    try:
+        import napari
+
+        viewer = napari.current_viewer()
+    except Exception:  # noqa: BLE001 - no viewer, or napari without Qt
+        return None
+    window = getattr(viewer, "window", None)
+    return getattr(window, "_qt_window", None)
+
+
+# Channel selection answered once per batch of files
+#
+# napari opens a multi-file selection (drag-and-drop, or File > Open Files) by
+# calling the reader once per path, so without this cache every file in the
+# batch would pop its own channel dialog. The answer is cached per batch and
+# per channel layout: files that expose the same channels reuse the first
+# answer, and a file with a different channel layout asks again.
+_CHANNEL_BATCH_PATHS: list | None = None
+_CHANNEL_BATCH_CHOICES: dict[tuple, tuple | None] = {}
+
+
+def _current_open_batch() -> list | None:
+    """Return the paths of the ``viewer.open()`` call in progress, if any.
+
+    Identified by duck-typing napari's ``ViewerModel.open`` frame rather than
+    its module path, so a napari that renames the local simply yields ``None``
+    and every file asks on its own, as before.
+    """
+    frame = inspect.currentframe()
+    try:
+        while frame is not None:
+            if frame.f_code.co_name == "open":
+                paths = frame.f_locals.get("paths_")
+                viewer = frame.f_locals.get("self")
+                if isinstance(paths, list) and hasattr(
+                    viewer, "_add_layers_with_plugins"
+                ):
+                    return paths
+            frame = frame.f_back
+    finally:
+        del frame
+    return None
+
+
+def _channel_batch_signature(channel_labels: list) -> tuple:
+    """Return a hashable key identifying a file's channel layout."""
+    return tuple(str(label) for label in channel_labels)
+
+
+def _get_batch_channel_choice(batch: list | None, signature: tuple):
+    """Return ``(found, choice)`` for this batch and channel layout.
+
+    ``choice`` is ``None`` when the user cancelled the dialog for these
+    channels, so the rest of the batch skips those files silently.
+    """
+    global _CHANNEL_BATCH_PATHS, _CHANNEL_BATCH_CHOICES
+
+    if batch is None or len(batch) < 2:
+        return False, None
+    # Compared by identity: the batch list lives for the whole ``open`` call,
+    # and holding a reference to it keeps its ``id`` from being reused.
+    if _CHANNEL_BATCH_PATHS is not batch:
+        _CHANNEL_BATCH_PATHS = batch
+        _CHANNEL_BATCH_CHOICES = {}
+        return False, None
+    if signature not in _CHANNEL_BATCH_CHOICES:
+        return False, None
+    return True, _CHANNEL_BATCH_CHOICES[signature]
+
+
+def _store_batch_channel_choice(
+    batch: list | None, signature: tuple, choice: tuple | None
+):
+    """Remember the answer given for this channel layout within the batch."""
+    if batch is None or len(batch) < 2:
+        return
+    if _CHANNEL_BATCH_PATHS is batch:
+        _CHANNEL_BATCH_CHOICES[signature] = choice
+
+
 def ambiguous_file_reader(
     path: str,
     reader_options: dict | None = None,
@@ -374,6 +460,7 @@ def raw_file_reader(
         harmonics=harmonics,
         axis_override=axis_override,
         keep_signal=keep_signal,
+        reader_options=reader_options,
     )
 
 
@@ -401,6 +488,10 @@ def _split_widget_reader_options(reader_options):
     # Spatial binning is applied by the mosaic reader, never by the IO
     # functions, so drop it here whichever path the file takes.
     filtered_reader_options.pop('binning', None)
+    filtered_reader_options.pop('from_custom_import', None)
+    filtered_reader_options.pop('interactive', None)
+    filtered_reader_options.pop('channels', None)
+    filtered_reader_options.pop('single_layer', None)
     return axis_override, keep_signal, filtered_reader_options
 
 
@@ -465,6 +556,7 @@ def _phasor_layers_from_signal(
     axis_override=None,
     keep_signal=False,
     progress_description=None,
+    reader_options=None,
 ):
     """Compute phasor coordinates for an already-loaded signal.
 
@@ -615,7 +707,83 @@ def _phasor_layers_from_signal(
                 channel_labels = list(range(raw_data.shape[iter_axis_index]))
 
             n_channels = len(channel_labels)
-            for channel_pos, channel_label in enumerate(channel_labels):
+            selected_positions = list(range(n_channels))
+            selected_channel_labels = channel_labels
+            single_layer = False
+
+            if n_channels > 1:
+                interactive = None
+                if reader_options is not None:
+                    interactive = reader_options.get("interactive", None)
+                    if interactive is None and reader_options.get(
+                        "from_custom_import", False
+                    ):
+                        interactive = False
+
+                if interactive is None:
+                    from qtpy.QtWidgets import QApplication
+
+                    app = QApplication.instance()
+                    in_pytest = "PYTEST_CURRENT_TEST" in os.environ
+                    interactive = (app is not None) and not in_pytest
+
+                if interactive:
+                    from qtpy.QtWidgets import QDialog
+
+                    from ._channel_dialog import ChannelSelectionDialog
+
+                    batch = _current_open_batch()
+                    signature = _channel_batch_signature(channel_labels)
+                    answered, choice = _get_batch_channel_choice(
+                        batch, signature
+                    )
+                    if not answered:
+                        dialog = ChannelSelectionDialog(
+                            channel_labels,
+                            filename=filename,
+                            batch_size=len(batch) if batch else 1,
+                            parent=_napari_main_window(),
+                        )
+                        exec_func = (
+                            getattr(dialog, "exec", None) or dialog.exec_
+                        )
+                        if exec_func() == QDialog.Accepted:
+                            choice = (
+                                dialog.get_selected_channel_positions(),
+                                dialog.get_selected_channel_labels(),
+                                dialog.is_single_layer(),
+                            )
+                        else:
+                            choice = None
+                        _store_batch_channel_choice(batch, signature, choice)
+                    if choice is None:
+                        return []
+                    (
+                        selected_positions,
+                        selected_channel_labels,
+                        single_layer,
+                    ) = choice
+                else:
+                    if reader_options and "channels" in reader_options:
+                        req = reader_options["channels"]
+                        selected_positions = [
+                            i
+                            for i, lbl in enumerate(channel_labels)
+                            if i in req or lbl in req or str(lbl) in req
+                        ]
+                        selected_channel_labels = [
+                            channel_labels[i] for i in selected_positions
+                        ]
+                    if reader_options and "single_layer" in reader_options:
+                        single_layer = bool(reader_options["single_layer"])
+
+            if not selected_positions:
+                return []
+
+            channel_layers = []
+            for channel_pos, channel_label in zip(
+                selected_positions, selected_channel_labels, strict=False
+            ):
                 pbr.set_description(f"Channel {channel_pos + 1}/{n_channels}")
                 pbr.update(1)
                 channel_data = raw_data.isel({iter_axis: channel_pos})
@@ -701,7 +869,82 @@ def _phasor_layers_from_signal(
                         channel_data
                     )
                     add_kwargs["metadata"]["signal_axis"] = int(histogram_axis)
-                layers.append((mean_intensity_image, add_kwargs))
+                channel_layers.append((mean_intensity_image, add_kwargs))
+
+            if single_layer and len(channel_layers) > 1:
+                means = [layer[0] for layer in channel_layers]
+                stacked_mean = np.stack(means, axis=0)
+                stacked_orig_mean = np.stack(
+                    [
+                        layer[1]["metadata"]["original_mean"]
+                        for layer in channel_layers
+                    ],
+                    axis=0,
+                )
+                g_list = [
+                    layer[1]["metadata"]["G"] for layer in channel_layers
+                ]
+                s_list = [
+                    layer[1]["metadata"]["S"] for layer in channel_layers
+                ]
+                if g_list[0].ndim >= 3:
+                    # (harmonics, Y, X) -> (harmonics, C, Y, X)
+                    stacked_G = np.stack(g_list, axis=1)
+                    stacked_S = np.stack(s_list, axis=1)
+                else:
+                    # (Y, X) -> (C, Y, X)
+                    stacked_G = np.stack(g_list, axis=0)
+                    stacked_S = np.stack(s_list, axis=0)
+
+                stacked_G_orig = stacked_G.copy()
+                stacked_S_orig = stacked_S.copy()
+
+                first_layer_kw = channel_layers[0][1]
+                first_meta = first_layer_kw["metadata"]
+                summed_signals = [
+                    layer[1]["metadata"].get("summed_signal")
+                    for layer in channel_layers
+                ]
+
+                single_meta = {
+                    "original_mean": stacked_orig_mean,
+                    "settings": {
+                        **settings,
+                        "channels": selected_channel_labels,
+                    },
+                    "summed_signal": (
+                        summed_signals
+                        if any(s is not None for s in summed_signals)
+                        else None
+                    ),
+                    "G": stacked_G,
+                    "S": stacked_S,
+                    "G_original": stacked_G_orig,
+                    "S_original": stacked_S_orig,
+                    "harmonics": first_meta["harmonics"],
+                    "channel_labels": selected_channel_labels,
+                }
+                single_add_kwargs = {
+                    "name": format_phasor_layer_name(filename),
+                    "metadata": single_meta,
+                }
+                if keep_signal:
+                    sig_list = [
+                        layer[1]["metadata"]["signal_full"]
+                        for layer in channel_layers
+                        if "signal_full" in layer[1]["metadata"]
+                    ]
+                    if len(sig_list) == len(channel_layers):
+                        single_add_kwargs["metadata"]["signal_full"] = (
+                            np.stack(sig_list, axis=0)
+                        )
+                    if "signal_axis" in first_meta:
+                        single_add_kwargs["metadata"]["signal_axis"] = (
+                            first_meta["signal_axis"]
+                        )
+                layers.append((stacked_mean, single_add_kwargs))
+            else:
+                layers.extend(channel_layers)
     finally:
         pbr.close()
 
@@ -885,10 +1128,12 @@ def raw_file_stack_reader(
     pbr = show_activity_progress(
         desc=f"Reading {len(paths)} file(s)...", total=len(paths)
     )
+    stack_reader_options = dict(reader_options) if reader_options else {}
+    stack_reader_options["interactive"] = False
     try:
         for index, path, file_layers in parallel_stream(
             lambda p: raw_file_reader(
-                p, reader_options=reader_options, harmonics=harmonics
+                p, reader_options=stack_reader_options, harmonics=harmonics
             ),
             paths,
             workers=stack_workers,
@@ -2202,11 +2447,9 @@ def processed_file_reader(
     filename, file_extension = _get_filename_extension(path)
 
     # Prepare reader options: remove widget-only keys and ensure harmonic present
-    filtered_reader_options = reader_options.copy() if reader_options else {}
-    filtered_reader_options.pop('phasor_axis', None)
-    # Widget-level flag understood only by the raw reader; drop it so it is
-    # never forwarded to the processed IO functions (which would reject it).
-    filtered_reader_options.pop('_keep_signal', None)
+    _, _, filtered_reader_options = _split_widget_reader_options(
+        reader_options
+    )
     if 'harmonic' not in filtered_reader_options:
         filtered_reader_options['harmonic'] = harmonics
 
