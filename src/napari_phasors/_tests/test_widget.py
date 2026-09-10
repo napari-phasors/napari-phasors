@@ -3857,7 +3857,9 @@ def test_tile_dialog_hands_czi_mosaic_positions_to_the_layout(
     assert captured["tile_positions"] == positions
 
 
-def test_custom_import_single_layer_checkbox(make_viewer_model, qtbot):
+def test_custom_import_single_layer_checkbox(
+    make_viewer_model, qtbot, monkeypatch
+):
     """The custom import widget can stack all channels into one layer."""
     viewer = make_viewer_model()
     widget = FbdWidget(viewer, path=get_test_file_path("test_file$EI0S.fbd"))
@@ -3867,19 +3869,33 @@ def test_custom_import_single_layer_checkbox(make_viewer_model, qtbot):
     assert widget.single_layer_checkbox is not None
     assert widget.single_layer_checkbox.isChecked() is False
     assert "single_layer" not in widget.reader_options
+    assert "(256, 256)" in widget.shape_preview_label.text()
+
+    errors = []
+    from napari_phasors import _widget as widget_module
+
+    monkeypatch.setattr(widget_module, "show_error", errors.append)
 
     # ...and hidden as soon as a single channel is picked, since there is
     # then nothing to stack.
     widget.single_layer_checkbox.setChecked(True)
     assert widget.reader_options["single_layer"] is True
+    assert errors == []
+    assert widget._get_signal_data() is not None
+    assert "(2, 256, 256)" in widget.shape_preview_label.text()
+    assert "(C, Y, X)" in widget.shape_preview_label.text()
+
     widget.channels.setCurrentIndex(1)
     assert widget.single_layer_checkbox.isHidden()
     assert "single_layer" not in widget.reader_options
+    assert "(256, 256)" in widget.shape_preview_label.text()
 
     widget.channels.setCurrentIndex(0)
     assert widget.reader_options["single_layer"] is True
+    assert "(2, 256, 256)" in widget.shape_preview_label.text()
 
     widget.btn.click()
+    assert errors == []
     assert len(viewer.layers) == 1
     layer = viewer.layers[0]
     assert layer.name == "test_file$EI0S Intensity [Phasor]"
