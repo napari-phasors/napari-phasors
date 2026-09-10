@@ -4167,3 +4167,71 @@ def test_histogram_widget_log_scale_floor_edge_cases(qtbot):
     widget.ax.set_ylim(-1.0, 0.2)
     widget._style_axes()
     assert widget.ax.get_ylim()[0] == 0.5
+
+
+def test_histogram_widget_log_scale_zero_bins_clamped_to_floor(qtbot):
+    """Test that bins with zero counts are clamped to the bottom floor in log scale."""
+    from matplotlib.collections import LineCollection
+
+    widget = HistogramWidget(bins=20, log_scale=True)
+    qtbot.addWidget(widget)
+
+    # Data clustered in the middle leaving 0-bins on the sides
+    data = np.full(50, 5.0)
+    widget.update_data(data)
+    floor = widget._log_scale_floor()
+    assert floor == 0.5
+
+    def _get_min_y(ax):
+        # Checks either ax.lines or LineCollection in ax.collections
+        min_vals = []
+        for line in ax.get_lines():
+            if line.get_linestyle() != "--":
+                min_vals.append(np.min(line.get_ydata()))
+        for coll in ax.collections:
+            if isinstance(coll, LineCollection):
+                segments = coll.get_segments()
+                if segments:
+                    y_coords = np.concatenate([s[:, 1] for s in segments])
+                    min_vals.append(np.min(y_coords))
+        return min(min_vals) if min_vals else None
+
+    # 1. Single dataset (merged mode, n=1)
+    widget._render()
+    assert _get_min_y(widget.ax) == pytest.approx(floor)
+
+    # 2. Merged mode with show_sd=True and n=1
+    widget.show_sd = True
+    widget._render()
+    assert _get_min_y(widget.ax) == pytest.approx(floor)
+
+    # 3. Multi-dataset Merged mode with show_sd=True (n > 1)
+    widget.update_multi_data(
+        {
+            "A": np.full(50, 5.0),
+            "B": np.full(50, 5.0),
+        }
+    )
+    widget.show_sd = True
+    widget._render()
+    assert _get_min_y(widget.ax) == pytest.approx(floor)
+
+    # 4. Multi-dataset Merged mode without SD
+    widget.show_sd = False
+    widget._render()
+    assert _get_min_y(widget.ax) == pytest.approx(floor)
+
+    # 5. Merged series mode
+    widget.set_dataset_series({"A": "S1", "B": "S2"})
+    widget._render()
+    assert _get_min_y(widget.ax) == pytest.approx(floor)
+
+    # 6. Individual layers mode
+    widget.display_mode = "Individual layers"
+    assert _get_min_y(widget.ax) == pytest.approx(floor)
+
+    # 7. Grouped mode
+    widget._group_assignments = {"A": 1, "B": 2}
+    widget._group_names = {1: "G1", 2: "G2"}
+    widget.display_mode = "Grouped"
+    assert _get_min_y(widget.ax) == pytest.approx(floor)

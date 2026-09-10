@@ -5648,6 +5648,10 @@ class HistogramWidget(QWidget):
             lower_fine = lower_fine * scale
             upper_fine = upper_fine * scale
 
+            if self._log_scale:
+                floor = self._log_scale_floor()
+                mean_fine = np.maximum(mean_fine, floor)
+
             self._fill_gradient(
                 x_fine, upper_fine, lower_fine, cmap, norm, alpha=0.35
             )
@@ -5658,6 +5662,9 @@ class HistogramWidget(QWidget):
             counts = list(self._counts_per_dataset.values())[0]
             x_fine, y_fine = self._smooth_curve(counts)
             y_fine = y_fine * self._display_scale(y_fine)
+            if self._log_scale:
+                floor = self._log_scale_floor()
+                y_fine = np.maximum(y_fine, floor)
             self._draw_gradient_line(x_fine, y_fine, cmap, norm, linewidth=2)
             self.ax.set_xlim(float(x_fine[0]), float(x_fine[-1]))
             if self._log_scale:
@@ -5676,6 +5683,9 @@ class HistogramWidget(QWidget):
 
             x_fine, mean_fine = self._smooth_curve(mean_counts)
             mean_fine = mean_fine * self._display_scale(mean_fine)
+            if self._log_scale:
+                floor = self._log_scale_floor()
+                mean_fine = np.maximum(mean_fine, floor)
 
             self._fill_gradient(
                 x_fine,
@@ -5705,6 +5715,9 @@ class HistogramWidget(QWidget):
             x_fine, mean_fine = self._smooth_curve(mean_counts)
             scale = self._display_scale(mean_fine)
             mean_fine = mean_fine * scale
+            if self._log_scale:
+                floor = self._log_scale_floor()
+                mean_fine = np.maximum(mean_fine, floor)
 
             # Draw the outline in the series' own colormap when it has one and
             # the user has not asked for solid colours, so the curve is colored
@@ -5765,6 +5778,9 @@ class HistogramWidget(QWidget):
             color = self._dataset_color(label, idx)
             x_fine, y_fine = self._smooth_curve(counts)
             y_fine = y_fine * self._display_scale(y_fine)
+            if self._log_scale:
+                floor = self._log_scale_floor()
+                y_fine = np.maximum(y_fine, floor)
             self.ax.plot(
                 x_fine,
                 y_fine,
@@ -5797,6 +5813,9 @@ class HistogramWidget(QWidget):
             x_fine, mean_fine = self._smooth_curve(mean_counts)
             scale = self._display_scale(mean_fine)
             mean_fine = mean_fine * scale
+            if self._log_scale:
+                floor = self._log_scale_floor()
+                mean_fine = np.maximum(mean_fine, floor)
             self.ax.plot(
                 x_fine,
                 mean_fine,
