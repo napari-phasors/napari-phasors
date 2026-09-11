@@ -54,6 +54,7 @@ from qtpy.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSizePolicy,
+    QSpinBox,
     QStackedWidget,
     QStyle,
     QStyledItemDelegate,
@@ -817,6 +818,70 @@ def resolve_napari_layer_colormap(
     if custom_color is None:
         return None
     return create_napari_colormap_from_qcolor(custom_color)
+
+
+def layer_colormap_to_settings(colormap, gamma=None) -> dict:
+    """Return a JSON-friendly description of a layer's colormap.
+
+    Both the name and the colours are kept: the name restores a built-in
+    colormap exactly, and the colours rebuild a custom one (a picked solid
+    colour, say) in a session where that name means nothing.
+
+    Parameters
+    ----------
+    colormap : napari.utils.colormaps.Colormap
+        The layer's colormap.
+    gamma : float, optional
+        The layer's gamma, stored alongside when given.
+
+    Returns
+    -------
+    dict
+        ``{"colormap_name", "colormap_colors", "gamma"}``.
+    """
+    colors = getattr(colormap, "colors", None)
+    return {
+        "colormap_name": getattr(colormap, "name", None),
+        "colormap_colors": (
+            np.asarray(colors, dtype=float).tolist()
+            if colors is not None
+            else None
+        ),
+        "gamma": None if gamma is None else float(gamma),
+    }
+
+
+def layer_colormap_from_settings(entry):
+    """Return a layer colormap stored by :func:`layer_colormap_to_settings`.
+
+    A name that napari already knows with the same colours comes back as that
+    name, so the layer shows the familiar entry in its colormap menu. Anything
+    else is rebuilt from the stored colours. Returns None when *entry* holds
+    nothing usable.
+    """
+    if not isinstance(entry, dict):
+        return None
+    from napari.utils.colormaps import AVAILABLE_COLORMAPS, Colormap
+
+    name = entry.get("colormap_name")
+    colors = entry.get("colormap_colors")
+    known = AVAILABLE_COLORMAPS.get(name) if isinstance(name, str) else None
+    if colors is None:
+        return name if known is not None else None
+    colors = np.asarray(colors, dtype=float)
+    if (
+        colors.ndim != 2
+        or colors.shape[0] < 2
+        or colors.shape[1] not in (3, 4)
+    ):
+        return name if known is not None else None
+    if known is not None:
+        known_colors = np.asarray(known.colors, dtype=float)
+        if known_colors.shape == colors.shape and np.allclose(
+            known_colors, colors
+        ):
+            return name
+    return Colormap(colors=colors, name=name or "custom")
 
 
 def create_colormap_icon(cmap_name, width=25, height=10):
@@ -3069,6 +3134,8 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
     - Splitting the masked layers into one curve per mask label.
     - Toggling SD shading (for Merged and Grouped modes).
     - Normalising every curve to its own maximum.
+    - Logarithmic y axis.
+    - Number of histogram bins.
     - Central-tendency vertical line (Mean / Median / Center of mass).
     - Show / hide legend.
     - Per-layer colour selection (Individual layers mode).
@@ -3088,6 +3155,10 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         Initial central-tendency line selection.
     show_legend : bool
         Initial state of the *Show legend* checkbox.
+    log_scale : bool, optional
+        Initial state of the *Logarithmic y axis* checkbox.
+    bins : int, optional
+        Initial number of histogram bins.
     split_mask_labels : bool, optional
         Initial state of the *Separate mask labels* checkbox.
     split_mask_labels_available : bool, optional
@@ -3127,6 +3198,8 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         "Median",
     )
     MAX_GROUPS = 6
+    MIN_BINS = 5
+    MAX_BINS = 2000
 
     def __init__(
         self,
@@ -3136,6 +3209,8 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         central_tendency: str = "None",
         show_legend: bool = False,
         aspect_ratio: str = "auto",
+        log_scale: bool = False,
+        bins: int = 150,
         split_mask_labels: bool = False,
         split_mask_labels_available: bool = False,
         layer_labels: list = None,
@@ -3194,6 +3269,32 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         )
         self.normalize_checkbox.setChecked(normalize)
         layout.addWidget(self.normalize_checkbox)
+
+        # --- Logarithmic y axis ---
+        self.log_scale_checkbox = QCheckBox("Logarithmic y axis")
+        self.log_scale_checkbox.setToolTip(
+            "Show the y axis on a logarithmic scale, so sparse tails stay "
+            "visible next to a tall peak. Empty bins are drawn on the zero "
+            "baseline instead of leaving gaps in the curve."
+        )
+        self.log_scale_checkbox.setChecked(log_scale)
+        layout.addWidget(self.log_scale_checkbox)
+
+        # --- Number of bins ---
+        bins_layout = QHBoxLayout()
+        bins_layout.addWidget(QLabel("Number of bins:"))
+        self.bins_spinbox = QSpinBox()
+        self.bins_spinbox.setRange(self.MIN_BINS, self.MAX_BINS)
+        self.bins_spinbox.setValue(
+            int(np.clip(int(bins), self.MIN_BINS, self.MAX_BINS))
+        )
+        self.bins_spinbox.setToolTip(
+            "How many bins the value range is divided into. The statistics "
+            "that depend on the bins (center of mass) follow the same choice."
+        )
+        bins_layout.addWidget(self.bins_spinbox)
+        bins_layout.addStretch()
+        layout.addLayout(bins_layout)
 
         # --- Central tendency ---
         ct_layout = QHBoxLayout()
@@ -3635,7 +3736,8 @@ class HistogramWidget(QWidget):
     ylabel : str, optional
         Label for the y-axis, by default ``"Pixel count"``.
     bins : int, optional
-        Number of histogram bins, by default 300.
+        Number of histogram bins, by default 150. Changed at runtime from
+        the settings dialog or :meth:`set_bins`.
     default_colormap_name : str, optional
         Name of the Matplotlib colormap to use as fallback when no explicit
         colormap colors are provided, by default ``"plasma"``.
@@ -3772,6 +3874,7 @@ class HistogramWidget(QWidget):
         self._white_background = False
         self._smooth_curves = True
         self._aspect_ratio = "auto"
+        self._log_scale = False
 
         # Range slider state
         self._range_slider_enabled = range_slider_enabled
@@ -4474,6 +4577,8 @@ class HistogramWidget(QWidget):
             group_colors=group_colors,
             group_names=group_names,
             aspect_ratio=self._aspect_ratio,
+            log_scale=self._log_scale,
+            bins=self.bins,
             parent=self,
         )
         dlg.white_bg_checkbox.setChecked(self._white_background)
@@ -4484,7 +4589,10 @@ class HistogramWidget(QWidget):
                 dlg.split_labels_checkbox.isChecked()
                 != self._split_by_mask_labels
             )
+            bins_changed = dlg.bins_spinbox.value() != self.bins
             self._split_by_mask_labels = dlg.split_labels_checkbox.isChecked()
+            self.bins = dlg.bins_spinbox.value()
+            self._log_scale = dlg.log_scale_checkbox.isChecked()
             self._display_mode = dlg.mode_combo.currentText()
             self._show_sd = dlg.sd_checkbox.isChecked()
             self._normalize = dlg.normalize_checkbox.isChecked()
@@ -4504,9 +4612,10 @@ class HistogramWidget(QWidget):
                 self._series_color_overrides = dlg.get_series_colors()
                 self._series_style = dlg.get_series_style()
                 self._series_style_explicit = True
-            if split_changed:
-                # Splitting changes which datasets exist, so the histogram
-                # has to be recomputed rather than only re-drawn.
+            if split_changed or bins_changed:
+                # Splitting changes which datasets exist and new bins change
+                # every count, so the histogram has to be recomputed rather
+                # than only re-drawn.
                 self._ingest(auto_sd=False)
                 return
             if self.counts is not None:
@@ -5040,6 +5149,29 @@ class HistogramWidget(QWidget):
             self._render()
 
     @property
+    def log_scale(self) -> bool:
+        """Whether the y axis is drawn on a logarithmic scale."""
+        return self._log_scale
+
+    @log_scale.setter
+    def log_scale(self, value: bool):
+        """Toggle the logarithmic y axis and re-render if data is loaded."""
+        self._log_scale = bool(value)
+        if self.counts is not None:
+            self._render()
+
+    def set_bins(self, bins: int) -> None:
+        """Use *bins* histogram bins, re-histogramming the stored data."""
+        bins = int(bins)
+        if bins < 1:
+            raise ValueError(f"bins must be positive, got {bins}")
+        if bins == self.bins:
+            return
+        self.bins = bins
+        if self._input_datasets:
+            self._ingest(auto_sd=False)
+
+    @property
     def white_background(self) -> bool:
         """Whether white background is enabled."""
         return self._white_background
@@ -5307,8 +5439,50 @@ class HistogramWidget(QWidget):
             self._render_bars()
 
         self._draw_central_tendency_lines()
+        if self._log_scale:
+            self._apply_log_scale()
         self._style_axes()
         self.fig.canvas.draw_idle()
+
+    def _log_linear_threshold(self) -> float:
+        """Return the smallest non-zero value a curve can take on screen.
+
+        Counts are integers, so the smallest non-zero bin is one pixel; a
+        merged curve averages up to one count per dataset, and normalising
+        divides by the tallest peak. Below this value nothing but the empty
+        bins remain, so the log axis turns linear there and zero sits on the
+        baseline instead of at minus infinity.
+        """
+        arrays = [
+            np.asarray(counts, dtype=float)
+            for counts in self._counts_per_dataset.values()
+        ]
+        if not arrays and self.counts is not None:
+            arrays = [np.asarray(self.counts, dtype=float)]
+        if not any(np.any(counts > 0) for counts in arrays):
+            return 1.0
+        threshold = 1.0 / len(arrays)
+        if self._normalize:
+            peak = max(float(np.max(counts)) for counts in arrays)
+            if peak > 0:
+                threshold /= peak
+        return threshold
+
+    def _apply_log_scale(self) -> None:
+        """Put the y axis on a log scale that keeps empty bins at zero.
+
+        A plain log axis cannot show zero: empty bins would drop out and
+        leave gaps in the curves and fills. A symmetric-log axis is
+        logarithmic above the smallest real count and linear below it, so an
+        empty bin is drawn on the zero baseline.
+        """
+        _bottom, top = self.ax.get_ylim()
+        self.ax.set_yscale(
+            "symlog", linthresh=self._log_linear_threshold(), linscale=0.5
+        )
+        # Autoscaling may leave a small negative margin, which a symlog axis
+        # would show as a spurious negative decade.
+        self.ax.set_ylim(0, max(top, 0) * 1.5 or 1.0)
 
     def _render_bars(self) -> None:
         """Render the standard colormap-colored bar histogram."""

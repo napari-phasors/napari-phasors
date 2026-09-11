@@ -1057,6 +1057,8 @@ def default_group_config():
         "show_legend": True,
         "white_background": False,
         "smooth_curves": True,
+        "log_scale": False,
+        "bins": 150,
         # Per-key contour styling (filled by the Contour Layer Settings dialog).
         "contour_layer_styles": {},  # filename -> {mode, colormap, color}
         "contour_group_styles": {},  # gid -> {mode, colormap, color}
@@ -3655,6 +3657,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 "central_tendency", "None"
             ),
             show_legend=self._group_config.get("show_legend", True),
+            log_scale=self._group_config.get("log_scale", False),
+            bins=self._group_config.get("bins", 150),
             layer_labels=names,
             group_assignments=self._group_config.get("assignments", {}),
             layer_colors=self._group_config.get("layer_colors", {}),
@@ -3685,6 +3689,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                     "show_legend": dialog.legend_checkbox.isChecked(),
                     "white_background": dialog.white_bg_checkbox.isChecked(),
                     "smooth_curves": dialog.smooth_checkbox.isChecked(),
+                    "log_scale": dialog.log_scale_checkbox.isChecked(),
+                    "bins": dialog.bins_spinbox.value(),
                 }
             )
 
@@ -4648,6 +4654,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "normalize": stored.get("normalize", False),
             "central_tendency": stored.get("central_tendency", "None"),
             "show_legend": stored.get("show_legend", True),
+            "log_scale": stored.get("log_scale", False),
+            "bins": int(stored.get("bins") or 150),
         }
 
     def _apply_filter_settings_to_ui(self, settings):
@@ -5865,13 +5873,14 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             )
             _save_histogram_png(
                 valid,
-                100,
+                self._group_config.get("bins", 150),
                 f"{png_base}_{safe_label}_histogram.png",
                 label,
                 colormap_colors=cmap_colors,
                 contrast_limits=value_range,
                 value_range=value_range,
                 dpi=self._export_dpi(),
+                log_scale=self._group_config.get("log_scale", False),
             )
         if "csv" in hist_formats:
             csv_base = self._derive_output_path(
@@ -5888,7 +5897,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             )
             _save_histogram_csv(
                 valid,
-                100,
+                self._group_config.get("bins", 150),
                 f"{csv_base}_{safe_label}_histogram.csv",
                 value_range=value_range,
             )
@@ -8029,6 +8038,8 @@ def _new_export_histogram(config, label):
     hw._normalize = config.get("normalize", False)
     hw._central_tendency = config.get("central_tendency", "None")
     hw._show_legend = config.get("show_legend", True)
+    hw._log_scale = config.get("log_scale", False)
+    hw.bins = int(config.get("bins") or hw.bins)
     hw.xlabel = label
     return hw
 
@@ -8154,11 +8165,13 @@ def _save_histogram_png(
     contrast_limits=None,
     value_range=None,
     dpi=300,
+    log_scale=False,
 ):
     """Save a histogram of ``values`` to ``path`` (matplotlib, no GUI).
 
     ``value_range`` (``(min, max)``) bounds the histogram to the chosen range
-    limits so the image and histogram share the same range.
+    limits so the image and histogram share the same range. ``log_scale``
+    draws the y axis logarithmically, as the Histogram Settings option does.
     """
     valid = np.asarray(values)[np.isfinite(values)]
     if value_range is not None and valid.size:
@@ -8167,9 +8180,10 @@ def _save_histogram_png(
     if not valid.size:
         return
 
-    hw = HistogramWidget()
+    hw = HistogramWidget(bins=int(bins))
     hw.display_mode = "Merged"
     hw.white_background = False
+    hw._log_scale = bool(log_scale)
     hw.xlabel = metric
     if colormap_colors is not None or contrast_limits is not None:
         hw.update_colormap(colormap_colors, contrast_limits)
@@ -8239,6 +8253,8 @@ def _store_plot_settings(layer, plot_settings, group_config=None):
             "normalize": group_config.get("normalize"),
             "central_tendency": group_config.get("central_tendency"),
             "show_legend": group_config.get("show_legend"),
+            "log_scale": group_config.get("log_scale", False),
+            "bins": group_config.get("bins", 150),
         }
 
 

@@ -29,6 +29,10 @@ classifiers = [
 ]
 dependencies = [
     "phasorpy>=0.10",
+    # psygnal 0.16.0 emits to a snapshot of the slots (psygnal#413), so a
+    # napari TransformChain slice freed mid-emission is still called and
+    # raises ReferenceError whenever a layer's scale/translate changes.
+    "psygnal<0.16",
     "qtpy",
     "fbdfile==2026.8.30",
     "sdtfile",

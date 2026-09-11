@@ -51,6 +51,8 @@ from ._utils import (
     HistogramWidget,
     analysis_section_stylesheet,
     create_mpl_colormap_from_qcolor,
+    layer_colormap_from_settings,
+    layer_colormap_to_settings,
     make_section,
     populate_colormap_combobox,
     resolve_colormap_by_name,
@@ -330,6 +332,10 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         self._mesh_overlay_imshow = None
         self._phase_colormap_name = "cool"
         self._modulation_colormap_name = "PiYG"
+        # Output types whose colormap the user picked in the combobox since
+        # the last run. That explicit pick is applied on the next run; every
+        # other run keeps the colormap the output layers already have.
+        self._pending_combobox_colormaps = set()
         self._coloring_paused_by_tab = False
         self.min_lifetime = None
         self.max_lifetime = None
@@ -1335,6 +1341,8 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             'range_min': None,
             'range_max': None,
             'output_ranges': {},
+            # {output_type: layer_colormap_to_settings(...)}
+            'output_colormaps': {},
             'mesh_overlay_enabled': False,
             'mesh_clip_semicircle_enabled': False,
             'mesh_colorbar_enabled': False,
@@ -1691,6 +1699,8 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             self._phase_colormap_name = name
         elif output_type == "Modulation":
             self._modulation_colormap_name = name
+        if output_type in {"Phase", "Modulation"}:
+            self._pending_combobox_colormaps.add(output_type)
 
         if output_type in {"Phase", "Modulation"} and (
             self.apply_2d_colormap_checkbox.isChecked()
@@ -1822,6 +1832,40 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             elif key == 'range_max':
                 mapping_settings['lifetime_range_max'] = value
 
+    def _restore_combobox_colormaps(self, settings):
+        """Show the stored Phase / Modulation colormaps in the combobox.
+
+        A combobox pick made for another layer must not carry over, so any
+        pending one is dropped. Colormaps the combobox does not list (a
+        picked solid colour) are left to the stored settings, which the next
+        run applies to the layers directly.
+        """
+        self._pending_combobox_colormaps.clear()
+        stored = settings.get('output_colormaps') or {}
+        for output_type, attr in (
+            ("Phase", "_phase_colormap_name"),
+            ("Modulation", "_modulation_colormap_name"),
+        ):
+            entry = stored.get(output_type)
+            name = (
+                entry.get('colormap_name') if isinstance(entry, dict) else None
+            )
+            if name and self.colormap_combobox.findText(name) >= 0:
+                setattr(self, attr, name)
+
+        name = {
+            "Phase": self._phase_colormap_name,
+            "Modulation": self._modulation_colormap_name,
+        }.get(self.output_mode_combobox.currentText())
+        if name is None:
+            return
+        self.colormap_combobox.blockSignals(True)
+        try:
+            self.colormap_combobox.setCurrentText(name)
+        finally:
+            self.colormap_combobox.blockSignals(False)
+        self.custom_color_button.setVisible(name == "Select color...")
+
     def _restore_lifetime_settings_from_metadata(self):
         """Restore all lifetime settings from the current layer's metadata."""
         layer_name = self.parent_widget.get_primary_layer_name()
@@ -1891,6 +1935,7 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
 
         self._updating_settings = True
         try:
+            self._restore_combobox_colormaps(settings)
             output_type = settings.get('output_type') or settings.get(
                 'lifetime_type',
                 'Apparent Phase Lifetime',
@@ -2428,6 +2473,8 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             )
         else:
             cmap_name = self._get_output_colormap_name(output_type)
+        use_combobox_pick = output_type in self._pending_combobox_colormaps
+        self._pending_combobox_colormaps.discard(output_type)
 
         self._set_metric_layers([])
         created_layers = []
@@ -2457,6 +2504,13 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             clipped_output = np.clip(output_values, min_lifetime, cl_max)
 
             output_layer = existing_outputs.get(layer.name)
+            colormap, gamma = self._output_layer_colormap(
+                layer,
+                output_type,
+                output_layer,
+                cmap_name,
+                use_default=use_combobox_pick,
+            )
             output_metadata = {
                 'source_layer': layer.name,
                 'output_type': output_type,
@@ -2466,7 +2520,7 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
                     clipped_output,
                     name=output_layer_name,
                     scale=layer.scale,
-                    colormap=cmap_name,
+                    colormap=colormap,
                     contrast_limits=[min_lifetime, cl_max],
                     metadata={_MAPPING_OUTPUT_METADATA_KEY: output_metadata},
                 )
@@ -2474,7 +2528,7 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             else:
                 output_layer.data = clipped_output
                 output_layer.scale = layer.scale
-                output_layer.colormap = cmap_name
+                output_layer.colormap = colormap
                 output_layer.contrast_limits = [
                     min_lifetime,
                     cl_max,
@@ -2482,9 +2536,58 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
                 output_layer.metadata[_MAPPING_OUTPUT_METADATA_KEY] = (
                     output_metadata
                 )
+            if gamma is not None:
+                output_layer.gamma = gamma
+            self._store_output_colormap(layer, output_type, output_layer)
             created_layers.append(output_layer)
 
         self._set_metric_layers(created_layers)
+
+    def _output_layer_colormap(
+        self, source_layer, output_type, output_layer, default, use_default
+    ):
+        """Return ``(colormap, gamma)`` for *source_layer*'s output layer.
+
+        The colormap stored in the source layer's settings wins, so a
+        colormap the user set on the layer survives running the analysis
+        again, and one copied over with the settings is applied. Without a
+        stored one, an existing output layer keeps its own; only a new layer
+        gets *default*. With *use_default* (the user has just picked a
+        colormap in the tab) *default* is used regardless, keeping the gamma.
+        """
+        stored = self._stored_output_colormap(source_layer, output_type)
+        colormap = None
+        if not use_default:
+            colormap = layer_colormap_from_settings(stored)
+            if colormap is None and output_layer is not None:
+                colormap = output_layer.colormap
+        if colormap is None:
+            colormap = default
+
+        gamma = stored.get('gamma') if stored else None
+        if gamma is None and output_layer is not None:
+            gamma = output_layer.gamma
+        return colormap, gamma
+
+    def _stored_output_colormap(self, source_layer, output_type):
+        """Return the colormap entry stored for *output_type*, or None."""
+        settings = self._get_phasor_mapping_settings(source_layer)
+        if not settings:
+            return None
+        entry = (settings.get('output_colormaps') or {}).get(output_type)
+        return entry if isinstance(entry, dict) else None
+
+    def _store_output_colormap(self, source_layer, output_type, output_layer):
+        """Save *output_layer*'s colormap into *source_layer*'s settings."""
+        if self._updating_settings:
+            return
+        settings = self._get_phasor_mapping_settings(source_layer, create=True)
+        colormaps = settings.get('output_colormaps')
+        if not isinstance(colormaps, dict):
+            colormaps = settings['output_colormaps'] = {}
+        colormaps[output_type] = layer_colormap_to_settings(
+            output_layer.colormap, output_layer.gamma
+        )
 
     def create_lifetime_layer(self):
         """Backward-compatible alias for output layer creation."""
@@ -2521,6 +2624,9 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
                 self._phase_colormap_name = cmap_name
             elif output_type == "Modulation":
                 self._modulation_colormap_name = cmap_name
+        # The layer now says which colormap is wanted; an older combobox pick
+        # must not override it on the next run.
+        self._pending_combobox_colormaps.discard(output_type)
 
         # Update all other lifetime layers to match
         self._updating_linked_layers = True
@@ -2532,6 +2638,16 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
                     layer.gamma = new_gamma
         finally:
             self._updating_linked_layers = False
+
+        # Remember the colormap with each analysed layer's settings, so a
+        # new run — and a copy of the settings — keeps it.
+        for layer in self.metric_layers:
+            info = self._mapping_output_info(layer)
+            if info is None or info[1] not in self.viewer.layers:
+                continue
+            self._store_output_colormap(
+                self.viewer.layers[info[1]], info[0], source_layer
+            )
 
         self.histogram_widget.update_colormap(
             colormap_colors=self.lifetime_colormap,
