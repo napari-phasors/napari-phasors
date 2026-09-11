@@ -104,6 +104,8 @@ label, including the per-timepoint rows of a time-lapse.
 - **Range slider**: Drag the handles to clip the display/contrast limits of the colormapped image in real time.
 - **Show standard deviation**: Shades the ±1 SD band around the merged or group curve.
 - **Normalize to maximum**: Divides every curve by its own peak so it reaches 1. Distributions whose pixel counts differ by orders of magnitude can then be compared in the same plot; the y axis is labelled *(normalized)* and the CSV export is scaled the same way.
+- **Logarithmic y axis**: Draws the counts on a log scale so sparse tails stay visible next to a tall peak. Empty bins are drawn on the zero baseline rather than leaving gaps in the curves.
+- **Number of bins**: How many bins the value range is divided into. Changing it recomputes the histogram, its CSV export and the bin-based statistics (center of mass).
 - **Show line**: Overlays a vertical line at the *Center of mass*, *Mean*, or *Median*.
 - **Show legend**: Toggles the curve legend.
 - **White background**: Switches to a white plot background for figures.

@@ -4011,3 +4011,126 @@ def test_experimental_banner_icon_fits_its_label(qtbot):
     assert pixmap is not None and not pixmap.isNull()
     dpr = pixmap.devicePixelRatio() or 1.0
     assert (pixmap.width() / dpr) == pytest.approx(WARNING_ICON_SIZE)
+
+
+def test_histogram_settings_dialog_log_scale_and_bins_controls(qtbot):
+    """The dialog starts from the given log-scale and bin settings."""
+    dlg = HistogramSettingsDialog(log_scale=True, bins=42)
+    qtbot.addWidget(dlg)
+    assert dlg.log_scale_checkbox.isChecked()
+    assert dlg.bins_spinbox.value() == 42
+
+    # Out-of-range values are clamped to what the spinbox offers.
+    dlg = HistogramSettingsDialog(bins=1)
+    qtbot.addWidget(dlg)
+    assert not dlg.log_scale_checkbox.isChecked()
+    assert dlg.bins_spinbox.value() == HistogramSettingsDialog.MIN_BINS
+
+
+def test_histogram_widget_log_scale_keeps_empty_bins_on_baseline(qtbot):
+    """On the log axis an empty bin sits on zero instead of dropping out."""
+    widget = HistogramWidget(bins=20)
+    qtbot.addWidget(widget)
+    # Two clusters with empty bins between them.
+    data = np.concatenate([np.full(1000, 1.0), np.full(3, 9.0)])
+    widget.update_data(data)
+    assert widget.ax.get_yscale() == "linear"
+    assert np.any(widget.counts == 0)
+
+    widget.log_scale = True
+
+    assert widget.ax.get_yscale() == "symlog"
+    assert widget.ax.get_ylim()[0] == 0
+    # Linear below one pixel, so zero maps to the bottom of the axes.
+    assert widget.ax.yaxis.get_transform().linthresh == 1.0
+    zero_y = widget.ax.transData.transform((5.0, 0.0))[1]
+    bottom_y = widget.ax.transAxes.transform((0.0, 0.0))[1]
+    assert np.isfinite(zero_y)
+    assert zero_y == pytest.approx(bottom_y)
+
+    # Autoscaled modes do not leave a negative margin on the log axis.
+    widget.display_mode = "Individual layers"
+    widget.update_multi_data({"A": data, "B": data + 1})
+    assert widget.ax.get_yscale() == "symlog"
+    assert widget.ax.get_ylim()[0] == 0
+
+    widget.log_scale = False
+    assert widget.ax.get_yscale() == "linear"
+
+
+def test_histogram_settings_dialog_applies_log_scale_and_bins(
+    qtbot, monkeypatch
+):
+    """Accepting the dialog re-bins the data and switches the y axis."""
+    widget = HistogramWidget(bins=10)
+    qtbot.addWidget(widget)
+    widget.update_data(np.linspace(0.0, 1.0, 500))
+
+    seen = {}
+
+    def fake_exec(self):
+        seen['bins'] = self.bins_spinbox.value()
+        seen['log'] = self.log_scale_checkbox.isChecked()
+        self.bins_spinbox.setValue(25)
+        self.log_scale_checkbox.setChecked(True)
+        return QDialog.Accepted
+
+    monkeypatch.setattr(HistogramSettingsDialog, 'exec', fake_exec)
+    widget._open_settings_dialog()
+
+    assert seen == {'bins': 10, 'log': False}
+    assert widget.bins == 25
+    assert len(widget.counts) == 25
+    assert widget.log_scale
+    assert widget.ax.get_yscale() == "symlog"
+
+
+def test_histogram_widget_set_bins_rehistograms(qtbot):
+    """Changing the bins recomputes every dataset on the new bins."""
+    widget = HistogramWidget(bins=10)
+    qtbot.addWidget(widget)
+    rng = np.random.default_rng(0)
+    widget.update_multi_data(
+        {"A": rng.normal(0, 1, 300), "B": rng.normal(1, 1, 300)}
+    )
+
+    widget.set_bins(30)
+
+    assert len(widget.counts) == 30
+    assert all(len(c) == 30 for c in widget._counts_per_dataset.values())
+    with pytest.raises(ValueError):
+        widget.set_bins(0)
+
+
+def test_layer_colormap_settings_roundtrip():
+    """Colormaps survive being stored in settings and read back."""
+    import json
+
+    from napari.utils.colormaps import AVAILABLE_COLORMAPS, Colormap
+
+    from napari_phasors._utils import (
+        layer_colormap_from_settings,
+        layer_colormap_to_settings,
+    )
+
+    entry = layer_colormap_to_settings(AVAILABLE_COLORMAPS['magma'], 0.5)
+    json.dumps(entry)  # must be writable to the OME-TIFF settings
+    assert entry['colormap_name'] == 'magma'
+    assert entry['gamma'] == 0.5
+    assert layer_colormap_from_settings(entry) == 'magma'
+
+    custom = Colormap(
+        colors=[[0, 0, 0, 1], [0.2, 0.4, 0.6, 1]],
+        name='napari_phasors_test_unregistered',
+    )
+    restored = layer_colormap_from_settings(layer_colormap_to_settings(custom))
+    assert isinstance(restored, Colormap)
+    np.testing.assert_allclose(restored.colors, custom.colors)
+
+    assert layer_colormap_from_settings(None) is None
+    assert (
+        layer_colormap_from_settings(
+            {'colormap_name': 'no_such_colormap', 'colormap_colors': None}
+        )
+        is None
+    )

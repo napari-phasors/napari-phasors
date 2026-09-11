@@ -4533,3 +4533,32 @@ def test_component_line_transparency_is_stored_as_alpha(
 
     assert pytest.approx(0.6) in seen["values"]
     assert widget._component_line_style["line_alpha"] == pytest.approx(0.4)
+
+
+def test_export_histogram_honours_log_scale_and_bins(qtbot, tmp_path):
+    """Batch histograms follow the log-scale and bin choices."""
+    from napari_phasors._batch_analysis import (
+        _new_export_histogram,
+        _save_histogram_png,
+        default_group_config,
+    )
+
+    config = default_group_config()
+    assert config["log_scale"] is False
+    assert config["bins"] == 150
+
+    config.update(log_scale=True, bins=40)
+    hw = _new_export_histogram(config, "Lifetime")
+    hw.update_data(np.random.default_rng(0).normal(size=500))
+    assert len(hw.counts) == 40
+    assert hw.ax.get_yscale() == "symlog"
+
+    path = tmp_path / "hist.png"
+    _save_histogram_png(
+        np.random.default_rng(1).normal(size=500),
+        30,
+        str(path),
+        "Lifetime",
+        log_scale=True,
+    )
+    assert path.exists()
