@@ -63,6 +63,13 @@ from ._parallel import (
     set_parallel_bands_enabled,
     set_parallel_items_enabled,
 )
+from ._settings_store import (
+    ANALYSIS_LABELS,
+    ANALYSIS_SETTINGS_KEYS,
+    LayerSettingsStore,
+    format_layer_list,
+    settings_equal,
+)
 from ._timelapse import CURRENT as FRAME_MODE_CURRENT
 from ._timelapse import POOLED as FRAME_MODE_POOLED
 from ._timelapse import (
@@ -89,6 +96,7 @@ from ._utils import (
     build_group_styles_from_layer_metadata,
     build_groups_from_layer_metadata,
     confirm_unassigned_layers,
+    create_settings_note_label,
     make_experimental_warning,
     make_section,
     make_solid_contour_cmap,
@@ -100,6 +108,7 @@ from ._utils import (
     resolve_colormap_by_name,
     save_groups_to_layer_metadata,
     set_phasor_storage_dtype,
+    set_settings_note,
     split_items_by_group,
     unassigned_layer_labels,
     update_frequency_in_metadata,
@@ -1681,6 +1690,11 @@ class PlotterWidget(QWidget):
         #: Last QDockWidget seen hosting this widget (see ``changeEvent``).
         self._plotter_dock_ref = None
         self.viewer = napari_viewer
+        #: Unsaved per-layer edits and per-analysis commits of the settings
+        #: stored in ``layer.metadata['settings']`` (see ``_settings_store``).
+        self.settings_store = LayerSettingsStore(
+            on_change=self._refresh_settings_notes
+        )
 
         # Unobtrusive, throttled check for a newer release (see module docs).
         maybe_check_for_update(parent=self)
@@ -3146,6 +3160,241 @@ class PlotterWidget(QWidget):
         """
         return _ListWidgetCompatWrapper(self)
 
+    # ------------------------------------------------------------------
+    # Analysis settings (see ``_settings_store``)
+    # ------------------------------------------------------------------
+
+    def layer_settings(self, layer):
+        """Return *layer*'s settings with its unsaved edits applied.
+
+        This is what the tabs restore their widgets from, so edits made while
+        a layer was primary come back when it is primary again. Read-only:
+        edits go through :meth:`stage_setting` or the settings store.
+        """
+        return self.settings_store.effective(layer)
+
+    def stage_setting(self, key, value, layer=None):
+        """Keep *value* as an unsaved edit of *key* on the primary layer.
+
+        Nothing reaches the metadata until the analysis owning *key* runs
+        and commits it with :meth:`commit_analysis_settings`.
+        """
+        layer = self.get_primary_layer() if layer is None else layer
+        if layer is not None:
+            self.settings_store.set_draft(layer, key, value)
+
+    def commit_analysis_settings(self, values, layers=None, merge=None):
+        """Store an analysis' *values* in every layer it ran on.
+
+        Parameters
+        ----------
+        values : dict
+            Top-level settings keys and the values to store.
+        layers : list of napari.layers.Image, optional
+            Layers the analysis ran on; defaults to the selected layers.
+        merge : dict, optional
+            Per-key ``rule(old, new)`` keeping parts of the stored value
+            (entries of harmonics the run did not use).
+        """
+        layers = self.get_selected_layers() if layers is None else layers
+        layers = [layer for layer in layers if layer is not None]
+        if layers:
+            self.settings_store.commit(layers, values, merge)
+
+    def pending_settings_values(self, group, layer=None):
+        """Return the *group* settings a run would store, from the primary."""
+        layer = self.get_primary_layer() if layer is None else layer
+        if layer is None:
+            return {}
+        settings = self.layer_settings(layer)
+        return {
+            key: settings[key]
+            for key in ANALYSIS_SETTINGS_KEYS[group]
+            if key in settings
+        }
+
+    def settings_overwrite_message(
+        self,
+        group,
+        values=None,
+        merge=None,
+        action="Running this analysis",
+        keys=None,
+    ):
+        """Return the note naming the layers whose settings a run replaces.
+
+        Only the non-primary selected layers are considered: their stored
+        *group* settings (only *keys* of them, if given) are replaced by the
+        primary layer's when the analysis runs on all of them. Returns
+        ``None`` when nothing would be overwritten.
+        """
+        primary = self.get_primary_layer()
+        others = [
+            layer
+            for layer in self.get_selected_layers()
+            if layer is not primary
+        ]
+        if not others:
+            return None
+        if values is None:
+            values = self.pending_settings_values(group)
+        overwritten = self.settings_store.overwritten_layers(
+            others,
+            ANALYSIS_SETTINGS_KEYS[group] if keys is None else keys,
+            values,
+            merge,
+        )
+        if not overwritten:
+            return None
+        names = format_layer_list(layer.name for layer in overwritten)
+        return (
+            f"{action} will overwrite the {ANALYSIS_LABELS[group]} "
+            f"parameters stored in: {names}."
+        )
+
+    @staticmethod
+    def _as_frequency(value):
+        """Return *value* as a valid frequency (MHz), or ``None``."""
+        try:
+            frequency = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not np.isfinite(frequency) or frequency <= 0:
+            return None
+        return frequency
+
+    def layer_frequency(self, layer, entered):
+        """Return the frequency (MHz) *layer* is analysed with.
+
+        The primary layer uses the *entered* frequency (the one shown in the
+        tabs). Any other layer keeps the frequency stored with it, since it
+        describes how that layer was acquired, and only falls back to the
+        entered one when it has none.
+        """
+        entered = self._as_frequency(entered)
+        if layer is self.get_primary_layer() and entered is not None:
+            return entered
+        stored = self._as_frequency(
+            self.settings_store.committed(layer).get('frequency')
+        )
+        return stored if stored is not None else entered
+
+    def commit_frequency(self, layers, entered):
+        """Store the frequencies a frequency-dependent run used.
+
+        The primary layer stores the *entered* frequency, and so does every
+        layer that had none; a frequency already stored with another layer
+        is kept (it was analysed with it, see :meth:`layer_frequency`).
+        """
+        entered = self._as_frequency(entered)
+        if entered is None:
+            return
+        primary = self.get_primary_layer()
+        for layer in layers:
+            stored = self._as_frequency(
+                self.settings_store.committed(layer).get('frequency')
+            )
+            if layer is primary or stored is None:
+                update_frequency_in_metadata(layer, entered)
+        self.settings_store.discard_drafts(layers, ['frequency'])
+
+    def frequency_note_messages(self, entered, layers=None):
+        """Return cautions about the frequencies of the selected layers.
+
+        Names the non-primary layers whose stored frequency differs from the
+        *entered* one (each is analysed with its own) and those without a
+        frequency (they will store the entered one).
+        """
+        entered = self._as_frequency(entered)
+        if entered is None:
+            return []
+        primary = self.get_primary_layer()
+        layers = self.get_selected_layers() if layers is None else layers
+        differing, missing = [], []
+        for layer in layers:
+            if layer is primary:
+                continue
+            stored = self._as_frequency(
+                self.settings_store.committed(layer).get('frequency')
+            )
+            if stored is None:
+                missing.append(layer.name)
+            elif not settings_equal(stored, entered):
+                differing.append(f"{layer.name} ({stored:g} MHz)")
+        messages = []
+        if differing:
+            messages.append(
+                f"The frequency stored in {format_layer_list(differing)} "
+                f"differs from {entered:g} MHz; each layer is analysed with "
+                "its own frequency."
+            )
+        if missing:
+            messages.append(
+                f"No frequency is stored in {format_layer_list(missing)}; "
+                f"{entered:g} MHz will be stored with them."
+            )
+        return messages
+
+    def _refresh_settings_notes(self):
+        """Update the notes about settings a run would overwrite, per tab."""
+        if getattr(self, '_is_closing', False) or getattr(
+            self, '_refreshing_settings_notes', False
+        ):
+            return
+        self._refreshing_settings_notes = True
+        try:
+            with contextlib.suppress(RuntimeError, AttributeError):
+                self._refresh_plot_settings_note()
+            for tab_name in (
+                'calibration_tab',
+                'filter_tab',
+                'phasor_mapping_tab',
+                'fret_tab',
+                'components_tab',
+                'selection_tab',
+            ):
+                tab = getattr(self, tab_name, None)
+                refresh = getattr(tab, '_refresh_settings_note', None)
+                if refresh is not None:
+                    with contextlib.suppress(RuntimeError):
+                        refresh()
+        finally:
+            self._refreshing_settings_notes = False
+
+    def _refresh_plot_settings_note(self):
+        """Name the selected layers storing other plot settings than shown."""
+        label = getattr(self, '_plot_settings_note', None)
+        if label is None:
+            return
+        primary = self.get_primary_layer()
+        others = [
+            layer
+            for layer in self.get_selected_layers()
+            if layer is not primary
+        ]
+        message = None
+        if others:
+            current = self._current_plot_settings()
+            differing = [
+                layer
+                for layer in others
+                if any(
+                    key in self.settings_store.committed(layer)
+                    and not settings_equal(
+                        self.settings_store.committed(layer)[key], value
+                    )
+                    for key, value in current.items()
+                )
+            ]
+            if differing:
+                names = format_layer_list(layer.name for layer in differing)
+                message = (
+                    f"The plot settings stored in {names} differ from the "
+                    "ones shown; changing a plot setting stores it in all "
+                    "selected layers."
+                )
+        set_settings_note(label, [message])
+
     def _get_default_plot_settings(self):
         """Get default settings dictionary for plot parameters."""
 
@@ -3206,29 +3455,70 @@ class PlotterWidget(QWidget):
             'timelapse_axis': 0,
         }
 
-    def _initialize_plot_settings_in_metadata(self, layer):
-        """Initialize settings in layer metadata if not present."""
-        if 'settings' not in layer.metadata:
-            layer.metadata['settings'] = {}
+    def _current_plot_settings(self):
+        """Return the plot settings shown right now, keyed like the metadata."""
+        piw = self.plotter_inputs_widget
+        current = {
+            'harmonic': self.harmonic,
+            'semi_circle': self.toggle_semi_circle,
+            'white_background': self.white_background,
+            'plot_type': self.plot_type,
+            'colormap': self._histogram_colormap_name,
+            'histogram_style': self._histogram_style,
+            'histogram_color': self._histogram_color,
+            'number_of_bins': self.histogram_bins,
+            'log_scale': self.histogram_log_scale,
+            'marker_size': piw.marker_size_spinbox.value(),
+            'marker_alpha': 1.0 - piw.marker_transparency_spinbox.value(),
+            'marker_color': getattr(self, '_marker_color', '#1f77b4'),
+            'contour_levels': piw.contour_levels_spinbox.value(),
+            'contour_linewidth': piw.contour_linewidth_spinbox.value(),
+            'contour_single_style': self._single_contour_style,
+            'contour_single_colormap': self._single_contour_colormap,
+            'contour_single_color': self._single_contour_color,
+            'timelapse_mode': self.frame_context.mode,
+            'timelapse_axis': self.frame_context.axis,
+        }
+        for key in ANALYSIS_SETTINGS_KEYS['settings_tab']:
+            if key not in current:
+                current[key] = getattr(self, f'_{key}', None)
+        return current
 
-        default_settings = self._get_default_plot_settings()
-        for key, default_value in default_settings.items():
-            if key not in layer.metadata['settings']:
-                layer.metadata['settings'][key] = default_value
+    def _fill_missing_plot_settings(self, layers):
+        """Store the plot settings shown in *layers* that have none stored.
+
+        Plotting a layer is the plot's "run", so a layer plotted without
+        stored plot settings gets the ones it was plotted with. Stored values
+        are never replaced here -- only a change of a plot setting does that.
+        """
+        current = None
+        for layer in layers:
+            settings = layer.metadata.setdefault('settings', {})
+            missing = [
+                key
+                for key in ANALYSIS_SETTINGS_KEYS['settings_tab']
+                if key not in settings
+            ]
+            if not missing:
+                continue
+            if current is None:
+                current = self._current_plot_settings()
+            for key in missing:
+                settings[key] = copy.deepcopy(current[key])
+
+    def _initialize_plot_settings_in_metadata(self, layer):
+        """Store the shown plot settings in *layer* where it has none."""
+        self._fill_missing_plot_settings([layer])
 
     def _update_setting_in_metadata(self, key, value):
-        """Update a specific setting in the current layer's metadata."""
+        """Store a changed plot setting in every selected layer.
+
+        The plot redraws every selected layer as soon as a setting changes,
+        so the change is committed to all of them right away.
+        """
         if self._updating_settings:
             return
-
-        layer_name = (
-            self.image_layer_with_phasor_features_combobox.currentText()
-        )
-        if layer_name:
-            layer = self.viewer.layers[layer_name]
-            if 'settings' not in layer.metadata:
-                layer.metadata['settings'] = {}
-            layer.metadata['settings'][key] = value
+        self.commit_analysis_settings({key: value})
 
     def _restore_plot_settings_from_metadata(self):
         """Restore all settings from the current layer's metadata."""
@@ -3239,9 +3529,6 @@ class PlotterWidget(QWidget):
             return
 
         image_layer = self.viewer.layers[layer_name]
-        if 'settings' not in image_layer.metadata:
-            self._initialize_plot_settings_in_metadata(image_layer)
-            return
 
         self._updating_settings = True
         try:
@@ -3275,7 +3562,11 @@ class PlotterWidget(QWidget):
                     matching_mask_layer_name
                 )
 
-            settings = image_layer.metadata['settings']
+            # Keys the layer has no value for show their defaults.
+            settings = {
+                **self._get_default_plot_settings(),
+                **(image_layer.metadata.get('settings') or {}),
+            }
 
             # Restore harmonic
             if 'harmonic' in settings:
@@ -3702,70 +3993,15 @@ class PlotterWidget(QWidget):
 
     def _get_import_settings_groups(self):
         """Return the settings keys controlled by each importable tab."""
-        return {
-            "settings_tab": [
-                "harmonic",
-                "semi_circle",
-                "white_background",
-                "plot_type",
-                "colormap",
-                "histogram_style",
-                "histogram_color",
-                "number_of_bins",
-                "log_scale",
-                "marker_size",
-                "marker_alpha",
-                "marker_color",
-                "contour_levels",
-                "contour_linewidth",
-                "contour_display_mode",
-                "contour_layer_colors",
-                "contour_group_assignments",
-                "contour_group_colors",
-                "contour_group_names",
-                "contour_multi_layer_colormap",
-                "contour_merged_style",
-                "contour_merged_color",
-                "contour_layer_styles",
-                "contour_group_styles",
-                "contour_show_legend",
-                "contour_single_style",
-                "contour_single_colormap",
-                "contour_single_color",
-                "phasor_center_enabled",
-                "phasor_center_method",
-                "phasor_center_color",
-                "phasor_center_size",
-                "phasor_center_alpha",
-                "phasor_center_display_mode",
-                "phasor_center_layer_colors",
-                "phasor_center_group_assignments",
-                "phasor_center_group_colors",
-                "phasor_center_group_names",
-            ],
-            "calibration_tab": [
-                "calibrated",
-                "calibration_phase",
-                "calibration_modulation",
-            ],
-            "filter_tab": [
-                "filter",
-                "threshold",
-                "threshold_upper",
-                "threshold_method",
-            ],
-            # The metric filter stack rides with the Phasor Mapping tab: it
-            # is one ordered object, even when some of its criteria are on
-            # the FRET efficiency.
-            "phasor_mapping_tab": [
-                "phasor_mapping",
-                "lifetime",
-                "mapping_filters",
-            ],
-            "fret_tab": ["fret"],
-            "components_tab": ["component_analysis"],
-            "selection_tab": ["selections"],
-        }
+        return copy.deepcopy(ANALYSIS_SETTINGS_KEYS)
+
+    def _imported_settings_keys(self, selected_tabs):
+        """Return every settings key an import of *selected_tabs* replaces."""
+        groups = self._get_import_settings_groups()
+        keys = [key for tab in selected_tabs for key in groups.get(tab, [])]
+        if "frequency" in selected_tabs:
+            keys.append("frequency")
+        return keys
 
     def _merge_imported_settings(
         self, current_settings, source_settings, selected_tabs
@@ -3974,6 +4210,11 @@ class PlotterWidget(QWidget):
                 if copy_masking:
                     self._copy_mask_from_layer(source_layer, target_layer)
 
+            # The imported values replace any unsaved edits of the same tabs.
+            self.settings_store.discard_drafts(
+                selected_layers, self._imported_settings_keys(selected_tabs)
+            )
+
             if copy_masking:
                 # Sync the mask combobox / invert / labels controls from the
                 # freshly-set assignments. Doing this before the settings
@@ -4032,6 +4273,11 @@ class PlotterWidget(QWidget):
                 update_frequency_in_metadata(
                     target_layer, settings['frequency']
                 )
+
+        # The imported values replace any unsaved edits of the same tabs.
+        self.settings_store.discard_drafts(
+            selected_layers, self._imported_settings_keys(selected_tabs)
+        )
 
         if 'frequency' in selected_tabs and 'frequency' in settings:
             self._broadcast_frequency_value_across_tabs(
@@ -5657,6 +5903,8 @@ class PlotterWidget(QWidget):
         sections_layout = QVBoxLayout(contents)
         sections_layout.setContentsMargins(0, 0, 0, 0)
         sections_layout.addWidget(self._import_settings_box)
+        self._plot_settings_note = create_settings_note_label(contents)
+        sections_layout.addWidget(self._plot_settings_note)
         sections_layout.addWidget(type_box)
         sections_layout.addWidget(appearance_box)
         sections_layout.addWidget(pc_box)
@@ -6596,22 +6844,20 @@ class PlotterWidget(QWidget):
             self.semi_circle_plot_artist_list.append(label)
 
     def _get_frequency_from_layer(self):
-        """Get frequency from the current layer's metadata."""
+        """Get the primary layer's frequency, including an unsaved edit."""
         layer_name = (
             self.image_layer_with_phasor_features_combobox.currentText()
         )
         if layer_name == "" or layer_name not in self.viewer.layers:
             return None
         layer = self.viewer.layers[layer_name]
-        if "settings" in layer.metadata:
-            settings = layer.metadata["settings"]
-            if "frequency" in settings:
-                try:
-                    return float(settings["frequency"])
-                except (ValueError, TypeError):
-                    return None
-
-        return None
+        frequency = self.settings_store.get(layer, "frequency")
+        if frequency is None:
+            return None
+        try:
+            return float(frequency)
+        except (ValueError, TypeError):
+            return None
 
     def _sync_frequency_inputs_from_metadata(self):
         """Sync the frequency widget input fields with metadata."""
@@ -6623,8 +6869,9 @@ class PlotterWidget(QWidget):
             return
 
         layer = self.viewer.layers[layer_name]
-        settings = layer.metadata.get('settings', {})
-        frequency = settings.get('frequency', None)
+        frequency = self._as_frequency(
+            self.settings_store.get(layer, 'frequency')
+        )
 
         if frequency is not None:
             self._broadcast_frequency_value_across_tabs(str(frequency))
@@ -6651,12 +6898,9 @@ class PlotterWidget(QWidget):
         self.fret_tab.frequency_input.blockSignals(True)
 
         if frequency is not None:
-            layer_name = (
-                self.image_layer_with_phasor_features_combobox.currentText()
-            )
-            if layer_name and layer_name in self.viewer.layers:
-                layer = self.viewer.layers[layer_name]
-                update_frequency_in_metadata(layer, frequency)
+            # An unsaved edit of the primary layer: it is stored when an
+            # analysis that needs it runs (see ``commit_frequency``).
+            self.stage_setting('frequency', frequency)
 
         self.calibration_tab.calibration_widget.frequency_input.setText(value)
         self.phasor_mapping_tab.frequency_input.setText(value)
@@ -7421,8 +7665,8 @@ class PlotterWidget(QWidget):
         self._update_mask_ui_mode()
         self._update_contour_controls_visibility()
 
-        self._initialize_plot_settings_in_metadata(layer)
         self._restore_plot_settings_from_metadata()
+        self._fill_missing_plot_settings(selected_layers)
         self._refresh_timelapse_controls()
 
         if sync_frequency:
@@ -7471,6 +7715,7 @@ class PlotterWidget(QWidget):
 
         current_tab_index = self.tab_widget.currentIndex()
         self._on_tab_changed(current_tab_index)
+        self._refresh_settings_notes()
 
     def _notify_analysis_tabs_layer_selection_changed(self):
         """Refresh analysis tabs after the source-layer selection changes."""
@@ -7535,7 +7780,9 @@ class PlotterWidget(QWidget):
                 ax = self.canvas_widget.axes
                 self._user_axes_limits = (ax.get_xlim(), ax.get_ylim())
 
+            self._fill_missing_plot_settings(selected_layers)
             self.plot()
+            self._refresh_settings_notes()
 
         finally:
             self._in_on_selection_changed = False

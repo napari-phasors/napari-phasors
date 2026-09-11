@@ -1196,3 +1196,108 @@ def test_write_ometif_mapping_filter_stack_roundtrip(tmp_path):
     assert restored[0]['params'] == {'frequency': 80.0}
     assert restored[1]['mode'] == "exclude"
     assert restored[1]['enabled'] is False
+
+
+def _write_filter_stack_file(tmp_path):
+    """Export a layer carrying a Phasor Mapping and a FRET filter."""
+    from napari_phasors._mapping_filters import (
+        FRET_EFFICIENCY,
+        compute_metric,
+        new_filter,
+        set_filters,
+    )
+
+    raw_flim_data = make_raw_flim_data(time_constants=[0.1, 1, 10])
+    layer = make_intensity_layer_with_phasors(raw_flim_data, harmonic=[1, 2])
+    real = layer.metadata['G'][0]
+    imag = layer.metadata['S'][0]
+    fret_params = {'frequency': 80.0, 'donor_lifetime': 2.0}
+    modulation = compute_metric("Modulation", real, imag)
+    efficiency = compute_metric(
+        FRET_EFFICIENCY, real, imag, params=fret_params
+    )
+    set_filters(
+        layer,
+        [
+            new_filter("Modulation", 0.0, float(np.nanmedian(modulation))),
+            new_filter(
+                FRET_EFFICIENCY,
+                0.0,
+                float(np.nanmax(efficiency)),
+                params=fret_params,
+            ),
+        ],
+    )
+    filepath = str(tmp_path / "filter_stack.ome.tif")
+    write_ome_tiff(filepath, [(layer.data, {"metadata": layer.metadata})])
+    return filepath
+
+
+def _stack_mask(metadata):
+    """Return the pixels the stored stack drops, measured on the originals."""
+    from napari_phasors._mapping_filters import (
+        combined_mask,
+        filters_from_settings,
+    )
+
+    return combined_mask(
+        filters_from_settings(metadata['settings']),
+        metadata['original_mean'],
+        metadata['G_original'],
+        metadata['S_original'],
+        metadata['harmonics'],
+    )
+
+
+def test_read_ometif_applies_mapping_filter_stack(tmp_path):
+    """A stored filter stack is applied to the arrays when the file is read.
+
+    The criteria are listed as active as soon as the file is open, so the
+    pixels they drop have to be gone too, not only after a toggle.
+    """
+    filepath = _write_filter_stack_file(tmp_path)
+    metadata = napari_get_reader(filepath)(filepath)[0][1]["metadata"]
+
+    mask = _stack_mask(metadata)
+    assert mask is not None and mask.any() and not mask.all()
+    expected_nan = mask | np.isnan(metadata['original_mean'])
+    assert np.array_equal(np.isnan(metadata['G'][0]), expected_nan)
+    assert np.array_equal(np.isnan(metadata['S'][1]), expected_nan)
+    # The originals stay unfiltered, so the stack can still be edited.
+    assert not np.isnan(metadata['G_original'][0][mask]).any()
+
+
+def test_read_ometif_filter_stack_shown_and_applied_in_tabs(
+    tmp_path, make_napari_viewer
+):
+    """Both tabs show the stored criteria on, and the data is filtered."""
+    from napari_phasors._mapping_filters import FRET_EFFICIENCY
+    from napari_phasors.plotter import PlotterWidget
+
+    filepath = _write_filter_stack_file(tmp_path)
+    data, kwargs = napari_get_reader(filepath)(filepath)[0][:2]
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    layer = viewer.add_image(data, **kwargs)
+
+    mask = _stack_mask(layer.metadata)
+    assert np.isnan(layer.data[mask]).all()
+    assert np.isnan(layer.metadata['G'][0][mask]).all()
+
+    # These tabs refresh lazily, when they are opened.
+    plotter.tab_widget.setCurrentWidget(plotter.phasor_mapping_tab)
+    mapping_on = [
+        f['metric']
+        for f in plotter.phasor_mapping_tab.filter_list.filters()
+        if f['enabled']
+    ]
+    plotter.tab_widget.setCurrentWidget(plotter.fret_tab)
+    fret_on = [
+        f['metric']
+        for f in plotter.fret_tab.filter_list.filters()
+        if f['enabled']
+    ]
+    # Opening the tabs rebuilt nothing that dropped the stack.
+    assert np.isnan(layer.metadata['G'][0][mask]).all()
+    assert "Modulation" in mapping_on
+    assert fret_on == [FRET_EFFICIENCY]

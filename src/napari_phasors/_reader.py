@@ -24,6 +24,7 @@ from napari.utils.colormaps.colormap_utils import CYMRGB, MAGENTA_GREEN
 from napari.utils.notifications import show_error
 
 from ._fbd import signal_from_fbd
+from ._mapping_filters import apply_filters_to_arrays, filters_from_settings
 from ._parallel import (
     parallel_map,
     parallel_phasor_from_signal,
@@ -2536,6 +2537,24 @@ def processed_file_reader(
             settings["threshold"] = threshold_value
             if threshold_upper_value is not None:
                 settings["threshold_upper"] = threshold_upper_value
+
+        # The metric filter stack (Phasor Mapping and FRET filters) comes
+        # after the intensity filter and threshold, as in
+        # ``compute_filter_and_threshold``; the originals stay unfiltered so
+        # the stack can still be edited or removed.
+        mapping_filters = filters_from_settings(settings)
+        if mapping_filters:
+            problems = []
+            mean_intensity_image, real, imag, _ = apply_filters_to_arrays(
+                mapping_filters,
+                mean_intensity_image,
+                real,
+                imag,
+                harmonics_read,
+                on_error=problems.append,
+            )
+            for message in dict.fromkeys(problems):
+                warnings.warn(f"{filename}: {message}", stacklevel=2)
 
         layers = []
 

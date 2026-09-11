@@ -1,4 +1,5 @@
 import contextlib
+import copy
 from html import escape
 from typing import TYPE_CHECKING
 
@@ -30,9 +31,19 @@ from ._utils import (
     REFERENCE_LIFETIMES_SOURCE,
     analysis_section_stylesheet,
     apply_filter_and_threshold,
+    create_settings_note_label,
     make_section,
     reference_lifetimes,
+    set_settings_note,
     setup_primary_button,
+)
+
+#: Settings a calibration stores in each calibrated layer.
+_CALIBRATION_KEYS = (
+    "calibrated",
+    "calibration_phase",
+    "calibration_modulation",
+    "calibration_reference",
 )
 
 if TYPE_CHECKING:
@@ -116,6 +127,9 @@ class CalibrationWidget(QWidget):
         super().__init__()
         self.viewer = viewer
         self.parent_widget = parent
+        # Set while the inputs are filled from a layer's settings, so that
+        # filling them is not mistaken for an edit.
+        self._restoring_settings = False
 
         # Build the calibration controls (formerly loaded from a .ui file).
         self.calibration_widget = self._build_calibration_widget()
@@ -149,6 +163,18 @@ class CalibrationWidget(QWidget):
         )
         self.calibration_widget.calibration_layer_combobox.currentTextChanged.connect(
             lambda _=None: self._refresh_calibrate_button()
+        )
+
+        # The reference inputs are unsaved settings of the primary layer
+        # until Calibrate stores them with each calibrated layer.
+        self.calibration_widget.calibration_layer_combobox.currentTextChanged.connect(
+            self._stage_reference
+        )
+        self.calibration_widget.lifetime_line_edit_widget.textChanged.connect(
+            self._stage_reference
+        )
+        self.calibration_widget.frequency_input.textChanged.connect(
+            lambda _=None: self._refresh_settings_note()
         )
 
         # Connect layer events to populate combobox and update button state
@@ -223,6 +249,10 @@ class CalibrationWidget(QWidget):
         layout.addWidget(parameters_box)
 
         self._populate_fluorophore_combobox(widget.fluorophore_combobox)
+
+        # Cautions about the selected layers' frequencies.
+        widget.settings_note = create_settings_note_label(widget)
+        layout.addWidget(widget.settings_note)
 
         widget.calibrate_push_button = QPushButton("Calibrate")
         layout.addWidget(widget.calibrate_push_button)
@@ -340,7 +370,81 @@ class CalibrationWidget(QWidget):
 
     def _on_image_layer_changed(self):
         """Update button state when the selected image layer changes."""
+        self._restore_reference_from_primary()
         self._update_button_state()
+        self._refresh_settings_note()
+
+    def _has_settings_store(self):
+        """Return whether the parent keeps per-layer settings."""
+        return self.parent_widget is not None and hasattr(
+            self.parent_widget, "settings_store"
+        )
+
+    def _collect_reference(self):
+        """Return the calibration reference entered in the inputs."""
+        try:
+            lifetime = float(
+                self.calibration_widget.lifetime_line_edit_widget.text()
+            )
+        except ValueError:
+            lifetime = None
+        name = self.calibration_widget.calibration_layer_combobox.currentText()
+        return {
+            "reference_layer": name or None,
+            "reference_lifetime": lifetime,
+        }
+
+    def _stage_reference(self, *_):
+        """Keep the entered reference as the primary's unsaved setting."""
+        if self._restoring_settings or not self._has_settings_store():
+            return
+        self.parent_widget.stage_setting(
+            "calibration_reference", self._collect_reference()
+        )
+
+    def _restore_reference_from_primary(self):
+        """Show the reference the primary layer was calibrated (or edited) with.
+
+        Inputs are left alone when the primary layer has no reference, so the
+        values being typed for a new calibration are kept.
+        """
+        if not self._has_settings_store():
+            return
+        primary = self.parent_widget.get_primary_layer()
+        if primary is None:
+            return
+        reference = self.parent_widget.layer_settings(primary).get(
+            "calibration_reference"
+        )
+        if not isinstance(reference, dict):
+            return
+        self._restoring_settings = True
+        try:
+            name = reference.get("reference_layer")
+            combobox = self.calibration_widget.calibration_layer_combobox
+            if name and combobox.findText(name) >= 0:
+                combobox.setCurrentText(name)
+            lifetime = reference.get("reference_lifetime")
+            if lifetime is not None:
+                self.calibration_widget.lifetime_line_edit_widget.setText(
+                    f"{float(lifetime):g}"
+                )
+        finally:
+            self._restoring_settings = False
+
+    def _refresh_settings_note(self):
+        """Caution about the frequencies the selected layers are calibrated at."""
+        messages = []
+        if self._has_settings_store():
+            selected_layers = self.parent_widget.get_selected_layers()
+            # Nothing is calibrated while the button uncalibrates.
+            if selected_layers and not any(
+                self._is_layer_calibrated(layer) for layer in selected_layers
+            ):
+                messages = self.parent_widget.frequency_note_messages(
+                    self.calibration_widget.frequency_input.text()
+                )
+        set_settings_note(self.calibration_widget.settings_note, messages)
 
     def _update_button_state(self):
         """Update button text and state based on current layer's calibration status."""
@@ -420,8 +524,14 @@ class CalibrationWidget(QWidget):
                 result = self._calibrate_layer(layer.name, calibration_name)
                 if result is not False:
                     calibrated_layers.append(layer)
+            if calibrated_layers and self._has_settings_store():
+                self.parent_widget.commit_frequency(
+                    calibrated_layers,
+                    self.calibration_widget.frequency_input.text(),
+                )
 
         self._update_button_state()
+        self._refresh_settings_note()
         self.parent_widget.plot()
 
     def _is_layer_calibrated(self, sample_layer):
@@ -435,6 +545,7 @@ class CalibrationWidget(QWidget):
         calibration_layer = self.viewer.layers[calibration_name]
 
         calibration_was_calibrated = False
+        saved_calibration = None
         if self._is_layer_calibrated(calibration_layer):
             reply = QMessageBox.question(
                 self,
@@ -453,14 +564,24 @@ class CalibrationWidget(QWidget):
 
             if reply == QMessageBox.Yes:
                 calibration_was_calibrated = True
+                # Uncalibrating drops the stored parameters; keep them so the
+                # reference layer can be calibrated again afterwards.
+                saved_calibration = self._calibration_settings(
+                    calibration_layer
+                )
                 self._uncalibrate_layer(calibration_name)
                 calibration_layer = self.viewer.layers[calibration_name]
 
         frequency, lifetime = self._get_and_validate_inputs()
         if frequency is None or lifetime is None:
             if calibration_was_calibrated:
-                self._restore_calibration(calibration_name)
+                self._restore_calibration(calibration_name, saved_calibration)
             return False
+        if self._has_settings_store():
+            # A layer is calibrated at the frequency it was acquired with.
+            frequency = self.parent_widget.layer_frequency(
+                sample_layer, frequency
+            )
 
         sample_phasor_data, harmonics = self._get_phasor_data(sample_layer)
         calibration_phasor_data, calibration_harmonics = self._get_phasor_data(
@@ -472,7 +593,7 @@ class CalibrationWidget(QWidget):
                 "Harmonics in sample and calibration layers do not match"
             )
             if calibration_was_calibrated:
-                self._restore_calibration(calibration_name)
+                self._restore_calibration(calibration_name, saved_calibration)
             return False
 
         phi_zero, mod_zero = self._calculate_calibration_parameters(
@@ -485,22 +606,52 @@ class CalibrationWidget(QWidget):
         )
 
         try:
-            settings = sample_layer.metadata.setdefault("settings", {})
-            settings["calibration_phase"] = phi_zero.tolist()
-            settings["calibration_modulation"] = mod_zero.tolist()
-            settings["calibrated"] = True
+            values = {
+                "calibration_phase": np.asarray(phi_zero).tolist(),
+                "calibration_modulation": np.asarray(mod_zero).tolist(),
+                "calibrated": True,
+                # Everything needed to repeat the calibration.
+                "calibration_reference": {
+                    "reference_layer": calibration_name,
+                    "reference_lifetime": lifetime,
+                    "frequency": frequency,
+                },
+            }
+            if self._has_settings_store():
+                self.parent_widget.commit_analysis_settings(
+                    values, layers=[sample_layer]
+                )
+            else:
+                sample_layer.metadata.setdefault("settings", {}).update(values)
 
             self._apply_phasor_transformation(sample_name, phi_zero, mod_zero)
 
             self._apply_existing_filters_and_thresholds(sample_layer)
         finally:
             if calibration_was_calibrated:
-                self._restore_calibration(calibration_name)
+                self._restore_calibration(calibration_name, saved_calibration)
 
-    def _restore_calibration(self, layer_name):
-        """Restore calibration to a layer using stored parameters."""
+    @staticmethod
+    def _calibration_settings(layer):
+        """Return a copy of the calibration settings stored in *layer*."""
+        settings = layer.metadata.get("settings") or {}
+        return {
+            key: copy.deepcopy(settings[key])
+            for key in _CALIBRATION_KEYS
+            if key in settings
+        }
+
+    def _restore_calibration(self, layer_name, saved=None):
+        """Restore calibration to a layer using stored parameters.
+
+        ``saved`` holds the settings kept before the layer was uncalibrated
+        (see :meth:`_calibration_settings`); uncalibrating removes them from
+        the layer, so without it there is nothing to restore.
+        """
         layer = self.viewer.layers[layer_name]
-        settings = layer.metadata.get("settings", {})
+        settings = layer.metadata.setdefault("settings", {})
+        if saved:
+            settings.update(copy.deepcopy(saved))
 
         phi_zero = settings.get("calibration_phase")
         mod_zero = settings.get("calibration_modulation")
@@ -542,6 +693,7 @@ class CalibrationWidget(QWidget):
         settings["calibrated"] = False
         settings.pop("calibration_phase", None)
         settings.pop("calibration_modulation", None)
+        settings.pop("calibration_reference", None)
 
         self._apply_existing_filters_and_thresholds(sample_layer)
 

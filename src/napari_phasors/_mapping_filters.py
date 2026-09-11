@@ -213,7 +213,16 @@ def get_filters(layer):
     dict instead; it is read as a one-entry stack so an old project keeps the
     filter it was saved with.
     """
-    settings = layer.metadata.get('settings') or {}
+    return filters_from_settings(layer.metadata.get('settings'))
+
+
+def filters_from_settings(settings):
+    """Return the filter stack stored in a ``settings`` dict.
+
+    The layer-free half of :func:`get_filters`, for the reader, which has
+    the settings before any layer exists.
+    """
+    settings = settings or {}
     if MAPPING_FILTERS_KEY in settings:
         return normalize_filters(settings.get(MAPPING_FILTERS_KEY))
     legacy = settings.get(LEGACY_FILTER_KEY)
