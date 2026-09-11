@@ -38,6 +38,8 @@ from napari_phasors.phasor_mapping_tab import (
     _DEFAULT_MESH_RESOLUTION,
     PhasorMappingWidget,
     _resolve_mesh_blur_sigma,
+    compute_lifetime_mesh_field,
+    compute_phasor_mesh_mask,
     draw_phasor_mesh,
 )
 from napari_phasors.plotter import PlotterWidget
@@ -2259,6 +2261,263 @@ def test_phasor_mapping_exceptions(make_viewer_model, qtbot):
     layer.metadata["S"] = np.ones((2, 10, 10))
     layer.metadata["harmonics"] = np.array([999])
     pm.calculate_output_data()  # Should return early
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "Apparent Phase Lifetime",
+        "Apparent Modulation Lifetime",
+        "Normal Lifetime",
+    ],
+)
+def test_lifetime_mesh_field_matches_output_lifetimes(kind):
+    """A mesh cell carries the lifetime the output map gives that phasor."""
+    real = np.array([0.8, 0.5, 0.3, 0.2])
+    imag = np.array([0.3, 0.45, 0.4, 0.1])
+    phase, modulation = phasor_to_polar(real, imag)
+
+    field = compute_lifetime_mesh_field(phase, modulation, kind, 80.0)
+
+    if kind == "Normal Lifetime":
+        expected = phasor_to_normal_lifetime(real, imag, frequency=80.0)
+    else:
+        phase_lt, mod_lt = phasor_to_apparent_lifetime(
+            real, imag, frequency=80.0
+        )
+        expected = phase_lt if kind == "Apparent Phase Lifetime" else mod_lt
+    np.testing.assert_allclose(field, expected, rtol=1e-9)
+
+
+def test_lifetime_mesh_geometry():
+    """Iso-lifetime lines: rays from 0 (phase), circles (modulation) and
+    rays from (0.5, 0) (normal)."""
+    omega = 2 * np.pi * 80.0 * 1e-3
+    # Same phase, different modulation: same apparent phase lifetime.
+    phase = np.array([0.6, 0.6])
+    modulation = np.array([0.3, 0.7])
+    phase_lt = compute_lifetime_mesh_field(
+        phase, modulation, "Apparent Phase Lifetime", 80.0
+    )
+    np.testing.assert_allclose(phase_lt, np.tan(0.6) / omega)
+    # Same modulation, different phase: same apparent modulation lifetime.
+    mod_lt = compute_lifetime_mesh_field(
+        np.array([0.2, 1.2]),
+        np.array([0.5, 0.5]),
+        "Apparent Modulation Lifetime",
+        80.0,
+    )
+    np.testing.assert_allclose(mod_lt, np.sqrt(1 / 0.25 - 1) / omega)
+    # Two points on one ray from (0.5, 0): same normal lifetime.
+    angle = 2.0
+    radii = np.array([0.2, 0.4])
+    real = 0.5 + radii * np.cos(angle)
+    imag = radii * np.sin(angle)
+    normal_lt = compute_lifetime_mesh_field(
+        *phasor_to_polar(real, imag), "Normal Lifetime", 80.0
+    )
+    assert normal_lt[0] == pytest.approx(normal_lt[1])
+
+
+def test_compute_phasor_mesh_mask_lifetime_range():
+    """Cells outside the lifetime range, or with no finite lifetime, are
+    excluded."""
+    p_grid = np.zeros(4)
+    m_grid = np.ones(4)
+    lifetime_grid = np.array([0.5, 2.0, 5.0, np.inf])
+    mask = compute_phasor_mesh_mask(
+        p_grid,
+        m_grid,
+        lifetime_grid=lifetime_grid,
+        lifetime_range=(1.0, 4.0),
+    )
+    np.testing.assert_array_equal(mask, [True, False, True, True])
+
+    # Below the diameter lifetimes mirror those above it; like the phase and
+    # modulation meshes, the semicircle geometry leaves that region empty.
+    below = compute_phasor_mesh_mask(
+        np.array([-0.3, 0.3]),
+        np.ones(2),
+        lifetime_grid=np.array([2.0, 2.0]),
+        lifetime_range=(1.0, 4.0),
+    )
+    np.testing.assert_array_equal(below, [True, False])
+    full_circle = compute_phasor_mesh_mask(
+        np.array([-0.3, 0.3]),
+        np.ones(2),
+        semicircle=False,
+        lifetime_grid=np.array([2.0, 2.0]),
+        lifetime_range=(1.0, 4.0),
+    )
+    np.testing.assert_array_equal(full_circle, [False, False])
+
+
+def test_draw_phasor_mesh_lifetime():
+    """A lifetime mesh needs a frequency and is scaled to its range."""
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    with pytest.raises(ValueError, match="frequency"):
+        draw_phasor_mesh(ax, "Normal Lifetime", resolution=8)
+
+    image = draw_phasor_mesh(
+        ax,
+        "Normal Lifetime",
+        frequency=80.0,
+        lifetime_range=(1.0, 3.0),
+        resolution=16,
+    )
+    assert image.get_clim() == (1.0, 3.0)
+
+
+def _lifetime_mesh_widget(make_viewer_model, lifetime_type):
+    """Return ``(plotter, mapping tab)`` in Lifetime mode at 80 MHz."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    parent.on_image_layer_changed()
+    mapping_widget.output_mode_combobox.setCurrentText("Lifetime")
+    mapping_widget.lifetime_type_combobox.setCurrentText(lifetime_type)
+    mapping_widget.frequency_input.setText("80.0")
+    return parent, mapping_widget
+
+
+def test_lifetime_mesh_overlay_follows_lifetime_type(make_viewer_model, qtbot):
+    """The mesh toggle draws the selected lifetime's mesh in Lifetime mode."""
+    parent, mapping_widget = _lifetime_mesh_widget(
+        make_viewer_model, "Apparent Phase Lifetime"
+    )
+    assert not mapping_widget.mesh_overlay_group.isHidden()
+
+    mapping_widget.mesh_overlay_checkbox.setChecked(True)
+
+    assert not mapping_widget.lifetime_mesh_range_container.isHidden()
+    assert mapping_widget.phase_range_container.isHidden()
+    assert mapping_widget.modulation_range_container.isHidden()
+    phase_mesh = mapping_widget._mesh_overlay_imshow
+    assert phase_mesh is not None
+    lifetime_min, lifetime_max = mapping_widget._lifetime_mesh_range()
+    assert lifetime_max > lifetime_min >= 0
+    assert phase_mesh.get_clim() == (lifetime_min, lifetime_max)
+
+    ax = parent.canvas_widget.axes
+    resolution = mapping_widget._get_mesh_grid_resolution(ax)
+    grid = mapping_widget._get_mesh_polar_grid(ax, resolution)
+
+    mapping_widget.lifetime_type_combobox.setCurrentText("Normal Lifetime")
+    normal_mesh = mapping_widget._mesh_overlay_imshow
+    assert normal_mesh is not None and normal_mesh is not phase_mesh
+    expected = compute_lifetime_mesh_field(
+        grid['p_grid'], grid['m_grid'], "Normal Lifetime", 80.0
+    )
+    shown = np.asarray(normal_mesh.get_array())
+    finite = np.isfinite(expected)
+    np.testing.assert_allclose(shown[finite], expected[finite])
+
+    mapping_widget.mesh_overlay_checkbox.setChecked(False)
+    assert mapping_widget._mesh_overlay_imshow is None
+    assert mapping_widget.lifetime_mesh_range_container.isHidden()
+
+
+def test_lifetime_mesh_requires_frequency(make_viewer_model, qtbot):
+    """Without a frequency the lifetime mesh is not drawn, and says why."""
+    _, mapping_widget = _lifetime_mesh_widget(
+        make_viewer_model, "Apparent Modulation Lifetime"
+    )
+    mapping_widget.frequency_input.setText("")
+    with patch(
+        "napari_phasors.phasor_mapping_tab.show_warning"
+    ) as mock_warning:
+        mapping_widget.mesh_overlay_checkbox.setChecked(True)
+    mock_warning.assert_called_once()
+    assert mapping_widget._mesh_overlay_imshow is None
+
+
+def test_lifetime_mesh_uses_harmonic_frequency(make_viewer_model, qtbot):
+    """The mesh is computed at frequency x harmonic, like the output map."""
+    parent, mapping_widget = _lifetime_mesh_widget(
+        make_viewer_model, "Apparent Phase Lifetime"
+    )
+    parent.harmonic = 2
+    assert mapping_widget._mesh_frequency() == pytest.approx(160.0)
+
+
+def test_lifetime_mesh_range_is_kept_per_lifetime_type(
+    make_viewer_model, qtbot
+):
+    """Each lifetime type remembers its own mesh range in the metadata."""
+    parent, mapping_widget = _lifetime_mesh_widget(
+        make_viewer_model, "Apparent Phase Lifetime"
+    )
+    mapping_widget.mesh_overlay_checkbox.setChecked(True)
+    mapping_widget.lifetime_mesh_range_slider.setValue((100, 300))
+
+    mapping_widget.lifetime_type_combobox.setCurrentText(
+        "Apparent Modulation Lifetime"
+    )
+    mapping_widget.lifetime_mesh_range_slider.setValue((200, 500))
+
+    mapping_widget.lifetime_type_combobox.setCurrentText(
+        "Apparent Phase Lifetime"
+    )
+    assert mapping_widget.lifetime_mesh_range_slider.value() == (100, 300)
+    assert mapping_widget.lifetime_mesh_min_edit.text() == "1.00"
+    assert mapping_widget.lifetime_mesh_max_edit.text() == "3.00"
+
+    layer = parent.viewer.layers[parent.get_primary_layer_name()]
+    ranges = layer.metadata['settings']['phasor_mapping'][
+        'mesh_lifetime_ranges'
+    ]
+    assert ranges == {
+        "Apparent Phase Lifetime": [1.0, 3.0],
+        "Apparent Modulation Lifetime": [2.0, 5.0],
+    }
+
+
+def test_lifetime_mesh_edits_widen_the_slider(make_viewer_model, qtbot):
+    """Typing a lifetime past the slider's end widens it instead of
+    clamping."""
+    _, mapping_widget = _lifetime_mesh_widget(
+        make_viewer_model, "Normal Lifetime"
+    )
+    mapping_widget.mesh_overlay_checkbox.setChecked(True)
+    mapping_widget.lifetime_mesh_min_edit.setText("2.5")
+    mapping_widget.lifetime_mesh_max_edit.setText("90")
+    mapping_widget._on_lifetime_mesh_edits_changed()
+
+    assert mapping_widget._lifetime_mesh_range() == (2.5, 90.0)
+    assert mapping_widget.lifetime_mesh_range_slider.maximum() >= 9000
+    assert mapping_widget._mesh_overlay_imshow.get_clim() == (2.5, 90.0)
+
+
+def test_lifetime_mesh_matches_output_layer_colors(make_viewer_model, qtbot):
+    """After calculating, the mesh uses the output layer's contrast limits
+    and colorbar."""
+    parent, mapping_widget = _lifetime_mesh_widget(
+        make_viewer_model, "Apparent Phase Lifetime"
+    )
+    mapping_widget._on_calculate_lifetime_clicked()
+    mapping_widget.mesh_overlay_checkbox.setChecked(True)
+    mapping_widget.mesh_colorbar_checkbox.setChecked(True)
+
+    output_layer = mapping_widget.metric_layers[0]
+    assert mapping_widget._mesh_overlay_imshow.get_clim() == pytest.approx(
+        tuple(output_layer.contrast_limits)
+    )
+    assert parent.mapping_colorbar is not None
+
+    # Panning/zooming and contrast changes redraw through the debounce timer
+    # (only while the tab is shown, which headless tests must fake).
+    mapping_widget._coloring_paused_by_tab = False
+    output_layer.contrast_limits = (0.5, 2.0)
+    assert mapping_widget._mesh_axes_update_timer.isActive()
+    mapping_widget._apply_mesh_after_axes_change()
+    assert mapping_widget._mesh_overlay_imshow.get_clim() == (0.5, 2.0)
+
+    mapping_widget.mesh_colorbar_checkbox.setChecked(False)
+    assert parent.mapping_colorbar is None
 
 
 def test_resolve_mesh_blur_sigma_zero_display_px_fallback():

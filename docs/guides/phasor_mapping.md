@@ -52,6 +52,40 @@ phasor plot and the image.
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/phase%20modulation.mp4" type="video/mp4">
 </video>
 
+## Mesh overlay
+
+The **Mesh overlay** section draws a colored mesh of the selected quantity
+behind the phasor data. It works in every mode, so you can read off a value
+anywhere on the plot and compare it with the image colors. Turn it on with
+**Show mesh overlay**. The controls that follow are:
+
+| Control | Purpose |
+|---|---|
+| **Transparency** | Transparency of the mesh. |
+| **Clip mesh to semicircle** | Only shows the mesh inside the universal semicircle (semicircle plot geometry only). |
+| **Show colorbar** | Adds a colorbar for the mesh next to the phasor plot. |
+| **Phase range (rad)** / **Modulation range** | *Phase and Modulation modes.* Restrict the mesh to a band of phase angles and/or modulations. |
+| **Lifetime range (ns)** | *Lifetime mode.* Restricts the mesh to a band of lifetimes of the selected lifetime type. |
+
+**Auto** fits a range to the plotted data. Each range is stored with the
+layer. In Lifetime mode every lifetime type keeps its own range.
+
+In Lifetime mode the mesh follows the selected lifetime type and needs the
+**Frequency (MHz)**. It uses the displayed harmonic, just like the output map.
+Lines of constant lifetime are:
+
+- **Apparent Phase Lifetime**: rays from the origin (0, 0). This is the phase
+  mesh in nanoseconds, so a lifetime range draws a wedge.
+- **Apparent Modulation Lifetime**: circles centered on the origin. This is
+  the modulation mesh in nanoseconds, so a lifetime range draws a ring.
+- **Normal Lifetime**: rays from the semicircle center (0.5, 0). Each ray
+  meets the universal semicircle at the single-exponential lifetime it stands
+  for, so a lifetime range draws a wedge centered at (0.5, 0).
+
+Once the output map is calculated, the lifetime mesh uses the map's colormap
+and contrast limits. A mesh cell and a pixel with the same lifetime then share
+a color.
+
 ## Filtering by lifetime, phase or modulation
 
 The **Filter** section works the way the **Filter** tab's intensity threshold
