@@ -2607,6 +2607,27 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         mesh_container.setLayout(mesh_row)
         top_form.addRow("Mesh overlay:", mesh_container)
 
+        # One PNG per checked lifetime. Lines of constant lifetime are rays
+        # from the origin (apparent phase), circles around it (apparent
+        # modulation) and rays from (0.5, 0) (normal).
+        self.mapping_mesh_lifetime_checkboxes = {}
+        lifetime_mesh_row = QHBoxLayout()
+        for kind, label in (
+            ("Apparent Phase Lifetime", "Apparent phase"),
+            ("Apparent Modulation Lifetime", "Apparent modulation"),
+            ("Normal Lifetime", "Normal"),
+        ):
+            checkbox = QCheckBox(label)
+            checkbox.setToolTip(
+                f"Draw a {kind} mesh, in ns (needs the frequency)."
+            )
+            self.mapping_mesh_lifetime_checkboxes[kind] = checkbox
+            lifetime_mesh_row.addWidget(checkbox)
+        lifetime_mesh_row.addStretch()
+        lifetime_mesh_container = QWidget()
+        lifetime_mesh_container.setLayout(lifetime_mesh_row)
+        top_form.addRow("Lifetime mesh:", lifetime_mesh_container)
+
         self.mapping_mesh_colormap_combo = self._make_colormap_combo("jet")
         top_form.addRow(
             "Mesh/color colormap:", self.mapping_mesh_colormap_combo
@@ -2677,13 +2698,32 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         mod_row.addStretch()
         layout.addLayout(mod_row)
 
+        self.mapping_lifetime_min_spin = QDoubleSpinBox()
+        self.mapping_lifetime_min_spin.setRange(0.0, 1000.0)
+        self.mapping_lifetime_min_spin.setDecimals(2)
+        self.mapping_lifetime_min_spin.setSingleStep(0.1)
+        self.mapping_lifetime_min_spin.setValue(0.0)
+        self.mapping_lifetime_max_spin = QDoubleSpinBox()
+        self.mapping_lifetime_max_spin.setRange(0.0, 1000.0)
+        self.mapping_lifetime_max_spin.setDecimals(2)
+        self.mapping_lifetime_max_spin.setSingleStep(0.1)
+        self.mapping_lifetime_max_spin.setValue(10.0)
+        lifetime_row = QHBoxLayout()
+        lifetime_row.addWidget(QLabel("Lifetime range (ns):"))
+        lifetime_row.addWidget(self.mapping_lifetime_min_spin)
+        lifetime_row.addWidget(QLabel("to"))
+        lifetime_row.addWidget(self.mapping_lifetime_max_spin)
+        lifetime_row.addStretch()
+        layout.addLayout(lifetime_row)
+
         self._on_mapping_range_auto_toggled(True)
 
         note = QLabel(
             "When 'Export phasor plot' is on, one PNG is exported per "
             "selected mesh (and a base plot), coloring points by phase or "
-            "modulation. The phase/modulation ranges restrict which mesh "
-            "cells are shown."
+            "modulation. The phase/modulation/lifetime ranges restrict which "
+            "mesh cells are shown. Lifetime meshes use the frequency above "
+            "times each plot's harmonic."
         )
         note.setWordWrap(True)
         note.setStyleSheet("color: gray; font-size: 11px;")
@@ -2697,11 +2737,38 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             self.mapping_phase_max_spin,
             self.mapping_mod_min_spin,
             self.mapping_mod_max_spin,
+            self.mapping_lifetime_min_spin,
+            self.mapping_lifetime_max_spin,
         ):
             spin.setEnabled(not checked)
 
-    def _resolve_mesh_ranges(self):
-        """Return ``(phase_range, modulation_range)`` for the mapping mesh."""
+    def _checked_lifetime_meshes(self):
+        """Return the lifetime types whose mesh is checked."""
+        return [
+            kind
+            for kind, checkbox in self.mapping_mesh_lifetime_checkboxes.items()
+            if checkbox.isChecked()
+        ]
+
+    def _mapping_mesh_frequency(self):
+        """Return the mapping frequency times its harmonic (MHz), or None."""
+        try:
+            frequency = float(self.mapping_frequency_spin.text())
+        except ValueError:
+            return None
+        if not np.isfinite(frequency) or frequency <= 0:
+            return None
+        return frequency * self.mapping_harmonic_spin.value()
+
+    def _resolve_mesh_ranges(self, lifetime_kinds=()):
+        """Return ``(phase_range, modulation_range, lifetime_ranges)``.
+
+        ``lifetime_ranges`` maps each of *lifetime_kinds* to its ``(min,
+        max)`` range in ns. With Auto on, every range is pooled across all
+        files; a quantity the data gives no range for keeps the manual one.
+        """
+        from .phasor_mapping_tab import lifetime_mesh_range_from_phasors
+
         manual_phase = (
             self.mapping_phase_min_spin.value(),
             self.mapping_phase_max_spin.value(),
@@ -2710,13 +2777,25 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             self.mapping_mod_min_spin.value(),
             self.mapping_mod_max_spin.value(),
         )
+        manual_lifetime = (
+            self.mapping_lifetime_min_spin.value(),
+            self.mapping_lifetime_max_spin.value(),
+        )
+        lifetime_ranges = dict.fromkeys(lifetime_kinds, manual_lifetime)
         if not self.mapping_range_auto_checkbox.isChecked():
-            return manual_phase, manual_mod
+            return manual_phase, manual_mod, lifetime_ranges
         coords = self._gather_all_phasor_coords(
             self.mapping_harmonic_spin.value()
         )
         if coords is None:
-            return manual_phase, manual_mod
+            return manual_phase, manual_mod, lifetime_ranges
+        frequency = self._mapping_mesh_frequency()
+        if frequency is not None:
+            for kind in lifetime_kinds:
+                lifetime_ranges[kind] = (
+                    lifetime_mesh_range_from_phasors(kind, *coords, frequency)
+                    or manual_lifetime
+                )
         g_flat, s_flat = coords
         with np.errstate(invalid="ignore"):
             phase, modulation = phasor_to_polar(g_flat, s_flat)
@@ -2732,7 +2811,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             if modulation.size
             else manual_mod
         )
-        return phase_range, mod_range
+        return phase_range, mod_range, lifetime_ranges
 
     def _auto_mapping_ranges(self):
         """Set the mesh phase/modulation ranges from *all* scanned files."""
@@ -2756,6 +2835,22 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
         if modulation.size:
             self.mapping_mod_min_spin.setValue(float(np.nanmin(modulation)))
             self.mapping_mod_max_spin.setValue(float(np.nanmax(modulation)))
+
+        # One manual lifetime range serves every checked lifetime mesh, so it
+        # spans all of them.
+        from .phasor_mapping_tab import lifetime_mesh_range_from_phasors
+
+        frequency = self._mapping_mesh_frequency()
+        if frequency is None:
+            return
+        ranges = [
+            lifetime_mesh_range_from_phasors(kind, g_flat, s_flat, frequency)
+            for kind in self._checked_lifetime_meshes()
+        ]
+        ranges = [r for r in ranges if r is not None]
+        if ranges:
+            self.mapping_lifetime_min_spin.setValue(min(r[0] for r in ranges))
+            self.mapping_lifetime_max_spin.setValue(max(r[1] for r in ranges))
 
     def _gather_all_phasor_coords(self, harmonic):
         """Return pooled ``(G, S)`` for ``harmonic`` across every scanned file."""
@@ -4820,7 +4915,11 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             meshes.append("Phase")
         if self.mapping_mesh_mod_checkbox.isChecked():
             meshes.append("Modulation")
-        phase_range, mod_range = self._resolve_mesh_ranges()
+        lifetime_meshes = self._checked_lifetime_meshes()
+        meshes.extend(lifetime_meshes)
+        phase_range, mod_range, lifetime_ranges = self._resolve_mesh_ranges(
+            lifetime_meshes
+        )
         return {
             "output_types": output_types,
             "frequency": float(self.mapping_frequency_spin.text() or 0.0),
@@ -4833,6 +4932,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "mesh_alpha": 1.0 - self.mapping_mesh_transparency_spin.value(),
             "mesh_phase_range": phase_range,
             "mesh_modulation_range": mod_range,
+            "mesh_lifetime_ranges": lifetime_ranges,
             "mesh_clip_semicircle": (
                 self.mapping_mesh_clip_checkbox.isChecked()
             ),
@@ -6271,6 +6371,8 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             for harmonic, key, real, imag in self._tab_phasor_arrays(
                 aggregate, suffix, streaming
             ):
+                # Idempotent: only re-stamps the plotted harmonic.
+                overlay = _overlay_for_harmonic(overlay, harmonic)
                 multi = len(harmonic_keys.get(harmonic, [])) > 1
                 if multi:
                     name = group_meta.get(key, (str(key), None))[0]
@@ -6307,6 +6409,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                         dpi=self._export_dpi(),
                     )
             for harmonic, group_items in grouped_by_harmonic.items():
+                overlay = _overlay_for_harmonic(overlay, harmonic)
                 all_path = os.path.join(
                     target_dir, f"combined_{suffix}_all_groups_H{harmonic}.png"
                 )
@@ -6721,7 +6824,12 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
             "mesh_alpha": mapping.get("mesh_alpha", 0.45),
             "mesh_phase_range": mapping.get("mesh_phase_range"),
             "mesh_modulation_range": mapping.get("mesh_modulation_range"),
+            "mesh_lifetime_ranges": mapping.get("mesh_lifetime_ranges") or {},
             "mesh_clip_semicircle": mapping.get("mesh_clip_semicircle"),
+            # Lifetime meshes: the plots rescale ``mesh_harmonic`` to their
+            # own harmonic (see ``_overlay_for_harmonic``).
+            "mesh_frequency": mapping.get("frequency"),
+            "mesh_harmonic": mapping.get("harmonic", 1),
         }
         jobs = [
             {
@@ -6730,12 +6838,16 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 "overlay": base_overlay,
             }
         ]
+        has_frequency = (mapping.get("frequency") or 0) > 0
         for mesh in mapping.get("meshes", []):
+            if mesh in LIFETIME_OUTPUT_TYPES and not has_frequency:
+                continue
             overlay = dict(base_overlay)
             overlay["mesh"] = mesh
+            slug = mesh.lower().replace(" ", "_")
             jobs.append(
                 {
-                    "suffix": f"mapping_phasor_{mesh.lower()}_mesh",
+                    "suffix": f"mapping_phasor_{slug}_mesh",
                     "tab": "phasor_mapping",
                     "overlay": overlay,
                 }
@@ -6757,7 +6869,7 @@ class BatchAnalysisWidget(PopoutWindowMixin, QWidget):
                 _, center_real, center_imag = phasor_center(mean, real, imag)
                 center = (float(center_real), float(center_imag))
             plot_overlay = self._components_overlay_with_fraction_data(
-                overlay, real, imag
+                _overlay_for_harmonic(overlay, harmonic), real, imag
             )
             _save_phasor_plot_png(
                 real,
@@ -7308,17 +7420,7 @@ def _save_phasor_plot_png(
 
     # Optional phase/modulation mesh field behind the data.
     if mapping_overlay and mapping_overlay.get("mesh"):
-        _draw_phase_modulation_mesh(
-            plot,
-            mapping_overlay["mesh"],
-            mapping_overlay.get("mesh_colormap") or "jet",
-            mapping_overlay.get("mesh_alpha", 0.45),
-            display.get("semi_circle", True),
-            phase_range=mapping_overlay.get("mesh_phase_range"),
-            modulation_range=mapping_overlay.get("mesh_modulation_range"),
-            clip_semicircle=mapping_overlay.get("mesh_clip_semicircle"),
-            dpi=dpi,
-        )
+        _draw_mapping_overlay_mesh(plot, mapping_overlay, display, dpi)
 
     plot_type = display.get("plot_type", "Histogram")
 
@@ -7470,14 +7572,17 @@ def _draw_phase_modulation_mesh(
     modulation_range=None,
     clip_semicircle=None,
     dpi=300,
+    frequency=None,
+    lifetime_range=None,
 ):
-    """Draw a phase or modulation colored field behind the phasor data.
+    """Draw a phase, modulation or lifetime colored field behind the data.
 
     Delegates to :func:`napari_phasors.phasor_mapping_tab.draw_phasor_mesh` so
     the exported mesh matches the interactive Phasor Mapping tab exactly
     (smoothed alpha edges, correct color scaling and a 1:1 data aspect). The
-    optional phase/modulation ranges restrict which cells are shown, mirroring
-    the interactive range sliders. ``clip_semicircle`` defaults to the plot
+    optional phase/modulation/lifetime ranges restrict which cells are shown,
+    mirroring the interactive range sliders; a lifetime ``kind`` needs the
+    effective ``frequency`` (MHz). ``clip_semicircle`` defaults to the plot
     geometry (clip in semicircle mode).
     """
     from .phasor_mapping_tab import draw_phasor_mesh
@@ -7495,6 +7600,58 @@ def _draw_phase_modulation_mesh(
         modulation_range=modulation_range,
         clip_semicircle=clip_semicircle,
         resolution=1000,
+        frequency=frequency,
+        lifetime_range=lifetime_range,
+    )
+
+
+def _overlay_for_harmonic(overlay, harmonic):
+    """Return *overlay* set up for a phasor plot of *harmonic*.
+
+    A lifetime mesh depends on the frequency, and a plot of harmonic ``n``
+    shows lifetimes at ``n`` times the laser frequency.
+    """
+    if not overlay or overlay.get("kind") != "mapping":
+        return overlay
+    return {**overlay, "mesh_harmonic": int(harmonic)}
+
+
+def _draw_mapping_overlay_mesh(plot, mapping_overlay, display, dpi):
+    """Draw the mesh a mapping overlay asks for behind the phasor data.
+
+    A lifetime mesh is drawn at ``mesh_frequency`` times ``mesh_harmonic``
+    and restricted by its lifetime range alone; without a frequency it is
+    skipped.
+    """
+    from .phasor_mapping_tab import lifetime_mesh_upper_bound
+
+    kind = mapping_overlay["mesh"]
+    phase_range = mapping_overlay.get("mesh_phase_range")
+    modulation_range = mapping_overlay.get("mesh_modulation_range")
+    frequency = lifetime_range = None
+    if kind in LIFETIME_OUTPUT_TYPES:
+        base_frequency = mapping_overlay.get("mesh_frequency") or 0
+        if base_frequency <= 0:
+            return
+        frequency = base_frequency * (
+            mapping_overlay.get("mesh_harmonic") or 1
+        )
+        lifetime_range = (
+            mapping_overlay.get("mesh_lifetime_ranges") or {}
+        ).get(kind) or (0.0, lifetime_mesh_upper_bound(frequency))
+        phase_range = modulation_range = None
+    _draw_phase_modulation_mesh(
+        plot,
+        kind,
+        mapping_overlay.get("mesh_colormap") or "jet",
+        mapping_overlay.get("mesh_alpha", 0.45),
+        display.get("semi_circle", True),
+        phase_range=phase_range,
+        modulation_range=modulation_range,
+        clip_semicircle=mapping_overlay.get("mesh_clip_semicircle"),
+        dpi=dpi,
+        frequency=frequency,
+        lifetime_range=lifetime_range,
     )
 
 
@@ -7785,17 +7942,7 @@ def _save_grouped_overlay_plot(
         overlay if overlay and overlay.get("kind") == "mapping" else None
     )
     if mapping_overlay and mapping_overlay.get("mesh"):
-        _draw_phase_modulation_mesh(
-            plot,
-            mapping_overlay["mesh"],
-            mapping_overlay.get("mesh_colormap") or "jet",
-            mapping_overlay.get("mesh_alpha", 0.45),
-            display.get("semi_circle", True),
-            phase_range=mapping_overlay.get("mesh_phase_range"),
-            modulation_range=mapping_overlay.get("mesh_modulation_range"),
-            clip_semicircle=mapping_overlay.get("mesh_clip_semicircle"),
-            dpi=dpi,
-        )
+        _draw_mapping_overlay_mesh(plot, mapping_overlay, display, dpi)
 
     marker_size = display.get("marker_size", 5)
     alpha = display.get("marker_alpha", 0.3)
@@ -7881,17 +8028,7 @@ def _save_combined_contour(
         overlay if overlay and overlay.get("kind") == "mapping" else None
     )
     if mapping_overlay and mapping_overlay.get("mesh"):
-        _draw_phase_modulation_mesh(
-            plot,
-            mapping_overlay["mesh"],
-            mapping_overlay.get("mesh_colormap") or "jet",
-            mapping_overlay.get("mesh_alpha", 0.45),
-            display.get("semi_circle", True),
-            phase_range=mapping_overlay.get("mesh_phase_range"),
-            modulation_range=mapping_overlay.get("mesh_modulation_range"),
-            clip_semicircle=mapping_overlay.get("mesh_clip_semicircle"),
-            dpi=dpi,
-        )
+        _draw_mapping_overlay_mesh(plot, mapping_overlay, display, dpi)
 
     handles = []
     centers = centers or {}

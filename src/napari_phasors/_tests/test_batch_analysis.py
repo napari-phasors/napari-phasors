@@ -935,6 +935,117 @@ def test_mapping_mesh_ranges_collected(qtbot, make_viewer_model):
         assert job["overlay"]["mesh_clip_semicircle"] is False
 
 
+def test_mapping_lifetime_mesh_plot_jobs(qtbot, make_viewer_model):
+    """Checked lifetime meshes become mesh plot jobs with their range."""
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+    widget.mapping_group.setChecked(True)
+    widget.mapping_plot_toggle.setChecked(True)
+    widget.mapping_range_auto_checkbox.setChecked(False)
+    assert widget.mapping_lifetime_min_spin.isEnabled()
+    widget.mapping_mesh_lifetime_checkboxes["Normal Lifetime"].setChecked(True)
+    widget.mapping_lifetime_min_spin.setValue(1.5)
+    widget.mapping_lifetime_max_spin.setValue(4.0)
+    widget.mapping_frequency_spin.setText("80")
+    widget.mapping_harmonic_spin.setValue(1)
+
+    mapping = widget._collect_mapping()
+    assert "Normal Lifetime" in mapping["meshes"]
+    assert mapping["mesh_lifetime_ranges"] == {"Normal Lifetime": (1.5, 4.0)}
+
+    jobs = widget._collect_plot_jobs(widget.build_pipeline([1, 2]))
+    job = next(
+        j for j in jobs if j["suffix"] == "mapping_phasor_normal_lifetime_mesh"
+    )
+    overlay = job["overlay"]
+    assert overlay["mesh"] == "Normal Lifetime"
+    assert overlay["mesh_frequency"] == 80.0
+    assert overlay["mesh_lifetime_ranges"] == {"Normal Lifetime": (1.5, 4.0)}
+
+    # Without a frequency there is no lifetime to draw, so no mesh plot.
+    widget.mapping_frequency_spin.setText("")
+    jobs = widget._collect_plot_jobs(widget.build_pipeline([1, 2]))
+    assert "mapping_phasor_normal_lifetime_mesh" not in [
+        j["suffix"] for j in jobs
+    ]
+
+
+def test_lifetime_mesh_uses_each_plots_harmonic():
+    """A harmonic-n plot draws its lifetime mesh at n times the frequency."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from phasorpy.plot import PhasorPlot
+
+    from napari_phasors._batch_analysis import (
+        _draw_mapping_overlay_mesh,
+        _overlay_for_harmonic,
+    )
+
+    overlay = {
+        "kind": "mapping",
+        "mesh": "Apparent Phase Lifetime",
+        "mesh_frequency": 80.0,
+        "mesh_harmonic": 1,
+        "mesh_lifetime_ranges": {"Apparent Phase Lifetime": (1.0, 3.0)},
+        "mesh_phase_range": (0.0, 0.2),
+        "mesh_modulation_range": (0.0, 0.5),
+    }
+    assert _overlay_for_harmonic(overlay, 2)["mesh_harmonic"] == 2
+    assert overlay["mesh_harmonic"] == 1  # the job's overlay is untouched
+    assert _overlay_for_harmonic(None, 2) is None
+
+    plot = PhasorPlot()
+    with patch("napari_phasors.phasor_mapping_tab.draw_phasor_mesh") as draw:
+        _draw_mapping_overlay_mesh(
+            plot, _overlay_for_harmonic(overlay, 2), {}, dpi=72
+        )
+    kwargs = draw.call_args.kwargs
+    assert kwargs["frequency"] == 160.0
+    assert kwargs["lifetime_range"] == (1.0, 3.0)
+    # A lifetime mesh is restricted by its lifetime range alone.
+    assert kwargs["phase_range"] is None
+    assert kwargs["modulation_range"] is None
+
+    # No frequency: nothing is drawn.
+    with patch("napari_phasors.phasor_mapping_tab.draw_phasor_mesh") as draw:
+        _draw_mapping_overlay_mesh(
+            plot, {**overlay, "mesh_frequency": 0}, {}, dpi=72
+        )
+    draw.assert_not_called()
+
+
+def test_lifetime_mesh_phasor_plot_png(tmp_path):
+    """A phasor plot with a lifetime mesh overlay renders to a PNG."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from napari_phasors._batch_analysis import _save_phasor_plot_png
+
+    rng = np.random.default_rng(0)
+    real = rng.uniform(0.3, 0.8, 200)
+    imag = rng.uniform(0.2, 0.45, 200)
+    path = tmp_path / "mesh.png"
+    _save_phasor_plot_png(
+        real,
+        imag,
+        {"semi_circle": True, "plot_type": "Scatter"},
+        {
+            "kind": "mapping",
+            "color_by": "None",
+            "mesh": "Apparent Modulation Lifetime",
+            "mesh_frequency": 80.0,
+            "mesh_harmonic": 1,
+            "mesh_lifetime_ranges": {
+                "Apparent Modulation Lifetime": (1.0, 4.0)
+            },
+        },
+        str(path),
+        dpi=72,
+    )
+    assert path.exists() and path.stat().st_size > 0
+
+
 def test_draw_phasor_mesh_keeps_square_aspect():
     """The shared mesh helper restores a 1:1 data aspect (no distortion)."""
     import matplotlib
@@ -2541,8 +2652,28 @@ def test_auto_mapping_ranges_uses_all_files(
     g, s = coords
     assert g.size > 0 and s.size > 0
 
+    # Pooled lifetime ranges, one per checked lifetime mesh.
+    widget.mapping_frequency_spin.setText("80")
+    _, _, lifetime_ranges = widget._resolve_mesh_ranges(
+        ["Apparent Phase Lifetime", "Normal Lifetime"]
+    )
+    assert set(lifetime_ranges) == {
+        "Apparent Phase Lifetime",
+        "Normal Lifetime",
+    }
+    for low, high in lifetime_ranges.values():
+        assert 0.0 <= low <= high <= 25.0  # capped at two 80 MHz periods
+
     # The Auto button must not raise (regression: it used self.layer_combo).
+    widget.mapping_mesh_lifetime_checkboxes["Normal Lifetime"].setChecked(True)
     widget._auto_mapping_ranges()
+    assert (
+        widget.mapping_lifetime_max_spin.value()
+        >= widget.mapping_lifetime_min_spin.value()
+    )
+    assert widget.mapping_lifetime_max_spin.value() == pytest.approx(
+        lifetime_ranges["Normal Lifetime"][1], abs=0.01
+    )
     assert (
         widget.mapping_phase_max_spin.value()
         >= widget.mapping_phase_min_spin.value()
