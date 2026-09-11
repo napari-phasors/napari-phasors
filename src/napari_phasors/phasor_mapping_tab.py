@@ -114,6 +114,35 @@ def compute_lifetime_mesh_field(p_grid, m_grid, kind, frequency):
     return _phasor_to_lifetime(kind, real, imag, frequency)
 
 
+def lifetime_mesh_upper_bound(frequency):
+    """Return the largest lifetime (ns) a lifetime mesh range defaults to.
+
+    Two modulation periods at *frequency* (MHz): the same bound the output
+    range falls back to when lifetimes run away (the apparent phase lifetime
+    diverges as G approaches 0).
+    """
+    return 2e3 / frequency
+
+
+def lifetime_mesh_range_from_phasors(kind, real, imag, frequency):
+    """Return the ``(min, max)`` range in ns of the *kind* lifetimes of data.
+
+    Non-physical (negative or non-finite) lifetimes are ignored and both ends
+    are capped at :func:`lifetime_mesh_upper_bound`. Returns ``None`` when no
+    lifetime is valid.
+    """
+    upper = lifetime_mesh_upper_bound(frequency)
+    lifetimes = np.asarray(
+        _phasor_to_lifetime(kind, real, imag, frequency), dtype=float
+    )
+    lifetimes = lifetimes[np.isfinite(lifetimes) & (lifetimes >= 0)]
+    if not lifetimes.size:
+        return None
+    return min(float(lifetimes.min()), upper), min(
+        float(lifetimes.max()), upper
+    )
+
+
 def compute_phasor_mesh_mask(
     p_grid,
     m_grid,
@@ -1456,6 +1485,7 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         """Fit the displayed mesh range(s) to the data and redraw the mesh."""
         if self._get_selected_output_type() in LIFETIME_OUTPUT_TYPES:
             self._initialize_lifetime_mesh_range_from_current_data()
+            self._sync_lifetime_mesh_range_to_histogram()
         else:
             self._initialize_mesh_ranges_from_current_data()
         self._refresh_mesh_overlay_if_needed()
@@ -3863,15 +3893,6 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         harmonic = getattr(self.parent_widget, 'harmonic', 1) or 1
         return frequency * harmonic
 
-    @staticmethod
-    def _lifetime_mesh_slider_max(frequency):
-        """Return the lifetime slider's default end (ns): two periods.
-
-        The same bound the output range falls back to when lifetimes run
-        away (the apparent phase lifetime diverges as G approaches 0).
-        """
-        return 2e3 / frequency
-
     def _lifetime_mesh_range(self):
         """Return the lifetime mesh ``(min, max)`` range in ns."""
         min_i, max_i = self.lifetime_mesh_range_slider.value()
@@ -3924,18 +3945,14 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             or output_type not in LIFETIME_OUTPUT_TYPES
         ):
             return
-        slider_max = self._lifetime_mesh_slider_max(frequency)
-        lifetime_min, lifetime_max = 0.0, slider_max
+        slider_max = lifetime_mesh_upper_bound(frequency)
+        lifetime_range = None
         features = pw.get_merged_features()
         if features is not None:
-            lifetimes = np.asarray(
-                _phasor_to_lifetime(output_type, *features, frequency),
-                dtype=float,
+            lifetime_range = lifetime_mesh_range_from_phasors(
+                output_type, *features, frequency
             )
-            lifetimes = lifetimes[np.isfinite(lifetimes) & (lifetimes >= 0)]
-            if lifetimes.size:
-                lifetime_min = min(float(lifetimes.min()), slider_max)
-                lifetime_max = min(float(lifetimes.max()), slider_max)
+        lifetime_min, lifetime_max = lifetime_range or (0.0, slider_max)
         self._set_lifetime_mesh_range(lifetime_min, lifetime_max, slider_max)
         self._persist_lifetime_mesh_range_to_metadata()
 
@@ -3957,7 +3974,7 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
             return False
         frequency = self._mesh_frequency()
         slider_max = (
-            self._lifetime_mesh_slider_max(frequency)
+            lifetime_mesh_upper_bound(frequency)
             if frequency is not None
             else None
         )
@@ -3995,6 +4012,7 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         factor = self.lifetime_mesh_range_factor
         self.lifetime_mesh_min_edit.setText(f"{value[0] / factor:.2f}")
         self.lifetime_mesh_max_edit.setText(f"{value[1] / factor:.2f}")
+        self._sync_lifetime_mesh_range_to_histogram()
         self._persist_lifetime_mesh_range_to_metadata()
         self._refresh_mesh_overlay_if_needed()
 
@@ -4010,8 +4028,19 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
         # A value typed past the slider's end widens it rather than being
         # clamped to it.
         self._set_lifetime_mesh_range(lifetime_min, lifetime_max)
+        self._sync_lifetime_mesh_range_to_histogram()
         self._persist_lifetime_mesh_range_to_metadata()
         self._refresh_mesh_overlay_if_needed()
+
+    def _sync_lifetime_mesh_range_to_histogram(self):
+        """Apply the lifetime mesh range to the histogram and output maps.
+
+        The two ranges are linked, as the phase mesh range and the histogram
+        are in Phase mode: the mesh band is the displayed lifetime range, and
+        ``_update_tab_sliders_from_range`` carries the reverse direction.
+        """
+        if self._get_selected_output_type() in LIFETIME_OUTPUT_TYPES:
+            self._sync_range_to_histogram(*self._lifetime_mesh_range())
 
     def _lifetime_mesh_colormap(self, output_type):
         """Return ``(cmap, vmin, vmax)`` for the *output_type* lifetime mesh.
@@ -4161,5 +4190,9 @@ class PhasorMappingWidget(AutoUpdateMixin, QWidget):
                 self.modulation_range_slider.setValue((min_v, max_v))
                 self.modulation_min_edit.setText(f"{min_f:.2f}")
                 self.modulation_max_edit.setText(f"{max_f:.2f}")
+            elif output_type in LIFETIME_OUTPUT_TYPES:
+                self._set_lifetime_mesh_range(min_f, max_f)
         finally:
             self._updating_settings = False
+        if output_type in LIFETIME_OUTPUT_TYPES:
+            self._persist_lifetime_mesh_range_to_metadata()

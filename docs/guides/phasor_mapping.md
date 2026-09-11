@@ -82,10 +82,6 @@ Lines of constant lifetime are:
   meets the universal semicircle at the single-exponential lifetime it stands
   for, so a lifetime range draws a wedge centered at (0.5, 0).
 
-Once the output map is calculated, the lifetime mesh uses the map's colormap
-and contrast limits. A mesh cell and a pixel with the same lifetime then share
-a color.
-
 ## Filtering by lifetime, phase or modulation
 
 The **Filter** section works the way the **Filter** tab's intensity threshold

@@ -291,12 +291,14 @@ per file. See {doc}`phasor_mapping` for the interactive-widget equivalent.
 |---|---|
 | **Color phasor by** | Colors the exported phasor plot's points by **None**, **Phase**, or **Modulation**. |
 | **Mesh overlay** | Draws a **Phase mesh** and/or **Modulation mesh** grid over the phasor plot. |
+| **Lifetime mesh** | Draws an **Apparent phase**, **Apparent modulation** and/or **Normal** lifetime mesh (ns), one PNG each. Needs the **Frequency (MHz)**, and each plot uses that frequency times its own harmonic. See {doc}`phasor_mapping` for the mesh geometry. |
 | **Mesh/color colormap** | Colormap used for the mesh and/or point coloring. |
 | **Mesh transparency** | Transparency of the mesh overlay. |
 | **Clip mesh to semicircle** | Only shows the mesh inside the universal semicircle (semicircle plot geometry only). |
-| **Range** | **Auto (range from all files)** computes a single phase/modulation range pooled across every file at export; uncheck to set fixed ranges manually. |
+| **Range** | **Auto (range from all files)** computes a single phase/modulation range, and one range per lifetime mesh, pooled across every file at export; uncheck to set fixed ranges manually. |
 | **Phase range (rad)** | Manual minimum/maximum phase for the mesh, when Auto is off. |
 | **Modulation range** | Manual minimum/maximum modulation for the mesh, when Auto is off. |
+| **Lifetime range (ns)** | Manual minimum/maximum lifetime for every lifetime mesh, when Auto is off. |
 
 ### Outputs
 

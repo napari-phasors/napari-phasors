@@ -2520,6 +2520,36 @@ def test_lifetime_mesh_matches_output_layer_colors(make_viewer_model, qtbot):
     assert parent.mapping_colorbar is None
 
 
+def test_lifetime_mesh_range_is_linked_to_histogram(make_viewer_model, qtbot):
+    """The lifetime mesh range and the histogram range move together."""
+    _, mapping_widget = _lifetime_mesh_widget(
+        make_viewer_model, "Apparent Modulation Lifetime"
+    )
+    mapping_widget._on_calculate_lifetime_clicked()
+    mapping_widget.mesh_overlay_checkbox.setChecked(True)
+
+    # Right after the calculation the mesh shows the displayed range.
+    hist_min, hist_max = mapping_widget.lifetime_range_slider.value()
+    factor = mapping_widget.lifetime_range_factor
+    assert mapping_widget._lifetime_mesh_range() == pytest.approx(
+        (hist_min / factor, hist_max / factor), abs=0.01
+    )
+
+    # Histogram -> mesh.
+    mapping_widget._on_range_changed_from_histogram(1.0, 3.0)
+    assert mapping_widget.lifetime_mesh_range_slider.value() == (100, 300)
+    assert mapping_widget.lifetime_mesh_max_edit.text() == "3.00"
+
+    # Mesh -> histogram and output maps.
+    mapping_widget.lifetime_mesh_range_slider.setValue((150, 250))
+    assert mapping_widget.lifetime_range_slider.value() == (1500, 2500)
+    output_layer = mapping_widget.metric_layers[0]
+    assert tuple(output_layer.contrast_limits) == pytest.approx((1.5, 2.5))
+    assert mapping_widget._mesh_overlay_imshow.get_clim() == pytest.approx(
+        (1.5, 2.5)
+    )
+
+
 def test_resolve_mesh_blur_sigma_zero_display_px_fallback():
     """_resolve_mesh_blur_sigma falls back to the default-resolution ratio
     when the axes report a zero-sized (or unavailable) window extent."""
