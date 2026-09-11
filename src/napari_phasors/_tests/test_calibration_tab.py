@@ -697,10 +697,12 @@ def test_calibration_with_already_calibrated_calibration_layer(
 
     # Verify sample was calibrated
     assert sample_layer.metadata["settings"]["calibrated"] is True
-    # The current implementation of calibration_tab.py pops the calibration_phase
-    # during uncalibration, so _restore_calibration actually silently fails.
-    # We update the test to reflect the current actual behavior.
-    assert calibration_layer.metadata["settings"]["calibrated"] is False
+    # The reference layer was only uncalibrated to be used as reference; it
+    # gets its own calibration back afterwards.
+    settings = calibration_layer.metadata["settings"]
+    assert settings["calibrated"] is True
+    assert settings["calibration_phase"] == [0.1]
+    assert settings["calibration_modulation"] == [1.1]
 
 
 def test_calibration_with_already_calibrated_calibration_layer_cancel(

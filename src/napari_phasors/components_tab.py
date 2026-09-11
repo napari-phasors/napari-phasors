@@ -1,4 +1,5 @@
 import contextlib
+import copy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -51,14 +52,17 @@ from qtpy.QtWidgets import (
 )
 
 from ._parallel import parallel_map, parallel_rowwise
+from ._settings_store import replace_keyed_entries
 from ._timelapse import slice_datasets
 from ._utils import (
     AutoUpdateMixin,
     CheckableComboBox,
     HistogramWidget,
     analysis_section_stylesheet,
+    create_settings_note_label,
     make_section,
     required_component_harmonics,
+    set_settings_note,
     setup_primary_button,
 )
 from .selection_tab import ClickableFrame
@@ -559,6 +563,10 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
 
         # Select the first component by default
         self._select_component_item(0)
+
+        # Caution shown when a run would replace other layers' settings.
+        self._settings_note = create_settings_note_label(self)
+        layout.addWidget(self._settings_note)
 
         # Calculate button (validated: greyed out until components are set)
         self.calculate_button = QPushButton("Run Component Analysis")
@@ -1174,21 +1182,10 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         if self._updating_settings:
             return
 
-        if not self.current_image_layer_name:
+        layer = self._current_layer()
+        settings = self._edit_component_settings(layer, create=False)
+        if settings is None:
             return
-
-        # Check if layer still exists (defensive check for cleanup/teardown)
-        if self.current_image_layer_name not in self.viewer.layers:
-            return
-
-        layer = self.viewer.layers[self.current_image_layer_name]
-        if (
-            'settings' not in layer.metadata
-            or 'component_analysis' not in layer.metadata['settings']
-        ):
-            return
-
-        settings = layer.metadata['settings']['component_analysis']
 
         if 'components' in settings and len(settings['components']) > 0:
             if idx is None or idx >= len(self.components):
@@ -1205,6 +1202,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                     new_comps[str(new_i)] = old_comps[i_str]
                     new_i += 1
                 settings['components'] = new_comps
+        self._component_settings_edited(layer)
 
     def _remove_last_component_from_settings(self):
         """Remove the last component from the settings in metadata."""
@@ -1413,26 +1411,168 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             self.label_italic = label_settings.get('italic', False)
             self.label_color = label_settings.get('color', 'black')
 
+    # ------------------------------------------------------------------
+    # Settings: the tab shows (and edits) the primary layer's settings,
+    # unsaved until the analysis runs and stores them in every selected
+    # layer (see ``_settings_store``).
+    # ------------------------------------------------------------------
+
+    def _settings_store(self):
+        """Return the parent's per-layer settings store, if it has one."""
+        return getattr(self.parent_widget, 'settings_store', None)
+
+    def _is_primary(self, layer):
+        """Return whether *layer* is the primary selected layer."""
+        return (
+            self.parent_widget is not None
+            and layer is not None
+            and layer is self.parent_widget.get_primary_layer()
+        )
+
+    def _current_layer(self):
+        """Return the layer the tab shows, or ``None``."""
+        name = self.current_image_layer_name
+        if not name or name not in self.viewer.layers:
+            return None
+        return self.viewer.layers[name]
+
+    def _read_component_settings(self, layer):
+        """Return *layer*'s component settings (read-only), or ``None``.
+
+        The primary layer's include the edits not stored yet, which is what
+        the tab shows; any other layer's are what its last run stored.
+        """
+        if layer is None:
+            return None
+        store = self._settings_store()
+        if store is not None and self._is_primary(layer):
+            settings = store.effective(layer)
+        else:
+            settings = layer.metadata.get('settings') or {}
+        block = settings.get('component_analysis')
+        return block if isinstance(block, dict) else None
+
+    def _edit_component_settings(self, layer, create=True):
+        """Return the component settings to edit in place for *layer*.
+
+        Edits of the primary layer go to its unsaved draft, so they only
+        reach the metadata when the analysis runs; call
+        :meth:`_component_settings_edited` once done. Returns ``None`` when
+        *layer* has none and ``create`` is False.
+        """
+        if layer is None:
+            return None
+        store = self._settings_store()
+        if store is not None and self._is_primary(layer):
+            if not create and self._read_component_settings(layer) is None:
+                return None
+            return store.draft_block(
+                layer,
+                'component_analysis',
+                self._get_default_components_settings,
+            )
+        settings = layer.metadata.get('settings')
+        block = (
+            settings.get('component_analysis')
+            if isinstance(settings, dict)
+            else None
+        )
+        if not isinstance(block, dict):
+            if not create:
+                return None
+            block = self._get_default_components_settings()
+            layer.metadata.setdefault('settings', {})[
+                'component_analysis'
+            ] = block
+        return block
+
+    def _component_settings_edited(self, layer):
+        """Finish an edit made through :meth:`_edit_component_settings`."""
+        store = self._settings_store()
+        if store is not None and layer is not None:
+            store.settle_draft(layer, 'component_analysis')
+
+    def _analysed_component_layers(self):
+        """Return the selected layers the analysis stored settings in."""
+        if self.parent_widget is None:
+            return []
+        return [
+            layer
+            for layer in self.parent_widget.get_selected_layers()
+            if isinstance(
+                (layer.metadata.get('settings') or {}).get(
+                    'component_analysis'
+                ),
+                dict,
+            )
+        ]
+
+    @staticmethod
+    def _components_merge_rule(harmonics):
+        """Return how a run for *harmonics* merges into stored settings.
+
+        The run's components replace the stored ones, but each keeps the
+        coordinates stored for harmonics the run did not use.
+        """
+
+        def merge(old, new):
+            if not isinstance(new, dict):
+                return new
+            merged = copy.deepcopy(new)
+            old_components = (old or {}).get('components') or {}
+            for idx, component in (merged.get('components') or {}).items():
+                old_component = old_components.get(str(idx))
+                if not isinstance(component, dict) or not isinstance(
+                    old_component, dict
+                ):
+                    continue
+                component['gs_harmonics'] = replace_keyed_entries(
+                    old_component.get('gs_harmonics') or {},
+                    component.get('gs_harmonics') or {},
+                    harmonics,
+                )
+            return merged
+
+        return merge
+
+    def _refresh_settings_note(self):
+        """Warn when a run would replace other selected layers' settings."""
+        note = getattr(self, '_settings_note', None)
+        if note is None or self._settings_store() is None:
+            return
+        if getattr(self, '_needs_update', False):
+            # The controls still show another layer; refreshed on restore.
+            return
+        block = self._read_component_settings(
+            self.parent_widget.get_primary_layer()
+        )
+        harmonic = getattr(self.parent_widget, 'harmonic', 1)
+        message = self.parent_widget.settings_overwrite_message(
+            'components_tab',
+            values={} if block is None else {'component_analysis': block},
+            merge={
+                'component_analysis': self._components_merge_rule([harmonic])
+            },
+            action="Running the analysis",
+        )
+        set_settings_note(note, [message])
+
     def _update_components_setting_in_metadata(self, key_path, value):
-        """Update a specific component setting in the current layer's metadata."""
+        """Keep an edited component setting as the primary's unsaved one."""
         layer_name = self.parent_widget.get_primary_layer_name()
         if not layer_name or layer_name not in self.viewer.layers:
             return
 
         layer = self.viewer.layers[layer_name]
 
-        if 'settings' not in layer.metadata:
-            layer.metadata['settings'] = {}
-        if 'component_analysis' not in layer.metadata['settings']:
-            layer.metadata['settings']['component_analysis'] = {}
-
         keys = key_path.split('.')
-        settings = layer.metadata['settings']['component_analysis']
+        settings = self._edit_component_settings(layer)
         for key in keys[:-1]:
             if key not in settings:
                 settings[key] = {}
             settings = settings[key]
         settings[keys[-1]] = value
+        self._component_settings_edited(layer)
 
     def _restore_components_ui_only_from_metadata(self):
         """Restore component UI values and visual dots from metadata without running analysis.
@@ -1450,16 +1590,13 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
 
         layer = self.viewer.layers[layer_name]
 
-        if 'settings' not in layer.metadata:
-            return
-
-        if 'component_analysis' not in layer.metadata['settings']:
+        # Includes the unsaved edits made while the layer was primary.
+        settings = self._read_component_settings(layer)
+        if settings is None:
             return
 
         self._updating_settings = True
         try:
-            settings = layer.metadata['settings']['component_analysis']
-
             self._clear_components_display()
 
             if 'analysis_type' in settings:
@@ -1602,16 +1739,13 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
 
         layer = self.viewer.layers[layer_name]
 
-        if 'settings' not in layer.metadata:
-            return
-
-        if 'component_analysis' not in layer.metadata['settings']:
+        # Includes the unsaved edits made while the layer was primary.
+        settings = self._read_component_settings(layer)
+        if settings is None:
             return
 
         self._updating_settings = True
         try:
-            settings = layer.metadata['settings']['component_analysis']
-
             self._clear_components_display()
 
             if 'analysis_type' in settings:
@@ -2252,13 +2386,10 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             self.current_image_layer_name = None
             return
 
-        if (
-            'settings' not in layer.metadata
-            or 'component_analysis' not in layer.metadata['settings']
-        ):
+        settings = self._read_component_settings(layer)
+        if settings is None:
             return
 
-        settings = layer.metadata['settings']['component_analysis']
         components_data = settings.get('components', {})
         harmonic_key = str(harmonic)
 
@@ -3143,18 +3274,11 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             if self.current_image_layer_name not in self.viewer.layers:
                 return
             layer = self.viewer.layers[self.current_image_layer_name]
-            if (
-                'settings' in layer.metadata
-                and 'component_analysis' in layer.metadata['settings']
-            ):
-
-                idx_str = str(idx)
-                if idx_str in layer.metadata['settings'][
-                    'component_analysis'
-                ].get('components', {}):
-                    old_name = layer.metadata['settings'][
-                        'component_analysis'
-                    ]['components'][idx_str].get('name')
+            settings = self._read_component_settings(layer)
+            if settings is not None:
+                entry = settings.get('components', {}).get(str(idx))
+                if isinstance(entry, dict):
+                    old_name = entry.get('name')
 
             renamed = old_name != name
             if renamed:
@@ -3222,15 +3346,25 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             if isinstance(tag, dict) and tag.get('component_index') == idx:
                 source = tag.get('source_layer')
                 if source and source in self.viewer.layers:
+                    source_layer = self.viewer.layers[source]
                     components = (
-                        self.viewer.layers[source]
-                        .metadata.get('settings', {})
+                        source_layer.metadata.get('settings', {})
                         .get('component_analysis', {})
                         .get('components', {})
                     )
                     entry = components.get(str(idx))
                     if isinstance(entry, dict):
-                        entry['name'] = stored_name
+                        # Renaming an existing output: stored right away.
+                        store = self._settings_store()
+                        if store is not None:
+                            store.update_committed(
+                                [source_layer],
+                                'component_analysis',
+                                ('components', str(idx), 'name'),
+                                stored_name,
+                            )
+                        else:
+                            entry['name'] = stored_name
                 continue
 
             # Linear Projection: the display name is part of the layer name.
@@ -3406,13 +3540,10 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 return component_g, component_s, component_names
 
             layer = self.viewer.layers[self.current_image_layer_name]
-            if (
-                'settings' not in layer.metadata
-                or 'component_analysis' not in layer.metadata['settings']
-            ):
+            settings = self._read_component_settings(layer)
+            if settings is None:
                 return component_g, component_s, component_names
 
-            settings = layer.metadata['settings']['component_analysis']
             components_data = settings.get('components', {})
             harmonic_key = str(harmonic)
 
@@ -4280,9 +4411,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 return
 
             layer_obj = self.viewer.layers[self.current_image_layer_name]
-            settings = layer_obj.metadata.get('settings', {}).get(
-                'component_analysis', {}
-            )
+            settings = self._read_component_settings(layer_obj) or {}
             idx_str = str(comp_idx)
             harmonic_key = str(current_harmonic)
 
@@ -4631,12 +4760,8 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
                 return sorted(harmonics)
 
             layer = self.viewer.layers[self.current_image_layer_name]
-            if (
-                'settings' in layer.metadata
-                and 'component_analysis' in layer.metadata['settings']
-            ):
-
-                settings = layer.metadata['settings']['component_analysis']
+            settings = self._read_component_settings(layer)
+            if settings is not None:
                 components_data = settings.get('components', {})
 
                 for comp_data in components_data.values():
@@ -4772,21 +4897,16 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
 
         comp1_name = "Component 1"
 
+        settings = self._read_component_settings(layer)
         if (
-            'settings' in layer.metadata
-            and 'component_analysis' in layer.metadata['settings']
+            settings is not None
+            and 'components' in settings
+            and len(settings['components']) > 0
+            and '0' in settings['components']
         ):
-
-            settings = layer.metadata['settings']['component_analysis']
-
-            if (
-                'components' in settings
-                and len(settings['components']) > 0
-                and '0' in settings['components']
-            ):
-                comp1_name = (
-                    settings['components']['0'].get('name') or "Component 1"
-                )
+            comp1_name = (
+                settings['components']['0'].get('name') or "Component 1"
+            )
 
         comp1_fractions_layer_name = f"{comp1_name} fractions: {layer_name}"
 
@@ -4878,6 +4998,8 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             finally:
                 self._updating_settings = False
 
+        self._refresh_settings_note()
+
     def _ensure_component_metadata(self, idx: int, harmonic: int = None):
         """Ensure component metadata structure exists and return component data dict."""
         if self._updating_settings or not self.current_image_layer_name:
@@ -4888,14 +5010,8 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             return None
 
         layer = self.viewer.layers[self.current_image_layer_name]
-        if 'settings' not in layer.metadata:
-            layer.metadata['settings'] = {}
-        if 'component_analysis' not in layer.metadata['settings']:
-            layer.metadata['settings'][
-                'component_analysis'
-            ] = self._get_default_components_settings()
-
-        settings = layer.metadata['settings']['component_analysis']
+        settings = self._edit_component_settings(layer)
+        settings.setdefault('components', {})
         idx_str = str(idx)
 
         if idx_str not in settings['components']:
@@ -4929,6 +5045,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         harmonic_key = str(harmonic)
         comp_data['gs_harmonics'][harmonic_key]['g'] = g
         comp_data['gs_harmonics'][harmonic_key]['s'] = s
+        self._component_settings_edited(self._current_layer())
 
     def _update_component_lifetime(
         self, idx: int, harmonic: int, lifetime: float
@@ -4940,6 +5057,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
 
         harmonic_key = str(harmonic)
         comp_data['gs_harmonics'][harmonic_key]['lifetime'] = lifetime
+        self._component_settings_edited(self._current_layer())
 
     def _update_component_name(self, idx: int, name: str):
         """Update component name."""
@@ -4948,6 +5066,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             return
 
         comp_data['name'] = name if name else None
+        self._component_settings_edited(self._current_layer())
 
     def _update_component_phasor_center_layers(
         self, idx: int, layer_names: list[str]
@@ -4958,6 +5077,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             return
 
         comp_data['phasor_center_layers'] = list(layer_names)
+        self._component_settings_edited(self._current_layer())
 
     def _update_component_colormap(
         self,
@@ -4967,105 +5087,57 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         colormap_colors: list,
         contrast_limits: tuple,
     ):
-        """Update component colormap settings for a specific harmonic."""
+        """Update component colormap settings for a specific harmonic.
+
+        The colormap belongs to fraction layers that already exist, so it is
+        stored right away in every layer the analysis ran on.
+        """
+        entry = {
+            'colormap_name': colormap_name,
+            'colormap_colors': colormap_colors,
+            'contrast_limits': (
+                list(contrast_limits) if contrast_limits else None
+            ),
+            'analysis_type': self.analysis_type,  # Store which analysis type saved this
+        }
+        store = self._settings_store()
+        analysed_layers = self._analysed_component_layers()
+        if (
+            store is not None
+            and analysed_layers
+            and not self._updating_settings
+        ):
+            for key, value in entry.items():
+                store.update_committed(
+                    analysed_layers,
+                    'component_analysis',
+                    (
+                        'components',
+                        str(idx),
+                        'gs_harmonics',
+                        str(harmonic),
+                        key,
+                    ),
+                    value,
+                )
+            return
+
         comp_data = self._ensure_component_metadata(idx, harmonic)
         if comp_data is None:
             return
 
         harmonic_key = str(harmonic)
-        comp_data['gs_harmonics'][harmonic_key].update(
-            {
-                'colormap_name': colormap_name,
-                'colormap_colors': colormap_colors,
-                'contrast_limits': (
-                    list(contrast_limits) if contrast_limits else None
-                ),
-                'analysis_type': self.analysis_type,  # Store which analysis type saved this
-            }
-        )
+        comp_data['gs_harmonics'][harmonic_key].update(entry)
+        self._component_settings_edited(self._current_layer())
 
     def _run_analysis(self):
-        """Run the selected analysis and store component locations in metadata for all selected layers."""
+        """Run the selected analysis and store its parameters in all selected layers."""
         self._analysis_attempted = True
         self._update_all_component_styling()
 
         selected_layers = self.parent_widget.get_selected_layers()
         if not self._updating_settings and selected_layers:
-            # Store metadata in all selected layers
-            for layer in selected_layers:
-                if 'settings' not in layer.metadata:
-                    layer.metadata['settings'] = {}
-                if 'component_analysis' not in layer.metadata['settings']:
-                    layer.metadata['settings'][
-                        'component_analysis'
-                    ] = self._get_default_components_settings()
-
-                settings = layer.metadata['settings']['component_analysis']
-
-                if 'components' not in settings:
-                    settings['components'] = {}
-
-                current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
-                settings['last_analysis_harmonic'] = current_harmonic
-
-                active_components = [
-                    c
-                    for c in self.components
-                    if c is not None and c.dot is not None
-                ]
-
-                for comp in active_components:
-                    idx = comp.idx
-                    idx_str = str(idx)
-                    name = comp.name_edit.text().strip()
-
-                    if idx_str not in settings['components']:
-                        settings['components'][idx_str] = {
-                            'idx': idx,
-                            'name': name if name else None,
-                            'gs_harmonics': {},
-                        }
-                    else:
-                        if name:
-                            settings['components'][idx_str]['name'] = name
-
-                    comp_data = settings['components'][idx_str]
-
-                    if 'gs_harmonics' not in comp_data:
-                        comp_data['gs_harmonics'] = {}
-
-                    try:
-                        x_data, y_data = comp.dot.get_data()
-                        g_val = x_data[0]
-                        s_val = y_data[0]
-                    except (ValueError, IndexError):
-                        continue
-
-                    harmonic_key = str(current_harmonic)
-                    if harmonic_key not in comp_data['gs_harmonics']:
-                        comp_data['gs_harmonics'][harmonic_key] = {}
-
-                    comp_data['gs_harmonics'][harmonic_key]['g'] = g_val
-                    comp_data['gs_harmonics'][harmonic_key]['s'] = s_val
-
-                    if comp.lifetime_edit is not None:
-                        lifetime_text = comp.lifetime_edit.text().strip()
-                        if lifetime_text:
-                            try:
-                                lifetime_val = float(lifetime_text)
-                                comp_data['gs_harmonics'][harmonic_key][
-                                    'lifetime'
-                                ] = lifetime_val
-                            except ValueError:
-                                comp_data['gs_harmonics'][harmonic_key][
-                                    'lifetime'
-                                ] = None
-                    else:
-                        comp_data['gs_harmonics'][harmonic_key][
-                            'lifetime'
-                        ] = None
-
-                settings['analysis_type'] = self.analysis_type
+            self._commit_components_settings(selected_layers)
 
         if self.analysis_type == "Linear Projection":
             self._run_linear_projection()
@@ -5073,6 +5145,105 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
             self._run_component_fit()
 
         self.on_layer_selection_changed()
+
+    def _commit_components_settings(self, layers):
+        """Store the analysis about to run in every layer in *layers*.
+
+        The component locations on display complete the primary layer's
+        settings (with its unsaved edits), which then replace the stored
+        settings of all *layers*. Coordinates of harmonics the run does not
+        use are kept, unless the fit combines several harmonics.
+        """
+        primary = self.parent_widget.get_primary_layer()
+        if primary not in layers:
+            primary = layers[0]
+        settings = self._edit_component_settings(primary)
+        settings.setdefault('components', {})
+
+        current_harmonic = getattr(self.parent_widget, 'harmonic', 1)
+        settings['last_analysis_harmonic'] = current_harmonic
+
+        active_components = [
+            c for c in self.components if c is not None and c.dot is not None
+        ]
+
+        for comp in active_components:
+            idx = comp.idx
+            idx_str = str(idx)
+            name = comp.name_edit.text().strip()
+
+            if idx_str not in settings['components']:
+                settings['components'][idx_str] = {
+                    'idx': idx,
+                    'name': name if name else None,
+                    'gs_harmonics': {},
+                }
+            else:
+                if name:
+                    settings['components'][idx_str]['name'] = name
+
+            comp_data = settings['components'][idx_str]
+
+            if 'gs_harmonics' not in comp_data:
+                comp_data['gs_harmonics'] = {}
+
+            try:
+                x_data, y_data = comp.dot.get_data()
+                g_val = x_data[0]
+                s_val = y_data[0]
+            except (ValueError, IndexError):
+                continue
+
+            harmonic_key = str(current_harmonic)
+            if harmonic_key not in comp_data['gs_harmonics']:
+                comp_data['gs_harmonics'][harmonic_key] = {}
+
+            comp_data['gs_harmonics'][harmonic_key]['g'] = g_val
+            comp_data['gs_harmonics'][harmonic_key]['s'] = s_val
+
+            if comp.lifetime_edit is not None:
+                lifetime_text = comp.lifetime_edit.text().strip()
+                if lifetime_text:
+                    try:
+                        lifetime_val = float(lifetime_text)
+                        comp_data['gs_harmonics'][harmonic_key][
+                            'lifetime'
+                        ] = lifetime_val
+                    except ValueError:
+                        comp_data['gs_harmonics'][harmonic_key][
+                            'lifetime'
+                        ] = None
+            else:
+                comp_data['gs_harmonics'][harmonic_key]['lifetime'] = None
+
+        settings['analysis_type'] = self.analysis_type
+
+        block = copy.deepcopy(settings)
+        if self._settings_store() is None:
+            for layer in layers:
+                layer.metadata.setdefault('settings', {})[
+                    'component_analysis'
+                ] = copy.deepcopy(block)
+            return
+
+        # A fit over several harmonics links their coordinates: the run
+        # replaces all of them. Otherwise only the run harmonic's.
+        linked_harmonics = (
+            self.analysis_type != "Linear Projection"
+            and self._get_required_harmonics(len(active_components)) > 1
+        )
+        merge = (
+            None
+            if linked_harmonics
+            else {
+                'component_analysis': self._components_merge_rule(
+                    [current_harmonic]
+                )
+            }
+        )
+        self.parent_widget.commit_analysis_settings(
+            {'component_analysis': block}, layers=layers, merge=merge
+        )
 
     def _run_linear_projection(self):
         """Run linear projection for 2-component analysis on all selected layers."""
@@ -6048,9 +6219,7 @@ class ComponentsWidget(AutoUpdateMixin, QWidget):
         )
         if layer_name and layer_name in self.viewer.layers:
             layer = self.viewer.layers[layer_name]
-            settings = layer.metadata.get('settings', {}).get(
-                'component_analysis', {}
-            )
+            settings = self._read_component_settings(layer) or {}
             components_data = settings.get('components', {})
 
             for idx_str, comp_data in components_data.items():
