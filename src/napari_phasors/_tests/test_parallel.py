@@ -9,17 +9,23 @@ from napari_phasors._parallel import (
     band_bounds,
     default_workers,
     items_for_memory,
+    memory_budget_enabled,
     memory_fraction,
     parallel_bands,
+    parallel_bands_enabled,
     parallel_compute_apply,
     parallel_enabled,
     parallel_filter_median,
+    parallel_items_enabled,
     parallel_map,
     parallel_phasor_from_signal,
     parallel_rowwise,
     parallel_stream,
+    set_memory_budget_enabled,
     set_memory_fraction,
+    set_parallel_bands_enabled,
     set_parallel_enabled,
+    set_parallel_items_enabled,
     workers_for_memory,
 )
 
@@ -36,14 +42,22 @@ def clear_worker_env(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def restore_parallel_switch():
-    """Leave the global parallel switch as this module found it.
+    """Leave the global parallel switches as this module found them.
 
-    It is process-wide state, so a test that flips it would otherwise change
-    the meaning of every test that runs afterwards.
+    Tests in this module specifically exercise concurrent execution and memory
+    budget scaling, so we enable both parallel scopes and the memory budget
+    for each test, restoring original state on teardown.
     """
-    previous = parallel_enabled()
+    previous_items = parallel_items_enabled()
+    previous_bands = parallel_bands_enabled()
+    previous_budget = memory_budget_enabled()
+    set_parallel_items_enabled(True)
+    set_parallel_bands_enabled(True)
+    set_memory_budget_enabled(True)
     yield
-    set_parallel_enabled(previous)
+    set_parallel_items_enabled(previous_items)
+    set_parallel_bands_enabled(previous_bands)
+    set_memory_budget_enabled(previous_budget)
 
 
 def test_default_workers_never_exceeds_item_count():
@@ -629,6 +643,24 @@ def test_disabling_parallelism_collapses_every_helper():
     assert parallel_enabled() is True
     assert default_workers() >= 1
     assert len(band_bounds(4096, halo=1)) >= 1
+
+
+def test_memory_budget_switch():
+    """Toggling the memory budget switch enables or disables memory capping."""
+    from napari_phasors._parallel import available_memory
+
+    set_memory_budget_enabled(False)
+    assert memory_budget_enabled() is False
+    assert items_for_memory(1 << 20) is None
+
+    # An explicit fraction still overrides the global toggle:
+    if available_memory() is not None:
+        assert items_for_memory(1 << 20, fraction=0.5) is not None
+
+    set_memory_budget_enabled(True)
+    assert memory_budget_enabled() is True
+    if available_memory() is not None:
+        assert items_for_memory(1 << 20) is not None
 
 
 def test_disabled_and_enabled_filtering_agree():

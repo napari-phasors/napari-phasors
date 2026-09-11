@@ -43,6 +43,15 @@ Automatic methods compute the lower cutoff; the upper cutoff can still be adjust
 
 Select **Manual** from the threshold dropdown and drag either handle of the range slider (or edit the min/max value fields directly) to set custom lower and upper cutoff values.
 
+## Filtering by a derived quantity
+
+The threshold on this tab restricts the image by **intensity**. To restrict it
+by a quantity derived from the phasor coordinates instead — an apparent
+lifetime, the phase, the modulation or a FRET efficiency — use the **Filter**
+section of the **Phasor Mapping** tab (see {doc}`phasor_mapping`) or of the
+**FRET** tab (see {doc}`fret_analysis`). Those filters are applied on top of
+this one and are reapplied automatically whenever the threshold here changes.
+
 ## How it works
 
 1. The intensity histogram of all selected layers is displayed

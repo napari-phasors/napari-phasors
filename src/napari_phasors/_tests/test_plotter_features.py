@@ -2570,3 +2570,98 @@ def test_useful_height_limit_caps_plotter_and_tracks_width(
     plotter._analysis_dock.hide()
     plotter._update_useful_height_limit(plotter.canvas_container.width())
     assert plotter.maximumHeight() == PlotterWidget._NO_HEIGHT_LIMIT
+
+
+def test_toolbar_clears_the_dock_title_bar(make_napari_viewer, qtbot):
+    """The bar you drag the panel by must not cover the toolbar icons.
+
+    napari's ``QtCustomTitleBar`` reports a hard-coded 20 px size hint while
+    laying itself out taller, and ``QDockWidget`` puts the content at the
+    hinted height -- so the title bar is painted over the first rows of the
+    matplotlib toolbar and clips the tops of the pan and zoom glyphs.
+    """
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    qtbot.addWidget(plotter)
+    dock = viewer.window.add_dock_widget(
+        plotter, name="Phasor Plot", area="right"
+    )
+    qt_window = viewer.window._qt_window
+    qt_window.resize(1200, 900)
+    # The overlap can only be measured once Qt has laid the dock out.
+    qt_window.show()
+    plotter._reserve_title_bar_overlap()
+    qt_window.layout().activate()
+
+    title_bar = dock.titleBarWidget()
+    assert title_bar is not None
+
+    def _bottom(widget):
+        return widget.mapTo(qt_window, widget.rect().bottomLeft()).y() + 1
+
+    def _top(widget):
+        return widget.mapTo(qt_window, widget.rect().topLeft()).y()
+
+    qtbot.waitUntil(
+        lambda: _top(plotter.canvas_widget.toolbar) >= _bottom(title_bar)
+    )
+
+
+def test_title_bar_overlap_is_measured_from_the_bar(make_napari_viewer, qtbot):
+    """The reserved strip is the bar's real height less the height it claims."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    qtbot.addWidget(plotter)
+    dock = viewer.window.add_dock_widget(
+        plotter, name="Phasor Plot", area="right"
+    )
+
+    title_bar = dock.titleBarWidget()
+    expected = max(0, title_bar.height() - title_bar.sizeHint().height())
+    assert plotter._title_bar_overlap() == expected
+
+    plotter._reserve_title_bar_overlap()
+    assert plotter.layout().contentsMargins().top() == expected
+
+
+def test_undocked_plotter_reserves_no_title_bar_strip(make_viewer_model):
+    """A bare widget has no bar over it, so nothing is reserved."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+
+    assert plotter._find_plotter_dock() is None
+    assert plotter._title_bar_overlap() == 0
+
+    plotter._reserve_title_bar_overlap()
+    assert plotter.layout().contentsMargins().top() == 0
+
+
+def test_title_bar_overlap_falls_back_when_unmeasurable(
+    make_napari_viewer, qtbot
+):
+    """A bar that reports nothing usable still gets the default strip."""
+    viewer = make_napari_viewer()
+    plotter = PlotterWidget(viewer)
+    qtbot.addWidget(plotter)
+    dock = viewer.window.add_dock_widget(
+        plotter, name="Phasor Plot", area="right"
+    )
+
+    class _Unmeasurable:
+        def sizeHint(self):
+            from qtpy.QtCore import QSize
+
+            return QSize(0, 0)
+
+        def height(self):
+            return 0
+
+    with patch.object(dock, 'titleBarWidget', return_value=_Unmeasurable()):
+        assert (
+            plotter._title_bar_overlap()
+            == PlotterWidget._TITLE_BAR_OVERLAP_FALLBACK
+        )
+
+    # No title bar at all means no bar to clear.
+    with patch.object(dock, 'titleBarWidget', return_value=None):
+        assert plotter._title_bar_overlap() == 0

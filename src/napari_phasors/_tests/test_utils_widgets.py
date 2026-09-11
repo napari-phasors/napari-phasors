@@ -1,9 +1,13 @@
 import csv
+from dataclasses import replace
 
 import numpy as np
-from qtpy.QtWidgets import QDialog, QHeaderView
+import pytest
+from qtpy.QtWidgets import QDialog, QHeaderView, QPushButton, QWidget
 
 from napari_phasors._utils import (
+    WARNING_ICON_SIZE,
+    AutoUpdateMixin,
     CurrentPageStackedWidget,
     HistogramDockWidget,
     HistogramSettingsDialog,
@@ -12,8 +16,10 @@ from napari_phasors._utils import (
     StatisticsTableWidget,
     build_group_styles_from_layer_metadata,
     build_groups_from_layer_metadata,
+    make_experimental_warning,
     save_groups_to_layer_metadata,
     split_items_by_group,
+    warning_pixmap,
 )
 
 
@@ -2869,6 +2875,342 @@ def test_update_data_label_parameter(qtbot):
     assert list(widget._counts_per_dataset.keys()) == ["Lifetime: my image"]
 
 
+# --- TileLayoutDialog -------------------------------------------------------
+
+
+def _positions_dialog(qtbot, n_rows=3, n_cols=3, tile=(64, 64), step=None):
+    """Build a TileLayoutDialog that was handed recorded tile positions."""
+    from napari_phasors._utils import TileLayoutDialog
+
+    step_y, step_x = step or tile
+    paths = [f"tile_{index:02d}.czi" for index in range(n_rows * n_cols)]
+    positions = [
+        (row * step_y, col * step_x)
+        for row in range(n_rows)
+        for col in range(n_cols)
+    ]
+    dialog = TileLayoutDialog(paths, tile_shape=tile, tile_positions=positions)
+    qtbot.addWidget(dialog)
+    return dialog, positions
+
+
+def test_tile_layout_dialog_marks_stitching_experimental(qtbot):
+    """The dialog carries the same experimental marker as the plot settings.
+
+    Stitching is unproven enough that the warning has to be on the dialog
+    itself, not only in the docs -- and it must be napari's own triangle, so
+    it reads as an experimental control rather than as decoration.
+    """
+    from qtpy.QtWidgets import QLabel
+
+    dialog, _ = _positions_dialog(qtbot)
+
+    icons = [
+        label
+        for label in dialog.findChildren(QLabel)
+        if label.objectName() == "error_label"
+    ]
+    assert len(icons) == 1
+    icon = icons[0]
+
+    texts = [
+        label.text()
+        for label in dialog.findChildren(QLabel)
+        if label.text() == "Experimental"
+    ]
+    assert texts == ["Experimental"]
+
+    assert "report it" in icon.toolTip()
+
+    # A modal dialog of our own is never reached by napari's stylesheet, so
+    # the triangle has to be rendered directly rather than left to the
+    # ``error_label`` object name.
+    pixmap = icon.pixmap()
+    assert pixmap is not None and not pixmap.isNull()
+
+
+def test_tile_layout_dialog_uses_recorded_positions(qtbot):
+    """Recorded positions are offered first and drive the built geometry."""
+    dialog, positions = _positions_dialog(qtbot)
+
+    assert dialog.source_combo.itemData(0) == "positions"
+    assert dialog.source_combo.currentData() == "positions"
+
+    geometry = dialog.get_geometry()
+    assert geometry is not None
+    assert len(geometry.placements) == len(positions)
+
+    # Measured positions define the overlap, so the typed fields mirror them
+    # and are locked while this source is selected.
+    assert not dialog.overlap_y_edit.isEnabled()
+    assert not dialog.overlap_x_edit.isEnabled()
+    assert float(dialog.overlap_y_edit.text()) == pytest.approx(
+        geometry.overlap_y * 100, abs=0.01
+    )
+
+    assert dialog.get_ordered_paths() == geometry.paths
+    assert dialog.get_sources() == geometry.sources
+
+
+def test_tile_layout_dialog_binning_rescales_the_canvas(qtbot):
+    """Choosing a binning factor shrinks the tiles, positions and canvas."""
+    dialog, _ = _positions_dialog(qtbot, tile=(64, 64))
+
+    assert dialog.binning_combo is not None
+    assert dialog.get_binning() == 1
+    unbinned = dialog.get_geometry().canvas_shape()
+
+    dialog.binning_combo.setCurrentIndex(dialog.binning_combo.findData(4))
+
+    assert dialog.get_binning() == 4
+    assert dialog._tile_shape == (16, 16)
+    binned = dialog.get_geometry().canvas_shape()
+    assert binned[0] == unbinned[0] // 4
+    assert binned[1] == unbinned[1] // 4
+    # The label reports the binned canvas, not the original one.
+    assert f"{binned[0]} x {binned[1]} px" in dialog.memory_label.text()
+    assert "GB per plane" in dialog.memory_label.text()
+
+
+def test_tile_layout_dialog_suggests_binning_that_fits_the_budget(qtbot):
+    """The initial binning is the smallest factor fitting the memory budget."""
+    dialog, _ = _positions_dialog(qtbot, tile=(64, 64))
+
+    # A generous budget needs no binning at all.
+    assert dialog._suggested_binning(budget_bytes=1 << 30) == 1
+
+    # A budget smaller than any offered factor falls back to the largest.
+    assert dialog._suggested_binning(budget_bytes=1) == 16
+
+    # In between, the chosen factor is the first one that fits.
+    height, width = dialog._canvas_for_binning(2)
+    assert dialog._suggested_binning(budget_bytes=height * width * 4) == 2
+
+
+def test_tile_layout_dialog_without_positions_has_no_binning(qtbot):
+    """Binning needs recorded positions, so it is absent otherwise."""
+    from napari_phasors._utils import TileLayoutDialog
+
+    dialog = TileLayoutDialog(["a.tif", "b.tif"], tile_shape=(32, 32))
+    qtbot.addWidget(dialog)
+
+    assert dialog.binning_combo is None
+    assert dialog.get_binning() == 1
+    # _apply_binning is a no-op rather than an error when there is nothing
+    # to rescale.
+    dialog._apply_binning()
+    assert dialog._tile_shape == (32, 32)
+
+
+def test_tile_layout_dialog_position_count_mismatch_is_reported(qtbot):
+    """Selecting a tile axis that contradicts the positions shows an error."""
+    from napari_phasors._utils import TileLayoutDialog
+
+    dialog = TileLayoutDialog(
+        ["mosaic.czi"],
+        tile_shape=(32, 32),
+        tile_axes={0: 4},
+        tile_positions=[(0, 0), (0, 32), (32, 0), (32, 32)],
+    )
+    qtbot.addWidget(dialog)
+    assert dialog.get_geometry() is not None
+
+    # One tile per file leaves a single tile against four positions.
+    dialog.tile_axis_combo.setCurrentIndex(0)
+
+    assert dialog.get_geometry() is None
+    assert "1 tile(s) are selected" in dialog.status_label.text()
+    assert not dialog.ok_btn.isEnabled()
+    # With no geometry the accessors fall back to the raw selection.
+    assert dialog.get_ordered_paths() == ["mosaic.czi"]
+    assert len(dialog.get_sources()) == 1
+
+
+def test_tile_layout_dialog_switching_source_shows_matching_controls(qtbot):
+    """Each layout source reveals only its own controls."""
+    from napari_phasors._utils import TileLayoutDialog
+
+    dialog = TileLayoutDialog(
+        [f"tile_r{r}_c{c}.tif" for r in range(2) for c in range(2)],
+        tile_shape=(16, 16),
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    def select(key):
+        dialog.source_combo.setCurrentIndex(dialog.source_combo.findData(key))
+
+    select("rows")
+    assert dialog.rows_widget.isVisible()
+    assert not dialog.pattern_widget.isVisible()
+
+    select("names")
+    assert not dialog.rows_widget.isVisible()
+    assert dialog.pattern_widget.isVisible()
+
+    # Plain TIFFs record no stage positions, so that source reports why.
+    select("stage")
+    assert dialog.get_geometry() is None
+    assert "Stage positions could not be read" in dialog.status_label.text()
+
+
+def test_tile_layout_dialog_overlap_parsing_and_blend_mode(qtbot):
+    """Overlap text is clamped to a fraction and blend modes map in order."""
+    from napari_phasors._utils import TileLayoutDialog
+
+    dialog = TileLayoutDialog(["a.tif", "b.tif"], tile_shape=(16, 16))
+    qtbot.addWidget(dialog)
+
+    dialog.overlap_y_edit.setText("25")
+    dialog.overlap_x_edit.setText("not a number")
+    assert dialog._overlaps() == (0.25, 0.0)
+
+    # Above 90% and below zero are clamped rather than rejected.
+    dialog.overlap_y_edit.setText("400")
+    dialog.overlap_x_edit.setText("-10")
+    assert dialog._overlaps() == (0.9, 0.0)
+
+    for index, mode in enumerate(("feather", "average", "sum")):
+        dialog.blend_combo.setCurrentIndex(index)
+        assert dialog._blend_mode() == mode
+
+
+def test_tile_layout_dialog_default_rows_spec_prefers_square(qtbot):
+    """The pre-filled row specification is the squarest factorization."""
+    from napari_phasors._utils import TileLayoutDialog
+
+    def spec(n_tiles):
+        dialog = TileLayoutDialog(
+            [f"t{i}.tif" for i in range(n_tiles)], tile_shape=(8, 8)
+        )
+        qtbot.addWidget(dialog)
+        return dialog._default_rows_spec()
+
+    assert spec(9) == "3x3"
+    assert spec(6) == "2x3"
+    # A prime count has no square-ish split, so it becomes a single row.
+    assert spec(7) == "1x7"
+    assert spec(0) == ""
+
+
+def test_tile_layout_preview_draws_and_clears(qtbot):
+    """The preview paints a rectangle per tile and a message when empty."""
+    from napari_phasors._stitching import TileGeometry, TilePlacement
+    from napari_phasors._utils import TileLayoutPreview
+
+    preview = TileLayoutPreview()
+    qtbot.addWidget(preview)
+    preview.resize(240, 200)
+
+    # ``grab()`` forces a real paint even though the widget is never shown;
+    # ``repaint()`` on a hidden widget does nothing.
+    def painted():
+        return preview.grab()
+
+    # Empty preview: paints the placeholder text without raising.
+    preview.set_geometry(None)
+    assert not painted().isNull()
+    assert preview._geometry is None
+
+    geometry = TileGeometry(
+        placements=[
+            TilePlacement(row=r, col=c, path=f"t{r}{c}.tif")
+            for r in range(2)
+            for c in range(3)
+        ],
+        tile_shape=(32, 48),
+        overlap_y=0.1,
+        overlap_x=0.1,
+    )
+    preview.set_geometry(geometry)
+    assert not painted().isNull()
+    assert preview._geometry is geometry
+
+    # A geometry whose tile size is not known yet falls back to a nominal
+    # tile rather than dividing by zero.
+    preview.set_geometry(replace(geometry, tile_shape=(0, 0)))
+    assert not painted().isNull()
+
+    # A geometry with placements but an empty canvas bails out mid-paint.
+    preview.set_geometry(TileGeometry(placements=[], tile_shape=(32, 48)))
+    assert not painted().isNull()
+
+
+def test_tile_layout_preview_handles_a_zero_sized_canvas(qtbot):
+    """Placements that collapse to no canvas stop the paint cleanly."""
+    from napari_phasors._stitching import TileGeometry, TilePlacement
+    from napari_phasors._utils import TileLayoutPreview
+
+    preview = TileLayoutPreview()
+    qtbot.addWidget(preview)
+    preview.resize(120, 100)
+
+    # A tile of nominal size zero in one axis leaves the canvas degenerate
+    # even though there is a placement to draw.
+    geometry = TileGeometry(
+        placements=[TilePlacement(row=0, col=0, path="only.tif")],
+        tile_shape=(0, 40),
+    )
+    preview.set_geometry(geometry)
+    assert not preview.grab().isNull()
+
+
+def test_tile_layout_preview_stops_on_an_empty_canvas(qtbot):
+    """Placements that describe no canvas end the paint without drawing."""
+    from napari_phasors._utils import TileLayoutPreview
+
+    class _EmptyCanvasGeometry:
+        placements = ["one"]
+        tile_shape = (32, 32)
+
+        def origins(self):
+            return [(0, 0)]
+
+        def canvas_shape(self):
+            return (0, 0)
+
+    preview = TileLayoutPreview()
+    qtbot.addWidget(preview)
+    preview.resize(120, 100)
+    preview.set_geometry(_EmptyCanvasGeometry())
+
+    assert not preview.grab().isNull()
+
+
+def test_suggested_binning_is_one_without_positions(qtbot):
+    """With nothing to rescale, the suggestion is 'no binning'."""
+    from napari_phasors._utils import TileLayoutDialog
+
+    dialog = TileLayoutDialog(["a.tif", "b.tif"], tile_shape=(32, 32))
+    qtbot.addWidget(dialog)
+
+    assert dialog._suggested_binning() == 1
+    assert dialog._canvas_for_binning is not None
+
+
+def test_tile_layout_dialog_builds_a_stage_position_layout(qtbot, monkeypatch):
+    """A successful stage-position read becomes the geometry directly."""
+    import napari_phasors._stitching as stitching
+    from napari_phasors._utils import TileLayoutDialog
+
+    paths = ["tile_a.ome.tif", "tile_b.ome.tif"]
+
+    def fake_stage_position(path):
+        # Two tiles side by side, 16 um apart, at 1 um per pixel.
+        return (0.0, 16.0 if path.endswith("b.ome.tif") else 0.0, 1.0, 1.0)
+
+    monkeypatch.setattr(stitching, "_read_stage_position", fake_stage_position)
+
+    dialog = TileLayoutDialog(paths, tile_shape=(16, 16))
+    qtbot.addWidget(dialog)
+    dialog.source_combo.setCurrentIndex(dialog.source_combo.findData("stage"))
+
+    geometry = dialog.get_geometry()
+    assert geometry is not None
+    assert len(geometry.placements) == 2
+    assert "2 tile(s)" in dialog.status_label.text()
+
+
 def test_unassigned_layer_is_excluded_from_groups(qtbot):
     """A layer left out of every group must not be folded into group 1."""
     widget = HistogramWidget(bins=10)
@@ -3150,3 +3492,522 @@ def test_checkable_combobox_clear_drops_hidden_rows(qtbot):
     assert combo.hiddenItems() == set()
     assert combo.visibleItems() == ["X", "Y"]
     assert not combo.view().isRowHidden(0)
+
+
+def _masked_setup(viewer, mask=None, labels=None, invert=False, data=None):
+    """Add a labels mask plus a masked image layer and return their data.
+
+    Mirrors what the mask controls of the Phasor Plot widget leave behind:
+    the mask array, its invert flag and the selected labels stored on the
+    analysed image layer's metadata.
+    """
+    if mask is None:
+        mask = np.zeros((6, 6), dtype=int)
+        mask[:3, :] = 1
+        mask[3:, :3] = 2
+    viewer.add_labels(mask, name="mask")
+    if data is None:
+        data = np.arange(mask.size, dtype=float).reshape(mask.shape)
+    image = viewer.add_image(data, name="img")
+    image.metadata['mask'] = mask
+    image.metadata['mask_invert'] = invert
+    if labels is not None:
+        image.metadata['mask_labels'] = labels
+    return mask, data
+
+
+def test_mask_label_values_reads_the_layer_metadata(make_viewer_model):
+    """The labels a masked layer is analysed with come from its metadata."""
+    from napari_phasors._utils import mask_label_values
+
+    viewer = make_viewer_model()
+    mask, _data = _masked_setup(viewer)
+    image = viewer.layers["img"]
+
+    # No explicit selection means every label of the mask.
+    assert mask_label_values(image.metadata) == [1, 2]
+
+    image.metadata['mask_labels'] = [2]
+    assert mask_label_values(image.metadata) == [2]
+
+    # No label selected is treated as no masking at all.
+    image.metadata['mask_labels'] = []
+    assert mask_label_values(image.metadata) == []
+
+    # An inverted mask analyses the complement of the labels, which is one
+    # region however many labels it was built from.
+    image.metadata['mask_labels'] = None
+    image.metadata['mask_invert'] = True
+    assert mask_label_values(image.metadata) == []
+
+    assert mask_label_values({}) == []
+
+
+def test_split_data_by_mask_labels_extracts_each_region():
+    """Splitting keeps every label's pixels and drops the rest."""
+    from napari_phasors._utils import split_data_by_mask_labels
+
+    mask = np.array([[0, 1], [2, 2]])
+    data = np.array([[10.0, 11.0], [12.0, 13.0]])
+
+    parts = split_data_by_mask_labels(data, mask, [1, 2])
+    assert set(parts) == {1, 2}
+    np.testing.assert_array_equal(parts[1], [11.0])
+    np.testing.assert_array_equal(parts[2], [12.0, 13.0])
+
+    # Labels with no pixel are left out entirely.
+    assert split_data_by_mask_labels(data, mask, [3]) == {}
+
+    # keep_shape keeps the layer's geometry for callers that slice frames.
+    shaped = split_data_by_mask_labels(data, mask, [1], keep_shape=True)
+    assert shaped[1].shape == data.shape
+    assert np.isnan(shaped[1]).sum() == 3
+
+    # A mask that does not line up with the data cannot split it.
+    assert split_data_by_mask_labels(data, mask[:1], [1]) == {}
+
+
+def test_histogram_widget_splits_one_layer_per_mask_label(
+    make_viewer_model, qtbot
+):
+    """Separating mask labels turns one layer into one dataset per label."""
+    viewer = make_viewer_model()
+    mask, data = _masked_setup(viewer)
+    widget = HistogramWidget(bins=8, viewer=viewer)
+    qtbot.addWidget(widget)
+    widget.set_dataset_sources({"Lifetime: img": "img"})
+    widget.update_data(data, label="Lifetime: img")
+
+    assert widget.mask_label_split_available()
+    assert not widget.mask_label_split_active()
+    assert list(widget._datasets) == ["Lifetime: img"]
+
+    widget.split_by_mask_labels = True
+
+    assert widget.mask_label_split_active()
+    assert list(widget._datasets) == [
+        "Lifetime: img – label 1",
+        "Lifetime: img – label 2",
+    ]
+    # Every masked pixel is accounted for exactly once.
+    assert sum(len(v) for v in widget._datasets.values()) == int(
+        (mask > 0).sum()
+    )
+    np.testing.assert_array_equal(
+        widget._datasets["Lifetime: img – label 2"],
+        np.sort(data[mask == 2]),
+    )
+    # Grouping still sees the analysed layer behind both curves.
+    assert widget._group_source_names() == ["img"]
+    # The curves take the colours napari paints the labels with.
+    assert set(widget._mask_label_colors) == set(widget._datasets)
+
+    widget.split_by_mask_labels = False
+    assert list(widget._datasets) == ["Lifetime: img"]
+    assert not widget.mask_label_split_active()
+
+
+def test_histogram_widget_split_needs_several_selected_labels(
+    make_viewer_model, qtbot
+):
+    """One selected label, an inverted mask or no mask offer no split."""
+    viewer = make_viewer_model()
+    _mask, data = _masked_setup(viewer, labels=[2])
+    widget = HistogramWidget(bins=8, viewer=viewer)
+    qtbot.addWidget(widget)
+    widget.set_dataset_sources({"Lifetime: img": "img"})
+    widget.update_data(data, label="Lifetime: img")
+
+    assert not widget.mask_label_split_available()
+
+    widget.split_by_mask_labels = True
+    assert list(widget._datasets) == ["Lifetime: img"]
+    assert not widget.mask_label_split_active()
+
+    # Selecting both labels makes it available without re-feeding the data.
+    viewer.layers["img"].metadata['mask_labels'] = [1, 2]
+    assert widget.mask_label_split_available()
+
+
+def test_histogram_widget_split_leaves_unmasked_layers_whole(
+    make_viewer_model, qtbot
+):
+    """A selection mixing masked and unmasked layers keeps them all."""
+    viewer = make_viewer_model()
+    _mask, data = _masked_setup(viewer)
+    plain = np.linspace(0.0, 1.0, 36).reshape(6, 6)
+    viewer.add_image(plain, name="plain")
+
+    widget = HistogramWidget(bins=8, viewer=viewer)
+    qtbot.addWidget(widget)
+    widget.set_dataset_sources({"A": "img", "B": "plain"})
+    widget.split_by_mask_labels = True
+    widget.update_multi_data({"A": data, "B": plain})
+
+    assert list(widget._datasets) == [
+        "A – label 1",
+        "A – label 2",
+        "B",
+    ]
+
+
+def test_histogram_widget_split_survives_a_rename(make_viewer_model, qtbot):
+    """Renaming the analysed dataset renames its per-label curves too."""
+    viewer = make_viewer_model()
+    _mask, data = _masked_setup(viewer)
+    widget = HistogramWidget(bins=8, viewer=viewer)
+    qtbot.addWidget(widget)
+    widget.set_dataset_sources({"Lifetime: img": "img"})
+    widget.update_data(data, label="Lifetime: img")
+    widget.split_by_mask_labels = True
+    widget._layer_colors["Lifetime: img – label 1"] = (1.0, 0.0, 0.0)
+
+    widget.rename_dataset("Lifetime: img", "Phase: img")
+
+    assert list(widget._datasets) == [
+        "Phase: img – label 1",
+        "Phase: img – label 2",
+    ]
+    assert widget._layer_colors["Phase: img – label 1"] == (1.0, 0.0, 0.0)
+    assert widget._dataset_sources["Phase: img – label 2"] == "img"
+
+
+def test_histogram_settings_dialog_offers_the_split(qtbot):
+    """The checkbox only shows when it applies, and picks a useful mode."""
+    dlg = HistogramSettingsDialog(layer_labels=["A"])
+    qtbot.addWidget(dlg)
+    assert not dlg.split_labels_checkbox.isVisible()
+
+    dlg = HistogramSettingsDialog(
+        layer_labels=["A"], split_mask_labels_available=True
+    )
+    qtbot.addWidget(dlg)
+    dlg.show()
+    assert dlg.split_labels_checkbox.isVisible()
+    assert dlg.mode_combo.currentText() == "Merged"
+
+    # Merged cannot tell the labels apart, so enabling the split moves to
+    # the mode that draws one outline each.
+    dlg.split_labels_checkbox.setChecked(True)
+    assert dlg.mode_combo.currentText() == "Individual layers"
+
+    # An explicit mode choice is never overridden.
+    dlg.mode_combo.setCurrentText("Grouped")
+    dlg.split_labels_checkbox.setChecked(False)
+    dlg.split_labels_checkbox.setChecked(True)
+    assert dlg.mode_combo.currentText() == "Grouped"
+
+
+def test_histogram_settings_dialog_applies_the_split(
+    make_viewer_model, qtbot, monkeypatch
+):
+    """Accepting the dialog with the box ticked re-splits the datasets."""
+    viewer = make_viewer_model()
+    _mask, data = _masked_setup(viewer)
+    widget = HistogramWidget(bins=8, viewer=viewer)
+    qtbot.addWidget(widget)
+    widget.set_dataset_sources({"Lifetime: img": "img"})
+    widget.update_data(data, label="Lifetime: img")
+
+    def _accept(self):
+        self.split_labels_checkbox.setChecked(True)
+        return QDialog.Accepted
+
+    monkeypatch.setattr(HistogramSettingsDialog, "exec", _accept)
+    widget._open_settings_dialog()
+
+    assert widget.split_by_mask_labels
+    assert widget.display_mode == "Individual layers"
+    assert list(widget._datasets) == [
+        "Lifetime: img – label 1",
+        "Lifetime: img – label 2",
+    ]
+
+
+def test_statistics_table_shows_a_row_per_mask_label(make_viewer_model, qtbot):
+    """The statistics dock follows the histogram into per-label rows."""
+    viewer = make_viewer_model()
+    _mask, data = _masked_setup(viewer)
+    widget = HistogramWidget(bins=8, viewer=viewer)
+    qtbot.addWidget(widget)
+    dock = StatisticsDockWidget(widget)
+    qtbot.addWidget(dock)
+    widget.set_dataset_sources({"Lifetime: img": "img"})
+    widget.update_data(data, label="Lifetime: img")
+
+    assert dock.layer_stats_table.rowCount() == 1
+
+    widget.split_by_mask_labels = True
+
+    table = dock.layer_stats_table
+    assert table.rowCount() == 2
+    assert [table.item(row, 0).text() for row in range(2)] == [
+        "Lifetime: img – label 1",
+        "Lifetime: img – label 2",
+    ]
+    assert dock.layer_stats_section._title == "Label Statistics"
+    # Each row summarises only its own label.
+    assert float(table.item(0, 2).text()) == np.mean(data[_mask == 1])
+
+
+def test_statistics_rows_per_mask_label_with_several_quantities(
+    make_viewer_model, qtbot
+):
+    """Two quantities of one layer keep one row per label, not per curve."""
+    viewer = make_viewer_model()
+    mask, data = _masked_setup(viewer)
+    widget = HistogramWidget(bins=8, viewer=viewer)
+    qtbot.addWidget(widget)
+    widget.set_dataset_sources({"C1: img": "img", "C2: img": "img"})
+    widget.set_dataset_series({"C1: img": "C1", "C2: img": "C2"})
+    widget.split_by_mask_labels = True
+    widget.update_multi_data({"C1: img": data, "C2: img": data * 2})
+
+    rows, names = widget.series_statistics_datasets()
+
+    assert names == ["C1", "C2"]
+    assert list(rows) == ["img – label 1", "img – label 2"]
+    assert set(rows["img – label 1"]) == {"C1", "C2"}
+    np.testing.assert_array_equal(
+        np.sort(rows["img – label 2"]["C2"]),
+        np.sort(data[mask == 2] * 2),
+    )
+
+
+def test_statistics_dock_offers_the_split(make_viewer_model, qtbot):
+    """The table's own checkbox drives (and follows) the histogram."""
+    viewer = make_viewer_model()
+    _mask, data = _masked_setup(viewer)
+    widget = HistogramWidget(bins=8, viewer=viewer)
+    qtbot.addWidget(widget)
+    dock = StatisticsDockWidget(widget)
+    qtbot.addWidget(dock)
+    dock.show()
+
+    widget.set_dataset_sources({"Lifetime: img": "img"})
+    widget.update_data(data, label="Lifetime: img")
+    assert dock.split_labels_checkbox.isVisible()
+
+    dock.split_labels_checkbox.setChecked(True)
+    assert widget.split_by_mask_labels
+    assert dock.layer_stats_table.rowCount() == 2
+
+    # Switching it off in the histogram is reflected back in the table.
+    widget.split_by_mask_labels = False
+    assert not dock.split_labels_checkbox.isChecked()
+    assert dock.layer_stats_table.rowCount() == 1
+
+    # An unmasked layer has nothing to separate, so nothing is offered.
+    plain = np.linspace(0.0, 1.0, 36).reshape(6, 6)
+    viewer.add_image(plain, name="plain")
+    widget.set_dataset_sources({"Lifetime: plain": "plain"})
+    widget.update_data(plain, label="Lifetime: plain")
+    assert not dock.split_labels_checkbox.isVisible()
+
+
+def test_checkable_combobox_popup_width_independent_of_widget_width(qtbot):
+    """Test that the popup list is wide enough to display items fully,
+    even when the combobox widget itself is extremely narrow (e.g. in a dock).
+    """
+    from qtpy.QtCore import QPointF, Qt
+    from qtpy.QtGui import QMouseEvent
+    from qtpy.QtWidgets import QVBoxLayout, QWidget
+
+    from napari_phasors._utils import CheckableComboBox
+
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    layout = QVBoxLayout(parent)
+    combo = CheckableComboBox(enable_primary_layer=False, unit="labels")
+    combo.addItems([str(i) for i in range(1, 15)])
+    layout.addWidget(combo)
+
+    # Force combobox to be very narrow, simulating narrow dock widget
+    combo.setFixedWidth(35)
+    parent.show()
+
+    combo.showPopup()
+    try:
+        # The popup view width must not be restricted to the 35px combobox width
+        view_width = combo.view().width()
+        assert view_width >= 150
+
+        # Checkboxes are visible and interactive
+        view = combo.view()
+        rect0 = view.visualRect(combo.model().index(0, 0))
+        pt = QPointF(rect0.center())
+        from qtpy.QtCore import QEvent
+
+        press_evt = QMouseEvent(
+            QEvent.MouseButtonPress,
+            pt,
+            Qt.LeftButton,
+            Qt.LeftButton,
+            Qt.NoModifier,
+        )
+        release_evt = QMouseEvent(
+            QEvent.MouseButtonRelease,
+            pt,
+            Qt.LeftButton,
+            Qt.LeftButton,
+            Qt.NoModifier,
+        )
+        combo.eventFilter(view.viewport(), press_evt)
+        combo.eventFilter(view.viewport(), release_evt)
+        assert combo.checkedItems() == ["1"]
+    finally:
+        combo.hidePopup()
+
+    # Test with long label items
+    combo2 = CheckableComboBox(enable_primary_layer=False, unit="labels")
+    qtbot.addWidget(combo2)
+    long_text = "Label 1 - Very Long Label Description That Needs Wide Popup"
+    combo2.addItems([long_text, "2"])
+    combo2.setFixedWidth(30)
+    combo2.show()
+
+    combo2.showPopup()
+    try:
+        assert combo2.view().width() >= 200
+    finally:
+        combo2.hidePopup()
+
+
+class _AutoUpdateTab(AutoUpdateMixin, QWidget):
+    """Minimal tab exercising the shared Autoupdate behaviour."""
+
+    def __init__(self, reason=None):
+        super().__init__()
+        self.reason = reason
+        self.runs = 0
+        self.button = QPushButton("Run")
+        self._build_autoupdate_toggle(
+            self.button, self._validate, self._run, "tooltip"
+        )
+
+    def _validate(self):
+        return self.reason
+
+    def _run(self):
+        self.runs += 1
+        # An analysis writes layers and metadata, which fires the very
+        # signals that asked for it; the mixin must not recurse.
+        self.request_autoupdate()
+
+
+def test_autoupdate_is_off_until_the_toggle_is_flipped(qtbot):
+    """No automatic run happens while the toggle is off."""
+    tab = _AutoUpdateTab()
+    qtbot.addWidget(tab)
+
+    assert not tab.autoupdate_enabled()
+    assert tab.request_autoupdate() is False
+    assert tab.runs == 0
+    assert tab.button.isEnabled()
+    assert tab.autoupdate_check.toolTip() == "tooltip"
+
+
+def test_autoupdate_runs_on_enable_and_disables_the_run_button(qtbot):
+    """Turning the switch on runs once and hands the button over."""
+    tab = _AutoUpdateTab()
+    qtbot.addWidget(tab)
+
+    tab.autoupdate_check.setChecked(True)
+
+    assert tab.autoupdate_enabled()
+    assert tab.runs == 1
+    assert not tab.button.isEnabled()
+
+    assert tab.request_autoupdate() is True
+    assert tab.runs == 2
+
+
+def test_autoupdate_re_enables_the_run_button_when_switched_off(qtbot):
+    """Switching back off restores manual operation without running."""
+    tab = _AutoUpdateTab()
+    qtbot.addWidget(tab)
+
+    tab.autoupdate_check.setChecked(True)
+    tab.autoupdate_check.setChecked(False)
+
+    assert not tab.autoupdate_enabled()
+    assert tab.button.isEnabled()
+    assert tab.runs == 1
+
+
+def test_autoupdate_skips_incomplete_inputs(qtbot):
+    """A validator complaint blocks the automatic run, unlike a click."""
+    tab = _AutoUpdateTab(reason="Enter a frequency.")
+    qtbot.addWidget(tab)
+
+    tab.autoupdate_check.setChecked(True)
+
+    assert tab.autoupdate_enabled()
+    assert tab.runs == 0
+
+    tab.reason = None
+    assert tab.request_autoupdate() is True
+    assert tab.runs == 1
+
+
+def test_autoupdate_does_not_recurse(qtbot):
+    """A run that requests another autoupdate is ignored while it runs."""
+    tab = _AutoUpdateTab()
+    qtbot.addWidget(tab)
+
+    tab.autoupdate_check.setChecked(True)
+
+    # ``_run`` calls ``request_autoupdate`` itself; only one run happened.
+    assert tab.runs == 1
+
+
+def test_autoupdate_is_inert_before_the_toggle_is_built(qtbot):
+    """A tab that never built the toggle can still be asked to update."""
+
+    class _Bare(AutoUpdateMixin, QWidget):
+        pass
+
+    tab = _Bare()
+    qtbot.addWidget(tab)
+
+    assert tab.request_autoupdate() is False
+    tab._autoupdate_enabled = True
+    assert tab.request_autoupdate() is False
+
+
+def test_warning_pixmap_keeps_its_logical_size_on_hidpi():
+    """The helper never pre-scales: the ratio stays the icon engine's own.
+
+    ``QIcon.pixmap`` takes a *logical* size and tags what it returns with the
+    ratio of the denser pixels it rendered. Pre-scaling the request and then
+    re-stamping the ratio doubles the triangle, which then overflows the
+    content rect napari's stylesheet gives ``#error_label`` and is clipped
+    into an unrecognisable wedge.
+    """
+    pixmap = warning_pixmap()
+    assert pixmap is not None and not pixmap.isNull()
+
+    dpr = pixmap.devicePixelRatio() or 1.0
+    assert (pixmap.width() / dpr) == pytest.approx(WARNING_ICON_SIZE)
+    assert (pixmap.height() / dpr) == pytest.approx(WARNING_ICON_SIZE)
+    assert pixmap.width() == pytest.approx(WARNING_ICON_SIZE * dpr)
+
+    smaller = warning_pixmap(size=8)
+    smaller_dpr = smaller.devicePixelRatio() or 1.0
+    assert (smaller.width() / smaller_dpr) == pytest.approx(8)
+
+
+def test_experimental_banner_icon_fits_its_label(qtbot):
+    """Every banner the factory builds keeps the triangle inside its box."""
+    banner = make_experimental_warning("Unproven; switch it off and report.")
+    qtbot.addWidget(banner)
+
+    assert banner.icon_label.objectName() == "error_label"
+    assert banner.text_label.text() == "Experimental"
+    assert "report" in banner.icon_label.toolTip()
+    assert "image: none" in banner.icon_label.styleSheet()
+
+    pixmap = banner.icon_label.pixmap()
+    assert pixmap is not None and not pixmap.isNull()
+    dpr = pixmap.devicePixelRatio() or 1.0
+    assert (pixmap.width() / dpr) == pytest.approx(WARNING_ICON_SIZE)

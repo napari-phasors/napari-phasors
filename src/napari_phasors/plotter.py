@@ -48,14 +48,18 @@ from superqt import QToggleSwitch
 
 from ._canvas import PhasorCanvasWidget as CanvasWidget
 from ._lod import LodSettingsWidget
+from ._mapping_filters import get_filters as get_mapping_filters
+from ._mapping_filters import rebuild_layer_from_filters
 from ._parallel import (
     BANDS,
     ITEMS,
     available_memory,
     default_workers,
+    memory_budget_enabled,
     memory_fraction,
     parallel_bands_enabled,
     parallel_items_enabled,
+    set_memory_budget_enabled,
     set_memory_fraction,
     set_parallel_bands_enabled,
     set_parallel_items_enabled,
@@ -81,10 +85,12 @@ from ._utils import (
     StatisticsTableWidget,
     analysis_section_stylesheet,
     apply_filter_and_threshold,
+    apply_filter_and_threshold_to_layers,
     available_colormap_names,
     build_group_styles_from_layer_metadata,
     build_groups_from_layer_metadata,
     confirm_unassigned_layers,
+    make_experimental_warning,
     make_section,
     make_solid_contour_cmap,
     normalize_rgb,
@@ -98,6 +104,7 @@ from ._utils import (
     split_items_by_group,
     unassigned_layer_labels,
     update_frequency_in_metadata,
+    validate_harmonics_for_wavelet,
     write_rows_to_csv,
 )
 from .calibration_tab import CalibrationWidget
@@ -106,51 +113,6 @@ from .filter_tab import FilterWidget
 from .fret_tab import FretWidget
 from .phasor_mapping_tab import PhasorMappingWidget
 from .selection_tab import SelectionWidget
-
-#: Fallback for :func:`_theme_warning_color`, matching the amber napari's own
-#: themes use, so the text next to the warning triangle stays legible even if
-#: the theme cannot be resolved.
-_FALLBACK_WARNING_COLOR = "#e3b617"
-
-
-def _theme_warning_color():
-    """Return the current napari theme's warning colour as a hex string.
-
-    Read from the theme rather than hard-coded so the "Experimental" text
-    matches the triangle beside it, which napari's stylesheet recolours with
-    this same value.
-    """
-    try:
-        from napari.settings import get_settings
-        from napari.utils.theme import get_theme
-
-        return get_theme(get_settings().appearance.theme).warning.as_hex()
-    except Exception:  # noqa: BLE001 - a missing/renamed theme must not
-        # take the settings tab down with it.
-        return _FALLBACK_WARNING_COLOR
-
-
-def _warning_pixmap(widget, size=16):
-    """Return napari's warning triangle as a pixmap, or ``None``.
-
-    Rendered from napari's own ``warning.svg`` in the theme's warning colour,
-    which is exactly what napari's stylesheet does for the ``error_label``
-    object name -- so the two agree pixel for pixel and the marker is the one
-    napari uses for its own experimental controls.
-    """
-    try:
-        from napari._qt.qt_resources import QColoredSVGIcon
-
-        icon = QColoredSVGIcon.from_resources("warning").colored(
-            _theme_warning_color()
-        )
-    except Exception:  # noqa: BLE001 - a missing resource must not take the
-        # settings tab down with it; the label just stays empty.
-        return None
-    ratio = widget.devicePixelRatioF() if widget is not None else 1.0
-    pixmap = icon.pixmap(round(size * ratio), round(size * ratio))
-    pixmap.setDevicePixelRatio(ratio)
-    return pixmap
 
 
 def _apply_label_colors_to_combo(combo, labels_layer, unique_labels):
@@ -233,7 +195,19 @@ class MaskAssignmentDialog(QDialog):
             }
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Assign a mask layer to each image layer:"))
+
+        top_header_layout = QHBoxLayout()
+        top_header_layout.addWidget(
+            QLabel("Assign a mask layer to each image layer:")
+        )
+        top_header_layout.addStretch()
+
+        self.invert_all_check = QCheckBox("Invert All")
+        self.invert_all_check.setToolTip("Invert all assigned masks.")
+        self.invert_all_check.clicked.connect(self._on_invert_all_clicked)
+        top_header_layout.addWidget(self.invert_all_check)
+
+        layout.addLayout(top_header_layout)
 
         # Scrollable form for assignments
         scroll = QScrollArea()
@@ -316,6 +290,7 @@ class MaskAssignmentDialog(QDialog):
                 current_invert_assignments.get(name, False)
             )
             invert_check.setEnabled(current != "None")
+            invert_check.toggled.connect(self._sync_invert_all_check)
             self._invert_checks[name] = invert_check
             row_layout.addWidget(invert_check)
 
@@ -328,6 +303,8 @@ class MaskAssignmentDialog(QDialog):
                 container=label_container,
             ):
                 cb.setEnabled(text != "None")
+                if text == "None":
+                    cb.setChecked(False)
                 layer = self._mask_layers.get(text)
                 if isinstance(layer, Labels):
                     container.setVisible(True)
@@ -355,6 +332,7 @@ class MaskAssignmentDialog(QDialog):
                 else:
                     container.setVisible(False)
                     lc.setVisible(False)
+                self._sync_invert_all_check()
 
             combo.currentTextChanged.connect(_on_mask_changed)
             combo.currentTextChanged.connect(self._sync_apply_all_combo)
@@ -389,6 +367,9 @@ class MaskAssignmentDialog(QDialog):
         self.auto_assign_button.setEnabled(bool(self._mask_layers))
         self.auto_assign_button.clicked.connect(self._on_auto_assign)
         apply_all_layout.addWidget(self.auto_assign_button)
+
+        self._sync_invert_all_check()
+
         layout.addLayout(apply_all_layout)
 
         # OK / Cancel
@@ -438,6 +419,32 @@ class MaskAssignmentDialog(QDialog):
             self._apply_all_combo.blockSignals(True)
             self._apply_all_combo.setCurrentText(common)
             self._apply_all_combo.blockSignals(False)
+
+    def _on_invert_all_clicked(self, checked):
+        """Toggle all enabled per-layer invert checkboxes."""
+        for cb in self._invert_checks.values():
+            if cb.isEnabled():
+                cb.setChecked(checked)
+
+    def _sync_invert_all_check(self, *_):
+        """Update 'Invert All' state based on enabled individual invert checkboxes."""
+        if not hasattr(self, "invert_all_check"):
+            return
+        enabled_cbs = [
+            cb for cb in self._invert_checks.values() if cb.isEnabled()
+        ]
+        if not enabled_cbs:
+            self.invert_all_check.setEnabled(False)
+            self.invert_all_check.blockSignals(True)
+            self.invert_all_check.setChecked(False)
+            self.invert_all_check.blockSignals(False)
+            return
+
+        self.invert_all_check.setEnabled(True)
+        all_checked = all(cb.isChecked() for cb in enabled_cbs)
+        self.invert_all_check.blockSignals(True)
+        self.invert_all_check.setChecked(all_checked)
+        self.invert_all_check.blockSignals(False)
 
     def get_assignments(self):
         """Return the mask assignments as a dict.
@@ -1081,7 +1088,8 @@ class PhasorCenterLayerSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
     marker_size : int
         Marker size for center dots.
     alpha : float
-        Alpha (opacity) for center dots.
+        Opacity for center dots; shown in the dialog as its complement,
+        transparency.
     merged_color : tuple
         RGB color tuple for merged mode.
     layer_labels : list of str
@@ -1172,15 +1180,15 @@ class PhasorCenterLayerSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         size_layout.addWidget(self._size_spinbox)
         root.addLayout(size_layout)
 
-        # Alpha
-        alpha_layout = QHBoxLayout()
-        alpha_layout.addWidget(QLabel("Alpha:"))
-        self._alpha_spinbox = QDoubleSpinBox()
-        self._alpha_spinbox.setRange(0.01, 1.0)
-        self._alpha_spinbox.setSingleStep(0.1)
-        self._alpha_spinbox.setValue(alpha)
-        alpha_layout.addWidget(self._alpha_spinbox)
-        root.addLayout(alpha_layout)
+        # Transparency (stored as its complement, alpha)
+        transparency_layout = QHBoxLayout()
+        transparency_layout.addWidget(QLabel("Transparency:"))
+        self._transparency_spinbox = QDoubleSpinBox()
+        self._transparency_spinbox.setRange(0.0, 0.99)
+        self._transparency_spinbox.setSingleStep(0.1)
+        self._transparency_spinbox.setValue(1.0 - alpha)
+        transparency_layout.addWidget(self._transparency_spinbox)
+        root.addLayout(transparency_layout)
 
         # Merged mode color (label differs for single vs multi layer)
         merged_color_layout = QHBoxLayout()
@@ -1405,8 +1413,11 @@ class PhasorCenterLayerSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         return self._size_spinbox.value()
 
     def get_alpha(self):
-        """Return the opacity for the phasor center markers."""
-        return self._alpha_spinbox.value()
+        """Return the opacity for the phasor center markers.
+
+        The dialog asks for *transparency*; the plot needs its complement.
+        """
+        return round(1.0 - self._transparency_spinbox.value(), 10)
 
     def get_merged_color(self):
         """Return the solid colour chosen for merged display."""
@@ -1651,6 +1662,18 @@ class PlotterWidget(QWidget):
     #: not reserve room for in its height hint, so a bar sitting flush under
     #: the dock title bar renders visibly clipped along its top edge.
     _TAB_BAR_TOP_MARGIN = 4
+
+    #: Fallback strip (px) kept above the plotter's own content when the
+    #: hosting dock's title bar cannot be measured. napari's
+    #: ``QtCustomTitleBar.sizeHint`` hard-codes a height of 20 px while the
+    #: bar actually lays out taller, and ``QDockWidget`` puts the content at
+    #: the size-hint height -- so the bar you drag the panel by is painted
+    #: over the first few rows of whatever sits flush at the top. Here that
+    #: is the matplotlib toolbar, whose pan and zoom glyphs lost their tops.
+    _TITLE_BAR_OVERLAP_FALLBACK = 6
+
+    #: Analysis tabs that own an "Autoupdate" toggle.
+    _AUTOUPDATE_TABS = ('phasor_mapping_tab', 'components_tab', 'fret_tab')
 
     def __init__(self, napari_viewer):
         """Initialize the PlotterWidget."""
@@ -2149,6 +2172,13 @@ class PlotterWidget(QWidget):
         self._create_fret_tab()
         self._compact_analysis_tab_margins()
 
+        # Connected last, so it runs after every tab has re-read its own
+        # per-harmonic state: an autoupdate must see the new harmonic's
+        # components, not the previous one's.
+        self.harmonic_spinbox.valueChanged.connect(
+            self._on_harmonic_changed_autoupdate
+        )
+
         # Connect napari signals when new layer is inseted or removed
         self.viewer.layers.events.inserted.connect(self.reset_layer_choices)
         self.viewer.layers.events.removed.connect(self.reset_layer_choices)
@@ -2210,8 +2240,11 @@ class PlotterWidget(QWidget):
         self.plotter_inputs_widget.marker_color_button.clicked.connect(
             self._on_marker_color_clicked
         )
-        self.plotter_inputs_widget.marker_alpha_spinbox.valueChanged.connect(
-            self._on_marker_alpha_changed
+        marker_transparency_spinbox = (
+            self.plotter_inputs_widget.marker_transparency_spinbox
+        )
+        marker_transparency_spinbox.valueChanged.connect(
+            self._on_marker_transparency_changed
         )
         self.plotter_inputs_widget.contour_levels_spinbox.valueChanged.connect(
             self._on_contour_levels_changed
@@ -2500,6 +2533,48 @@ class PlotterWidget(QWidget):
                     QSizePolicy.Preferred, QSizePolicy.Expanding
                 )
 
+    def _title_bar_overlap(self):
+        """Return how far the hosting dock's title bar reaches into content.
+
+        ``QDockWidget`` lays the content out below the title bar's *size
+        hint*, but napari's title bar reports a hard-coded 20 px while
+        rendering as tall as its buttons and margins need. The difference is
+        painted over the top of the content, so it is the strip that has to
+        be kept clear. Returns 0 when the plotter is not docked (a floating
+        or bare widget has no bar over it).
+        """
+        dock = self._find_plotter_dock()
+        if dock is None:
+            return 0
+        title_bar = dock.titleBarWidget()
+        if title_bar is None:
+            return 0
+        try:
+            hinted = title_bar.sizeHint().height()
+            actual = title_bar.height()
+        except RuntimeError:
+            return self._TITLE_BAR_OVERLAP_FALLBACK
+        if hinted <= 0 or actual <= 0:
+            return self._TITLE_BAR_OVERLAP_FALLBACK
+        return max(0, actual - hinted)
+
+    def _reserve_title_bar_overlap(self):
+        """Keep the dock's title bar from covering the top of the toolbar.
+
+        Idempotent, and re-applied whenever the dock state is refreshed: the
+        overlap changes when the panel floats, is re-docked, or the theme
+        changes the title bar's button metrics.
+        """
+        layout = self.layout()
+        if layout is None:
+            return
+        overlap = self._title_bar_overlap()
+        margins = layout.contentsMargins()
+        if margins.top() != overlap:
+            layout.setContentsMargins(
+                margins.left(), overlap, margins.right(), margins.bottom()
+            )
+
     def _add_analysis_dock_widget(self):
         """Add the analysis widget and histogram container to the viewer.
 
@@ -2537,6 +2612,7 @@ class PlotterWidget(QWidget):
             self._docks_initialized = True
 
             self._restore_expanding_dock_policies()
+            self._reserve_title_bar_overlap()
             self._enforce_bottom_dock_layout()
 
             # Defer resizeDocks so it runs after Qt has applied the splits.
@@ -2624,6 +2700,10 @@ class PlotterWidget(QWidget):
                 and not self._is_closing
             ):
                 self.close()
+            elif docked is not None:
+                # Newly docked: reserve the strip the title bar draws over
+                # straight away rather than waiting for the visibility poll.
+                self._reserve_title_bar_overlap()
         super().changeEvent(event)
 
     def _split_analysis_below_plotter(self):
@@ -3267,8 +3347,9 @@ class PlotterWidget(QWidget):
                 )
 
             if 'marker_alpha' in settings:
-                self.plotter_inputs_widget.marker_alpha_spinbox.setValue(
-                    settings['marker_alpha']
+                piw = self.plotter_inputs_widget
+                piw.marker_transparency_spinbox.setValue(
+                    1.0 - settings['marker_alpha']
                 )
 
             if 'contour_levels' in settings:
@@ -3674,7 +3755,14 @@ class PlotterWidget(QWidget):
                 "threshold_upper",
                 "threshold_method",
             ],
-            "phasor_mapping_tab": ["phasor_mapping", "lifetime"],
+            # The metric filter stack rides with the Phasor Mapping tab: it
+            # is one ordered object, even when some of its criteria are on
+            # the FRET efficiency.
+            "phasor_mapping_tab": [
+                "phasor_mapping",
+                "lifetime",
+                "mapping_filters",
+            ],
             "fret_tab": ["fret"],
             "components_tab": ["component_analysis"],
             "selection_tab": ["selections"],
@@ -3756,6 +3844,15 @@ class PlotterWidget(QWidget):
         if "filter_tab" in selected_tabs:
             for layer in layers:
                 self._apply_imported_filter_if_needed(layer)
+            self.refresh_phasor_data()
+        elif "phasor_mapping_tab" in selected_tabs:
+            # The imported stack still has to reach the arrays; without the
+            # Filter tab in the selection nothing else rebuilds them.
+            for layer in layers:
+                rebuild_layer_from_filters(
+                    layer,
+                    filter_params=self._filter_params_from_settings(layer),
+                )
             self.refresh_phasor_data()
 
     def _import_settings_from_layer(self):
@@ -4006,6 +4103,7 @@ class PlotterWidget(QWidget):
                 else:
                     tab._on_image_layer_changed()
                 tab._needs_update = False
+                self.request_analysis_autoupdates(tabs=[tab])
 
     def _hide_all_tab_artists(self):
         """Hide all tab-specific artists."""
@@ -4192,6 +4290,9 @@ class PlotterWidget(QWidget):
         # napari re-applies its Maximum vertical policy every time a widget
         # is docked, so re-assert ours here (no-op when already correct).
         self._restore_expanding_dock_policies()
+        # The title bar's reach over the content changes with float/dock and
+        # with the theme, so the strip reserved for it is re-measured too.
+        self._reserve_title_bar_overlap()
 
         analysis_hidden = _is_hidden('_analysis_dock')
         histogram_hidden = _is_hidden('_histogram_dock')
@@ -4278,6 +4379,11 @@ class PlotterWidget(QWidget):
             self._update_plot_elements()
         if hasattr(self, 'selection_tab'):
             self.selection_tab.on_harmonic_changed()
+
+    def _on_harmonic_changed_autoupdate(self, _value):
+        """Re-run the analyses that follow the harmonic, once tabs caught up."""
+        if not self._updating_settings:
+            self.request_analysis_autoupdates()
 
     # ------------------------------------------------------------------
     # Time-lapse (frame) handling
@@ -4472,8 +4578,12 @@ class PlotterWidget(QWidget):
         self.plotter_inputs_widget.marker_size_spinbox.setVisible(is_scatter)
         self.plotter_inputs_widget.label_marker_color.setVisible(is_scatter)
         self.plotter_inputs_widget.marker_color_button.setVisible(is_scatter)
-        self.plotter_inputs_widget.label_marker_alpha.setVisible(is_scatter)
-        self.plotter_inputs_widget.marker_alpha_spinbox.setVisible(is_scatter)
+        self.plotter_inputs_widget.label_marker_transparency.setVisible(
+            is_scatter
+        )
+        self.plotter_inputs_widget.marker_transparency_spinbox.setVisible(
+            is_scatter
+        )
 
         # Contour plot elements
         self.plotter_inputs_widget.label_contour_levels.setVisible(is_contour)
@@ -4510,11 +4620,16 @@ class PlotterWidget(QWidget):
             self.canvas_widget.artists['SCATTER'].size = value
             self.canvas_widget.figure.canvas.draw_idle()
 
-    def _on_marker_alpha_changed(self, value):
-        """Callback when the scatter marker opacity spinbox is changed."""
-        self._update_setting_in_metadata('marker_alpha', value)
+    def _on_marker_transparency_changed(self, value):
+        """Callback when the scatter marker transparency spinbox is changed.
+
+        The control is expressed as transparency (0 = opaque) to match the
+        rest of the plugin; the stored setting stays the matplotlib alpha.
+        """
+        alpha = round(1.0 - float(value), 10)
+        self._update_setting_in_metadata('marker_alpha', alpha)
         if not self._updating_settings and self.plot_type == 'SCATTER':
-            self.canvas_widget.artists['SCATTER'].alpha = value
+            self.canvas_widget.artists['SCATTER'].alpha = alpha
             self.canvas_widget.figure.canvas.draw_idle()
 
     def _on_contour_levels_changed(self, value):
@@ -5425,13 +5540,13 @@ class PlotterWidget(QWidget):
         widget.marker_color_button.setMaximumSize(20, 20)
         widget.marker_color_button.setStyleSheet("background-color: #1f77b4;")
 
-        widget.label_marker_alpha = QLabel("Alpha:")
-        widget.marker_alpha_spinbox = QDoubleSpinBox()
-        widget.marker_alpha_spinbox.setMinimum(0.01)
-        widget.marker_alpha_spinbox.setMaximum(1.0)
-        widget.marker_alpha_spinbox.setSingleStep(0.1)
-        widget.marker_alpha_spinbox.setValue(0.5)
-        widget.marker_alpha_spinbox.setKeyboardTracking(False)
+        widget.label_marker_transparency = QLabel("Transparency:")
+        widget.marker_transparency_spinbox = QDoubleSpinBox()
+        widget.marker_transparency_spinbox.setMinimum(0.0)
+        widget.marker_transparency_spinbox.setMaximum(0.99)
+        widget.marker_transparency_spinbox.setSingleStep(0.1)
+        widget.marker_transparency_spinbox.setValue(0.5)
+        widget.marker_transparency_spinbox.setKeyboardTracking(False)
 
         widget.label_contour_levels = QLabel("Levels:")
         widget.contour_levels_spinbox = QSpinBox()
@@ -5455,7 +5570,10 @@ class PlotterWidget(QWidget):
             (widget.label_7, widget.log_scale_checkbox),
             (widget.label_marker_size, widget.marker_size_spinbox),
             (widget.label_marker_color, widget.marker_color_button),
-            (widget.label_marker_alpha, widget.marker_alpha_spinbox),
+            (
+                widget.label_marker_transparency,
+                widget.marker_transparency_spinbox,
+            ),
             (widget.label_contour_levels, widget.contour_levels_spinbox),
             (widget.label_contour_linewidth, widget.contour_linewidth_spinbox),
         ]
@@ -5512,7 +5630,11 @@ class PlotterWidget(QWidget):
             (piw.label_7, piw.log_scale_checkbox, 5),
             (piw.label_marker_size, piw.marker_size_spinbox, 6),
             (piw.label_marker_color, piw.marker_color_button, 7),
-            (piw.label_marker_alpha, piw.marker_alpha_spinbox, 8),
+            (
+                piw.label_marker_transparency,
+                piw.marker_transparency_spinbox,
+                8,
+            ),
             (piw.label_contour_levels, piw.contour_levels_spinbox, 9),
             (piw.label_contour_linewidth, piw.contour_linewidth_spinbox, 10),
         ]
@@ -5625,19 +5747,48 @@ class PlotterWidget(QWidget):
         grid.addWidget(self.parallel_bands_checkbox, 1, 1)
 
         self.memory_budget_label = QLabel("Memory budget:")
+        self.memory_budget_checkbox = QToggleSwitch()
+        self.memory_budget_checkbox.setChecked(memory_budget_enabled())
+        self.memory_budget_checkbox.setToolTip(
+            "Cap concurrent work and workers based on available RAM. "
+            "Disable to process without memory budget limits."
+        )
         self.memory_budget_spinbox = QSpinBox()
         self.memory_budget_spinbox.setRange(5, 95)
         self.memory_budget_spinbox.setSuffix("% of free RAM")
         self.memory_budget_spinbox.setValue(round(memory_fraction() * 100))
+        self.memory_budget_spinbox.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed
+        )
+        self.memory_budget_spinbox.setStyleSheet(
+            "QSpinBox { min-width: 150px; }"
+        )
+        self.memory_budget_spinbox.setMinimumWidth(170)
         self.memory_budget_spinbox.setToolTip(
             "Share of free memory that concurrent work may occupy. Lower "
             "this if reading a large stack runs out of memory."
         )
+        self.memory_budget_spinbox.setEnabled(
+            self.memory_budget_checkbox.isChecked()
+        )
+        self.memory_budget_checkbox.toggled.connect(
+            self._on_memory_budget_toggled
+        )
         self.memory_budget_spinbox.valueChanged.connect(
             self._on_memory_budget_changed
         )
+
+        memory_budget_container = QWidget()
+        memory_budget_container.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed
+        )
+        memory_budget_layout = QHBoxLayout(memory_budget_container)
+        memory_budget_layout.setContentsMargins(0, 0, 0, 0)
+        memory_budget_layout.addWidget(self.memory_budget_checkbox)
+        memory_budget_layout.addWidget(self.memory_budget_spinbox, 1)
+
         grid.addWidget(self.memory_budget_label, 2, 0)
-        grid.addWidget(self.memory_budget_spinbox, 2, 1)
+        grid.addWidget(memory_budget_container, 2, 1)
 
         self.phasor_precision_label = QLabel("Phasor precision:")
         self.phasor_precision_combobox = QComboBox()
@@ -5671,47 +5822,19 @@ class PlotterWidget(QWidget):
     def _build_experimental_warning(self):
         """Return the "Experimental" banner for the Performance section.
 
-        The marker is napari's own: ``warning.svg`` -- the triangle with the
-        exclamation mark -- in the current theme's warning colour, which is
-        what napari puts on its own experimental controls. The label carries
-        the ``error_label`` object name napari's stylesheet targets *and*
-        renders that same resource itself, so it looks right whether or not
-        the stylesheet reaches this widget. Reusing napari's icon rather than
-        shipping our own keeps the two identical in every theme.
+        Built by :func:`~napari_phasors._utils.make_experimental_warning` so
+        this banner and the one on the tile layout dialog are the same
+        marker, in the same theme colour, drawn from napari's own
+        ``warning.svg``.
         """
-        widget = QWidget()
-        row = QHBoxLayout(widget)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(4)
-
-        tooltip = (
+        banner = make_experimental_warning(
             "Parallel processing is new. Results are identical to running "
             "sequentially, but if you hit a crash, a hang or an out-of-memory "
             "error, switch these off and report it."
         )
-
-        self.experimental_warning_icon = QLabel()
-        self.experimental_warning_icon.setObjectName("error_label")
-        self.experimental_warning_icon.setToolTip(tooltip)
-        # The object name alone only paints the icon where napari's
-        # stylesheet reaches this widget, which depends on where the dock
-        # ends up. Rendering the same resource ourselves makes the marker
-        # unconditional; the stylesheet's ``image`` wins where it applies,
-        # and it draws the identical SVG in the identical colour.
-        pixmap = _warning_pixmap(self.experimental_warning_icon)
-        if pixmap is not None:
-            self.experimental_warning_icon.setPixmap(pixmap)
-
-        self.experimental_warning_label = QLabel("Experimental")
-        self.experimental_warning_label.setToolTip(tooltip)
-        self.experimental_warning_label.setStyleSheet(
-            f"color: {_theme_warning_color()};"
-        )
-
-        row.addWidget(self.experimental_warning_icon)
-        row.addWidget(self.experimental_warning_label)
-        row.addStretch(1)
-        return widget
+        self.experimental_warning_icon = banner.icon_label
+        self.experimental_warning_label = banner.text_label
+        return banner
 
     def _on_parallel_items_toggled(self, checked):
         """Switch fan-out over separate layers, files and images on or off.
@@ -5729,6 +5852,12 @@ class PlotterWidget(QWidget):
         finishes with the setting it started under.
         """
         set_parallel_bands_enabled(checked)
+        self._update_parallel_processing_hint()
+
+    def _on_memory_budget_toggled(self, checked):
+        """Switch memory budget capping on or off."""
+        set_memory_budget_enabled(checked)
+        self.memory_budget_spinbox.setEnabled(checked)
         self._update_parallel_processing_hint()
 
     def _on_memory_budget_changed(self, percent):
@@ -5777,17 +5906,23 @@ class PlotterWidget(QWidget):
 
         parts = []
         if items_on:
-            free = available_memory()
-            budget = (
-                f"{free * memory_fraction() / 2 ** 30:.1f} GB of the "
-                f"{free / 2 ** 30:.1f} GB free right now"
-                if free
-                else f"{round(memory_fraction() * 100)}% of free memory"
-            )
-            parts.append(
-                f"Up to {default_workers(scope=ITEMS)} layers, files or "
-                f"images are processed at once, sized to fit {budget}."
-            )
+            if memory_budget_enabled():
+                free = available_memory()
+                budget = (
+                    f"{free * memory_fraction() / 2 ** 30:.1f} GB of the "
+                    f"{free / 2 ** 30:.1f} GB free right now"
+                    if free
+                    else f"{round(memory_fraction() * 100)}% of free memory"
+                )
+                parts.append(
+                    f"Up to {default_workers(scope=ITEMS)} layers, files or "
+                    f"images are processed at once, sized to fit {budget}."
+                )
+            else:
+                parts.append(
+                    f"Up to {default_workers(scope=ITEMS)} layers, files or "
+                    f"images are processed at once."
+                )
         else:
             parts.append(
                 "Layers, files and images are processed one at a time, which "
@@ -5851,8 +5986,8 @@ class PlotterWidget(QWidget):
                 7,
             ),
             (
-                self.plotter_inputs_widget.label_marker_alpha,
-                self.plotter_inputs_widget.marker_alpha_spinbox,
+                self.plotter_inputs_widget.label_marker_transparency,
+                self.plotter_inputs_widget.marker_transparency_spinbox,
                 8,
             ),
             (
@@ -6102,30 +6237,8 @@ class PlotterWidget(QWidget):
             title="Components Histogram & Statistics",
         )
 
-        # Insert component selector combobox at the top of the dock widget
-        dock_layout = self.components_histogram_dock_widget.layout()
-        component_selector = QWidget()
-        selector_layout = QHBoxLayout(component_selector)
-        selector_layout.setContentsMargins(4, 4, 4, 0)
-        selector_layout.addWidget(QLabel("Component:"))
-        selector_layout.addWidget(
-            self.components_tab.histogram_component_combobox, 1
-        )
-        dock_layout.insertWidget(0, component_selector)
-
-        # The docked histogram area is clamped to its minimum height
-        # (see ``_resize_initial_docks``). This dock uniquely carries the
-        # "Component:" selector row above the plot, so grow its minimum by that
-        # row's height; otherwise the extra row eats into the histogram canvas
-        # and the bottom of the plot is clipped in the Components tab.
-        selector_extra = (
-            component_selector.sizeHint().height() + dock_layout.spacing()
-        )
-        self.components_histogram_dock_widget.setMinimumHeight(
-            self.components_histogram_dock_widget.minimumHeight()
-            + selector_extra
-        )
-
+        # Which components are plotted is chosen with the "Show in histogram
+        # and statistics" toggle on each component card in the Components tab.
         self._components_hist_page_idx = self._histogram_stack.addWidget(
             self.components_histogram_dock_widget
         )
@@ -6135,18 +6248,6 @@ class PlotterWidget(QWidget):
             self.components_tab.histogram_widget,
             title="Components Statistics",
         )
-
-        # Mirror the component selector at the top of the statistics dock so
-        # the component can be changed without opening the histogram dock.
-        stats_dock_layout = self.components_statistics_dock_widget.layout()
-        stats_component_selector = QWidget()
-        stats_selector_layout = QHBoxLayout(stats_component_selector)
-        stats_selector_layout.setContentsMargins(4, 4, 4, 0)
-        stats_selector_layout.addWidget(QLabel("Component:"))
-        stats_selector_layout.addWidget(
-            self.components_tab.stats_component_combobox, 1
-        )
-        stats_dock_layout.insertWidget(0, stats_component_selector)
 
         self._components_stats_page_idx = self._statistics_stack.addWidget(
             self.components_statistics_dock_widget
@@ -7366,6 +7467,12 @@ class PlotterWidget(QWidget):
                 self.fret_tab._needs_update = True
 
         self._notify_analysis_tabs_layer_selection_changed()
+
+        # Only the visible tab was restored above; the others were torn down
+        # and would autoupdate from stale widget state. They catch up from
+        # ``_on_tab_changed`` when the user brings them forward.
+        self.request_analysis_autoupdates(tabs=[current_tab])
+
         self.plot()
 
         current_tab_index = self.tab_widget.currentIndex()
@@ -7574,6 +7681,111 @@ class PlotterWidget(QWidget):
         self.harmonic_spinbox.setRange(
             int(np.min(harmonics)), int(np.max(harmonics))
         )
+
+    @staticmethod
+    def _has_filter_or_threshold_settings(layer):
+        """Return whether *layer* has a filter or threshold worth reapplying.
+
+        A layer can carry a filter without a threshold (or the other way
+        around), and a threshold can consist of an upper bound only, so every
+        setting has to be checked independently.
+        """
+        settings = layer.metadata.get('settings') or {}
+        filter_settings = settings.get('filter') or {}
+        if filter_settings.get('method') is not None:
+            return True
+        if settings.get('threshold') is not None:
+            return True
+        if settings.get('threshold_upper') is not None:
+            return True
+        if get_mapping_filters(layer):
+            return True
+        threshold_method = settings.get('threshold_method')
+        return threshold_method not in (None, "None")
+
+    @staticmethod
+    def _filter_params_from_settings(layer):
+        """Build filter/threshold parameters from *layer*'s own settings.
+
+        The Filter tab widgets only ever hold the primary layer's values, so
+        they cannot be used to restore a selection of layers that were
+        filtered differently (e.g. several files read back from OME-TIFF).
+        """
+        settings = layer.metadata.get('settings') or {}
+        filter_settings = settings.get('filter') or {}
+        method = filter_settings.get('method')
+        size = repeat = sigma = levels = harmonics = None
+
+        if method == 'median':
+            size = int(filter_settings.get('size', 3))
+            repeat = int(filter_settings.get('repeat', 1))
+            if repeat <= 0:
+                method = None
+        elif method == 'wavelet':
+            harmonics = layer.metadata.get('harmonics')
+            if harmonics is not None and validate_harmonics_for_wavelet(
+                harmonics
+            ):
+                sigma = float(filter_settings.get('sigma', 2.0))
+                levels = int(filter_settings.get('levels', 1))
+            else:
+                method = None
+                harmonics = None
+        elif method is not None:
+            method = None
+
+        return {
+            'threshold': settings.get('threshold'),
+            'threshold_upper': settings.get('threshold_upper'),
+            'threshold_method': settings.get('threshold_method'),
+            'filter_method': method,
+            'size': size,
+            'repeat': repeat,
+            'sigma': sigma,
+            'levels': levels,
+            'harmonics': harmonics,
+        }
+
+    def _reapply_filter_and_threshold(self, selected_layers):
+        """Reapply the stored filter/threshold after a mask change.
+
+        Masking restores the original phasor data first, which also undoes any
+        filter and threshold the user had applied, so they have to be applied
+        again on top of the mask. Each layer is restored from its *own*
+        settings, so layers filtered differently keep their own processing.
+        """
+        self.filter_tab._on_image_layer_changed()
+        if not selected_layers:
+            return
+
+        layer_params = [
+            (layer, self._filter_params_from_settings(layer))
+            for layer in selected_layers
+            if self._has_filter_or_threshold_settings(layer)
+        ]
+        if not layer_params:
+            return
+
+        errors = apply_filter_and_threshold_to_layers(layer_params)
+        failed = [
+            (layer.name, error)
+            for (layer, _), error in zip(layer_params, errors, strict=True)
+            if isinstance(error, BaseException)
+        ]
+        if failed:
+            details = "\n".join(
+                f"  \u2022 {name}: {error}" for name, error in failed
+            )
+            notifications.show_error(
+                f"Could not filter {len(failed)} layer(s):\n{details}"
+            )
+
+        # The metric filter stack is not reapplied here: it is part of
+        # ``compute_filter_and_threshold``, which every layer above just went
+        # through. ``_has_filter_or_threshold_settings`` counts a stack as a
+        # reason to rebuild, so a layer whose only processing is a metric
+        # filter is in the list too.
+        self.refresh_phasor_data()
 
     def _restore_original_phasor_data(self, image_layer):
         """Restore original G, S, and image data from backups.
@@ -7889,15 +8101,7 @@ class PlotterWidget(QWidget):
                 self._mask_label_assignments[image_layer.name] = labels
 
         if hasattr(self, 'filter_tab'):
-            self.filter_tab._on_image_layer_changed()
-            first_layer = selected_layers[0]
-            if (
-                first_layer.metadata['settings'].get('filter', None)
-                is not None
-                and first_layer.metadata['settings'].get('threshold', None)
-                is not None
-            ):
-                self.filter_tab.apply_button_clicked()
+            self._reapply_filter_and_threshold(selected_layers)
 
         self.plot()
 
@@ -7946,15 +8150,7 @@ class PlotterWidget(QWidget):
             )
 
         if hasattr(self, 'filter_tab'):
-            self.filter_tab._on_image_layer_changed()
-            first_layer = selected_layers[0]
-            if (
-                first_layer.metadata['settings'].get('filter', None)
-                is not None
-                and first_layer.metadata['settings'].get('threshold', None)
-                is not None
-            ):
-                self.filter_tab.apply_button_clicked()
+            self._reapply_filter_and_threshold(selected_layers)
 
         self.refresh_current_plot()
 
@@ -8177,16 +8373,7 @@ class PlotterWidget(QWidget):
                 )
 
         if hasattr(self, 'filter_tab'):
-            self.filter_tab._on_image_layer_changed()
-            if selected_layers:
-                first_layer = selected_layers[0]
-                if (
-                    first_layer.metadata['settings'].get('filter', None)
-                    is not None
-                    and first_layer.metadata['settings'].get('threshold', None)
-                    is not None
-                ):
-                    self.filter_tab.apply_button_clicked()
+            self._reapply_filter_and_threshold(selected_layers)
 
         self._update_mask_assign_button_text()
         self.plot()
@@ -8252,6 +8439,32 @@ class PlotterWidget(QWidget):
                     tab._restore_on_layer_change()
                 elif hasattr(tab, '_needs_update'):
                     tab._needs_update = True
+
+        # The phasor data itself changed (a filter, a threshold, or a
+        # calibration): every tab's inputs are still valid, so any of them
+        # with Autoupdate on recomputes against the new data.
+        self.request_analysis_autoupdates()
+
+    def request_analysis_autoupdates(self, tabs=None):
+        """Re-run the analyses whose Autoupdate toggle is on.
+
+        Called for the events an analysis result depends on but that happen
+        outside its own tab: the filter or calibration tab rewriting the
+        phasor data, a new harmonic, or a different layer selection. ``tabs``
+        restricts the request to specific tab instances; by default every
+        tab holding a toggle is asked.
+
+        Returns the list of tabs that actually recomputed.
+        """
+        updated = []
+        for attr in self._AUTOUPDATE_TABS:
+            tab = getattr(self, attr, None)
+            if tab is None or (tabs is not None and tab not in tabs):
+                continue
+            request = getattr(tab, 'request_autoupdate', None)
+            if request is not None and request():
+                updated.append(tab)
+        return updated
 
     def has_phasor_data(self):
         """Check if valid phasor data is loaded.
@@ -8932,13 +9145,13 @@ class PlotterWidget(QWidget):
         plot_data = np.column_stack((x_data, y_data))
         self.canvas_widget.artists['SCATTER'].data = plot_data
 
-        # Setting data causes biaplotter to reset size and alpha to default values
-        # Re-apply the user's chosen size, alpha, and color
+        # Setting data resets size and alpha to their default values, so the
+        # user's chosen size, transparency and color are re-applied here.
         self.canvas_widget.artists['SCATTER'].size = (
             self.plotter_inputs_widget.marker_size_spinbox.value()
         )
-        self.canvas_widget.artists['SCATTER'].alpha = (
-            self.plotter_inputs_widget.marker_alpha_spinbox.value()
+        self.canvas_widget.artists['SCATTER'].alpha = 1.0 - (
+            self.plotter_inputs_widget.marker_transparency_spinbox.value()
         )
         self.canvas_widget.artists['SCATTER'].color = getattr(
             self, '_marker_color', '#1f77b4'

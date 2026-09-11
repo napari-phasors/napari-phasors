@@ -52,6 +52,49 @@ phasor plot and the image.
   <source src="https://github.com/napari-phasors/napari-phasors-data/raw/main/videos/phase%20modulation.mp4" type="video/mp4">
 </video>
 
+## Filtering by lifetime, phase or modulation
+
+The **Filter** section works the way the **Filter** tab's intensity threshold
+does, but on the quantities computed here: pixels whose value falls outside a
+range you choose lose their phasor coordinates (they are set to NaN) and
+disappear from the phasor plot, the output maps, the histogram and the
+statistics table at the same time.
+
+Each criterion is a **card**. Click **+ Add filter**, below the list, to create
+one on the quantity currently displayed. The quantity is chosen on the card
+itself and does not have to match the display, so you can filter by lifetime
+while looking at modulation. A card carries:
+
+| Control | Purpose |
+|---|---|
+| Check box | Switch the filter off without deleting it. The pixels it hid come straight back. |
+| Quantity drop-down | The lifetime, phase or modulation the filter tests. Changing it restarts the range at that quantity's full data span. |
+| **Keep** / **Exclude** | Keep only what is inside the range, or remove what is inside it. |
+| Range slider and min/max boxes | The range itself, in the metric's own units. |
+| **×** | Remove the filter for good. |
+
+Under each range, the card reports the share of measured pixels that criterion
+keeps on its own; the line under the list reports how many filters are active
+and how much of the layer survives all of them together.
+
+Filters **combine as conditions, not as steps**: a pixel is kept only when it
+satisfies every enabled criterion, and each criterion is always evaluated
+against the unfiltered data. Three consequences follow, and they are the point
+of the card list:
+
+- The order you add filters in does not change the result.
+- Removing or disabling one filter restores exactly the pixels it had hidden —
+  no earlier filter is silently lost.
+- The range offered for a new filter always spans the full data range, never
+  the range left over by the filters already applied.
+
+The stack is stored in the layer metadata, so it survives a layer switch, is
+reapplied automatically when a threshold, a mask or a calibration rewrites the
+phasor data, and is preserved when exporting to OME-TIF. It is shared with the
+**FRET** tab: a FRET-efficiency criterion is listed here too (greyed out, but
+still removable), so a pixel that disappeared is always accounted for by a
+visible card.
+
 ## Arc Overlay Tool
 
 The **Phase & Modulation Arcs** tool helps visualize analysis boundaries by
@@ -72,6 +115,13 @@ component or reflects mixed lifetimes.
 Click **Calculate Output** to compute the selected metric for all currently
 selected layers. A new napari image layer is created (or updated if it
 already exists) with the selected colormap applied.
+
+> [!TIP]
+> Enable the **Autoupdate** toggle below the button to recompute the output
+> automatically. While it is on, the button is disabled and the analysis is
+> re-run whenever the tab's own inputs change, the harmonic or the layer
+> selection changes, or the **Filter** or **Calibration** tab rewrites the
+> phasor data.
 
 After the first successful calculation, changing **Parameter to Analyze** or
 the lifetime type automatically recalculates the new output for the currently

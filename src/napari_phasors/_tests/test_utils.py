@@ -16,6 +16,9 @@ from napari_phasors._synthetic_generator import (
 from napari_phasors._utils import (
     apply_filter_and_threshold,
     colormap_to_dict,
+    extract_channel_label,
+    extract_channel_suffix,
+    format_phasor_layer_name,
     name_match_stem,
     rank_mask_candidates,
     threshold_li,
@@ -683,7 +686,15 @@ def test_name_match_stem():
     """Stems drop directory, extension and any compound suffix."""
     assert name_match_stem("/data/sample.ome.tif") == "sample"
     assert name_match_stem("Sample_1.TIF") == "sample_1"
-    # Layer names carry a suffix after the extension.
+    # Layer names carry a suffix after the extension or without an extension.
+    assert (
+        name_match_stem("sample.ptu Intensity [Phasor]", strip_directory=False)
+        == "sample"
+    )
+    assert (
+        name_match_stem("sample Intensity [Phasor]", strip_directory=False)
+        == "sample"
+    )
     assert (
         name_match_stem("sample.ptu Intensity Image", strip_directory=False)
         == "sample"
@@ -692,6 +703,56 @@ def test_name_match_stem():
     assert name_match_stem("a/b", strip_directory=False) == "a/b"
     assert name_match_stem("a/b") == "b"
     assert name_match_stem(".tif") == ""
+
+
+def test_format_phasor_layer_name():
+    """format_phasor_layer_name formats layer names following conventions."""
+    assert format_phasor_layer_name("sample") == "sample Intensity [Phasor]"
+    assert (
+        format_phasor_layer_name("sample", channel_label=0)
+        == "sample Intensity: Channel 0 [Phasor]"
+    )
+    assert (
+        format_phasor_layer_name("sample", channel_label="DAPI")
+        == "sample Intensity: Channel DAPI [Phasor]"
+    )
+    assert (
+        format_phasor_layer_name("dir", is_stack=True)
+        == "dir Stack Intensity [Phasor]"
+    )
+    assert (
+        format_phasor_layer_name("dir", channel_label=1, is_stack=True)
+        == "dir Stack Intensity: Channel 1 [Phasor]"
+    )
+    assert (
+        format_phasor_layer_name("mosaic", is_mosaic=True)
+        == "mosaic Mosaic Intensity [Phasor]"
+    )
+    assert (
+        format_phasor_layer_name("mosaic", channel_label=2, is_mosaic=True)
+        == "mosaic Mosaic Intensity: Channel 2 [Phasor]"
+    )
+
+
+def test_extract_channel_label():
+    """extract_channel_label extracts channel from metadata or layer name."""
+    assert extract_channel_label("sample Intensity: Channel 0 [Phasor]") == "0"
+    assert extract_channel_label("sample Intensity Image: Channel 1") == "1"
+    assert extract_channel_label("sample Intensity [Phasor]") is None
+    # Priority given to metadata settings if present
+    meta = {"settings": {"channel": 2}}
+    assert extract_channel_label("dummy", metadata=meta) == "2"
+
+
+def test_extract_channel_suffix():
+    """extract_channel_suffix extracts channel suffix string."""
+    assert (
+        extract_channel_suffix("sample Intensity: Channel 0 [Phasor]")
+        == ": Channel 0"
+    )
+    assert extract_channel_suffix("sample Intensity [Phasor]") == ""
+    assert extract_channel_suffix("") == ""
+    assert extract_channel_suffix(None) == ""
 
 
 def test_rank_mask_candidates_orders_matches():

@@ -31,8 +31,18 @@ from matplotlib.widgets import (
     RectangleSelector,
 )
 from psygnal import Signal
-from qtpy.QtCore import QRectF, QSize, Qt
-from qtpy.QtGui import QColor, QCursor, QIcon, QPainter, QPen, QPixmap
+from qtpy.QtCore import QPointF, QRect, QRectF, QSize, Qt
+from qtpy.QtGui import (
+    QBrush,
+    QColor,
+    QCursor,
+    QIcon,
+    QImage,
+    QPainter,
+    QPen,
+    QPixmap,
+    QPolygonF,
+)
 from qtpy.QtWidgets import (
     QHBoxLayout,
     QToolButton,
@@ -67,6 +77,52 @@ default_overlay_cmap, default_overlay_cmap_first_transparent = (
 # Backward-compatibility aliases
 cat10_mod_cmap = default_overlay_cmap
 cat10_mod_cmap_first_transparent = default_overlay_cmap_first_transparent
+
+#: Default diameter, in screen pixels, of the brush and eraser tools.
+DEFAULT_BRUSH_SIZE_PX = 14.0
+
+#: Default class palette used across the manual selection tools.
+DEFAULT_MANUAL_COLORS = [
+    QColor("#ff7f0e"),  # Orange
+    QColor("#1f77b4"),  # Blue
+    QColor("#2ca02c"),  # Green
+    QColor("#9400d3"),  # Purple
+    QColor("#e377c2"),  # Pink
+    QColor("#8c564b"),  # Brown
+    QColor("#bcbd22"),  # Olive / Yellow-green
+    QColor("#17becf"),  # Cyan
+    QColor("#e41a1c"),  # Red
+    QColor("#ffd700"),  # Gold
+]
+
+
+def _capsule_mask(
+    px: np.ndarray,
+    py: np.ndarray,
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    rx: float,
+    ry: float,
+) -> np.ndarray:
+    """Return a mask of points within ``(rx, ry)`` of a segment.
+
+    The stroke a brush leaves between two mouse positions is the set of
+    points closer than the brush radius to the segment joining them.
+    Distances are measured in units of the radii, so the footprint stays
+    round on screen even when the two axes have different scales.
+    """
+    ux = (np.asarray(px, dtype=float) - x0) / rx
+    uy = (np.asarray(py, dtype=float) - y0) / ry
+    vx = (x1 - x0) / rx
+    vy = (y1 - y0) / ry
+    vv = vx * vx + vy * vy
+    # A zero-length segment (a single dab) collapses to its start point.
+    t = np.clip((ux * vx + uy * vy) / vv, 0.0, 1.0) if vv > 0 else 0.0
+    dx = ux - t * vx
+    dy = uy - t * vy
+    return (dx * dx + dy * dy) <= 1.0
 
 
 class SelectionGeometry:
@@ -105,7 +161,53 @@ class SelectionGeometry:
             path: mplPath = self.params
             return path.contains_points(points)
 
+        if self.shape_type == "brush":
+            return self._brush_contains(x, y)
+
         return np.zeros(len(points), dtype=bool)
+
+    def _brush_contains(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        """Return a mask of points covered by a stored brush stroke.
+
+        ``params`` holds one ``(x0, y0, x1, y1, rx, ry)`` row per painted
+        segment; a point belongs to the stroke when any segment covers it.
+        """
+        segments = np.atleast_2d(np.asarray(self.params, dtype=float))
+        inside = np.zeros(len(x), dtype=bool)
+        if segments.size == 0:
+            return inside
+
+        # Only points inside the stroke bounding box can be covered, and
+        # a long stroke holds many segments, so prefilter before looping.
+        rx = segments[:, 4]
+        ry = segments[:, 5]
+        xmin = np.min(np.minimum(segments[:, 0], segments[:, 2]) - rx)
+        xmax = np.max(np.maximum(segments[:, 0], segments[:, 2]) + rx)
+        ymin = np.min(np.minimum(segments[:, 1], segments[:, 3]) - ry)
+        ymax = np.max(np.maximum(segments[:, 1], segments[:, 3]) + ry)
+        near = (x >= xmin) & (x <= xmax) & (y >= ymin) & (y <= ymax)
+        if not np.any(near):
+            return inside
+
+        near_x = x[near]
+        near_y = y[near]
+        covered = np.zeros(len(near_x), dtype=bool)
+        for x0, y0, x1, y1, seg_rx, seg_ry in segments:
+            remaining = ~covered
+            if not np.any(remaining):
+                break
+            covered[remaining] = _capsule_mask(
+                near_x[remaining],
+                near_y[remaining],
+                x0,
+                y0,
+                x1,
+                y1,
+                seg_rx,
+                seg_ry,
+            )
+        inside[near] = covered
+        return inside
 
 
 def _render_selector_pixmap(shape: str, color: str, size: int = 24) -> QPixmap:
@@ -117,7 +219,12 @@ def _render_selector_pixmap(shape: str, color: str, size: int = 24) -> QPixmap:
 
     pen = QPen(QColor(color))
     pen.setWidthF(1.8)
-    pen.setStyle(Qt.DashLine)
+    # The drawing tools are outlined like the region they leave behind:
+    # dashed for the marquee shapes, solid for the painting tools.
+    if shape in ("brush", "eraser"):
+        pen.setWidthF(1.5)
+    else:
+        pen.setStyle(Qt.DashLine)
     painter.setPen(pen)
     painter.setBrush(Qt.NoBrush)
 
@@ -151,6 +258,51 @@ def _render_selector_pixmap(shape: str, color: str, size: int = 24) -> QPixmap:
         )
         path.lineTo(margin, size - margin + 1)
         painter.drawPath(path)
+    elif shape in ("brush", "eraser"):
+        rendered_svg = False
+        icon_name = "paint" if shape == "brush" else "erase"
+        try:
+            from napari.resources import ICONS, get_colorized_svg
+            from qtpy.QtCore import QByteArray
+            from qtpy.QtSvg import QSvgRenderer
+
+            if icon_name in ICONS:
+                color_str = (
+                    color.name() if hasattr(color, "name") else str(color)
+                )
+                svg_data = get_colorized_svg(ICONS[icon_name], color_str)
+                renderer = QSvgRenderer(QByteArray(svg_data.encode("utf-8")))
+                renderer.render(painter, rect)
+                rendered_svg = True
+        except Exception:  # noqa: BLE001
+            pass
+
+        if not rendered_svg:
+            scale = size / 24.0
+
+            def pt(x, y):
+                return QPointF(x * scale, y * scale)
+
+            if shape == "brush":
+                painter.drawLine(pt(20.5, 3.5), pt(13.0, 11.0))
+                painter.drawLine(pt(10.0, 9.5), pt(14.5, 14.0))
+                bristles = QPolygonF(
+                    [pt(10.0, 11.0), pt(13.0, 14.0), pt(5.0, 19.0)]
+                )
+                painter.setBrush(QColor(color))
+                painter.drawPolygon(bristles)
+                painter.setBrush(Qt.NoBrush)
+            else:
+                body = QPolygonF(
+                    [
+                        pt(4.0, 15.5),
+                        pt(11.5, 5.0),
+                        pt(20.0, 5.0),
+                        pt(12.5, 15.5),
+                    ]
+                )
+                painter.drawPolygon(body)
+                painter.drawLine(pt(7.75, 10.25), pt(16.25, 10.25))
 
     painter.end()
     return pixmap
@@ -162,13 +314,89 @@ def _make_selector_icon(
     checked_color: str = "#00c18c",
     size: int = 24,
 ) -> QIcon:
-    """Render a crisp vector QIcon for rectangle, ellipse, or lasso selector with normal and checked states."""
+    """Render a crisp vector QIcon for a selection tool.
+
+    ``shape`` is one of ``rectangle``, ``ellipse``, ``lasso``, ``brush``
+    or ``eraser``; both the normal and the checked state are rendered.
+    """
     icon = QIcon()
     pixmap_off = _render_selector_pixmap(shape, normal_color, size)
     pixmap_on = _render_selector_pixmap(shape, checked_color, size)
     icon.addPixmap(pixmap_off, QIcon.Mode.Normal, QIcon.State.Off)
     icon.addPixmap(pixmap_on, QIcon.Mode.Normal, QIcon.State.On)
     return icon
+
+
+def _make_brush_cursor(
+    size_px: float,
+    color: str | QColor,
+    widget: QWidget | None = None,
+    filled: bool = True,
+    fill_alpha: float = 0.5,
+) -> QCursor:
+    """Return a circular cursor matching the brush or eraser footprint.
+
+    Parameters
+    ----------
+    size_px : float
+        Diameter of the circle in screen pixels.
+    color : str or QColor
+        Color of the brush circle (or outline).
+    widget : QWidget, optional
+        Widget used to obtain device pixel ratio for crisp rendering on HiDPI.
+    filled : bool, default True
+        If True (brush mode), the circle is filled with `fill_alpha` transparency.
+        If False (eraser mode), only an outline of the circle in black is drawn with no fill.
+    fill_alpha : float, default 0.5
+        Fill transparency between 0.0 and 1.0 (0.5 = 50% opacity).
+    """
+    ratio = 1.0
+    if widget is not None:
+        with contextlib.suppress(Exception):
+            ratio = float(widget.devicePixelRatioF())
+    if not np.isfinite(ratio) or ratio <= 0:
+        ratio = 1.0
+
+    diameter = float(np.clip(size_px, 1.0, 96.0))
+    total = int(np.ceil(diameter)) + 6
+    if total % 2 != 0:
+        total += 1
+
+    pixmap = QPixmap(int(round(total * ratio)), int(round(total * ratio)))
+    pixmap.setDevicePixelRatio(ratio)
+    pixmap.fill(Qt.transparent)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    offset = (total - diameter) / 2.0
+    rect = QRectF(offset, offset, diameter, diameter)
+
+    if filled:
+        c = QColor(color)
+        fill_col = QColor(c)
+        fill_col.setAlphaF(fill_alpha)
+        painter.setBrush(QBrush(fill_col))
+        pen = QPen(fill_col)
+        pen.setWidthF(1.0)
+        painter.setPen(pen)
+        painter.drawEllipse(rect)
+    else:
+        painter.setBrush(Qt.NoBrush)
+        # A light halo underneath keeps the outline readable on dark backgrounds
+        halo = QPen(QColor(255, 255, 255, 150))
+        halo.setWidthF(2.4)
+        painter.setPen(halo)
+        painter.drawEllipse(rect)
+
+        pen = QPen(QColor(0, 0, 0))
+        pen.setWidthF(1.2)
+        painter.setPen(pen)
+        painter.drawEllipse(rect)
+
+    painter.end()
+
+    hotspot = total // 2
+    return QCursor(pixmap, hotspot, hotspot)
 
 
 class BaseInteractiveSelector:
@@ -190,6 +418,7 @@ class BaseInteractiveSelector:
         self._class_value: int = 1
         self._selected_indices: np.ndarray | None = None
         self._last_geometry: SelectionGeometry | None = None
+        self._cids: list[int] = []
 
     @property
     def data(self) -> np.ndarray | None:
@@ -219,8 +448,27 @@ class BaseInteractiveSelector:
     def last_geometry(self) -> SelectionGeometry | None:
         return self._last_geometry
 
+    def cursor(self) -> QCursor:
+        """Mouse cursor to show while this selector is active."""
+        return QCursor(Qt.CrossCursor)
+
+    def _connect(self, event_name: str, handler: Callable) -> None:
+        """Register a canvas callback owned (and later freed) by self."""
+        self._cids.append(
+            self.canvas_widget.canvas.mpl_connect(event_name, handler)
+        )
+
+    def _disconnect_all(self) -> None:
+        """Drop every canvas callback registered by this selector."""
+        canvas = getattr(self.canvas_widget, "canvas", None)
+        for cid in self._cids:
+            with contextlib.suppress(Exception):
+                canvas.mpl_disconnect(cid)
+        self._cids = []
+
     def remove(self):
         """Disconnect and clear the selector widget from axes."""
+        self._disconnect_all()
         if self._selector is not None:
             with contextlib.suppress(Exception):
                 self._selector.clear()
@@ -278,9 +526,7 @@ class InteractiveRectangleSelector(BaseInteractiveSelector):
                 "linestyle": "--",
             },
         )
-        self.canvas_widget.canvas.mpl_connect(
-            "button_press_event", self._on_button_press
-        )
+        self._connect("button_press_event", self._on_button_press)
 
     def on_select(self, eclick, erelease) -> np.ndarray | None:
         if eclick.xdata is None or erelease.xdata is None:
@@ -337,9 +583,7 @@ class InteractiveEllipseSelector(BaseInteractiveSelector):
                 "linestyle": "--",
             },
         )
-        self.canvas_widget.canvas.mpl_connect(
-            "button_press_event", self._on_button_press
-        )
+        self._connect("button_press_event", self._on_button_press)
 
     def on_select(self, eclick, erelease) -> np.ndarray | None:
         if eclick.xdata is None or erelease.xdata is None:
@@ -407,6 +651,363 @@ class InteractiveLassoSelector(BaseInteractiveSelector):
         self._selected_indices = np.flatnonzero(inside)
         self.apply_selection()
         return self._selected_indices
+
+
+class InteractiveBrushSelector(BaseInteractiveSelector):
+    """Free-hand brush that paints the active class onto the phasor plot.
+
+    The same implementation backs the eraser: erasing is painting with the
+    class value ``0`` (unassigned) instead of the class currently selected
+    in the Manual Selection tab.
+
+    The brush size is expressed in screen pixels so that it stays visually
+    constant while zooming, and is converted to data units on every event.
+    Granularity follows the active artist: histogram bins are painted whole,
+    so the overlay always matches what the user sees under the cursor, while
+    a scatter plot is painted point by point.
+
+    While the mouse is held down only the plot overlay is refreshed; the
+    napari layers and the statistics are updated once, on release.
+    """
+
+    BRUSH_COLOR = "#00c18c"
+    ERASER_COLOR = "#ff5c5c"
+
+    def __init__(
+        self,
+        ax: plt.Axes,
+        canvas_widget: PhasorCanvasWidget,
+        erase: bool = False,
+    ):
+        super().__init__(
+            ax,
+            canvas_widget,
+            (
+                "Interactive Eraser Selector"
+                if erase
+                else "Interactive Brush Selector"
+            ),
+        )
+        self.erase = bool(erase)
+        self._size_px = float(DEFAULT_BRUSH_SIZE_PX)
+        self._color: str | QColor | None = None
+        self._painting = False
+        self._last_point: tuple[float, float] | None = None
+        self._artist: Any | None = None
+        self._points: np.ndarray | None = None
+        self._working: np.ndarray | None = None
+        self._stroke_segments: list[tuple[float, ...]] = []
+        self._bin_lookup: tuple[Any, ...] | None = None
+        self._grid: np.ndarray | None = None
+
+    @property
+    def size_px(self) -> float:
+        """Brush diameter in screen pixels."""
+        return self._size_px
+
+    @size_px.setter
+    def size_px(self, value: float):
+        self._size_px = float(np.clip(float(value), 1.0, 96.0))
+        if self.canvas_widget.active_selector is self:
+            self.canvas_widget.canvas.setCursor(self.cursor())
+
+    @property
+    def color(self) -> str | QColor:
+        """Current paint color for the brush."""
+        if self._color is not None:
+            return self._color
+        idx = max(0, int(self._class_value) - 1) % len(DEFAULT_MANUAL_COLORS)
+        return DEFAULT_MANUAL_COLORS[idx]
+
+    @color.setter
+    def color(self, value: str | QColor | None):
+        self._color = value
+        if self.canvas_widget.active_selector is self:
+            self.canvas_widget.canvas.setCursor(self.cursor())
+
+    @property
+    def class_value(self) -> int:
+        return self._class_value
+
+    @class_value.setter
+    def class_value(self, value: int):
+        self._class_value = int(value)
+        if self.canvas_widget.active_selector is self:
+            self.canvas_widget.canvas.setCursor(self.cursor())
+
+    @property
+    def is_eraser(self) -> bool:
+        """True when this tool clears the selection instead of painting it."""
+        return self.erase
+
+    @property
+    def paint_value(self) -> int:
+        """Class value this tool writes under the cursor."""
+        return 0 if self.erase else int(self._class_value)
+
+    def cursor(self) -> QCursor:
+        if self.erase:
+            return _make_brush_cursor(
+                self._size_px,
+                color="#000000",
+                widget=self.canvas_widget.canvas,
+                filled=False,
+            )
+        return _make_brush_cursor(
+            self._size_px,
+            color=self.color,
+            widget=self.canvas_widget.canvas,
+            filled=True,
+            fill_alpha=0.5,
+        )
+
+    def create_selector(self):
+        self.remove()
+        self._connect("button_press_event", self._on_press)
+        self._connect("motion_notify_event", self._on_motion)
+        self._connect("button_release_event", self._on_release)
+
+    def remove(self):
+        self._painting = False
+        self._last_point = None
+        self._artist = None
+        self._points = None
+        self._working = None
+        self._bin_lookup = None
+        self._grid = None
+        super().remove()
+
+    def _radii_data(self) -> tuple[float, float]:
+        """Return the brush radii converted from screen to data units."""
+        inverse = self.ax.transData.inverted()
+        x0, y0 = inverse.transform((0.0, 0.0))
+        x1, y1 = inverse.transform((self._size_px / 2.0, self._size_px / 2.0))
+        rx = abs(float(x1 - x0))
+        ry = abs(float(y1 - y0))
+        if not np.isfinite(rx) or rx <= 0:
+            rx = 1e-12
+        if not np.isfinite(ry) or ry <= 0:
+            ry = 1e-12
+        return rx, ry
+
+    def _on_press(self, event):
+        if event.button != 1 or event.inaxes is not self.ax:
+            return
+        if getattr(self.canvas_widget.toolbar, "mode", ""):
+            return
+
+        artist = self.canvas_widget.active_artist_object
+        points = self._data
+        if points is None:
+            points = getattr(artist, "data", None)
+        if artist is None or points is None or len(points) == 0:
+            return
+
+        self._begin_stroke(artist, np.asarray(points, dtype=float))
+        self._painting = True
+        self._last_point = (event.xdata, event.ydata)
+        self._paint_segment(event.xdata, event.ydata, event.xdata, event.ydata)
+
+    def _on_motion(self, event):
+        if not self._painting:
+            if (
+                event.inaxes is self.ax
+                and self.canvas_widget.active_selector is self
+            ):
+                self.canvas_widget.canvas.setCursor(self.cursor())
+            return
+        if event.xdata is None or event.ydata is None:
+            return
+        if self._last_point is None:
+            self._last_point = (event.xdata, event.ydata)
+        x0, y0 = self._last_point
+        self._paint_segment(x0, y0, event.xdata, event.ydata)
+        self._last_point = (event.xdata, event.ydata)
+
+    def _on_release(self, event):
+        if not self._painting:
+            return
+        if event.button not in (1, None):
+            return
+        self._painting = False
+        self._last_point = None
+        self._finish_stroke()
+        if self.canvas_widget.active_selector is self:
+            self.canvas_widget.canvas.setCursor(self.cursor())
+
+    def _begin_stroke(self, artist: Any, points: np.ndarray):
+        """Snapshot the current selection so the stroke can extend it."""
+        self._artist = artist
+        self._points = points
+        self._stroke_segments = []
+        self._bin_lookup = None
+        self._grid = None
+
+        indices = getattr(artist, "color_indices", None)
+        indices = None if indices is None else np.asarray(indices)
+        if (
+            indices is None
+            or indices.ndim == 0
+            or len(indices) != len(points)
+            or indices.dtype.kind not in "iu"
+        ):
+            working = np.zeros(len(points), dtype=np.uint32)
+        else:
+            working = np.array(indices, copy=True)
+        self._working = working
+
+        histogram = getattr(artist, "histogram", None)
+        if histogram is not None and hasattr(artist, "_render_overlay_grid"):
+            self._build_bin_lookup(histogram, points, working)
+
+    def _build_bin_lookup(
+        self, histogram: tuple, points: np.ndarray, working: np.ndarray
+    ):
+        """Index the plotted points by histogram bin for the whole stroke.
+
+        Sorting once on mouse press turns every later dab into a lookup of
+        the points inside the touched bins, instead of a scan over the whole
+        dataset.
+        """
+        _, x_edges, y_edges = histogram
+        nx = len(x_edges) - 1
+        ny = len(y_edges) - 1
+        if nx < 1 or ny < 1:
+            return
+
+        x_idx = np.digitize(points[:, 0], x_edges) - 1
+        y_idx = np.digitize(points[:, 1], y_edges) - 1
+        # ``np.histogram2d`` puts values on the upper edge in the last bin.
+        x_idx[points[:, 0] == x_edges[-1]] = nx - 1
+        y_idx[points[:, 1] == y_edges[-1]] = ny - 1
+
+        inside = (x_idx >= 0) & (x_idx < nx) & (y_idx >= 0) & (y_idx < ny)
+        if not np.any(inside):
+            return
+
+        point_ids = np.flatnonzero(inside)
+        bin_ids = (x_idx[point_ids] * ny + y_idx[point_ids]).astype(np.int64)
+        order = np.argsort(bin_ids, kind="stable")
+        sorted_points = point_ids[order]
+        starts = np.searchsorted(bin_ids[order], np.arange(nx * ny + 1))
+
+        grid = np.zeros((nx, ny), dtype=np.int32)
+        values = working[point_ids].astype(np.int32)
+        painted = values > 0
+        if np.any(painted):
+            np.maximum.at(
+                grid,
+                (x_idx[point_ids][painted], y_idx[point_ids][painted]),
+                values[painted],
+            )
+
+        centers_x, centers_y = np.meshgrid(
+            0.5 * (x_edges[:-1] + x_edges[1:]),
+            0.5 * (y_edges[:-1] + y_edges[1:]),
+            indexing="ij",
+        )
+        self._bin_lookup = (
+            sorted_points,
+            starts,
+            nx,
+            ny,
+            centers_x.ravel(),
+            centers_y.ravel(),
+            x_edges,
+            y_edges,
+        )
+        self._grid = grid
+
+    def _bin_at(self, x: float, y: float) -> int | None:
+        """Return the flat bin index under ``(x, y)``, or None if outside."""
+        if self._bin_lookup is None:
+            return None
+        _, _, nx, ny, _, _, x_edges, y_edges = self._bin_lookup
+        ix = int(np.digitize(x, x_edges)) - 1
+        iy = int(np.digitize(y, y_edges)) - 1
+        if x == x_edges[-1]:
+            ix = nx - 1
+        if y == y_edges[-1]:
+            iy = ny - 1
+        if 0 <= ix < nx and 0 <= iy < ny:
+            return ix * ny + iy
+        return None
+
+    def _paint_segment(self, x0: float, y0: float, x1: float, y1: float):
+        """Paint the swept footprint between two cursor positions."""
+        if self._working is None or self._artist is None:
+            return
+        rx, ry = self._radii_data()
+        self._stroke_segments.append((x0, y0, x1, y1, rx, ry))
+        value = self.paint_value
+
+        if self._bin_lookup is not None:
+            sorted_points, starts, nx, ny, cx, cy, _, _ = self._bin_lookup
+            hit = _capsule_mask(cx, cy, x0, y0, x1, y1, rx, ry)
+            # A brush narrower than a bin would otherwise cover no centre at
+            # all, so the bins under the two ends always count as touched.
+            for px, py in ((x0, y0), (x1, y1)):
+                flat = self._bin_at(px, py)
+                if flat is not None:
+                    hit[flat] = True
+
+            bins = np.flatnonzero(hit)
+            # Empty bins hold no points, and painting them would colour the
+            # overlay where the plot shows nothing.
+            bins = bins[starts[bins + 1] > starts[bins]]
+            if len(bins) == 0:
+                return
+            self._working[
+                np.concatenate(
+                    [sorted_points[starts[b] : starts[b + 1]] for b in bins]
+                )
+            ] = value
+            self._grid[bins // ny, bins % ny] = value
+            self._artist._color_indices = self._working
+            self._artist._render_overlay_grid(self._grid)
+        else:
+            hit = _capsule_mask(
+                self._points[:, 0],
+                self._points[:, 1],
+                x0,
+                y0,
+                x1,
+                y1,
+                rx,
+                ry,
+            )
+            if not np.any(hit):
+                return
+            self._working[hit] = value
+            self._artist._color_indices = self._working
+            if hasattr(self._artist, "_colorize"):
+                self._artist._colorize(self._working)
+
+        self.canvas_widget.figure.canvas.draw_idle()
+
+    def _finish_stroke(self):
+        """Commit the stroke to the artist and notify the rest of the app."""
+        artist = self._artist
+        working = self._working
+        segments = self._stroke_segments
+
+        self._artist = None
+        self._points = None
+        self._working = None
+        self._bin_lookup = None
+        self._grid = None
+        self._stroke_segments = []
+
+        if artist is None or working is None or not segments:
+            return
+
+        self._last_geometry = SelectionGeometry(
+            "brush", np.asarray(segments, dtype=float)
+        )
+        self._selected_indices = np.flatnonzero(working == self.paint_value)
+        artist.color_indices = working
+        self.selection_applied_signal.emit(working)
+        self.canvas_widget.figure.canvas.draw_idle()
 
 
 class Histogram2D:
@@ -656,28 +1257,28 @@ class Histogram2D:
             self._colorize(self._color_indices)
 
     def _colorize(self, indices: np.ndarray | None):
+        self._render_overlay_grid(self._overlay_grid(indices))
+
+    def _overlay_grid(self, indices: np.ndarray | None) -> np.ndarray | None:
+        """Reduce per-point class values to the per-bin grid that is drawn.
+
+        A bin takes the highest class value among the points it holds, and
+        None means there is nothing to overlay at all.
+        """
         if indices is None or self._data is None or self._histogram is None:
-            if "overlay_histogram_image" in self._mpl_artists:
-                self._remove_artists(["overlay_histogram_image"])
-            return
+            return None
 
         indices = np.asarray(indices)
         if indices.ndim == 0:
             if indices == 0:
-                if "overlay_histogram_image" in self._mpl_artists:
-                    self._remove_artists(["overlay_histogram_image"])
-                return
+                return None
             indices = np.full(len(self._data), indices, dtype=np.int32)
         elif len(indices) != len(self._data):
-            if "overlay_histogram_image" in self._mpl_artists:
-                self._remove_artists(["overlay_histogram_image"])
-            return
+            return None
 
         non_zero = indices > 0
         if not np.any(non_zero):
-            if "overlay_histogram_image" in self._mpl_artists:
-                self._remove_artists(["overlay_histogram_image"])
-            return
+            return None
 
         _, x_edges, y_edges = self._histogram
         nx = len(x_edges) - 1
@@ -692,12 +1293,25 @@ class Histogram2D:
 
         valid = (x_idx >= 0) & (x_idx < nx) & (y_idx >= 0) & (y_idx < ny)
         if not np.any(valid):
+            return None
+
+        grid = np.zeros((nx, ny), dtype=np.int32)
+        np.maximum.at(grid, (x_idx[valid], y_idx[valid]), vals[valid])
+        return grid
+
+    def _render_overlay_grid(self, grid: np.ndarray | None):
+        """Draw the categorical overlay image for a per-bin class ``grid``.
+
+        Kept separate from :meth:`_overlay_grid` so tools that already know
+        which bins they touched, such as the brush, can refresh the overlay
+        without rebuilding it from every plotted point.
+        """
+        if grid is None or self._histogram is None or not np.any(grid):
             if "overlay_histogram_image" in self._mpl_artists:
                 self._remove_artists(["overlay_histogram_image"])
             return
 
-        grid = np.zeros((nx, ny), dtype=np.int32)
-        np.maximum.at(grid, (x_idx[valid], y_idx[valid]), vals[valid])
+        _, x_edges, y_edges = self._histogram
 
         overlay_cmap = (
             self._overlay_colormap
@@ -1405,6 +2019,96 @@ class Contour:
 ContourArtist = Contour
 
 
+#: Empty border, in source-image pixels, every toolbar glyph must keep inside
+#: its own canvas. ``Pan`` and ``Zoom`` -- the drag and zoom tools -- were
+#: drawn edge to edge: the pan arrows span rows 2 to 47 of a 48 px image (the
+#: bottom tip is even truncated by the canvas) and the magnifier's crown sits
+#: on row 3. Scaled into a toolbar button, those tips land on the icon-box
+#: boundary and read as cut off, while ``Home``, ``Back``, ``Forward`` and
+#: ``Save`` all clear three pixels or more and look correct.
+TOOLBAR_ICON_MARGIN = 3
+
+#: Processed icon images, keyed by file path. The images are plain ``QImage``
+#: values (no window-system resources), so caching them across widgets is safe.
+_TOOLBAR_ICON_CACHE: dict[str, QImage] = {}
+
+
+def _opaque_bounds(image: QImage) -> tuple[int, int, int, int] | None:
+    """Return the inclusive ``(left, top, right, bottom)`` box of visible pixels.
+
+    ``None`` is returned for a fully transparent image.
+    """
+    left, top = image.width(), image.height()
+    right = bottom = -1
+    for y in range(image.height()):
+        for x in range(image.width()):
+            if image.pixelColor(x, y).alpha() == 0:
+                continue
+            left = min(left, x)
+            right = max(right, x)
+            top = min(top, y)
+            bottom = max(bottom, y)
+    if right < 0:
+        return None
+    return left, top, right, bottom
+
+
+def _inset_icon_image(image: QImage) -> QImage:
+    """Return *image* with its glyph inset by ``TOOLBAR_ICON_MARGIN``.
+
+    Images whose glyph already clears the margin on every side are returned
+    unchanged; the rest are scaled down (keeping their aspect ratio) and
+    re-centred, so no glyph ever touches the edge of its icon box.
+    """
+    bounds = _opaque_bounds(image)
+    if bounds is None:
+        return image
+    left, top, right, bottom = bounds
+    width, height = image.width(), image.height()
+    clearance = min(left, top, width - 1 - right, height - 1 - bottom)
+    if clearance >= TOOLBAR_ICON_MARGIN:
+        return image
+
+    safe_w = width - 2 * TOOLBAR_ICON_MARGIN
+    safe_h = height - 2 * TOOLBAR_ICON_MARGIN
+    if safe_w <= 0 or safe_h <= 0:
+        return image
+
+    glyph = image.copy(
+        QRect(left, top, right - left + 1, bottom - top + 1)
+    ).scaled(
+        safe_w,
+        safe_h,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    inset = QImage(width, height, QImage.Format.Format_ARGB32)
+    inset.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(inset)
+    painter.drawImage(
+        (width - glyph.width()) // 2,
+        (height - glyph.height()) // 2,
+        glyph,
+    )
+    painter.end()
+    return inset
+
+
+def load_toolbar_icon(path: Path | str) -> QIcon:
+    """Return the toolbar icon at *path*, inset so its glyph is never clipped."""
+    key = str(path)
+    image = _TOOLBAR_ICON_CACHE.get(key)
+    if image is None:
+        image = QImage(key)
+        if image.isNull():
+            return QIcon()
+        image = _inset_icon_image(
+            image.convertToFormat(QImage.Format.Format_ARGB32)
+        )
+        _TOOLBAR_ICON_CACHE[key] = image
+    return QIcon(QPixmap.fromImage(image))
+
+
 class PhasorNavigationToolbar(NavigationToolbar2QT):
     """Custom navigation toolbar emitting Qt signals when Pan or Zoom are toggled."""
 
@@ -1470,7 +2174,7 @@ class PhasorNavigationToolbar(NavigationToolbar2QT):
             if len(text) > 0:
                 icon_path = icon_dir / f"{text}.png"
                 if icon_path.exists():
-                    action.setIcon(QIcon(str(icon_path)))
+                    action.setIcon(load_toolbar_icon(icon_path))
 
     def _update_buttons_checked(self) -> None:
         """Update toggle tool icons when selected/unselected."""
@@ -1482,22 +2186,22 @@ class PhasorNavigationToolbar(NavigationToolbar2QT):
             if pan_action.isChecked():
                 checked_path = icon_dir / "Pan_checked.png"
                 if checked_path.exists():
-                    pan_action.setIcon(QIcon(str(checked_path)))
+                    pan_action.setIcon(load_toolbar_icon(checked_path))
             else:
                 normal_path = icon_dir / "Pan.png"
                 if normal_path.exists():
-                    pan_action.setIcon(QIcon(str(normal_path)))
+                    pan_action.setIcon(load_toolbar_icon(normal_path))
 
         if "zoom" in self._actions:
             zoom_action = self._actions["zoom"]
             if zoom_action.isChecked():
                 checked_path = icon_dir / "Zoom_checked.png"
                 if checked_path.exists():
-                    zoom_action.setIcon(QIcon(str(checked_path)))
+                    zoom_action.setIcon(load_toolbar_icon(checked_path))
             else:
                 normal_path = icon_dir / "Zoom.png"
                 if normal_path.exists():
-                    zoom_action.setIcon(QIcon(str(normal_path)))
+                    zoom_action.setIcon(load_toolbar_icon(normal_path))
 
     def zoom(self, *args):
         super().zoom(*args)
@@ -1507,9 +2211,39 @@ class PhasorNavigationToolbar(NavigationToolbar2QT):
         super().pan(*args)
         self.pan_toggled_signal.emit(self.mode == "pan/zoom")
 
+    def _wait_cursor_for_draw_cm(self):
+        """Do not show wait cursor during draw if an active selector is controlling cursor."""
+        cw = self.parentWidget()
+        if cw is not None and getattr(cw, "active_selector", None) is not None:
+            return contextlib.nullcontext()
+        return super()._wait_cursor_for_draw_cm()
+
+    def set_cursor(self, cursor):
+        """Prevent toolbar from resetting canvas cursor when a selector is active."""
+        cw = self.parentWidget()
+        if cw is not None and getattr(cw, "active_selector", None) is not None:
+            return
+        super().set_cursor(cursor)
+
+    def _update_cursor(self, event):
+        """Prevent toolbar from overriding canvas cursor when a selector is active."""
+        cw = self.parentWidget()
+        if cw is not None and getattr(cw, "active_selector", None) is not None:
+            return
+        super()._update_cursor(event)
+
 
 class SelectionToolbarWidget(QWidget):
-    """Toolbar holding exclusive selection tool buttons (Lasso, Ellipse, Rectangle)."""
+    """Toolbar holding the exclusive selection tool buttons."""
+
+    #: Button name paired with the shape drawn on its icon.
+    TOOLS: tuple[tuple[str, str, str], ...] = (
+        ("LASSO", "lasso", "Lasso selection tool"),
+        ("ELLIPSE", "ellipse", "Ellipse selection tool"),
+        ("RECTANGLE", "rectangle", "Rectangle selection tool"),
+        ("BRUSH", "brush", "Brush tool"),
+        ("ERASER", "eraser", "Eraser tool"),
+    )
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -1537,9 +2271,8 @@ class SelectionToolbarWidget(QWidget):
 
         self.buttons: dict[str, QToolButton] = {}
 
-        self._add_button("LASSO", "Lasso selection tool", "lasso")
-        self._add_button("ELLIPSE", "Ellipse selection tool", "ellipse")
-        self._add_button("RECTANGLE", "Rectangle selection tool", "rectangle")
+        for name, shape, tooltip in self.TOOLS:
+            self._add_button(name, tooltip, shape)
 
     def _add_button(self, name: str, tooltip: str, shape: str):
         btn = QToolButton(self)
@@ -1555,11 +2288,7 @@ class SelectionToolbarWidget(QWidget):
     def update_theme(self, has_light_bg: bool = False):
         """Update selector icons to match theme background."""
         normal_color = "#3e3f41" if has_light_bg else "#ffffff"
-        for name, shape in (
-            ("LASSO", "lasso"),
-            ("ELLIPSE", "ellipse"),
-            ("RECTANGLE", "rectangle"),
-        ):
+        for name, shape, _tooltip in self.TOOLS:
             if name in self.buttons:
                 self.buttons[name].setIcon(
                     _make_selector_icon(shape, normal_color=normal_color)
@@ -1637,6 +2366,8 @@ class PhasorCanvasWidget(QWidget):
             "RECTANGLE": InteractiveRectangleSelector(self.axes, self),
             "ELLIPSE": InteractiveEllipseSelector(self.axes, self),
             "LASSO": InteractiveLassoSelector(self.axes, self),
+            "BRUSH": InteractiveBrushSelector(self.axes, self),
+            "ERASER": InteractiveBrushSelector(self.axes, self, erase=True),
         }
         self._active_selector_name: str | None = None
 
@@ -1702,6 +2433,31 @@ class PhasorCanvasWidget(QWidget):
         return self.active_artist
 
     @property
+    def brush_size(self) -> float:
+        """Diameter, in screen pixels, shared by the brush and eraser."""
+        brush = self.selectors.get("BRUSH")
+        return brush.size_px if brush is not None else DEFAULT_BRUSH_SIZE_PX
+
+    @brush_size.setter
+    def brush_size(self, value: float):
+        for name in ("BRUSH", "ERASER"):
+            selector = self.selectors.get(name)
+            if selector is not None:
+                selector.size_px = value
+
+    @property
+    def brush_color(self) -> str | QColor:
+        """Paint color for the brush selector."""
+        brush = self.selectors.get("BRUSH")
+        return brush.color if brush is not None else DEFAULT_MANUAL_COLORS[0]
+
+    @brush_color.setter
+    def brush_color(self, value: str | QColor):
+        brush = self.selectors.get("BRUSH")
+        if brush is not None:
+            brush.color = value
+
+    @property
     def active_selector(self) -> Any | None:
         if self._active_selector_name:
             return self.selectors.get(self._active_selector_name)
@@ -1751,7 +2507,7 @@ class PhasorCanvasWidget(QWidget):
                     btn.blockSignals(False)
 
         self._active_selector_name = name
-        self.canvas.setCursor(QCursor(Qt.CrossCursor))
+        self.canvas.setCursor(self.selectors[name].cursor())
         self.selector_changed_signal.emit(name)
 
     def _deactivate_all_selectors(self):

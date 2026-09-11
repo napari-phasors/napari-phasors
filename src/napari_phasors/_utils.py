@@ -4,8 +4,10 @@ This module contains utility functions used by other modules.
 """
 
 import os
+import re
 import warnings
-from typing import TYPE_CHECKING
+from dataclasses import replace
+from typing import TYPE_CHECKING, Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -16,7 +18,7 @@ from matplotlib.colors import LinearSegmentedColormap, PowerNorm
 from matplotlib.figure import Figure
 from matplotlib.legend_handler import HandlerBase
 from matplotlib.patches import Polygon as MplPolygon
-from napari.layers import Image
+from napari.layers import Image, Labels
 from napari.utils import progress as _napari_progress
 from phasorpy.filter import phasor_filter_pawflim, phasor_threshold
 from qtpy.QtCore import QEvent, QRect, QSize, Qt, QThread, QTimer, Signal
@@ -63,8 +65,9 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from superqt import QRangeSlider
+from superqt import QRangeSlider, QToggleSwitch
 
+from ._mapping_filters import apply_layer_filters
 from ._parallel import parallel_filter_median
 
 #: Precisions the phasor arrays may be stored at. ``"native"`` keeps whatever
@@ -181,6 +184,124 @@ def make_section(title):
     return box, layout
 
 
+#: Fallback for :func:`theme_warning_color`, matching the amber napari's own
+#: themes use, so the text next to the warning triangle stays legible even if
+#: the theme cannot be resolved.
+_FALLBACK_WARNING_COLOR = "#e3b617"
+
+
+def theme_warning_color():
+    """Return the current napari theme's warning colour as a hex string.
+
+    Read from the theme rather than hard-coded so the "Experimental" text
+    matches the triangle beside it, which napari's stylesheet recolours with
+    this same value.
+    """
+    try:
+        from napari.settings import get_settings
+        from napari.utils.theme import get_theme
+
+        return get_theme(get_settings().appearance.theme).warning.as_hex()
+    except Exception:  # noqa: BLE001 - a missing/renamed theme must not
+        # take the widget that asked down with it.
+        return _FALLBACK_WARNING_COLOR
+
+
+#: Logical size, in pixels, to render the "Experimental" warning triangle at.
+#: napari's stylesheet pins ``#error_label`` to an 18 px box with 2 px of
+#: padding, so 14 px is the content area the label actually has. Drawing
+#: larger than this clips the triangle into an unrecognisable wedge, because
+#: the pixmap is painted inside that content rect.
+WARNING_ICON_SIZE = 14
+
+
+def warning_pixmap(size=WARNING_ICON_SIZE):
+    """Return napari's warning triangle as a pixmap, or ``None``.
+
+    Rendered from napari's own ``warning.svg`` in the theme's warning colour,
+    which is exactly what napari's stylesheet does for the ``error_label``
+    object name -- so the two agree pixel for pixel and the marker is the one
+    napari uses for its own experimental controls.
+
+    ``size`` is a *logical* size. ``QIcon.pixmap`` already does the high-DPI
+    work: it renders denser pixels and tags the result with their device
+    pixel ratio, so the pixmap keeps the requested logical size. Pre-scaling
+    the request, or re-stamping the ratio afterwards, doubles the triangle
+    and it then overflows the box the stylesheet gives the label.
+    """
+    try:
+        from napari._qt.qt_resources import QColoredSVGIcon
+
+        icon = QColoredSVGIcon.from_resources("warning").colored(
+            theme_warning_color()
+        )
+    except Exception:  # noqa: BLE001 - a missing resource must not take the
+        # widget that asked down with it; the label just stays empty.
+        return None
+    return icon.pixmap(size, size)
+
+
+def make_experimental_warning(tooltip, parent=None):
+    """Return an "Experimental" banner row marking a feature as unproven.
+
+    The marker is napari's own: ``warning.svg`` -- the triangle with the
+    exclamation mark -- in the current theme's warning colour, which is what
+    napari puts on its own experimental controls. The icon label carries the
+    ``error_label`` object name napari's stylesheet targets *and* renders
+    that same resource itself, so it looks right whether or not the
+    stylesheet reaches this widget. Reusing napari's icon rather than
+    shipping our own keeps every banner identical in every theme.
+
+    Parameters
+    ----------
+    tooltip : str
+        Shown on both the triangle and the text. Say what is unproven and
+        what to do about it, not just that the feature is new.
+    parent : QWidget, optional
+        Parent widget.
+
+    Returns
+    -------
+    QWidget
+        A row holding the triangle and the word "Experimental", left
+        aligned. The two labels are exposed as ``icon_label`` and
+        ``text_label`` so a caller can keep its own references to them.
+    """
+    widget = QWidget(parent)
+    row = QHBoxLayout(widget)
+    row.setContentsMargins(0, 0, 0, 0)
+    row.setSpacing(4)
+
+    icon_label = QLabel()
+    icon_label.setObjectName("error_label")
+    icon_label.setToolTip(tooltip)
+    # napari's stylesheet targets ``#error_label`` with ``image: url(...)``,
+    # but Qt paints the stylesheet's ``image`` in addition to any pixmap set
+    # on the QLabel. When both are active, Qt renders two slightly misaligned
+    # triangles, creating a double-triangle visual artifact that fills in the
+    # exclamation mark cutout. Suppressing the stylesheet's duplicate image
+    # allows the single rendered pixmap to display cleanly with its
+    # exclamation mark intact, while retaining the geometry rules of
+    # ``#error_label``.
+    icon_label.setStyleSheet("image: none;")
+    icon_label.setAlignment(Qt.AlignCenter)
+    pixmap = warning_pixmap()
+    if pixmap is not None:
+        icon_label.setPixmap(pixmap)
+
+    text_label = QLabel("Experimental")
+    text_label.setToolTip(tooltip)
+    text_label.setStyleSheet(f"color: {theme_warning_color()};")
+
+    row.addWidget(icon_label)
+    row.addWidget(text_label)
+    row.addStretch(1)
+
+    widget.icon_label = icon_label
+    widget.text_label = text_label
+    return widget
+
+
 class CurrentPageStackedWidget(QStackedWidget):
     """A ``QStackedWidget`` that sizes itself to the visible page only.
 
@@ -286,6 +407,88 @@ def setup_primary_button(button, validator, run_callback, ready_tooltip=""):
     button.clicked.connect(_on_clicked)
     refresh()
     return refresh
+
+
+class AutoUpdateMixin:
+    """Adds an "Autoupdate" toggle that re-runs a tab's analysis on change.
+
+    Analysis tabs normally recompute only when their primary button is
+    clicked. A tab mixing this in calls :meth:`_build_autoupdate_toggle` to
+    create the switch, and then :meth:`request_autoupdate` from every place
+    that changes something the result depends on -- its own inputs, and the
+    external events the parent plotter forwards (a filter or calibration that
+    rewrote the phasor data, a new harmonic, a different layer selection).
+
+    The analysis only re-runs while the toggle is on *and* the tab's validator
+    reports that the inputs are complete, so a half-filled form never triggers
+    a run. Re-entrancy is blocked: an analysis writes layers and metadata,
+    which fires the very signals that requested it.
+    """
+
+    #: Class-level defaults so ``request_autoupdate`` is safe to call on a tab
+    #: that has not built its toggle yet (e.g. during ``__init__``).
+    _autoupdate_enabled = False
+    _autoupdate_running = False
+    _autoupdate_validator = None
+    _autoupdate_action = None
+    _autoupdate_run_button = None
+
+    def _build_autoupdate_toggle(self, run_button, validator, action, tooltip):
+        """Create the "Autoupdate" switch and return the widget holding it.
+
+        ``run_button`` is the tab's primary button; it is disabled while
+        autoupdate is on, since the analysis then runs on its own.
+        """
+        self._autoupdate_validator = validator
+        self._autoupdate_action = action
+        self._autoupdate_run_button = run_button
+
+        container = QWidget()
+        row = QHBoxLayout(container)
+        row.setContentsMargins(0, 0, 0, 0)
+        self.autoupdate_check = QToggleSwitch("Autoupdate")
+        self.autoupdate_check.onColor = QColor("#27ae60")  # Nice Green
+        self.autoupdate_check.setChecked(False)
+        self.autoupdate_check.setToolTip(tooltip)
+        self.autoupdate_check.toggled.connect(self._on_autoupdate_toggled)
+        row.addWidget(self.autoupdate_check)
+        self.autoupdate_container = container
+        return container
+
+    def _on_autoupdate_toggled(self, checked):
+        """Handle the Autoupdate switch changing state."""
+        self._autoupdate_enabled = bool(checked)
+        if self._autoupdate_run_button is not None:
+            self._autoupdate_run_button.setEnabled(
+                not self._autoupdate_enabled
+            )
+        if self._autoupdate_enabled:
+            self.request_autoupdate()
+
+    def autoupdate_enabled(self):
+        """Return whether the tab re-runs its analysis automatically."""
+        return bool(self._autoupdate_enabled)
+
+    def request_autoupdate(self):
+        """Re-run the analysis if autoupdate is on and the inputs are valid.
+
+        Returns ``True`` when the analysis actually ran.
+        """
+        if not self._autoupdate_enabled or self._autoupdate_running:
+            return False
+        if self._autoupdate_action is None:
+            return False
+        if (
+            self._autoupdate_validator is not None
+            and self._autoupdate_validator() is not None
+        ):
+            return False
+        self._autoupdate_running = True
+        try:
+            self._autoupdate_action()
+        finally:
+            self._autoupdate_running = False
+        return True
 
 
 def _check_state_value(state):
@@ -1040,8 +1243,49 @@ def validate_harmonics_for_wavelet(harmonics):
     return True
 
 
+def _layer_mask_invalid(layer: Image):
+    """Return the boolean "outside the mask" array for *layer*, or ``None``.
+
+    Honours the label selection (``mask_labels``) and ``mask_invert`` stored
+    alongside the mask. ``None`` means the layer carries no mask.
+    """
+    if 'mask' not in layer.metadata:
+        return None
+    mask = layer.metadata['mask']
+    mask_labels = layer.metadata.get('mask_labels')
+    invert = layer.metadata.get('mask_invert', False)
+    # Build mask_invalid respecting label-specific selection
+    if mask_labels is not None:
+        if len(mask_labels) > 0:
+            # Only the selected labels are valid
+            if invert:
+                return np.isin(mask, mask_labels)
+            return ~np.isin(mask, mask_labels)
+        # No labels selected -> display data as if it was without a mask
+        return np.zeros(mask.shape, dtype=bool)
+    # No label selection: all non-zero pixels are valid
+    return mask <= 0 if not invert else mask > 0
+
+
+def _mask_phasor_arrays(layer: Image, mean, real, imag, harmonics):
+    """Set the pixels outside *layer*'s mask to NaN in the given arrays."""
+    mask_invalid = _layer_mask_invalid(layer)
+    if mask_invalid is None:
+        return mean, real, imag
+
+    mean = np.where(mask_invalid, np.nan, mean)
+    if real.ndim > mean.ndim:
+        for h in range(len(harmonics)):
+            real[h] = np.where(mask_invalid, np.nan, real[h])
+            imag[h] = np.where(mask_invalid, np.nan, imag[h])
+    else:
+        real = np.where(mask_invalid, np.nan, real)
+        imag = np.where(mask_invalid, np.nan, imag)
+    return mean, real, imag
+
+
 def _extract_phasor_arrays_from_layer(
-    layer: Image, harmonics: np.ndarray = None
+    layer: Image, harmonics: np.ndarray = None, apply_mask: bool = True
 ):
     """Extract phasor arrays from layer metadata.
 
@@ -1051,6 +1295,10 @@ def _extract_phasor_arrays_from_layer(
         Napari image layer with phasor features.
     harmonics : np.ndarray, optional
         Harmonic values. If None, will be extracted from layer.
+    apply_mask : bool, optional
+        Whether to NaN out the pixels outside the layer's mask. Pass ``False``
+        to get the unmasked arrays and mask them yourself *after* filtering
+        (see :func:`compute_filter_and_threshold`).
 
     Returns
     -------
@@ -1067,33 +1315,10 @@ def _extract_phasor_arrays_from_layer(
     real = layer.metadata['G_original'].copy()
     imag = layer.metadata['S_original'].copy()
 
-    # Apply mask if present in metadata
-    if 'mask' in layer.metadata:
-        mask = layer.metadata['mask']
-        mask_labels = layer.metadata.get('mask_labels')
-        invert = layer.metadata.get('mask_invert', False)
-        # Build mask_invalid respecting label-specific selection
-        if mask_labels is not None:
-            if len(mask_labels) > 0:
-                # Only the selected labels are valid
-                if invert:
-                    mask_invalid = np.isin(mask, mask_labels)
-                else:
-                    mask_invalid = ~np.isin(mask, mask_labels)
-            else:
-                # No labels selected -> display data as if it was without a mask
-                mask_invalid = np.zeros(mask.shape, dtype=bool)
-        else:
-            # No label selection: all non-zero pixels are valid
-            mask_invalid = mask <= 0 if not invert else mask > 0
-        mean = np.where(mask_invalid, np.nan, mean)
-        if real.ndim > mean.ndim:
-            for h in range(len(harmonics)):
-                real[h] = np.where(mask_invalid, np.nan, real[h])
-                imag[h] = np.where(mask_invalid, np.nan, imag[h])
-        else:
-            real = np.where(mask_invalid, np.nan, real)
-            imag = np.where(mask_invalid, np.nan, imag)
+    if apply_mask:
+        mean, real, imag = _mask_phasor_arrays(
+            layer, mean, real, imag, harmonics
+        )
 
     return mean, real, imag, harmonics
 
@@ -1265,6 +1490,7 @@ def compute_filter_and_threshold(
     sigma: float = None,
     levels: int = None,
     harmonics: np.ndarray = None,
+    apply_mapping_filters: bool = True,
 ):
     """Compute a layer's filtered and thresholded phasor arrays.
 
@@ -1281,17 +1507,29 @@ def compute_filter_and_threshold(
         As in :func:`apply_filter_and_threshold`.
     harmonics : np.ndarray, optional
         Harmonic values. Read from the layer when None.
+    apply_mapping_filters : bool, optional
+        Also apply the layer's metric filter stack (see
+        :mod:`napari_phasors._mapping_filters`). On by default so that every
+        path which rebuilds the phasor arrays from the originals -- an
+        intensity threshold, a mask edit, an imported analysis -- reproduces
+        the metric filters instead of dropping them. Pass ``False`` to obtain
+        the unfiltered baseline the metrics themselves are measured on.
 
     Returns
     -------
     tuple
         ``(mean, real, imag)`` arrays.
     """
+    # The mask is applied *after* filtering: a mask restricts which pixels are
+    # shown, it must not change the phasor coordinates of the pixels it keeps.
+    # Masking first would filter every kept pixel against NaN neighbours, which
+    # moves it away from the position it had when it was selected (a phasor
+    # cursor selection is scattered, so nearly all of its pixels border NaN).
     mean, real, imag, harmonics = _extract_phasor_arrays_from_layer(
-        layer, harmonics
+        layer, harmonics, apply_mask=False
     )
 
-    return _apply_filter_and_threshold_to_phasor_arrays(
+    mean, real, imag = _apply_filter_and_threshold_to_phasor_arrays(
         mean,
         real,
         imag,
@@ -1304,6 +1542,15 @@ def compute_filter_and_threshold(
         sigma=sigma,
         levels=levels,
     )
+
+    mean, real, imag = _mask_phasor_arrays(layer, mean, real, imag, harmonics)
+
+    if apply_mapping_filters:
+        mean, real, imag = apply_layer_filters(
+            layer, (mean, real, imag), harmonics=harmonics
+        )
+
+    return mean, real, imag
 
 
 def assign_filter_and_threshold(
@@ -1494,11 +1741,103 @@ def _get_layer_group_entry(layer):
     return layer.metadata.get('group')
 
 
+def format_phasor_layer_name(
+    stem: str,
+    channel_label: Any = None,
+    *,
+    is_stack: bool = False,
+    is_mosaic: bool = False,
+) -> str:
+    """Format a consistent napari layer name for phasor intensity images.
+
+    Follows the convention:
+    - Single channel: ``'<stem> Intensity [Phasor]'``
+    - Multi-channel: ``'<stem> Intensity: Channel <channel_label> [Phasor]'``
+    - Stack: ``'<stem> Stack Intensity [Phasor]'``
+    - Mosaic: ``'<stem> Mosaic Intensity [Phasor]'``
+
+    Parameters
+    ----------
+    stem : str
+        Base filename or directory stem without extension.
+    channel_label : Any, optional
+        Channel index or label. If provided and non-empty, appends
+        ``': Channel <channel_label>'``.
+    is_stack : bool, optional
+        Whether the layer is a z/t-stack.
+    is_mosaic : bool, optional
+        Whether the layer is a stitched mosaic.
+
+    Returns
+    -------
+    str
+        Formatted layer name.
+    """
+    qualifiers = []
+    if is_mosaic:
+        qualifiers.append("Mosaic")
+    if is_stack:
+        qualifiers.append("Stack")
+    qualifier_str = f"{' '.join(qualifiers)} " if qualifiers else ""
+    name = f"{stem} {qualifier_str}Intensity"
+    if channel_label is not None and str(channel_label).strip() != "":
+        name = f"{name}: Channel {channel_label}"
+    return f"{name} [Phasor]"
+
+
+def extract_channel_label(
+    layer_name: str | None = None,
+    metadata: dict | None = None,
+) -> str | None:
+    """Extract channel label from metadata settings or a layer name.
+
+    Parameters
+    ----------
+    layer_name : str, optional
+        Layer name, potentially ending with ``': Channel <label> [Phasor]'``.
+    metadata : dict, optional
+        Layer metadata dict, potentially containing ``settings['channel']``.
+
+    Returns
+    -------
+    str or None
+        The extracted channel label as a string, or None if not found.
+    """
+    if metadata and isinstance(metadata, dict):
+        settings = metadata.get("settings")
+        if isinstance(settings, dict) and "channel" in settings:
+            ch = settings["channel"]
+            if ch is not None:
+                return str(ch)
+    if layer_name:
+        match = re.search(
+            r":\s*Channel\s+([^:\[]+?)(?:\s*\[Phasor\])?(?:\s*\[\d+\])?$",
+            layer_name,
+        )
+        if match:
+            return match.group(1).strip()
+    return None
+
+
+def extract_channel_suffix(layer_name: str | None) -> str:
+    """Extract channel suffix (e.g. ``': Channel 0'``) from a layer name.
+
+    Returns an empty string if no channel suffix is present.
+    """
+    if not layer_name:
+        return ""
+    match = re.search(
+        r"(:\s*Channel\s+[^:\[]+?)(?:\s*\[Phasor\])?(?:\s*\[\d+\])?$",
+        layer_name,
+    )
+    return match.group(1) if match else ""
+
+
 def name_match_stem(value, strip_directory=True):
     """Return the comparable stem of a file path or layer name.
 
     Drops any directory part, the extension, and any further compound
-    suffix, so ``"sample.ome.tif"``, ``"sample.tif Intensity Image"`` and
+    suffix, so ``"sample.ome.tif"``, ``"sample.tif Intensity [Phasor]"`` and
     ``"sample"`` all compare as ``"sample"``.
 
     Parameters
@@ -1516,7 +1855,14 @@ def name_match_stem(value, strip_directory=True):
     """
     if strip_directory:
         value = os.path.basename(value)
-    return os.path.splitext(value)[0].split(".")[0].lower()
+    stem = os.path.splitext(value)[0].split(".")[0]
+    stem = re.sub(
+        r"\s*(?:Intensity.*?\[Phasor\]|\[Phasor\]\s*Intensity|Intensity\s*Image).*$",
+        "",
+        stem,
+        flags=re.IGNORECASE,
+    )
+    return stem.lower()
 
 
 def rank_mask_candidates(target, candidates, strip_directory=True):
@@ -1830,6 +2176,102 @@ def unassigned_layer_labels(layer_labels, group_assignments):
     return [label for label in layer_labels if label not in group_assignments]
 
 
+#: Joins a dataset name and the mask label it was split into, giving names
+#: like ``"Lifetime: cells.tif - label 3"``.
+MASK_LABEL_SEPARATOR = " \u2013 "
+
+
+def mask_label_split_name(label, value):
+    """Return the dataset name for mask label *value* of *label*."""
+    return f"{label}{MASK_LABEL_SEPARATOR}label {value}"
+
+
+def mask_label_values(metadata):
+    """Return the mask label values a masked layer is analysed with.
+
+    Parameters
+    ----------
+    metadata : dict
+        ``metadata`` of an analysed image layer, as written by the mask
+        controls of the Phasor Plot widget.
+
+    Returns
+    -------
+    list of int
+        The positive label values the mask restricts the analysis to, in
+        ascending order. Empty when the layer carries no mask that describes
+        one region per label: no mask at all, an inverted one (whose analysed
+        pixels are the complement of the labels, not one region each), or one
+        with no label selected, which the plugin treats as no masking.
+    """
+    mask = metadata.get('mask') if metadata else None
+    if mask is None or metadata.get('mask_invert', False):
+        return []
+    selected = metadata.get('mask_labels')
+    # ``None`` means every label of the mask is analysed; the plugin
+    # normalises "all ticked" to it (see PlotterWidget._on_mask_layer_changed).
+    values = (
+        np.unique(np.asarray(mask))
+        if selected is None
+        else np.atleast_1d(np.asarray(list(selected)))
+    )
+    return sorted({int(value) for value in values.ravel() if value > 0})
+
+
+def find_labels_layer_for_mask(viewer, mask):
+    """Return the Labels layer whose data is *mask*, or None.
+
+    A layer stores the mask it was analysed with as a plain array; matching
+    it back to a layer is what lets the per-label curves be drawn in the
+    colours napari paints those labels with.
+    """
+    mask = np.asarray(mask)
+    for layer in getattr(viewer, "layers", []):
+        if not isinstance(layer, Labels):
+            continue
+        data = np.asarray(layer.data)
+        if data.shape == mask.shape and np.array_equal(data, mask):
+            return layer
+    return None
+
+
+def split_data_by_mask_labels(data, mask, values, keep_shape=False):
+    """Split *data* into the pixels of each mask label.
+
+    Parameters
+    ----------
+    data : np.ndarray
+        Array shaped like the analysed layer.
+    mask : np.ndarray
+        Label array of the same shape, as stored in the layer metadata.
+    values : iterable of int
+        Label values to extract; empty ones are skipped.
+    keep_shape : bool, optional
+        Return arrays shaped like *data* with every other label set to NaN,
+        instead of a flat array of the label's pixels. Needed by callers
+        that go on to slice the result along a frame axis.
+
+    Returns
+    -------
+    dict
+        ``{label_value: np.ndarray}``, empty when *mask* does not line up
+        with *data*.
+    """
+    data = np.asarray(data)
+    mask = np.asarray(mask)
+    if mask.shape != data.shape:
+        return {}
+    parts = {}
+    for value in values:
+        selected = mask == value
+        if not selected.any():
+            continue
+        parts[value] = (
+            np.where(selected, data, np.nan) if keep_shape else data[selected]
+        )
+    return parts
+
+
 class _ColormapDelegate(QStyledItemDelegate):
     """Custom delegate to ensure colormap icons have vertical spacing in dropdowns."""
 
@@ -1865,7 +2307,20 @@ class _PrimaryLayerDelegate(QStyledItemDelegate):
     def sizeHint(self, option, index):
         """Return the item size, heightened to fit the primary-layer action."""
         base = super().sizeHint(option, index)
-        return QSize(base.width(), max(base.height(), 24))
+        width = base.width()
+        is_header = index.data(self.PRIMARY_ROLE + 1) is not None
+        if self._enable_primary_layer and not is_header:
+            fm_primary = QFontMetrics(self._label_font)
+            fm_action = QFontMetrics(self._action_font)
+            extra_label_width = (
+                max(
+                    fm_primary.horizontalAdvance("Primary layer"),
+                    fm_action.horizontalAdvance("Set as primary"),
+                )
+                + 18
+            )
+            width += extra_label_width
+        return QSize(width, max(base.height(), 24))
 
     def paint(self, painter, option, index):
         """Draw the item plus its primary-layer action or indicator."""
@@ -2498,9 +2953,41 @@ class CheckableComboBox(QComboBox):
                 line_edit.setText(f"{len(checked)} {self._unit} selected")
 
     def showPopup(self):
-        """Show the popup and track visibility."""
+        """Show the popup and track visibility.
+
+        Ensures the popup dropdown list is wide enough to display the full
+        width of all items (checkboxes, labels, primary action if enabled,
+        and scrollbars) even when the dock widget or combobox is narrow.
+        """
         self._popup_visible = True
+
+        view = self.view()
+        max_col_w = max(view.sizeHintForColumn(0), 0)
+
+        scrollbar = view.verticalScrollBar()
+        scrollbar_w = (
+            scrollbar.sizeHint().width()
+            if scrollbar is not None and scrollbar.sizeHint().width() > 0
+            else self.style().pixelMetric(
+                QStyle.PM_ScrollBarExtent, None, self
+            )
+        )
+        frame_w = view.frameWidth() * 2
+        content_w = max_col_w + scrollbar_w + frame_w + 10
+
+        min_popup_width = max(self.width(), content_w, 150)
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is not None:
+            min_popup_width = min(
+                min_popup_width, screen.availableGeometry().width()
+            )
+
+        view.setMinimumWidth(min_popup_width)
         super().showPopup()
+
+        popup_win = view.window()
+        if popup_win is not None and popup_win.width() < min_popup_width:
+            popup_win.resize(min_popup_width, popup_win.height())
 
     def hidePopup(self):
         """Hide the popup and clear hover state."""
@@ -2579,6 +3066,7 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
 
     Provides controls for:
     - Display mode: Merged / Individual layers / Grouped.
+    - Splitting the masked layers into one curve per mask label.
     - Toggling SD shading (for Merged and Grouped modes).
     - Normalising every curve to its own maximum.
     - Central-tendency vertical line (Mean / Median / Center of mass).
@@ -2600,6 +3088,11 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         Initial central-tendency line selection.
     show_legend : bool
         Initial state of the *Show legend* checkbox.
+    split_mask_labels : bool, optional
+        Initial state of the *Separate mask labels* checkbox.
+    split_mask_labels_available : bool, optional
+        Whether that checkbox is shown at all. It only means something when
+        the analysed layers are masked with several labels.
     layer_labels : list of str, optional
         Dataset names offered per-curve colours in *Individual layers* mode.
     group_labels : list of str, optional
@@ -2643,6 +3136,8 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         central_tendency: str = "None",
         show_legend: bool = False,
         aspect_ratio: str = "auto",
+        split_mask_labels: bool = False,
+        split_mask_labels_available: bool = False,
         layer_labels: list = None,
         group_labels: list = None,
         group_assignments: dict = None,
@@ -2669,6 +3164,21 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         self.mode_combo.setCurrentText(display_mode)
         mode_layout.addWidget(self.mode_combo)
         layout.addLayout(mode_layout)
+
+        # --- Separate mask labels ---
+        self.split_labels_checkbox = QCheckBox("Separate mask labels")
+        self.split_labels_checkbox.setToolTip(
+            "Analyse each label of the mask on its own: one curve per label "
+            "in the histogram and one row per label in the statistics table, "
+            "instead of one per layer. Shown when the analysed layers are "
+            "masked with more than one label."
+        )
+        self.split_labels_checkbox.setChecked(split_mask_labels)
+        self.split_labels_checkbox.setVisible(split_mask_labels_available)
+        self.split_labels_checkbox.toggled.connect(
+            self._on_split_labels_toggled
+        )
+        layout.addWidget(self.split_labels_checkbox)
 
         # --- Show SD ---
         self.sd_checkbox = QCheckBox("Show standard deviation")
@@ -2904,6 +3414,16 @@ class HistogramSettingsDialog(ExclusiveGroupRowsMixin, QDialog):
         if chosen.isValid():
             rgb = (chosen.redF(), chosen.greenF(), chosen.blueF())
             self._set_btn_color(btn, rgb)
+
+    def _on_split_labels_toggled(self, checked: bool) -> None:
+        """Move to *Individual layers* when the per-label split is enabled.
+
+        Separating the labels exists to tell them apart, which one merged
+        curve cannot show. The mode stays a free choice; this only picks the
+        useful default when the split is switched on from *Merged*.
+        """
+        if checked and self.mode_combo.currentText() == "Merged":
+            self.mode_combo.setCurrentText("Individual layers")
 
     def _update_ui_for_mode(self, mode: str) -> None:
         """Show/hide controls depending on the selected mode."""
@@ -3206,6 +3726,18 @@ class HistogramWidget(QWidget):
             0  # Track transitions for auto-enabling SD
         )
 
+        # The datasets exactly as the analysis tab handed them over, kept so
+        # the per-mask-label split can be re-applied when the user toggles it
+        # without the tab having to feed the data again.
+        self._input_datasets = {}
+        self._input_single = False
+        # Mask-label split: whether it is on, {split label: (source dataset,
+        # mask label value)} for what is currently drawn, and the colour
+        # napari paints each of those labels with.
+        self._split_by_mask_labels = False
+        self._split_labels = {}
+        self._mask_label_colors = {}
+
         # Colormap state (set externally)
         self.colormap_colors = None  # Nx4 array of RGBA colors
         self.contrast_limits = None  # [vmin, vmax]
@@ -3220,6 +3752,8 @@ class HistogramWidget(QWidget):
         # statistics, never to render.
         self._frame_context = None
         self._frame_source_datasets = {}
+        # Lazily computed split of the above; see :meth:`frame_source_datasets`.
+        self._frame_source_split = None
 
         # Display settings
         self._display_mode = (
@@ -3901,6 +4435,12 @@ class HistogramWidget(QWidget):
     def _open_settings_dialog(self):
         """Open the histogram settings dialog."""
         layer_labels = list(self._datasets.keys()) if self._datasets else None
+        # Offer every drawn curve its current colour, so a mask label starts
+        # from the colour napari gives it rather than the default cycle.
+        layer_colors = {
+            label: self._dataset_color(label, index)
+            for index, label in enumerate(layer_labels or [])
+        }
         # Curves get their own colours, but groups are assigned to the layers
         # behind them: with several components on screen the group rows still
         # list the analysed layers, not one entry per component.
@@ -3922,13 +4462,15 @@ class HistogramWidget(QWidget):
             normalize=self._normalize,
             central_tendency=self._central_tendency,
             show_legend=self._show_legend,
+            split_mask_labels=self._split_by_mask_labels,
+            split_mask_labels_available=self.mask_label_split_available(),
             layer_labels=layer_labels,
             group_labels=group_labels,
             series_labels=series_labels if len(series_labels) > 1 else None,
             series_colors=series_colors,
             series_style=self._series_style,
             group_assignments=group_assignments,
-            layer_colors=self._layer_colors,
+            layer_colors=layer_colors,
             group_colors=group_colors,
             group_names=group_names,
             aspect_ratio=self._aspect_ratio,
@@ -3938,6 +4480,11 @@ class HistogramWidget(QWidget):
         dlg.smooth_checkbox.setChecked(self._smooth_curves)
 
         if dlg.exec() == QDialog.Accepted:
+            split_changed = (
+                dlg.split_labels_checkbox.isChecked()
+                != self._split_by_mask_labels
+            )
+            self._split_by_mask_labels = dlg.split_labels_checkbox.isChecked()
             self._display_mode = dlg.mode_combo.currentText()
             self._show_sd = dlg.sd_checkbox.isChecked()
             self._normalize = dlg.normalize_checkbox.isChecked()
@@ -3957,9 +4504,204 @@ class HistogramWidget(QWidget):
                 self._series_color_overrides = dlg.get_series_colors()
                 self._series_style = dlg.get_series_style()
                 self._series_style_explicit = True
+            if split_changed:
+                # Splitting changes which datasets exist, so the histogram
+                # has to be recomputed rather than only re-drawn.
+                self._ingest(auto_sd=False)
+                return
             if self.counts is not None:
                 self._render()
             self.dataChanged.emit()
+
+    # ------------------------------------------------------------------
+    # Mask-label split
+    # ------------------------------------------------------------------
+
+    @property
+    def split_by_mask_labels(self) -> bool:
+        """Whether each mask label is analysed as its own dataset."""
+        return self._split_by_mask_labels
+
+    @split_by_mask_labels.setter
+    def split_by_mask_labels(self, value: bool):
+        """Toggle the per-label split and re-histogram the stored data."""
+        value = bool(value)
+        if value == self._split_by_mask_labels:
+            return
+        self._split_by_mask_labels = value
+        if self._input_datasets:
+            self._ingest(auto_sd=False)
+
+    def mask_label_split_available(self) -> bool:
+        """True when the analysed layers carry a mask with several labels.
+
+        The split is only offered then: with one label (or none) it would
+        just rename the layer's own curve.
+        """
+        if self._viewer is None or not self._input_datasets:
+            return False
+        sources = {self._source_for(label) for label in self._input_datasets}
+        return any(
+            len(self._mask_split_values(source)) > 1 for source in sources
+        )
+
+    def mask_label_split_active(self) -> bool:
+        """True when the drawn datasets are one per mask label."""
+        return bool(self._split_labels)
+
+    def _source_metadata(self, source):
+        """Return the metadata of the analysed layer *source*, or ``{}``."""
+        if self._viewer is None:
+            return {}
+        try:
+            layer = self._viewer.layers[source]
+        except (
+            AttributeError,
+            IndexError,
+            KeyError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ):
+            return {}
+        return getattr(layer, "metadata", None) or {}
+
+    def _mask_split_values(self, source):
+        """Return the mask labels *source* is analysed with.
+
+        Cheap enough to call on every update: it only reads the metadata the
+        mask controls left on the layer.
+        """
+        return mask_label_values(self._source_metadata(source))
+
+    def _mask_split_info(self, source):
+        """Return ``(mask, values, colors)`` for *source*, or None.
+
+        None means the layer is not masked in a way that describes one
+        region per label (see :func:`mask_label_values`).
+        """
+        metadata = self._source_metadata(source)
+        values = mask_label_values(metadata)
+        if len(values) < 2:
+            return None
+        mask = np.asarray(metadata['mask'])
+        mask_layer = find_labels_layer_for_mask(self._viewer, mask)
+        colors = {}
+        if mask_layer is not None:
+            for value in values:
+                rgba = mask_layer.get_color(value)
+                if rgba is not None:
+                    colors[value] = tuple(float(c) for c in rgba[:3])
+        return mask, values, colors
+
+    def _align_mask(self, mask, shape):
+        """Return *mask* matching *shape*, or None when it cannot.
+
+        In per-frame time-lapse mode the tabs feed one frame at a time while
+        the mask always covers the whole layer, so it is sliced the same way
+        before the two are compared pixel by pixel.
+        """
+        mask = np.asarray(mask)
+        shape = tuple(shape)
+        if mask.shape == shape:
+            return mask
+        context = self._frame_context
+        if context is not None and context.is_per_frame:
+            sliced = np.asarray(context.slice_array(mask))
+            if sliced.shape == shape:
+                return sliced
+        return None
+
+    def _forget_split_labels(self) -> None:
+        """Drop the bookkeeping left by the previous split."""
+        for name in self._split_labels:
+            self._dataset_sources.pop(name, None)
+            self._dataset_series.pop(name, None)
+            self._mask_label_colors.pop(name, None)
+        self._split_labels = {}
+        self._frame_source_split = None
+
+    def _split_datasets(self, datasets, *, keep_shape=False, record=False):
+        """Return *datasets* expanded into one entry per mask label.
+
+        A dataset whose source layer carries no per-label mask — or whose
+        array does not line up with that mask — is passed through whole, so
+        a selection mixing masked and unmasked layers keeps them all.
+
+        Parameters
+        ----------
+        datasets : dict
+            ``{label: np.ndarray}`` as handed over by the analysis tab.
+        keep_shape : bool, optional
+            Return arrays shaped like the layer, with the pixels of the
+            other labels set to NaN, instead of the label's pixels alone.
+        record : bool, optional
+            Remember what each split came from, and mirror the split onto
+            the dataset sources, series and label colours so that grouping,
+            per-quantity series and colouring follow the new names.
+
+        Returns
+        -------
+        dict
+            ``{label: np.ndarray}`` with one entry per mask label of every
+            dataset that could be split.
+        """
+        if record:
+            self._forget_split_labels()
+        if not self._split_by_mask_labels:
+            return dict(datasets)
+
+        expanded = {}
+        split_labels = {}
+        info_cache = {}
+        for label, data in datasets.items():
+            source = self._source_for(label)
+            if source not in info_cache:
+                info_cache[source] = self._mask_split_info(source)
+            info = info_cache[source]
+            parts = {}
+            if info is not None:
+                mask = self._align_mask(info[0], np.shape(data))
+                if mask is not None:
+                    parts = split_data_by_mask_labels(
+                        data, mask, info[1], keep_shape=keep_shape
+                    )
+            if not parts:
+                expanded[label] = data
+                continue
+            for value, part in parts.items():
+                name = mask_label_split_name(label, value)
+                expanded[name] = part
+                split_labels[name] = (label, value)
+                if not record:
+                    continue
+                self._dataset_sources[name] = source
+                if label in self._dataset_series:
+                    self._dataset_series[name] = self._dataset_series[label]
+                if value in info[2]:
+                    self._mask_label_colors[name] = info[2][value]
+        if record:
+            self._split_labels = split_labels
+        return expanded
+
+    def frame_source_datasets(self) -> dict:
+        """Return the un-sliced arrays behind the plot, one per drawn curve.
+
+        Mirrors what is on screen: with the mask labels separated, each
+        layer's array is split into one array per label so the per-timepoint
+        statistics and their CSV list the same rows as the histogram. Those
+        arrays keep the layer's shape — the other labels are NaN — because
+        the caller slices them frame by frame. They are computed on demand
+        and cached, since a stack split many ways is a lot of memory to hold
+        for a table that may never be opened.
+        """
+        if not self._split_labels or not self._frame_source_datasets:
+            return self._frame_source_datasets
+        if self._frame_source_split is None:
+            self._frame_source_split = self._split_datasets(
+                self._frame_source_datasets, keep_shape=True
+            )
+        return self._frame_source_split
 
     def set_frame_source(self, frame_context, datasets) -> None:
         """Record the un-sliced per-layer arrays behind the displayed data.
@@ -3978,6 +4720,7 @@ class HistogramWidget(QWidget):
         """
         self._frame_context = frame_context
         self._frame_source_datasets = dict(datasets or {})
+        self._frame_source_split = None
 
     def has_frame_source(self) -> bool:
         """Return True when per-timepoint statistics can be exported."""
@@ -3992,7 +4735,9 @@ class HistogramWidget(QWidget):
         NaN/Inf values are always excluded. Non-positive values are
         excluded only when ``exclude_nonpositive=True`` was passed to
         the constructor. This is the single-dataset entry point;
-        multi-layer features are disabled.
+        multi-layer features are disabled — unless the layer is masked and
+        its labels are being separated, which turns the one dataset into one
+        per label and takes the multi-layer route.
 
         Parameters
         ----------
@@ -4003,6 +4748,51 @@ class HistogramWidget(QWidget):
             column). Defaults to ``"Layer"``; callers should pass the
             analyzed image layer's name so it matches the multi-layer view.
         """
+        self._input_datasets = {label: data}
+        self._input_single = True
+        self._ingest()
+
+    def update_multi_data(self, datasets: dict) -> None:
+        """Compute histograms from multiple datasets and render.
+
+        Each dataset (one per layer) is stored individually so that
+        *Individual layers*, *Grouped*, and *Merged + SD* display modes
+        can operate on per-layer counts.
+
+        Parameters
+        ----------
+        datasets : dict
+            ``{label: np.ndarray}`` mapping layer names to their scalar
+            data arrays.  Arrays will be flattened and filtered.
+        """
+        self._input_datasets = dict(datasets)
+        self._input_single = False
+        self._ingest()
+
+    def _ingest(self, *, auto_sd: bool = True) -> None:
+        """Histogram the stored datasets, separating mask labels first.
+
+        Both entry points funnel through here so a single layer split into
+        several mask labels is drawn exactly like several layers, and so
+        toggling the split re-runs the computation without the analysis tab
+        having to feed the data again.
+
+        Parameters
+        ----------
+        auto_sd : bool, optional
+            Whether going from one curve to several may switch SD shading
+            on. False when re-running after a settings change, where the
+            user has just said what they want.
+        """
+        datasets = self._split_datasets(self._input_datasets, record=True)
+        if self._input_single and len(datasets) <= 1:
+            label, data = next(iter(datasets.items()), ("Layer", np.array([])))
+            self._ingest_single(data, label)
+        else:
+            self._ingest_multi(datasets, auto_sd=auto_sd)
+
+    def _ingest_single(self, data: np.ndarray, label: str) -> None:
+        """Histogram one dataset, with the multi-layer features disabled."""
         valid = self._filter_valid_values(data)
 
         if len(valid) == 0:
@@ -4028,19 +4818,8 @@ class HistogramWidget(QWidget):
         self.show()
         self.dataChanged.emit()
 
-    def update_multi_data(self, datasets: dict) -> None:
-        """Compute histograms from multiple datasets and render.
-
-        Each dataset (one per layer) is stored individually so that
-        *Individual layers*, *Grouped*, and *Merged + SD* display modes
-        can operate on per-layer counts.
-
-        Parameters
-        ----------
-        datasets : dict
-            ``{label: np.ndarray}`` mapping layer names to their scalar
-            data arrays.  Arrays will be flattened and filtered.
-        """
+    def _ingest_multi(self, datasets: dict, *, auto_sd: bool = True) -> None:
+        """Histogram several datasets on one set of common bins."""
         self._datasets = {}
         for label, data in datasets.items():
             valid = self._filter_valid_values(data)
@@ -4066,7 +4845,7 @@ class HistogramWidget(QWidget):
             self._counts_per_dataset[label] = counts
 
         current_count = len(self._datasets)
-        if current_count > 1 and self._previous_dataset_count <= 1:
+        if auto_sd and current_count > 1 and self._previous_dataset_count <= 1:
             self._show_sd = True
         self._previous_dataset_count = current_count
 
@@ -4078,6 +4857,23 @@ class HistogramWidget(QWidget):
 
     def rename_dataset(self, old_name: str, new_name: str) -> None:
         """Handle renaming of a dataset to preserve colors and groupings."""
+        if old_name in self._input_datasets:
+            self._input_datasets = {
+                (new_name if key == old_name else key): value
+                for key, value in self._input_datasets.items()
+            }
+        split_renames = {
+            name: mask_label_split_name(new_name, value)
+            for name, (base, value) in self._split_labels.items()
+            if base == old_name
+        }
+        if split_renames:
+            # The per-label names embed the dataset name, so they all move
+            # with it; re-splitting under the new one keeps the colours and
+            # groups the remap has just carried over.
+            self.remap_dataset_keys({old_name: new_name, **split_renames})
+            self._ingest(auto_sd=False)
+            return
         if old_name in self._datasets:
             self._datasets[new_name] = self._datasets.pop(old_name)
         if old_name in self._counts_per_dataset:
@@ -4191,6 +4987,8 @@ class HistogramWidget(QWidget):
         self._counts_per_dataset = {}
         self._raw_valid_data = None
         self._previous_dataset_count = 0
+        self._input_datasets = {}
+        self._forget_split_labels()
         if clear_frame_source:
             self._frame_context = None
             self._frame_source_datasets = {}
@@ -4428,13 +5226,11 @@ class HistogramWidget(QWidget):
         if choice == "None":
             return
 
-        default_colors = plt.cm.tab10.colors
         n_datasets = len(self._counts_per_dataset)
 
         if n_datasets > 1 and self._display_mode == "Individual layers":
             for idx, (label, valid) in enumerate(self._datasets.items()):
-                default_c = default_colors[idx % len(default_colors)][:3]
-                color = self._layer_colors.get(label, default_c)
+                color = self._dataset_color(label, idx)
                 val = self._compute_central_tendency(
                     valid, choice, self.bin_centers, self.bin_edges
                 )
@@ -4653,6 +5449,20 @@ class HistogramWidget(QWidget):
             return None
         return self.xlabel or None
 
+    def statistics_row_name(self, label):
+        """Return the statistics row *label* belongs to.
+
+        Rows are the analysed layers, so the curves of several quantities
+        derived from one layer share a row. Separated mask labels are the
+        exception: they are different regions of the layer, so each keeps
+        its own row.
+        """
+        source = self._source_for(label)
+        split = self._split_labels.get(label)
+        if split is None:
+            return source
+        return mask_label_split_name(source, split[1])
+
     def series_statistics_datasets(self):
         """Return ``({layer: {series: values}}, series_names)`` for the table.
 
@@ -4666,8 +5476,7 @@ class HistogramWidget(QWidget):
             return None, []
         rows = {}
         for label, values in self._datasets.items():
-            source = self._source_for(label)
-            rows.setdefault(source, {})[
+            rows.setdefault(self.statistics_row_name(label), {})[
                 self._dataset_series.get(label)
             ] = values
         return rows, names
@@ -4705,6 +5514,20 @@ class HistogramWidget(QWidget):
             )
             pooled[label] = np.concatenate([values for _, values in members])
         return pooled
+
+    def _dataset_color(self, label, index):
+        """Return the colour of one dataset's curve.
+
+        A colour picked in the settings dialog wins; a dataset that is one
+        label of a mask otherwise takes the colour napari paints that label
+        with, so the curves and the labels layer read as the same thing.
+        Everything else falls back to the default colour cycle.
+        """
+        default_colors = plt.cm.tab10.colors
+        fallback = self._mask_label_colors.get(
+            label, default_colors[index % len(default_colors)][:3]
+        )
+        return self._layer_colors.get(label, fallback)
 
     def _group_color(self, group_id):
         """Return the color of *group_id*, falling back to the cycle."""
@@ -4866,12 +5689,10 @@ class HistogramWidget(QWidget):
 
     def _render_individual(self) -> None:
         """Render each dataset as a smooth outline."""
-        default_colors = plt.cm.tab10.colors
         for idx, (label, counts) in enumerate(
             self._counts_per_dataset.items()
         ):
-            default_c = default_colors[idx % len(default_colors)][:3]
-            color = self._layer_colors.get(label, default_c)
+            color = self._dataset_color(label, idx)
             x_fine, y_fine = self._smooth_curve(counts)
             y_fine = y_fine * self._display_scale(y_fine)
             self.ax.plot(
@@ -5651,6 +6472,22 @@ class StatisticsDockWidget(QWidget):
         main_layout.addWidget(self.group_stats_section)
         self.group_stats_section.setVisible(False)
 
+        # Mirror of the histogram's per-label split. The table is where one
+        # row per masked region is most often wanted, so the option is
+        # offered here as well as in the histogram settings; both drive the
+        # same state on the histogram widget.
+        self.split_labels_checkbox = QCheckBox("Separate mask labels")
+        self.split_labels_checkbox.setToolTip(
+            "Show one row per label of the mask instead of one per layer. "
+            "Shown when the analysed layers are masked with more than one "
+            "label. The histogram follows, drawing one curve per label."
+        )
+        self.split_labels_checkbox.setVisible(False)
+        self.split_labels_checkbox.toggled.connect(
+            self._on_split_labels_toggled
+        )
+        main_layout.addWidget(self.split_labels_checkbox)
+
         self.export_csv_button = QPushButton("Export Table as CSV")
         self.export_csv_button.setMinimumWidth(140)
         self.export_csv_button.setEnabled(False)
@@ -5660,6 +6497,19 @@ class StatisticsDockWidget(QWidget):
         main_layout.addStretch()
 
         histogram_widget.dataChanged.connect(self._update_statistics)
+
+    def _on_split_labels_toggled(self, checked):
+        """Separate the mask labels in the histogram that drives the table."""
+        self.histogram_widget.split_by_mask_labels = checked
+
+    def _sync_split_labels_checkbox(self):
+        """Offer the split only while the analysed layers are masked."""
+        hw = self.histogram_widget
+        self.split_labels_checkbox.setVisible(hw.mask_label_split_available())
+        if self.split_labels_checkbox.isChecked() != hw.split_by_mask_labels:
+            self.split_labels_checkbox.blockSignals(True)
+            self.split_labels_checkbox.setChecked(hw.split_by_mask_labels)
+            self.split_labels_checkbox.blockSignals(False)
 
     def _shows_per_frame_rows(self):
         """True when the table should list one row per time-lapse frame."""
@@ -5676,7 +6526,7 @@ class StatisticsDockWidget(QWidget):
         hw = self.histogram_widget
         hist_range = hw.get_range() if hw._range_slider_enabled else None
         return pooled_histogram_bins(
-            hw._frame_source_datasets, hw.bins, hist_range
+            hw.frame_source_datasets(), hw.bins, hist_range
         )
 
     def _frame_statistics_rows(self):
@@ -5686,7 +6536,7 @@ class StatisticsDockWidget(QWidget):
         hw = self.histogram_widget
         bin_centers, bin_edges = self._pooled_bins()
         rows = build_frame_statistics_rows(
-            hw._frame_source_datasets,
+            hw.frame_source_datasets(),
             hw._frame_context,
             bin_edges,
             bin_centers,
@@ -5696,6 +6546,7 @@ class StatisticsDockWidget(QWidget):
     def _update_statistics(self):
         """Recompute the statistics tables from the histogram's data."""
         hw = self.histogram_widget
+        self._sync_split_labels_checkbox()
 
         # Say what was measured in the column headers rather than leaving a
         # bare "Mean" that could be a lifetime, a fraction or an efficiency.
@@ -5716,7 +6567,13 @@ class StatisticsDockWidget(QWidget):
                 self.export_csv_button.setEnabled(True)
                 return
 
-        self.layer_stats_section.set_title("Layer Statistics")
+        # With the mask labels separated the rows are regions of a layer,
+        # not the layers themselves.
+        self.layer_stats_section.set_title(
+            "Label Statistics"
+            if hw.mask_label_split_active()
+            else "Layer Statistics"
+        )
 
         has_multi = bool(hw._datasets)
         has_single = (
@@ -5835,7 +6692,7 @@ class StatisticsDockWidget(QWidget):
             or to emit one row per timepoint per layer.
         """
         hw = self.histogram_widget
-        datasets = hw._frame_source_datasets
+        datasets = hw.frame_source_datasets()
         # Bin over the whole acquisition so every frame's centre of mass is
         # computed on the same bins, matching the on-screen per-frame table.
         bin_centers, bin_edges = self._pooled_bins()
@@ -6126,6 +6983,636 @@ class FileOrderDialog(QDialog):
         except ValueError:
             return 1.0
         return value if value > 0 else 1.0
+
+
+class TileLayoutDialog(QDialog):
+    """Dialog to describe how a set of files tiles a larger image.
+
+    The layout can come from three sources, offered in order of reliability:
+    stage positions recorded in the files, indices encoded in the file names,
+    or a manual specification. The manual mode is the one that covers
+    partially filled mosaics, where each row holds a different number of
+    tiles (``5, 7, 9, 9, 7, 5`` for a roughly circular sample, say); short
+    rows are positioned according to the chosen alignment.
+
+    A live map of the resulting arrangement is drawn so an incorrect
+    traversal order or start corner is caught before the tiles are read.
+
+    A mosaic may also be held entirely in one file, with its tiles stored
+    along a dedicated dimension such as the mosaic axis of a Zeiss CZI. Pass
+    the candidate axes as *tile_axes* and the dialog offers a choice of which
+    one holds the tiles.
+
+    Parameters
+    ----------
+    file_paths : list of str
+        Tile paths, in acquisition order.
+    parent : QWidget, optional
+        Parent widget.
+    tile_shape : tuple of int, optional
+        ``(height, width)`` of a single tile, if already known.
+    tile_axes : dict, optional
+        Maps each axis that could hold tiles inside a file to its size, as
+        returned by :func:`~napari_phasors._reader.probe_tile_axes`.
+    tile_positions : sequence of tuple, optional
+        Exact ``(y, x)`` pixel position of each tile, when the file records
+        them. Offered as a layout source and selected by default, since
+        measured positions beat any description of the arrangement.
+    """
+
+    def __init__(
+        self,
+        file_paths,
+        parent=None,
+        tile_shape=None,
+        tile_axes=None,
+        tile_positions=None,
+    ):
+        """Build the layout controls and the arrangement preview."""
+        super().__init__(parent)
+        self.setWindowTitle("Tile Layout")
+        self.setMinimumWidth(620)
+
+        self._paths = list(file_paths)
+        self._base_tile_shape = tuple(tile_shape) if tile_shape else (0, 0)
+        self._tile_shape = self._base_tile_shape
+        self._tile_axes = dict(tile_axes or {})
+        self._base_positions = (
+            [tuple(position) for position in tile_positions]
+            if tile_positions is not None
+            else None
+        )
+        self._positions = list(self._base_positions or [])
+        self._geometry = None
+
+        layout = QVBoxLayout(self)
+
+        layout.addWidget(
+            make_experimental_warning(
+                "Tiled mosaic stitching is new. Check the arrangement in the "
+                "preview before stitching, and if a mosaic comes out "
+                "misaligned, blended wrongly or runs out of memory, report it."
+            )
+        )
+
+        info = QLabel(
+            f"{len(self._paths)} file(s) selected. Describe how they tile "
+            "the image. Rows may hold different numbers of tiles."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        self._add_tile_axis_row(layout)
+        self._add_binning_row(layout)
+
+        source_layout = QHBoxLayout()
+        source_layout.addWidget(QLabel("Layout from: "))
+        self.source_combo = QComboBox()
+        if self._base_positions is not None:
+            self.source_combo.addItem(
+                "Tile positions recorded in the file", "positions"
+            )
+        self.source_combo.addItem("Rows (manual)", "rows")
+        self.source_combo.addItem("File names", "names")
+        self.source_combo.addItem("Stage positions in files", "stage")
+        self.source_combo.currentIndexChanged.connect(self._on_source_changed)
+        source_layout.addWidget(self.source_combo)
+        source_layout.addStretch()
+        layout.addLayout(source_layout)
+
+        # --- Manual rows -------------------------------------------------
+        self.rows_widget = QWidget()
+        rows_layout = QVBoxLayout(self.rows_widget)
+        rows_layout.setContentsMargins(0, 0, 0, 0)
+
+        spec_layout = QHBoxLayout()
+        spec_layout.addWidget(QLabel("Tiles per row: "))
+        self.rows_edit = QLineEdit()
+        self.rows_edit.setPlaceholderText("e.g. 5, 7, 9, 9, 7, 5  or  3x9")
+        self.rows_edit.setText(self._default_rows_spec())
+        self.rows_edit.setToolTip(
+            "Number of tiles in each row, separated by commas. "
+            "'3x9' is shorthand for three rows of nine."
+        )
+        self.rows_edit.editingFinished.connect(self._refresh)
+        spec_layout.addWidget(self.rows_edit)
+        rows_layout.addLayout(spec_layout)
+
+        options_layout = QHBoxLayout()
+        options_layout.addWidget(QLabel("Order: "))
+        self.traversal_combo = QComboBox()
+        self.traversal_combo.addItems(["Raster", "Snake"])
+        self.traversal_combo.setToolTip(
+            "Raster restarts each row on the same side. Snake alternates "
+            "direction, as most stage controllers do."
+        )
+        self.traversal_combo.currentIndexChanged.connect(self._refresh)
+        options_layout.addWidget(self.traversal_combo)
+
+        options_layout.addWidget(QLabel("Start: "))
+        self.corner_combo = QComboBox()
+        self.corner_combo.addItems(
+            ["Top-left", "Top-right", "Bottom-left", "Bottom-right"]
+        )
+        self.corner_combo.currentIndexChanged.connect(self._refresh)
+        options_layout.addWidget(self.corner_combo)
+
+        options_layout.addWidget(QLabel("Short rows: "))
+        self.alignment_combo = QComboBox()
+        self.alignment_combo.addItems(["Center", "Left", "Right"])
+        self.alignment_combo.setToolTip(
+            "Where rows with fewer tiles sit relative to the longest row."
+        )
+        self.alignment_combo.currentIndexChanged.connect(self._refresh)
+        options_layout.addWidget(self.alignment_combo)
+        options_layout.addStretch()
+        rows_layout.addLayout(options_layout)
+        layout.addWidget(self.rows_widget)
+
+        # --- File name pattern -------------------------------------------
+        self.pattern_widget = QWidget()
+        pattern_layout = QHBoxLayout(self.pattern_widget)
+        pattern_layout.setContentsMargins(0, 0, 0, 0)
+        pattern_layout.addWidget(QLabel("Pattern: "))
+        self.pattern_edit = QLineEdit()
+        self.pattern_edit.setText(r"(?P<row>\d+)\D+(?P<col>\d+)")
+        self.pattern_edit.setToolTip(
+            "Regular expression matched against each file name. Must define "
+            "'row' and 'col' groups, or a single 'index' group."
+        )
+        self.pattern_edit.editingFinished.connect(self._refresh)
+        pattern_layout.addWidget(self.pattern_edit)
+        layout.addWidget(self.pattern_widget)
+        self.pattern_widget.hide()
+
+        # --- Overlap ------------------------------------------------------
+        overlap_layout = QHBoxLayout()
+        overlap_layout.addWidget(QLabel("Overlap Y (%): "))
+        self.overlap_y_edit = QLineEdit("10")
+        self.overlap_y_edit.setFixedWidth(60)
+        self.overlap_y_edit.setValidator(QDoubleValidator(0.0, 90.0, 3))
+        self.overlap_y_edit.editingFinished.connect(self._refresh)
+        overlap_layout.addWidget(self.overlap_y_edit)
+
+        overlap_layout.addWidget(QLabel("Overlap X (%): "))
+        self.overlap_x_edit = QLineEdit("10")
+        self.overlap_x_edit.setFixedWidth(60)
+        self.overlap_x_edit.setValidator(QDoubleValidator(0.0, 90.0, 3))
+        self.overlap_x_edit.editingFinished.connect(self._refresh)
+        overlap_layout.addWidget(self.overlap_x_edit)
+
+        overlap_layout.addWidget(QLabel("Blending: "))
+        self.blend_combo = QComboBox()
+        self.blend_combo.addItems(["Feather", "Average", "Sum counts"])
+        self.blend_combo.setToolTip(
+            "How intensity is combined where tiles overlap. Feather "
+            "cross-fades for a seamless image; sum keeps the total photon "
+            "counts. Phasor coordinates are the same either way."
+        )
+        overlap_layout.addWidget(self.blend_combo)
+        overlap_layout.addStretch()
+        layout.addLayout(overlap_layout)
+
+        note = QLabel(
+            "The overlap can be re-tuned, or estimated from the data, after "
+            "the tiles have been read."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color: grey;")
+        layout.addWidget(note)
+
+        # --- Preview ------------------------------------------------------
+        self.preview = TileLayoutPreview()
+        layout.addWidget(self.preview)
+
+        self.status_label = QLabel("")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        self.ok_btn = QPushButton("OK")
+        self.ok_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(self.ok_btn)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(self.cancel_btn)
+        layout.addLayout(btn_layout)
+
+        self._refresh()
+
+    def _add_tile_axis_row(self, layout):
+        """Add the selector for the axis holding the tiles inside each file."""
+        self.tile_axis_combo = None
+        if not self._tile_axes:
+            return
+
+        from ._reader import describe_tile_axis
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Tiles inside each file: "))
+
+        self.tile_axis_combo = QComboBox()
+        self.tile_axis_combo.addItem("One tile per file", None)
+        for axis, size in self._tile_axes.items():
+            self.tile_axis_combo.addItem(
+                f"{describe_tile_axis(axis)} - {size} tiles", axis
+            )
+        # A file that carries a tile dimension almost always means the mosaic
+        # lives inside it, so start on the most likely axis rather than
+        # ignoring it.
+        self.tile_axis_combo.setCurrentIndex(1)
+        self.tile_axis_combo.setToolTip(
+            "Dimension along which a single file stores its tiles, for "
+            "example the mosaic axis of a CZI. Choose 'One tile per file' "
+            "when each selected file holds one tile."
+        )
+        self.tile_axis_combo.currentIndexChanged.connect(
+            self._on_tile_axis_changed
+        )
+        row.addWidget(self.tile_axis_combo)
+        row.addStretch()
+        layout.addLayout(row)
+
+    def _add_binning_row(self, layout):
+        """Add the spatial binning selector for large mosaics."""
+        self.binning_combo = None
+        if not self._base_tile_shape[0] or self._base_positions is None:
+            return
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Binning: "))
+        self.binning_combo = QComboBox()
+        for factor in (1, 2, 4, 8, 16):
+            self.binning_combo.addItem(
+                "None" if factor == 1 else f"{factor} x {factor}", factor
+            )
+        self.binning_combo.setToolTip(
+            "Sum square blocks of pixels while reading. Binning adds photons "
+            "together, so the phasor of a binned pixel is the "
+            "photon-weighted phasor of the pixels it covers, and it cuts the "
+            "memory a mosaic needs by the square of the factor."
+        )
+        row.addWidget(self.binning_combo)
+
+        self.memory_label = QLabel("")
+        self.memory_label.setStyleSheet("color: grey;")
+        row.addWidget(self.memory_label)
+        row.addStretch()
+        layout.addLayout(row)
+
+        # Start at a factor that keeps the stitched image manageable, rather
+        # than at a setting that would try to allocate tens of gigabytes.
+        # Set the value before connecting, since the rest of the dialog the
+        # refresh needs does not exist yet.
+        self.binning_combo.setCurrentIndex(
+            self.binning_combo.findData(self._suggested_binning())
+        )
+        self._apply_binning()
+        self.binning_combo.currentIndexChanged.connect(
+            self._on_binning_changed
+        )
+
+    def _suggested_binning(self, budget_bytes=512 * 1024 * 1024):
+        """Return the smallest binning whose canvas fits in *budget_bytes*.
+
+        Sized against one float32 plane of the stitched canvas; blending
+        needs several of those at once, so this stays conservative.
+        """
+        if self._base_positions is None or not self._base_tile_shape[0]:
+            return 1
+        for factor in (1, 2, 4, 8, 16):
+            height, width = self._canvas_for_binning(factor)
+            if height * width * 4 <= budget_bytes:
+                return factor
+        return 16
+
+    def _canvas_for_binning(self, factor):
+        """Return the stitched canvas size for a binning factor."""
+        height = self._base_tile_shape[0] // factor
+        width = self._base_tile_shape[1] // factor
+        return (
+            max(y // factor for y, _ in self._base_positions) + height,
+            max(x // factor for _, x in self._base_positions) + width,
+        )
+
+    def get_binning(self):
+        """Return the selected binning factor."""
+        if self.binning_combo is None:
+            return 1
+        return int(self.binning_combo.currentData() or 1)
+
+    def _apply_binning(self):
+        """Rescale the tile size and positions to the current binning."""
+        factor = self.get_binning()
+        if self._base_positions is None:
+            return
+        self._tile_shape = (
+            self._base_tile_shape[0] // factor,
+            self._base_tile_shape[1] // factor,
+        )
+        self._positions = [
+            (y // factor, x // factor) for y, x in self._base_positions
+        ]
+        if getattr(self, "memory_label", None) is not None:
+            height, width = self._canvas_for_binning(factor)
+            self.memory_label.setText(
+                f"{height} x {width} px, "
+                f"{height * width * 4 / (1024 ** 3):.2f} GB per plane"
+            )
+
+    def _on_binning_changed(self):
+        """Rescale the layout after the binning factor changed."""
+        self._apply_binning()
+        self._refresh()
+
+    def _on_tile_axis_changed(self):
+        """Re-derive the tile count and refresh the layout."""
+        self.rows_edit.setText(self._default_rows_spec())
+        self._refresh()
+
+    def get_tile_axis(self):
+        """Return the selected tile axis, or ``None`` for one tile per file."""
+        if self.tile_axis_combo is None:
+            return None
+        return self.tile_axis_combo.currentData()
+
+    def _sources(self):
+        """Return the tiles the current settings describe."""
+        from ._stitching import TileSource
+
+        axis = self.get_tile_axis()
+        if axis is None:
+            return [TileSource(path) for path in self._paths]
+
+        count = int(self._tile_axes.get(axis, 1))
+        return [
+            TileSource(path, index)
+            for path in self._paths
+            for index in range(count)
+        ]
+
+    def _default_rows_spec(self):
+        """Guess a square-ish arrangement to pre-fill the row specification."""
+        count = len(self._sources())
+        if count < 1:
+            return ""
+        side = int(round(count**0.5))
+        # ``candidate`` walks down to 1, which divides every count, so the
+        # loop always returns: a prime count simply becomes a single row.
+        for candidate in range(side, 0, -1):
+            if count % candidate == 0:
+                rows, columns = candidate, count // candidate
+                return f"{rows}x{columns}"
+
+    def _on_source_changed(self, index):
+        """Show the controls belonging to the selected layout source."""
+        source = self.source_combo.currentData()
+        self.rows_widget.setVisible(source == "rows")
+        self.pattern_widget.setVisible(source == "names")
+        self._refresh()
+
+    def _overlaps(self):
+        """Return the overlap fractions currently entered."""
+
+        def _fraction(edit):
+            try:
+                return min(max(float(edit.text()) / 100.0, 0.0), 0.9)
+            except ValueError:
+                return 0.0
+
+        return _fraction(self.overlap_y_edit), _fraction(self.overlap_x_edit)
+
+    def _blend_mode(self):
+        """Return the blend mode key for the current combobox selection."""
+        return ("feather", "average", "sum")[self.blend_combo.currentIndex()]
+
+    def _build_geometry(self):
+        """Build the geometry for the current settings, or raise ValueError."""
+        from ._stitching import (
+            layout_from_filenames,
+            layout_from_positions,
+            layout_from_rows,
+            layout_from_stage_positions,
+        )
+
+        overlap_y, overlap_x = self._overlaps()
+        blend_mode = self._blend_mode()
+        source = self.source_combo.currentData()
+        tiles = self._sources()
+
+        if source == "positions":
+            if len(self._positions) != len(tiles):
+                raise ValueError(
+                    f"The file records {len(self._positions)} position(s) "
+                    f"but {len(tiles)} tile(s) are selected. Choose the "
+                    "matching tile axis, or another layout source."
+                )
+            return layout_from_positions(
+                tiles,
+                self._positions,
+                tile_shape=self._tile_shape,
+                blend_mode=blend_mode,
+            )
+
+        if source == "stage":
+            geometry = layout_from_stage_positions(
+                tiles,
+                tile_shape=self._tile_shape,
+                blend_mode=blend_mode,
+            )
+            if geometry is None:
+                raise ValueError(
+                    "Stage positions could not be read. Only OME-TIFF files "
+                    "record them, one position per file; use another source."
+                )
+            return geometry
+
+        row_kwargs = {
+            "tiles_per_row": self.rows_edit.text(),
+            "traversal": ("raster", "snake")[
+                self.traversal_combo.currentIndex()
+            ],
+            "start_corner": (
+                "top-left",
+                "top-right",
+                "bottom-left",
+                "bottom-right",
+            )[self.corner_combo.currentIndex()],
+            "alignment": ("center", "left", "right")[
+                self.alignment_combo.currentIndex()
+            ],
+        }
+
+        if source == "names":
+            return layout_from_filenames(
+                tiles,
+                pattern=self.pattern_edit.text(),
+                tile_shape=self._tile_shape,
+                overlap_y=overlap_y,
+                overlap_x=overlap_x,
+                blend_mode=blend_mode,
+                **row_kwargs,
+            )
+
+        return layout_from_rows(
+            tiles,
+            tile_shape=self._tile_shape,
+            overlap_y=overlap_y,
+            overlap_x=overlap_x,
+            blend_mode=blend_mode,
+            **row_kwargs,
+        )
+
+    def _refresh(self):
+        """Rebuild the geometry and redraw the preview."""
+        try:
+            self._geometry = self._build_geometry()
+        except ValueError as error:
+            self._geometry = None
+            self.preview.set_geometry(None)
+            self.status_label.setText(str(error))
+            self.status_label.setStyleSheet("color: #d97b7b;")
+            self.ok_btn.setEnabled(False)
+            return
+
+        # A layout built from recorded positions determines the overlap, so
+        # show what was measured instead of leaving a stale typed value.
+        if self.source_combo.currentData() == "positions":
+            self.overlap_y_edit.setText(
+                f"{self._geometry.overlap_y * 100:.2f}"
+            )
+            self.overlap_x_edit.setText(
+                f"{self._geometry.overlap_x * 100:.2f}"
+            )
+        self.overlap_y_edit.setEnabled(
+            self.source_combo.currentData() != "positions"
+        )
+        self.overlap_x_edit.setEnabled(
+            self.source_combo.currentData() != "positions"
+        )
+
+        self.preview.set_geometry(self._geometry)
+        placements = self._geometry.placements
+        rows = len({placement.row for placement in placements})
+        columns = len({placement.col for placement in placements})
+        n_files = len({placement.path for placement in placements})
+        source = (
+            f"{len(placements)} tile(s)"
+            if n_files == len(placements)
+            else f"{len(placements)} tile(s) from {n_files} file(s)"
+        )
+        message = f"{source} in {rows} row(s), {columns} column position(s)."
+        if self._tile_shape[0] and self._tile_shape[1]:
+            canvas = self._geometry.canvas_shape()
+            message += f" Stitched size: {canvas[0]} x {canvas[1]} px."
+        self.status_label.setText(message)
+        self.status_label.setStyleSheet("color: grey;")
+        self.ok_btn.setEnabled(True)
+
+    def get_geometry(self):
+        """Return the :class:`~napari_phasors._stitching.TileGeometry` built.
+
+        Returns
+        -------
+        TileGeometry or None
+            ``None`` if the current settings are invalid.
+        """
+        return self._geometry
+
+    def get_ordered_paths(self):
+        """Return the tile paths in placement order, with repeats."""
+        if self._geometry is None:
+            return list(self._paths)
+        return self._geometry.paths
+
+    def get_sources(self):
+        """Return the tiles in placement order.
+
+        Returns
+        -------
+        list of TileSource
+            One entry per tile. A single multi-tile file yields several
+            entries that share a path and differ by index.
+        """
+        if self._geometry is None:
+            return self._sources()
+        return self._geometry.sources
+
+
+class TileLayoutPreview(QWidget):
+    """Small map of a mosaic layout, drawn from a ``TileGeometry``.
+
+    Each tile is drawn as a rectangle at its computed position and labelled
+    with its position in the acquisition order, so an incorrect traversal or
+    start corner is obvious at a glance.
+    """
+
+    def __init__(self, parent=None):
+        """Create an empty preview."""
+        super().__init__(parent)
+        self._geometry = None
+        self.setMinimumHeight(200)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+    def set_geometry(self, geometry):
+        """Set the geometry to draw, or ``None`` to clear the preview."""
+        self._geometry = geometry
+        self.update()
+
+    def paintEvent(self, event):
+        """Draw the tile rectangles scaled to fit the widget."""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        if self._geometry is None or not self._geometry.placements:
+            painter.setPen(QPen(QColor("#8a8a8a")))
+            painter.drawText(
+                self.rect(), Qt.AlignCenter, "No layout to preview"
+            )
+            painter.end()
+            return
+
+        geometry = self._geometry
+        # The tile size is unknown until the files are read, so preview with
+        # a nominal tile and let the overlap set the spacing.
+        height, width = geometry.tile_shape
+        if not height or not width:
+            height = width = 100
+            geometry = replace(geometry, tile_shape=(height, width))
+
+        origins = geometry.origins()
+        canvas_height, canvas_width = geometry.canvas_shape()
+        if not canvas_height or not canvas_width:
+            painter.end()
+            return
+
+        margin = 10
+        scale = min(
+            (self.width() - 2 * margin) / canvas_width,
+            (self.height() - 2 * margin) / canvas_height,
+        )
+        offset_x = (self.width() - canvas_width * scale) / 2
+        offset_y = (self.height() - canvas_height * scale) / 2
+
+        font = painter.font()
+        font.setPointSizeF(max(6.0, min(11.0, height * scale / 3.5)))
+        painter.setFont(font)
+
+        for index, (origin_y, origin_x) in enumerate(origins):
+            rect = QRect(
+                int(offset_x + origin_x * scale),
+                int(offset_y + origin_y * scale),
+                max(1, int(width * scale)),
+                max(1, int(height * scale)),
+            )
+            painter.setBrush(QColor(90, 140, 200, 60))
+            painter.setPen(QPen(QColor("#5a8cc8"), 1))
+            painter.drawRect(rect)
+            painter.setPen(QPen(QColor("#c7c7c7")))
+            painter.drawText(rect, Qt.AlignCenter, str(index + 1))
+
+        painter.end()
 
 
 def read_ome_tiff_settings(file_path):

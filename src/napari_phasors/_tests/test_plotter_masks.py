@@ -9,9 +9,15 @@ from qtpy.QtWidgets import (
     QLabel,
 )
 
+from napari_phasors._mapping_filters import new_filter, set_filters
+from napari_phasors._synthetic_generator import (
+    make_intensity_layer_with_phasors,
+    make_raw_flim_data,
+)
 from napari_phasors._tests.test_plotter import (  # noqa: E501
     create_image_layer_with_phasors,
 )
+from napari_phasors._utils import apply_filter_and_threshold
 from napari_phasors.plotter import (
     MaskAssignmentDialog,
     PlotterWidget,
@@ -435,9 +441,9 @@ def test_mask_assignment_dialog_auto_assign_action():
     from napari_phasors.plotter import MaskAssignmentDialog
 
     images = [
-        "embryo_1.ptu Intensity Image",
-        "embryo_2.ptu Intensity Image",
-        "unmatched_image.ptu Intensity Image",
+        "embryo_1.ptu Intensity [Phasor]",
+        "embryo_2.ptu Intensity [Phasor]",
+        "unmatched_image.ptu Intensity [Phasor]",
     ]
     masks = ["embryo_2_segmentation", "embryo_1", "random_mask"]
 
@@ -468,14 +474,14 @@ def test_mask_assignment_dialog_auto_assign_keeps_near_misses_unassigned():
     from napari_phasors.plotter import MaskAssignmentDialog
 
     dialog = MaskAssignmentDialog(
-        image_layer_names=["2026-05-03_control.lsm Intensity Image"],
+        image_layer_names=["2026-05-03_control.lsm Intensity [Phasor]"],
         mask_layer_names=["2026-05-03_treated_mask"],
         parent=None,
     )
     dialog.auto_assign_button.click()
 
     assert dialog.get_assignments() == {
-        "2026-05-03_control.lsm Intensity Image": "None"
+        "2026-05-03_control.lsm Intensity [Phasor]": "None"
     }
     dialog.close()
 
@@ -485,17 +491,17 @@ def test_mask_assignment_dialog_auto_assign_updates_dependent_widgets():
     from napari_phasors.plotter import MaskAssignmentDialog
 
     dialog = MaskAssignmentDialog(
-        image_layer_names=["sample.tif Intensity Image"],
+        image_layer_names=["sample.tif Intensity [Phasor]"],
         mask_layer_names=["sample_mask"],
         parent=None,
     )
-    invert = dialog._invert_checks["sample.tif Intensity Image"]
+    invert = dialog._invert_checks["sample.tif Intensity [Phasor]"]
     assert not invert.isEnabled()
 
     dialog.auto_assign_button.click()
 
     assert dialog.get_assignments() == {
-        "sample.tif Intensity Image": "sample_mask"
+        "sample.tif Intensity [Phasor]": "sample_mask"
     }
     # The Invert checkbox is only meaningful once a mask is assigned.
     assert invert.isEnabled()
@@ -813,6 +819,79 @@ def test_mask_assignment_dialog_has_invert_option(
     for name in [layer1.name, layer2.name]:
         assert name in invert_assignments
         assert invert_assignments[name] is False
+
+
+def test_mask_assignment_dialog_invert_all_controls():
+    """Test 'Invert All' checkbox toggles all enabled rows and synchronizes."""
+    dialog = MaskAssignmentDialog(
+        image_layer_names=["img1", "img2"],
+        mask_layer_names=["mask1"],
+        current_assignments={"img1": "mask1", "img2": "mask1"},
+        current_invert_assignments={"img1": False, "img2": False},
+    )
+
+    assert hasattr(dialog, "invert_all_check")
+    assert dialog.invert_all_check.isEnabled()
+    assert not dialog.invert_all_check.isChecked()
+
+    # Click Invert All -> both become checked
+    dialog.invert_all_check.click()
+    assert dialog.invert_all_check.isChecked()
+    assert dialog._invert_checks["img1"].isChecked()
+    assert dialog._invert_checks["img2"].isChecked()
+    assert dialog.get_invert_assignments() == {"img1": True, "img2": True}
+
+    # Uncheck one row -> Invert All becomes unchecked
+    dialog._invert_checks["img1"].setChecked(False)
+    assert not dialog.invert_all_check.isChecked()
+    assert not dialog._invert_checks["img1"].isChecked()
+    assert dialog._invert_checks["img2"].isChecked()
+
+    # Check that row again -> Invert All becomes checked
+    dialog._invert_checks["img1"].setChecked(True)
+    assert dialog.invert_all_check.isChecked()
+
+    # Click Invert All again to uncheck -> both become unchecked
+    dialog.invert_all_check.click()
+    assert not dialog.invert_all_check.isChecked()
+    assert not dialog._invert_checks["img1"].isChecked()
+    assert not dialog._invert_checks["img2"].isChecked()
+
+
+def test_mask_assignment_dialog_invert_all_with_unassigned_rows():
+    """Test 'Invert All' handles rows with 'None' mask correctly."""
+    # When all rows have "None", Invert All should be disabled
+    dialog = MaskAssignmentDialog(
+        image_layer_names=["img1", "img2"],
+        mask_layer_names=["mask1"],
+        current_assignments={"img1": "None", "img2": "None"},
+    )
+    assert not dialog.invert_all_check.isEnabled()
+    assert not dialog.invert_all_check.isChecked()
+
+    # Assign mask to img1 -> Invert All becomes enabled
+    dialog._combos["img1"].setCurrentText("mask1")
+    assert dialog.invert_all_check.isEnabled()
+    assert not dialog.invert_all_check.isChecked()
+
+    # Click Invert All -> only img1 is inverted (img2 is disabled)
+    dialog.invert_all_check.click()
+    assert dialog.invert_all_check.isChecked()
+    assert dialog._invert_checks["img1"].isChecked()
+    assert not dialog._invert_checks["img2"].isChecked()
+    assert not dialog._invert_checks["img2"].isEnabled()
+    assert dialog.get_invert_assignments() == {"img1": True, "img2": False}
+
+    # Now assign mask to img2 as well
+    dialog._combos["img2"].setCurrentText("mask1")
+    # img2 is newly enabled and unchecked, so Invert All should reflect that
+    assert not dialog.invert_all_check.isChecked()
+
+    # Click Invert All -> both are now checked
+    dialog.invert_all_check.click()
+    assert dialog.invert_all_check.isChecked()
+    assert dialog._invert_checks["img1"].isChecked()
+    assert dialog._invert_checks["img2"].isChecked()
 
 
 def test_apply_mask_assignments_with_invert(make_viewer_model):
@@ -2169,3 +2248,426 @@ def test_find_mask_layer_for_skips_empty_shapes_layer(make_viewer_model):
     assert result is None
 
     plotter.deleteLater()
+
+
+def test_mask_labels_split_histogram_and_statistics(make_viewer_model, qtbot):
+    """Masking with several labels lets each label be analysed on its own."""
+    viewer = make_viewer_model()
+    image_layer = create_image_layer_with_phasors()
+    viewer.add_layer(image_layer)
+    plotter = PlotterWidget(viewer)
+    try:
+        mask_data = np.zeros(image_layer.data.shape, dtype=int)
+        mask_data[: mask_data.shape[0] // 2, :] = 1
+        mask_data[mask_data.shape[0] // 2 :, :] = 2
+        viewer.add_labels(mask_data, name="two_labels")
+
+        plotter.image_layers_checkable_combobox.setCheckedItems(
+            [image_layer.name]
+        )
+        plotter._process_layer_selection_change()
+        # Assign the mask through the UI so the metadata is written by the
+        # same code path the user goes through.
+        plotter.mask_layer_combobox.setCurrentText("two_labels")
+        # Every label ticked is stored as "no label filter" at all.
+        assert 'mask_labels' not in image_layer.metadata
+
+        mapping_tab = plotter.phasor_mapping_tab
+        mapping_tab.frequency_input.setText("80.0")
+        mapping_tab._on_calculate_lifetime_clicked()
+
+        histogram = mapping_tab.histogram_widget
+        stats = plotter._statistics_stack.widget(
+            plotter._phasor_map_stats_page_idx
+        )
+        assert histogram.mask_label_split_available()
+        assert stats.layer_stats_table.rowCount() == 1
+
+        histogram.split_by_mask_labels = True
+
+        names = list(histogram._datasets)
+        assert len(names) == 2
+        assert all("label" in name for name in names)
+        # Both curves come from the analysed image layer, so grouping and
+        # every other per-layer feature still sees one layer.
+        assert histogram._group_source_names() == [image_layer.name]
+        table = stats.layer_stats_table
+        assert table.rowCount() == 2
+        assert [table.item(row, 0).text() for row in range(2)] == names
+
+        # Deselecting a label leaves nothing to separate.
+        plotter.mask_labels_combobox.setCheckedItems(["1"])
+        plotter._on_mask_labels_changed()
+        mapping_tab._on_calculate_lifetime_clicked()
+        assert not histogram.mask_label_split_available()
+        assert not histogram.mask_label_split_active()
+        assert len(histogram._datasets) == 1
+    finally:
+        plotter.close()
+
+
+def _layer_with_larger_phasors():
+    """A phasor layer big enough for median filtering to change values."""
+    raw_flim_data = make_raw_flim_data(
+        shape=(16, 16), time_constants=[0.1, 1, 2, 3, 4, 5, 10]
+    )
+    return make_intensity_layer_with_phasors(raw_flim_data, harmonic=[1, 2, 3])
+
+
+def test_threshold_without_filter_survives_mask(make_viewer_model):
+    """Applying a mask must not undo a threshold applied without a filter.
+
+    Regression: the reapply after masking required *both* a filter and a
+    lower threshold in the settings, so a threshold-only layer was left with
+    the restored, unthresholded data.
+    """
+    viewer = make_viewer_model()
+    layer = _layer_with_larger_phasors()
+    viewer.add_layer(layer)
+    plotter = PlotterWidget(viewer)
+
+    shape = _make_mask_shape(layer)
+    mask_data = np.zeros(shape, dtype=int)
+    mask_data[2:12, 2:12] = 1
+    viewer.add_labels(mask_data, name="mask")
+    plotter.reset_layer_choices()
+
+    filter_tab = plotter.filter_tab
+    filter_tab.threshold_method_combobox.setCurrentText("Manual")
+    lower, upper = filter_tab.threshold_slider.value()
+    filter_tab.threshold_slider.setValue((lower + (upper - lower) // 2, upper))
+    filter_tab.apply_button_clicked()
+    assert "filter" not in layer.metadata["settings"]
+    assert layer.metadata["settings"]["threshold"] is not None
+
+    plotter.mask_layer_combobox.setCurrentText("mask")
+
+    # More pixels are dropped than the mask alone would drop, i.e. the
+    # threshold is still in effect on top of the mask.
+    assert np.isnan(layer.data).sum() > int((mask_data <= 0).sum())
+
+
+def test_filter_without_threshold_survives_mask(make_viewer_model):
+    """Applying a mask must not undo a filter applied without a threshold."""
+    viewer = make_viewer_model()
+    layer = _layer_with_larger_phasors()
+    viewer.add_layer(layer)
+    plotter = PlotterWidget(viewer)
+
+    shape = _make_mask_shape(layer)
+    mask_data = np.zeros(shape, dtype=int)
+    mask_data[2:12, 2:12] = 1
+    viewer.add_labels(mask_data, name="mask")
+    plotter.reset_layer_choices()
+
+    filter_tab = plotter.filter_tab
+    filter_tab.filter_method_combobox.setCurrentText("Median")
+    filter_tab.median_filter_spinbox.setValue(3)
+    filter_tab.median_filter_repetition_spinbox.setValue(1)
+    filter_tab.threshold_method_combobox.setCurrentText("None")
+    filter_tab.apply_button_clicked()
+    assert layer.metadata["settings"]["threshold"] is None
+    assert not np.allclose(
+        layer.metadata["G"], layer.metadata["G_original"], equal_nan=True
+    )
+
+    plotter.mask_layer_combobox.setCurrentText("mask")
+
+    inside = mask_data > 0
+    assert not np.allclose(
+        layer.metadata["G"][..., inside],
+        layer.metadata["G_original"][..., inside],
+        equal_nan=True,
+    )
+
+
+def test_mask_does_not_move_phasor_coordinates(make_viewer_model):
+    """Masking must not change the phasor coordinates of the kept pixels.
+
+    Regression: the mask was applied to the original arrays *before*
+    filtering, so every kept pixel was re-filtered against NaN neighbours and
+    moved. A phasor-cursor selection is scattered across the image, so nearly
+    all of its pixels border NaN and ended up back at their unfiltered
+    positions — visibly outside the cursor that selected them.
+    """
+    rng = np.random.default_rng(0)
+    raw = make_raw_flim_data(
+        shape=(32, 32), time_constants=[0.1, 0.5, 1, 2, 3, 4, 5, 10]
+    )
+    # Poisson noise makes the median filter actually move the coordinates.
+    raw = rng.poisson(raw * 50).astype(float)
+    layer = make_intensity_layer_with_phasors(raw, harmonic=[1, 2])
+
+    viewer = make_viewer_model()
+    viewer.add_layer(layer)
+    plotter = PlotterWidget(viewer)
+
+    filter_tab = plotter.filter_tab
+    filter_tab.filter_method_combobox.setCurrentText("Median")
+    filter_tab.median_filter_spinbox.setValue(3)
+    filter_tab.median_filter_repetition_spinbox.setValue(1)
+    filter_tab.apply_button_clicked()
+
+    # A circular cursor drawn on the filtered cloud, as the selection tab does.
+    g_shown, s_shown = layer.metadata["G"][0], layer.metadata["S"][0]
+    g_c, s_c = np.nanmedian(g_shown), np.nanmedian(s_shown)
+    distances = np.sqrt((g_shown - g_c) ** 2 + (s_shown - s_c) ** 2)
+    # A cursor tight enough that a moved pixel escapes it.
+    radius = float(np.nanpercentile(distances, 25))
+    inside = distances <= radius
+    assert inside.sum() > 10
+
+    viewer.add_labels(inside.astype(int), name="Cursor Selection")
+    plotter.reset_layer_choices()
+    plotter.mask_layer_combobox.setCurrentText("Cursor Selection")
+
+    g_after, s_after = layer.metadata["G"][0], layer.metadata["S"][0]
+    # Exactly the selected pixels survive, at exactly the coordinates the
+    # cursor selected them at — so every plotted point is inside the cursor.
+    assert np.array_equal(~np.isnan(g_after), inside)
+    np.testing.assert_allclose(g_after[inside], g_shown[inside])
+    np.testing.assert_allclose(s_after[inside], s_shown[inside])
+    distance = np.sqrt(
+        (g_after[inside] - g_c) ** 2 + (s_after[inside] - s_c) ** 2
+    )
+    assert distance.max() <= radius
+
+
+def _noisy_phasor_layer(name, seed):
+    """A phasor layer with noise, so filter parameters visibly matter."""
+    rng = np.random.default_rng(seed)
+    raw = make_raw_flim_data(
+        shape=(32, 32), time_constants=[0.1, 0.5, 1, 2, 3, 4, 5, 10]
+    )
+    raw = rng.poisson(raw * 50).astype(float)
+    return make_intensity_layer_with_phasors(raw, harmonic=[1, 2], name=name)
+
+
+def test_multi_layer_masks_reapply_each_layers_own_settings(make_viewer_model):
+    """Masking several layers must not clobber their individual settings.
+
+    Regression: the re-apply after a mask change went through the Filter tab's
+    apply button, which reads the *widgets* — populated from the primary layer
+    only — and wrote those values to every selected layer. Layers filtered
+    differently (e.g. several OME-TIFFs read back with their own stored
+    settings) were re-filtered with the primary layer's parameters, so their
+    phasors moved out of the cursor that had selected them.
+    """
+    viewer = make_viewer_model()
+    layer_a = _noisy_phasor_layer("A", 0)
+    layer_b = _noisy_phasor_layer("B", 1)
+    viewer.add_layer(layer_a)
+    viewer.add_layer(layer_b)
+    plotter = PlotterWidget(viewer)
+
+    # Each layer arrives with its own filter, as when read back from file.
+    apply_filter_and_threshold(
+        layer_a,
+        threshold=0.0,
+        threshold_method="Manual",
+        filter_method="median",
+        size=3,
+        repeat=1,
+    )
+    apply_filter_and_threshold(
+        layer_b,
+        threshold=0.0,
+        threshold_method="Manual",
+        filter_method="median",
+        size=7,
+        repeat=3,
+    )
+
+    plotter.image_layers_checkable_combobox.setCheckedItems(
+        [layer_a.name, layer_b.name]
+    )
+    plotter._process_layer_selection_change()
+
+    # A circular cursor per layer, drawn on what that layer displays.
+    cursors, selections = {}, {}
+    for layer in (layer_a, layer_b):
+        g, s = layer.metadata["G"][0], layer.metadata["S"][0]
+        g_c, s_c = np.nanmedian(g), np.nanmedian(s)
+        distance = np.sqrt((g - g_c) ** 2 + (s - s_c) ** 2)
+        radius = float(np.nanpercentile(distance, 25))
+        cursors[layer.name] = (g_c, s_c, radius)
+        selections[layer.name] = distance <= radius
+        viewer.add_labels(
+            selections[layer.name].astype(int), name=f"sel {layer.name}"
+        )
+    plotter.reset_layer_choices()
+
+    plotter._apply_mask_assignments(
+        {
+            layer_a.name: f"sel {layer_a.name}",
+            layer_b.name: f"sel {layer_b.name}",
+        }
+    )
+
+    for layer, size, repeat in ((layer_a, 3, 1), (layer_b, 7, 3)):
+        # Each layer kept its own filter parameters ...
+        filter_settings = layer.metadata["settings"]["filter"]
+        assert (filter_settings["size"], filter_settings["repeat"]) == (
+            size,
+            repeat,
+        )
+        # ... so every plotted point is still inside that layer's cursor.
+        g_c, s_c, radius = cursors[layer.name]
+        inside = selections[layer.name]
+        g, s = layer.metadata["G"][0], layer.metadata["S"][0]
+        distance = np.sqrt((g[inside] - g_c) ** 2 + (s[inside] - s_c) ** 2)
+        assert np.array_equal(~np.isnan(g), inside)
+        assert distance.max() <= radius
+
+
+def test_invert_all_sync_before_the_checkbox_exists():
+    """The row callbacks fire while the dialog is still being built."""
+    dialog = MaskAssignmentDialog(
+        image_layer_names=["img1"],
+        mask_layer_names=["mask1"],
+        current_assignments={"img1": "mask1"},
+    )
+    saved = dialog.invert_all_check
+    del dialog.invert_all_check
+    # Must be a no-op rather than an AttributeError.
+    dialog._sync_invert_all_check()
+    dialog.invert_all_check = saved
+
+
+def test_reapply_filter_and_threshold_skips_layers_with_nothing_to_redo(
+    make_viewer_model,
+):
+    """Layers with no processing of their own are left untouched."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    layer = create_image_layer_with_phasors()
+    layer.name = "plain"
+    viewer.add_layer(layer)
+    plotter.image_layer_with_phasor_features_combobox.setCurrentText("plain")
+
+    before = layer.metadata['G'].copy()
+    plotter._reapply_filter_and_threshold([])
+    plotter._reapply_filter_and_threshold([layer])
+    np.testing.assert_array_equal(layer.metadata['G'], before)
+
+
+def test_reapply_filter_and_threshold_reports_a_failing_layer(
+    make_viewer_model, monkeypatch
+):
+    """A layer whose filtering raises is named in a single error message."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    layer = create_image_layer_with_phasors()
+    layer.name = "explodes"
+    viewer.add_layer(layer)
+    plotter.image_layer_with_phasor_features_combobox.setCurrentText(
+        "explodes"
+    )
+    layer.metadata['settings']['threshold'] = 0.0
+
+    errors = []
+    monkeypatch.setattr(
+        "napari_phasors.plotter.notifications.show_error", errors.append
+    )
+    monkeypatch.setattr(
+        "napari_phasors.plotter.apply_filter_and_threshold_to_layers",
+        lambda pairs, **kwargs: [RuntimeError("boom") for _ in pairs],
+    )
+
+    plotter._reapply_filter_and_threshold([layer])
+    assert errors and "explodes" in errors[0] and "boom" in errors[0]
+
+
+def test_has_filter_or_threshold_settings_counts_every_kind(
+    make_viewer_model,
+):
+    """An upper bound alone, or a metric filter alone, is worth reapplying."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    layer = create_image_layer_with_phasors()
+    layer.metadata['settings'] = {}
+    assert not plotter._has_filter_or_threshold_settings(layer)
+
+    layer.metadata['settings'] = {'threshold_upper': 5.0}
+    assert plotter._has_filter_or_threshold_settings(layer)
+
+    layer.metadata['settings'] = {}
+    set_filters(layer, [new_filter("Modulation", 0.1, 0.9)])
+    assert plotter._has_filter_or_threshold_settings(layer)
+
+
+def test_filter_params_from_settings_reads_each_filter_method(
+    make_viewer_model,
+):
+    """Wavelet, median and an unknown method each yield usable parameters."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    layer = create_image_layer_with_phasors()
+    layer.metadata['harmonics'] = np.array([1, 2])
+
+    layer.metadata['settings']['filter'] = {
+        'method': 'wavelet',
+        'sigma': 3.0,
+        'levels': 2,
+    }
+    params = plotter._filter_params_from_settings(layer)
+    assert params['filter_method'] == 'wavelet'
+    assert params['sigma'] == 3.0
+    assert params['levels'] == 2
+    assert params['harmonics'] is not None
+
+    # Harmonics that wavelet filtering cannot handle drop the method.
+    layer.metadata['harmonics'] = np.array([1, 5])
+    params = plotter._filter_params_from_settings(layer)
+    assert params['filter_method'] is None
+    assert params['harmonics'] is None
+
+    layer.metadata['settings']['filter'] = {'method': 'median', 'repeat': 0}
+    assert plotter._filter_params_from_settings(layer)['filter_method'] is None
+
+    layer.metadata['settings']['filter'] = {'method': 'something else'}
+    assert plotter._filter_params_from_settings(layer)['filter_method'] is None
+
+
+def test_importing_only_the_mapping_tab_still_applies_its_filters(
+    make_viewer_model,
+):
+    """An imported stack reaches the arrays without the Filter tab's help."""
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    layer = create_image_layer_with_phasors()
+    layer.name = "imported"
+    viewer.add_layer(layer)
+    plotter.image_layer_with_phasor_features_combobox.setCurrentText(
+        "imported"
+    )
+
+    set_filters(layer, [new_filter("Modulation", 0.0, 0.05)])
+    plotter._apply_imported_analyses([layer], ["phasor_mapping_tab"])
+    assert np.isnan(layer.metadata['G']).any()
+
+
+def test_parallel_processing_hint_describes_the_memory_budget(
+    make_viewer_model,
+):
+    """The hint quantifies the budget only while the budget is switched on."""
+    from napari_phasors import _parallel
+
+    previous = _parallel.memory_budget_enabled()
+    previous_items = _parallel.parallel_items_enabled()
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    try:
+        plotter.parallel_items_checkbox.setChecked(True)
+        plotter.memory_budget_checkbox.setChecked(True)
+        plotter._update_parallel_processing_hint()
+        with_budget = plotter.parallel_processing_hint.text()
+        assert "sized to fit" in with_budget
+
+        plotter.memory_budget_checkbox.setChecked(False)
+        plotter._update_parallel_processing_hint()
+        assert "sized to fit" not in plotter.parallel_processing_hint.text()
+        assert "at once" in plotter.parallel_processing_hint.text()
+    finally:
+        _parallel.set_memory_budget_enabled(previous)
+        _parallel.set_parallel_items_enabled(previous_items)

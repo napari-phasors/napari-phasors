@@ -7,6 +7,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 from napari.layers import Image
+from qtpy.QtWidgets import QDoubleSpinBox
 
 from napari_phasors._batch_analysis import (
     BatchAnalysisWidget,
@@ -4016,7 +4017,7 @@ def _fake_channel_results(profiles_by_channel):
     for channel, profile in profiles_by_channel:
         layer = Image(
             np.zeros((2, 2)),
-            name=f"f Intensity Image: Channel {channel}",
+            name=f"f Intensity: Channel {channel} [Phasor]",
             metadata={
                 "settings": {"channel": channel},
                 "_signal_profile": np.asarray(profile, dtype=float),
@@ -4486,3 +4487,49 @@ def test_batch_files_in_flight_ignores_unreadable_paths(tmp_path):
     from napari_phasors._batch_analysis import _batch_files_in_flight
 
     assert _batch_files_in_flight([str(tmp_path / "missing.bin")], 2) == 4
+
+
+def test_transparency_controls_are_stored_as_alpha(qtbot, make_viewer_model):
+    """The batch dialogs ask for transparency and store its complement.
+
+    The exported plots are drawn with matplotlib, whose ``alpha`` is opacity,
+    so every transparency control is inverted on the way into the settings.
+    """
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+
+    widget.mapping_mesh_transparency_spin.setValue(0.25)
+    assert widget._collect_mapping()["mesh_alpha"] == pytest.approx(0.75)
+
+    controls = widget._plot_combined_controls
+    controls["marker_transparency"].setValue(0.4)
+    settings = widget._collect_plot_settings(mode="combined")
+    assert settings["marker_alpha"] == pytest.approx(0.6)
+
+
+def test_component_line_transparency_is_stored_as_alpha(
+    qtbot, make_viewer_model, monkeypatch
+):
+    """The line style dialog's transparency round-trips through ``line_alpha``."""
+    from qtpy.QtWidgets import QDialog
+
+    import napari_phasors._batch_analysis as ba
+
+    widget = BatchAnalysisWidget(make_viewer_model())
+    qtbot.addWidget(widget)
+    widget._component_line_style["line_alpha"] = 0.4
+
+    seen = {}
+
+    def _accept(dialog):
+        # The spinbox shows transparency, i.e. the complement of the stored
+        # alpha; nudge it and confirm the inverse lands back in the style.
+        spin = dialog.findChildren(QDoubleSpinBox)
+        seen["values"] = [s.value() for s in spin]
+        return QDialog.Accepted
+
+    monkeypatch.setattr(ba.QDialog, "exec", _accept)
+    widget._open_component_line_style_dialog()
+
+    assert pytest.approx(0.6) in seen["values"]
+    assert widget._component_line_style["line_alpha"] == pytest.approx(0.4)

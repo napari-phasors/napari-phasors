@@ -17,6 +17,7 @@ from napari_phasors._synthetic_generator import (
     make_intensity_layer_with_phasors,
     make_raw_flim_data,
 )
+from napari_phasors._utils import WARNING_ICON_SIZE
 from napari_phasors.calibration_tab import CalibrationWidget
 from napari_phasors.components_tab import ComponentsWidget
 from napari_phasors.filter_tab import FilterWidget
@@ -145,7 +146,9 @@ def test_canvas_container_resize_starts_debounce_timer(make_viewer_model):
     assert hasattr(plotter.plotter_inputs_widget, 'white_background_checkbox')
     assert hasattr(plotter.plotter_inputs_widget, 'log_scale_checkbox')
     assert hasattr(plotter.plotter_inputs_widget, 'marker_size_spinbox')
-    assert hasattr(plotter.plotter_inputs_widget, 'marker_alpha_spinbox')
+    assert hasattr(
+        plotter.plotter_inputs_widget, 'marker_transparency_spinbox'
+    )
     assert hasattr(plotter.plotter_inputs_widget, 'marker_color_button')
 
     # Test default property values
@@ -581,9 +584,9 @@ def test_modifying_settings_updates_metadata_correctly(make_viewer_model):
     plotter.plotter_inputs_widget.marker_size_spinbox.setValue(30)
     assert layer.metadata['settings']['marker_size'] == 30
 
-    # Test marker alpha update
-    plotter.plotter_inputs_widget.marker_alpha_spinbox.setValue(0.8)
-    assert layer.metadata['settings']['marker_alpha'] == 0.8
+    # Test marker transparency update (stored as its complement, alpha)
+    plotter.plotter_inputs_widget.marker_transparency_spinbox.setValue(0.8)
+    assert layer.metadata['settings']['marker_alpha'] == pytest.approx(0.2)
 
     # Test marker color update
     plotter._marker_color = '#ff0000'
@@ -605,7 +608,7 @@ def test_plot_type_ui_toggles(make_viewer_model):
     assert not plotter.plotter_inputs_widget.log_scale_checkbox.isHidden()
 
     assert plotter.plotter_inputs_widget.marker_size_spinbox.isHidden()
-    assert plotter.plotter_inputs_widget.marker_alpha_spinbox.isHidden()
+    assert plotter.plotter_inputs_widget.marker_transparency_spinbox.isHidden()
     assert plotter.plotter_inputs_widget.marker_color_button.isHidden()
 
     # Change to SCATTER
@@ -618,7 +621,9 @@ def test_plot_type_ui_toggles(make_viewer_model):
     assert plotter.plotter_inputs_widget.log_scale_checkbox.isHidden()
 
     assert not plotter.plotter_inputs_widget.marker_size_spinbox.isHidden()
-    assert not plotter.plotter_inputs_widget.marker_alpha_spinbox.isHidden()
+    assert (
+        not plotter.plotter_inputs_widget.marker_transparency_spinbox.isHidden()
+    )
     assert not plotter.plotter_inputs_widget.marker_color_button.isHidden()
 
     # Change to CONTOUR
@@ -631,7 +636,7 @@ def test_plot_type_ui_toggles(make_viewer_model):
     assert plotter.plotter_inputs_widget.log_scale_checkbox.isHidden()
 
     assert plotter.plotter_inputs_widget.marker_size_spinbox.isHidden()
-    assert plotter.plotter_inputs_widget.marker_alpha_spinbox.isHidden()
+    assert plotter.plotter_inputs_widget.marker_transparency_spinbox.isHidden()
     assert plotter.plotter_inputs_widget.marker_color_button.isHidden()
 
     assert not plotter.plotter_inputs_widget.contour_levels_spinbox.isHidden()
@@ -647,7 +652,7 @@ def test_plot_type_ui_toggles(make_viewer_model):
     assert plotter.plotter_inputs_widget.log_scale_checkbox.isHidden()
 
     assert plotter.plotter_inputs_widget.marker_size_spinbox.isHidden()
-    assert plotter.plotter_inputs_widget.marker_alpha_spinbox.isHidden()
+    assert plotter.plotter_inputs_widget.marker_transparency_spinbox.isHidden()
     assert plotter.plotter_inputs_widget.marker_color_button.isHidden()
 
     assert plotter.plotter_inputs_widget.contour_levels_spinbox.isHidden()
@@ -1337,8 +1342,14 @@ def test_parallel_processing_toggles_switch_the_thread_pools(
     viewer = make_viewer_model()
     plotter = PlotterWidget(viewer)
     try:
-        assert plotter.parallel_items_checkbox.isChecked() is True
-        assert plotter.parallel_bands_checkbox.isChecked() is True
+        assert plotter.parallel_items_checkbox.isChecked() is False
+        assert plotter.parallel_bands_checkbox.isChecked() is False
+        assert "sequentially on one thread" in (
+            plotter.parallel_processing_hint.text()
+        )
+
+        plotter.parallel_items_checkbox.setChecked(True)
+        plotter.parallel_bands_checkbox.setChecked(True)
 
         # Captured while both are on, so the comparison below survives a
         # single-core runner or a NAPARI_PHASORS_WORKERS override.
@@ -1402,18 +1413,38 @@ def test_performance_section_is_marked_experimental(make_viewer_model, qtbot):
     pixmap = plotter.experimental_warning_icon.pixmap()
     assert pixmap is not None and not pixmap.isNull()
 
+    # The triangle is painted inside the content rect napari's stylesheet
+    # leaves for ``#error_label`` (an 18 px box less 2 px of padding). A
+    # pixmap whose *logical* size exceeds that is clipped into an
+    # unrecognisable wedge, which is what a pre-scaled high-DPI pixmap does:
+    # ``QIcon.pixmap`` already takes a logical size and tags the result with
+    # its device pixel ratio, so the ratio must be left alone.
+    dpr = pixmap.devicePixelRatio() or 1.0
+    assert (pixmap.width() / dpr) == pytest.approx(WARNING_ICON_SIZE)
+    assert (pixmap.height() / dpr) == pytest.approx(WARNING_ICON_SIZE)
+    assert "image: none" in plotter.experimental_warning_icon.styleSheet()
+
 
 def test_memory_budget_spinbox_sizes_the_pools(make_viewer_model, qtbot):
     """The budget spinbox is what every memory-sized pool is measured against."""
     from napari_phasors import _parallel
 
-    previous = _parallel.memory_fraction()
+    previous_fraction = _parallel.memory_fraction()
+    previous_budget_enabled = _parallel.memory_budget_enabled()
     viewer = make_viewer_model()
     plotter = PlotterWidget(viewer)
     try:
+        assert plotter.memory_budget_checkbox.isChecked() is False
+        assert plotter.memory_budget_spinbox.isEnabled() is False
         assert plotter.memory_budget_spinbox.value() == round(
             _parallel.DEFAULT_MEMORY_FRACTION * 100
         )
+        assert _parallel.items_for_memory(1 << 20) is None
+
+        # Turn on memory budget
+        plotter.memory_budget_checkbox.setChecked(True)
+        assert plotter.memory_budget_spinbox.isEnabled() is True
+        assert _parallel.memory_budget_enabled() is True
 
         plotter.memory_budget_spinbox.setValue(10)
         assert _parallel.memory_fraction() == pytest.approx(0.10)
@@ -1426,8 +1457,15 @@ def test_memory_budget_spinbox_sizes_the_pools(make_viewer_model, qtbot):
         # Only meaningful where free memory could be read at all.
         if tight is not None and roomy is not None:
             assert roomy > tight
+
+        # Turn off memory budget again
+        plotter.memory_budget_checkbox.setChecked(False)
+        assert plotter.memory_budget_spinbox.isEnabled() is False
+        assert _parallel.memory_budget_enabled() is False
+        assert _parallel.items_for_memory(1 << 20) is None
     finally:
-        _parallel.set_memory_fraction(previous)
+        _parallel.set_memory_fraction(previous_fraction)
+        _parallel.set_memory_budget_enabled(previous_budget_enabled)
 
 
 def test_phasor_precision_combobox_sets_the_storage_dtype(
@@ -1806,5 +1844,43 @@ def test_capture_and_apply_plot_colors_in_contour_mode(make_viewer_model):
     plotter._apply_plot_colors("black")
     ax = plotter.canvas_widget.artists['CONTOUR'].ax
     assert ax.xaxis.label.get_color() == "black"
+
+    plotter.deleteLater()
+
+
+def test_marker_transparency_control_round_trips_through_alpha(
+    make_viewer_model,
+):
+    """The scatter control is transparency; the stored setting stays alpha.
+
+    The spinbox is worded as transparency for consistency with the rest of
+    the plugin, while ``marker_alpha`` keeps matplotlib's opacity meaning so
+    settings saved by older versions still restore correctly.
+    """
+    viewer = make_viewer_model()
+    plotter = PlotterWidget(viewer)
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    plotter.image_layer_with_phasor_features_combobox.setCurrentText(
+        layer.name
+    )
+    plotter.on_image_layer_changed()
+
+    piw = plotter.plotter_inputs_widget
+    assert piw.label_marker_transparency.text() == "Transparency:"
+    assert piw.marker_transparency_spinbox.minimum() == 0.0
+
+    piw.marker_transparency_spinbox.setValue(0.25)
+    assert layer.metadata['settings']['marker_alpha'] == pytest.approx(0.75)
+
+    # Restoring an alpha from metadata puts its complement in the control.
+    layer.metadata['settings']['marker_alpha'] = 0.4
+    plotter._restore_plot_settings_from_metadata()
+    assert piw.marker_transparency_spinbox.value() == pytest.approx(0.6)
+
+    plotter.plotter_inputs_widget.plot_type_combobox.setCurrentText(
+        "Dot Plot (Scatter)"
+    )
+    assert plotter.canvas_widget.artists['SCATTER'].alpha == pytest.approx(0.4)
 
     plotter.deleteLater()

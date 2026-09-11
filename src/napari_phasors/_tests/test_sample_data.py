@@ -1,11 +1,55 @@
 import numpy as np
+import pooch
+import pytest
 
 from napari_phasors._sample_data import (
+    DOWNLOAD_RETRIES,
     convallaria_FLIM_sample_data,
     embryo_FLIM_sample_data,
     fret_FLIM_sample_data,
     paramecium_HSI_sample_data,
 )
+
+
+@pytest.mark.parametrize(
+    "sample_data_function",
+    [
+        convallaria_FLIM_sample_data,
+        embryo_FLIM_sample_data,
+        paramecium_HSI_sample_data,
+        fret_FLIM_sample_data,
+    ],
+)
+def test_sample_data_downloaders_retry_transient_failures(
+    sample_data_function, monkeypatch
+):
+    """Every loader asks pooch to retry a failed download before giving up.
+
+    Without ``retry_if_failed`` a single read timeout against GitHub/Zenodo
+    aborts the whole sample-data command (and, on CI, the test).
+    """
+    created_kwargs = []
+    real_create = pooch.create
+
+    def spy_create(*args, **kwargs):
+        created_kwargs.append(kwargs)
+        return real_create(*args, **kwargs)
+
+    class _StopHere(Exception):
+        """Sentinel: stop before any actual download happens."""
+
+    def no_download(self, *args, **kwargs):
+        raise _StopHere
+
+    monkeypatch.setattr(pooch, "create", spy_create)
+    monkeypatch.setattr(pooch.Pooch, "fetch", no_download)
+
+    with pytest.raises(_StopHere):
+        sample_data_function()
+
+    assert created_kwargs
+    for kwargs in created_kwargs:
+        assert kwargs["retry_if_failed"] == DOWNLOAD_RETRIES
 
 
 def test_convallaria_FLIM_sample_data(make_viewer_model, qtbot):
@@ -20,7 +64,9 @@ def test_convallaria_FLIM_sample_data(make_viewer_model, qtbot):
     )
     assert layer_data_tuple[0].shape == (256, 256)
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
-    assert layer_data_tuple[1]["name"] == "Convallaria_$EI0S Intensity Image"
+    assert (
+        layer_data_tuple[1]["name"] == "Convallaria_$EI0S Intensity [Phasor]"
+    )
     metadata = layer_data_tuple[1]["metadata"]
     assert "G" in metadata
     assert "S" in metadata
@@ -45,7 +91,7 @@ def test_convallaria_FLIM_sample_data(make_viewer_model, qtbot):
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
     assert (
         layer_data_tuple[1]["name"]
-        == "Calibration_Rhodamine110_$EI0S Intensity Image"
+        == "Calibration_Rhodamine110_$EI0S Intensity [Phasor]"
     )
     metadata = layer_data_tuple[1]["metadata"]
     assert "G" in metadata
@@ -75,7 +121,7 @@ def test_embryo_FLIM_sample_data(make_viewer_model, qtbot):
     )
     assert layer_data_tuple[0].shape == (512, 512)
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
-    assert layer_data_tuple[1]["name"] == "Embryo Intensity Image"
+    assert layer_data_tuple[1]["name"] == "Embryo Intensity [Phasor]"
     metadata = layer_data_tuple[1]["metadata"]
     assert "G" in metadata
     assert "S" in metadata
@@ -98,7 +144,9 @@ def test_embryo_FLIM_sample_data(make_viewer_model, qtbot):
     )
     assert layer_data_tuple[0].shape == (512, 512)
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
-    assert layer_data_tuple[1]["name"] == "Fluorescein_Embryo Intensity Image"
+    assert (
+        layer_data_tuple[1]["name"] == "Fluorescein_Embryo Intensity [Phasor]"
+    )
     metadata = layer_data_tuple[1]["metadata"]
     assert "G" in metadata
     assert "S" in metadata
@@ -126,7 +174,7 @@ def test_paramecium_HSI_sample_data(make_viewer_model, qtbot):
     )
     assert layer_data_tuple[0].shape == (512, 512)
     assert "name" in layer_data_tuple[1] and "metadata" in layer_data_tuple[1]
-    assert layer_data_tuple[1]["name"] == "paramecium Intensity Image"
+    assert layer_data_tuple[1]["name"] == "paramecium Intensity [Phasor]"
     metadata = layer_data_tuple[1]["metadata"]
     assert "G" in metadata
     assert "S" in metadata
@@ -148,10 +196,10 @@ def test_fret_FLIM_sample_data(make_viewer_model, qtbot):
     layer_data_list = fret_FLIM_sample_data()
     assert isinstance(layer_data_list, list) and len(layer_data_list) == 4
     expected_names = [
-        "Donor_Only Intensity Image",
-        "Background_Autofluorescence Intensity Image",
-        "FRET_Construct_1 Intensity Image",
-        "FRET_Construct_2 Intensity Image",
+        "Donor_Only Intensity [Phasor]",
+        "Background_Autofluorescence Intensity [Phasor]",
+        "FRET_Construct_1 Intensity [Phasor]",
+        "FRET_Construct_2 Intensity [Phasor]",
     ]
     for layer_data_tuple, expected_name in zip(
         layer_data_list, expected_names, strict=True

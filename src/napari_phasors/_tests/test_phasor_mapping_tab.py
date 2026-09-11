@@ -2,6 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import matplotlib.colors as mcolors
 import numpy as np
+import pytest
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from napari.layers import Image
@@ -22,8 +23,17 @@ from qtpy.QtWidgets import (
 )
 from superqt import QRangeSlider
 
+from napari_phasors._mapping_filters import (
+    EXCLUDE,
+    MAPPING_METRICS,
+    MappingFilterList,
+    get_filters,
+    metric_fallback_range,
+    new_filter,
+    set_filters,
+)
 from napari_phasors._tests.test_plotter import create_image_layer_with_phasors
-from napari_phasors._utils import HistogramWidget
+from napari_phasors._utils import HistogramWidget, apply_filter_and_threshold
 from napari_phasors.phasor_mapping_tab import (
     _DEFAULT_MESH_RESOLUTION,
     PhasorMappingWidget,
@@ -980,7 +990,7 @@ def test_phasor_mapping_widget_calculate_lifetimes_with_real_data(
 
     layer = Image(
         np.ones((2, 2)),
-        name="Test Intensity Image",
+        name="Test Intensity [Phasor]",
         metadata={
             "original_mean": np.ones((2, 2)),
             "settings": {},
@@ -1386,7 +1396,7 @@ def test_phasor_mapping_widget_different_harmonics_and_frequencies(
     for harmonic, base_frequency in test_cases:
         layer = Image(
             np.ones((2, 2)),
-            name="Test Intensity Image",
+            name="Test Intensity [Phasor]",
             metadata={
                 "original_mean": np.ones((2, 2)),
                 "settings": {},
@@ -1853,7 +1863,7 @@ def test_mesh_overlay_independent_from_apply_colormap_toggle(
 
 
 def test_mesh_settings_persist_across_layer_switches(make_viewer_model, qtbot):
-    """Mesh toggle, alpha, and ranges should restore per layer."""
+    """Mesh toggle, transparency, and ranges should restore per layer."""
     viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     mapping_widget = parent.phasor_mapping_tab
@@ -1872,7 +1882,7 @@ def test_mesh_settings_persist_across_layer_switches(make_viewer_model, qtbot):
     mapping_widget._on_calculate_lifetime_clicked()
 
     mapping_widget.mesh_overlay_checkbox.setChecked(True)
-    mapping_widget.mesh_alpha_spinbox.setValue(0.62)
+    mapping_widget.mesh_transparency_spinbox.setValue(0.62)
     mapping_widget.phase_range_slider.setValue((25, 120))
     mapping_widget.modulation_range_slider.setValue((10, 70))
 
@@ -1887,7 +1897,7 @@ def test_mesh_settings_persist_across_layer_switches(make_viewer_model, qtbot):
     parent.on_image_layer_changed()
 
     assert mapping_widget.mesh_overlay_checkbox.isChecked()
-    assert abs(mapping_widget.mesh_alpha_spinbox.value() - 0.62) < 1e-6
+    assert abs(mapping_widget.mesh_transparency_spinbox.value() - 0.62) < 1e-6
     assert mapping_widget.phase_range_slider.value() == (25, 120)
     assert mapping_widget.modulation_range_slider.value() == (10, 70)
 
@@ -1948,8 +1958,10 @@ def test_mesh_redraw_is_debounced_on_axes_limit_changes(
         mock_apply.assert_called_once_with("Phase")
 
 
-def test_mesh_overlay_colorbar_and_alpha_updates(make_viewer_model, qtbot):
-    """Mesh colorbar toggle and alpha updates should reflect dynamically."""
+def test_mesh_overlay_colorbar_and_transparency_updates(
+    make_viewer_model, qtbot
+):
+    """Mesh colorbar and transparency updates should reflect dynamically."""
     viewer = make_viewer_model()
     parent = PlotterWidget(viewer)
     mapping_widget = parent.phasor_mapping_tab
@@ -1972,11 +1984,11 @@ def test_mesh_overlay_colorbar_and_alpha_updates(make_viewer_model, qtbot):
     assert parent.mapping_colorbar is not None
     assert parent.mapping_cax is not None
 
-    # Test setting alpha instantly triggers map redraw
+    # Test setting transparency instantly triggers map redraw
     with patch.object(
         mapping_widget, '_apply_histogram_coloring'
     ) as mock_apply:
-        mapping_widget.mesh_alpha_spinbox.setValue(0.73)
+        mapping_widget.mesh_transparency_spinbox.setValue(0.73)
         mock_apply.assert_called_once_with("Phase")
 
     # Disable colorbar
@@ -2509,7 +2521,12 @@ def test_mapping_histogram_follows_real_source_selection(
 def test_mapping_output_controls_refresh_after_first_calculation(
     make_napari_viewer, qtbot
 ):
-    """Parameter and Lifetime Type changes refresh active Mapping output."""
+    """Parameter changes refresh the active Mapping output.
+
+    Picking another lifetime is the exception: it selects a different
+    analysis, so it waits for the button (see
+    ``test_mapping_lifetime_type_change_waits_for_calculate``).
+    """
     viewer, _, mapping, _ = _setup_mapping_selection_workflow(
         make_napari_viewer, qtbot
     )
@@ -2525,6 +2542,7 @@ def test_mapping_output_controls_refresh_after_first_calculation(
         if lifetime_type is not None:
             mapping.lifetime_type_combobox.setCurrentText(lifetime_type)
             output_type = lifetime_type
+            mapping._on_calculate_lifetime_clicked()
         else:
             output_type = mode
 
@@ -2984,3 +3002,810 @@ def test_mapping_reports_a_failing_layer(
     assert any("boom" in message for message in errors)
     assert any("map_layer" in message for message in errors)
     assert len(viewer.layers) == before
+
+
+def test_mesh_transparency_is_stored_as_alpha(make_viewer_model, qtbot):
+    """The mesh control is transparency; the setting stays matplotlib alpha."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    mapping_widget = parent.phasor_mapping_tab
+
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    parent.on_image_layer_changed()
+
+    mapping_widget.output_mode_combobox.setCurrentText("Phase")
+    mapping_widget._on_calculate_lifetime_clicked()
+
+    mapping_widget.mesh_transparency_spinbox.setValue(0.3)
+    assert mapping_widget._mesh_alpha() == pytest.approx(0.7)
+
+    settings = layer.metadata['settings']['phasor_mapping']
+    assert settings['mesh_alpha'] == pytest.approx(0.7)
+
+    # Restoring the stored alpha shows its complement in the control.
+    settings['mesh_alpha'] = 0.25
+    mapping_widget._restore_lifetime_settings_from_metadata()
+    assert mapping_widget.mesh_transparency_spinbox.value() == pytest.approx(
+        0.75
+    )
+
+
+def test_mapping_lifetime_type_change_waits_for_calculate(
+    make_napari_viewer, qtbot
+):
+    """Picking another lifetime does not run the analysis on its own."""
+    viewer, parent, mapping, _ = _setup_mapping_selection_workflow(
+        make_napari_viewer, qtbot
+    )
+    assert mapping._has_calculated_output is True
+    assert "Apparent Phase Lifetime: mapping_a" in viewer.layers
+
+    mapping.lifetime_type_combobox.setCurrentText("Normal Lifetime")
+    qtbot.wait(200)
+
+    # The selection is recorded, but nothing is computed for it until the
+    # button is clicked.
+    assert mapping.current_output_type == "Normal Lifetime"
+    assert "Normal Lifetime: mapping_a" not in viewer.layers
+    assert not mapping._output_refresh_timer.isActive()
+
+    mapping._on_calculate_lifetime_clicked()
+    assert "Normal Lifetime: mapping_a" in viewer.layers
+
+
+def test_mapping_lifetime_type_change_drops_armed_refresh(
+    make_napari_viewer, qtbot
+):
+    """A refresh armed before the switch must not run the new lifetime."""
+    viewer, parent, mapping, _ = _setup_mapping_selection_workflow(
+        make_napari_viewer, qtbot
+    )
+    mapping._schedule_active_output_refresh()
+    assert mapping._output_refresh_timer.isActive()
+
+    mapping.lifetime_type_combobox.setCurrentText(
+        "Apparent Modulation Lifetime"
+    )
+    qtbot.wait(200)
+
+    assert not mapping._output_refresh_timer.isActive()
+    assert "Apparent Modulation Lifetime: mapping_a" not in viewer.layers
+
+
+def test_mapping_display_range_is_kept_per_output_type(
+    make_napari_viewer, qtbot
+):
+    """A range chosen for one lifetime must not clip another one's map."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    layer.name = "mapping_source"
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    qtbot.addWidget(parent)
+    mapping = parent.phasor_mapping_tab
+    parent.tab_widget.setCurrentWidget(mapping)
+    mapping.frequency_input.setText("80.0")
+
+    def run(output_type):
+        mapping.lifetime_type_combobox.setCurrentText(output_type)
+        mapping._on_calculate_lifetime_clicked()
+        return np.asarray(
+            viewer.layers[f"{output_type}: mapping_source"].data
+        ).copy()
+
+    phase_full = run("Apparent Phase Lifetime")
+
+    # The user narrows the displayed range while looking at the phase map.
+    factor = mapping.lifetime_range_factor
+    mapping._on_lifetime_range_changed((int(1.0 * factor), int(2.0 * factor)))
+    phase_narrowed = np.asarray(
+        viewer.layers["Apparent Phase Lifetime: mapping_source"].data
+    ).copy()
+    assert np.nanmax(phase_narrowed) <= 2.0
+
+    # The normal lifetime keeps its own full range...
+    normal = run("Normal Lifetime")
+    assert np.nanmax(normal) > 2.0
+    assert not np.allclose(np.nanmax(normal), 2.0)
+
+    # ...and coming back to the phase map restores the phase range, so its
+    # values are the ones that were on screen, not the normal lifetime's.
+    phase_again = run("Apparent Phase Lifetime")
+    assert np.allclose(phase_again, phase_narrowed, equal_nan=True)
+    assert not np.allclose(phase_again, phase_full, equal_nan=True)
+
+    settings = layer.metadata['settings']['phasor_mapping']
+    assert set(settings['output_ranges']) == {
+        "Apparent Phase Lifetime",
+        "Normal Lifetime",
+    }
+    assert settings['output_ranges']["Apparent Phase Lifetime"] == [1.0, 2.0]
+
+
+def test_mapping_legacy_range_without_output_ranges_is_honoured(
+    make_napari_viewer, qtbot
+):
+    """Settings saved before per-output ranges existed still restore."""
+    viewer = make_napari_viewer()
+    layer = create_image_layer_with_phasors()
+    layer.name = "mapping_source"
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    qtbot.addWidget(parent)
+    mapping = parent.phasor_mapping_tab
+    parent.tab_widget.setCurrentWidget(mapping)
+    mapping.frequency_input.setText("80.0")
+
+    layer.metadata.setdefault('settings', {})['phasor_mapping'] = {
+        'lifetime_type': "Apparent Phase Lifetime",
+        'output_type': "Apparent Phase Lifetime",
+        'range_min': 1.0,
+        'range_max': 2.0,
+    }
+
+    mapping.lifetime_type_combobox.setCurrentText("Apparent Phase Lifetime")
+    mapping._on_calculate_lifetime_clicked()
+
+    data = np.asarray(
+        viewer.layers["Apparent Phase Lifetime: mapping_source"].data
+    )
+    assert np.nanmin(data) >= 1.0
+    assert np.nanmax(data) <= 2.0
+
+
+def _add_filter(widget, metric, low, high, *, mode=None):
+    """Add a criterion through the card list, as the user would."""
+    widget.filter_list.set_current_metric(metric)
+    widget.filter_list._on_add_clicked()
+    entry = widget.filter_list.filters()[-1]
+    card = widget.filter_list._cards[entry['id']]
+    if mode is not None:
+        card.mode_combobox.setCurrentIndex(1 if mode == EXCLUDE else 0)
+    card.min_edit.setText(f"{low:.4f}")
+    card.max_edit.setText(f"{high:.4f}")
+    card._on_edits_changed()
+    return card
+
+
+def _metric_median(layer, metric, harmonic):
+    """Return the median of a computed output map, ignoring NaN."""
+    values = layer.metadata['derived_data'][metric][harmonic]
+    return float(np.nanmedian(values))
+
+
+def test_filter_section_is_a_card_list(make_viewer_model, qtbot):
+    """The Filter section is an empty, explained card list to begin with."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.phasor_mapping_tab
+
+    assert isinstance(widget.filter_list, MappingFilterList)
+    assert widget.filter_list.filters() == []
+    assert widget.filter_list.empty_label.isVisibleTo(widget.filter_list)
+    assert not hasattr(widget.filter_list, 'clear_button')
+    layout = widget.filter_list.layout()
+    assert layout.indexOf(widget.filter_list.add_button) == layout.count() - 1
+
+    # Every mapping metric is offered on the card itself.
+    widget.filter_list._on_add_clicked()
+    card = next(iter(widget.filter_list._cards.values()))
+    offered = [
+        card.metric_combobox.itemText(i)
+        for i in range(card.metric_combobox.count())
+    ]
+    assert offered == list(MAPPING_METRICS)
+
+    # The section sits below the Calculate button, where the outputs it
+    # filters have already been produced.
+    calc_idx = widget.main_layout.indexOf(widget.calculate_lifetime_button)
+    assert widget.main_layout.indexOf(widget.filter_box) > calc_idx
+
+
+def test_add_filter_follows_the_displayed_output(make_viewer_model, qtbot):
+    """The metric offered defaults to the quantity currently on screen."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.phasor_mapping_tab
+
+    widget.output_mode_combobox.setCurrentText("Phase")
+    assert widget.filter_list.current_metric() == "Phase"
+
+    widget.output_mode_combobox.setCurrentText("Modulation")
+    assert widget.filter_list.current_metric() == "Modulation"
+
+    widget.output_mode_combobox.setCurrentText("Lifetime")
+    widget.lifetime_type_combobox.setCurrentText("Normal Lifetime")
+    assert widget.filter_list.current_metric() == "Normal Lifetime"
+
+
+def test_add_filter_is_blocked_until_its_inputs_exist(
+    make_viewer_model, qtbot
+):
+    """The button says why a filter cannot be added instead of failing later."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.phasor_mapping_tab
+
+    widget._refresh_filter_add_button()
+    assert not widget.filter_list.add_button.isEnabled()
+    assert "Select at least one" in widget.filter_list.add_button.toolTip()
+
+    layer = create_image_layer_with_phasors()
+    layer.name = "blocked"
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    widget._on_image_layer_changed()
+
+    widget.frequency_input.setText("")
+    widget.filter_list.set_current_metric("Normal Lifetime")
+    widget._refresh_filter_add_button()
+    assert not widget.filter_list.add_button.isEnabled()
+    assert "frequency" in widget.filter_list.add_button.toolTip()
+
+    # Phase needs no frequency, so it is available immediately.
+    widget.filter_list.set_current_metric("Phase")
+    widget._refresh_filter_add_button()
+    assert widget.filter_list.add_button.isEnabled()
+
+    widget.frequency_input.setText("80.0")
+    widget.filter_list.set_current_metric("Normal Lifetime")
+    widget._refresh_filter_add_button()
+    assert widget.filter_list.add_button.isEnabled()
+
+
+def test_filter_nans_the_phasor_coordinates_and_the_output_layer(
+    make_viewer_model, qtbot
+):
+    """A criterion removes the same pixels from G/S, the mean and the map."""
+    viewer = make_viewer_model()
+    parent, widget, layer = _ready_mapping_widget(viewer)
+    widget.lifetime_type_combobox.setCurrentText("Normal Lifetime")
+    widget._on_calculate_lifetime_clicked()
+
+    output_name = f"Normal Lifetime: {layer.name}"
+    assert output_name in viewer.layers
+    before = np.isnan(layer.metadata['G']).sum()
+
+    median = _metric_median(layer, "Normal Lifetime", parent.harmonic)
+    _add_filter(widget, "Normal Lifetime", median - 0.05, median + 0.05)
+
+    g = layer.metadata['G']
+    s = layer.metadata['S']
+    assert np.isnan(g).sum() > before
+    assert np.isnan(s).sum() == np.isnan(g).sum()
+    per_harmonic = g.shape[0] if g.ndim > layer.data.ndim else 1
+    assert np.isnan(layer.data).sum() == np.isnan(g).sum() // per_harmonic
+
+    output = viewer.layers[output_name]
+    assert np.isnan(output.data).sum() == np.isnan(layer.data).sum()
+
+    # The stack is persisted so it survives a re-read of the layer.
+    (stored,) = get_filters(layer)
+    assert stored['metric'] == "Normal Lifetime"
+    assert stored['harmonic'] == parent.harmonic
+
+
+def test_display_range_cannot_resurrect_filtered_pixels(
+    make_viewer_model, qtbot
+):
+    """Widening the lifetime display range brings back no filtered pixel."""
+    viewer = make_viewer_model()
+    parent, widget, layer = _ready_mapping_widget(viewer)
+    widget.lifetime_type_combobox.setCurrentText("Normal Lifetime")
+    widget._on_calculate_lifetime_clicked()
+
+    median = _metric_median(layer, "Normal Lifetime", parent.harmonic)
+    _add_filter(widget, "Normal Lifetime", median - 0.05, median + 0.05)
+
+    output = viewer.layers[f"Normal Lifetime: {layer.name}"]
+    filtered = np.isnan(output.data).sum()
+    assert filtered > 0
+
+    widget.lifetime_range_slider.setValue(
+        (
+            widget.lifetime_range_slider.minimum(),
+            widget.lifetime_range_slider.maximum(),
+        )
+    )
+    assert np.isnan(output.data).sum() == filtered
+
+
+def test_two_filters_compose_and_are_independent(make_viewer_model, qtbot):
+    """A second criterion narrows the first; removing it restores it exactly."""
+    viewer = make_viewer_model()
+    parent, widget, layer = _ready_mapping_widget(viewer)
+    widget.lifetime_type_combobox.setCurrentText("Normal Lifetime")
+    widget._on_calculate_lifetime_clicked()
+
+    baseline = np.isnan(layer.metadata['G']).sum()
+    lifetime_median = _metric_median(layer, "Normal Lifetime", parent.harmonic)
+    _add_filter(
+        widget, "Normal Lifetime", lifetime_median - 1.0, lifetime_median + 1.0
+    )
+    after_first = np.isnan(layer.metadata['G']).sum()
+    assert after_first > baseline
+
+    modulation_bounds = widget.filter_list.bounds_for("Modulation")
+    second = _add_filter(
+        widget,
+        "Modulation",
+        (modulation_bounds[0] + modulation_bounds[1]) / 2,
+        modulation_bounds[1],
+    )
+    after_second = np.isnan(layer.metadata['G']).sum()
+    assert after_second >= after_first
+    assert len(get_filters(layer)) == 2
+
+    # Switching the second off is exactly as good as never adding it.
+    second.enabled_check.setChecked(False)
+    assert np.isnan(layer.metadata['G']).sum() == after_first
+    assert len(get_filters(layer)) == 2
+
+    second.enabled_check.setChecked(True)
+    assert np.isnan(layer.metadata['G']).sum() == after_second
+
+    widget.filter_list._on_card_removed(second.filter_id)
+    assert np.isnan(layer.metadata['G']).sum() == after_first
+    assert len(get_filters(layer)) == 1
+
+    widget._apply_filter_stack([])
+    assert np.isnan(layer.metadata['G']).sum() == baseline
+    assert get_filters(layer) == []
+
+
+def test_filter_order_does_not_change_the_result(make_viewer_model, qtbot):
+    """The stack is a set of conditions, so the order they were added in is
+    irrelevant."""
+    viewer = make_viewer_model()
+    parent, widget, layer = _ready_mapping_widget(viewer)
+    widget.lifetime_type_combobox.setCurrentText("Normal Lifetime")
+    widget._on_calculate_lifetime_clicked()
+
+    lifetime_median = _metric_median(layer, "Normal Lifetime", parent.harmonic)
+    modulation_bounds = widget.filter_list.bounds_for("Modulation")
+    modulation_mid = sum(modulation_bounds) / 2
+
+    _add_filter(
+        widget, "Normal Lifetime", lifetime_median - 1.0, lifetime_median + 1.0
+    )
+    _add_filter(widget, "Modulation", modulation_mid, modulation_bounds[1])
+    forward = np.isnan(layer.metadata['G']).copy()
+
+    widget._apply_filter_stack([])
+    _add_filter(widget, "Modulation", modulation_mid, modulation_bounds[1])
+    _add_filter(
+        widget, "Normal Lifetime", lifetime_median - 1.0, lifetime_median + 1.0
+    )
+    assert np.array_equal(forward, np.isnan(layer.metadata['G']))
+
+
+def test_exclude_mode_is_the_complement_of_keep(make_viewer_model, qtbot):
+    """The same range can be punched out instead of kept."""
+    viewer = make_viewer_model()
+    parent, widget, layer = _ready_mapping_widget(viewer)
+    widget.output_mode_combobox.setCurrentText("Modulation")
+    widget._on_calculate_lifetime_clicked()
+
+    low, high = widget.filter_list.bounds_for("Modulation")
+    middle = (low + high) / 2
+
+    _add_filter(widget, "Modulation", low, middle)
+    kept = np.isnan(layer.metadata['G']).copy()
+
+    widget._apply_filter_stack([])
+    _add_filter(widget, "Modulation", low, middle, mode=EXCLUDE)
+    excluded = np.isnan(layer.metadata['G'])
+
+    measurable = ~np.isnan(layer.metadata['G_original'])
+    assert not np.array_equal(kept, excluded)
+    assert np.all((kept | excluded)[measurable])
+
+
+def test_filter_ranges_stay_measured_on_the_unfiltered_data(
+    make_viewer_model, qtbot
+):
+    """A filter never shrinks the range the next filter is offered."""
+    viewer = make_viewer_model()
+    parent, widget, layer = _ready_mapping_widget(viewer)
+    widget.output_mode_combobox.setCurrentText("Modulation")
+    widget._on_calculate_lifetime_clicked()
+    widget.filter_list.set_current_metric("Modulation")
+    widget._refresh_filter_bounds()
+    before = widget.filter_list.bounds_for("Modulation")
+
+    low, high = before
+    _add_filter(widget, "Modulation", low, (low + high) / 2)
+
+    widget._refresh_filter_bounds()
+    assert widget.filter_list.bounds_for("Modulation") == pytest.approx(before)
+
+
+def test_filter_reports_what_it_keeps(make_viewer_model, qtbot):
+    """Each card, and the stack as a whole, say how much data survives."""
+    viewer = make_viewer_model()
+    parent, widget, layer = _ready_mapping_widget(viewer)
+    widget.output_mode_combobox.setCurrentText("Modulation")
+    widget._on_calculate_lifetime_clicked()
+
+    low, high = widget.filter_list.bounds_for("Modulation")
+    card = _add_filter(widget, "Modulation", low, (low + high) / 2)
+
+    assert "keeps" in card.stat_label.text()
+    summary = widget.filter_list.summary_label.text()
+    assert summary.startswith("1 of 1 on")
+    assert "kept" in summary
+    assert layer.name in widget.filter_list.summary_label.toolTip()
+
+    card.enabled_check.setChecked(False)
+    assert card.stat_label.text().startswith("off")
+    assert widget.filter_list.summary_label.text().startswith("0 of 1 on")
+
+
+def test_filter_updates_the_histogram_and_the_statistics(
+    make_viewer_model, qtbot
+):
+    """The histogram and the statistics table follow the filtered data."""
+    viewer = make_viewer_model()
+    parent, widget, layer = _ready_mapping_widget(viewer)
+    widget.lifetime_type_combobox.setCurrentText("Normal Lifetime")
+    widget._on_calculate_lifetime_clicked()
+
+    statistics = parent.phasor_map_statistics_dock_widget
+    statistics._update_statistics()
+    before_rows = statistics.layer_stats_table.rowCount()
+    before_mean = statistics.layer_stats_table.item(0, 1).text()
+    before_points = sum(
+        len(values) for values in widget.histogram_widget._datasets.values()
+    )
+
+    median = _metric_median(layer, "Normal Lifetime", parent.harmonic)
+    _add_filter(widget, "Normal Lifetime", median - 0.05, median + 0.05)
+
+    plotted = np.concatenate(list(widget.histogram_widget._datasets.values()))
+    assert 0 < len(plotted) < before_points
+    # Everything still plotted is inside the range the card shows.
+    assert plotted.min() >= median - 0.05 - 1e-9
+    assert plotted.max() <= median + 0.05 + 1e-9
+
+    statistics._update_statistics()
+    assert statistics.layer_stats_table.rowCount() == before_rows
+    assert statistics.layer_stats_table.item(0, 1).text() != before_mean
+    assert float(
+        statistics.layer_stats_table.item(0, 1).text()
+    ) == pytest.approx(float(plotted.mean()), abs=1e-2)
+
+
+def test_filter_survives_an_intensity_threshold(make_viewer_model, qtbot):
+    """Re-thresholding rebuilds from the originals without losing the stack."""
+    viewer = make_viewer_model()
+    parent, widget, layer = _ready_mapping_widget(viewer)
+    widget.output_mode_combobox.setCurrentText("Modulation")
+    widget._on_calculate_lifetime_clicked()
+
+    low, high = widget.filter_list.bounds_for("Modulation")
+    _add_filter(widget, "Modulation", low, (low + high) / 2)
+    filtered = np.isnan(layer.metadata['G']).sum()
+    assert filtered > 0
+
+    apply_filter_and_threshold(layer, threshold=0.0)
+    assert np.isnan(layer.metadata['G']).sum() >= filtered
+    assert len(get_filters(layer)) == 1
+
+
+def test_filter_applies_to_every_selected_layer(make_viewer_model, qtbot):
+    """The stack is written to each analysed layer, not just the primary one."""
+    viewer = make_viewer_model()
+    parent, widget, first = _ready_mapping_widget(viewer, name="first")
+    second = create_image_layer_with_phasors()
+    second.name = "second"
+    viewer.add_layer(second)
+    parent.image_layers_checkable_combobox.setCheckedItems(["first", "second"])
+    widget._on_image_layer_changed()
+    widget.output_mode_combobox.setCurrentText("Modulation")
+    widget._on_calculate_lifetime_clicked()
+
+    low, high = widget.filter_list.bounds_for("Modulation")
+    _add_filter(widget, "Modulation", low, (low + high) / 2)
+
+    assert len(get_filters(first)) == 1
+    assert len(get_filters(second)) == 1
+    assert np.isnan(first.metadata['G']).any()
+    assert np.isnan(second.metadata['G']).any()
+
+
+def test_filter_on_a_multi_harmonic_layer(make_viewer_model, qtbot):
+    """A criterion on one harmonic invalidates every harmonic of that pixel."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.phasor_mapping_tab
+
+    mean = np.ones((10, 10), dtype=float)
+    g = np.full((2, 10, 10), 0.5, dtype=float)
+    s = np.full((2, 10, 10), 0.5, dtype=float)
+    layer = Image(
+        mean,
+        name="multi_h",
+        metadata={
+            'G': g.copy(),
+            'S': s.copy(),
+            'G_original': g.copy(),
+            'S_original': s.copy(),
+            'original_mean': mean.copy(),
+            'harmonics': np.array([1, 2]),
+            'frequency': 80.0,
+            'settings': {},
+        },
+    )
+    viewer.add_layer(layer)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText(layer.name)
+    widget._on_image_layer_changed()
+    widget.frequency_input.setText("80.0")
+    widget.lifetime_type_combobox.setCurrentText("Normal Lifetime")
+    widget._on_calculate_lifetime_clicked()
+
+    # (0.5, 0.5) at 80 MHz is a normal lifetime of ~1.989 ns, outside [2.5, 3.5].
+    card = _add_filter(widget, "Normal Lifetime", 2.5, 3.5)
+    assert card.entry['harmonic'] == parent.harmonic
+    assert np.all(np.isnan(layer.metadata['G']))
+    assert np.all(np.isnan(layer.metadata['S']))
+    assert np.all(np.isnan(layer.data))
+
+    widget._apply_filter_stack([])
+    assert not np.any(np.isnan(layer.metadata['G']))
+    assert not np.any(np.isnan(layer.metadata['S']))
+
+
+def test_filter_warns_when_a_criterion_cannot_be_evaluated(
+    make_viewer_model, qtbot, monkeypatch
+):
+    """A criterion whose frequency went missing is reported, not applied."""
+    viewer = make_viewer_model()
+    parent, widget, layer = _ready_mapping_widget(viewer)
+    warnings = []
+    monkeypatch.setattr(
+        "napari_phasors.phasor_mapping_tab.show_warning", warnings.append
+    )
+
+    set_filters(
+        layer,
+        [{'metric': "Normal Lifetime", 'min': 1.0, 'max': 2.0}],
+    )
+    widget.frequency_input.setText("")
+    widget._apply_filter_stack(get_filters(layer))
+
+    assert warnings and "Normal Lifetime" in warnings[0]
+    assert not np.isnan(layer.metadata['G']).all()
+
+
+def test_reapply_filter_stack_restores_the_arrays(make_viewer_model, qtbot):
+    """The stack can be re-derived after something else rewrote the arrays."""
+    viewer = make_viewer_model()
+    parent, widget, layer = _ready_mapping_widget(viewer)
+    widget.output_mode_combobox.setCurrentText("Modulation")
+    widget._on_calculate_lifetime_clicked()
+
+    low, high = widget.filter_list.bounds_for("Modulation")
+    _add_filter(widget, "Modulation", low, (low + high) / 2)
+    expected = np.isnan(layer.metadata['G']).copy()
+
+    layer.metadata['G'] = layer.metadata['G_original'].copy()
+    layer.metadata['S'] = layer.metadata['S_original'].copy()
+    widget._reapply_filter_stack([layer])
+    assert np.array_equal(np.isnan(layer.metadata['G']), expected)
+
+    # A layer with no stack is left exactly as it is.
+    other = create_image_layer_with_phasors()
+    other.name = "untouched"
+    viewer.add_layer(other)
+    before = other.metadata['G'].copy()
+    widget._reapply_filter_stack([other])
+    np.testing.assert_array_equal(other.metadata['G'], before)
+
+
+def test_apply_filter_stack_without_a_selection_does_nothing(
+    make_viewer_model, qtbot
+):
+    """Nothing selected, nothing to filter."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.phasor_mapping_tab
+    widget._apply_filter_stack([])
+    assert widget.filter_list.filters() == []
+
+    widget._sync_filter_ui()
+    assert widget.filter_list.summary_label.text() == ""
+
+
+def test_filter_cards_are_restored_when_the_layer_changes(
+    make_viewer_model, qtbot
+):
+    """Switching layers shows each layer's own stack."""
+    viewer = make_viewer_model()
+    parent, widget, first = _ready_mapping_widget(viewer, name="one")
+    widget.output_mode_combobox.setCurrentText("Modulation")
+    widget._on_calculate_lifetime_clicked()
+    low, high = widget.filter_list.bounds_for("Modulation")
+    _add_filter(widget, "Modulation", low, (low + high) / 2)
+
+    second = create_image_layer_with_phasors()
+    second.name = "two"
+    viewer.add_layer(second)
+    parent.image_layer_with_phasor_features_combobox.setCurrentText("two")
+    widget._on_image_layer_changed()
+    assert widget.filter_list.filters() == []
+
+    parent.image_layer_with_phasor_features_combobox.setCurrentText("one")
+    widget._on_image_layer_changed()
+    assert len(widget.filter_list.filters()) == 1
+
+
+def test_fret_criteria_are_listed_read_only_in_the_mapping_tab(
+    make_viewer_model, qtbot
+):
+    """A FRET filter is visible here, so its hidden pixels are accounted for."""
+    viewer = make_viewer_model()
+    parent, widget, layer = _ready_mapping_widget(viewer)
+    set_filters(
+        layer,
+        [
+            new_filter(
+                "FRET efficiency",
+                0.2,
+                0.8,
+                params={'frequency': 80.0, 'donor_lifetime': 4.2},
+            )
+        ],
+    )
+    widget._sync_filter_ui()
+
+    (shown,) = widget.filter_list.filters()
+    assert shown['metric'] == "FRET efficiency"
+    card = widget.filter_list._cards[shown['id']]
+    assert not card.range_slider.isEnabled()
+    assert card.remove_button.isEnabled()
+
+
+def test_filter_helpers_survive_a_detached_widget(make_viewer_model, qtbot):
+    """Without a parent plotter there is nothing to filter, and no crash."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.phasor_mapping_tab
+    widget.parent_widget = None
+    try:
+        assert widget._layer_filter_params(object()) == {}
+        assert widget._filter_layers() == []
+        assert widget._primary_filter_layer() is None
+        assert widget._filter_frequency() is None
+        widget._apply_filter_stack([new_filter("Modulation", 0.0, 1.0)])
+        widget._refresh_filter_bounds()
+    finally:
+        widget.parent_widget = parent
+
+
+class _BrokenSelector:
+    """Stands in for a plotter whose Qt selector has already been destroyed."""
+
+    def get_selected_layers(self):
+        """Raise the way a deleted Qt widget does when it is queried."""
+        raise RuntimeError("wrapped C/C++ object has been deleted")
+
+
+def test_filter_layers_tolerates_a_torn_down_selector(
+    make_viewer_model, qtbot
+):
+    """A selector that has already been destroyed reads as "nothing selected"."""
+    viewer = make_viewer_model()
+    parent = PlotterWidget(viewer)
+    widget = parent.phasor_mapping_tab
+    widget.parent_widget = _BrokenSelector()
+    try:
+        assert widget._filter_layers() == []
+        assert widget._primary_filter_layer() is None
+    finally:
+        # The tab's own teardown still needs a real plotter behind it.
+        widget.parent_widget = parent
+
+
+def test_filter_frequency_falls_back_to_the_layer(make_viewer_model, qtbot):
+    """A layer analysed earlier keeps the frequency it was analysed with."""
+    viewer = make_viewer_model()
+    parent, widget, layer = _ready_mapping_widget(viewer)
+    widget.frequency_input.setText("")
+    layer.metadata.setdefault('settings', {})['frequency'] = 40.0
+    assert widget._filter_frequency(layer) == 40.0
+
+    layer.metadata['settings'].pop('frequency')
+    layer.metadata['frequency'] = 20.0
+    assert widget._filter_frequency(layer) == 20.0
+
+
+def test_refresh_filter_bounds_skips_what_it_cannot_measure(
+    make_viewer_model, qtbot
+):
+    """A metric with no frequency contributes no bounds instead of failing."""
+    viewer = make_viewer_model()
+    parent, widget, layer = _ready_mapping_widget(viewer)
+    widget.frequency_input.setText("")
+    layer.metadata['settings'].pop('frequency', None)
+    layer.metadata.pop('frequency', None)
+    widget.filter_list.set_filters(
+        [new_filter("Normal Lifetime", 1.0, 2.0), new_filter("Phase", 0, 1)]
+    )
+    widget._refresh_filter_bounds()
+
+    assert widget.filter_list.bounds_for(
+        "Normal Lifetime"
+    ) == metric_fallback_range("Normal Lifetime")
+    assert widget.filter_list.bounds_for("Phase") != metric_fallback_range(
+        "Phase"
+    )
+
+
+def test_applying_a_filter_does_not_re_enter_the_restore_path(
+    make_viewer_model, qtbot
+):
+    """The refresh a filter triggers must not recurse back into it."""
+    viewer = make_viewer_model()
+    parent, widget, layer = _ready_mapping_widget(viewer)
+    widget._applying_mapping_filter = True
+    try:
+        widget._needs_update = True
+        widget._restore_on_layer_change()
+        assert widget._needs_update is True
+
+        widget._has_calculated_output = False
+        widget._autoupdate_calculate_output()
+        assert widget._has_calculated_output is False
+    finally:
+        widget._applying_mapping_filter = False
+
+
+def test_apply_filter_stack_defaults_to_the_cards_on_screen(
+    make_viewer_model, qtbot
+):
+    """Calling apply with no argument uses whatever the list currently holds."""
+    viewer = make_viewer_model()
+    parent, widget, layer = _ready_mapping_widget(viewer)
+    widget.output_mode_combobox.setCurrentText("Modulation")
+    widget._on_calculate_lifetime_clicked()
+
+    low, high = widget.filter_list.bounds_for("Modulation")
+    widget.filter_list.set_filters(
+        [new_filter("Modulation", low, (low + high) / 2)]
+    )
+    widget._apply_filter_stack()
+    assert np.isnan(layer.metadata['G']).any()
+    assert len(get_filters(layer)) == 1
+
+
+def test_refresh_filter_bounds_ignores_a_layer_with_nothing_measurable(
+    make_viewer_model, qtbot
+):
+    """A metric that is NaN everywhere leaves the offered range alone."""
+    viewer = make_viewer_model()
+    parent, widget, layer = _ready_mapping_widget(viewer)
+    layer.metadata['G_original'] = np.full_like(
+        layer.metadata['G_original'], np.nan
+    )
+    layer.metadata['S_original'] = np.full_like(
+        layer.metadata['S_original'], np.nan
+    )
+    widget.filter_list.set_current_metric("Modulation")
+    widget._refresh_filter_bounds()
+    assert widget.filter_list.bounds_for("Modulation") == (
+        metric_fallback_range("Modulation")
+    )
+
+
+def test_compute_metric_for_a_layer_without_a_mean(make_viewer_model, qtbot):
+    """A layer with no intensity image has no metric to measure."""
+    viewer = make_viewer_model()
+    parent, widget, layer = _ready_mapping_widget(viewer)
+    assert (
+        widget._compute_metric_for_layer(
+            layer, "Modulation", 1, arrays=(None, None, None)
+        )
+        is None
+    )

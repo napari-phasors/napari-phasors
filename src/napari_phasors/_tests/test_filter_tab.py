@@ -1480,3 +1480,102 @@ def test_apply_filter_to_no_layers_is_a_no_op():
     from napari_phasors._utils import apply_filter_and_threshold_to_layers
 
     assert apply_filter_and_threshold_to_layers([]) == []
+
+
+def test_lower_threshold_below_masked_range_is_kept(make_viewer_model, qtbot):
+    """A lower threshold under the masked minimum survives re-applying.
+
+    Regression: masking raised the slider minimum, the restored handle was
+    clamped to it, and applying then stored ``None`` — silently discarding the
+    user's lower threshold once the mask was removed again.
+    """
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    fw = parent.filter_tab
+    fw._on_image_layer_changed()
+
+    om = layer.metadata["original_mean"]
+    # A threshold between the full-data minimum and the masked minimum.
+    bright = om >= np.nanpercentile(om, 70)
+    lower = float(np.nanpercentile(om, 40))
+    fw.threshold_method_combobox.setCurrentText("Manual")
+    fw.min_threshold_edit.setText(f"{lower:.2f}")
+    fw.on_min_threshold_edit_changed()
+    fw.apply_button_clicked()
+    stored = layer.metadata["settings"]["threshold"]
+    assert stored is not None
+    assert stored < om[bright].min()
+
+    # Mask in only the bright pixels, then re-apply as the mask handlers do.
+    layer.metadata["mask"] = bright.astype(int)
+    fw._on_image_layer_changed()
+    assert fw._offscreen_threshold_lower == stored
+    fw.apply_button_clicked()
+    assert layer.metadata["settings"]["threshold"] == stored
+
+    # Moving the handle yourself supersedes the remembered value.
+    fw.threshold_slider.setValue(
+        (fw.threshold_slider.minimum(), fw.threshold_slider.maximum())
+    )
+    assert fw._offscreen_threshold_lower is None
+    fw.apply_button_clicked()
+    assert layer.metadata["settings"]["threshold"] is None
+
+
+def test_upper_threshold_above_masked_range_is_kept(make_viewer_model, qtbot):
+    """The upper bound gets the same treatment as the lower one.
+
+    A mask that removes the brightest pixels lowers the slider maximum; the
+    restored upper handle then sits at the extreme, which otherwise reads as
+    "no limit" and would drop the user's upper threshold on the next apply.
+    """
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    fw = parent.filter_tab
+    fw._on_image_layer_changed()
+
+    om = layer.metadata["original_mean"]
+    # Keep only the dimmest pixels, so the slider maximum drops well below
+    # the upper threshold the user set on the full image.
+    dim = om <= np.nanpercentile(om, 30)
+    upper = float(np.nanpercentile(om, 85))
+    fw.threshold_method_combobox.setCurrentText("Manual")
+    # A lower bound too, since the two are restored together.
+    fw.min_threshold_edit.setText("0.01")
+    fw.on_min_threshold_edit_changed()
+    fw.max_threshold_edit.setText(f"{upper:.2f}")
+    fw.on_max_threshold_edit_changed()
+    fw.apply_button_clicked()
+    stored = layer.metadata["settings"]["threshold_upper"]
+    assert stored is not None
+    assert stored > om[dim].max()
+
+    layer.metadata["mask"] = dim.astype(int)
+    fw._on_image_layer_changed()
+    assert fw._offscreen_threshold_upper == stored
+    fw.apply_button_clicked()
+    assert layer.metadata["settings"]["threshold_upper"] == stored
+
+
+def test_layer_without_settings_clears_the_remembered_thresholds(
+    make_viewer_model, qtbot
+):
+    """A layer that carries no settings starts from an unconstrained slider."""
+    viewer = make_viewer_model()
+    layer = create_image_layer_with_phasors()
+    viewer.add_layer(layer)
+    parent = PlotterWidget(viewer)
+    fw = parent.filter_tab
+    fw._offscreen_threshold_lower = 1.0
+    fw._offscreen_threshold_upper = 2.0
+
+    del layer.metadata["settings"]
+    fw._on_image_layer_changed()
+
+    assert fw._offscreen_threshold_lower is None
+    assert fw._offscreen_threshold_upper is None
+    assert fw.threshold_method_combobox.currentText() == "None"
