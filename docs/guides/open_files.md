@@ -41,6 +41,7 @@ The defaults below come from the format mapping in
 | `.lif` (raw) | `image=None`, `dim="λ"` |
 | `.bin` | no extra defaults |
 | `.json` (raw) | `channel=0`, `dtype=None` |
+| `.h5` (BrightEyes-MCS) | `dataset=None` (the file's default product), `time=0`, `depth=0`, `channel=0` |
 | `.ome.tif`, `.ome.tiff` | no extra defaults |
 | `.r64`, `.ref` | no extra defaults |
 | `.ifli` | `channel=0` |
@@ -51,6 +52,8 @@ Notes:
 
 - `.lif` and `.json` are ambiguous extensions (raw or processed), so the
    reader tries raw first and then processed if needed.
+- `.h5` is read as a BrightEyes-MCS file and needs `phasorpy >= 0.12`. With an
+   older phasorpy the format is hidden rather than offered and failing.
 - If you need behavior different from these defaults, use the custom import
    widget.
 - This includes selecting harmonics other than the default first two (when
@@ -113,6 +116,42 @@ The tiles are phasor-transformed individually and blended, with photon
 weighting, into a single intensity layer with one set of phasor coordinates.
 See {doc}`tiled_mosaics` for the layout sources, blend modes, overlap
 estimation and binning.
+
+## BrightEyes-MCS (`.h5`) import settings
+
+Both kinds of BrightEyes-MCS HDF5 file are read: raw acquisitions written by
+BrightEyes-MCS, and calibrated files produced by `calibrate_h5_file()` from
+the BrightEyes-MCS-File library.
+
+An MCS file holds several data products and several points along the
+repetition and z axes, so the import widget asks which one to transform:
+
+- **Output** — the data product to read, listed from the file itself. The
+  file's own declared default is preselected. Raw acquisitions appear as
+  `Raw view: ...`, processed runs as `output/<run>/products/<product>`.
+- **Time** and **Z** — the repetition and depth index to read, with the
+  available range taken from the selected product's shape. They are disabled
+  while a calibration dataset is selected, which has neither axis.
+- **Acquire calibration** with **Use: REF / IRF** — read the file's reference
+  or instrument-response dataset instead of the image data.
+
+Two buttons import the selection:
+
+- **Phasor Transform** transforms whatever the selectors currently describe.
+- **Phasor Transform Data + REF/IRF** imports the chosen data product *and*
+  the matching REF or IRF in one step, which is the usual starting point for
+  calibration. If the calibration dataset cannot be read, the data layer is
+  still imported and the problem is reported.
+
+The dataset, timepoint and z-slice are recorded in the layer name, so several
+imports from one file stay distinguishable, for example
+`sample [Raw view: raw/spad, T0, Z0] Intensity [Phasor]`.
+
+A calibrated file carries its reference lifetime, and the laser frequency
+where present. Both are read into the layer metadata and filled into the
+**Calibration** tab automatically, so calibration needs no retyping. See
+{doc}`calibration`.
+
 ## FLIMbox (`.fbd`) reconstruction settings
 
 Reconstructing an FBD image needs two settings that are not always described

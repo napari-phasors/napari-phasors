@@ -1,5 +1,7 @@
 import json
 import os
+import sys
+import types
 import warnings
 
 import numpy as np
@@ -2610,3 +2612,196 @@ def test_get_filename_extension_dotted_names(
 def test_h5_layer_stem(settings, expected):
     """The h5 selection is described in the stem, not the channel suffix."""
     assert reader_module._h5_layer_stem("file", settings) == expected
+
+
+class _FakeDatasetInfo:
+    """Stand-in for ``brighteyes_mcs_reader``'s dataset descriptor."""
+
+    def __init__(self, label, path, shape, axes, is_default, kind="data"):
+        self.label = label
+        self.path = path
+        self.shape = shape
+        self.axes = axes
+        self.is_default = is_default
+        self.kind = kind
+
+
+@pytest.fixture
+def fake_mcs_reader(monkeypatch):
+    """Install a fake ``brighteyes_mcs_reader`` and return its call log.
+
+    Lets the shared dataset listing be exercised without the optional
+    dependency, which is what the reader and the import dialog both go
+    through.
+    """
+    module = types.ModuleType("brighteyes_mcs_reader")
+    calls = []
+
+    def list_datasets(path):
+        calls.append(path)
+        if isinstance(module.datasets, Exception):
+            raise module.datasets
+        return module.datasets
+
+    module.list_datasets = list_datasets
+    module.datasets = []
+    module.calls = calls
+    monkeypatch.setitem(sys.modules, "brighteyes_mcs_reader", module)
+    return module
+
+
+def test_list_h5_datasets_filters_sorts_and_normalises(fake_mcs_reader):
+    """Only data products are listed, default first, shapes as tuples."""
+    fake_mcs_reader.datasets = [
+        _FakeDatasetInfo(
+            "spad", "/raw/spad", [1, 2, 3], ["repetition", "z", "y"], False
+        ),
+        _FakeDatasetInfo("meta", "/raw/metadata", [1], ["x"], False, "meta"),
+        _FakeDatasetInfo(
+            "apr_sum",
+            "/output/apr_001/products/apr_sum",
+            [4, 5],
+            ["repetition", "z"],
+            True,
+        ),
+    ]
+
+    products = reader_module.list_h5_datasets("file.h5")
+
+    # The non-data entry is dropped and the file's own default leads, so the
+    # dialog opens on it and the reader falls back to it.
+    assert [p["path"] for p in products] == [
+        "/output/apr_001/products/apr_sum",
+        "/raw/spad",
+    ]
+    assert products[0]["default"] is True
+    assert products[1]["shape"] == (1, 2, 3)
+    assert products[1]["axes"] == ("repetition", "z", "y")
+    assert fake_mcs_reader.calls == ["file.h5"]
+
+
+def test_list_h5_datasets_requires_optional_dependency(monkeypatch):
+    """A missing optional dependency raises, for the caller to handle."""
+    monkeypatch.setitem(sys.modules, "brighteyes_mcs_reader", None)
+    with pytest.raises(ImportError):
+        reader_module.list_h5_datasets("file.h5")
+
+
+def test_resolve_h5_dataset_passes_through_explicit_choice(fake_mcs_reader):
+    """An explicit dataset is never second-guessed."""
+    fake_mcs_reader.datasets = [
+        _FakeDatasetInfo("spad", "/raw/spad", [], [], True)
+    ]
+
+    assert reader_module.resolve_h5_dataset("f.h5", "irf") == "irf"
+    assert reader_module.resolve_h5_dataset("f.h5", "/output/x") == "/output/x"
+    # The listing is not even consulted when the caller already chose.
+    assert fake_mcs_reader.calls == []
+
+
+def test_resolve_h5_dataset_falls_back_to_listed_default(fake_mcs_reader):
+    """Without a choice, the file's declared default is used."""
+    fake_mcs_reader.datasets = [
+        _FakeDatasetInfo("spad", "/raw/spad", [], [], False),
+        _FakeDatasetInfo("sum", "/output/a/products/sum", [], [], True),
+    ]
+
+    assert (
+        reader_module.resolve_h5_dataset("f.h5", None)
+        == "/output/a/products/sum"
+    )
+
+
+@pytest.mark.parametrize(
+    "datasets",
+    [[], RuntimeError("unreadable")],
+    ids=["no-products", "listing-fails"],
+)
+def test_resolve_h5_dataset_defers_when_listing_gives_nothing(
+    fake_mcs_reader, datasets
+):
+    """An undescribable file leaves the dataset to phasorpy, not an error."""
+    fake_mcs_reader.datasets = datasets
+    assert reader_module.resolve_h5_dataset("f.h5", None) is None
+
+
+def test_read_brighteyes_mcs_resolves_dataset_before_reading(monkeypatch):
+    """The reader reads the dataset the dialog would have preselected."""
+    captured = {}
+
+    def fake_signal(path, **kwargs):
+        captured["path"] = path
+        captured["kwargs"] = kwargs
+        return "signal"
+
+    monkeypatch.setattr(
+        reader_module, "_signal_from_brighteyes_mcs", fake_signal
+    )
+    monkeypatch.setattr(
+        reader_module,
+        "resolve_h5_dataset",
+        lambda path, dataset: dataset or "/raw/spad",
+    )
+
+    result = reader_module._read_brighteyes_mcs("f.h5", {"time": 2})
+
+    assert result == "signal"
+    assert captured["path"] == "f.h5"
+    # The unspecified dataset was resolved, and the defaults filled in.
+    assert captured["kwargs"] == {
+        "dataset": "/raw/spad",
+        "time": 2,
+        "depth": 0,
+        "channel": 0,
+    }
+
+
+def test_read_brighteyes_mcs_does_not_mutate_caller_options(monkeypatch):
+    """Resolving the dataset must not write back into the caller's dict."""
+    monkeypatch.setattr(
+        reader_module, "_signal_from_brighteyes_mcs", lambda path, **kw: None
+    )
+    monkeypatch.setattr(
+        reader_module, "resolve_h5_dataset", lambda path, dataset: "/raw/spad"
+    )
+    options = {"time": 1}
+
+    reader_module._read_brighteyes_mcs("f.h5", options)
+
+    assert options == {"time": 1}
+
+
+@pytest.mark.parametrize(
+    "channel, expected",
+    [(0, "Channel 0"), (3, "Channel 3"), ("sum", "Sum")],
+)
+def test_format_channel_label(channel, expected):
+    """Channel labels distinguish the summed view from a single channel."""
+    assert reader_module._format_channel_label(channel) == expected
+
+
+@pytest.mark.parametrize(
+    "path, expected",
+    [
+        (None, "raw/spad"),
+        ("", "raw/spad"),
+        ("/raw/spad", "Raw view: raw/spad"),
+        ("/output/apr_001/products/image", "output/apr_001"),
+        (
+            "/output/apr_001/products/apr_sum",
+            "output/apr_001/products/apr_sum",
+        ),
+        (
+            "/output/virtual_channels/spad/channel_0",
+            "Raw view: spad/channel 0",
+        ),
+        ("/output/data_channel_2", "Raw view: channel 2"),
+        ("/output/data_aux_channel_1", "Raw view: aux channel 1"),
+        # Anything unrecognised is shown as-is rather than mangled.
+        ("/output/something_else", "output/something_else"),
+        ("custom/path", "custom/path"),
+    ],
+)
+def test_format_h5_dataset_label(path, expected):
+    """Dataset paths become labels a user can tell apart."""
+    assert reader_module._format_h5_dataset_label(path) == expected
