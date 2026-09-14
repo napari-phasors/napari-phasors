@@ -6,7 +6,9 @@ import numpy as np
 from phasorpy.lifetime import phasor_to_apparent_lifetime
 
 from napari_phasors._settings_store import (
+    ANALYSIS_SETTINGS_KEYS,
     LayerSettingsStore,
+    format_layer_list,
     merge_keyed_path,
     replace_keyed_entries,
     settings_equal,
@@ -340,3 +342,324 @@ def test_calibration_stores_its_reference(make_viewer_model, qtbot):
         "reference_lifetime": 2.5,
         "frequency": 80.0,
     }
+
+
+# ---------------------------------------------------------------------------
+# Store edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_settings_equal_array_edge_cases():
+    """Values that cannot be compared elementwise are not equal."""
+    # Ragged: NumPy cannot build an array to compare against.
+    assert not settings_equal(np.array([1.0]), [[1, 2], [3]])
+    assert not settings_equal(np.array([1.0, 2.0]), [1.0])
+    assert settings_equal(np.array([1, 2]), [1, 2])
+    assert settings_equal(float("nan"), float("nan"))
+
+
+def test_merge_keyed_path_without_a_stored_dict():
+    """There is nothing to keep when the old settings have no dict there."""
+    merge = merge_keyed_path(("a", "b"), [1])
+    assert merge({"a": 1}, "replaced") == "replaced"
+    assert merge({"a": 5}, {"a": {"b": {1: "new"}}}) == {
+        "a": {"b": {1: "new"}}
+    }
+
+
+def test_format_layer_list_summarises_long_lists():
+    """A note names a few layers and counts the rest."""
+    assert format_layer_list(["A", "B"]) == "A, B"
+    assert (
+        format_layer_list([f"L{i}" for i in range(6)])
+        == "L0, L1, L2, L3 and 2 more"
+    )
+
+
+def test_set_draft_path_creates_missing_levels():
+    """A nested edit builds the dicts it needs, without touching metadata."""
+    layer = _Layer({"fret": {"donor": 1}})
+    store = LayerSettingsStore()
+
+    store.set_draft_path(layer, "fret", ("colormap_settings", "gamma"), 2.0)
+
+    assert store.get(layer, "fret")["colormap_settings"] == {"gamma": 2.0}
+    assert layer.metadata["settings"]["fret"] == {"donor": 1}
+
+
+def test_store_ignores_layers_it_has_nothing_for():
+    """Calls without a layer, or without a draft, are no-ops."""
+    store = LayerSettingsStore()
+    assert store.committed(None) == {}
+    assert store.drafts(None) == {}
+    store.set_draft(None, "frequency", 80.0)
+    store.set_draft_path(None, "fret", ("donor",), 1)
+
+    layer = _Layer({"fret": {"donor": 1}})
+    store.settle_draft(layer, "fret")
+    assert not store.has_draft(layer, ["fret"])
+
+    store.set_draft(layer, "frequency", 80.0)
+    assert store.has_draft(layer, ["frequency"])
+    assert not store.has_draft(layer, ["fret"])
+
+
+def test_update_committed_replaces_a_non_dict_value():
+    """A key stored as something else is replaced by the patched dict."""
+    layer = _Layer({"fret": 5})
+    store = LayerSettingsStore()
+
+    store.update_committed([layer], "fret", ("colormap", "gamma"), 2.0)
+
+    assert layer.metadata["settings"]["fret"] == {"colormap": {"gamma": 2.0}}
+
+
+# ---------------------------------------------------------------------------
+# Plotter helpers
+# ---------------------------------------------------------------------------
+
+
+def test_pending_values_and_overwrite_message_read_the_primary(
+    make_viewer_model, qtbot
+):
+    """The values a run would store are the primary's, edits included."""
+    plotter, (_, b) = _plotter_with_layers(make_viewer_model, ["A", "B"])
+    b.metadata["settings"]["fret"] = {"donor_lifetime": 4.0}
+    plotter.stage_setting("fret", {"donor_lifetime": 2.0})
+
+    assert plotter.pending_settings_values("fret_tab") == {
+        "fret": {"donor_lifetime": 2.0}
+    }
+    message = plotter.settings_overwrite_message("fret_tab")
+    assert "FRET parameters stored in: B" in message
+
+
+def test_pending_settings_values_without_a_layer(make_viewer_model, qtbot):
+    """Nothing is pending when no layer is selected."""
+    plotter, _ = _plotter_with_layers(make_viewer_model, ["A"])
+    plotter.image_layers_checkable_combobox.setCheckedItems([])
+    plotter._layer_selection_timer.stop()
+    plotter._process_layer_selection_change()
+
+    assert plotter.get_primary_layer() is None
+    assert plotter.pending_settings_values("fret_tab") == {}
+
+
+def test_commit_frequency_ignores_unusable_values(make_viewer_model, qtbot):
+    """A frequency that is not a positive number is never stored or read."""
+    plotter, (a,) = _plotter_with_layers(make_viewer_model, ["A"])
+
+    plotter.commit_frequency([a], "not a number")
+    assert "frequency" not in a.metadata["settings"]
+
+    a.metadata["settings"]["frequency"] = "not a number"
+    plotter.image_layer_with_phasor_features_combobox.setCurrentText("A")
+    assert plotter._get_frequency_from_layer() is None
+
+
+def test_settings_notes_are_skipped_when_there_is_nothing_to_show(
+    make_viewer_model, qtbot
+):
+    """Refreshing the notes while closing, or without a label, is a no-op."""
+    plotter, _ = _plotter_with_layers(make_viewer_model, ["A"])
+
+    plotter._is_closing = True
+    plotter._refresh_settings_notes()
+    plotter._is_closing = False
+
+    plotter._plot_settings_note = None
+    plotter._refresh_plot_settings_note()
+
+
+def test_initialize_plot_settings_fills_only_missing_keys(
+    make_viewer_model, qtbot
+):
+    """A layer keeps the plot settings it has and gets the ones it lacks."""
+    plotter, (a,) = _plotter_with_layers(make_viewer_model, ["A"])
+    a.metadata["settings"]["number_of_bins"] = 12
+
+    plotter._initialize_plot_settings_in_metadata(a)
+
+    assert a.metadata["settings"]["number_of_bins"] == 12
+    assert set(ANALYSIS_SETTINGS_KEYS["settings_tab"]) <= set(
+        a.metadata["settings"]
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tab helpers
+# ---------------------------------------------------------------------------
+
+
+def test_mapping_settings_helpers_without_a_parent(make_viewer_model, qtbot):
+    """Without the plotter the tab reads metadata and stores nothing."""
+    plotter, (a,) = _plotter_with_layers(make_viewer_model, ["A"])
+    mapping = plotter.phasor_mapping_tab
+    assert mapping._get_phasor_mapping_settings(None) is None
+
+    a.metadata["settings"]["phasor_mapping"] = {"output_type": "Phase"}
+    mapping.parent_widget = None
+    try:
+        assert mapping._get_phasor_mapping_settings(a) == {
+            "output_type": "Phase"
+        }
+        mapping._stage_mapping_values({"output_type": "Modulation"})
+        mapping._commit_mapping_settings([a])
+        mapping._refresh_settings_note()
+    finally:
+        mapping.parent_widget = plotter
+
+    assert a.metadata["settings"]["phasor_mapping"] == {"output_type": "Phase"}
+
+
+def test_mapping_range_edits_are_staged_as_lifetime_range(
+    make_viewer_model, qtbot
+):
+    """Editing the displayed range is kept as an unsaved edit."""
+    plotter, (a,) = _plotter_with_layers(make_viewer_model, ["A"])
+    mapping = plotter.phasor_mapping_tab
+
+    mapping._update_lifetime_setting_in_metadata("range_min", 0.5)
+    mapping._update_lifetime_setting_in_metadata("range_max", 4.5)
+
+    staged = plotter.layer_settings(a)["phasor_mapping"]
+    assert staged["lifetime_range_min"] == 0.5
+    assert staged["lifetime_range_max"] == 4.5
+    assert "phasor_mapping" not in (a.metadata.get("settings") or {})
+
+
+def test_mapping_commit_merges_legacy_lifetime_settings(
+    make_viewer_model, qtbot
+):
+    """A layer written before the rename keeps one set of settings."""
+    plotter, (a,) = _plotter_with_layers(make_viewer_model, ["A"])
+    a.metadata["settings"]["lifetime"] = {"colormap": "turbo"}
+    mapping = plotter.phasor_mapping_tab
+
+    mapping._commit_mapping_settings([a])
+
+    stored = a.metadata["settings"]["phasor_mapping"]
+    assert stored["output_type"] == mapping._get_selected_output_type()
+    assert a.metadata["settings"]["lifetime"] == stored
+
+
+def test_component_settings_helpers(make_viewer_model, qtbot):
+    """Only the primary layer's component settings are edited as drafts."""
+    plotter, (a, b, c) = _plotter_with_layers(
+        make_viewer_model, ["A", "B", "C"]
+    )
+    tab = plotter.components_tab
+
+    assert tab._read_component_settings(None) is None
+    assert tab._edit_component_settings(None) is None
+    assert tab._read_component_settings(a) is None
+
+    b.metadata["settings"]["component_analysis"] = {"components": {}}
+    assert tab._read_component_settings(b) == {"components": {}}
+
+    # Another selected layer without settings: created in its metadata.
+    assert tab._edit_component_settings(c, create=False) is None
+    block = tab._edit_component_settings(c)
+    assert c.metadata["settings"]["component_analysis"] is block
+
+    assert tab._components_merge_rule([1])({}, "replaced") == "replaced"
+
+    tab.parent_widget = None
+    try:
+        assert tab._analysed_component_layers() == []
+    finally:
+        tab.parent_widget = plotter
+
+    tab._needs_update = True
+    tab._refresh_settings_note()
+    tab._needs_update = False
+
+
+def test_calibration_reference_is_restored_from_the_primary(
+    make_viewer_model, qtbot
+):
+    """The tab shows the reference the primary layer was calibrated with."""
+    plotter, (sample, _) = _plotter_with_layers(
+        make_viewer_model, ["sample", "reference"]
+    )
+    _select(plotter, ["sample"], "sample")
+    tab = plotter.calibration_tab
+    widget = tab.calibration_widget
+    sample.metadata["settings"]["calibration_reference"] = {
+        "reference_layer": "reference",
+        "reference_lifetime": 2.5,
+    }
+
+    tab._restore_reference_from_primary()
+
+    assert widget.calibration_layer_combobox.currentText() == "reference"
+    assert widget.lifetime_line_edit_widget.text() == "2.5"
+
+    # A layer with no stored reference leaves what is being typed alone.
+    sample.metadata["settings"]["calibration_reference"] = "not a reference"
+    widget.lifetime_line_edit_widget.setText("9")
+    tab._restore_reference_from_primary()
+    assert widget.lifetime_line_edit_widget.text() == "9"
+
+    # Restoring the widgets does not stage what it puts in them.
+    plotter.settings_store.discard_drafts([sample])
+    tab._restoring_settings = True
+    try:
+        tab._stage_reference()
+    finally:
+        tab._restoring_settings = False
+    assert not plotter.settings_store.has_draft(
+        sample, ["calibration_reference"]
+    )
+
+
+def test_fret_uses_each_layers_own_frequency(make_viewer_model, qtbot):
+    """A layer acquired at another frequency keeps and uses it."""
+    plotter, (a, b) = _plotter_with_layers(make_viewer_model, ["A", "B"])
+    b.metadata["settings"]["frequency"] = 40.0
+    fret = plotter.fret_tab
+    plotter.tab_widget.setCurrentWidget(fret)
+    fret.frequency_input.setText("80")
+    fret.donor_line_edit.setText("2.5")
+
+    fret.calculate_fret_efficiency()
+
+    assert a.metadata["settings"]["frequency"] == 80.0
+    assert b.metadata["settings"]["frequency"] == 40.0
+
+    fret._needs_update = True
+    fret._refresh_settings_note()
+    fret._needs_update = False
+
+
+def test_selection_note_lists_layers_with_other_cursors(
+    make_viewer_model, qtbot
+):
+    """The note names the selected layers whose cursors a run replaces."""
+    plotter, (_, b) = _plotter_with_layers(make_viewer_model, ["A", "B"])
+    b.metadata["settings"]["selections"] = {
+        "circular_cursors": [{"center": [0.5, 0.2], "radius": 0.1}]
+    }
+    cursor = plotter.selection_tab.cursor_selection_widget
+
+    cursor._refresh_settings_note()
+    assert "cursors stored in: B" in cursor._settings_note.text()
+
+    cursor.parent_widget = None
+    try:
+        cursor._refresh_settings_note()
+    finally:
+        cursor.parent_widget = plotter
+
+
+def test_filter_none_is_staged_as_an_empty_block(make_viewer_model, qtbot):
+    """Choosing 'None' reads as "no filter" without touching the metadata."""
+    plotter, (a,) = _plotter_with_layers(make_viewer_model, ["A"])
+    stored = {"method": "median", "size": 3, "repeat": 1}
+    a.metadata["settings"]["filter"] = dict(stored)
+
+    plotter.filter_tab.filter_method_combobox.setCurrentText("None")
+    plotter.filter_tab._stage_ui_settings()
+
+    assert plotter.layer_settings(a)["filter"] == {}
+    assert a.metadata["settings"]["filter"] == stored

@@ -3,6 +3,7 @@ import importlib.metadata
 import os
 
 import numpy as np
+import pytest
 
 from napari_phasors._reader import napari_get_reader
 from napari_phasors._synthetic_generator import (
@@ -1301,3 +1302,21 @@ def test_read_ometif_filter_stack_shown_and_applied_in_tabs(
     assert np.isnan(layer.metadata['G'][0][mask]).all()
     assert "Modulation" in mapping_on
     assert fret_on == [FRET_EFFICIENCY]
+
+
+def test_read_ometif_warns_about_a_filter_it_cannot_apply(tmp_path):
+    """A lifetime filter stored without a frequency is skipped, with a warning."""
+    from napari_phasors._mapping_filters import new_filter, set_filters
+
+    raw_flim_data = make_raw_flim_data(time_constants=[0.1, 1, 10])
+    layer = make_intensity_layer_with_phasors(raw_flim_data, harmonic=[1, 2])
+    set_filters(layer, [new_filter("Normal Lifetime", 0.5, 3.0)])
+    filepath = str(tmp_path / "unusable_filter.ome.tif")
+    write_ome_tiff(filepath, [(layer.data, {"metadata": layer.metadata})])
+
+    with pytest.warns(UserWarning, match="Normal Lifetime"):
+        metadata = napari_get_reader(filepath)(filepath)[0][1]["metadata"]
+
+    # The criterion is kept, and no pixel was dropped by it.
+    assert _stack_mask(metadata) is None
+    assert not np.isnan(metadata['G'][0]).all()
