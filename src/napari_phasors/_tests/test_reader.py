@@ -2557,10 +2557,10 @@ def test_h5_support_absent_without_phasorpy_reader(monkeypatch):
     """A stale phasorpy must cost .h5 support, not the whole plugin."""
     # The module-level binding used to be a plain attribute access, so an
     # older phasorpy made importing napari_phasors fail outright.
-    assert reader_module.BRIGHTEYES_MCS_AVAILABLE == (
+    assert (
         getattr(reader_module.io, "signal_from_brighteyes_mcs", None)
         is not None
-    )
+    ) == reader_module.BRIGHTEYES_MCS_AVAILABLE
     if not reader_module.BRIGHTEYES_MCS_AVAILABLE:
         assert ".h5" not in reader_module.extension_mapping["raw"]
         assert "phasorpy>=0.12" in (

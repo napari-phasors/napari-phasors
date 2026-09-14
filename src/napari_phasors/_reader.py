@@ -37,6 +37,7 @@ from ._utils import (
     format_phasor_layer_name,
     show_activity_progress,
 )
+
 # The BrightEyes-MCS reader is optional, so import it only if present.
 _signal_from_brighteyes_mcs = getattr(io, "signal_from_brighteyes_mcs", None)
 
